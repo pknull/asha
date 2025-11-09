@@ -1,14 +1,13 @@
 {
   "name": "panel",
-  "version": "3.0.2",
-  "description": "Panel system for structured multi-perspective analysis with dynamic agent assignment. Convenes panel characters (The Adversary, The Architect, The Curator, etc.) for systematic inquiry across 11 phases.",
+  "version": "4.0.0",
+  "description": "Simplified panel system for automatic multi-perspective analysis. Just type '/panel <topic>' and the system handles character selection, agent assignment, and structured decision-making.",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"
   },
   "commands": [
-    "./commands/panel.md",
-    "./commands/panel-use.md"
+    "./commands/panel.md"
   ],
   "agents": [
     "./agents/recruiter.md"
