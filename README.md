@@ -1,6 +1,6 @@
 # Asha Marketplace
 
-**Version**: 1.0.0
+**Version**: 1.1.0
 **Description**: Claude Code plugins and tools for the Asha framework
 
 Collection of plugins supporting creative writing, TTRPG campaigns, narrative development, and the Redacted107 (REDACTED99) universe.
@@ -12,12 +12,12 @@ Collection of plugins supporting creative writing, TTRPG campaigns, narrative de
 ### Panel System
 
 **Name**: `panel`
-**Version**: 3.0.2
-**Description**: Structured multi-perspective analysis with dynamic agent assignment
+**Version**: 4.1.0
+**Description**: Dynamic multi-perspective analysis with 3 core roles + recruited specialists
 
-Convenes 8 universal characters (Asha, The Adversary, The Recruiter, The Architect, The Archivist, The Engineer, The Ethicist, The Curator) for systematic inquiry across 11 phases. Features dynamic agent assignment via The Recruiter orchestrating 239-agent ecosystem.
+Simple invocation (`/panel <topic>`) with automatic specialist recruitment. Features 3 core roles (Asha, Recruiter, Adversary) plus 2-5 dynamically recruited specialists from 239-agent library with evocative session-specific names. The Recruiter analyzes topics and assigns domain experts; The Adversary argues against proposals and demands proof of necessity.
 
-**[Full Documentation →](panel/README.md)**
+**[Full Documentation →](plugins/panel/README.md)**
 
 ---
 
@@ -50,21 +50,21 @@ Convenes 8 universal characters (Asha, The Adversary, The Recruiter, The Archite
 asha-marketplace/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace metadata
-├── panel/                         # Panel system plugin
-│   ├── .claude-plugin/
-│   │   └── plugin.json
-│   ├── commands/
-│   │   ├── panel.md
-│   │   └── panel-use.md
-│   ├── agents/
-│   │   └── recruiter.md
-│   ├── docs/
-│   │   ├── characters/
-│   │   ├── rosters.md
-│   │   ├── profiles.md
-│   │   └── PANEL_PROTOCOL.md
-│   ├── README.md
-│   └── LICENSE
+├── plugins/                       # Plugin collection
+│   └── panel/                     # Panel system plugin
+│       ├── .claude-plugin/
+│       │   └── plugin.json
+│       ├── commands/
+│       │   └── panel.md
+│       ├── agents/
+│       │   └── recruiter.md
+│       ├── docs/
+│       │   └── characters/        # 3 core role profiles
+│       │       ├── Asha.md
+│       │       ├── The Adversary.md
+│       │       └── The Recruiter.md
+│       ├── README.md
+│       └── LICENSE
 └── README.md                      # This file
 ```
 
@@ -99,7 +99,7 @@ This marketplace will expand with additional Asha framework tools:
    - Enables dynamic agent creation during panels
    - Falls back to 239-agent library if unavailable
 
-**[See panel prerequisites →](panel/README.md#prerequisites)**
+**[See panel prerequisites →](plugins/panel/README.md#prerequisites)**
 
 ---
 
@@ -141,6 +141,15 @@ Issues and feature requests: https://github.com/pknull/asha-marketplace/issues
 ---
 
 ## Version History
+
+### v1.1.0 (2025-11-08)
+- Panel system v4.1.0 with dynamic recruitment architecture
+- 3 core roles (Asha, Recruiter, Adversary) + recruited specialists
+- Simplified invocation: `/panel <topic>` handles everything automatically
+- The Adversary now argues against proposals by default (opposition stance)
+- Session-specific naming for recruited specialists
+- Removed 5 universal character profiles (simplified to core 3)
+- Conventional marketplace structure with `plugins/` directory
 
 ### v1.0.0 (2025-11-08)
 - Initial marketplace release
