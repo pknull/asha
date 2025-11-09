@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Asha framework plugins and tools for creative writing, TTRPG, and REDACTED99 universe development",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
     {
       "name": "panel",
-      "description": "Panel system for structured multi-perspective analysis with dynamic agent assignment. Convenes 8 universal characters for systematic inquiry across 11 phases.",
+      "description": "Dynamic multi-perspective analysis with 3 core roles (Asha, Recruiter, Adversary) + recruited specialists. Recruiter analyzes topic and assigns 2-5 specialist agents with session-specific names.",
       "source": "./plugins/panel",
       "strict": false
     }
