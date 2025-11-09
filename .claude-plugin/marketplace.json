@@ -13,7 +13,7 @@
     {
       "name": "panel",
       "description": "Panel system for structured multi-perspective analysis with dynamic agent assignment. Convenes 8 universal characters for systematic inquiry across 11 phases.",
-      "source": "./panel",
+      "source": "./plugins/panel",
       "strict": false
     }
   ]
