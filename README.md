@@ -13,9 +13,7 @@ Collection of plugins supporting creative writing, TTRPG campaigns, narrative de
 
 **Name**: `panel`
 **Version**: 4.1.0
-**Description**: Dynamic multi-perspective analysis with 3 core roles + recruited specialists
-
-Simple invocation (`/panel <topic>`) with automatic specialist recruitment. Features 3 core roles (Asha, Recruiter, Adversary) plus 2-5 dynamically recruited specialists from 239-agent library with evocative session-specific names. The Recruiter analyzes topics and assigns domain experts; The Adversary argues against proposals and demands proof of necessity.
+**Description**: Dynamic multi-perspective analysis with automatic specialist recruitment
 
 **[Full Documentation →](plugins/panel/README.md)**
 
