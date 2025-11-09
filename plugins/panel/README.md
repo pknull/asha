@@ -6,7 +6,7 @@
 Just type `/panel <your topic>` and the system automatically:
 - Recruiter analyzes topic and recruits 2-5 specialist agents from 239-agent library
 - Assigns specialists with evocative session-specific names
-- Adversary challenges assumptions and ensures quality
+- Adversary argues against proposals and demands proof of necessity
 - Asha moderates and produces comprehensive Decision Report
 - Executes structured 11-phase decision protocol
 
@@ -53,11 +53,12 @@ The panel system enables automatic expert analysis by:
 - Deploys `agent-fabricator` if capability gaps detected
 - **Question**: "Who has CAPABILITY?"
 
-**The Adversary** (Challenge & Quality Gate)
-- Questions assumptions and identifies failure modes
-- Ensures panel doesn't converge prematurely on flawed consensus
-- Forces defense of positions with evidence
-- **Question**: "Is this WRONG/broken/contradictory?"
+**The Adversary** (Opposition & Quality Gate)
+- **Default stance: OPPOSE** - argues against proposals and defends status quo
+- Demands evidence before changing working systems: "Show me user complaints, failure data, metrics"
+- Forces proponents to prove necessity: "The current system works. Prove it doesn't."
+- Prevents premature action and consensus formed without data
+- **Question**: "Why should we do this at all?"
 
 ### Dynamic Panelists (Recruited Per Topic)
 
@@ -109,7 +110,7 @@ The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session
 
 **Phase 3: Initial Positions** (All Panelists)
 - Specialists deploy assigned agents to gather evidence
-- Adversary identifies potential failure modes
+- Adversary takes opposition stance: "DON'T do this because..." and demands proof
 - Present 5-bullet briefs with citations
 
 **Phase 4: Cross-Examination** (The Adversary-led)
@@ -223,7 +224,7 @@ This plugin assumes your Claude Code project uses:
 Core roles have documented profiles in `plugins/panel/docs/characters/`:
 - **Asha.md** - Moderator/Facilitator
 - **The Recruiter.md** - Workforce Intelligence
-- **The Adversary.md** - Challenge & Quality Gate
+- **The Adversary.md** - Opposition & Quality Gate
 
 Recruited specialists are documented in `.claude/agents/*.md` (239 agents available in host project).
 

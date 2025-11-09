@@ -15,7 +15,7 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 - Assigns specialists with evocative session-specific names
 - Infers goals from topic context
 - Applies consensus decision rule (unanimous for security topics)
-- The Adversary challenges assumptions and ensures quality
+- The Adversary argues against proposals and demands proof of necessity
 - Asha moderates and compiles the decision report
 
 ## Core Roles (Always Present)
@@ -33,11 +33,12 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 - Deploys `agent-fabricator` if capability gaps detected
 - **Question**: "Who has CAPABILITY?"
 
-**The Adversary** (Challenge & Quality Gate)
-- Questions assumptions and identifies failure modes
-- Ensures panel doesn't converge prematurely on flawed consensus
-- Forces defense of positions with evidence
-- **Question**: "Is this WRONG/broken/contradictory?"
+**The Adversary** (Opposition & Quality Gate)
+- **Default stance: OPPOSE** - argues against proposals and defends status quo
+- Demands evidence before changing working systems: "Show me user complaints, failure data, metrics"
+- Forces proponents to prove necessity: "The current system works. Prove it doesn't."
+- Prevents premature action and consensus formed without data
+- **Question**: "Why should we do this at all?"
 
 ## Dynamic Panelists (Recruited Per Topic)
 
@@ -106,7 +107,7 @@ The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session
 
 **Phase 3: Initial Positions** (All Panelists)
 - Each specialist (via recruited agent) gathers information and analyzes from their domain
-- The Adversary identifies potential failure modes and challenges
+- The Adversary takes opposition stance: "DON'T do this because..." and demands proof
 - Synthesize into 5-bullet brief: Position, Evidence, Risks, Unknowns, Recommendation
 - Present findings with citations
 
@@ -185,7 +186,7 @@ If no agent scores >4 for required capability → Recruiter deploys `agent-fabri
 Core roles have documented profiles in `plugins/panel/docs/characters/`:
 - **Asha.md** - Moderator/Facilitator
 - **The Recruiter.md** - Workforce Intelligence
-- **The Adversary.md** - Challenge & Quality Gate
+- **The Adversary.md** - Opposition & Quality Gate
 
 Recruited specialists are documented in `.claude/agents/*.md` (239 agents available).
 
