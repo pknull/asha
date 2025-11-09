@@ -4,7 +4,7 @@
 **Description**: Dynamic multi-perspective analysis with 3 core roles + recruited specialists
 
 Just type `/panel <your topic>` and the system automatically:
-- Recruiter analyzes topic and recruits 2-5 specialist agents from 239-agent library
+- Recruiter analyzes topic and recruits 2-5 specialist agents from available library
 - Assigns specialists with evocative session-specific names
 - Adversary argues against proposals and demands proof of necessity
 - Asha moderates and produces comprehensive Decision Report
@@ -28,7 +28,7 @@ Just type `/panel <your topic>` and the system automatically:
 
 The panel system enables automatic expert analysis by:
 
-1. **Topic analysis** (Phase -1) - Recruiter determines needed expertise and recruits 2-5 specialists from 239-agent library with session-specific names
+1. **Topic analysis** (Phase -1) - Recruiter determines needed expertise and recruits 2-5 specialists from available agent library with session-specific names
 2. **Structured inquiry** (Phases 1-8) - Framing, cross-examination, research gate, reflection, synthesis, decision
 3. **Decision Report** - Evidence citations, confidence scoring, dissent notation, actionable next steps
 
@@ -48,7 +48,7 @@ The panel system enables automatic expert analysis by:
 
 **The Recruiter** (Workforce Intelligence)
 - Analyzes topic to determine needed expertise
-- Scores 239-agent library (0-10) for capability match
+- Scores available agent library (0-10) for capability match
 - Recruits 2-5 specialist agents with session-specific names
 - Deploys `agent-fabricator` if capability gaps detected
 - **Question**: "Who has CAPABILITY?"
@@ -92,7 +92,7 @@ The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session
 
 **Phase -1: Topic Analysis & Workforce Recruitment** (The Recruiter)
 - Analyze topic domain and determine required expertise (2-5 domains typical)
-- Score 239-agent library (0-10) for capability match
+- Score available agent library (0-10) for capability match
 - Assign specialists with session-specific names
 - Deploy agent-fabricator if gaps detected
 - Set decision rule (consensus default, unanimous for security)
@@ -226,7 +226,7 @@ Core roles have documented profiles in `plugins/panel/docs/characters/`:
 - **The Recruiter.md** - Workforce Intelligence
 - **The Adversary.md** - Opposition & Quality Gate
 
-Recruited specialists are documented in `.claude/agents/*.md` (239 agents available in host project).
+Recruited specialists are documented in `.claude/agents/*.md` (agent count varies by host project).
 
 ---
 
@@ -258,7 +258,7 @@ Reports saved to: `Work/meetings/YYYY-MM-DD--panel--<slug>.md`
 **How it works**:
 
 1. **Recruiter analyzes topic** (Phase -1) - Determines if research-heavy, implementation-focused, creative, technical, etc.
-2. **Scores 239-agent library** - 0-10 match for topic expertise needs
+2. **Scores available agent library** - 0-10 match for topic expertise needs
 3. **Assigns specialists with session names** - 2-5 agents typical, given evocative contextual names
 4. **Deploys agent-fabricator** - If gaps detected (no agent scores >4)
 
@@ -285,7 +285,7 @@ Same agent, different contextual identity based on topic domain.
 ### Agent assignment failures
 
 **Issue**: Recruiter cannot find agents in `.claude/agents/`
-**Solution**: Verify 239-agent library exists in host project
+**Solution**: Verify agent library exists in host project (`.claude/agents/*.md`)
 
 ### agent-fabricator not available
 

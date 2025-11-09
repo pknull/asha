@@ -11,7 +11,7 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 ```
 
 **That's it.** The panel handles everything automatically:
-- The Recruiter analyzes topic and recruits 2-5 specialist agents from 239-agent library
+- The Recruiter analyzes topic and recruits 2-5 specialist agents from available library
 - Assigns specialists with evocative session-specific names
 - Infers goals from topic context
 - Applies consensus decision rule (unanimous for security topics)
@@ -28,7 +28,7 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 
 **The Recruiter** (Workforce Intelligence)
 - Analyzes topic to determine needed expertise
-- Scores 239-agent library (0-10) for capability match
+- Scores available agent library (0-10) for capability match
 - Recruits 2-5 specialist agents with session-specific names
 - Deploys `agent-fabricator` if capability gaps detected
 - **Question**: "Who has CAPABILITY?"
@@ -72,7 +72,7 @@ The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session
 **Phase -1: Topic Analysis & Workforce Recruitment** (The Recruiter)
 - Analyze topic domain (technical, creative, research-heavy, security-critical)
 - Determine required expertise areas (2-5 domains typical)
-- Search 239-agent library systematically (`.claude/agents/*.md`)
+- Search agent library systematically (`.claude/agents/*.md`)
 - Score agents 0-10 for topic capability match:
   * 10: Perfect specialist match
   * 7-9: Strong capabilities alignment
@@ -164,7 +164,7 @@ Every panel produces a structured decision report:
 
 **Core Roles vs Recruited Specialists**:
 - **Core Roles** = Persistent panel infrastructure (Asha, Recruiter, Adversary)
-- **Recruited Specialists** = Topic-specific experts from 239-agent library with session names
+- **Recruited Specialists** = Topic-specific experts from agent library with session names
 
 **Recruitment Flow**:
 1. **Phase -1**: Recruiter analyzes topic → determines expertise needs → scores agents → assigns with session names
@@ -188,7 +188,7 @@ Core roles have documented profiles in `plugins/panel/docs/characters/`:
 - **The Recruiter.md** - Workforce Intelligence
 - **The Adversary.md** - Opposition & Quality Gate
 
-Recruited specialists are documented in `.claude/agents/*.md` (239 agents available).
+Recruited specialists are documented in `.claude/agents/*.md` (agent count varies by host project).
 
 ## Logging
 
