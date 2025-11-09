@@ -1,6 +1,6 @@
 # Panel - Expert Multi-Perspective Analysis
 
-Convene a panel of 8 universal characters who analyze your topic from distinct perspectives, deploy specialized agents as tools, and produce a structured decision through an 11-phase protocol.
+Convene a panel with 3 core roles + dynamically recruited specialists who analyze your topic from distinct perspectives and produce a structured decision through an 11-phase protocol.
 
 ## Usage
 
@@ -11,31 +11,75 @@ Convene a panel of 8 universal characters who analyze your topic from distinct p
 ```
 
 **That's it.** The panel handles everything automatically:
-- Selects which characters participate based on topic analysis
-- Assigns optimal agents to characters via Recruiter scoring (239-agent library)
+- The Recruiter analyzes topic and recruits 2-5 specialist agents from 239-agent library
+- Assigns specialists with evocative session-specific names
 - Infers goals from topic context
 - Applies consensus decision rule (unanimous for security topics)
+- The Adversary challenges assumptions and ensures quality
+- Asha moderates and compiles the decision report
 
-## Universal Characters
+## Core Roles (Always Present)
 
-Each character brings a unique analytical lens:
+**Asha** (Moderator/Facilitator)
+- Manages 11-phase protocol execution
+- Ensures procedural integrity and timebox enforcement
+- Synthesizes final decision report
+- **Question**: "What is the PROCESS?"
 
-- **Asha** (Moderator) → "What is the PROCESS?"
-- **The Adversary** (Challenge & Quality Gate) → "Is this WRONG/broken/contradictory?"
-- **The Recruiter** (Workforce Intelligence) → "Who has CAPABILITY?"
-- **The Architect** (Structure & Synthesis) → "What are the OPTIONS?"
-- **The Archivist** (Evidence & Sources) → "What does EVIDENCE say?"
-- **The Engineer** (Implementation Excellence) → "Can we BUILD this?"
-- **The Ethicist** (Values & Cultural Integrity) → "Who is AFFECTED?"
-- **The Curator** (Aesthetic Fitness) → "Does this SERVE its purpose?"
+**The Recruiter** (Workforce Intelligence)
+- Analyzes topic to determine needed expertise
+- Scores 239-agent library (0-10) for capability match
+- Recruits 2-5 specialist agents with session-specific names
+- Deploys `agent-fabricator` if capability gaps detected
+- **Question**: "Who has CAPABILITY?"
 
-Not all characters participate in every panel—they evaluate relevance and abstain if their domain doesn't apply.
+**The Adversary** (Challenge & Quality Gate)
+- Questions assumptions and identifies failure modes
+- Ensures panel doesn't converge prematurely on flawed consensus
+- Forces defense of positions with evidence
+- **Question**: "Is this WRONG/broken/contradictory?"
+
+## Dynamic Panelists (Recruited Per Topic)
+
+The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session-specific names** based on topic context.
+
+**Examples by Topic Type**:
+
+**Creative Writing Panel** (Redacted229 Chapter 9 evaluation):
+- `prose-analysis` → **"The Editor"** (craft assessment)
+- `intimacy-designer` → **"The Architect of Dread"** (genre mechanics)
+- `narrative-architect` → **"The Structuralist"** (story coherence)
+- `character-developer` → **"The Psychologist"** (character authenticity)
+
+**Technical Architecture Panel** (GraphQL vs REST):
+- `research-assistant` → **"The Evidence Gatherer"** (source validation)
+- `architect` → **"The Systems Designer"** (architecture patterns)
+- `ml-engineer` → **"The Model Capability Analyst"** (performance analysis)
+
+**Culinary Innovation Panel** (How do we pimp fish):
+- `research-assistant` → **"The Culinary Historian"** (technique research)
+- `trend-analyst` → **"The Flavor Prophet"** (emerging patterns)
+- `creative-director` → **"The Presentation Architect"** (plating design)
+
+**Session-Specific Naming Convention**:
+- **Agent role** describes what it does (e.g., `prose-analysis`)
+- **Session name** describes who it becomes for this panel (e.g., "The Editor")
+- Names should be evocative, contextual, and domain-appropriate
 
 ## 11-Phase Protocol
 
-**Phase -1: Topic Analysis & Character Selection** (Asha)
-- Analyze topic domain (technical, creative, research-heavy, security-critical, etc.)
-- Invite 4-8 relevant characters based on detected needs
+**Phase -1: Topic Analysis & Workforce Recruitment** (The Recruiter)
+- Analyze topic domain (technical, creative, research-heavy, security-critical)
+- Determine required expertise areas (2-5 domains typical)
+- Search 239-agent library systematically (`.claude/agents/*.md`)
+- Score agents 0-10 for topic capability match:
+  * 10: Perfect specialist match
+  * 7-9: Strong capabilities alignment
+  * 4-6: Partial match, can handle with coordination
+  * 1-3: Poor match, inefficient
+  * 0: No coverage, gap identified
+- Assign specialists with session-specific names (e.g., `prose-analysis` → "The Editor")
+- Deploy `agent-fabricator` if gaps detected (no agent scores >4)
 - Set decision rule (consensus default, unanimous for security)
 - Infer primary goals from topic context
 
@@ -44,33 +88,15 @@ Not all characters participate in every panel—they evaluate relevance and abst
 - Formalize refined topic statement
 - Skip if topic is already well-specified
 
-**Phase 1: Participation Declaration** (All Invited Characters)
-- Each character evaluates topic relevance to their analytical domain
-- Declare PARTICIPATE (brief rationale) or ABSTAIN (brief rationale)
-- Minimum 3 active participants required
-- Abstaining characters may re-join during Research Gate if evidence reveals relevance
-
-**Phase 2: Workforce Assignment** (The Recruiter)
-- Read Capability Requirements from each active character's profile
-- Analyze topic context (research-heavy? implementation? creative? technical?)
-- Search 239-agent library systematically (`.claude/agents/*.md`)
-- Score agents 0-10 for each character's capability needs:
-  * 10: Perfect specialist match
-  * 7-9: Strong capabilities alignment
-  * 4-6: Partial match, can handle with coordination
-  * 1-3: Poor match, inefficient
-  * 0: No coverage, gap identified
-- Assign optimal agents (0-N per character based on complexity)
-- Deploy `agent-fabricator` if gaps detected (no agent scores >4)
-- Output workforce allocation table with scores and rationale
-
-**Phase 3: Framing** (Asha)
+**Phase 1: Framing** (Asha)
 - State topic, inferred goals, constraints, decision rule
-- Introduce active characters and explain selection rationale
-- Reference Recruiter's workforce assignments
+- Introduce panel composition:
+  * Core roles (Asha, Recruiter, Adversary)
+  * Recruited specialists with session names
+- Explain recruitment rationale (why these specialists for this topic)
 - Establish complete panel composition before Initial Positions
 
-**Phase 4: Infrastructure Check** (Asha)
+**Phase 2: Infrastructure Check** (Asha)
 - Compare proposals against existing assets to avoid duplication:
   * Memory files (workflowProtocols.md, activeContext.md)
   * Commands (/panel, /save, /notes, /validate-vault)
@@ -78,37 +104,36 @@ Not all characters participate in every panel—they evaluate relevance and abst
 - Output "Existing Infrastructure Comparison"
 - Redirect to enhancement if duplicative
 
-**Phase 5: Initial Positions** (All Active Characters)
-- Each character deploys assigned agents to gather information
-- Characters with multiple agents coordinate outputs
-- Characters operating agentless deliver direct analytical perspective
+**Phase 3: Initial Positions** (All Panelists)
+- Each specialist (via recruited agent) gathers information and analyzes from their domain
+- The Adversary identifies potential failure modes and challenges
 - Synthesize into 5-bullet brief: Position, Evidence, Risks, Unknowns, Recommendation
 - Present findings with citations
 
-**Phase 6: Cross-Examination** (The Adversary-led)
+**Phase 4: Cross-Examination** (The Adversary-led)
 - The Adversary challenges assumptions, finds contradictions and failure modes
-- Other characters respond from their analytical perspectives
-- Characters may request additional agent deployment if challenges reveal gaps
+- Specialists respond from their domain perspectives
+- Recruiter may assign additional agents if challenges reveal capability gaps
 
-**Phase 7: Research Gate** (Asha)
+**Phase 5: Research Gate** (Asha)
 - If evidence gaps block decisions, authorize additional research
-- Direct The Archivist to run targeted queries using assigned agents
+- Direct specialists to run targeted queries using assigned agents
 - Recruiter may assign additional specialized agents if insufficient
 - Enforce Confidence Scoring: Relevance, Completeness, Confidence Score
 - Thresholds: <0.6 Insufficient | 0.6–0.79 Preliminary | ≥0.8 High confidence
 
-**Phase 8: Reflection Round** (All Active Characters)
+**Phase 6: Reflection Round** (All Panelists)
 - Review Cross-Examination arguments and Research Gate findings
 - Revise Initial Positions if persuaded by evidence or challenges
 - Submit updated briefs acknowledging what changed and why
 - Asha identifies convergence or remaining disagreements
 
-**Phase 9: Synthesis** (The Architect)
+**Phase 7: Synthesis** (Recruited Architect or Asha)
 - Analyze updated briefs and structure viable options with tradeoffs
 - Articulate decision pathways and implications
-- May request additional agent deployment for complex synthesis
+- If complex synthesis needed, Recruiter may assign architecture specialist
 
-**Phase 10: Decision** (Asha)
+**Phase 8: Decision** (Asha)
 - Apply decision rule (consensus/unanimous based on topic)
 - Record dissent and rationale if present
 - List Next Steps with owners, deliverables, due dates
@@ -120,50 +145,49 @@ Every panel produces a structured decision report:
 - **Topic** (including Phase 0 clarifications if applicable)
 - **Inferred Goals** (derived from topic analysis)
 - **Decision Rule** (consensus or unanimous)
-- **Character Selection Rationale** (why these characters for this topic)
-- **Participation Declarations** (active participants + abstentions with rationales)
-- **Workforce Assignments** (Recruiter's agent allocation table with scores)
-- **Existing Infrastructure Comparison** (Phase 4 findings)
-- **Character Briefs** (Phase 5 Initial Positions with agent-gathered evidence)
-- **Cross-Examination Findings** (Phase 6 challenges and responses)
-- **Research Findings** (Phase 7 sources, if Research Gate activated)
+- **Panel Composition**:
+  * Core Roles (Asha, Recruiter, Adversary)
+  * Recruited Specialists (agent → session name mapping with scores)
+  * Recruitment Rationale (why these specialists for this topic)
+- **Existing Infrastructure Comparison** (Phase 2 findings)
+- **Expert Briefs** (Phase 3 Initial Positions with agent-gathered evidence)
+- **Cross-Examination Findings** (Phase 4 challenges and responses)
+- **Research Findings** (Phase 5 sources, if Research Gate activated)
 - **Confidence Summary** (Relevance, Completeness, Score, Threshold)
-- **Reflection Round Summary** (Phase 8 revised positions, convergence)
-- **Synthesis** (Phase 9 options/tradeoffs from The Architect)
-- **Decision** (Phase 10 final determination)
+- **Reflection Round Summary** (Phase 6 revised positions, convergence)
+- **Synthesis** (Phase 7 options/tradeoffs)
+- **Decision** (Phase 8 final determination)
 - **Next Steps** (actionable items with ownership)
 
-## Dynamic Agent Assignment
+## Dynamic Agent Recruitment Architecture
 
-**Characters vs Agents**:
-- **Characters** = Persistent analytical perspectives with consistent voices
-- **Agents** = Technical tools The Recruiter assigns dynamically based on panel topic
+**Core Roles vs Recruited Specialists**:
+- **Core Roles** = Persistent panel infrastructure (Asha, Recruiter, Adversary)
+- **Recruited Specialists** = Topic-specific experts from 239-agent library with session names
 
-Same character may receive different agents depending on problem context:
-- Simple topic: The Architect operates agentless (direct analytical perspective)
-- Research topic: The Archivist receives `research-assistant` (10/10 score)
-- Complex topic: The Curator receives `prose-analysis` + `narrator` + `intimacy-designer`
+**Recruitment Flow**:
+1. **Phase -1**: Recruiter analyzes topic → determines expertise needs → scores agents → assigns with session names
+2. **Phase 3**: Specialists deploy assigned agents for research and analysis
+3. **Phase 4-5**: Recruiter may assign additional agents if gaps detected
+4. **Phase 7**: Recruiter may assign architecture specialist for complex synthesis
 
-**Agent Deployment Flow**:
-1. Phase 2: Recruiter assigns agents based on capability scoring
-2. Phase 5: Characters use assigned agents for research and analysis
-3. Phase 6-7: Recruiter may assign additional agents if gaps detected
-4. Phase 9: Architect may request specialized agents for synthesis
+**Session-Specific Naming**:
+- Same agent becomes different "character" depending on context
+- `prose-analysis` → "The Editor" (creative), "The Code Reviewer" (technical), "The Stylist" (marketing)
+- `research-assistant` → "The Archivist" (historical), "The Evidence Gatherer" (legal), "The Data Scout" (analytics)
+- Names should reflect domain context and analytical role
 
 **Gap Detection & Agent Creation**:
-If no agent scores >4 for required capability → Recruiter deploys `agent-fabricator` to create new specialized agent during Phase 2.
+If no agent scores >4 for required capability → Recruiter deploys `agent-fabricator` to create new specialized agent during Phase -1.
 
 ## Character Files
 
-Each character has a documented profile in `plugins/panel/docs/characters/`:
-- Nature and essence
-- Manifestation at The Threshold
-- Analytical approach and key questions
-- Capability requirements for agent assignment
-- Role in panel sessions
-- Voice examples
+Core roles have documented profiles in `plugins/panel/docs/characters/`:
+- **Asha.md** - Moderator/Facilitator
+- **The Recruiter.md** - Workforce Intelligence
+- **The Adversary.md** - Challenge & Quality Gate
 
-Characters operate independently without cross-referencing other panel members. They only interact through protocol phases.
+Recruited specialists are documented in `.claude/agents/*.md` (239 agents available).
 
 ## Logging
 
@@ -177,29 +201,29 @@ Suggested frontmatter:
 ---
 date: YYYY-MM-DD
 topic: "<one-line topic>"
+mode: "inworld|outworld"
 decision_rule: "consensus|unanimous"
-characters: ["Asha", "The Adversary", "The Recruiter", "The Architect", ...]
+experts: ["moderator", "adversary", "recruited-agent-1", "recruited-agent-2", ...]
 ---
 ```
 
 ## Notes
 
-- **Automatic character selection**: Phase -1 analyzes topic and invites relevant characters (4-8 typical)
-- **Abstention protocol**: Invited characters declare participation or abstain with rationale
-- **Dynamic agent assignment**: No static defaults—assignments vary by topic complexity
+- **Dynamic recruitment**: No static panelists—Recruiter assigns 2-5 specialists per topic
+- **Session-specific names**: Agents given evocative contextual names for panel depth
 - **Evidence standards**: Use markers where appropriate: [Inference], [Speculation], [Unverified]
-- **Optional phases**: Skip Phase 0 if topic well-specified, skip Phase 8 for simple decisions
+- **Optional phases**: Skip Phase 0 if topic well-specified, skip Phase 6 for simple decisions
 - **Tool segregation**: Memory/Tools via filesystem; Vault via Obsidian tools; BookStack via MCP
-- **Character independence**: Each operates from unique perspective, no cross-references
+- **Core role consistency**: Asha, Recruiter, Adversary always present; specialists vary by topic
 
 ## Pattern Implementation
 
 Based on CSIRO Agent Design Patterns (Liu et al. 2025):
 - **Passive Goal Creator** (Phase 0): Clarifies ambiguous topics
-- **Role-Based Cooperation**: Fixed character assignments with hierarchical workflow
+- **Role-Based Cooperation**: Core roles with hierarchical workflow
 - **Debate-Based Cooperation**: Cross-Examination phase enables argument exchange
 - **Self-Reflection**: Reflection Round allows position revision
-- **Cross-Reflection**: Characters review each other's arguments
+- **Cross-Reflection**: Specialists review each other's arguments
 - **Human Reflection**: Decision Report enables user contestability
 
 **Reference**: Liu et al. (2025). "Agent design pattern catalogue: A collection of architectural patterns for foundation model based agents." *The Journal of Systems and Software* 220, 112278.

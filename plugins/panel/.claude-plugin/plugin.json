@@ -1,7 +1,7 @@
 {
   "name": "panel",
-  "version": "4.0.0",
-  "description": "Simplified panel system for automatic multi-perspective analysis. Just type '/panel <topic>' and the system handles character selection, agent assignment, and structured decision-making.",
+  "version": "4.1.0",
+  "description": "Dynamic multi-perspective analysis with 3 core roles + recruited specialists. Recruiter analyzes topic and assigns 2-5 specialist agents from 239-agent library with evocative session-specific names.",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"
