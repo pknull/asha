@@ -2,19 +2,29 @@
 # PostToolUse Hook - Captures file modifications and agent deployments
 # Automatically appends to .current-session.md for session watching
 
+# Source common utilities
+source "$(dirname "$0")/common.sh"
+
+PROJECT_DIR=$(detect_project_dir)
+if [[ -z "$PROJECT_DIR" ]]; then
+    # Cannot detect project directory - exit silently (no error spam to user)
+    echo "{}"
+    exit 0
+fi
+
 # Skip logging if silence mode active (master override)
-if [[ -f "$CLAUDE_PROJECT_DIR/Work/markers/silence" ]]; then
+if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
     echo "{}"
     exit 0
 fi
 
 # Skip logging during RP sessions
-if [[ -f "$CLAUDE_PROJECT_DIR/Work/markers/rp-active" ]]; then
+if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
     echo "{}"
     exit 0
 fi
 
-SESSION_FILE="$CLAUDE_PROJECT_DIR/Memory/sessions/current-session.md"
+SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
 TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
 
 # Ensure session file exists
@@ -60,7 +70,7 @@ if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
         "Edit"|"Write")
             FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
             if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-                REL_PATH=${FILE_PATH#$CLAUDE_PROJECT_DIR/}
+                REL_PATH=${FILE_PATH#$PROJECT_DIR/}
                 CONTEXT="attempting to access $REL_PATH"
             fi
             ;;
@@ -91,9 +101,9 @@ case "$TOOL_NAME" in
         FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
             # Only log if file is in Vault, Memory, or Tools (skip .claude internals)
-            if [[ "$FILE_PATH" =~ ^$CLAUDE_PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
+            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
                 # Extract relative path for readability
-                REL_PATH=${FILE_PATH#$CLAUDE_PROJECT_DIR/}
+                REL_PATH=${FILE_PATH#$PROJECT_DIR/}
                 # Insert after "## Significant Operations" section header
                 sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Edit)" "$SESSION_FILE"
             fi
@@ -103,8 +113,8 @@ case "$TOOL_NAME" in
     "Write")
         FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-            if [[ "$FILE_PATH" =~ ^$CLAUDE_PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
-                REL_PATH=${FILE_PATH#$CLAUDE_PROJECT_DIR/}
+            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
+                REL_PATH=${FILE_PATH#$PROJECT_DIR/}
                 sed -i "/## Significant Operations/a - [$TIMESTAMP] Created: $REL_PATH (Write)" "$SESSION_FILE"
             fi
         fi
@@ -113,7 +123,7 @@ case "$TOOL_NAME" in
     "NotebookEdit")
         NOTEBOOK_PATH=$(echo "$TOOL_INPUT" | jq -r '.notebook_path // empty')
         if [[ -n "$NOTEBOOK_PATH" && "$NOTEBOOK_PATH" != "null" ]]; then
-            REL_PATH=${NOTEBOOK_PATH#$CLAUDE_PROJECT_DIR/}
+            REL_PATH=${NOTEBOOK_PATH#$PROJECT_DIR/}
             sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Notebook)" "$SESSION_FILE"
         fi
         ;;
