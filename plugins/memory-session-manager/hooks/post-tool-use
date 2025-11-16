@@ -27,6 +27,9 @@ fi
 SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
 TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
 
+# Ensure parent directory exists
+mkdir -p "$(dirname "$SESSION_FILE")"
+
 # Ensure session file exists
 if [[ ! -f "$SESSION_FILE" ]]; then
     cat > "$SESSION_FILE" <<EOF
