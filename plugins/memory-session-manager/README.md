@@ -9,6 +9,7 @@ This plugin provides tools for **maintaining** Memory files and session data in 
 **Key Features**:
 - 📝 Automatic session watching (captures operations, decisions, errors as they happen)
 - 💾 `/save` command with guided synthesis workflow
+- 🔇 `/silence` command for toggling Memory logging (experimental/debugging sessions)
 - 🗂️ Memory file structure specification (frontmatter schema, required files)
 - 📚 Documentation for cross-platform adaptation (Claude.ai, ChatGPT, Gemini)
 
@@ -30,6 +31,7 @@ This plugin provides tools for **maintaining** Memory files and session data in 
 
 4. The plugin provides:
    - `/save` command for session synthesis
+   - `/silence` command for toggling Memory logging
    - Automatic session watching hooks
    - Memory maintenance skill (auto-invoked when updating Memory files)
 
@@ -73,6 +75,10 @@ See `docs/PLATFORM-ADAPTERS.md` for manual implementation guides for:
   - Four Questions Protocol for Memory updates
   - Archive management
   - Git integration (Claude Code only)
+- **`/silence [on|off|toggle|status]`**: Toggle Memory logging
+  - Controls `Work/markers/silence` marker
+  - Disables session capture when enabled
+  - Auto-removed at session end
 
 ### Skills
 - **`memory-maintenance`**: Autonomous Memory file structure guidance
