@@ -15,6 +15,12 @@
       "description": "Dynamic multi-perspective analysis with 3 core roles (Asha, Recruiter, Adversary) + recruited specialists. Recruiter analyzes topic and assigns 2-5 specialist agents with session-specific names.",
       "source": "./plugins/panel",
       "strict": false
+    },
+    {
+      "name": "memory-session-manager",
+      "description": "Memory file maintenance and session capture/save workflow for multi-session AI projects. Provides /save command, automatic session watching via hooks, and memory-maintenance skill for frontmatter schema guidance.",
+      "source": "./plugins/memory-session-manager",
+      "strict": false
     }
   ]
 }

@@ -1,0 +1,155 @@
+#!/bin/bash
+# PostToolUse Hook - Captures file modifications and agent deployments
+# Automatically appends to .current-session.md for session watching
+
+# Skip logging if silence mode active (master override)
+if [[ -f "$CLAUDE_PROJECT_DIR/Work/markers/silence" ]]; then
+    echo "{}"
+    exit 0
+fi
+
+# Skip logging during RP sessions
+if [[ -f "$CLAUDE_PROJECT_DIR/Work/markers/rp-active" ]]; then
+    echo "{}"
+    exit 0
+fi
+
+SESSION_FILE="$CLAUDE_PROJECT_DIR/Memory/sessions/current-session.md"
+TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
+
+# Ensure session file exists
+if [[ ! -f "$SESSION_FILE" ]]; then
+    cat > "$SESSION_FILE" <<EOF
+---
+sessionStart: $(date -u '+%Y-%m-%d %H:%M UTC')
+sessionID: $(head /dev/urandom | tr -dc a-f0-9 | head -c 8)
+---
+
+## Significant Operations
+<!-- Auto-appended: agent deployments, file writes, panel sessions -->
+
+## Decisions & Clarifications
+<!-- Auto-appended: AskUserQuestion responses, mode selections -->
+
+## Discoveries & Patterns
+<!-- Auto-appended: ACE cycle outputs, explicit insights -->
+
+## Errors & Anomalies
+<!-- Auto-appended: tool failures, mode confusion, authority overrides -->
+
+## Candidates for Next Steps
+<!-- Auto-appended: identified follow-up tasks -->
+EOF
+fi
+
+# Read stdin JSON from Claude Code
+INPUT=$(cat)
+
+# Extract tool information
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
+TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
+TOOL_RESPONSE=$(echo "$INPUT" | jq -c '.tool_response // {}')
+
+# Check for errors in tool response (capture failures)
+ERROR_MSG=$(echo "$TOOL_RESPONSE" | jq -r '.error // empty')
+if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
+    # Truncate long errors to 200 chars for readability
+    if [[ ${#ERROR_MSG} -gt 200 ]]; then
+        ERROR_SHORT="${ERROR_MSG:0:200}..."
+    else
+        ERROR_SHORT="$ERROR_MSG"
+    fi
+
+    # Extract context from tool input if available
+    CONTEXT=""
+    case "$TOOL_NAME" in
+        "Edit"|"Write")
+            FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+            if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
+                REL_PATH=${FILE_PATH#$CLAUDE_PROJECT_DIR/}
+                CONTEXT="attempting to access $REL_PATH"
+            fi
+            ;;
+        "Task")
+            AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty')
+            if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "null" ]]; then
+                CONTEXT="deploying $AGENT_TYPE agent"
+            fi
+            ;;
+        "Bash")
+            COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty' | head -c 50)
+            if [[ -n "$COMMAND" && "$COMMAND" != "null" ]]; then
+                CONTEXT="running: $COMMAND"
+            fi
+            ;;
+    esac
+
+    # Log error to Errors & Anomalies section
+    if [[ -n "$CONTEXT" ]]; then
+        sed -i "/## Errors & Anomalies/a - [$TIMESTAMP] ERROR: $TOOL_NAME → $ERROR_SHORT | Context: $CONTEXT" "$SESSION_FILE"
+    else
+        sed -i "/## Errors & Anomalies/a - [$TIMESTAMP] ERROR: $TOOL_NAME → $ERROR_SHORT" "$SESSION_FILE"
+    fi
+fi
+
+case "$TOOL_NAME" in
+    "Edit")
+        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+        if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
+            # Only log if file is in Vault, Memory, or Tools (skip .claude internals)
+            if [[ "$FILE_PATH" =~ ^$CLAUDE_PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
+                # Extract relative path for readability
+                REL_PATH=${FILE_PATH#$CLAUDE_PROJECT_DIR/}
+                # Insert after "## Significant Operations" section header
+                sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Edit)" "$SESSION_FILE"
+            fi
+        fi
+        ;;
+
+    "Write")
+        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+        if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
+            if [[ "$FILE_PATH" =~ ^$CLAUDE_PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
+                REL_PATH=${FILE_PATH#$CLAUDE_PROJECT_DIR/}
+                sed -i "/## Significant Operations/a - [$TIMESTAMP] Created: $REL_PATH (Write)" "$SESSION_FILE"
+            fi
+        fi
+        ;;
+
+    "NotebookEdit")
+        NOTEBOOK_PATH=$(echo "$TOOL_INPUT" | jq -r '.notebook_path // empty')
+        if [[ -n "$NOTEBOOK_PATH" && "$NOTEBOOK_PATH" != "null" ]]; then
+            REL_PATH=${NOTEBOOK_PATH#$CLAUDE_PROJECT_DIR/}
+            sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Notebook)" "$SESSION_FILE"
+        fi
+        ;;
+
+    "Task")
+        AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty')
+        DESCRIPTION=$(echo "$TOOL_INPUT" | jq -r '.description // empty')
+
+        if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "null" ]]; then
+            sed -i "/## Significant Operations/a - [$TIMESTAMP] Agent: $AGENT_TYPE → $DESCRIPTION" "$SESSION_FILE"
+        fi
+        ;;
+
+    "AskUserQuestion")
+        # Extract question headers for decision tracking
+        QUESTIONS=$(echo "$TOOL_INPUT" | jq -r '.questions[]? | .header // empty' | paste -sd ',' -)
+        if [[ -n "$QUESTIONS" && "$QUESTIONS" != "null" ]]; then
+            sed -i "/## Decisions & Clarifications/a - [$TIMESTAMP] Decision Point: $QUESTIONS" "$SESSION_FILE"
+        fi
+        ;;
+
+    "SlashCommand")
+        COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
+        # Only log work-related commands (skip /rp and other non-work activities)
+        if [[ "$COMMAND" == "/panel"* || "$COMMAND" == "/save"* ]]; then
+            sed -i "/## Significant Operations/a - [$TIMESTAMP] Command: $COMMAND" "$SESSION_FILE"
+        fi
+        # /rp, /notes, /validate-vault, etc. are not logged (avoid noise from non-work commands)
+        ;;
+esac
+
+# Return success (no blocking, no output to user)
+echo "{}"

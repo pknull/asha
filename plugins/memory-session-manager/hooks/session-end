@@ -1,0 +1,36 @@
+#!/bin/bash
+# SessionEnd Hook - Archives session file on clean exit using unified save script
+# Delegates to Tools/save-session.sh for consistent archiving logic
+
+# Read stdin JSON from Claude Code (required for hooks)
+INPUT=$(cat)
+
+# Clean up silence marker if it exists (in case user forgot to explicitly restore logging)
+if [[ -f "$CLAUDE_PROJECT_DIR/Work/markers/silence" ]]; then
+    rm "$CLAUDE_PROJECT_DIR/Work/markers/silence"
+fi
+
+# Clean up RP marker if it exists (in case user forgot to explicitly end RP session)
+if [[ -f "$CLAUDE_PROJECT_DIR/Work/markers/rp-active" ]]; then
+    rm "$CLAUDE_PROJECT_DIR/Work/markers/rp-active"
+fi
+
+# Extract session end reason
+REASON=$(echo "$INPUT" | jq -r '.reason // empty')
+
+# Only archive on clean logout/exit (not on /clear which continues session)
+if [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" ]]; then
+    # Use unified save script in automatic mode
+    # This handles archiving, resetting watching file, and user reminder
+    exec "$CLAUDE_PROJECT_DIR/Tools/save-session.sh" --automatic
+
+elif [[ "$REASON" == "clear" ]]; then
+    # /clear was called - session continues, don't archive
+    # This preserves the watching file for ongoing session tracking
+    echo "{}"
+
+else
+    # Other reasons (crashes, unexpected termination)
+    # Don't archive automatically - preserve for recovery
+    echo "{}"
+fi

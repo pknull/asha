@@ -1,0 +1,25 @@
+{
+  "hooks": [
+    {
+      "event": "PostToolUse",
+      "type": "command",
+      "description": "Captures file modifications and agent deployments to session watching file",
+      "enabled": true,
+      "command": "${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "type": "command",
+      "description": "Logs user prompts and optionally refines via LanguageTool",
+      "enabled": true,
+      "command": "${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt-submit"
+    },
+    {
+      "event": "SessionEnd",
+      "type": "command",
+      "description": "Archives session watching file on clean exit",
+      "enabled": true,
+      "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-end"
+    }
+  ]
+}

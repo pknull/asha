@@ -1,0 +1,13 @@
+{
+  "name": "memory-session-manager",
+  "version": "1.0.0",
+  "description": "Memory file maintenance and session capture/save workflow for multi-session AI projects",
+  "author": {
+    "name": "REDACTED99 Project"
+  },
+  "license": "MIT",
+  "keywords": ["memory", "session", "context", "multi-session", "persistence"],
+  "commands": "./commands",
+  "skills": "./skills",
+  "hooks": "./hooks/hooks.json"
+}
