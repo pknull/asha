@@ -29,16 +29,10 @@ sessionID: $(head /dev/urandom | tr -dc a-f0-9 | head -c 8)
 <!-- Auto-appended: agent deployments, file writes, panel sessions -->
 
 ## Decisions & Clarifications
-<!-- Auto-appended: AskUserQuestion responses, mode selections -->
-
-## Discoveries & Patterns
-<!-- Auto-appended: ACE cycle outputs, explicit insights -->
+<!-- Auto-appended: AskUserQuestion responses -->
 
 ## Errors & Anomalies
-<!-- Auto-appended: tool failures, mode confusion, authority overrides -->
-
-## Candidates for Next Steps
-<!-- Auto-appended: identified follow-up tasks -->
+<!-- Auto-appended: tool failures -->
 EOF
 fi
 

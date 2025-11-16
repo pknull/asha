@@ -37,14 +37,8 @@ sessionID: [random-hash]
 ## Decisions & Clarifications
 [Auto-populated user decisions]
 
-## Discoveries & Patterns
-[Auto-populated ACE outputs and insights]
-
 ## Errors & Anomalies
 [Auto-populated tool failures]
-
-## Candidates for Next Steps
-[Auto-populated follow-up tasks identified]
 ```
 
 ### Lifecycle
@@ -52,7 +46,7 @@ sessionID: [random-hash]
 1. **Creation**: Auto-created on first significant operation each session
 2. **Persistence**: Survives until `/save` completes (crash recovery)
 3. **Synthesis**: At `/save`, content synthesized to:
-   - `activeContext.md` (operational context, decisions, patterns)
+   - `activeContext.md` (operational context, decisions)
    - `systemMonitoring.md` (errors and system health)
 4. **Archive**: Post-synthesis, moved to `Memory/sessions/archive/session-[timestamp].md`
 5. **Limits**: 3000 lines maximum (prevent unbounded growth)
@@ -137,23 +131,7 @@ Capture operations automatically after completion, only if `should_capture_to_se
 
 **Section**: Decisions & Clarifications
 
-### 4. ACE Cognitive Cycle Completions
-
-**Trigger**: ACE Phase 3 (Curator) completes
-
-**Capture Format**:
-```
-- [timestamp] Analysis: {task-description} → {curator-recommendation}
-```
-
-**Example**:
-```
-- [2025-11-15 12:45] Analysis: Database migration strategy → Path B: Incremental with rollback checkpoints
-```
-
-**Section**: Discoveries & Patterns
-
-### 5. Panel Sessions
+### 4. Panel Sessions
 
 **Trigger**: Panel tool invocation completes
 
@@ -169,7 +147,7 @@ Capture operations automatically after completion, only if `should_capture_to_se
 
 **Section**: Significant Operations
 
-### 6. RP Sessions
+### 5. RP Sessions
 
 **Trigger**: roleplay-gm agent activity
 
@@ -187,23 +165,7 @@ Capture operations automatically after completion, only if `should_capture_to_se
 
 **Note**: RP sessions also logged separately in dedicated RP transcripts
 
-### 7. Pattern Discoveries
-
-**Trigger**: "★ Insight" generation during session
-
-**Capture Format**:
-```
-- [timestamp] Pattern: {insight-text}
-```
-
-**Example**:
-```
-- [2025-11-15 14:00] Pattern: Convention Matching - Memory as source of truth for code style
-```
-
-**Section**: Discoveries & Patterns
-
-### 8. Errors & Failures
+### 6. Errors & Failures
 
 **Trigger**: Tool result contains `<error>` tags
 
@@ -292,7 +254,6 @@ Hooks for automation where available, manual protocol fallback:
 **During Synthesis**:
 - Extract key accomplishments → activeContext.md
 - Extract decisions → activeContext.md
-- Extract patterns → activeContext.md
 - Extract errors → systemMonitoring.md
 
 **After Synthesis**:
@@ -331,21 +292,12 @@ sessionID: fustian-unsavory
 - [2025-11-15 13:00] Panel: Copyright clearance → All commercial blockers resolved, 0 copyrighted creatures remaining
 
 ## Decisions & Clarifications
-- [2025-11-15 12:20] Decision: Redacted186 verification → IP panel confirmed wholly original
-- [2025-11-15 12:50] Decision: Broodling spread mechanics → Water contamination (not zombie bites)
-- [2025-11-15 13:10] Decision: Campaign threat → Redacted124 contamination (students cannot fight directly)
-
-## Discoveries & Patterns
-- [2025-11-15 12:25] Pattern: Referencing public domain deity ≠ derivative work
-- [2025-11-15 12:55] Pattern: Environmental horror vs survival horror zombie tropes
-- [2025-11-15 13:15] Pattern: Voice refinement - remove "transcendent" framing
+- [2025-11-15 12:20] Decision Point: Redacted186 verification
+- [2025-11-15 12:50] Decision Point: Broodling spread mechanics
+- [2025-11-15 13:10] Decision Point: Campaign threat resolution
 
 ## Errors & Anomalies
 - [2025-11-15 13:20] ERROR: Git → pathspec did not match | Context: Working directory not set correctly
-
-## Candidates for Next Steps
-- Resume Redacted1208 game development with commercially cleared REDACTED99 setting
-- Deferred work: 77 Lovecraft-derived description rewrites (production phase)
 ```
 
 ## Platform-Specific Notes

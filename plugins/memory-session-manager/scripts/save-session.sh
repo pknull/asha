@@ -104,16 +104,10 @@ sessionID: $SESSION_ID
 <!-- Auto-appended: agent deployments, file writes, panel sessions -->
 
 ## Decisions & Clarifications
-<!-- Auto-appended: AskUserQuestion responses, mode selections -->
-
-## Discoveries & Patterns
-<!-- Auto-appended: ACE cycle outputs, explicit insights -->
+<!-- Auto-appended: AskUserQuestion responses -->
 
 ## Errors & Anomalies
-<!-- Auto-appended: tool failures, mode confusion, authority overrides -->
-
-## Candidates for Next Steps
-<!-- Auto-appended: identified follow-up tasks -->
+<!-- Auto-appended: tool failures -->
 EOF
     log "Reset watching file with new session ID: $SESSION_ID"
 }
@@ -269,8 +263,6 @@ interactive_mode() {
         # Extract sections for Four Questions
         SIGNIFICANT_OPS=$(extract_section "Significant Operations" "$WATCHING_FILE")
         DECISIONS=$(extract_section "Decisions & Clarifications" "$WATCHING_FILE")
-        DISCOVERIES=$(extract_section "Discoveries & Patterns" "$WATCHING_FILE")
-        NEXT_STEPS=$(extract_section "Candidates for Next Steps" "$WATCHING_FILE")
 
         echo ""
         echo "=== SESSION WATCHING FILE SUMMARY ==="
@@ -285,18 +277,6 @@ interactive_mode() {
         if [[ -n "$DECISIONS" ]]; then
             echo "## Decisions & Clarifications"
             echo "$DECISIONS"
-            echo ""
-        fi
-
-        if [[ -n "$DISCOVERIES" ]]; then
-            echo "## Discoveries & Patterns"
-            echo "$DISCOVERIES"
-            echo ""
-        fi
-
-        if [[ -n "$NEXT_STEPS" ]]; then
-            echo "## Candidates for Next Steps"
-            echo "$NEXT_STEPS"
             echo ""
         fi
 
