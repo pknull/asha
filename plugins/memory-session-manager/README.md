@@ -26,10 +26,38 @@ This plugin provides tools for **maintaining** Memory files and session data in 
 /plugin install memory-session-manager@asha-marketplace
 ```
 
-3. The plugin provides:
+3. **Restart Claude Code** to activate hooks
+
+4. The plugin provides:
    - `/save` command for session synthesis
    - Automatic session watching hooks
    - Memory maintenance skill (auto-invoked when updating Memory files)
+
+#### Quick Start (First Session)
+
+After installation and restart, start a conversation. The session file (`Memory/sessions/current-session.md`) should auto-create on first significant operation.
+
+**If session file doesn't auto-create**, manually initialize:
+```bash
+cat > Memory/sessions/current-session.md <<'EOF'
+---
+sessionStart: $(date -u '+%Y-%m-%d %H:%M UTC')
+sessionID: manual-$(head /dev/urandom | tr -dc a-f0-9 | head -c 8)
+---
+
+## Significant Operations
+
+## Decisions & Clarifications
+
+## Discoveries & Patterns
+
+## Errors & Anomalies
+
+## Candidates for Next Steps
+EOF
+```
+
+Then manually log operations during session, or let hooks take over after restart. See `docs/TROUBLESHOOTING.md` for diagnosis.
 
 ### Other Platforms
 
@@ -128,6 +156,7 @@ dependencies: ["file1.md", "file2.md"]
 - `docs/SESSION-CAPTURE.md` - Session watching protocol
 - `docs/SESSION-SAVE.md` - Synthesis workflow guide
 - `docs/PLATFORM-ADAPTERS.md` - Cross-platform implementation
+- `docs/TROUBLESHOOTING.md` - Common issues and solutions
 
 ## Philosophy
 
