@@ -413,11 +413,14 @@ archive_only_mode() {
     ARCHIVE_PATH=$(archive_watching_file)
 
     if [[ -n "$ARCHIVE_PATH" ]]; then
-        reset_watching_file
         log "Session watching file archived and reset"
     else
-        log "No archiving needed"
+        log "No archiving needed (file empty or missing)"
     fi
+
+    # Always reset watching file to ensure continuity
+    # (mid-session /save should not break session tracking)
+    reset_watching_file
 }
 
 # ==============================================================================
