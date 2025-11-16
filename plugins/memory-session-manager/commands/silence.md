@@ -6,7 +6,7 @@ allowed-tools: ["Bash"]
 
 # Silence Mode Toggle
 
-Controls the silence marker (`Work/markers/silence`) that disables all Memory logging and session capture.
+Controls the silence marker (`Memory/markers/silence`) that disables all Memory logging and session capture.
 
 Additional context: $ARGUMENTS
 
@@ -26,32 +26,32 @@ Additional context: $ARGUMENTS
 
 **Toggle current state** (if on → off, if off → on):
 ```bash
-if [[ -f "Work/markers/silence" ]]; then
-    rm Work/markers/silence
+if [[ -f "Memory/markers/silence" ]]; then
+    rm Memory/markers/silence
     echo "🔊 Silence mode DISABLED - Memory logging active"
 else
-    mkdir -p Work/markers
-    touch Work/markers/silence
+    mkdir -p Memory/markers
+    touch Memory/markers/silence
     echo "🔇 Silence mode ENABLED - Memory logging disabled"
 fi
 ```
 
 **Explicit enable** (if argument is "on"):
 ```bash
-mkdir -p Work/markers
-touch Work/markers/silence
+mkdir -p Memory/markers
+touch Memory/markers/silence
 echo "🔇 Silence mode ENABLED - Memory logging disabled"
 ```
 
 **Explicit disable** (if argument is "off"):
 ```bash
-rm -f Work/markers/silence
+rm -f Memory/markers/silence
 echo "🔊 Silence mode DISABLED - Memory logging active"
 ```
 
 **Check current status**:
 ```bash
-if [[ -f "Work/markers/silence" ]]; then
+if [[ -f "Memory/markers/silence" ]]; then
     echo "Current status: 🔇 ENABLED (Memory logging disabled)"
 else
     echo "Current status: 🔊 DISABLED (Memory logging active)"
@@ -73,4 +73,4 @@ Execute appropriate bash commands above based on the argument.
 
 - Silence marker automatically removed at session-end (hook cleanup)
 - Use for experimental sessions, debugging, or when Memory logging unwanted
-- Related marker: `Work/markers/rp-active` (RP mode, disables session watching only)
+- Related marker: `Memory/markers/rp-active` (RP mode, disables session watching only)

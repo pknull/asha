@@ -13,13 +13,13 @@ if [[ -z "$PROJECT_DIR" ]]; then
 fi
 
 # Skip logging if silence mode active (master override)
-if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
+if [[ -f "$PROJECT_DIR/Memory/markers/silence" ]]; then
     echo "{}"
     exit 0
 fi
 
 # Skip logging during RP sessions
-if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
+if [[ -f "$PROJECT_DIR/Memory/markers/rp-active" ]]; then
     echo "{}"
     exit 0
 fi

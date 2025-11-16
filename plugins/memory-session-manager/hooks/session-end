@@ -16,13 +16,13 @@ fi
 INPUT=$(cat)
 
 # Clean up silence marker if it exists (in case user forgot to explicitly restore logging)
-if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
-    rm "$PROJECT_DIR/Work/markers/silence"
+if [[ -f "$PROJECT_DIR/Memory/markers/silence" ]]; then
+    rm "$PROJECT_DIR/Memory/markers/silence"
 fi
 
 # Clean up RP marker if it exists (in case user forgot to explicitly end RP session)
-if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
-    rm "$PROJECT_DIR/Work/markers/rp-active"
+if [[ -f "$PROJECT_DIR/Memory/markers/rp-active" ]]; then
+    rm "$PROJECT_DIR/Memory/markers/rp-active"
 fi
 
 # Extract session end reason
