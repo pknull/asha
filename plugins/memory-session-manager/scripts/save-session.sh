@@ -8,13 +8,49 @@ set -euo pipefail
 # CONFIGURATION
 # ==============================================================================
 
-# Use CLAUDE_PROJECT_DIR if available (when called from hooks), otherwise detect
-if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-    PROJECT_DIR="$CLAUDE_PROJECT_DIR"
-else
-    # Fall back to script location detection
-    PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-fi
+# Multi-layered project directory detection
+# Priority: CLAUDE_PROJECT_DIR → git root → upward search → fail with error
+detect_project_dir() {
+    # Layer 1: Use CLAUDE_PROJECT_DIR if set (hook invocation)
+    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
+        echo "$CLAUDE_PROJECT_DIR"
+        return 0
+    fi
+
+    # Layer 2: Try git root (manual invocation within git repo)
+    if command -v git >/dev/null 2>&1; then
+        local git_root
+        git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
+        if [[ -n "$git_root" ]] && [[ -d "$git_root/Memory" ]]; then
+            echo "$git_root"
+            return 0
+        fi
+    fi
+
+    # Layer 3: Search upward for Memory/ directory
+    local search_dir="$(pwd)"
+    while [[ "$search_dir" != "/" ]]; do
+        if [[ -d "$search_dir/Memory" ]]; then
+            echo "$search_dir"
+            return 0
+        fi
+        search_dir="$(dirname "$search_dir")"
+    done
+
+    # Layer 4: All detection methods failed
+    echo "[ERROR] Cannot detect project directory. Tried:" >&2
+    echo "  1. CLAUDE_PROJECT_DIR environment variable (not set)" >&2
+    echo "  2. Git root with Memory/ directory (not found)" >&2
+    echo "  3. Upward search for Memory/ directory (not found)" >&2
+    echo "" >&2
+    echo "Solutions:" >&2
+    echo "  - Run from within project directory" >&2
+    echo "  - Set CLAUDE_PROJECT_DIR: export CLAUDE_PROJECT_DIR=/path/to/project" >&2
+    echo "  - Or: CLAUDE_PROJECT_DIR=/path/to/project $0" >&2
+    return 1
+}
+
+PROJECT_DIR=$(detect_project_dir) || exit 1
 
 MEMORY_DIR="$PROJECT_DIR/Memory"
 WORK_DIR="$PROJECT_DIR/Memory"
