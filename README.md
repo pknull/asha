@@ -1,6 +1,6 @@
 # Asha Marketplace
 
-**Version**: 1.1.0
+**Version**: 1.2.0
 **Description**: Claude Code plugins and tools for the Asha framework
 
 Collection of plugins supporting creative writing, TTRPG campaigns, narrative development, and the Redacted107 (REDACTED99) universe.
@@ -11,8 +11,9 @@ Collection of plugins supporting creative writing, TTRPG campaigns, narrative de
 
 ### Panel System
 
-**Name**: `panel`
-**Version**: 4.1.0
+**Plugin Name**: `panel-system`
+**Command**: `/panel`
+**Version**: 4.1.2
 **Description**: Dynamic multi-perspective analysis with automatic specialist recruitment
 
 **[Full Documentation →](plugins/panel/README.md)**
@@ -30,7 +31,7 @@ Collection of plugins supporting creative writing, TTRPG campaigns, narrative de
 ### Install Panel Plugin
 
 ```bash
-/plugin install panel@asha-marketplace
+/plugin install panel-system@asha-marketplace
 ```
 
 ### Verify Installation
