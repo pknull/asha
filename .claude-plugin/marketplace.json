@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Asha framework plugins and tools for creative writing, TTRPG, and REDACTED99 universe development",
-    "version": "1.1.0",
+    "version": "1.1.1",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
