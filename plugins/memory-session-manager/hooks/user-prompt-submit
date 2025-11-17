@@ -1,7 +1,7 @@
 #!/bin/bash
 # UserPromptSubmit Hook - Session logging + optional Ollama prompt refinement
 # Logs significant user prompts to .current-session.md
-# If Work/markers/prompt-refine exists, refines prompts via Ollama before sending
+# If Memory/markers/prompt-refine exists, refines prompts via Ollama before sending
 
 # Source common utilities
 source "$(dirname "$0")/common.sh"
@@ -84,7 +84,7 @@ fi
 # ============================================================================
 
 # Clear correction indicator by default (will be set again if correction ≥10%)
-rm -f "$PROJECT_DIR/Work/markers/last-correction" 2>/dev/null || true
+rm -f "$PROJECT_DIR/Memory/markers/last-correction" 2>/dev/null || true
 
 # Always attempt correction if prompt is substantial and not in special modes
 if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
@@ -176,7 +176,7 @@ except Exception as e:
                 DIFF_INT=${DIFF_PERCENT%.*}  # Convert to integer for comparison
                 if [[ $DIFF_INT -ge 10 ]]; then
                     # Signal statusline: last prompt was corrected
-                    touch "$PROJECT_DIR/Work/markers/last-correction" 2>/dev/null || true
+                    touch "$PROJECT_DIR/Memory/markers/last-correction" 2>/dev/null || true
 
                     # Log significant correction to session file
                     CORRECTION_LOG="- [$TIMESTAMP] Prompt corrected ($DIFF_PERCENT% change): \`$PROMPT\` → \`$REFINED\`"

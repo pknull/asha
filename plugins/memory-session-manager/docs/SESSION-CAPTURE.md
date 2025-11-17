@@ -57,24 +57,24 @@ Before ANY capture operation, check for marker files that disable logging:
 
 ```python
 def should_capture_to_session():
-    if exists("Work/markers/silence"):
+    if exists("Memory/markers/silence"):
         return False  # Silence: disables Memory logging (hooks, session watching)
                       # NOTE: RP transcripts continue (roleplay-gm agent independent)
 
-    if exists("Work/markers/rp-active"):
+    if exists("Memory/markers/rp-active"):
         return False  # RP mode: hooks disabled, no session watching
 
     # Default: log everything
     return True
 ```
 
-**Silence Mode** (`Work/markers/silence`):
+**Silence Mode** (`Memory/markers/silence`):
 - Disables Memory synthesis
 - Disables session watching
 - RP transcripts continue (independent system)
 - Use for: Sessions that shouldn't be remembered
 
-**RP Mode** (`Work/markers/rp-active`):
+**RP Mode** (`Memory/markers/rp-active`):
 - Disables session watching
 - RP transcripts continue in separate files
 - Use for: Roleplay sessions (logged separately)

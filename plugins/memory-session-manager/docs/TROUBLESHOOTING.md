@@ -20,7 +20,7 @@ CLAUDE_PROJECT_DIR=$(pwd) bash ~/.claude/plugins/marketplaces/asha-marketplace/p
 1. Claude Code hasn't restarted since plugin installation
 2. Hooks disabled in Claude Code settings
 3. Environment variable `$CLAUDE_PROJECT_DIR` not set properly
-4. Marker file blocking capture (`Work/markers/silence` or `Work/markers/rp-active`)
+4. Marker file blocking capture (`Memory/markers/silence` or `Memory/markers/rp-active`)
 
 **Solutions**:
 
@@ -59,10 +59,10 @@ Once created, manually append operations during session, then use `/save` normal
 ### Solution 3: Check Marker Files
 ```bash
 # Remove silence mode if accidentally active
-rm -f Work/markers/silence
+rm -f Memory/markers/silence
 
 # Remove RP mode if not doing roleplay
-rm -f Work/markers/rp-active
+rm -f Memory/markers/rp-active
 ```
 
 ### Solution 4: Verify Hook Permissions
@@ -106,12 +106,12 @@ bash Code/asha-marketplace/plugins/memory-session-manager/scripts/save-session.s
 **Solution**: Temporarily enable silence mode for low-signal work:
 ```bash
 # Enable silence
-touch Work/markers/silence
+touch Memory/markers/silence
 
 # Do noisy work...
 
 # Disable silence
-rm Work/markers/silence
+rm Memory/markers/silence
 ```
 
 Session watching resumes after removing marker.

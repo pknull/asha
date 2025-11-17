@@ -76,7 +76,7 @@ See `docs/PLATFORM-ADAPTERS.md` for manual implementation guides for:
   - Archive management
   - Git integration (Claude Code only)
 - **`/silence [on|off|toggle|status]`**: Toggle Memory logging
-  - Controls `Work/markers/silence` marker
+  - Controls `Memory/markers/silence` marker
   - Disables session capture when enabled
   - Auto-removed at session end
 
@@ -111,8 +111,8 @@ The plugin automatically captures significant operations to `Memory/sessions/cur
 - Errors and failures
 
 **Marker Overrides**:
-- `Work/markers/silence` disables all Memory logging
-- `Work/markers/rp-active` disables session watching (RP sessions)
+- `Memory/markers/silence` disables all Memory logging
+- `Memory/markers/rp-active` disables session watching (RP sessions)
 
 ### Session Save (Manual with `/save`)
 
