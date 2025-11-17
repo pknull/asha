@@ -11,8 +11,9 @@ A collection of general-purpose Claude Code plugins for technical teams, creativ
 
 ### Panel System
 
-**Name**: `panel`
-**Version**: 4.1.0
+**Plugin Name**: `panel-system`
+**Command**: `/panel`
+**Version**: 4.1.2
 **Description**: Dynamic multi-perspective analysis with automatic specialist recruitment
 
 Convene a structured analysis panel with 3 core roles (Moderator, Analyst, Challenger) + dynamically recruited specialists who examine your topic from distinct perspectives and produce evidence-based decisions.
@@ -56,11 +57,15 @@ Provides automatic session watching, guided synthesis workflows, and Memory file
 ### Install Plugins
 
 ```bash
+<<<<<<< HEAD
 # Install panel system
 /plugin install panel@asha-marketplace
 
 # Install memory+session manager
 /plugin install memory-session-manager@asha-marketplace
+=======
+/plugin install panel-system@asha-marketplace
+>>>>>>> claude/fix-issue-1-01Gyt9DQqudRHAWgmkPpi35D
 ```
 
 ### Verify Installation

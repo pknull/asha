@@ -1,6 +1,6 @@
 {
-  "name": "panel",
-  "version": "4.1.1",
+  "name": "panel-system",
+  "version": "4.1.2",
   "description": "Dynamic multi-perspective analysis with 3 core roles + recruited specialists. Recruiter analyzes topic and assigns 2-5 specialist agents from 239-agent library with evocative session-specific names.",
   "author": {
     "name": "pknull",

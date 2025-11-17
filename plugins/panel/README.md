@@ -1,6 +1,8 @@
 # Claude Code Panel Plugin
 
-**Version**: 4.1.0
+**Version**: 4.1.2
+**Plugin Name**: `panel-system`
+**Command**: `/panel`
 **Description**: Dynamic multi-perspective analysis with 3 core roles + recruited specialists
 
 Just type `/panel <your topic>` and the system automatically:
@@ -157,7 +159,7 @@ This plugin assumes your Claude Code project uses:
 /plugin marketplace add pknull/asha-marketplace
 
 # Install panel plugin
-/plugin install panel@asha-marketplace
+/plugin install panel-system@asha-marketplace
 
 # Restart Claude Code to load plugin
 ```
@@ -166,7 +168,7 @@ This plugin assumes your Claude Code project uses:
 
 ```bash
 /plugin list
-# Should show: ✔ panel · Installed
+# Should show: ✔ panel-system · Installed
 
 /panel
 # Should display panel help and usage examples
@@ -296,10 +298,16 @@ Same agent, different contextual identity based on topic domain.
 
 ## Version History
 
-### 4.1.1 (2025-11-17)
-- **Fix**: Changed command registration from array to directory-based discovery
-- **Fix**: Resolves `/panel` command namespace conflict (users no longer need `/panel:panel`)
-- **Plugin.json**: Updated `"commands"` from array to `"./commands"` for proper command resolution
+### 4.1.2 (2025-11-17)
+- **BREAKING**: Renamed plugin from `"panel"` to `"panel-system"` to resolve namespace conflict
+- **Fix**: `/panel` command now works as short form (no longer requires `/panel:panel`)
+- **Root cause**: Plugin name matching command name created ambiguous namespace
+- **Installation**: Use `/plugin install panel-system@asha-marketplace`
+- **Migration**: Uninstall old `panel` plugin, reinstall as `panel-system`
+
+### 4.1.1 (2025-11-17) - DEPRECATED
+- Attempted fix using directory-based command discovery (did not resolve issue)
+- Superseded by v4.1.2 plugin rename approach
 
 ### 4.1.0 (2025-11-08)
 - **Dynamic recruitment architecture**: 3 core roles + recruited specialists with session-specific names

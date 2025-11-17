@@ -11,7 +11,7 @@
   },
   "plugins": [
     {
-      "name": "panel",
+      "name": "panel-system",
       "description": "Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challenger) + recruited specialists. Analyst assigns 2-5 specialist agents with session-specific names based on topic.",
       "source": "./plugins/panel",
       "strict": false
