@@ -104,23 +104,27 @@ case "$TOOL_NAME" in
     "Edit")
         FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-            # Only log if file is in Vault, Memory, or Tools (skip .claude internals)
-            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
-                # Extract relative path for readability
+            # Extract relative path for readability (or full path if outside project)
+            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
                 REL_PATH=${FILE_PATH#$PROJECT_DIR/}
-                # Insert after "## Significant Operations" section header
-                sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Edit)" "$SESSION_FILE"
+            else
+                REL_PATH="$FILE_PATH"
             fi
+            # Insert after "## Significant Operations" section header
+            sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Edit)" "$SESSION_FILE"
         fi
         ;;
 
     "Write")
         FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/(Vault|Memory|Tools)/ ]]; then
+            # Extract relative path for readability (or full path if outside project)
+            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
                 REL_PATH=${FILE_PATH#$PROJECT_DIR/}
-                sed -i "/## Significant Operations/a - [$TIMESTAMP] Created: $REL_PATH (Write)" "$SESSION_FILE"
+            else
+                REL_PATH="$FILE_PATH"
             fi
+            sed -i "/## Significant Operations/a - [$TIMESTAMP] Created: $REL_PATH (Write)" "$SESSION_FILE"
         fi
         ;;
 
