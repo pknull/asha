@@ -8,9 +8,7 @@
   },
   "license": "MIT",
   "keywords": ["panel", "analysis", "multi-perspective", "ttrpg", "creative-writing", "decision-making", "collaboration"],
-  "commands": [
-    "./commands/panel.md"
-  ],
+  "commands": "./commands",
   "agents": [
     "./agents/recruiter.md"
   ]
