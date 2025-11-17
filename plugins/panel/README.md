@@ -296,6 +296,11 @@ Same agent, different contextual identity based on topic domain.
 
 ## Version History
 
+### 4.1.1 (2025-11-17)
+- **Fix**: Changed command registration from array to directory-based discovery
+- **Fix**: Resolves `/panel` command namespace conflict (users no longer need `/panel:panel`)
+- **Plugin.json**: Updated `"commands"` from array to `"./commands"` for proper command resolution
+
 ### 4.1.0 (2025-11-08)
 - **Dynamic recruitment architecture**: 3 core roles + recruited specialists with session-specific names
 - **Removed static characters**: Deleted 5 universal character profiles (Architect, Archivist, Curator, Engineer, Ethicist)
