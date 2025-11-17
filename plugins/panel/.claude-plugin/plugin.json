@@ -7,7 +7,7 @@
     "email": "noreply@example.com"
   },
   "license": "MIT",
-  "keywords": ["panel", "analysis", "multi-perspective", "ttrpg", "creative-writing", "asha", "redacted99"],
+  "keywords": ["panel", "analysis", "multi-perspective", "ttrpg", "creative-writing", "decision-making", "collaboration"],
   "commands": [
     "./commands/panel.md"
   ],

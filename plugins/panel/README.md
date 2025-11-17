@@ -4,10 +4,10 @@
 **Description**: Dynamic multi-perspective analysis with 3 core roles + recruited specialists
 
 Just type `/panel <your topic>` and the system automatically:
-- Recruiter analyzes topic and recruits 2-5 specialist agents from available library
+- The Analyst analyzes topic and recruits 2-5 specialist agents from available library
 - Assigns specialists with evocative session-specific names
-- Adversary argues against proposals and demands proof of necessity
-- Asha moderates and produces comprehensive Decision Report
+- The Challenger argues against proposals and demands proof of necessity
+- The Moderator moderates and produces comprehensive Decision Report
 - Executes structured 11-phase decision protocol
 
 ---
@@ -28,7 +28,7 @@ Just type `/panel <your topic>` and the system automatically:
 
 The panel system enables automatic expert analysis by:
 
-1. **Topic analysis** (Phase -1) - Recruiter determines needed expertise and recruits 2-5 specialists from available agent library with session-specific names
+1. **Topic analysis** (Phase -1) - The Analyst determines needed expertise and recruits 2-5 specialists from available agent library with session-specific names
 2. **Structured inquiry** (Phases 1-8) - Framing, cross-examination, research gate, reflection, synthesis, decision
 3. **Decision Report** - Evidence citations, confidence scoring, dissent notation, actionable next steps
 
@@ -40,20 +40,20 @@ The panel system enables automatic expert analysis by:
 
 ### Core Roles (Always Present)
 
-**Asha** (Moderator/Facilitator)
+**The Moderator** (Moderator/Facilitator)
 - Manages 11-phase protocol execution
 - Ensures procedural integrity and timebox enforcement
 - Synthesizes final decision report
 - **Question**: "What is the PROCESS?"
 
-**The Recruiter** (Workforce Intelligence)
+**The Analyst** (Workforce Intelligence)
 - Analyzes topic to determine needed expertise
 - Scores available agent library (0-10) for capability match
 - Recruits 2-5 specialist agents with session-specific names
 - Deploys `agent-fabricator` if capability gaps detected
 - **Question**: "Who has CAPABILITY?"
 
-**The Adversary** (Opposition & Quality Gate)
+**The Challenger** (Opposition & Quality Gate)
 - **Default stance: OPPOSE** - argues against proposals and defends status quo
 - Demands evidence before changing working systems: "Show me user complaints, failure data, metrics"
 - Forces proponents to prove necessity: "The current system works. Prove it doesn't."
@@ -62,7 +62,7 @@ The panel system enables automatic expert analysis by:
 
 ### Dynamic Panelists (Recruited Per Topic)
 
-The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session-specific names** based on topic context.
+The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-specific names** based on topic context.
 
 **Examples by Topic Type**:
 
@@ -90,44 +90,44 @@ The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session
 
 ## 11-Phase Protocol
 
-**Phase -1: Topic Analysis & Workforce Recruitment** (The Recruiter)
+**Phase -1: Topic Analysis & Workforce Recruitment** (The Analyst)
 - Analyze topic domain and determine required expertise (2-5 domains typical)
 - Score available agent library (0-10) for capability match
 - Assign specialists with session-specific names
 - Deploy agent-fabricator if gaps detected
 - Set decision rule (consensus default, unanimous for security)
 
-**Phase 0: Goal Clarification** (Asha)
+**Phase 0: Goal Clarification** (The Moderator)
 - Request clarification if topic ambiguous
 - Skip if well-specified
 
-**Phase 1: Framing** (Asha)
+**Phase 1: Framing** (The Moderator)
 - State topic, goals, decision rule
 - Introduce panel composition (core roles + recruited specialists)
 
-**Phase 2: Infrastructure Check** (Asha)
+**Phase 2: Infrastructure Check** (The Moderator)
 - Compare against existing assets to avoid duplication
 
 **Phase 3: Initial Positions** (All Panelists)
 - Specialists deploy assigned agents to gather evidence
-- Adversary takes opposition stance: "DON'T do this because..." and demands proof
+- The Challenger takes opposition stance: "DON'T do this because..." and demands proof
 - Present 5-bullet briefs with citations
 
-**Phase 4: Cross-Examination** (The Adversary-led)
+**Phase 4: Cross-Examination** (The Challenger-led)
 - Challenge assumptions, find contradictions
-- Recruiter may assign additional agents if gaps revealed
+- The Analyst may assign additional agents if gaps revealed
 
-**Phase 5: Research Gate** (Asha)
+**Phase 5: Research Gate** (The Moderator)
 - Authorize additional research if evidence gaps exist
 - Enforce confidence scoring (≥0.8 high confidence)
 
 **Phase 6: Reflection Round** (All Panelists)
 - Revise positions based on evidence and challenges
 
-**Phase 7: Synthesis** (Recruited Architect or Asha)
+**Phase 7: Synthesis** (Recruited Architect or The Moderator)
 - Structure viable options with tradeoffs
 
-**Phase 8: Decision** (Asha)
+**Phase 8: Decision** (The Moderator)
 - Apply decision rule, record dissent, list next steps
 
 ---
@@ -222,9 +222,9 @@ This plugin assumes your Claude Code project uses:
 ## Character Profiles
 
 Core roles have documented profiles in `plugins/panel/docs/characters/`:
-- **Asha.md** - Moderator/Facilitator
-- **The Recruiter.md** - Workforce Intelligence
-- **The Adversary.md** - Opposition & Quality Gate
+- **The Moderator.md** - Moderator/Facilitator
+- **The Analyst.md** - Workforce Intelligence
+- **The Challenger.md** - Opposition & Quality Gate
 
 Recruited specialists are documented in `.claude/agents/*.md` (agent count varies by host project).
 
@@ -257,7 +257,7 @@ Reports saved to: `Work/meetings/YYYY-MM-DD--panel--<slug>.md`
 
 **How it works**:
 
-1. **Recruiter analyzes topic** (Phase -1) - Determines if research-heavy, implementation-focused, creative, technical, etc.
+1. **The Analyst analyzes topic** (Phase -1) - Determines if research-heavy, implementation-focused, creative, technical, etc.
 2. **Scores available agent library** - 0-10 match for topic expertise needs
 3. **Assigns specialists with session names** - 2-5 agents typical, given evocative contextual names
 4. **Deploys agent-fabricator** - If gaps detected (no agent scores >4)
@@ -280,11 +280,11 @@ Same agent, different contextual identity based on topic domain.
 ### "Panel character file not found"
 
 **Issue**: Missing core character profiles in `plugins/panel/docs/characters/`
-**Solution**: Ensure 3 core files exist (Asha.md, The Adversary.md, The Recruiter.md)
+**Solution**: Ensure 3 core files exist (The Moderator.md, The Challenger.md, The Analyst.md)
 
 ### Agent assignment failures
 
-**Issue**: Recruiter cannot find agents in `.claude/agents/`
+**Issue**: The Analyst cannot find agents in `.claude/agents/`
 **Solution**: Verify agent library exists in host project (`.claude/agents/*.md`)
 
 ### agent-fabricator not available
@@ -299,7 +299,7 @@ Same agent, different contextual identity based on topic domain.
 ### 4.1.0 (2025-11-08)
 - **Dynamic recruitment architecture**: 3 core roles + recruited specialists with session-specific names
 - **Removed static characters**: Deleted 5 universal character profiles (Architect, Archivist, Curator, Engineer, Ethicist)
-- **Retained core roles**: Asha (moderator), Recruiter (workforce), Adversary (challenge)
+- **Retained core roles**: The Moderator (facilitation), The Analyst (workforce), The Challenger (opposition)
 - **Session-specific naming**: Agents given evocative contextual names per topic
 - **Simplified protocol**: Removed Phase 1 (Participation Declaration - no abstentions needed)
 - **Quality restoration**: Returns panel depth and domain expertise from v3.0 architecture
@@ -320,7 +320,7 @@ Same agent, different contextual identity based on topic domain.
 - 11-phase protocol with manual composition
 - Profile/roster system
 - Inworld/outworld modes
-- Dynamic agent assignment via Recruiter
+- Dynamic agent assignment via The Analyst
 
 ---
 

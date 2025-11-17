@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for asha-marketplace
 
-**Version**: 1.0.0
+**Version**: 1.2.0
 **Last Updated**: 2025-11-17
 **Repository**: pknull/asha-marketplace
 
@@ -29,7 +29,7 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 
 ## Project Overview
 
-**asha-marketplace** is a Claude Code plugin marketplace providing tools for creative writing, TTRPG campaigns, narrative development, and the Redacted107 (REDACTED99) universe.
+**asha-marketplace** is a Claude Code plugin marketplace providing tools for creative writing, TTRPG campaigns, and narrative development.
 
 ### Current Plugins
 
@@ -279,7 +279,7 @@ Every plugin follows this structure:
 | Memory files | camelCase | `activeContext.md`, `projectbrief.md` |
 | Commands | kebab-case | `save`, `silence`, `panel` |
 | Agents | kebab-case | `recruiter`, `prose-analysis` |
-| Characters | Title Case | `Asha`, `The Recruiter`, `The Adversary` |
+| Characters | Title Case | `The Moderator`, `The Analyst`, `The Challenger` |
 | Scripts | kebab-case.sh | `save-session.sh`, `common.sh` |
 | Session IDs | dictionary-words or hex | `silent-thunder`, `a3f8c2d1` |
 
@@ -329,16 +329,15 @@ domain: [domain]
 title: Character Name
 type: character
 status: draft
-universe: REDACTED99
 ---
 
 # Character Name
 
 ## Nature
-[Metaphysical essence]
+[Conceptual essence]
 
 ## Appearance
-[In-world description]
+[Presentation style]
 
 ## Voice Quality
 [Communication patterns]
@@ -688,8 +687,8 @@ git push -u origin <branch-name>
    ```
 
 2. **Update sections**
-   - Nature: Metaphysical essence
-   - Appearance: In-world description
+   - Nature: Conceptual essence
+   - Appearance: Presentation style
    - Voice Quality: Communication patterns
    - Role in Panel Sessions: Specific function
    - Capability Requirements: Required agents
@@ -700,7 +699,6 @@ git push -u origin <branch-name>
    title: Character Name
    type: character
    status: draft
-   universe: REDACTED99
    ---
    ```
 
@@ -816,7 +814,7 @@ git push -u origin <branch-name>
    - Don't create Memory files in asha-marketplace
 
 3. **Distinguish character from implementation**
-   - Characters are narrative personas (Asha, Recruiter, Adversary)
+   - Characters are narrative personas (The Moderator, The Analyst, The Challenger)
    - Implementation uses agents, commands, hooks
    - Character files describe voice/role, not technical details
 
@@ -877,6 +875,15 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v1.2.0 (2025-11-17)
+- Removed REDACTED99-specific universe references
+- Updated character names to general-purpose versions:
+  - "Asha" → "The Moderator"
+  - "The Recruiter" → "The Analyst"
+  - "The Adversary" → "The Challenger"
+- Generalized character file conventions
+- Updated all examples and task patterns with new names
 
 ### v1.0.0 (2025-11-17)
 - Initial CLAUDE.md creation
