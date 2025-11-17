@@ -1,3 +1,9 @@
+---
+description: "Convene multi-perspective expert panel for analysis and decision-making"
+argument-hint: "Topic or question to analyze"
+allowed-tools: ["Task", "Read", "Write", "Edit", "Grep", "Glob"]
+---
+
 # Panel - Expert Multi-Perspective Analysis
 
 Convene a panel with 3 core roles + dynamically recruited specialists who analyze your topic from distinct perspectives and produce a structured decision through an 11-phase protocol.
