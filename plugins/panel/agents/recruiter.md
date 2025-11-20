@@ -34,7 +34,8 @@ For tasks scoring <4 (no suitable agent):
 
 **Agent-Fabricator Coordination**:
 - When new agent creation justified, coordinate with agent-fabricator via Task tool
-- Provide clear specification: purpose, deployment triggers, required tools, integration points
+- **CRITICAL**: Instruct fabricator to start from template at `plugins/panel/docs/_template.md` and fill it in
+- Provide clear specification: purpose, deployment triggers, required tools, integration points, domain expertise
 - Validate fabricator output against task requirements before panel recommendation
 
 ## Deliverables
@@ -86,9 +87,14 @@ Produce a concise 5-bullet brief per panel protocol:
 
 **Phase 4: Agent Fabricator Coordination** (if CREATE recommendations exist)
 1. Deploy `agent-fabricator` via Task tool
-2. Provide complete specification for each new agent
-3. Validate fabricator output against task requirements
-4. Update capability matrix with new agents
+2. **First instruction to fabricator**: "Read and use `plugins/panel/docs/_template.md` as your starting point"
+3. Provide complete specification for each new agent:
+   - Name (kebab-case), description (action-oriented)
+   - Purpose and deployment triggers
+   - Required tools and domain expertise
+   - Integration points with existing agents
+4. Validate fabricator output against task requirements
+5. Update capability matrix with new agents
 
 **Phase 5: Panel Brief Synthesis**
 Deliver concise 5-bullet brief:
