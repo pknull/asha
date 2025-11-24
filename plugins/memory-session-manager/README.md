@@ -61,6 +61,44 @@ EOF
 
 Then manually log operations during session, or let hooks take over after restart. See `docs/TROUBLESHOOTING.md` for diagnosis.
 
+#### Vector DB Setup (Optional)
+
+The plugin includes **optional vector database support** for fast Memory retrieval across sessions.
+
+**What it does**:
+- Fast fact lookups ("What is the creator's name?", "What's the current project?")
+- Token-efficient retrieval (~200 tokens vs 2,000+ for full file reads)
+- Search across all Memory content without reading multiple files
+
+**Installation**:
+
+Option 1 - Automated setup:
+```bash
+# Run setup script from plugin directory
+~/.claude/plugins/marketplaces/asha-marketplace/plugins/memory-session-manager/scripts/setup-vector-db.sh
+```
+
+Option 2 - Manual installation:
+```bash
+pip install mem0ai==1.0.1 qdrant-client==1.16.0
+```
+
+**Usage** (in your project directory):
+
+1. Ingest Memory files to vector DB:
+```bash
+python ~/.claude/plugins/marketplaces/asha-marketplace/plugins/memory-session-manager/tools/ingest_memory.py
+```
+
+2. Search Memory:
+```bash
+python ~/.claude/plugins/marketplaces/asha-marketplace/plugins/memory-session-manager/tools/mem0_helper.py search "your query"
+```
+
+**Integration**: The `memory-retrieval` agent automatically decides whether to use vector DB (fast) or direct file reading (comprehensive) based on query complexity.
+
+**Note**: Each project gets its own vector DB instance in `Memory/vector_db/` - vector DB data is project-specific, just like Memory files.
+
 ### Other Platforms
 
 See `docs/PLATFORM-ADAPTERS.md` for manual implementation guides for:
