@@ -1,2 +1,0 @@
-mem0ai==1.0.1
-qdrant-client==1.16.0
