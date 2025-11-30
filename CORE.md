@@ -229,7 +229,7 @@ Created app.py with Flask hello world endpoint. Run with `python app.py`.
 
 - **Phase 1 Files** (Always read): activeContext.md → projectbrief.md
 - **Phase 2 Files** (Conditional): Read when triggered by Phase 1 content (see I-INPUT section Phase 2 protocol)
-- **Available Files**: projectInstructions.md, communicationStyle.md, workflowProtocols.md, techEnvironment.md, productContext.md, progress.md, custom files as referenced
+- **Available Files**: projectInstructions.md, communicationStyle.md, workflowProtocols.md, techEnvironment.md, progress.md, custom files as referenced
 
 **Post-Access Actions**:
 
@@ -249,7 +249,7 @@ Created app.py with Flask hello world endpoint. Run with `python app.py`.
 **Session Synthesis** (manual via save command):
 - Four Questions Protocol guides Memory updates
 - activeContext.md updated with session summary
-- Errors extracted to systemMonitoring.md
+- Errors noted in session archive
 - Session archived
 - **Partnership Ritual**: Generate closing haiku (session continuity acknowledgment)
 

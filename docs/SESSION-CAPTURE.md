@@ -47,7 +47,6 @@ sessionID: [random-hash]
 2. **Persistence**: Survives until `/save` completes (crash recovery)
 3. **Synthesis**: At `/save`, content synthesized to:
    - `activeContext.md` (operational context, decisions)
-   - `systemMonitoring.md` (errors and system health)
 4. **Archive**: Post-synthesis, moved to `Memory/sessions/archive/session-[timestamp].md`
 5. **Limits**: 3000 lines maximum (prevent unbounded growth)
 
@@ -57,24 +56,24 @@ Before ANY capture operation, check for marker files that disable logging:
 
 ```python
 def should_capture_to_session():
-    if exists("Memory/markers/silence"):
+    if exists("Work/markers/silence"):
         return False  # Silence: disables Memory logging (hooks, session watching)
                       # NOTE: RP transcripts continue (roleplay-gm agent independent)
 
-    if exists("Memory/markers/rp-active"):
+    if exists("Work/markers/rp-active"):
         return False  # RP mode: hooks disabled, no session watching
 
     # Default: log everything
     return True
 ```
 
-**Silence Mode** (`Memory/markers/silence`):
+**Silence Mode** (`Work/markers/silence`):
 - Disables Memory synthesis
 - Disables session watching
 - RP transcripts continue (independent system)
 - Use for: Sessions that shouldn't be remembered
 
-**RP Mode** (`Memory/markers/rp-active`):
+**RP Mode** (`Work/markers/rp-active`):
 - Disables session watching
 - RP transcripts continue in separate files
 - Use for: Roleplay sessions (logged separately)
@@ -224,7 +223,6 @@ Claude follows capture protocol based on instructions:
 - Check markers before each capture
 - Append to watching file after significant operations
 - Format per capture trigger specifications
-- Update systemMonitoring.md with error patterns
 
 ### Level 3: Hybrid Approach
 
@@ -254,12 +252,11 @@ Hooks for automation where available, manual protocol fallback:
 **During Synthesis**:
 - Extract key accomplishments → activeContext.md
 - Extract decisions → activeContext.md
-- Extract errors → systemMonitoring.md
+- Review errors for patterns
 
 **After Synthesis**:
 - Archive watching file to `Memory/sessions/archive/`
 - Reset with new sessionID
-- Increment systemMonitoring.md session count
 
 ## File Size Management
 

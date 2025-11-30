@@ -28,7 +28,6 @@ Memory/
 ├── communicationStyle.md    # Required: Voice, persona, tone
 ├── workflowProtocols.md     # Optional: Project-specific patterns
 ├── techEnvironment.md       # Optional: Stack conventions, discovered patterns
-├── productContext.md        # Optional: Product details
 └── [custom].md              # Optional: Project-specific Memory files
 ```
 
@@ -110,23 +109,10 @@ Memory/
 3. Check Memory before writing code (apply documented conventions)
 4. Update as new patterns discovered
 
-### productContext.md
-
-**Purpose**: Product-specific details for non-technical stakeholders
-
-**Content**:
-- **Product Vision**: What problem are we solving?
-- **User Stories**: Who uses this and why?
-- **Market Context**: Competitive landscape
-- **Business Logic**: Domain-specific rules
-
-**When to Create**: Product development with business stakeholders
-
 ### Custom Files
 
 Create project-specific Memory files as needed:
 - `agentCoverageTest.md` - Agent inventory validation rubric
-- `systemMonitoring.md` - Error pattern tracking
 - `wireframeReference.md` - Framework evolution notes
 
 **Naming**: Descriptive, camelCase, `.md` extension
@@ -195,7 +181,6 @@ dependencies: ["file1.md", "file2.md"]
 **Conditional Files** (read when triggered):
 - workflowProtocols.md → Depends on: projectbrief.md
 - techEnvironment.md → Depends on: projectbrief.md
-- productContext.md → Depends on: projectbrief.md
 
 **Rule**: Document dependencies in frontmatter for explicit relationships
 

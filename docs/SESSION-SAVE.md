@@ -28,7 +28,7 @@ The `/save` command implements a systematic session completion workflow using th
 - Discoveries & Patterns (insights, ACE outputs)
 - Candidates for Next Steps (identified follow-ups)
 
-**Error Synthesis**: Errors automatically extracted and appended to `Memory/systemMonitoring.md`
+**Error Review**: Errors captured in watching file available for manual review
 
 ### Phase 2: Four Questions Protocol
 
@@ -178,8 +178,6 @@ Add session summary with:
 **This Operation**:
 - Moves `Memory/sessions/current-session.md` to `Memory/sessions/archive/session-[timestamp].md`
 - Creates fresh watching file with new session ID
-- Increments session count in `Memory/systemMonitoring.md`
-- Updates systemMonitoring Last Updated timestamp
 
 **Archive Structure**:
 ```
@@ -238,13 +236,12 @@ Before marking session complete, verify:
 
 **Workflow**:
 1. Display session watching summary
-2. Extract errors to systemMonitoring.md
-3. Show Four Questions Protocol guidance
-4. Check Memory cleanup needed
-5. Provide Memory update instructions
-6. User performs updates
-7. User runs `--archive-only` to archive watching file
-8. User commits to git
+2. Show Four Questions Protocol guidance
+3. Check Memory cleanup needed
+4. Provide Memory update instructions
+5. User performs updates
+6. User runs `--archive-only` to archive watching file
+7. User commits to git
 
 **Best For**: Sessions with significant context requiring reflection
 
@@ -270,24 +267,16 @@ Before marking session complete, verify:
 
 **Best For**: After manual Memory updates, final step before git commit
 
-## Error Synthesis
+## Error Handling
 
-**Automatic During Save**: Errors from watching file extracted to `Memory/systemMonitoring.md`
+**During Session**: Errors captured in watching file for review
 
 **Categories**:
 - **Tool Failures**: File operations, bash commands, MCP
 - **Mode Confusion**: Incorrect agent/mode selection
 - **Authority Overrides**: User corrections to AI claims
 
-**Format**:
-```markdown
-- [timestamp] ERROR: {tool-name} → {error-message} | Context: {what-was-being-attempted}
-```
-
-**Tracking**:
-- Total error count updated
-- Session count incremented
-- Last Updated timestamp set
+**Review**: Errors visible in session watching summary for pattern analysis
 
 ## Session Watching File Lifecycle
 
@@ -333,7 +322,7 @@ Reset with new session ID
 2. **Context Preservation**: Structured synthesis ensures critical information captured
 3. **Crash Recovery**: Watching file survives interruptions
 4. **Audit Trail**: Git-tracked archives provide historical evidence
-5. **Error Tracking**: Automatic extraction to systemMonitoring.md
+5. **Error Visibility**: Captured in session watching for review
 6. **Reduced Cognitive Load**: Guided workflow vs free recall
 7. **Session Continuity**: Next session begins with complete context
 
@@ -418,9 +407,9 @@ Reset with new session ID
 - **Cause**: activeContext.md >500 lines
 - **Solution**: Archive older activities after synthesis
 
-**Issue**: Error synthesis fails
-- **Cause**: systemMonitoring.md missing or malformed
-- **Solution**: Check file structure, verify section headers exist
+**Issue**: Errors not visible in summary
+- **Cause**: Session watching file missing error section
+- **Solution**: Review raw watching file for error entries
 
 **Issue**: Archive already exists with same timestamp
 - **Cause**: Multiple saves in same minute
