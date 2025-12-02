@@ -55,6 +55,39 @@ Session continuity acknowledgment via haiku:
 
 ---
 
+## Error Recovery Protocol
+
+**Applies when**: Tool failures, agent errors, or cascading failures during task execution.
+
+**Enforcement**: Guidance-based (protocol adherence during operation)
+
+> **Note**: Hook-based enforcement was attempted but Claude Code's `PostToolUse` hooks only fire for successful tool calls, not failures. Error tracking remains a model-followed protocol.
+
+### Consecutive Error Threshold
+
+| Count | Action |
+|-------|--------|
+| 1 | Append to context, attempt recovery |
+| 2 | Append to context, try alternate approach |
+| 3 | **Escalate to user** with error summary |
+
+### Escalation Format
+
+When third consecutive failure occurs, stop and report:
+
+```
+[ESCALATION] Consecutive failures (3) on: {task_description}
+  Errors: {brief_list}
+  Attempted: {recovery_attempts}
+  Awaiting: User guidance
+```
+
+### Error Logging
+
+For persistent issues affecting future sessions, note pattern in `activeContext.md` under current focus or blockers.
+
+---
+
 ## Framework Maintenance
 
 Session coordinator may update AGENTS.md to improve operational efficiency.
