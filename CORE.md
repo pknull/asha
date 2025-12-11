@@ -57,6 +57,7 @@ When task requires specialized guidance, consult relevant modules:
 | `Asha/modules/research.md` | Authority and verification | Fact-checking, citations, claims requiring verification |
 | `Asha/modules/memory-ops.md` | Memory system operations | Session save, Memory updates, context synthesis |
 | `Asha/modules/high-stakes.md` | Dangerous operations | Git pushes, deletions, production changes, migrations |
+| `Asha/modules/verbalized-sampling.md` | Diversity recovery | Mode collapse, brainstorming, character voice, NPC variation |
 
 ## Error Handling
 

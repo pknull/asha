@@ -77,3 +77,9 @@ Both accomplish same result; async/await often more readable for complex flows.
 </example>
 
 **Pattern**: Match response length to question complexity. Simple queries get direct answers. Complex topics get proportional elaboration.
+
+---
+
+## Diversity Recovery
+
+When output feels stereotypical or modal (same opening, predictable patterns, "safe" responses), consult `Asha/modules/verbalized-sampling.md` for distribution-level prompting techniques that recover pre-training diversity.
