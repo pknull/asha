@@ -25,6 +25,7 @@ mkdir -p "$PROJECT_ROOT/Memory/sessions/archive"
 mkdir -p "$PROJECT_ROOT/Memory/reasoning_bank"
 mkdir -p "$PROJECT_ROOT/Work/markers"
 mkdir -p "$PROJECT_ROOT/.claude/hooks"
+mkdir -p "$PROJECT_ROOT/.claude/commands"
 
 # 2. Symlink hooks into .claude/hooks/
 echo "Installing hooks..."
@@ -44,12 +45,26 @@ done
 # Also symlink common.sh (needed by hooks)
 ln -sf "$ASHA_DIR/hooks/common.sh" "$PROJECT_ROOT/.claude/hooks/common.sh"
 
-# 3. Make tools executable
+# 3. Symlink commands into .claude/commands/
+echo "Installing commands..."
+for cmd in "$ASHA_DIR/commands/"*.md; do
+    if [[ -f "$cmd" ]]; then
+        cmd_name=$(basename "$cmd")
+        target="$PROJECT_ROOT/.claude/commands/$cmd_name"
+        if [[ -L "$target" ]]; then
+            rm "$target"
+        fi
+        ln -sf "$ASHA_DIR/commands/$cmd_name" "$target"
+        echo "  → $cmd_name"
+    fi
+done
+
+# 4. Make tools executable
 echo "Setting permissions..."
 chmod +x "$ASHA_DIR/tools/"*.sh 2>/dev/null || true
 chmod +x "$ASHA_DIR/tools/"*.py 2>/dev/null || true
 
-# 4. Copy templates if Memory files don't exist
+# 5. Copy templates if Memory files don't exist
 echo "Checking Memory files..."
 for tmpl in "$ASHA_DIR/templates/"*.md; do
     if [[ -f "$tmpl" ]]; then
@@ -64,7 +79,7 @@ for tmpl in "$ASHA_DIR/templates/"*.md; do
     fi
 done
 
-# 5. Initialize ReasoningBank database
+# 6. Initialize ReasoningBank database
 echo "Initializing ReasoningBank..."
 if command -v python3 >/dev/null 2>&1; then
     python3 "$ASHA_DIR/tools/reasoning_bank.py" stats >/dev/null 2>&1 && \
