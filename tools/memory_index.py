@@ -131,7 +131,7 @@ DEFAULT_INDEX_PATTERNS = [
     # Memory files (high priority - project context)
     "Memory/*.md",
     # Asha framework
-    "Asha/**/*.md",
+    "asha/**/*.md",
     # Common code locations
     "Tools/*.py",
     ".claude/agents/*.md",
@@ -171,7 +171,7 @@ CHUNK_OVERLAP = 400  # Characters of overlap between chunks
 # Content type detection
 CONTENT_TYPE_MAP = {
     "Memory/": "memory",
-    "Asha/": "framework",
+    "asha/": "framework",
     "Vault/World/Characters/": "character",
     "Vault/World/Locations/": "location",
     "Vault/World/Groups/": "group",

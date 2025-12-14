@@ -51,7 +51,7 @@ detect_asha_dir() {
     if [[ -d "$PROJECT_DIR/Asha" ]]; then
         echo "$PROJECT_DIR/Asha"
     else
-        # Script is in Asha/tools/, go up one level
+        # Script is in asha/tools/, go up one level
         echo "$(cd "$(dirname "$0")/.." && pwd)"
     fi
 }

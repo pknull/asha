@@ -13,5 +13,5 @@ lastUpdated: "YYYY-MM-DD"
 ## Asha Tools
 
 Run from project root:
-- `python Asha/tools/reasoning_bank.py stats` - Pattern tracking
-- `Asha/tools/save-session.sh --interactive` - Session save
+- `python asha/tools/reasoning_bank.py stats` - Pattern tracking
+- `asha/tools/save-session.sh --interactive` - Session save

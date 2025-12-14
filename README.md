@@ -15,7 +15,7 @@ The framework is voice-agnostic. CORE.md defines *how* to operate. Each project'
 ## Directory Structure
 
 ```
-Asha/
+asha/
 ├── CORE.md                 # Framework (portable, voice-agnostic)
 ├── README.md               # This file
 ├── docs/
@@ -51,7 +51,7 @@ Create a file that references the core framework. The filename depends on your A
 
 Entry point content:
 ```markdown
-@Asha/CORE.md
+@asha/CORE.md
 ```
 
 ### 3. Initialize Memory
@@ -60,7 +60,7 @@ Create a `Memory/` directory and copy templates:
 
 ```bash
 mkdir Memory
-cp Asha/templates/*.md Memory/
+cp asha/templates/*.md Memory/
 ```
 
 ### 4. Configure Memory Files
@@ -86,8 +86,8 @@ For full session capture and synthesis:
 
 For quick starts without full infrastructure:
 
-1. Copy `Asha/` to project
-2. Create entry point referencing `@Asha/CORE.md`
+1. Copy `asha/` to project
+2. Create entry point referencing `@asha/CORE.md`
 3. Create `Memory/` with at least:
    - `activeContext.md` (what's happening now)
    - `projectbrief.md` (what this project is)

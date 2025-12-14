@@ -66,13 +66,13 @@ For non-trivial implementation tasks, query learned patterns before designing so
 
 ```bash
 # Check what worked for similar contexts
-python Asha/tools/reasoning_bank.py query --type code --context "keywords describing task"
+python asha/tools/reasoning_bank.py query --type code --context "keywords describing task"
 
 # Check error resolutions if encountering known error types
-python Asha/tools/reasoning_bank.py error --type "ErrorType" --signature "message fragment"
+python asha/tools/reasoning_bank.py error --type "ErrorType" --signature "message fragment"
 
 # Check agent effectiveness for task delegation
-python Asha/tools/reasoning_bank.py tool --name "agent-type"
+python asha/tools/reasoning_bank.py tool --name "agent-type"
 ```
 
 **When to query**:

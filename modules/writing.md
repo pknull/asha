@@ -82,4 +82,4 @@ Both accomplish same result; async/await often more readable for complex flows.
 
 ## Diversity Recovery
 
-When output feels stereotypical or modal (same opening, predictable patterns, "safe" responses), consult `Asha/modules/verbalized-sampling.md` for distribution-level prompting techniques that recover pre-training diversity.
+When output feels stereotypical or modal (same opening, predictable patterns, "safe" responses), consult `asha/modules/verbalized-sampling.md` for distribution-level prompting techniques that recover pre-training diversity.

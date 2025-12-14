@@ -37,11 +37,11 @@ Three storage layers, each for different query types:
 - `Memory/techEnvironment.md` → Tools, paths, platform capabilities
 
 ### Vector DB (Semantic Search)
-Query with: `python Asha/tools/memory_index.py search --fallback "query"` (if available)
+Query with: `python asha/tools/memory_index.py search --fallback "query"` (if available)
 Use for: Finding relevant content by meaning across indexed files. Requires Ollama.
 
 ### ReasoningBank (Pattern Tracking)
-Query with: `python Asha/tools/reasoning_bank.py query --context "situation"`
+Query with: `python asha/tools/reasoning_bank.py query --context "situation"`
 Use for: Checking what approaches succeeded/failed in past sessions, error resolutions, tool effectiveness.
 
 User context supplements Memory but never replaces it.
@@ -69,12 +69,12 @@ When task requires specialized guidance, consult relevant modules:
 
 | Module | Purpose | Triggers |
 |--------|---------|----------|
-| `Asha/modules/code.md` | Technical implementation | Coding, refactoring, debugging, ACE analysis |
-| `Asha/modules/writing.md` | Prose and creative output | Blog posts, documentation, creative writing |
-| `Asha/modules/research.md` | Authority and verification | Fact-checking, citations, claims requiring verification |
-| `Asha/modules/memory-ops.md` | Memory system operations | Session save, Memory updates, context synthesis |
-| `Asha/modules/high-stakes.md` | Dangerous operations | Git pushes, deletions, production changes, migrations |
-| `Asha/modules/verbalized-sampling.md` | Diversity recovery | Mode collapse, brainstorming, character voice, NPC variation |
+| `asha/modules/code.md` | Technical implementation | Coding, refactoring, debugging, ACE analysis |
+| `asha/modules/writing.md` | Prose and creative output | Blog posts, documentation, creative writing |
+| `asha/modules/research.md` | Authority and verification | Fact-checking, citations, claims requiring verification |
+| `asha/modules/memory-ops.md` | Memory system operations | Session save, Memory updates, context synthesis |
+| `asha/modules/high-stakes.md` | Dangerous operations | Git pushes, deletions, production changes, migrations |
+| `asha/modules/verbalized-sampling.md` | Diversity recovery | Mode collapse, brainstorming, character voice, NPC variation |
 
 ## Error Handling
 

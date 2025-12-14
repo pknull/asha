@@ -19,7 +19,7 @@ This command uses the portable `save-session.sh` script to handle all session co
 Execute the save script in interactive mode to see session summary and Four Questions guidance:
 
 ```bash
-"$(git rev-parse --show-toplevel)"/Asha/tools/save-session.sh --interactive
+"$(git rev-parse --show-toplevel)"/asha/tools/save-session.sh --interactive
 ```
 
 This will:
@@ -82,7 +82,7 @@ Based on the script output, systematically update Memory Bank files:
 After Memory Bank updates are complete, archive the session watching file:
 
 ```bash
-"$(git rev-parse --show-toplevel)"/Asha/tools/save-session.sh --archive-only
+"$(git rev-parse --show-toplevel)"/asha/tools/save-session.sh --archive-only
 ```
 
 This creates timestamped archive in `Memory/sessions/archive/` and resets watching file for next session.

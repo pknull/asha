@@ -1,6 +1,6 @@
 #!/bin/bash
 # Asha Install Script - Sets up Asha in a project
-# Run from project root: ./Asha/install.sh
+# Run from project root: ./asha/install.sh
 
 set -euo pipefail
 
@@ -10,7 +10,7 @@ if [[ -d "Asha" ]]; then
 elif [[ -d "../Asha" ]]; then
     PROJECT_ROOT="$(cd .. && pwd)"
 else
-    echo "Error: Run from project root (where Asha/ directory is located)"
+    echo "Error: Run from project root (where asha/ directory is located)"
     exit 1
 fi
 
@@ -95,5 +95,5 @@ echo ""
 echo "Next steps:"
 echo "  1. Edit Memory/communicationStyle.md to define your assistant's voice"
 echo "  2. Edit Memory/activeContext.md to describe your project"
-echo "  3. Run: Asha/tools/save-session.sh --interactive"
+echo "  3. Run: asha/tools/save-session.sh --interactive"
 echo ""

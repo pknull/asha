@@ -36,7 +36,7 @@ detect_asha_dir() {
         return 0
     fi
 
-    # Fallback: hooks are in Asha/hooks/, go up one level
+    # Fallback: hooks are in asha/hooks/, go up one level
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [[ -f "$script_dir/../CORE.md" ]]; then
