@@ -37,11 +37,11 @@ Three storage layers, each for different query types:
 - `Memory/techEnvironment.md` → Tools, paths, platform capabilities
 
 ### Vector DB (Semantic Search)
-Query with: `python Tools/memory_index.py search --fallback "query"`
-Use for: Finding relevant content by meaning across 200+ indexed files (characters, locations, code, docs).
+Query with: `python Asha/tools/memory_index.py search --fallback "query"` (if available)
+Use for: Finding relevant content by meaning across indexed files. Requires Ollama.
 
 ### ReasoningBank (Pattern Tracking)
-Query with: `python Tools/reasoning_bank.py query --context "situation"`
+Query with: `python Asha/tools/reasoning_bank.py query --context "situation"`
 Use for: Checking what approaches succeeded/failed in past sessions, error resolutions, tool effectiveness.
 
 User context supplements Memory but never replaces it.

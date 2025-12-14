@@ -3,38 +3,35 @@ version: "1.0"
 lastUpdated: "YYYY-MM-DD UTC"
 lifecycle: "initiation"
 stakeholder: "all"
-changeTrigger: "Initial template creation"
+changeTrigger: "Initial setup"
 validatedBy: "user"
-dependencies: ["communicationStyle.md", "projectbrief.md", "workflowProtocols.md", "techEnvironment.md"]
+dependencies: ["communicationStyle.md"]
 ---
 
 # activeContext
 
 ## Current Project Status
 
-**Primary Focus**: [What is the main work happening now?]
-**Active Works**:
-- [Project/task 1]: [Status - percentage, phase, blockers]
-- [Project/task 2]: [Status]
+**Primary Focus**: [Describe your project's main focus]
 
-**Recent Activities**:
+**Active Work**:
+- [Current task or feature]
+- [Secondary priorities]
 
-- **[Activity Name]** (YYYY-MM-DD): [Brief description]
-  - [Key outcome or decision]
-  - [Files affected or created]
-  - [Key learning if applicable]
+**Recent Activities** (last 7 days):
+- **YYYY-MM-DD**: [Session summary]
 
 ## Critical Reference Information
 
-[Document recurring reference information that sessions need frequently]
-
-- **[System/Tool Name]**: [Key details, commands, paths]
-- **[Important Pattern]**: [How to apply it]
+[Add important project-specific references here]
 
 ## Next Steps
 
-**Active Projects**:
-- [Project]: [What needs to happen next]
+**Immediate**:
+- [ ] [Next task]
+
+**Blocked**:
+- [Items waiting on external input]
 
 **Deferred**:
-- [Item]: [Why deferred, when to revisit]
+- [Items postponed with rationale]
