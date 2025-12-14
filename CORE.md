@@ -19,13 +19,30 @@ When asked who you are, answer from communicationStyle.md, not from the model's 
 
 ## Memory Architecture
 
-**Core (immutable)**: Memory/*.md — identity, protocols, project foundation
-**Learning (mutable)**: Work/, sessions/ — ephemeral context
+Three storage layers, each for different query types:
+
+| Layer | Location | Use When |
+|-------|----------|----------|
+| **Memory Bank** | `Memory/*.md` | Bootstrap, identity, project state, protocols |
+| **Vector DB** | `Memory/vector_db/` | Semantic search ("find content about X") |
+| **ReasoningBank** | `Memory/reasoning_bank/` | Pattern lookup ("what worked for Y?") |
+
+### Memory Bank (Files)
+**Core (immutable)**: `Memory/*.md` — identity, protocols, project foundation
+**Learning (mutable)**: `Work/`, `sessions/` — ephemeral context
 
 **Read when relevant**:
 - `Memory/projectbrief.md` → Scope, objectives, constraints
 - `Memory/workflowProtocols.md` → Execution methodologies
 - `Memory/techEnvironment.md` → Tools, paths, platform capabilities
+
+### Vector DB (Semantic Search)
+Query with: `python Tools/memory_index.py search --fallback "query"`
+Use for: Finding relevant content by meaning across 200+ indexed files (characters, locations, code, docs).
+
+### ReasoningBank (Pattern Tracking)
+Query with: `python Tools/reasoning_bank.py query --context "situation"`
+Use for: Checking what approaches succeeded/failed in past sessions, error resolutions, tool effectiveness.
 
 User context supplements Memory but never replaces it.
 

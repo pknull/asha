@@ -60,6 +60,31 @@ Production, Memory architecture, breaking changes, migrations, security:
 - Update Memory/techEnvironment.md with discovered conventions for future sessions
 - Verify library availability in codebase before using (don't assume dependencies exist)
 
+## ReasoningBank Pattern Lookup (Before Novel Solutions)
+
+For non-trivial implementation tasks, query learned patterns before designing solutions:
+
+```bash
+# Check what worked for similar contexts
+python Tools/reasoning_bank.py query --type code --context "keywords describing task"
+
+# Check error resolutions if encountering known error types
+python Tools/reasoning_bank.py error --type "ErrorType" --signature "message fragment"
+
+# Check agent effectiveness for task delegation
+python Tools/reasoning_bank.py tool --name "agent-type"
+```
+
+**When to query**:
+- Refactoring tasks (check proven patterns)
+- Error resolution (check known fixes)
+- Agent selection (check historical effectiveness)
+- Recurring task types (check what succeeded before)
+
+**When to skip**: Simple operations, unique one-off tasks, time-critical situations.
+
+**After completion**: Record successful patterns via `/save` protocol or direct CLI if pattern is transferable to future sessions.
+
 ## Code Comments (Software Development Only)
 
 - Default to minimal or no comments - prefer self-documenting code
