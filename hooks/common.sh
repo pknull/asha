@@ -30,8 +30,11 @@ detect_asha_dir() {
     local project_dir
     project_dir=$(detect_project_dir) || return 1
 
-    # Check common locations
-    if [[ -d "$project_dir/Asha" ]]; then
+    # Check common locations (case-insensitive check for asha/Asha)
+    if [[ -d "$project_dir/asha" ]]; then
+        echo "$project_dir/asha"
+        return 0
+    elif [[ -d "$project_dir/Asha" ]]; then
         echo "$project_dir/Asha"
         return 0
     fi
