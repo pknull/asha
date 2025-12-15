@@ -130,13 +130,25 @@ EMBEDDING_MODEL = "nomic-embed-text:latest"
 DEFAULT_INDEX_PATTERNS = [
     # Memory files (high priority - project context)
     "Memory/*.md",
-    # Asha framework
-    "asha/**/*.md",
+    # Asha framework (excluding venv)
+    "asha/*.md",
+    "asha/commands/*.md",
+    "asha/docs/*.md",
+    "asha/modules/*.md",
+    "asha/templates/*.md",
     # Common code locations
     "Tools/*.py",
     ".claude/agents/*.md",
     ".claude/commands/*.md",
     ".claude/docs/*.md",
+]
+
+# Directories to always exclude from indexing
+EXCLUDE_PATTERNS = [
+    ".venv",
+    "node_modules",
+    "__pycache__",
+    ".git",
 ]
 
 # Project-specific patterns loaded from config
@@ -507,14 +519,25 @@ def get_changed_files_since(commit_hash: str) -> list[str]:
         return []
 
 
+def should_exclude(file_path: Path) -> bool:
+    """Check if file should be excluded from indexing"""
+    path_str = str(file_path)
+    for exclude in EXCLUDE_PATTERNS:
+        if f"/{exclude}/" in path_str or path_str.endswith(f"/{exclude}"):
+            return True
+    return False
+
+
 def get_files_to_index() -> list[Path]:
-    """Get all files matching index patterns"""
+    """Get all files matching index patterns, excluding unwanted directories"""
     init_paths()
     patterns = load_index_patterns()
     files = []
     for pattern in patterns:
         matches = list(PROJECT_ROOT.glob(pattern))
         files.extend(matches)
+    # Filter out excluded directories
+    files = [f for f in files if not should_exclude(f)]
     return sorted(set(files))
 
 

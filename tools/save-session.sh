@@ -371,9 +371,11 @@ archive_only_mode() {
     # Refresh vector DB index if memory_index.py exists
     MEMORY_INDEX="$ASHA_DIR/tools/memory_index.py"
     if [[ -f "$MEMORY_INDEX" ]]; then
-        # Try project venv first, then system python
+        # Try asha venv first, then project venv, then system python
         PYTHON=""
-        if [[ -x "$PROJECT_DIR/.venv/bin/python3" ]]; then
+        if [[ -x "$ASHA_DIR/.venv/bin/python3" ]]; then
+            PYTHON="$ASHA_DIR/.venv/bin/python3"
+        elif [[ -x "$PROJECT_DIR/.venv/bin/python3" ]]; then
             PYTHON="$PROJECT_DIR/.venv/bin/python3"
         elif command -v python3 >/dev/null 2>&1; then
             PYTHON="python3"

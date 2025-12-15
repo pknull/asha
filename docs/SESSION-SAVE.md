@@ -20,15 +20,13 @@ The `/save` command implements a systematic session completion workflow using th
 
 ### Phase 1: Session Review
 
-**Automatic**: The save script displays session watching file summary
+The session watching file summary is reviewed automatically, displaying:
 
-**Sections Displayed**:
 - Significant Operations (agents, file mods, panels)
 - Decisions & Clarifications (user choices)
 - Discoveries & Patterns (insights, ACE outputs)
 - Candidates for Next Steps (identified follow-ups)
-
-**Error Review**: Errors captured in watching file available for manual review
+- Errors captured during the session (for pattern analysis)
 
 ### Phase 2: Four Questions Protocol
 
@@ -58,13 +56,13 @@ The `/save` command implements a systematic session completion workflow using th
 
 #### Question 3: What did we learn?
 
-**Validated Patterns** → Add to `Memory/workflowProtocols.md`:
+**Validated Patterns** (add to `Memory/workflowProtocols.md`):
 - Techniques that worked well
 - Efficiency improvements
 - Tool usage patterns
 - Integration approaches
 
-**Pitfalls Encountered** → Document prevention strategies:
+**Pitfalls Encountered** (document prevention strategies):
 - Mistakes made
 - Edge cases discovered
 - Failure modes identified
@@ -171,13 +169,7 @@ Add session summary with:
 
 **After Memory Updates Complete**:
 
-```bash
-"${CLAUDE_PLUGIN_ROOT}"/scripts/save-session.sh --archive-only
-```
-
-**This Operation**:
-- Moves `Memory/sessions/current-session.md` to `Memory/sessions/archive/session-[timestamp].md`
-- Creates fresh watching file with new session ID
+The session watching file is moved to `Memory/sessions/archive/` with a timestamped filename, and a fresh watching file is created for the next session.
 
 **Archive Structure**:
 ```
@@ -192,10 +184,7 @@ Memory/sessions/archive/
 
 ### Phase 6: Git Commit
 
-**Stage Memory Changes**:
-```bash
-git add Memory/
-```
+Memory changes are staged, committed with a descriptive message summarizing the session, and pushed to the remote repository.
 
 **Commit Message Format**:
 ```
@@ -204,15 +193,6 @@ session: [Brief description of session activities]
 [Summary of key accomplishments and decisions]
 
 [If Memory cleaned: Memory cleanup: XXX→YYY lines (Z% reduction)]
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
-```
-
-**Push to Remote**:
-```bash
-git push
 ```
 
 ## Completion Validation
@@ -228,48 +208,27 @@ Before marking session complete, verify:
 - [ ] Git commit created with descriptive message
 - [ ] Changes pushed to remote
 
-## Manual vs Automated Modes
+## Modes
 
 ### Interactive Mode (Default)
 
 **Trigger**: `/save` command
 
-**Workflow**:
-1. Display session watching summary
-2. Show Four Questions Protocol guidance
-3. Check Memory cleanup needed
-4. Provide Memory update instructions
-5. User performs updates
-6. User runs `--archive-only` to archive watching file
-7. User commits to git
+The AI reviews the session watching summary, works through the Four Questions Protocol, updates Memory files, archives the watching file, and commits to git.
 
 **Best For**: Sessions with significant context requiring reflection
 
 ### Automatic Mode
 
-**Trigger**: SessionEnd hook (clean logout)
+**Trigger**: Session end hook (clean logout)
 
-**Workflow**:
-1. Archive watching file to `Memory/sessions/archive/`
-2. Create fresh watching file
-3. Remind user to run `/save` for synthesis
+The watching file is archived automatically, and a reminder is provided to run `/save` for synthesis if needed.
 
 **Best For**: Clean session termination without synthesis
 
-### Archive-Only Mode
-
-**Trigger**: `save-session.sh --archive-only`
-
-**Workflow**:
-1. Archive current watching file
-2. Reset with new session ID
-3. No Memory updates
-
-**Best For**: After manual Memory updates, final step before git commit
-
 ## Error Handling
 
-**During Session**: Errors captured in watching file for review
+**During Session**: Errors are captured in the watching file for review
 
 **Categories**:
 - **Tool Failures**: File operations, bash commands, MCP
@@ -293,11 +252,9 @@ Display summary (Phase 1)
        ↓
 Four Questions guidance (Phase 2)
        ↓
-User updates Memory (Phase 3)
+Update Memory (Phase 3)
        ↓
-User runs --archive-only
-       ↓
-Archive to Memory/sessions/archive/
+Archive watching file
        ↓
 Reset with new session ID
        ↓
@@ -325,34 +282,6 @@ Reset with new session ID
 5. **Error Visibility**: Captured in session watching for review
 6. **Reduced Cognitive Load**: Guided workflow vs free recall
 7. **Session Continuity**: Next session begins with complete context
-
-## Platform-Specific Notes
-
-### Claude Code
-
-- Full automation via hooks and bash scripts
-- `${CLAUDE_PLUGIN_ROOT}` for portable paths
-- Git integration automatic
-- Recommended workflow: `/save` → update Memory → `--archive-only` → git commit
-
-### Claude.ai
-
-- Manual Four Questions Protocol
-- Copy watching file content manually
-- Update Memory files via Projects interface
-- Manual archive (rename/move watching file)
-
-### ChatGPT
-
-- Conversation-based synthesis
-- Export conversation as session archive
-- Manual Memory file updates
-- No automatic watching file
-
-### Gemini
-
-- Manual protocol only
-- Research platform capabilities TBD
 
 ## Examples
 

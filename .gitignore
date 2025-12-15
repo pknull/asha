@@ -1,0 +1,13 @@
+# Virtual environment (created by install.sh)
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*.swo

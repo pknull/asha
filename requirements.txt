@@ -1,0 +1,8 @@
+# Asha Python Dependencies
+# Install with: pip install -r asha/requirements.txt
+
+# Vector DB (semantic search)
+chromadb>=0.4.0
+
+# HTTP client (Ollama API communication)
+requests>=2.25.0

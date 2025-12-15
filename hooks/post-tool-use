@@ -168,5 +168,39 @@ case "$TOOL_NAME" in
         ;;
 esac
 
+# Vector DB refresh for indexed file changes (background, non-blocking)
+# Only trigger for files in Memory/, asha/, or .claude/ directories
+case "$TOOL_NAME" in
+    "Edit"|"Write"|"NotebookEdit")
+        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // .notebook_path // empty')
+        if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
+            # Check if file is in an indexed directory
+            if [[ "$FILE_PATH" =~ Memory/.*\.md$ ]] || \
+               [[ "$FILE_PATH" =~ asha/.*\.md$ ]] || \
+               [[ "$FILE_PATH" =~ \.claude/.*\.md$ ]]; then
+
+                MEMORY_INDEX="$ASHA_DIR/tools/memory_index.py"
+                if [[ -f "$MEMORY_INDEX" ]]; then
+                    # Run incremental ingest in background (non-blocking)
+                    # Use project venv if available, otherwise system python
+                    PYTHON=""
+                    if [[ -x "$PROJECT_DIR/.venv/bin/python3" ]]; then
+                        PYTHON="$PROJECT_DIR/.venv/bin/python3"
+                    elif [[ -x "$ASHA_DIR/.venv/bin/python3" ]]; then
+                        PYTHON="$ASHA_DIR/.venv/bin/python3"
+                    elif command -v python3 >/dev/null 2>&1; then
+                        PYTHON="python3"
+                    fi
+
+                    if [[ -n "$PYTHON" ]]; then
+                        # Background process: refresh vector DB
+                        ("$PYTHON" "$MEMORY_INDEX" ingest --changed >/dev/null 2>&1) &
+                    fi
+                fi
+            fi
+        fi
+        ;;
+esac
+
 # Return success (no blocking, no output to user)
 echo "{}"

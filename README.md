@@ -32,38 +32,30 @@ asha/
 
 ## Deployment
 
-### 1. Copy Asha to Your Project
+### 1. Add Asha as Git Submodule
+
+Add Asha to your project as a git submodule:
 
 ```bash
-cp -r /path/to/Asha /your/project/
+git submodule add https://github.com/yourusername/asha.git asha
 ```
 
-### 2. Create Entry Point
+### 2. Run Installation
 
-Create a file that references the core framework. The filename depends on your AI platform:
-
-| Platform | File |
-|----------|------|
-| Claude Code | `CLAUDE.md` |
-| Gemini CLI | `GEMINI.md` |
-| Codex CLI | `AGENTS.md` |
-| Other | Check platform documentation |
-
-Entry point content:
-```markdown
-@asha/CORE.md
-```
-
-### 3. Initialize Memory
-
-Create a `Memory/` directory and copy templates:
+Run the installer which handles all setup automatically:
 
 ```bash
-mkdir Memory
-cp asha/templates/*.md Memory/
+./asha/install.sh
 ```
 
-### 4. Configure Memory Files
+The installer will:
+- Detect your AI platform (Claude Code, Gemini CLI, Codex CLI)
+- Create the appropriate entry point file
+- Initialize `Memory/` directory with templates
+- Set up session infrastructure (hooks, commands)
+- Configure any platform-specific integrations
+
+### 3. Configure Memory Files
 
 Edit each Memory file to replace placeholder content:
 
@@ -73,24 +65,18 @@ Edit each Memory file to replace placeholder content:
 4. **workflowProtocols.md** - Define project-specific execution patterns
 5. **activeContext.md** - Initialize with current project state
 
-### 5. Optional: Session Infrastructure
-
-For full session capture and synthesis:
-
-1. Create `Work/` directory for ephemeral session data
-2. Create `Memory/sessions/` for session archives
-3. Configure hooks per `docs/SESSION-CAPTURE.md`
-4. Configure save command per `docs/SESSION-SAVE.md`
-
 ## Minimal Deployment
 
-For quick starts without full infrastructure:
+For quick starts, the installer can run in minimal mode:
 
-1. Copy `asha/` to project
-2. Create entry point referencing `@asha/CORE.md`
-3. Create `Memory/` with at least:
-   - `activeContext.md` (what's happening now)
-   - `projectbrief.md` (what this project is)
+```bash
+./asha/install.sh --minimal
+```
+
+This creates only the essential files:
+- Entry point referencing `@asha/CORE.md`
+- `Memory/activeContext.md` (what's happening now)
+- `Memory/projectbrief.md` (what this project is)
 
 The framework operates in degraded mode without full Memory, prompting for initialization when files are missing.
 
