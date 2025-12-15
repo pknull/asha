@@ -357,6 +357,43 @@ done
 ln -sf "$ASHA_DIR/hooks/common.sh" "$PROJECT_ROOT/.claude/hooks/common.sh"
 success "Hooks installed"
 
+# Generate settings.json to register hooks with Claude Code
+SETTINGS_FILE="$PROJECT_ROOT/.claude/settings.json"
+if [[ ! -f "$SETTINGS_FILE" ]]; then
+    cat > "$SETTINGS_FILE" <<'EOF'
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-use",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}
+EOF
+    success "Hook settings registered (.claude/settings.json)"
+else
+    info "settings.json exists (hooks may need manual registration)"
+fi
+
 # =============================================================================
 # Step 7: Install Commands
 # =============================================================================
