@@ -80,6 +80,30 @@ Both accomplish same result; async/await often more readable for complex flows.
 
 ---
 
+## Prose Craft: Sentence Rhythm
+
+For fiction and narrative prose, sentence length distribution signals emotional register. Match rhythm to scene intent:
+
+| Scene Type | Short | Medium | Long/Run-on | Character |
+|------------|-------|--------|-------------|-----------|
+| **Calm** | 10% | 60% | 30% long | Steady, breathing room |
+| **Anxious** | 40% | 30% | 30% run-ons | Jagged, accelerating |
+| **Grief** | 20% fragments | 30% | 50% meandering | Slow, heavy, circular |
+| **Action** | 70% | 20% | 10% single-word | Staccato, punchy |
+| **Confusion** | uneven | fragments | run-ons + questions | Chaotic, disorienting |
+| **Intimacy** | 30% | 50% | 20% fragments | Flowing but punctuated |
+
+**Application**: These aren't prescriptions—they're diagnostic. If a scene feels wrong, check whether rhythm matches intent. Calm scene full of short punchy sentences reads as tense. Grief scene with balanced rhythm feels detached.
+
+### Structural Bans
+
+- **Filter words**: Don't write "he saw the car"—describe the car directly
+- **Adjective stacking**: Never two adjectives modifying same noun
+- **Theme explanation**: Don't state character's psychological conclusions
+- **Simile overuse**: Prefer direct description over "X is like Y"
+
+---
+
 ## Diversity Recovery
 
 When output feels stereotypical or modal (same opening, predictable patterns, "safe" responses), consult `asha/modules/verbalized-sampling.md` for distribution-level prompting techniques that recover pre-training diversity.
