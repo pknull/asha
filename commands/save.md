@@ -64,12 +64,12 @@ This will:
 - Reset watching file for next session
 - Refresh vector DB index (incremental)
 
-Then commit and push:
+Then commit (and push if remote exists):
 
 ```bash
 git add Memory/
 git commit -m "Session save: <brief summary>"
-git push
+git remote -v | grep -q . && git push || echo "No remote configured, skipping push"
 ```
 
 ## Completion Validation
