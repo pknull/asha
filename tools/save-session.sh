@@ -177,16 +177,11 @@ automatic_mode() {
     if [[ -n "$ARCHIVE_PATH" ]]; then
         # Reset watching file for next session
         reset_watching_file
-
-        # Output JSON for hook
-        cat <<EOF
-{
-  "hookSpecificOutput": "📋 Session watching file archived to Memory/sessions/archive/\n\n**Reminder:** Run \`/save\` to synthesize session context to activeContext.md\n\nArchived: $(basename "$ARCHIVE_PATH")"
-}
-EOF
-    else
-        echo "{}"
+        log "📋 Session archived: $(basename "$ARCHIVE_PATH")"
     fi
+
+    # Output valid JSON for hook (no hookSpecificOutput needed for SessionEnd)
+    echo "{}"
 }
 
 # ==============================================================================
