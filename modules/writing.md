@@ -107,3 +107,57 @@ For fiction and narrative prose, sentence length distribution signals emotional 
 ## Diversity Recovery
 
 When output feels stereotypical or modal (same opening, predictable patterns, "safe" responses), consult `asha/modules/verbalized-sampling.md` for distribution-level prompting techniques that recover pre-training diversity.
+
+---
+
+## AI-Assisted Prose Generation
+
+Patterns distilled from practitioner community research (2025-12). AI accelerates structure, decelerates in prose.
+
+### Pre-Expansion Requirements
+
+Before generating prose for any scene or chapter:
+
+1. **Transformation Arc**: Define start state → end state. "Character begins at X, ends at Y. Scene's job: move them." Without this, sprawl is inevitable.
+
+2. **Word Budget**: Set explicit target. AI expands indefinitely without constraint. 800-1500 words/scene typical.
+
+3. **Blurb Test**: If you can't summarize the arc in 2-3 sentences, structure isn't ready. Write the blurb first.
+
+### Voice Anchoring
+
+For character dialogue, maintain 3-4 exemplar lines per character. Pass as few-shot examples when generating:
+
+```
+[Character voice anchor - Marcus]
+"The math doesn't lie. People do."
+"Three options. Pick one or I pick for you."
+"Sentiment is noise. Show me the data."
+
+Continue in this voice:
+```
+
+Exemplar lines belong in character sheets (`Vault/Characters/`), not in prompts.
+
+### Staged Draft Protocol
+
+| Stage | Purpose | Actor | Gate |
+|-------|---------|-------|------|
+| **Draft 1** | Bad first pass | AI | Exists, covers beats |
+| **Draft 2** | Structural edit | Human | Identifies keeps/cuts |
+| **Draft 3** | Voice pass | AI + verbalized sampling | Rhythm matches intent |
+| **Draft 4** | Mechanical only | AI (grammar) | No prose changes |
+
+**Critical**: Stages are gates, not suggestions. Draft 1 output never publishes. Perfectionists who reject Draft 1 defeat the workflow.
+
+### Known AI Prose Failure Modes
+
+| Pattern | Detection | Fix |
+|---------|-----------|-----|
+| Metronomic rhythm | Uniform 15-20 word sentences | Vary per scene type table above |
+| Hedging accumulation | "Perhaps," "somewhat," "it seemed" pile up | Delete on sight |
+| Punchy wit syndrome | Every paragraph lands a clever observation | Thin to 1 per scene max |
+| Sensory front-loading | Weather/setting in first sentence of every scene | Vary entry points |
+| Emotion naming | "He felt fear" | Show physiological response |
+
+These overlap with `prose_voice.md` anti-patterns. Cross-reference when reviewing.
