@@ -338,79 +338,86 @@ else
 fi
 
 # =============================================================================
-# Step 6: Install Hooks
+# Step 6: Install Hooks (Platform Bridges)
 # =============================================================================
 
 header "Step 6: Installing hooks"
 
-for hook in "$ASHA_DIR/hooks/"*; do
-    if [[ -f "$hook" && "$(basename "$hook")" != "common.sh" ]]; then
-        hook_name=$(basename "$hook")
-        target="$PROJECT_ROOT/.claude/hooks/$hook_name"
-        [[ -L "$target" ]] && rm "$target"
-        ln -sf "$ASHA_DIR/hooks/$hook_name" "$target"
-        chmod +x "$target"
-        echo "  → $hook_name"
+# Create directories
+mkdir -p "$PROJECT_ROOT/.claude/hooks"
+mkdir -p "$PROJECT_ROOT/.opencode/plugin"
+
+# Cleanup old symlinks from previous installations
+for old_link in "$PROJECT_ROOT/.claude/hooks/post-tool-use" \
+                "$PROJECT_ROOT/.claude/hooks/session-end" \
+                "$PROJECT_ROOT/.claude/hooks/common.sh" \
+                "$PROJECT_ROOT/.claude/hooks/user-prompt-submit" \
+                "$PROJECT_ROOT/.claude/hooks/violation-checker"; do
+    if [[ -L "$old_link" ]]; then
+        rm "$old_link"
+        info "Removed old symlink: $(basename "$old_link")"
+    elif [[ -f "$old_link" ]]; then
+        # Regular file from previous installation - backup and remove
+        mv "$old_link" "$old_link.backup.$(date +%Y%m%d%H%M%S)"
+        info "Backed up: $(basename "$old_link")"
     fi
 done
 
-ln -sf "$ASHA_DIR/hooks/common.sh" "$PROJECT_ROOT/.claude/hooks/common.sh"
-success "Hooks installed"
-
-# Generate settings.json to register hooks with Claude Code
-SETTINGS_FILE="$PROJECT_ROOT/.claude/settings.json"
-if [[ ! -f "$SETTINGS_FILE" ]]; then
-    cat > "$SETTINGS_FILE" <<'EOF'
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/post-tool-use",
-            "timeout": 30
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"$CLAUDE_PROJECT_DIR\"/.claude/hooks/session-end",
-            "timeout": 15
-          }
-        ]
-      }
-    ]
-  }
-}
-EOF
-    success "Hook settings registered (.claude/settings.json)"
-else
-    info "settings.json exists (hooks may need manual registration)"
+# Claude Code bridge: Copy hooks.json
+CLAUDE_HOOKS="$PROJECT_ROOT/.claude/hooks/hooks.json"
+if [[ -f "$CLAUDE_HOOKS" ]]; then
+    cp "$CLAUDE_HOOKS" "$CLAUDE_HOOKS.backup.$(date +%Y%m%d%H%M%S)"
+    warn "Existing hooks.json backed up"
 fi
+cp "$ASHA_DIR/bridges/claude.json" "$CLAUDE_HOOKS"
+success "Claude Code hooks configured (.claude/hooks/hooks.json)"
+
+# OpenCode bridge: Copy plugin
+OPENCODE_PLUGIN="$PROJECT_ROOT/.opencode/plugin/asha-hooks.ts"
+if [[ -f "$OPENCODE_PLUGIN" ]]; then
+    cp "$OPENCODE_PLUGIN" "$OPENCODE_PLUGIN.backup.$(date +%Y%m%d%H%M%S)"
+    warn "Existing asha-hooks.ts backed up"
+fi
+cp "$ASHA_DIR/bridges/opencode.ts" "$OPENCODE_PLUGIN"
+success "OpenCode hooks configured (.opencode/plugin/asha-hooks.ts)"
+
+# Ensure hook scripts are executable
+chmod +x "$ASHA_DIR/hooks/"* 2>/dev/null || true
+
+success "Hooks installed for both platforms"
 
 # =============================================================================
-# Step 7: Install Commands
+# Step 7: Install Commands (Both Platforms)
 # =============================================================================
 
 header "Step 7: Installing commands"
 
+# Claude Code commands (symlinks)
 for cmd in "$ASHA_DIR/commands/"*.md; do
     if [[ -f "$cmd" ]]; then
         cmd_name=$(basename "$cmd")
         target="$PROJECT_ROOT/.claude/commands/$cmd_name"
         [[ -L "$target" ]] && rm "$target"
         ln -sf "$ASHA_DIR/commands/$cmd_name" "$target"
-        echo "  → $cmd_name"
+        echo "  → Claude: $cmd_name"
     fi
 done
 
-success "Commands installed"
+# OpenCode commands (copies - format is compatible but we strip Claude-specific frontmatter)
+mkdir -p "$PROJECT_ROOT/.opencode/command"
+for cmd in "$ASHA_DIR/commands/"*.md; do
+    if [[ -f "$cmd" ]]; then
+        cmd_name=$(basename "$cmd")
+        target="$PROJECT_ROOT/.opencode/command/$cmd_name"
+        
+        # Copy and strip Claude-specific frontmatter fields
+        # OpenCode ignores unknown fields, so we can just copy directly
+        cp "$cmd" "$target"
+        echo "  → OpenCode: $cmd_name"
+    fi
+done
+
+success "Commands installed for both platforms"
 
 # =============================================================================
 # Step 8: Set Permissions

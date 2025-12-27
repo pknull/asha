@@ -5,9 +5,15 @@
 # Detect project directory with multi-layered fallback
 # Returns project directory path or exits with code 1 if not found
 detect_project_dir() {
-    # Layer 1: Use CLAUDE_PROJECT_DIR if set (hook invocation)
+    # Layer 1: Use CLAUDE_PROJECT_DIR if set (Claude Code hook invocation)
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
         echo "$CLAUDE_PROJECT_DIR"
+        return 0
+    fi
+
+    # Layer 1.5: Use OPENCODE_PROJECT_DIR if set (OpenCode plugin invocation)
+    if [[ -n "${OPENCODE_PROJECT_DIR:-}" ]]; then
+        echo "$OPENCODE_PROJECT_DIR"
         return 0
     fi
 

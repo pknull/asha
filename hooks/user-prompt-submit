@@ -1,0 +1,202 @@
+#!/bin/bash
+# UserPromptSubmit Hook - Session logging + optional Ollama prompt refinement
+# Logs significant user prompts to .current-session.md
+# If Work/markers/prompt-refine exists, refines prompts via Ollama before sending
+
+# Source common utilities
+source "$(dirname "$0")/common.sh"
+
+PROJECT_DIR=$(detect_project_dir)
+if [[ -z "$PROJECT_DIR" ]]; then
+    # Cannot detect project directory - exit silently (no error spam to user)
+    echo "{}"
+    exit 0
+fi
+
+# Skip everything if silence mode active (master override)
+if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
+    echo "{}"
+    exit 0
+fi
+
+# Skip everything during RP sessions
+if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
+    echo "{}"
+    exit 0
+fi
+
+SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
+TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
+
+# Ensure Memory directory structure exists
+mkdir -p "$PROJECT_DIR/Memory/sessions"
+mkdir -p "$PROJECT_DIR/Work/markers"
+
+# Ensure session file exists with proper structure
+if [[ ! -f "$SESSION_FILE" ]]; then
+    cat > "$SESSION_FILE" <<EOF
+---
+sessionStart: $(date -u '+%Y-%m-%d %H:%M UTC')
+sessionID: $(shuf -n 1 /usr/share/dict/words | tr -d "'" | tr '[:upper:]' '[:lower:]')
+---
+
+## Significant Operations
+<!-- Auto-appended: agent deployments, file writes, panel sessions -->
+
+## Decisions & Clarifications
+<!-- Auto-appended: AskUserQuestion responses, mode selections -->
+
+## Discoveries & Patterns
+<!-- Auto-appended: ACE cycle outputs, explicit insights -->
+
+## Candidates for Next Steps
+<!-- Auto-appended: identified follow-up tasks -->
+EOF
+fi
+
+# Read stdin JSON from Claude Code
+INPUT=$(cat)
+
+# Extract user prompt
+PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty')
+
+# Session logging (original logic)
+if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
+    PROMPT_LENGTH=${#PROMPT}
+
+    # Log if prompt is substantial (>15 chars) or contains question mark
+    if [[ $PROMPT_LENGTH -gt 15 || "$PROMPT" == *"?"* ]]; then
+        # Truncate to 120 chars for readability
+        if [[ $PROMPT_LENGTH -gt 120 ]]; then
+            PROMPT_SHORT="${PROMPT:0:120}..."
+        else
+            PROMPT_SHORT="$PROMPT"
+        fi
+
+        # Append to Decisions & Clarifications section
+        sed -i "/## Decisions & Clarifications/a - [$TIMESTAMP] User: $PROMPT_SHORT" "$SESSION_FILE"
+    fi
+fi
+
+# ============================================================================
+# AUTOMATIC PROMPT REFINEMENT (LanguageTool integration)
+# Always runs, but only injects system-reminder if correction ≥10% change
+# ============================================================================
+
+# Clear correction indicator by default (will be set again if correction ≥10%)
+rm -f "$PROJECT_DIR/Work/markers/last-correction" 2>/dev/null || true
+
+# Always attempt correction if prompt is substantial and not in special modes
+if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
+    # Count words in prompt (skip refinement for very short prompts)
+    WORD_COUNT=$(echo "$PROMPT" | wc -w)
+
+    if [[ $WORD_COUNT -ge 5 ]]; then
+        # Call LanguageTool API (local server on localhost:8081)
+        # Silently fail if server unavailable
+        LT_RESPONSE=$(curl -s -X POST http://localhost:8081/v2/check \
+            --data-urlencode "text=$PROMPT" \
+            --data "language=en-US" \
+            --max-time 3 2>/dev/null)
+
+        # Check if we got matches (server available and found corrections)
+        if [[ -n "$LT_RESPONSE" && "$LT_RESPONSE" != "null" ]]; then
+            # Extract matches and apply corrections
+            # Python calculates difference percentage
+            CORRECTION_RESULT=$(python3 -c "
+import json
+import sys
+
+try:
+    response = json.loads('''$LT_RESPONSE''')
+    original_text = '''$PROMPT'''
+
+    matches = response.get('matches', [])
+    if not matches:
+        # No corrections needed
+        print('UNCHANGED')
+        sys.exit(0)
+
+    # Sort matches by offset in reverse order (apply from end to start)
+    matches.sort(key=lambda m: m['offset'], reverse=True)
+
+    corrected_text = original_text
+    for match in matches:
+        offset = match['offset']
+        length = match['length']
+        replacements = match.get('replacements', [])
+
+        if replacements:
+            # Use first suggestion
+            replacement = replacements[0]['value']
+            corrected_text = corrected_text[:offset] + replacement + corrected_text[offset+length:]
+
+    # Calculate difference percentage using Levenshtein distance
+    if corrected_text == original_text:
+        print('UNCHANGED')
+        sys.exit(0)
+
+    # Levenshtein distance (edit distance) - proper handling of insertions/deletions
+    def levenshtein(s1, s2):
+        if len(s1) < len(s2):
+            return levenshtein(s2, s1)
+        if len(s2) == 0:
+            return len(s1)
+
+        previous_row = range(len(s2) + 1)
+        for i, c1 in enumerate(s1):
+            current_row = [i + 1]
+            for j, c2 in enumerate(s2):
+                insertions = previous_row[j + 1] + 1
+                deletions = current_row[j] + 1
+                substitutions = previous_row[j] + (c1 != c2)
+                current_row.append(min(insertions, deletions, substitutions))
+            previous_row = current_row
+
+        return previous_row[-1]
+
+    edit_distance = levenshtein(original_text, corrected_text)
+    original_chars = len(original_text)
+    diff_percent = (edit_distance / original_chars * 100) if original_chars > 0 else 0
+
+    # Output format: DIFF_PERCENT|CORRECTED_TEXT
+    print(f'{diff_percent:.1f}|{corrected_text}')
+
+except Exception as e:
+    # On error, signal unchanged
+    print('UNCHANGED')
+" 2>/dev/null)
+
+            # Parse correction result
+            if [[ "$CORRECTION_RESULT" != "UNCHANGED" && -n "$CORRECTION_RESULT" ]]; then
+                DIFF_PERCENT=$(echo "$CORRECTION_RESULT" | cut -d'|' -f1)
+                REFINED=$(echo "$CORRECTION_RESULT" | cut -d'|' -f2-)
+
+                # Only inject system-reminder if difference ≥ 10%
+                DIFF_INT=${DIFF_PERCENT%.*}  # Convert to integer for comparison
+                if [[ $DIFF_INT -ge 10 ]]; then
+                    # Signal statusline: last prompt was corrected
+                    touch "$PROJECT_DIR/Work/markers/last-correction" 2>/dev/null || true
+
+                    # Log significant correction to session file
+                    CORRECTION_LOG="- [$TIMESTAMP] Prompt corrected ($DIFF_PERCENT% change): \`$PROMPT\` → \`$REFINED\`"
+                    sed -i "/## Discoveries & Patterns/a $CORRECTION_LOG" "$SESSION_FILE" 2>/dev/null || true
+
+                    # Inject correction as system-reminder (via stdout)
+                    cat <<EOF
+<system-reminder>
+User's prompt has been corrected. Interpret as: "$REFINED"
+</system-reminder>
+EOF
+                fi
+                # If < 10%, marker stays cleared (removed at start of hook)
+            fi
+            # If no correction, marker stays cleared (removed at start of hook)
+        fi
+        # If server unavailable, marker stays cleared (removed at start of hook)
+    fi
+fi
+
+# Return prompt (potentially refined) as JSON
+# Claude Code expects JSON response with "prompt" field
+jq -n --arg prompt "$PROMPT" '{prompt: $prompt}'

@@ -25,8 +25,9 @@ fi
 # Extract session end reason
 REASON=$(echo "$INPUT" | jq -r '.reason // empty')
 
-# Only archive on clean logout/exit (not on /clear which continues session)
-if [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" ]]; then
+# Only archive on clean logout/exit/idle (not on /clear which continues session)
+# "idle" is sent by OpenCode when session becomes inactive
+if [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" || "$REASON" == "idle" ]]; then
     # Use save script in automatic mode
     SAVE_SCRIPT="$ASHA_DIR/tools/save-session.sh"
     if [[ -x "$SAVE_SCRIPT" ]]; then

@@ -1,0 +1,83 @@
+#!/bin/bash
+# Violation Checker - Evaluates tool actions against rule set
+# Called from post-tool-use hook to log violations without blocking
+#
+# OUTCOME: Detect and log rule violations to session file for context
+# PATTERN: Each rule is a sourced script with check_violation function
+# CONSTRAINT: Never blocks, only logs to current session
+
+source "$(dirname "$0")/common.sh"
+
+PROJECT_DIR=$(detect_project_dir)
+if [[ -z "$PROJECT_DIR" ]]; then
+    exit 0
+fi
+
+ASHA_DIR=$(detect_asha_dir)
+if [[ -z "$ASHA_DIR" ]]; then
+    exit 0
+fi
+
+RULES_DIR="$ASHA_DIR/rules"
+SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
+
+# Only log if session file exists
+[[ ! -f "$SESSION_FILE" ]] && exit 0
+
+# Only run if rules directory exists
+[[ ! -d "$RULES_DIR" ]] && exit 0
+
+# Arguments from post-tool-use
+TOOL_NAME="${1:-}"
+TOOL_INPUT="${2:-}"
+
+[[ -z "$TOOL_NAME" ]] && exit 0
+
+# Extract relevant fields based on tool type
+FILE_PATH=""
+COMMAND=""
+
+case "$TOOL_NAME" in
+    "Write"|"Edit")
+        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+        ;;
+    "Bash")
+        COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
+        ;;
+esac
+
+# Run each rule
+for rule_file in "$RULES_DIR"/*.sh; do
+    [[ ! -f "$rule_file" ]] && continue
+
+    rule_name=$(basename "$rule_file" .sh)
+
+    # Extract severity from rule file
+    severity=$(grep -m1 "^# Severity:" "$rule_file" | cut -d: -f2 | tr -d ' ' || echo "MEDIUM")
+
+    # Source rule and run check
+    (
+        source "$rule_file"
+
+        case "$TOOL_NAME" in
+            "Write"|"Edit")
+                violation_msg=$(check_violation "$TOOL_NAME" "$FILE_PATH" "$PROJECT_DIR" 2>/dev/null) || true
+                ;;
+            "Bash")
+                violation_msg=$(check_violation "$TOOL_NAME" "$COMMAND" "$PROJECT_DIR" 2>/dev/null) || true
+                ;;
+            *)
+                violation_msg=""
+                ;;
+        esac
+
+        if [[ -n "$violation_msg" ]]; then
+            timestamp=$(date -u '+%H:%M UTC')
+            echo "" >> "$SESSION_FILE"
+            echo "> [!warning] Violation [$severity] $timestamp" >> "$SESSION_FILE"
+            echo "> **$rule_name**: $violation_msg" >> "$SESSION_FILE"
+        fi
+    )
+done
+
+exit 0
