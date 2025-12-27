@@ -55,13 +55,13 @@ fi
 # Read stdin JSON from Claude Code
 INPUT=$(cat)
 
-# Extract tool information
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty')
-TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}')
-TOOL_RESPONSE=$(echo "$INPUT" | jq -c '.tool_response // {}')
+# Extract tool information (suppress jq errors for malformed input)
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
+TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)
+TOOL_RESPONSE=$(echo "$INPUT" | jq -c '.tool_response // {}' 2>/dev/null)
 
 # Check for errors in tool response
-ERROR_MSG=$(echo "$TOOL_RESPONSE" | jq -r '.error // empty')
+ERROR_MSG=$(echo "$TOOL_RESPONSE" | jq -r '.error // empty' 2>/dev/null)
 if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
     # Truncate long errors to 200 chars for readability
     if [[ ${#ERROR_MSG} -gt 200 ]]; then
@@ -74,20 +74,20 @@ if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
     CONTEXT=""
     case "$TOOL_NAME" in
         "Edit"|"Write")
-            FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+            FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
             if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
                 REL_PATH=${FILE_PATH#$PROJECT_DIR/}
                 CONTEXT="attempting to access $REL_PATH"
             fi
             ;;
         "Task")
-            AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty')
+            AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty' 2>/dev/null)
             if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "null" ]]; then
                 CONTEXT="deploying $AGENT_TYPE agent"
             fi
             ;;
         "Bash")
-            COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty' | head -c 50)
+            COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty' 2>/dev/null | head -c 50)
             if [[ -n "$COMMAND" && "$COMMAND" != "null" ]]; then
                 CONTEXT="running: $COMMAND"
             fi
@@ -104,7 +104,7 @@ fi
 
 case "$TOOL_NAME" in
     "Edit")
-        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
             if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
                 REL_PATH=${FILE_PATH#$PROJECT_DIR/}
@@ -116,7 +116,7 @@ case "$TOOL_NAME" in
         ;;
 
     "Write")
-        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
+        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
             if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
                 REL_PATH=${FILE_PATH#$PROJECT_DIR/}
@@ -128,7 +128,7 @@ case "$TOOL_NAME" in
         ;;
 
     "NotebookEdit")
-        NOTEBOOK_PATH=$(echo "$TOOL_INPUT" | jq -r '.notebook_path // empty')
+        NOTEBOOK_PATH=$(echo "$TOOL_INPUT" | jq -r '.notebook_path // empty' 2>/dev/null)
         if [[ -n "$NOTEBOOK_PATH" && "$NOTEBOOK_PATH" != "null" ]]; then
             REL_PATH=${NOTEBOOK_PATH#$PROJECT_DIR/}
             sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Notebook)" "$SESSION_FILE"
@@ -136,8 +136,8 @@ case "$TOOL_NAME" in
         ;;
 
     "Task")
-        AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty')
-        DESCRIPTION=$(echo "$TOOL_INPUT" | jq -r '.description // empty')
+        AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty' 2>/dev/null)
+        DESCRIPTION=$(echo "$TOOL_INPUT" | jq -r '.description // empty' 2>/dev/null)
 
         if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "null" ]]; then
             sed -i "/## Significant Operations/a - [$TIMESTAMP] Agent: $AGENT_TYPE → $DESCRIPTION" "$SESSION_FILE"
@@ -154,14 +154,14 @@ case "$TOOL_NAME" in
         ;;
 
     "AskUserQuestion")
-        QUESTIONS=$(echo "$TOOL_INPUT" | jq -r '.questions[]? | .header // empty' | paste -sd ',' -)
+        QUESTIONS=$(echo "$TOOL_INPUT" | jq -r '.questions[]? | .header // empty' 2>/dev/null | paste -sd ',' -)
         if [[ -n "$QUESTIONS" && "$QUESTIONS" != "null" ]]; then
             sed -i "/## Decisions & Clarifications/a - [$TIMESTAMP] Decision Point: $QUESTIONS" "$SESSION_FILE"
         fi
         ;;
 
     "SlashCommand")
-        COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
+        COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty' 2>/dev/null)
         if [[ "$COMMAND" == "/panel"* || "$COMMAND" == "/save"* ]]; then
             sed -i "/## Significant Operations/a - [$TIMESTAMP] Command: $COMMAND" "$SESSION_FILE"
         fi
@@ -172,7 +172,7 @@ esac
 # Only trigger for files in Memory/, asha/, or .claude/ directories
 case "$TOOL_NAME" in
     "Edit"|"Write"|"NotebookEdit")
-        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // .notebook_path // empty')
+        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // .notebook_path // empty' 2>/dev/null)
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
             # Check if file is in an indexed directory
             if [[ "$FILE_PATH" =~ Memory/.*\.md$ ]] || \
