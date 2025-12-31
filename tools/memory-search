@@ -1,0 +1,16 @@
+#!/bin/bash
+# Quick access to vector memory search
+# Usage: ./asha/tools/memory-search "query" [--fallback] [--limit N]
+#
+# Returns JSON results filtered to distance < 0.5 (strong matches only)
+# If no strong matches, returns: {"results": [], "method": "semantic", "note": "no strong matches"}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESULT=$("$SCRIPT_DIR/run-python.sh" "$SCRIPT_DIR/memory_index.py" search "$@")
+
+# Filter to results with distance < 0.5 using jq
+echo "$RESULT" | jq '{
+  results: [.results[] | select(.distance < 0.5)],
+  method: .method,
+  note: (if ([.results[] | select(.distance < 0.5)] | length) == 0 then "no strong matches" else null end)
+} | del(.note | nulls)'

@@ -43,8 +43,8 @@ Three storage layers, each for different query types:
 - `Memory/techEnvironment.md` → Tools, paths, platform capabilities
 
 ### Vector DB (Semantic Search)
-**Quick search**: `./memory-search "query"` (filters to strong matches only)
-**Fallback**: `./memory-search --fallback "query"` (adds keyword search if semantic fails)
+**Quick search**: `./asha/tools/memory-search "query"` (filters to strong matches only)
+**Fallback**: `./asha/tools/memory-search --fallback "query"` (adds keyword search if semantic fails)
 
 **When to search**:
 - Asked about something/someone unfamiliar → search before answering
