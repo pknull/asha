@@ -425,9 +425,18 @@ success "Commands installed for both platforms"
 
 header "Step 8: Setting permissions"
 
-chmod +x "$ASHA_DIR/tools/"*.sh 2>/dev/null || true
-chmod +x "$ASHA_DIR/tools/"*.py 2>/dev/null || true
+chmod +x "$ASHA_DIR/tools/"* 2>/dev/null || true
+chmod +x "$ASHA_DIR/hooks/"* 2>/dev/null || true
 success "Tool permissions set"
+
+# Check for jq (needed for memory-search filtering)
+if command -v jq >/dev/null 2>&1; then
+    success "jq available (for memory-search filtering)"
+else
+    warn "jq not installed - memory-search will fail"
+    echo "  Install with: sudo apt install jq (Debian/Ubuntu)"
+    echo "                brew install jq (macOS)"
+fi
 
 # =============================================================================
 # Step 9: Copy Templates
