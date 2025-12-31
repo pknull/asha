@@ -1,0 +1,156 @@
+#!/bin/bash
+# /save-react - Experimental ReAct-enhanced save command
+
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+ASHA_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(dirname "$ASHA_DIR")"
+
+# Change to project root
+cd "$PROJECT_ROOT"
+
+# Check if Python is available
+if ! command -v python3 &> /dev/null; then
+    echo "Error: Python 3 is required for /save-react"
+    exit 1
+fi
+
+# Check if current session exists
+if [ ! -f "Memory/sessions/current-session.md" ]; then
+    echo "No current session found. Nothing to save."
+    exit 1
+fi
+
+# Run the Python ReAct analyzer directly
+python3 << 'PYTHON_SCRIPT'
+import os
+import sys
+import json
+import subprocess
+from pathlib import Path
+from datetime import datetime
+
+# Add asha tools to path
+sys.path.insert(0, './asha/tools')
+
+# Import our local ReAct analyzer
+try:
+    from local_react_save import LocalReActSave
+except ImportError:
+    print("Error: Could not import LocalReActSave. Make sure local_react_save.py exists in asha/tools/")
+    sys.exit(1)
+
+def get_current_session():
+    """Get the current session file"""
+    session_file = Path("Memory/sessions/current-session.md")
+    if not session_file.exists():
+        print("No current session found. Nothing to save.")
+        return None
+    return session_file
+
+def run_react_analysis(session_file):
+    """Run ReAct analysis on the session"""
+    print("\n🧠 Running ReAct Analysis...")
+    print("=" * 50)
+    
+    agent = LocalReActSave(str(session_file))
+    report = agent.execute()
+    
+    return report
+
+def display_recommendations(report):
+    """Display the ReAct recommendations"""
+    print("\n📊 ReAct Recommendations")
+    print("=" * 50)
+    
+    # Analysis summary
+    analysis = report.get('analysis', {})
+    patterns_found = analysis.get('patterns_found', {})
+    code_patterns = patterns_found.get('code_patterns', []) if patterns_found else []
+    
+    print(f"\n📈 Analysis Summary:")
+    print(f"  • Patterns found: {len(code_patterns)}")
+    print(f"  • Similar patterns in memory: {analysis.get('similar_patterns', 0)}")
+    print(f"  • Redundancy: {analysis.get('redundancy_percentage', 0):.1f}%")
+    print(f"  • Novel insights: {len(analysis.get('novel_insights', []))}")
+    
+    # Recommendations
+    recs = report.get('recommendations', {})
+    
+    if recs.get('memory_updates'):
+        print(f"\n📝 Memory Updates:")
+        for update in recs['memory_updates']:
+            print(f"  • {update['action'].upper()}: {update['target']}")
+    
+    if recs.get('new_abstractions'):
+        print(f"\n🎯 Suggested Abstractions:")
+        for abst in recs['new_abstractions']:
+            print(f"  • {abst['pattern']} (used {abst['usage_count']} times)")
+            print(f"    → Create: {abst['suggested_file']}")
+    
+    if recs.get('cross_project_suggestions'):
+        print(f"\n🔗 Cross-Project Opportunities:")
+        for suggestion in recs['cross_project_suggestions']:
+            projects = ", ".join(suggestion['projects'])
+            print(f"  • Share '{suggestion['pattern']}' with: {projects}")
+            print(f"    Reason: {suggestion['reason']}")
+    
+    # Novel insights
+    insights = analysis.get('novel_insights', [])
+    if insights:
+        print(f"\n💡 Novel Insights:")
+        for insight in insights:
+            print(f"  • {insight}")
+    
+    print(f"\n📌 Summary: {report.get('summary', 'Analysis complete')}")
+
+def prompt_ai_analysis():
+    """Prompt the current AI to provide additional analysis"""
+    print("\n🤖 AI Analysis Request")
+    print("=" * 50)
+    print("""
+Based on the ReAct analysis above, please provide:
+
+1. **Pattern Insights**: What architectural patterns or coding practices are emerging?
+2. **Memory Strategy**: How should we organize this knowledge for future reference?
+3. **Action Items**: What specific refactoring or abstractions would provide most value?
+4. **Cross-Project**: Which patterns would benefit other projects and how?
+
+Please use ReAct thinking:
+- THINK: Analyze the patterns and their implications
+- ACT: Suggest specific memory operations
+- DECIDE: Recommend the optimal knowledge storage strategy
+""")
+
+def main():
+    """Main entry point for /save-react"""
+    print("🚀 /save-react - Experimental ReAct-Enhanced Save")
+    print("=" * 50)
+    
+    # Get current session
+    session_file = get_current_session()
+    if not session_file:
+        return
+    
+    try:
+        # Run ReAct analysis
+        report = run_react_analysis(session_file)
+        
+        # Display recommendations
+        display_recommendations(report)
+        
+        # Always prompt for AI analysis
+        prompt_ai_analysis()
+        
+        print("\n" + "="*50)
+        print("💭 Please provide your ReAct analysis above.")
+        print("📝 Then you can run /save to complete the regular save process.")
+        
+    except Exception as e:
+        print(f"\n❌ Error during ReAct analysis: {e}")
+        print("You can still run regular /save if needed.")
+
+if __name__ == "__main__":
+    main()
+
+PYTHON_SCRIPT
