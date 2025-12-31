@@ -8,9 +8,13 @@
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RESULT=$("$SCRIPT_DIR/run-python.sh" "$SCRIPT_DIR/memory_index.py" search "$@")
 
-# Filter to results with distance < 0.5 using jq
-echo "$RESULT" | jq '{
-  results: [.results[] | select(.distance < 0.5)],
-  method: .method,
-  note: (if ([.results[] | select(.distance < 0.5)] | length) == 0 then "no strong matches" else null end)
-} | del(.note | nulls)'
+# Filter to results with distance < 0.5 using Python (no jq dependency)
+echo "$RESULT" | "$SCRIPT_DIR/run-python.sh" -c "
+import json, sys
+data = json.load(sys.stdin)
+filtered = [r for r in data.get('results', []) if r.get('distance', 1) < 0.5]
+output = {'results': filtered, 'method': data.get('method', 'semantic')}
+if not filtered:
+    output['note'] = 'no strong matches'
+print(json.dumps(output, indent=2))
+"
