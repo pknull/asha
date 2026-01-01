@@ -409,7 +409,10 @@ for cmd in "$ASHA_DIR/commands/"*.md; do
     if [[ -f "$cmd" ]]; then
         cmd_name=$(basename "$cmd")
         target="$PROJECT_ROOT/.opencode/command/$cmd_name"
-        
+
+        # Remove existing file/symlink before copying (handles symlink-to-source issue)
+        [[ -e "$target" || -L "$target" ]] && rm "$target"
+
         # Copy and strip Claude-specific frontmatter fields
         # OpenCode ignores unknown fields, so we can just copy directly
         cp "$cmd" "$target"
