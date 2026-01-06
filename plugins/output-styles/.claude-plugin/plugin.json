@@ -1,0 +1,8 @@
+{
+  "name": "output-styles",
+  "version": "1.0.0",
+  "description": "Switchable output styles for Claude Code responses",
+  "author": "pknull",
+  "commands": ["commands/style.md"],
+  "hooks": "hooks/hooks.json"
+}
