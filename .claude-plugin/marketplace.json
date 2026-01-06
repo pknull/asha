@@ -21,6 +21,18 @@
       "description": "Memory file maintenance and session capture/save workflow for multi-session AI projects. Provides /save command, automatic session watching via hooks, and memory-maintenance skill for frontmatter schema guidance.",
       "source": "./plugins/memory-session-manager",
       "strict": false
+    },
+    {
+      "name": "local-review",
+      "description": "Parallel code review with 4 specialized reviewers (security, logic, edge cases, style) plus validation pass to filter false positives.",
+      "source": "./plugins/local-review",
+      "strict": false
+    },
+    {
+      "name": "output-styles",
+      "description": "Switchable output styles for Claude Code responses. Includes 8 styles (ultra-concise, bullet-points, genui, html-structured, markdown-focused, table-based, tts-summary, yaml-structured) with /style command.",
+      "source": "./plugins/output-styles",
+      "strict": false
     }
   ]
 }
