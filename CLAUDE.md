@@ -33,8 +33,7 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 
 ### Current Plugins
 
-1. **Panel System** (v4.1.0): Dynamic multi-perspective analysis with automatic specialist recruitment
-2. **Memory+Session Manager** (v1.0.0): Multi-session Memory Bank infrastructure with automated session capture
+1. **Panel System** (v4.2.0): Dynamic multi-perspective analysis with automatic specialist recruitment
 
 ### Technology Stack
 

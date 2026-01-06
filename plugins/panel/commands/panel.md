@@ -16,6 +16,19 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 /panel Evaluate Chapter 9's horror effectiveness
 ```
 
+### Options
+
+```bash
+/panel --format=github "Topic here"     # Output as GitHub PR comment
+/panel --format=json "Topic here"       # Output as structured JSON
+/panel --context=docs/RFC.md "Topic"    # Inject reference material
+/panel --context=spec.md --format=github "Evaluate this proposal"
+```
+
+**Flags**:
+- `--format=<type>`: Output format (`markdown` default, `github`, `json`)
+- `--context=<file>`: Pre-load reference material into panel context
+
 **That's it.** The panel handles everything automatically:
 - The Recruiter analyzes topic and recruits 2-5 specialist agents from available library
 - Assigns specialists with evocative session-specific names
@@ -142,7 +155,13 @@ The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session
 
 **Phase 8: Decision** (Asha)
 - Apply decision rule (consensus/unanimous based on topic)
-- Record dissent and rationale if present
+- Calculate consensus percentage: (aligned panelists / total panelists) × 100
+- Record dissent with percentage weight and rationale
+- Threshold interpretation:
+  * **100%**: Unanimous agreement
+  * **80-99%**: Strong consensus (proceed with noted concerns)
+  * **60-79%**: Moderate consensus (address dissent before proceeding)
+  * **<60%**: Weak consensus (requires additional deliberation or escalation)
 - List Next Steps with owners, deliverables, due dates
 
 ## Decision Report (Fixed Output)
@@ -150,6 +169,7 @@ The Recruiter assigns agents from `.claude/agents/*.md` with **evocative session
 Every panel produces a structured decision report:
 
 - **Topic** (including Phase 0 clarifications if applicable)
+- **Context Materials** (if `--context` used: file summaries and key points)
 - **Inferred Goals** (derived from topic analysis)
 - **Decision Rule** (consensus or unanimous)
 - **Panel Composition**:
@@ -164,7 +184,100 @@ Every panel produces a structured decision report:
 - **Reflection Round Summary** (Phase 6 revised positions, convergence)
 - **Synthesis** (Phase 7 options/tradeoffs)
 - **Decision** (Phase 8 final determination)
+- **Consensus** (percentage, threshold level, dissent summary)
 - **Next Steps** (actionable items with ownership)
+
+## Output Formats
+
+### Markdown (Default)
+Standard decision report as documented above. Suitable for Memory files, documentation, and general use.
+
+### GitHub PR Comment (`--format=github`)
+Condensed format optimized for GitHub pull request comments:
+
+```markdown
+## 🎯 Panel Decision: [Topic]
+
+**Consensus**: 85% (Strong) | **Decision Rule**: Consensus
+
+### Summary
+[2-3 sentence executive summary]
+
+### Recommendation
+[Primary recommendation with rationale]
+
+<details>
+<summary>📊 Panel Composition</summary>
+
+- **Core**: Asha (Moderator), Recruiter, Adversary
+- **Specialists**: [Agent] → "Session Name" (score)
+</details>
+
+<details>
+<summary>⚖️ Key Trade-offs</summary>
+
+[Synthesis bullet points]
+</details>
+
+<details>
+<summary>🚫 Dissent (15%)</summary>
+
+**The Adversary**: [Dissent rationale]
+</details>
+
+### Next Steps
+- [ ] [Action item with owner]
+```
+
+### JSON (`--format=json`)
+Structured data for programmatic consumption:
+
+```json
+{
+  "topic": "string",
+  "goals": ["string"],
+  "decision_rule": "consensus|unanimous",
+  "panel": {
+    "core": ["Asha", "Recruiter", "Adversary"],
+    "specialists": [{"agent": "string", "session_name": "string", "score": 0-10}]
+  },
+  "consensus": {
+    "percentage": 85,
+    "threshold": "strong|moderate|weak|unanimous",
+    "aligned": 4,
+    "total": 5
+  },
+  "decision": "string",
+  "dissent": [{"role": "string", "rationale": "string", "weight": 15}],
+  "next_steps": [{"action": "string", "owner": "string", "deliverable": "string"}],
+  "confidence": {"relevance": 0.0-1.0, "completeness": 0.0-1.0, "score": 0.0-1.0}
+}
+```
+
+## Context Injection
+
+The `--context` flag pre-loads reference material before panel deliberation:
+
+```bash
+/panel --context=docs/RFC-001.md "Should we adopt this RFC?"
+/panel --context=Memory/techEnvironment.md "Evaluate caching strategy"
+```
+
+**Behavior**:
+1. Read specified file(s) before Phase -1
+2. Include content summary in Phase 1 Framing
+3. Make content available to all panelists during deliberation
+4. Reference in Decision Report under "Context Materials"
+
+**Multiple contexts**:
+```bash
+/panel --context=spec.md --context=constraints.md "Evaluate feasibility"
+```
+
+**URL context** (if WebFetch available):
+```bash
+/panel --context=https://example.com/api-docs "Design integration approach"
+```
 
 ## Dynamic Agent Recruitment Architecture
 
