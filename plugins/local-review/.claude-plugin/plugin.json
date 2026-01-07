@@ -1,7 +1,10 @@
 {
   "name": "local-review",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Parallel code review with specialized reviewers for security, logic, edge cases, and style",
-  "author": "pknull",
-  "commands": ["commands/local-review.md"]
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "commands": "./commands"
 }
