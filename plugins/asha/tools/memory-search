@@ -1,0 +1,28 @@
+#!/bin/bash
+# Quick access to vector memory search
+# Usage: memory-search "query" [--fallback] [--limit N]
+#
+# Returns JSON results filtered to distance < 0.5 (strong matches only)
+# If no strong matches, returns: {"results": [], "method": "semantic", "note": "no strong matches"}
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESULT=$("$SCRIPT_DIR/run-python.sh" "$SCRIPT_DIR/memory_index.py" search "$@" 2>&1)
+EXIT_CODE=$?
+
+# Check if result is valid JSON before filtering
+if [[ $EXIT_CODE -ne 0 ]] || ! echo "$RESULT" | head -1 | grep -q '^\s*{'; then
+    # Not JSON - pass through error as-is
+    echo "$RESULT" >&2
+    exit ${EXIT_CODE:-1}
+fi
+
+# Filter to results with distance < 0.5 using Python (no jq dependency)
+echo "$RESULT" | "$SCRIPT_DIR/run-python.sh" -c "
+import json, sys
+data = json.load(sys.stdin)
+filtered = [r for r in data.get('results', []) if r.get('distance', 1) < 0.5]
+output = {'results': filtered, 'method': data.get('method', 'semantic')}
+if not filtered:
+    output['note'] = 'no strong matches'
+print(json.dumps(output, indent=2))
+"

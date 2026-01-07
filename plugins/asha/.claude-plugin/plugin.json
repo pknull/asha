@@ -1,0 +1,11 @@
+{
+  "name": "asha",
+  "version": "1.0.0",
+  "description": "Cognitive scaffold framework for session coordination and memory persistence",
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "commands": "./commands",
+  "hooks": "./hooks/hooks.json"
+}

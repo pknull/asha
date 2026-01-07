@@ -33,6 +33,12 @@
       "description": "Switchable output styles for Claude Code responses. Includes 8 styles (ultra-concise, bullet-points, genui, html-structured, markdown-focused, table-based, tts-summary, yaml-structured) with /style command.",
       "source": "./plugins/output-styles",
       "strict": false
+    },
+    {
+      "name": "asha",
+      "description": "Cognitive scaffold framework for session coordination and memory persistence. Provides /asha:init, /asha:save, /asha:index commands with automatic context injection, session tracking, and vector DB semantic search.",
+      "source": "./plugins/asha",
+      "strict": false
     }
   ]
 }
