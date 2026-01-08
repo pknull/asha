@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha-marketplace
 
-**Version**: 1.2.0
-**Last Updated**: 2025-11-17
+**Version**: 1.3.0
+**Last Updated**: 2026-01-07
 **Repository**: pknull/asha-marketplace
 
 ---
@@ -29,11 +29,14 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 
 ## Project Overview
 
-**asha-marketplace** is a Claude Code plugin marketplace providing tools for creative writing, TTRPG campaigns, and narrative development.
+**asha-marketplace** is a Claude Code plugin marketplace providing tools for multi-perspective analysis, code review, output styling, and session coordination.
 
 ### Current Plugins
 
 1. **Panel System** (v4.2.0): Dynamic multi-perspective analysis with automatic specialist recruitment
+2. **Local Review** (v1.0.1): Parallel code review with 4 specialized reviewers
+3. **Output Styles** (v1.0.1): Switchable output styles for Claude Code responses
+4. **Asha** (v1.0.1): Cognitive scaffold framework for session coordination and memory persistence
 
 ### Technology Stack
 
@@ -63,25 +66,31 @@ asha-marketplace/
 │   │   │   └── characters/           # Character profiles (3)
 │   │   ├── README.md
 │   │   └── LICENSE
-│   └── memory-session-manager/       # Session management plugin
+│   ├── local-review/                  # Code review plugin
+│   │   ├── .claude-plugin/
+│   │   │   └── plugin.json
+│   │   └── commands/
+│   │       └── local-review.md       # /local-review command
+│   ├── output-styles/                 # Output styling plugin
+│   │   ├── .claude-plugin/
+│   │   │   └── plugin.json
+│   │   ├── commands/
+│   │   │   └── style.md              # /style command
+│   │   ├── hooks/
+│   │   │   └── hooks.json            # SessionStart hook
+│   │   └── styles/                    # Style definitions (8 styles)
+│   └── asha/                          # Session coordination plugin
 │       ├── .claude-plugin/
 │       │   └── plugin.json
 │       ├── commands/
-│       │   ├── save.md               # /save command
-│       │   └── silence.md            # /silence command
+│       │   ├── init.md               # /asha:init command
+│       │   ├── save.md               # /asha:save command
+│       │   ├── index.md              # /asha:index command
+│       │   └── cleanup.md            # /asha:cleanup command
 │       ├── hooks/
-│       │   ├── hooks.json            # Hook registry
-│       │   ├── common.sh             # Shared utilities
-│       │   ├── post-tool-use         # PostToolUse hook
-│       │   ├── user-prompt-submit    # UserPromptSubmit hook
-│       │   └── session-end           # SessionEnd hook
-│       ├── scripts/
-│       │   └── save-session.sh       # Session save logic
-│       ├── skills/
-│       │   └── memory-maintenance/   # Autonomous Memory guidance
-│       ├── docs/
-│       │   └── MEMORY-STRUCTURE.md   # Memory specifications
-│       └── README.md
+│       │   └── hooks.json
+│       ├── templates/                 # Memory Bank templates
+│       └── tools/                     # Python tools for indexing
 ├── .gitignore
 ├── LICENSE (MIT)
 ├── README.md
@@ -128,7 +137,7 @@ asha-marketplace/
 
 ### Plugin Integration Strategies
 
-- **Command-Based**: Explicit user invocation (`/panel`, `/save`)
+- **Command-Based**: Explicit user invocation (`/panel`, `/local-review`, `/style`, `/asha:save`)
 - **Hook-Based**: Automatic capture (PostToolUse, UserPromptSubmit, SessionEnd)
 - **Skill-Based**: Autonomous guidance (memory-maintenance)
 - **Marker-Based**: Control flow via marker files (silence, rp-active)
@@ -195,7 +204,7 @@ Every plugin follows this structure:
   "owner": {"name": "pknull", "email": "noreply@example.com"},
   "metadata": {
     "description": "...",
-    "version": "1.1.0",
+    "version": "1.3.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
@@ -356,7 +365,7 @@ status: draft
 - **Patch (Z)**: Bug fixes, typos (optional for docs)
 
 **Examples**:
-- Panel system: v4.1.0
+- Panel system: v4.2.0
 - Memory files: v2.1 (no patch for documentation)
 
 ### Timestamp Convention
@@ -805,7 +814,9 @@ git push -u origin <branch-name>
 
 1. **Identify plugin scope**
    - Panel system: `/panel` command, character profiles, recruitment
-   - Memory Manager: `/save`, `/silence`, hooks, session watching
+   - Local Review: `/local-review` command, parallel code review
+   - Output Styles: `/style` command, response formatting
+   - Asha: `/asha:init`, `/asha:save`, `/asha:index` commands, Memory Bank
 
 2. **Check for Memory file references**
    - Memory files live in user projects, not this repo
@@ -853,17 +864,16 @@ git push -u origin <branch-name>
 
 ### Documentation Files
 
-- `/home/user/asha-marketplace/README.md`: Marketplace overview
-- `/home/user/asha-marketplace/plugins/panel/README.md`: Panel system documentation
-- `/home/user/asha-marketplace/plugins/memory-session-manager/README.md`: Memory Manager documentation
-- `/home/user/asha-marketplace/plugins/memory-session-manager/docs/MEMORY-STRUCTURE.md`: Memory file specifications
+- `README.md`: Marketplace overview
+- `plugins/panel/README.md`: Panel system documentation
 
 ### Key Configuration Files
 
-- `/home/user/asha-marketplace/.claude-plugin/marketplace.json`: Plugin registry
-- `/home/user/asha-marketplace/plugins/panel/.claude-plugin/plugin.json`: Panel metadata
-- `/home/user/asha-marketplace/plugins/memory-session-manager/.claude-plugin/plugin.json`: Memory Manager metadata
-- `/home/user/asha-marketplace/plugins/memory-session-manager/hooks/hooks.json`: Hook configuration
+- `.claude-plugin/marketplace.json`: Plugin registry
+- `plugins/panel/.claude-plugin/plugin.json`: Panel metadata
+- `plugins/local-review/.claude-plugin/plugin.json`: Local Review metadata
+- `plugins/output-styles/.claude-plugin/plugin.json`: Output Styles metadata
+- `plugins/asha/.claude-plugin/plugin.json`: Asha metadata
 
 ### External References
 
@@ -874,6 +884,13 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v1.3.0 (2026-01-07)
+- Audit and cleanup: Removed stale memory-session-manager references
+- Updated to reflect actual 4 plugins: panel-system, local-review, output-styles, asha
+- Panel system v4.2.0 with --format and --context flags
+- Fixed repository structure documentation
+- Updated all plugin scope references
 
 ### v1.2.0 (2025-11-17)
 - Removed REDACTED99-specific universe references

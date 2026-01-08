@@ -1,7 +1,7 @@
 # asha-marketplace
 
-**Version**: 1.2.0
-**Description**: Claude Code plugins for multi-perspective analysis, session management, and collaborative decision-making
+**Version**: 1.3.0
+**Description**: Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination
 
 A collection of general-purpose Claude Code plugins for technical teams, creative projects, and systematic decision-making workflows.
 
@@ -13,36 +13,97 @@ A collection of general-purpose Claude Code plugins for technical teams, creativ
 
 **Plugin Name**: `panel-system`
 **Command**: `/panel`
-**Version**: 4.1.2
-**Description**: Dynamic multi-perspective analysis with automatic specialist recruitment
+**Version**: 4.2.0
 
-Convene a structured analysis panel with 3 core roles (Moderator, Analyst, Challenger) + dynamically recruited specialists who examine your topic from distinct perspectives and produce evidence-based decisions.
+Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challenger) + dynamically recruited specialists. Supports multiple output formats and context injection.
 
-**Use Cases**:
-- Technical architecture decisions
-- Code review and security analysis
-- Creative writing evaluation
-- Strategic planning
-- Research methodology
-- Ethical assessment
+```bash
+/panel Should we implement GraphQL or REST for the new API
+/panel --format=github "Review authentication approach"
+/panel --context=docs/RFC.md "Evaluate this proposal"
+```
+
+**Features**:
+- 11-phase structured decision protocol
+- Consensus tracking with percentage thresholds
+- Output formats: markdown (default), github, json
+- Context injection from files or URLs
+- Dynamic specialist recruitment from agent library
 
 **[Full Documentation →](plugins/panel/README.md)**
 
-### Memory+Session Manager
+---
 
-**Name**: `memory-session-manager`
-**Version**: 1.0.0
-**Description**: Memory file maintenance and session capture for multi-session AI projects
+### Local Review
 
-Provides automatic session watching, guided synthesis workflows, and Memory file structure specifications for maintaining context across discontinuous Claude Code sessions.
+**Plugin Name**: `local-review`
+**Command**: `/local-review`
+**Version**: 1.0.1
 
-**Use Cases**:
-- Long-term software projects
-- Multi-session creative work
-- Persistent context management
-- Session continuity across teams
+Parallel code review with 4 specialized reviewers plus validation pass to filter false positives.
 
-**[Full Documentation →](plugins/memory-session-manager/README.md)**
+```bash
+/local-review              # Review staged changes
+/local-review <path>       # Review specific file(s)
+/local-review --all        # Review all uncommitted changes
+```
+
+**Reviewers**:
+- **Security**: Injection, auth flaws, hardcoded secrets
+- **Logic**: Algorithms, conditionals, state management
+- **Edge Cases**: Null handling, boundaries, race conditions
+- **Style**: Naming, duplication, complexity
+
+---
+
+### Output Styles
+
+**Plugin Name**: `output-styles`
+**Command**: `/style`
+**Version**: 1.0.1
+
+Switchable output styles for Claude Code responses.
+
+```bash
+/style                    # List available styles
+/style <name>             # Switch to a style
+/style off                # Disable styling
+```
+
+**Available Styles**:
+| Style | Description |
+|-------|-------------|
+| ultra-concise | Minimal words, direct actions |
+| bullet-points | Hierarchical bullet points |
+| genui | Generative UI with HTML output |
+| html-structured | Clean semantic HTML |
+| markdown-focused | Full markdown features |
+| table-based | Table-based organization |
+| tts-summary | Audio TTS announcements |
+| yaml-structured | YAML structured output |
+
+---
+
+### Asha
+
+**Plugin Name**: `asha`
+**Commands**: `/asha:init`, `/asha:save`, `/asha:index`, `/asha:cleanup`
+**Version**: 1.0.1
+
+Cognitive scaffold framework for session coordination and memory persistence.
+
+```bash
+/asha:init                # Initialize Asha in project
+/asha:save                # Save session to Memory Bank
+/asha:index               # Index files for semantic search
+/asha:cleanup             # Remove legacy installation files
+```
+
+**Features**:
+- Memory Bank architecture (activeContext, projectbrief, etc.)
+- Session watching and archival
+- Vector DB semantic search (optional)
+- Git integration for persistence
 
 ---
 
@@ -57,57 +118,16 @@ Provides automatic session watching, guided synthesis workflows, and Memory file
 ### Install Plugins
 
 ```bash
-<<<<<<< HEAD
-# Install panel system
-/plugin install panel@asha-marketplace
-
-# Install memory+session manager
-/plugin install memory-session-manager@asha-marketplace
-=======
 /plugin install panel-system@asha-marketplace
->>>>>>> claude/fix-issue-1-01Gyt9DQqudRHAWgmkPpi35D
+/plugin install local-review@asha-marketplace
+/plugin install output-styles@asha-marketplace
+/plugin install asha@asha-marketplace
 ```
 
 ### Verify Installation
 
 ```bash
 /plugin list
-
-# Test commands
-/panel
-/save
-/silence status
-```
-
----
-
-## Quick Start
-
-### Panel System
-
-```bash
-/panel Should we implement GraphQL or REST for the new API
-/panel Review authentication system for OWASP Top 10 vulnerabilities
-/panel Evaluate Chapter 9's prose quality and narrative effectiveness
-```
-
-The panel automatically:
-- Analyzes topic to determine needed expertise
-- Recruits 2-5 specialist agents from your agent library
-- Assigns specialists with contextual session-specific names
-- Executes 11-phase structured decision protocol
-- Produces comprehensive Decision Report
-
-### Memory+Session Manager
-
-```bash
-# Session watching runs automatically via hooks
-# At end of session:
-/save
-
-# Toggle logging for experimental work:
-/silence on    # Disable logging
-/silence off   # Re-enable logging
 ```
 
 ---
@@ -119,108 +139,38 @@ asha-marketplace/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace metadata
 ├── plugins/
-│   ├── panel/                     # Panel system plugin
+│   ├── panel/                    # Panel system plugin
 │   │   ├── .claude-plugin/
 │   │   │   └── plugin.json
 │   │   ├── commands/
 │   │   │   └── panel.md
 │   │   ├── agents/
 │   │   │   └── recruiter.md
-│   │   ├── docs/
-│   │   │   └── characters/        # 3 core role profiles
-│   │   │       ├── The Moderator.md
-│   │   │       ├── The Analyst.md
-│   │   │       └── The Challenger.md
-│   │   ├── README.md
-│   │   └── LICENSE
-│   └── memory-session-manager/    # Session management plugin
+│   │   ├── docs/characters/
+│   │   └── README.md
+│   ├── local-review/             # Code review plugin
+│   │   ├── .claude-plugin/
+│   │   │   └── plugin.json
+│   │   └── commands/
+│   │       └── local-review.md
+│   ├── output-styles/            # Output styling plugin
+│   │   ├── .claude-plugin/
+│   │   │   └── plugin.json
+│   │   ├── commands/
+│   │   │   └── style.md
+│   │   ├── hooks/
+│   │   └── styles/
+│   └── asha/                     # Session coordination plugin
 │       ├── .claude-plugin/
 │       │   └── plugin.json
 │       ├── commands/
-│       │   ├── save.md
-│       │   └── silence.md
 │       ├── hooks/
-│       │   ├── hooks.json
-│       │   ├── common.sh
-│       │   ├── post-tool-use
-│       │   ├── user-prompt-submit
-│       │   └── session-end
-│       ├── scripts/
-│       │   └── save-session.sh
-│       ├── skills/
-│       │   └── memory-maintenance/
-│       ├── docs/
-│       └── README.md
-└── README.md                      # This file
+│       ├── templates/
+│       └── tools/
+├── README.md
+├── CLAUDE.md
+└── LICENSE
 ```
-
----
-
-## Prerequisites
-
-### Panel System Requirements
-
-1. **Agent Library** (recommended):
-   - Available agents in `.claude/agents/*.md`
-   - Panel recruits specialists from available agents
-   - More agents = better specialist matching
-
-2. **Memory Bank Architecture** (optional but recommended):
-   - `Memory/activeContext.md` for session continuity
-   - Decision logging integration
-
-3. **agent-fabricator** (optional):
-   - Enables dynamic agent creation when capability gaps detected
-   - Falls back to available agent library if unavailable
-
-**[See panel prerequisites →](plugins/panel/README.md#prerequisites)**
-
-### Memory+Session Manager Requirements
-
-**Minimum** (all platforms):
-- Persistent text storage
-- Ability to read/update files
-
-**Enhanced** (Claude Code):
-- File system access (Memory/sessions/ directory)
-- Bash execution (save-session.sh)
-- Hooks (automatic capture)
-- Git integration (commits)
-
----
-
-## Philosophy
-
-### Panel System
-
-**Structured Collaborative Inquiry**:
-- 3 core roles provide consistent perspective framework
-- Dynamic specialist recruitment matches expertise to topic
-- 11-phase protocol ensures systematic analysis
-- Evidence-based decisions with confidence scoring
-
-**Universal Application**:
-- Technical: Architecture, security, performance
-- Creative: Narrative, craft, consistency
-- Strategic: Planning, resource allocation, risk
-- Ethical: Privacy, bias, impact assessment
-
-### Memory+Session Manager
-
-**Separation of Concerns**:
-- Your framework tells Claude to READ Memory
-- This plugin tells Claude HOW TO MAINTAIN Memory
-
-**Session Continuity**:
-- Every session begins fresh (Claude context resets)
-- Memory is the ONLY connection to previous work
-- Session watching captures operations automatically
-- Synthesis transforms operations into persistent context
-
-**Cross-Platform**:
-- Core protocol works anywhere (manual synthesis)
-- Enhanced automation on capable platforms (Claude Code)
-- Graceful degradation strategy
 
 ---
 
@@ -240,7 +190,9 @@ To propose new plugins or improvements:
 Individual plugins licensed separately. See each plugin's LICENSE file.
 
 - **Panel System**: MIT License
-- **Memory+Session Manager**: MIT License
+- **Local Review**: MIT License
+- **Output Styles**: MIT License
+- **Asha**: MIT License
 
 ---
 
@@ -250,30 +202,25 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 
 **Documentation**:
 - Panel system: `plugins/panel/README.md`
-- Memory manager: `plugins/memory-session-manager/README.md`
 - Development guide: `CLAUDE.md`
 
 ---
 
 ## Version History
 
+### v1.3.0 (2026-01-07)
+- **Audit & cleanup**: Removed stale memory-session-manager references
+- Panel system v4.2.0 with --format and --context flags
+- Added local-review, output-styles, and asha plugins to documentation
+- Fixed merge conflicts in README
+
 ### v1.2.0 (2025-11-17)
-- **Sterilization**: Removed universe-specific references, made plugins general-purpose
-- Renamed character files to universal archetypes (Moderator, Analyst, Challenger)
-- Updated all documentation for broader applicability
-- Generalized keywords and descriptions
-- Maintained marketplace name and plugin functionality
+- Sterilization: Removed universe-specific references
+- Renamed character files to universal archetypes
 
 ### v1.1.0 (2025-11-08)
 - Panel system v4.1.0 with dynamic recruitment architecture
-- 3 core roles + recruited specialists with session-specific naming
-- Simplified invocation: `/panel <topic>` handles everything automatically
-- Opposition stance for Challenger role (argues against proposals by default)
-- Removed 5 universal character profiles (simplified to core 3)
-- Conventional marketplace structure with `plugins/` directory
+- 3 core roles + recruited specialists
 
 ### v1.0.0 (2025-11-08)
 - Initial marketplace release
-- Panel system v3.0.2 included
-- Universal composition with abstention protocol
-- Dynamic agent assignment via The Analyst
