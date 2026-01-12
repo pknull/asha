@@ -66,9 +66,10 @@ Templates to copy:
 - `communicationStyle.md`
 - `workflowProtocols.md`
 - `techEnvironment.md`
+- `scratchpad.md`
 
 ```bash
-for template in activeContext.md projectbrief.md communicationStyle.md workflowProtocols.md techEnvironment.md; do
+for template in activeContext.md projectbrief.md communicationStyle.md workflowProtocols.md techEnvironment.md scratchpad.md; do
     if [[ ! -f "${CLAUDE_PROJECT_DIR}/Memory/$template" ]]; then
         cp "${CLAUDE_PLUGIN_ROOT}/templates/$template" "${CLAUDE_PROJECT_DIR}/Memory/$template"
         echo "Created Memory/$template"

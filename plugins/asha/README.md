@@ -1,9 +1,9 @@
 # Asha
 
-**Version**: 1.0.1
-**Commands**: `/asha:init`, `/asha:save`, `/asha:index`, `/asha:cleanup`
+**Version**: 1.1.0
+**Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:index`, `/asha:cleanup`
 
-Cognitive scaffold framework for session coordination and memory persistence.
+Cognitive scaffold framework for session coordination, memory persistence, and quick note capture.
 
 ## Installation
 
@@ -34,7 +34,8 @@ project/
 │   ├── projectbrief.md
 │   ├── communicationStyle.md
 │   ├── workflowProtocols.md
-│   └── techEnvironment.md
+│   ├── techEnvironment.md
+│   └── scratchpad.md
 ├── Work/markers/
 ├── .asha/
 │   ├── .venv/
@@ -56,6 +57,17 @@ Save current session context to Memory Bank.
 2. Update Memory files using Four Questions framework
 3. Archive session and refresh vector index
 4. Commit and push (if remote exists)
+
+### /asha:note
+
+Add timestamped note to scratchpad.
+
+```bash
+/asha:note Discovered auth tokens expire after 1 hour
+/asha:note API rate limit is 100 requests per minute
+```
+
+Notes are appended to `Memory/scratchpad.md` with UTC timestamps. Review and migrate important notes during `/asha:save`.
 
 ### /asha:index
 
@@ -95,6 +107,7 @@ Remove legacy nested-repo installation files.
 | `communicationStyle.md` | Voice, tone, persona |
 | `workflowProtocols.md` | Validated patterns and techniques |
 | `techEnvironment.md` | Stack, conventions, constraints |
+| `scratchpad.md` | Quick notes captured via `/asha:note` |
 
 ## Session Continuity
 

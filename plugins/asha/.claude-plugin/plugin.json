@@ -1,7 +1,7 @@
 {
   "name": "asha",
-  "version": "1.0.1",
-  "description": "Cognitive scaffold framework for session coordination and memory persistence",
+  "version": "1.1.0",
+  "description": "Cognitive scaffold framework for session coordination, memory persistence, and quick note capture",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"

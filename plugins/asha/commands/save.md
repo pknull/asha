@@ -38,6 +38,11 @@ Based on the session summary, update Memory Bank files:
 - Update Next Steps section
 - Increment version number in frontmatter
 
+**Memory/scratchpad.md** (review and migrate):
+- Check for notes captured via `/asha:note`
+- Migrate important items to appropriate Memory files
+- Prune completed or obsolete notes
+
 **Memory/workflowProtocols.md** (if patterns learned):
 - Add validated techniques
 - Document pitfalls with prevention
