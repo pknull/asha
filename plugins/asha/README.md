@@ -1,9 +1,9 @@
 # Asha
 
-**Version**: 1.1.0
-**Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:index`, `/asha:cleanup`
+**Version**: 1.2.0
+**Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
 
-Cognitive scaffold framework for session coordination, memory persistence, and quick note capture.
+Cognitive scaffold framework for session coordination, memory persistence, and session monitoring.
 
 ## Installation
 
@@ -68,6 +68,40 @@ Add timestamped note to scratchpad.
 ```
 
 Notes are appended to `Memory/scratchpad.md` with UTC timestamps. Review and migrate important notes during `/asha:save`.
+
+### /asha:status
+
+Show current session status and captured activity.
+
+```bash
+/asha:status
+```
+
+**Example output:**
+```
+## Current Session Status
+
+**Session ID**: silent-thunder
+**Started**: 2026-01-12 14:30 UTC
+**Duration**: 2h 14m
+**File size**: 3.2K
+
+### Captured Activity
+
+| Section | Count |
+|---------|-------|
+| Significant Operations | 12 |
+| Decisions & Clarifications | 3 |
+| Errors & Anomalies | 0 |
+
+### Recent Operations (last 5)
+- Edit: plugins/asha/commands/note.md
+- Edit: plugins/asha/README.md
+- Bash: git commit
+...
+```
+
+Use before `/asha:save` to preview what's been captured.
 
 ### /asha:index
 
