@@ -1,6 +1,6 @@
 {
   "name": "asha",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Cognitive scaffold framework for session coordination, memory persistence, and session monitoring",
   "author": {
     "name": "pknull",
