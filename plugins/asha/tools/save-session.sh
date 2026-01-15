@@ -356,6 +356,35 @@ EOF
 }
 
 # ==============================================================================
+# ANALYZE MODE (ReAct pattern analysis)
+# ==============================================================================
+
+analyze_mode() {
+    log "Running in ANALYZE mode (--react flag)"
+
+    if [[ ! -f "$WATCHING_FILE" ]]; then
+        log "No session watching file found, skipping analysis"
+        return 0
+    fi
+
+    LOCAL_REACT="$PLUGIN_ROOT/tools/local_react_save.py"
+    PYTHON_CMD=$(get_python_cmd)
+
+    if [[ ! -f "$LOCAL_REACT" ]]; then
+        log "local_react_save.py not found at $LOCAL_REACT"
+        return 1
+    fi
+
+    if [[ -z "$PYTHON_CMD" ]]; then
+        log "Python not available, cannot run ReAct analysis"
+        return 1
+    fi
+
+    # Run the ReAct analysis
+    "$PYTHON_CMD" "$LOCAL_REACT" "$WATCHING_FILE" "$MEMORY_DIR"
+}
+
+# ==============================================================================
 # ARCHIVE-ONLY MODE (called after manual Memory updates)
 # ==============================================================================
 
@@ -399,7 +428,10 @@ case "$MODE" in
     --archive-only)
         archive_only_mode
         ;;
+    --analyze)
+        analyze_mode
+        ;;
     *)
-        error "Unknown mode: $MODE. Use --interactive, --automatic, or --archive-only"
+        error "Unknown mode: $MODE. Use --interactive, --automatic, --archive-only, or --analyze"
         ;;
 esac
