@@ -5,6 +5,19 @@ Memory Index - Unified interface for semantic search over project files
 Uses ChromaDB + Ollama embeddings for document indexing and retrieval.
 Requires: chromadb, requests, ollama running locally
 
+INDEXING APPROACH:
+    Blacklist-based: indexes ALL text files except explicitly excluded paths.
+    Override defaults via Memory/vector_db/index_config.json:
+
+    {
+        "exclude_dirs": ["custom", "dirs"],           // replaces defaults
+        "additional_exclude_dirs": ["more", "dirs"],  // extends defaults
+        "exclude_extensions": [".custom"],            // replaces defaults
+        "additional_exclude_extensions": [".more"],   // extends defaults
+        "exclude_files": ["custom.file"],             // replaces defaults
+        "additional_exclude_files": ["more.file"]     // extends defaults
+    }
+
 Usage:
     python memory_index.py search "what is the creator's name?"
     python memory_index.py search --fallback "who tells Redacted124 to go"
@@ -134,50 +147,102 @@ def init_paths():
 OLLAMA_BASE_URL = "http://localhost:11434"
 EMBEDDING_MODEL = "nomic-embed-text:latest"
 
-# Default index patterns (can be overridden via config file)
-# Note: asha/ patterns removed - framework is now a global plugin
-DEFAULT_INDEX_PATTERNS = [
-    # Memory files (high priority - project context)
-    "Memory/*.md",
-    # Common code locations
-    "Tools/*.py",
-    ".claude/agents/*.md",
-    ".claude/commands/*.md",
-    ".claude/docs/*.md",
-]
+# =============================================================================
+# EXCLUSION CONFIGURATION (Blacklist approach - index everything except these)
+# =============================================================================
 
-# Directories to always exclude from indexing
-EXCLUDE_PATTERNS = [
-    ".venv",
-    ".asha",
-    "node_modules",
-    "__pycache__",
+# Directories to exclude (matches any path segment)
+DEFAULT_EXCLUDE_DIRS = [
+    # Version control
     ".git",
+    # Python
+    ".venv", "venv", "env", "__pycache__", ".pytest_cache", ".mypy_cache",
+    # Node
+    "node_modules",
+    # Asha internals
+    ".asha",
+    "Memory/vector_db",
+    "Memory/reasoning_bank",
+    # Session logs (raw, already synthesized)
+    "sessions",
+    # Build outputs
+    "dist", "build", ".next", ".nuxt",
+    # IDE
+    ".idea", ".vscode",
 ]
 
-# Project-specific patterns loaded from config
-INDEX_PATTERNS = None
+# File extensions to exclude (binary/non-textual)
+DEFAULT_EXCLUDE_EXTENSIONS = [
+    # Database/binary
+    ".db", ".sqlite", ".sqlite3", ".bin", ".exe", ".dll", ".so", ".dylib",
+    ".pkl", ".pickle", ".parquet",
+    # Images
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp", ".bmp", ".tiff",
+    # Archives
+    ".zip", ".tar", ".gz", ".7z", ".rar", ".bz2",
+    # Media
+    ".mp3", ".mp4", ".wav", ".avi", ".mov", ".mkv", ".flac",
+    # Documents (no text extraction)
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+    # Fonts
+    ".ttf", ".otf", ".woff", ".woff2", ".eot",
+    # Other binary
+    ".pyc", ".pyo", ".class", ".o", ".a",
+]
 
-def load_index_patterns() -> list[str]:
-    """Load index patterns from config or use defaults"""
-    global INDEX_PATTERNS
-    if INDEX_PATTERNS is not None:
-        return INDEX_PATTERNS
+# Specific filenames to exclude
+DEFAULT_EXCLUDE_FILES = [
+    ".DS_Store",
+    "Thumbs.db",
+    ".index_state.json",
+    "package-lock.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "Pipfile.lock",
+]
+
+# Loaded exclusion config (can be overridden via config file)
+EXCLUDE_CONFIG = None
+
+def load_exclude_config() -> dict:
+    """Load exclusion config from file or use defaults"""
+    global EXCLUDE_CONFIG
+    if EXCLUDE_CONFIG is not None:
+        return EXCLUDE_CONFIG
 
     init_paths()
     config_file = VECTOR_DB_PATH / "index_config.json"
+
+    # Start with defaults
+    EXCLUDE_CONFIG = {
+        "exclude_dirs": DEFAULT_EXCLUDE_DIRS.copy(),
+        "exclude_extensions": DEFAULT_EXCLUDE_EXTENSIONS.copy(),
+        "exclude_files": DEFAULT_EXCLUDE_FILES.copy(),
+    }
 
     if config_file.exists():
         try:
             with open(config_file, 'r') as f:
                 config = json.load(f)
-                INDEX_PATTERNS = config.get("patterns", DEFAULT_INDEX_PATTERNS)
-                return INDEX_PATTERNS
+                # Override with config values if present
+                if "exclude_dirs" in config:
+                    EXCLUDE_CONFIG["exclude_dirs"] = config["exclude_dirs"]
+                if "exclude_extensions" in config:
+                    EXCLUDE_CONFIG["exclude_extensions"] = config["exclude_extensions"]
+                if "exclude_files" in config:
+                    EXCLUDE_CONFIG["exclude_files"] = config["exclude_files"]
+                # Allow adding to defaults instead of replacing
+                if "additional_exclude_dirs" in config:
+                    EXCLUDE_CONFIG["exclude_dirs"].extend(config["additional_exclude_dirs"])
+                if "additional_exclude_extensions" in config:
+                    EXCLUDE_CONFIG["exclude_extensions"].extend(config["additional_exclude_extensions"])
+                if "additional_exclude_files" in config:
+                    EXCLUDE_CONFIG["exclude_files"].extend(config["additional_exclude_files"])
         except (json.JSONDecodeError, IOError):
             pass
 
-    INDEX_PATTERNS = DEFAULT_INDEX_PATTERNS
-    return INDEX_PATTERNS
+    return EXCLUDE_CONFIG
 
 
 # Chunking config
@@ -523,25 +588,72 @@ def get_changed_files_since(commit_hash: str) -> list[str]:
 
 
 def should_exclude(file_path: Path) -> bool:
-    """Check if file should be excluded from indexing"""
+    """
+    Check if file should be excluded from indexing.
+
+    Exclusion layers:
+    1. Directory exclusions (any path segment matches)
+    2. Extension exclusions (file suffix)
+    3. Filename exclusions (exact match)
+    """
+    config = load_exclude_config()
     path_str = str(file_path)
-    for exclude in EXCLUDE_PATTERNS:
-        if f"/{exclude}/" in path_str or path_str.endswith(f"/{exclude}"):
+
+    # Layer 1: Directory exclusions
+    path_parts = file_path.parts
+    for exclude_dir in config["exclude_dirs"]:
+        # Check if any path segment matches
+        if exclude_dir in path_parts:
             return True
+        # Also check for nested paths like "Memory/vector_db"
+        if "/" in exclude_dir and exclude_dir in path_str:
+            return True
+
+    # Layer 2: Extension exclusions
+    suffix = file_path.suffix.lower()
+    if suffix in config["exclude_extensions"]:
+        return True
+
+    # Layer 3: Filename exclusions
+    if file_path.name in config["exclude_files"]:
+        return True
+
     return False
 
 
 def get_files_to_index() -> list[Path]:
-    """Get all files matching index patterns, excluding unwanted directories"""
+    """
+    Walk project tree and return all indexable files.
+
+    Uses blacklist approach: index everything except excluded paths.
+    """
     init_paths()
-    patterns = load_index_patterns()
     files = []
-    for pattern in patterns:
-        matches = list(PROJECT_ROOT.glob(pattern))
-        files.extend(matches)
-    # Filter out excluded directories
-    files = [f for f in files if not should_exclude(f)]
-    return sorted(set(files))
+
+    for root, dirs, filenames in os.walk(PROJECT_ROOT):
+        root_path = Path(root)
+
+        # Prune excluded directories from walk (modifies dirs in-place)
+        config = load_exclude_config()
+        dirs[:] = [d for d in dirs if d not in config["exclude_dirs"]]
+
+        # Also prune nested exclusion patterns
+        rel_root = root_path.relative_to(PROJECT_ROOT)
+        dirs[:] = [
+            d for d in dirs
+            if not any(
+                excl in str(rel_root / d)
+                for excl in config["exclude_dirs"]
+                if "/" in excl
+            )
+        ]
+
+        for filename in filenames:
+            file_path = root_path / filename
+            if not should_exclude(file_path):
+                files.append(file_path)
+
+    return sorted(files)
 
 
 def file_content_hash(file_path: Path) -> str:
