@@ -1,6 +1,6 @@
 # asha-marketplace
 
-**Version**: 1.3.0
+**Version**: 1.5.0
 **Description**: Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination
 
 A collection of general-purpose Claude Code plugins for technical teams, creative projects, and systematic decision-making workflows.
@@ -88,7 +88,7 @@ Switchable output styles for Claude Code responses.
 
 **Plugin Name**: `asha`
 **Commands**: `/asha:init`, `/asha:save`, `/asha:index`, `/asha:cleanup`
-**Version**: 1.0.1
+**Version**: 1.4.0
 
 Cognitive scaffold framework for session coordination and memory persistence.
 

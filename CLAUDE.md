@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha-marketplace
 
-**Version**: 1.3.0
-**Last Updated**: 2026-01-07
+**Version**: 1.5.0
+**Last Updated**: 2026-01-16
 **Repository**: pknull/asha-marketplace
 
 ---
@@ -884,6 +884,12 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v1.5.0 (2026-01-16)
+- Fixed hook handler permissions (711 → 755) and naming consistency (added .sh extensions)
+- Added version validation script (tests/validate-versions.sh)
+- Synchronized versions across README.md, CLAUDE.md, and plugin.json files
+- Asha plugin v1.4.0 with improved memory indexing
 
 ### v1.3.0 (2026-01-07)
 - Audit and cleanup: Removed stale memory-session-manager references

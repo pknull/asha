@@ -200,7 +200,7 @@ esac
 # Only runs for Write/Edit/Bash operations that might violate rules
 case "$TOOL_NAME" in
     "Write"|"Edit"|"Bash")
-        VIOLATION_CHECKER="$SCRIPT_DIR/violation-checker"
+        VIOLATION_CHECKER="$SCRIPT_DIR/violation-checker.sh"
         if [[ -x "$VIOLATION_CHECKER" ]]; then
             ("$VIOLATION_CHECKER" "$TOOL_NAME" "$TOOL_INPUT" >/dev/null 2>&1) &
         fi

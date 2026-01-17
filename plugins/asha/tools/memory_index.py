@@ -84,12 +84,21 @@ def require_dependencies(for_operation: str = "this operation"):
     if not status["requests"]:
         missing.append("requests (pip install requests)")
     if not status["ollama"]:
-        missing.append("ollama running (ollama serve)")
+        missing.append("ollama running locally")
 
     if missing:
         print(f"❌ Cannot perform {for_operation}. Missing dependencies:", file=sys.stderr)
         for dep in missing:
             print(f"   - {dep}", file=sys.stderr)
+
+        # Provide detailed help for Ollama if it's the missing piece
+        if not status["ollama"] and status["chromadb"] and status["requests"]:
+            print("\n📋 Ollama Setup Guide:", file=sys.stderr)
+            print("   1. Install Ollama: https://ollama.com/download", file=sys.stderr)
+            print("   2. Start the server: ollama serve", file=sys.stderr)
+            print("   3. Pull embedding model: ollama pull nomic-embed-text", file=sys.stderr)
+            print("   4. Verify: curl http://localhost:11434/api/version", file=sys.stderr)
+
         sys.exit(1)
 
 

@@ -199,11 +199,13 @@ class LocalReActSave:
                 })
         
         # Cross-project suggestions (based on pattern types)
+        # Note: Projects list would be populated by scanning sibling directories
+        # or reading from a configuration file listing related projects
         if 'async-function' in pattern_frequency and pattern_frequency['async-function'] > 3:
             decisions['cross_project_suggestions'].append({
                 'pattern': 'async-error-handling',
-                'projects': ['mplay', 'rpg-dice'],
-                'reason': 'Common async patterns detected'
+                'projects': [],  # Populated dynamically when cross-project config exists
+                'reason': 'Common async patterns detected - consider sharing across related projects'
             })
         
         return decisions

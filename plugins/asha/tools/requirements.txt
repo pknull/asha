@@ -1,5 +1,15 @@
 # Asha Python Dependencies
 # Install with: pip install -r requirements.txt
+#
+# Runtime Requirements:
+#   - Python 3.9+
+#   - Ollama running locally (https://ollama.com) with embedding model
+#     Start with: ollama serve
+#     Pull model: ollama pull nomic-embed-text
+#
+# Standard library modules used (no install needed):
+#   datetime, pathlib, hashlib, json, os, re, subprocess, sys,
+#   argparse, sqlite3, typing, collections, difflib
 
 # Vector DB (semantic search)
 chromadb>=0.4.0
