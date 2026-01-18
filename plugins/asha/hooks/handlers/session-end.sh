@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # SessionEnd Hook - Archives session file on clean exit
 # Delegates to tools/save-session.sh for consistent archiving logic
 

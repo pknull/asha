@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # UserPromptSubmit Hook - Session logging + optional prompt refinement
 # Logs significant user prompts to current-session.md
 # If Work/markers/prompt-refine exists, refines prompts via LanguageTool before sending

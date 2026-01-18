@@ -220,6 +220,117 @@ class TestReasoningBank(unittest.TestCase):
         for r in results:
             self.assertGreaterEqual(r["success_score"], 0.6)
 
+    def test_query_error_resolution_found(self):
+        """Test querying existing error resolution"""
+        rb = self._import_with_mock_project_root()
+
+        # Record an error resolution
+        rb.record_error_resolution(
+            error_type="KeyError",
+            signature="'missing_key'",
+            resolution="Use .get() with default",
+            prevention="Always check key existence"
+        )
+
+        result = rb.query_error_resolution("KeyError", "'missing_key'")
+
+        self.assertTrue(result["found"])
+        self.assertIn("resolution", result)
+        self.assertEqual(result["resolution"]["error_type"], "KeyError")
+        self.assertEqual(result["resolution"]["resolution"], "Use .get() with default")
+
+    def test_query_error_resolution_not_found(self):
+        """Test querying non-existent error resolution"""
+        rb = self._import_with_mock_project_root()
+
+        result = rb.query_error_resolution("UnknownError", "unknown signature")
+
+        self.assertFalse(result["found"])
+        self.assertEqual(result["error_type"], "UnknownError")
+
+    def test_query_tool_effectiveness(self):
+        """Test querying tool effectiveness statistics"""
+        rb = self._import_with_mock_project_root()
+
+        # Record tool usages
+        rb.record_tool_usage("Read", "file inspection", success=True, duration_ms=50)
+        rb.record_tool_usage("Read", "file inspection", success=True, duration_ms=60)
+        rb.record_tool_usage("Read", "file inspection", success=False, duration_ms=100)
+
+        result = rb.query_tool_effectiveness("Read")
+
+        self.assertIn("results", result)
+        self.assertGreater(len(result["results"]), 0)
+        tool_stats = result["results"][0]
+        self.assertEqual(tool_stats["tool_name"], "Read")
+        self.assertEqual(tool_stats["success_count"], 2)
+        self.assertEqual(tool_stats["failure_count"], 1)
+
+    def test_update_pattern_score(self):
+        """Test updating pattern score with feedback"""
+        rb = self._import_with_mock_project_root()
+
+        # Record a pattern
+        record_result = rb.record_pattern(
+            pattern_type="workflow",
+            context="test context",
+            action="test action",
+            score=0.5
+        )
+        pattern_id = record_result["id"]
+
+        # Update score with feedback
+        result = rb.update_pattern_score(
+            pattern_id=pattern_id,
+            score=0.9,
+            feedback="Pattern proved highly effective"
+        )
+
+        self.assertEqual(result["status"], "updated")
+        self.assertEqual(result["new_score"], 0.9)
+
+    def test_update_pattern_score_invalid_id(self):
+        """Test updating non-existent pattern"""
+        rb = self._import_with_mock_project_root()
+
+        result = rb.update_pattern_score(pattern_id=99999, score=0.8)
+
+        self.assertIn("error", result)
+        self.assertIn("not found", result["error"].lower())
+
+    def test_get_stats(self):
+        """Test getting database statistics"""
+        rb = self._import_with_mock_project_root()
+
+        # Add some data
+        rb.record_pattern("code", "ctx", "act", score=0.8)
+        rb.record_error_resolution("TestError", "sig", "res")
+        rb.record_tool_usage("Bash", "command exec", success=True)
+
+        stats = rb.get_stats()
+
+        # Check structure: patterns, error_resolutions, tool_effectiveness
+        self.assertIn("patterns", stats)
+        self.assertIn("error_resolutions", stats)
+        self.assertIn("tool_effectiveness", stats)
+        self.assertGreaterEqual(stats["patterns"]["total"], 1)
+        self.assertGreaterEqual(stats["error_resolutions"]["unique_errors"], 1)
+        self.assertGreaterEqual(stats["tool_effectiveness"]["tracked_use_cases"], 1)
+
+    def test_export_data_json(self):
+        """Test exporting data in JSON format"""
+        rb = self._import_with_mock_project_root()
+
+        # Add data
+        rb.record_pattern("code", "export test ctx", "export test act", score=0.7)
+
+        result = rb.export_data(format="json")
+
+        self.assertIn("patterns", result)
+        self.assertIn("error_resolutions", result)
+        self.assertIn("tool_effectiveness", result)
+        self.assertIsInstance(result["patterns"], list)
+
 
 class TestProjectRootDetection(unittest.TestCase):
     """Test project root detection logic"""

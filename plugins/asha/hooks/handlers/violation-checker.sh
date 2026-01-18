@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # Violation Checker - Evaluates tool actions against rule set
 # Called from post-tool-use hook to log violations without blocking
 #

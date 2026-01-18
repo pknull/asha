@@ -77,8 +77,19 @@ else
 fi
 echo ""
 
-# Test Suite 4: Shellcheck (if available)
-echo -e "${BLUE}--- Test Suite 4: Shell Script Linting ---${NC}"
+# Test Suite 4: Hook Handler Tests
+echo -e "${BLUE}--- Test Suite 4: Hook Handler Tests ---${NC}"
+if "$SCRIPT_DIR/test-hooks.sh"; then
+    echo -e "${GREEN}✓ Hook handler tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Hook handler tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
+# Test Suite 5: Shellcheck (if available)
+echo -e "${BLUE}--- Test Suite 5: Shell Script Linting ---${NC}"
 if command -v shellcheck &>/dev/null; then
     SHELL_ERRORS=0
     while IFS= read -r -d '' script; do

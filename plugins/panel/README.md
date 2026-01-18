@@ -1,6 +1,6 @@
 # Claude Code Panel Plugin
 
-**Version**: 4.1.2
+**Version**: 4.2.0
 **Plugin Name**: `panel-system`
 **Command**: `/panel`
 **Description**: Dynamic multi-perspective analysis with 3 core roles + recruited specialists

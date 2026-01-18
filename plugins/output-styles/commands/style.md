@@ -1,3 +1,8 @@
+---
+description: "Switch output styles for Claude Code responses"
+argument-hint: "[style-name] | off"
+---
+
 # /style
 
 Switch between output styles for Claude Code responses.

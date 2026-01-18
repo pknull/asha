@@ -1,13 +1,18 @@
-# /local-review
+---
+description: "Review code changes with parallel specialized reviewers"
+argument-hint: "[path] | --all"
+---
+
+# /review
 
 Review local code changes with parallel specialized reviewers and validation.
 
 ## Usage
 
 ```
-/local-review              # Review staged changes (git diff --cached)
-/local-review <path>       # Review specific file(s)
-/local-review --all        # Review all uncommitted changes (git diff)
+/review              # Review staged changes (git diff --cached)
+/review <path>       # Review specific file(s)
+/review --all        # Review all uncommitted changes (git diff)
 ```
 
 ## Execution

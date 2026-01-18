@@ -37,15 +37,15 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 ### Local Review
 
 **Plugin Name**: `local-review`
-**Command**: `/local-review`
-**Version**: 1.0.1
+**Command**: `/review` (or `/local-review:review`)
+**Version**: 1.0.2
 
 Parallel code review with 4 specialized reviewers plus validation pass to filter false positives.
 
 ```bash
-/local-review              # Review staged changes
-/local-review <path>       # Review specific file(s)
-/local-review --all        # Review all uncommitted changes
+/review              # Review staged changes
+/review <path>       # Review specific file(s)
+/review --all        # Review all uncommitted changes
 ```
 
 **Reviewers**:
@@ -152,7 +152,7 @@ asha-marketplace/
 │   │   ├── .claude-plugin/
 │   │   │   └── plugin.json
 │   │   └── commands/
-│   │       └── local-review.md
+│   │       └── review.md
 │   ├── output-styles/            # Output styling plugin
 │   │   ├── .claude-plugin/
 │   │   │   └── plugin.json
@@ -174,6 +174,36 @@ asha-marketplace/
 
 ---
 
+## Testing
+
+Run the full test suite:
+
+```bash
+./tests/run-tests.sh
+```
+
+### Test Coverage
+
+| Suite | Tests | Description |
+|-------|-------|-------------|
+| Plugin Validation | 5 | JSON schema, namespace conflicts, file existence |
+| Version Consistency | 6 | Cross-file version synchronization |
+| Python Unit Tests | 67 | reasoning_bank, memory_index, local_react_save |
+| Hook Handlers | 104 | Lifecycle hooks, rules, tools, repo hygiene |
+| Shell Linting | 1 | shellcheck (optional) |
+
+**Total: 182 tests** (183 with shellcheck)
+
+Individual test suites:
+```bash
+./tests/validate-plugins.sh    # Plugin configuration
+./tests/validate-versions.sh   # Version consistency
+./tests/test-hooks.sh          # Hook handlers
+python3 -m unittest discover -s tests/python -v  # Python tests
+```
+
+---
+
 ## Contributing
 
 To propose new plugins or improvements:
@@ -181,7 +211,8 @@ To propose new plugins or improvements:
 1. Fork this repository
 2. Create plugin in new subdirectory following structure
 3. Update `.claude-plugin/marketplace.json`
-4. Submit pull request with documentation
+4. Run `./tests/run-tests.sh` to verify all tests pass
+5. Submit pull request with documentation
 
 ---
 

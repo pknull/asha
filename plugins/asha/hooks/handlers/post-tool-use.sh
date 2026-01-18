@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # PostToolUse Hook - Captures file modifications and agent deployments
 # Automatically appends to current-session.md for session watching
 

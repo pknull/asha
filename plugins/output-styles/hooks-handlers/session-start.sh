@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # SessionStart hook - Injects active output style into session context
 
 CONFIG_FILE="$HOME/.claude/active-output-style"

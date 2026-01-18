@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # SessionStart Hook - Injects CORE.md context if Asha is initialized in project
 # Only activates for projects with .asha/config.json present
 

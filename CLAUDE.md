@@ -34,9 +34,9 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 ### Current Plugins
 
 1. **Panel System** (v4.2.0): Dynamic multi-perspective analysis with automatic specialist recruitment
-2. **Local Review** (v1.0.1): Parallel code review with 4 specialized reviewers
+2. **Local Review** (v1.0.2): Parallel code review with 4 specialized reviewers
 3. **Output Styles** (v1.0.1): Switchable output styles for Claude Code responses
-4. **Asha** (v1.0.1): Cognitive scaffold framework for session coordination and memory persistence
+4. **Asha** (v1.4.0): Cognitive scaffold framework for session coordination and memory persistence
 
 ### Technology Stack
 

@@ -1,7 +1,7 @@
 # Local Review
 
-**Version**: 1.0.1
-**Command**: `/local-review`
+**Version**: 1.0.2
+**Command**: `/review` (or `/local-review:review`)
 
 Parallel code review with 4 specialized reviewers plus validation pass to filter false positives.
 
@@ -15,9 +15,9 @@ Parallel code review with 4 specialized reviewers plus validation pass to filter
 ## Usage
 
 ```bash
-/local-review              # Review staged changes (git diff --cached)
-/local-review <path>       # Review specific file(s)
-/local-review --all        # Review all uncommitted changes (git diff)
+/review              # Review staged changes (git diff --cached)
+/review <path>       # Review specific file(s)
+/review --all        # Review all uncommitted changes (git diff)
 ```
 
 ## Reviewers
