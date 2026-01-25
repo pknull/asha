@@ -36,7 +36,7 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 1. **Panel System** (v4.2.0): Dynamic multi-perspective analysis with automatic specialist recruitment
 2. **Local Review** (v1.0.2): Parallel code review with 4 specialized reviewers
 3. **Output Styles** (v1.0.1): Switchable output styles for Claude Code responses
-4. **Asha** (v1.4.0): Cognitive scaffold framework for session coordination and memory persistence
+4. **Asha** (v1.5.0): Cognitive scaffold framework for session coordination and memory persistence
 
 ### Technology Stack
 
@@ -889,7 +889,7 @@ git push -u origin <branch-name>
 - Fixed hook handler permissions (711 → 755) and naming consistency (added .sh extensions)
 - Added version validation script (tests/validate-versions.sh)
 - Synchronized versions across README.md, CLAUDE.md, and plugin.json files
-- Asha plugin v1.4.0 with improved memory indexing
+- Asha plugin v1.5.0 with robust memory indexing (retry logic, diagnostics)
 
 ### v1.3.0 (2026-01-07)
 - Audit and cleanup: Removed stale memory-session-manager references

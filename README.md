@@ -88,7 +88,7 @@ Switchable output styles for Claude Code responses.
 
 **Plugin Name**: `asha`
 **Commands**: `/asha:init`, `/asha:save`, `/asha:index`, `/asha:cleanup`
-**Version**: 1.4.0
+**Version**: 1.5.0
 
 Cognitive scaffold framework for session coordination and memory persistence.
 
