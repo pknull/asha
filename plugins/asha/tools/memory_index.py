@@ -30,9 +30,14 @@ Usage:
 import os
 import sys
 import json
+import atexit
+import faulthandler
+import signal
 import subprocess
+import traceback
 import hashlib
 import re
+import time
 from pathlib import Path
 from datetime import datetime
 
@@ -84,21 +89,12 @@ def require_dependencies(for_operation: str = "this operation"):
     if not status["requests"]:
         missing.append("requests (pip install requests)")
     if not status["ollama"]:
-        missing.append("ollama running locally")
+        missing.append("ollama running (ollama serve)")
 
     if missing:
         print(f"❌ Cannot perform {for_operation}. Missing dependencies:", file=sys.stderr)
         for dep in missing:
             print(f"   - {dep}", file=sys.stderr)
-
-        # Provide detailed help for Ollama if it's the missing piece
-        if not status["ollama"] and status["chromadb"] and status["requests"]:
-            print("\n📋 Ollama Setup Guide:", file=sys.stderr)
-            print("   1. Install Ollama: https://ollama.com/download", file=sys.stderr)
-            print("   2. Start the server: ollama serve", file=sys.stderr)
-            print("   3. Pull embedding model: ollama pull nomic-embed-text", file=sys.stderr)
-            print("   4. Verify: curl http://localhost:11434/api/version", file=sys.stderr)
-
         sys.exit(1)
 
 
@@ -142,6 +138,41 @@ MEMORY_DIR = None
 VECTOR_DB_PATH = None
 INDEX_STATE_FILE = None
 
+CURRENT_FILE = None
+DEBUG_LOG_PATH = os.environ.get("INDEXER_DEBUG_LOG", "/tmp/redacted99-indexer-debug.log")
+_FAULTHANDLER_FILE = None
+
+def log_debug(message: str):
+    timestamp = datetime.now().isoformat()
+    try:
+        with open(DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(f"{timestamp} {message}\n")
+    except Exception:
+        pass
+
+def setup_diagnostics():
+    global _FAULTHANDLER_FILE
+    try:
+        _FAULTHANDLER_FILE = open(DEBUG_LOG_PATH, "a", encoding="utf-8")
+        faulthandler.enable(_FAULTHANDLER_FILE)
+    except Exception:
+        pass
+
+    def _handle_signal(signum, frame):
+        if signum == signal.SIGHUP:
+            log_debug(f"signal {signum} received, ignoring, last_file={CURRENT_FILE}")
+            return
+        log_debug(f"signal {signum} received, last_file={CURRENT_FILE}")
+        sys.exit(1)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGABRT):
+        try:
+            signal.signal(sig, _handle_signal)
+        except Exception:
+            pass
+
+    atexit.register(lambda: log_debug(f"exit, last_file={CURRENT_FILE}"))
+
 def init_paths():
     """Initialize paths - call before any file operations"""
     global PROJECT_ROOT, MEMORY_DIR, VECTOR_DB_PATH, INDEX_STATE_FILE
@@ -155,6 +186,9 @@ def init_paths():
 # Ollama config
 OLLAMA_BASE_URL = "http://localhost:11434"
 EMBEDDING_MODEL = "nomic-embed-text:latest"
+OLLAMA_EMBED_TIMEOUT = float(os.environ.get("OLLAMA_EMBED_TIMEOUT", "30"))
+OLLAMA_EMBED_MAX_RETRIES = int(os.environ.get("OLLAMA_EMBED_RETRIES", "2"))
+OLLAMA_EMBED_RETRY_BACKOFF = float(os.environ.get("OLLAMA_EMBED_RETRY_BACKOFF", "1.5"))
 
 # =============================================================================
 # EXCLUSION CONFIGURATION (Blacklist approach - index everything except these)
@@ -164,6 +198,7 @@ EMBEDDING_MODEL = "nomic-embed-text:latest"
 DEFAULT_EXCLUDE_DIRS = [
     # Version control
     ".git",
+    ".git-rewrite",  # git filter-branch artifacts
     # Python
     ".venv", "venv", "env", "__pycache__", ".pytest_cache", ".mypy_cache",
     # Node
@@ -178,6 +213,8 @@ DEFAULT_EXCLUDE_DIRS = [
     "dist", "build", ".next", ".nuxt",
     # IDE
     ".idea", ".vscode",
+    # Obsidian internals (plugins, themes, config)
+    ".obsidian",
 ]
 
 # File extensions to exclude (binary/non-textual)
@@ -197,6 +234,8 @@ DEFAULT_EXCLUDE_EXTENSIONS = [
     ".ttf", ".otf", ".woff", ".woff2", ".eot",
     # Other binary
     ".pyc", ".pyo", ".class", ".o", ".a",
+    # Map editors and specialized formats
+    ".dungeondraft_map", ".wonderdraft_map", ".canvas",
 ]
 
 # Specific filenames to exclude
@@ -308,13 +347,36 @@ def get_section_for_position(headers: list[tuple[int, str]], pos: int) -> str:
 
 
 def get_embedding(text: str) -> list[float]:
-    """Get embedding from Ollama"""
-    response = requests.post(
-        f"{OLLAMA_BASE_URL}/api/embeddings",
-        json={"model": EMBEDDING_MODEL, "prompt": text}
-    )
-    response.raise_for_status()
-    return response.json()["embedding"]
+    """Get embedding from Ollama. Returns None on failure."""
+    if not REQUESTS_AVAILABLE:
+        return None
+
+    url = f"{OLLAMA_BASE_URL}/api/embeddings"
+    payload = {"model": EMBEDDING_MODEL, "prompt": text}
+    for attempt in range(1, OLLAMA_EMBED_MAX_RETRIES + 1):
+        try:
+            response = requests.post(url, json=payload, timeout=OLLAMA_EMBED_TIMEOUT)
+            response.raise_for_status()
+            embedding = response.json().get("embedding")
+            if embedding is None or (hasattr(embedding, '__len__') and len(embedding) == 0):
+                raise ValueError("empty embedding")
+            return embedding
+        except Exception as exc:
+            if attempt < OLLAMA_EMBED_MAX_RETRIES:
+                print(
+                    f"  ⚠️  Ollama embedding failed (attempt {attempt}/{OLLAMA_EMBED_MAX_RETRIES}), retrying...",
+                    file=sys.stderr,
+                    flush=True
+                )
+                time.sleep(OLLAMA_EMBED_RETRY_BACKOFF * attempt)
+            else:
+                print(
+                    f"  ⚠️  Ollama embedding failed after {attempt} attempts: {exc}",
+                    file=sys.stderr,
+                    flush=True
+                )
+
+    return None
 
 
 def init_db():
@@ -431,6 +493,9 @@ def search(query: str, limit: int = 5) -> dict:
 
     # Get query embedding
     query_embedding = get_embedding(query)
+    if query_embedding is None or (hasattr(query_embedding, '__len__') and len(query_embedding) == 0):
+        print("❌ Failed to get embedding from Ollama", file=sys.stderr, flush=True)
+        return {"results": [], "method": "semantic", "error": "embedding_failed"}
 
     # Search
     results = collection.query(
@@ -472,6 +537,9 @@ def search_with_fallback(query: str, limit: int = 5, semantic_threshold: float =
 
     # Phase 1: Semantic search
     query_embedding = get_embedding(query)
+    if query_embedding is None or (hasattr(query_embedding, '__len__') and len(query_embedding) == 0):
+        print("❌ Failed to get embedding from Ollama", file=sys.stderr, flush=True)
+        return {"results": [], "method": "semantic+keyword", "error": "embedding_failed"}
     semantic_results = collection.query(
         query_embeddings=[query_embedding],
         n_results=limit * 2,  # Get more for filtering
@@ -692,18 +760,18 @@ def ingest_file(collection, file_path: Path) -> int:
     """Ingest a single file into vector DB. Returns number of chunks ingested."""
     init_paths()
     if not file_path.exists():
-        print(f"  ⚠️  Skipping {file_path.name} (not found)")
+        print(f"  ⚠️  Skipping {file_path.name} (not found)", flush=True)
         return 0
 
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f.read()
     except UnicodeDecodeError:
-        print(f"  ⚠️  Skipping {file_path.name} (binary or encoding error)")
+        print(f"  ⚠️  Skipping {file_path.name} (binary or encoding error)", flush=True)
         return 0
 
     if not content.strip():
-        print(f"  ⚠️  Skipping {file_path.name} (empty)")
+        print(f"  ⚠️  Skipping {file_path.name} (empty)", flush=True)
         return 0
 
     # Extract title from first header or use filename
@@ -738,6 +806,11 @@ def ingest_file(collection, file_path: Path) -> int:
         chunk_id = f"{rel_path}::{i}"
         embedding = get_embedding(chunk_text_content)
 
+        # Skip chunks that produce empty embeddings (e.g., from malformed content)
+        if embedding is None or (hasattr(embedding, '__len__') and len(embedding) == 0):
+            print(f"  ⚠️  Skipping chunk {i} of {file_path.name} (empty embedding)", flush=True)
+            continue
+
         # Get section header for this chunk's position
         section_header = get_section_for_position(section_headers, chunk_start_pos)
 
@@ -757,6 +830,11 @@ def ingest_file(collection, file_path: Path) -> int:
             "ingested_at": datetime.now().isoformat()
         })
 
+    # Guard against empty embedding lists (all chunks failed)
+    if not embeddings:
+        print(f"  ⚠️  Skipping {file_path.name} (no valid embeddings)", flush=True)
+        return 0
+
     collection.add(
         ids=ids,
         embeddings=embeddings,
@@ -764,15 +842,18 @@ def ingest_file(collection, file_path: Path) -> int:
         metadatas=metadatas
     )
 
-    chunk_info = f" ({len(chunks)} chunks)" if len(chunks) > 1 else ""
-    print(f"  📄 {rel_path}{chunk_info} [{content_type}]")
-    return len(chunks)
+    chunk_info = f" ({len(ids)} chunks)" if len(ids) > 1 else ""
+    print(f"  📄 {rel_path}{chunk_info} [{content_type}]", flush=True)
+    return len(ids)
 
 
 def ingest(changed_only: bool = False):
     """Ingest files into vector DB"""
+    global CURRENT_FILE
     require_dependencies("ingest")
     init_paths()
+    setup_diagnostics()
+    log_debug(f"ingest start: changed_only={changed_only}")
 
     print("=" * 60)
     print("Memory Index - Semantic Search Database")
@@ -833,14 +914,26 @@ def ingest(changed_only: bool = False):
         }
     }
 
-    for file_path in files_to_ingest:
-        chunks = ingest_file(collection, file_path)
+    total_files = len(files_to_ingest)
+    for index, file_path in enumerate(files_to_ingest, start=1):
+        remaining = total_files - index
+        rel_path = str(file_path.relative_to(PROJECT_ROOT))
+        CURRENT_FILE = rel_path
+        log_debug(f"start {index}/{total_files} {rel_path}")
+        print(f"➡️  [{index}/{total_files}] {remaining} remaining - {rel_path}", flush=True)
+        try:
+            chunks = ingest_file(collection, file_path)
+            log_debug(f"done {rel_path} chunks={chunks}")
+        except Exception as exc:
+            print(f"  ⚠️  Failed to ingest {rel_path}: {exc}", file=sys.stderr, flush=True)
+            log_debug(f"error {rel_path}: {exc}\n{traceback.format_exc()}")
+            continue
         if chunks > 0:
             total_chunks += chunks
-            rel_path = str(file_path.relative_to(PROJECT_ROOT))
             new_state["files"][rel_path] = file_content_hash(file_path)
 
     save_index_state(new_state)
+    log_debug(f"ingest complete: files={len(files_to_ingest)} chunks={total_chunks}")
 
     print()
     print("=" * 60)
