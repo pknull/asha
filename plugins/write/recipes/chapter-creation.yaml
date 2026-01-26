@@ -1,0 +1,135 @@
+name: chapter-creation
+version: "1.0"
+description: Create a chapter from concept to polished prose
+complexity: standard
+
+agents:
+  - name: consistency-checker
+    role: Verify continuity before new content
+    model: sonnet
+    trigger: "@chapter-requested"
+    output: "@continuity-clear"
+    checkpoint: false
+
+  - name: outline-architect
+    role: Build chapter structure and beats
+    model: sonnet
+    trigger: "@continuity-clear"
+    output: "@outline-ready"
+    checkpoint: true
+
+  - name: prose-writer
+    role: Generate Draft 1 from outline
+    model: sonnet
+    trigger: "@outline-approved"
+    output: "@draft-complete"
+    checkpoint: false
+
+  - name: developmental-editor
+    role: Review structure and pacing
+    model: opus
+    trigger: "@draft-complete"
+    output: "@dev-review-ready"
+    checkpoint: true
+
+  - name: prose-writer
+    role: Voice pass (Draft 3)
+    model: sonnet
+    trigger: "@structure-approved"
+    output: "@voice-pass-complete"
+    checkpoint: false
+
+  - name: line-editor
+    role: Polish prose
+    model: sonnet
+    trigger: "@voice-pass-complete"
+    output: "@line-edit-complete"
+    checkpoint: false
+
+flow:
+  start: "@chapter-requested"
+  end: "@ready-to-publish"
+
+  transitions:
+    - from: "@chapter-requested"
+      to: "@continuity-clear"
+      agent: consistency-checker
+
+    - from: "@continuity-clear"
+      to: "@outline-ready"
+      agent: outline-architect
+
+    # CHECKPOINT: Human approves chapter structure
+    - from: "@outline-ready"
+      to: "@outline-approved"
+      type: checkpoint
+      description: "Human reviews and approves chapter outline"
+
+    - from: "@outline-approved"
+      to: "@draft-complete"
+      agent: prose-writer
+
+    - from: "@draft-complete"
+      to: "@dev-review-ready"
+      agent: developmental-editor
+
+    # CHECKPOINT: Human approves structure after dev edit
+    - from: "@dev-review-ready"
+      to: "@structure-approved"
+      type: checkpoint
+      description: "Human reviews structural feedback, approves or requests changes"
+
+    - from: "@structure-approved"
+      to: "@voice-pass-complete"
+      agent: prose-writer
+
+    - from: "@voice-pass-complete"
+      to: "@line-edit-complete"
+      agent: line-editor
+
+    - from: "@line-edit-complete"
+      to: "@ready-to-publish"
+      type: action
+      description: "Chapter complete, ready for manuscript"
+
+    # Failure loop
+    - from: "@changes-requested"
+      to: "@draft-complete"
+      agent: prose-writer
+      note: "Revise based on feedback"
+
+failure:
+  max_retries: 3
+  on_blocked: escalate_to_user
+
+checkpoints:
+  outline-approval:
+    description: "Human reviews chapter structure before prose"
+    required: true
+    bypass: "Quick draft mode"
+    artifacts:
+      - chapter_outline.md
+
+  structure-approval:
+    description: "Human reviews developmental edit feedback"
+    required: true
+    bypass: never
+    artifacts:
+      - dev_edit_report.md
+
+gates:
+  - name: continuity
+    description: "New content doesn't contradict existing"
+    blocking: true
+    bypass: "First chapter / no prior content"
+
+  - name: structure
+    description: "Chapter has clear arc and purpose"
+    blocking: true
+    bypass: never
+
+notes:
+  - "Consistency check runs FIRST to catch issues early"
+  - "Two checkpoints: outline approval and structure approval"
+  - "Prose-writer runs twice: Draft 1 and Draft 3 (voice pass)"
+  - "Opus used for developmental edit (high reasoning)"

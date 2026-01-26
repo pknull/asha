@@ -1,0 +1,171 @@
+name: feature-implementation
+version: "1.0"
+description: End-to-end feature implementation from requirements to merge
+complexity: full
+
+agents:
+  - name: codebase-historian
+    role: Research prior art and patterns
+    model: sonnet
+    trigger: "@needs-research"
+    output: "@research-complete"
+    checkpoint: false
+    gate: prior-art
+
+  - name: planner
+    role: Break down requirements, identify approach
+    model: sonnet
+    trigger: "@research-complete"
+    output: "@needs-design"
+    checkpoint: false
+
+  - name: architect
+    role: Design solution architecture
+    model: opus
+    trigger: "@needs-design"
+    output: "@design-ready"
+    checkpoint: true  # Human must approve design
+    gate: design-approval
+
+  - name: tdd
+    role: Write failing tests first
+    model: sonnet
+    trigger: "@design-approved"
+    output: "@tests-written"
+    checkpoint: false
+
+  - name: typescript-pro  # or python-pro, etc.
+    role: Implement to pass tests
+    model: sonnet
+    trigger: "@tests-written"
+    output: "@implementation-ready"
+    checkpoint: false
+
+  - name: code-reviewer
+    role: Stage 1 - Spec compliance review
+    model: sonnet
+    trigger: "@implementation-ready"
+    output: "@spec-reviewed"
+    checkpoint: false
+    stage: 1
+
+  - name: code-reviewer
+    role: Stage 2 - Code quality review
+    model: sonnet
+    trigger: "@spec-reviewed"
+    output: "@review-passed | @changes-requested"
+    checkpoint: false
+    stage: 2
+    gate: code-review
+
+  - name: security-auditor
+    role: Security scan (if auth/crypto/input)
+    model: sonnet
+    trigger: "@review-passed"
+    output: "@security-passed"
+    checkpoint: false
+    condition: "touches auth, crypto, or user input"
+    gate: security
+
+flow:
+  start: "@needs-research"
+  end: "@merged"
+
+  transitions:
+    # Happy path
+    - from: "@needs-research"
+      to: "@research-complete"
+      agent: codebase-historian
+
+    - from: "@research-complete"
+      to: "@needs-design"
+      agent: planner
+
+    - from: "@needs-design"
+      to: "@design-ready"
+      agent: architect
+
+    # CHECKPOINT: Human reviews design
+    - from: "@design-ready"
+      to: "@design-approved"
+      type: checkpoint
+      description: "Human approves architecture before implementation"
+
+    - from: "@design-approved"
+      to: "@tests-written"
+      agent: tdd
+
+    - from: "@tests-written"
+      to: "@implementation-ready"
+      agent: typescript-pro
+
+    - from: "@implementation-ready"
+      to: "@spec-reviewed"
+      agent: code-reviewer
+
+    - from: "@spec-reviewed"
+      to: "@review-passed"
+      agent: code-reviewer
+
+    - from: "@review-passed"
+      to: "@security-passed"
+      agent: security-auditor
+      condition: "security-sensitive code"
+
+    - from: "@security-passed"
+      to: "@ready-to-merge"
+
+    - from: "@review-passed"
+      to: "@ready-to-merge"
+      condition: "not security-sensitive"
+
+    # Final merge
+    - from: "@ready-to-merge"
+      to: "@merged"
+      type: action
+      description: "Merge to main branch"
+
+    # Failure loops
+    - from: "@changes-requested"
+      to: "@implementation-ready"
+      agent: typescript-pro
+      note: "Fix issues, return to review"
+
+failure:
+  max_retries: 3
+  on_blocked: escalate_to_user
+  record_to_reasoning_bank: true
+
+checkpoints:
+  design-approval:
+    description: "Human reviews and approves architecture"
+    required: true
+    bypass: never
+
+gates:
+  - name: prior-art
+    description: "Check for prior patterns/failures"
+    blocking: true
+    bypass: "Explicit 'no prior art needed'"
+
+  - name: design-approval
+    description: "User approves design before implementation"
+    blocking: true
+    bypass: never
+
+  - name: code-review
+    description: "Two-stage review passes"
+    blocking: true
+    bypass: "Trivial changes <10 lines"
+
+  - name: security
+    description: "Security audit passes"
+    blocking: true
+    condition: "auth, crypto, or user input touched"
+    bypass: never
+
+notes:
+  - "Opus used for architecture decisions (high reasoning)"
+  - "Two-stage review: spec compliance then code quality"
+  - "Security gate conditional on code touched"
+  - "TDD enforced: tests written before implementation"

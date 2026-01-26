@@ -42,7 +42,8 @@ echo "Test 2: Plugin versions (plugin.json vs README.md)..."
 declare -A PLUGIN_VERSIONS
 PLUGIN_VERSIONS=(
     ["panel-system"]=""
-    ["local-review"]=""
+    ["code"]=""
+    ["write"]=""
     ["output-styles"]=""
     ["asha"]=""
 )
@@ -70,8 +71,11 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
         "panel-system")
             readme_version=$(awk '/### Panel System/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
             ;;
-        "local-review")
-            readme_version=$(awk '/### Local Review/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+        "code")
+            readme_version=$(awk '/### Code$/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
+            ;;
+        "write")
+            readme_version=$(awk '/### Write$/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
             ;;
         "output-styles")
             readme_version=$(awk '/### Output Styles/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)

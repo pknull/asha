@@ -1,0 +1,122 @@
+name: refactor-safe
+version: "1.0"
+description: Code cleanup with safety gates and deletion tracking
+complexity: standard
+
+agents:
+  - name: codebase-historian
+    role: Check what refactoring patterns worked before
+    model: sonnet
+    trigger: "@refactor-requested"
+    output: "@patterns-checked"
+    checkpoint: false
+
+  - name: refactor-cleaner
+    role: Identify dead code, consolidate duplicates
+    model: sonnet
+    trigger: "@patterns-checked"
+    output: "@refactor-plan-ready"
+    checkpoint: true  # Approve deletion list before executing
+
+  - name: refactoring-specialist
+    role: Execute refactoring transformations
+    model: sonnet
+    trigger: "@refactor-approved"
+    output: "@refactor-complete"
+    checkpoint: false
+
+  - name: code-reviewer
+    role: Verify behavior preserved
+    model: sonnet
+    trigger: "@refactor-complete"
+    output: "@review-passed | @changes-requested"
+    checkpoint: false
+    gate: code-review
+
+  - name: security-auditor
+    role: Check no security regressions
+    model: haiku
+    trigger: "@review-passed"
+    output: "@security-passed"
+    checkpoint: false
+    condition: "refactor touches auth/security code"
+
+flow:
+  start: "@refactor-requested"
+  end: "@merged"
+
+  transitions:
+    - from: "@refactor-requested"
+      to: "@patterns-checked"
+      agent: codebase-historian
+
+    - from: "@patterns-checked"
+      to: "@refactor-plan-ready"
+      agent: refactor-cleaner
+
+    # CHECKPOINT: Human approves deletion list
+    - from: "@refactor-plan-ready"
+      to: "@refactor-approved"
+      type: checkpoint
+      description: "Human reviews deletion list before executing"
+
+    - from: "@refactor-approved"
+      to: "@refactor-complete"
+      agent: refactoring-specialist
+
+    - from: "@refactor-complete"
+      to: "@review-passed"
+      agent: code-reviewer
+
+    - from: "@review-passed"
+      to: "@security-passed"
+      agent: security-auditor
+      condition: "touches security code"
+
+    - from: "@review-passed"
+      to: "@ready-to-merge"
+      condition: "no security code touched"
+
+    - from: "@security-passed"
+      to: "@ready-to-merge"
+
+    # Final merge
+    - from: "@ready-to-merge"
+      to: "@merged"
+      type: action
+      description: "Merge to main branch"
+
+    # Failure loop
+    - from: "@changes-requested"
+      to: "@refactor-complete"
+      agent: refactoring-specialist
+
+failure:
+  max_retries: 3
+  on_blocked: escalate_to_user
+  record_to_reasoning_bank: true
+
+checkpoints:
+  deletion-approval:
+    description: "Human reviews list of code to delete/change"
+    required: true
+    bypass: never
+    artifacts:
+      - deletion_log.md  # What will be removed
+      - consolidation_plan.md  # What will be merged
+
+gates:
+  - name: code-review
+    description: "Verify behavior unchanged"
+    blocking: true
+    bypass: never
+    focus:
+      - "No functional changes"
+      - "Tests still pass"
+      - "No new dependencies"
+
+notes:
+  - "Deletion checkpoint is MANDATORY - no automatic deletions"
+  - "refactor-cleaner produces deletion log for review"
+  - "Focus on behavior preservation, not style improvements"
+  - "Run full test suite before and after"

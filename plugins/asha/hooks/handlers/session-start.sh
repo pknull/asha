@@ -41,8 +41,7 @@ Asha is initialized in this project. Read and follow the bootstrap protocol belo
 $CORE_CONTENT
 
 Available modules (reference as needed):
-- ${PLUGIN_ROOT}/modules/code.md - Code writing protocols
-- ${PLUGIN_ROOT}/modules/writing.md - Writing protocols
+- ${PLUGIN_ROOT}/modules/cognitive.md - ACE cycle, parallel execution, tool efficiency
 - ${PLUGIN_ROOT}/modules/research.md - Research protocols
 - ${PLUGIN_ROOT}/modules/memory-ops.md - Memory operation protocols
 - ${PLUGIN_ROOT}/modules/high-stakes.md - High-stakes decision protocols

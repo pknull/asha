@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
@@ -17,9 +17,15 @@
       "strict": false
     },
     {
-      "name": "local-review",
-      "description": "Parallel code review with 4 specialized reviewers (security, logic, edge cases, style) plus validation pass to filter false positives.",
-      "source": "./plugins/local-review",
+      "name": "code",
+      "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents. Includes /code:review command, codebase-historian agent, quality gates, Socratic planning, and swarm recipes.",
+      "source": "./plugins/code",
+      "strict": false
+    },
+    {
+      "name": "write",
+      "description": "Creative writing workflows: prose craft, worldbuilding, editing, and storytelling agents. Includes outline-architect, prose-writer, consistency-checker, developmental-editor, and line-editor agents with chapter/manuscript/character recipes.",
+      "source": "./plugins/write",
       "strict": false
     },
     {

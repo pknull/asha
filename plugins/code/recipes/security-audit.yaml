@@ -1,0 +1,158 @@
+name: security-audit
+version: "1.0"
+description: Comprehensive security assessment and hardening
+complexity: full
+
+agents:
+  - name: codebase-historian
+    role: Check past security issues and resolutions
+    model: sonnet
+    trigger: "@audit-requested"
+    output: "@history-reviewed"
+    checkpoint: false
+
+  - name: security-auditor
+    role: Comprehensive security scan
+    model: opus  # High reasoning for security
+    trigger: "@history-reviewed"
+    output: "@vulnerabilities-found | @no-issues"
+    checkpoint: true  # Review findings before remediation
+    gate: vulnerability-assessment
+
+  - name: security-auditor
+    role: Prioritize and classify findings
+    model: sonnet
+    trigger: "@findings-reviewed"
+    output: "@remediation-plan-ready"
+    checkpoint: true  # Approve remediation approach
+
+  - name: typescript-pro  # or appropriate dev agent
+    role: Implement security fixes
+    model: sonnet
+    trigger: "@remediation-approved"
+    output: "@fixes-implemented"
+    checkpoint: false
+
+  - name: security-auditor
+    role: Verify fixes and no regressions
+    model: opus
+    trigger: "@fixes-implemented"
+    output: "@verification-passed | @issues-remain"
+    checkpoint: false
+    gate: verification
+
+  - name: code-reviewer
+    role: Final review of security changes
+    model: sonnet
+    trigger: "@verification-passed"
+    output: "@review-passed"
+    checkpoint: false
+    gate: code-review
+
+flow:
+  start: "@audit-requested"
+  end: "@audit-complete"
+
+  transitions:
+    - from: "@audit-requested"
+      to: "@history-reviewed"
+      agent: codebase-historian
+
+    - from: "@history-reviewed"
+      to: "@vulnerabilities-found"
+      agent: security-auditor
+
+    # CHECKPOINT: Human reviews vulnerability findings
+    - from: "@vulnerabilities-found"
+      to: "@findings-reviewed"
+      type: checkpoint
+      description: "Human reviews vulnerability findings"
+
+    - from: "@findings-reviewed"
+      to: "@remediation-plan-ready"
+      agent: security-auditor
+
+    # CHECKPOINT: Human approves remediation approach
+    - from: "@remediation-plan-ready"
+      to: "@remediation-approved"
+      type: checkpoint
+      description: "Human approves remediation approach"
+
+    - from: "@remediation-approved"
+      to: "@fixes-implemented"
+      agent: typescript-pro
+
+    - from: "@fixes-implemented"
+      to: "@verification-passed"
+      agent: security-auditor
+
+    - from: "@verification-passed"
+      to: "@review-passed"
+      agent: code-reviewer
+
+    - from: "@review-passed"
+      to: "@audit-complete"
+
+    # No issues path
+    - from: "@no-issues"
+      to: "@audit-complete"
+      note: "Clean audit, no action needed"
+
+    # Failure loop
+    - from: "@issues-remain"
+      to: "@fixes-implemented"
+      agent: typescript-pro
+      note: "Re-fix remaining issues"
+
+failure:
+  max_retries: 3
+  on_blocked: escalate_to_user
+  record_to_reasoning_bank: true
+  critical: true  # Security failures are always escalated
+
+checkpoints:
+  findings-review:
+    description: "Human reviews vulnerability findings"
+    required: true
+    bypass: never
+    artifacts:
+      - vulnerability_report.md
+      - severity_classification.md
+
+  remediation-approval:
+    description: "Human approves remediation approach"
+    required: true
+    bypass: never
+    artifacts:
+      - remediation_plan.md
+      - risk_assessment.md
+
+gates:
+  - name: vulnerability-assessment
+    description: "Complete security scan"
+    blocking: true
+    bypass: never
+    checks:
+      - "OWASP Top 10"
+      - "Authentication/authorization"
+      - "Input validation"
+      - "Cryptographic usage"
+      - "Secrets management"
+      - "Dependency vulnerabilities"
+
+  - name: verification
+    description: "Confirm fixes work"
+    blocking: true
+    bypass: never
+
+  - name: code-review
+    description: "Review security changes"
+    blocking: true
+    bypass: never
+
+notes:
+  - "Opus used for security analysis (high stakes)"
+  - "TWO checkpoints: findings review AND remediation approval"
+  - "No bypasses allowed for security gates"
+  - "All findings recorded to ReasoningBank for future reference"
+  - "Critical failures always escalate immediately"

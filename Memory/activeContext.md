@@ -1,9 +1,9 @@
 ---
-version: "1.5"
-lastUpdated: "2026-01-25 10:25 UTC"
+version: "1.7"
+lastUpdated: "2026-01-26 10:05 UTC"
 lifecycle: "maintenance"
 stakeholder: "all"
-changeTrigger: "Session save - memory_index.py robustness improvements"
+changeTrigger: "Session save - v1.6.0 domain restructuring complete"
 validatedBy: "ai"
 dependencies: ["communicationStyle.md"]
 ---
@@ -12,31 +12,35 @@ dependencies: ["communicationStyle.md"]
 
 ## Current Project Status
 
-**Primary Focus**: Claude Code plugin marketplace providing tools for multi-perspective analysis, code review, output styling, and session coordination.
+**Primary Focus**: Claude Code plugin marketplace providing domain-focused plugins for research, development, creative writing, and session coordination.
 
 **Active Work**:
-- Marketplace v1.5.0, Asha v1.5.0 synchronized
-- Test suite mature: **182 tests** passing
-- All plugins documented with frontmatter
+- Marketplace v1.6.0, Asha v1.6.0 synchronized
+- Domain restructuring complete and validated
+- All tests passing (104 hook tests, version validation, plugin validation)
 
 **Recent Activities** (last 7 days):
-- **2026-01-25**: memory_index.py robustness improvements - Migrated changes from cached installation back to source; added faulthandler/signal handling for crash debugging; Ollama retry logic with configurable timeout/retries/backoff; robust embedding handling (returns None on failure, validates non-empty); per-chunk empty embedding checks; try/except around file ingestion with debug logging; progress display with file index/remaining count; additional exclusions (.git-rewrite, .obsidian, .canvas); all prints use flush=True; bumped Asha to v1.5.0
-- **2026-01-18**: Ralph loop test expansion (100 iterations) - Doubled test coverage from 91→182 tests; added 7 reasoning_bank tests, 5 memory_index tests, ~45 hook handler tests; added frontmatter to review.md and style.md; fixed 7 bugs (test assertions, return structures, graceful error handling); removed stray .desktop file; created LICENSE files for plugins missing them
-- **2026-01-17**: Audit remediation - Fixed critical hook issues (711→755 permissions, added .sh extensions); synchronized versions across README.md/CLAUDE.md/plugin.json; created test framework (validate-versions.sh, test_reasoning_bank.py with 11 tests, run-tests.sh runner); enhanced Ollama error messages; removed hardcoded project references
+- **2026-01-26**: Domain restructuring complete - Created code plugin (codebase-historian, orchestration, recipes); created write plugin (5 agents, writing.md, recipes); absorbed local-review into code as /code:review; moved ACE cycle to asha/cognitive.md; cleaned up all stale references; panel approved structure with 100% consensus; code review identified and fixed 7 issues
+- **2026-01-25**: memory_index.py robustness improvements - Added faulthandler/signal handling; Ollama retry logic; robust embedding handling; bumped Asha to v1.5.0
+- **2026-01-18**: Ralph loop test expansion - Doubled test coverage from 91→182 tests
+- **2026-01-17**: Audit remediation - Fixed hook permissions; synchronized versions; created test framework
 
 ## Critical Reference Information
 
-- **Plugins**: panel-system (v4.2.0), local-review (v1.0.2), output-styles (v1.0.1), asha (v1.5.0)
+- **Plugins**: panel-system (v4.2.0), code (v1.0.0), write (v1.0.0), output-styles (v1.0.1), asha (v1.6.0)
+- **Domain separation**: panel=research, code=development, write=creative, asha=core scaffold
 - **Main docs**: CLAUDE.md contains comprehensive repository guide
-- **Vector DB**: Indexed, 6 files/chunks, ollama + chromadb operational
+- **Vector DB**: Indexed, ollama + chromadb operational
 - **Shared files**: communicationStyle.md → /home/pknull/Obsidian/REDACTED99/Memory/communicationStyle.md
-- **Test suite**: `./tests/run-tests.sh` runs 182 tests (5 plugin validation, 6 version consistency, 67 Python unit, 104 hook handlers)
+- **Test suite**: `./tests/run-tests.sh` runs all tests
 
 ## Next Steps
 
 **Immediate**:
-- [x] Add tests for memory_index.py and local_react_save.py (completed)
-- [ ] Resolve local-review namespace conflict (plugin name = command filename)
+- [x] Domain restructuring (completed)
+- [x] Panel review of new structure (approved)
+- [x] Code review and cleanup (completed)
+- [x] Commit and push v1.6.0 changes
 
 **Blocked**:
 - None

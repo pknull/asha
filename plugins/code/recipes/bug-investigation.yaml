@@ -1,0 +1,109 @@
+name: bug-investigation
+version: "1.0"
+description: Diagnose bug, write regression test, fix, verify
+complexity: standard
+
+agents:
+  - name: codebase-historian
+    role: Check for similar bugs in history
+    model: sonnet
+    trigger: "@bug-reported"
+    output: "@history-checked"
+    checkpoint: false
+
+  - name: debugger
+    role: Reproduce and isolate root cause
+    model: sonnet
+    trigger: "@history-checked"
+    output: "@root-cause-found"
+    checkpoint: true  # Confirm root cause before fixing
+
+  - name: tdd
+    role: Write regression test that fails
+    model: sonnet
+    trigger: "@root-cause-confirmed"
+    output: "@regression-test-written"
+    checkpoint: false
+
+  - name: debugger
+    role: Implement fix
+    model: sonnet
+    trigger: "@regression-test-written"
+    output: "@fix-implemented"
+    checkpoint: false
+
+  - name: code-reviewer
+    role: Verify fix doesn't introduce new issues
+    model: sonnet
+    trigger: "@fix-implemented"
+    output: "@review-passed | @changes-requested"
+    checkpoint: false
+    gate: code-review
+
+flow:
+  start: "@bug-reported"
+  end: "@merged"
+
+  transitions:
+    - from: "@bug-reported"
+      to: "@history-checked"
+      agent: codebase-historian
+
+    - from: "@history-checked"
+      to: "@root-cause-found"
+      agent: debugger
+
+    # CHECKPOINT: Human confirms root cause
+    - from: "@root-cause-found"
+      to: "@root-cause-confirmed"
+      type: checkpoint
+      description: "Human confirms root cause diagnosis before fix"
+
+    - from: "@root-cause-confirmed"
+      to: "@regression-test-written"
+      agent: tdd
+
+    - from: "@regression-test-written"
+      to: "@fix-implemented"
+      agent: debugger
+
+    - from: "@fix-implemented"
+      to: "@review-passed"
+      agent: code-reviewer
+
+    - from: "@review-passed"
+      to: "@ready-to-merge"
+
+    # Final merge
+    - from: "@ready-to-merge"
+      to: "@merged"
+      type: action
+      description: "Merge to main branch"
+
+    # Failure loop
+    - from: "@changes-requested"
+      to: "@fix-implemented"
+      agent: debugger
+
+failure:
+  max_retries: 3
+  on_blocked: escalate_to_user
+  record_to_reasoning_bank: true
+
+checkpoints:
+  root-cause-confirmation:
+    description: "Human confirms root cause diagnosis before fix"
+    required: true
+    bypass: "Obvious bug with clear cause"
+
+gates:
+  - name: code-review
+    description: "Review verifies fix and no regressions"
+    blocking: true
+    bypass: "Trivial fix <10 lines"
+
+notes:
+  - "Historian checks for similar past bugs first"
+  - "Root cause checkpoint prevents fixing symptoms"
+  - "Regression test written BEFORE fix (TDD)"
+  - "Review focuses on: correct fix + no new issues"

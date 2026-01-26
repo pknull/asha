@@ -79,16 +79,24 @@ User context supplements Memory but never replaces it.
 
 ## Module Reference
 
-When task requires specialized guidance, consult relevant modules (paths provided in session context):
+When task requires specialized guidance, consult relevant modules:
 
+### Core Modules (asha plugin)
 | Module | Purpose | Triggers |
 |--------|---------|----------|
-| `code.md` | Technical implementation | Coding, refactoring, debugging, ACE analysis |
-| `writing.md` | Prose and creative output | Blog posts, documentation, creative writing |
+| `cognitive.md` | ACE cycle, parallel execution, tool efficiency | Complex tasks, multi-step operations, decision points |
 | `research.md` | Authority and verification | Fact-checking, citations, claims requiring verification |
 | `memory-ops.md` | Memory system operations | Session save, Memory updates, context synthesis |
 | `high-stakes.md` | Dangerous operations | Git pushes, deletions, production changes, migrations |
 | `verbalized-sampling.md` | Diversity recovery | Mode collapse, brainstorming, character voice, NPC variation |
+
+### Domain Plugins (install separately)
+| Plugin | Module | Purpose |
+|--------|--------|---------|
+| `code` | `code.md` | Convention matching, code comments, references format |
+| `code` | `orchestration.md` | Quality gates, Socratic planning, scale-adaptive workflows |
+| `write` | `writing.md` | Prose craft, staged drafts, voice anchoring |
+| `panel` | (commands) | Multi-perspective analysis, specialist recruitment |
 
 ## Error Handling
 

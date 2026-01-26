@@ -3,16 +3,16 @@ description: "Review code changes with parallel specialized reviewers"
 argument-hint: "[path] | --all"
 ---
 
-# /review
+# /code:review
 
 Review local code changes with parallel specialized reviewers and validation.
 
 ## Usage
 
 ```
-/review              # Review staged changes (git diff --cached)
-/review <path>       # Review specific file(s)
-/review --all        # Review all uncommitted changes (git diff)
+/code:review              # Review staged changes (git diff --cached)
+/code:review <path>       # Review specific file(s)
+/code:review --all        # Review all uncommitted changes (git diff)
 ```
 
 ## Execution
@@ -106,7 +106,7 @@ Remove findings that fail validation. Note any that were filtered.
 Output format:
 
 ```markdown
-## Local Review Results
+## Code Review Results
 
 **Scope**: {what was reviewed}
 **Files**: {count} | **Lines**: {count}

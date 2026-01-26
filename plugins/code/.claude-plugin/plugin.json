@@ -1,0 +1,15 @@
+{
+  "name": "code",
+  "version": "1.0.0",
+  "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents for software engineering",
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "license": "MIT",
+  "keywords": ["code", "development", "review", "tdd", "orchestration", "workflows"],
+  "commands": "./commands",
+  "agents": [
+    "./agents/codebase-historian.md"
+  ]
+}

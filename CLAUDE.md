@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha-marketplace
 
-**Version**: 1.5.0
-**Last Updated**: 2026-01-16
+**Version**: 1.6.0
+**Last Updated**: 2026-01-26
 **Repository**: pknull/asha-marketplace
 
 ---
@@ -33,10 +33,13 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 
 ### Current Plugins
 
-1. **Panel System** (v4.2.0): Dynamic multi-perspective analysis with automatic specialist recruitment
-2. **Local Review** (v1.0.2): Parallel code review with 4 specialized reviewers
-3. **Output Styles** (v1.0.1): Switchable output styles for Claude Code responses
-4. **Asha** (v1.5.0): Cognitive scaffold framework for session coordination and memory persistence
+| Plugin | Version | Domain | Description |
+|--------|---------|--------|-------------|
+| **Panel System** | v4.2.0 | Research | Multi-perspective analysis with specialist recruitment |
+| **Code** | v1.0.0 | Development | Code review, orchestration patterns, TDD workflows |
+| **Write** | v1.0.0 | Creative | Prose craft, worldbuilding, storytelling agents |
+| **Output Styles** | v1.0.1 | Formatting | Switchable response styles |
+| **Asha** | v1.6.0 | Core | Session coordination, memory persistence, general techniques |
 
 ### Technology Stack
 
@@ -55,42 +58,53 @@ asha-marketplace/
 ├── .claude-plugin/
 │   └── marketplace.json              # Marketplace registry and plugin list
 ├── plugins/
-│   ├── panel/                         # Panel system plugin
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json           # Plugin metadata
-│   │   ├── commands/
-│   │   │   └── panel.md              # /panel command definition
-│   │   ├── agents/
-│   │   │   └── recruiter.md          # Recruiter agent
-│   │   ├── docs/
-│   │   │   └── characters/           # Character profiles (3)
-│   │   ├── README.md
-│   │   └── LICENSE
-│   ├── local-review/                  # Code review plugin
+│   ├── panel/                         # Research & analysis
 │   │   ├── .claude-plugin/
 │   │   │   └── plugin.json
-│   │   └── commands/
-│   │       └── local-review.md       # /local-review command
-│   ├── output-styles/                 # Output styling plugin
+│   │   ├── commands/
+│   │   │   └── panel.md              # /panel command
+│   │   ├── agents/
+│   │   │   └── recruiter.md
+│   │   └── docs/characters/          # Character profiles (3)
+│   ├── code/                          # Development workflows
+│   │   ├── .claude-plugin/
+│   │   │   └── plugin.json
+│   │   ├── commands/
+│   │   │   └── review.md             # /code:review command
+│   │   ├── agents/
+│   │   │   └── codebase-historian.md
+│   │   ├── modules/
+│   │   │   ├── code.md
+│   │   │   └── orchestration.md
+│   │   └── recipes/                  # Multi-agent workflows
+│   ├── write/                         # Creative writing
+│   │   ├── .claude-plugin/
+│   │   │   └── plugin.json
+│   │   ├── agents/                   # 5 writing agents
+│   │   ├── modules/
+│   │   │   └── writing.md
+│   │   └── recipes/                  # Writing workflows
+│   ├── output-styles/                 # Response formatting
 │   │   ├── .claude-plugin/
 │   │   │   └── plugin.json
 │   │   ├── commands/
 │   │   │   └── style.md              # /style command
 │   │   ├── hooks/
-│   │   │   └── hooks.json            # SessionStart hook
-│   │   └── styles/                    # Style definitions (8 styles)
-│   └── asha/                          # Session coordination plugin
+│   │   └── styles/                   # 8 style definitions
+│   └── asha/                          # Core scaffold
 │       ├── .claude-plugin/
 │       │   └── plugin.json
-│       ├── commands/
-│       │   ├── init.md               # /asha:init command
-│       │   ├── save.md               # /asha:save command
-│       │   ├── index.md              # /asha:index command
-│       │   └── cleanup.md            # /asha:cleanup command
+│       ├── commands/                 # /asha:* commands
 │       ├── hooks/
-│       │   └── hooks.json
-│       ├── templates/                 # Memory Bank templates
-│       └── tools/                     # Python tools for indexing
+│       ├── modules/                  # Core techniques
+│       │   ├── CORE.md
+│       │   ├── cognitive.md
+│       │   ├── research.md
+│       │   ├── memory-ops.md
+│       │   ├── high-stakes.md
+│       │   └── verbalized-sampling.md
+│       ├── templates/                # Memory Bank templates
+│       └── tools/                    # Python tools
 ├── .gitignore
 ├── LICENSE (MIT)
 ├── README.md
@@ -137,7 +151,7 @@ asha-marketplace/
 
 ### Plugin Integration Strategies
 
-- **Command-Based**: Explicit user invocation (`/panel`, `/local-review`, `/style`, `/asha:save`)
+- **Command-Based**: Explicit user invocation (`/panel`, `/code:review`, `/style`, `/asha:save`)
 - **Hook-Based**: Automatic capture (PostToolUse, UserPromptSubmit, SessionEnd)
 - **Skill-Based**: Autonomous guidance (memory-maintenance)
 - **Marker-Based**: Control flow via marker files (silence, rp-active)
@@ -813,10 +827,11 @@ git push -u origin <branch-name>
 ### When Reading User Requests
 
 1. **Identify plugin scope**
-   - Panel system: `/panel` command, character profiles, recruitment
-   - Local Review: `/local-review` command, parallel code review
+   - Panel system: `/panel` command, character profiles, recruitment (Research domain)
+   - Code: `/code:review` command, codebase-historian, orchestration (Development domain)
+   - Write: 5 writing agents, recipes, prose craft (Creative domain)
    - Output Styles: `/style` command, response formatting
-   - Asha: `/asha:init`, `/asha:save`, `/asha:index` commands, Memory Bank
+   - Asha: `/asha:*` commands, Memory Bank, core modules (Core scaffold)
 
 2. **Check for Memory file references**
    - Memory files live in user projects, not this repo
@@ -871,7 +886,8 @@ git push -u origin <branch-name>
 
 - `.claude-plugin/marketplace.json`: Plugin registry
 - `plugins/panel/.claude-plugin/plugin.json`: Panel metadata
-- `plugins/local-review/.claude-plugin/plugin.json`: Local Review metadata
+- `plugins/code/.claude-plugin/plugin.json`: Code metadata
+- `plugins/write/.claude-plugin/plugin.json`: Write metadata
 - `plugins/output-styles/.claude-plugin/plugin.json`: Output Styles metadata
 - `plugins/asha/.claude-plugin/plugin.json`: Asha metadata
 
@@ -885,6 +901,14 @@ git push -u origin <branch-name>
 
 ## Version History
 
+### v1.6.0 (2026-01-26)
+- **Domain restructuring**: Organized plugins by workflow type (panel=research, code=dev, write=creative, asha=core)
+- **New plugin: code** — Development workflows with codebase-historian agent, orchestration patterns, quality gates, swarm recipes
+- **New plugin: write** — Creative writing with 5 specialized agents (outline-architect, prose-writer, consistency-checker, developmental-editor, line-editor) and recipes
+- **Absorbed local-review** into code plugin as `/code:review`
+- **ACE cycle moved** to asha/modules/cognitive.md as general technique
+- Cleaned up asha to core scaffold only (moved domain content to code/write)
+
 ### v1.5.0 (2026-01-16)
 - Fixed hook handler permissions (711 → 755) and naming consistency (added .sh extensions)
 - Added version validation script (tests/validate-versions.sh)
@@ -893,10 +917,8 @@ git push -u origin <branch-name>
 
 ### v1.3.0 (2026-01-07)
 - Audit and cleanup: Removed stale memory-session-manager references
-- Updated to reflect actual 4 plugins: panel-system, local-review, output-styles, asha
 - Panel system v4.2.0 with --format and --context flags
 - Fixed repository structure documentation
-- Updated all plugin scope references
 
 ### v1.2.0 (2025-11-17)
 - Removed REDACTED99-specific universe references

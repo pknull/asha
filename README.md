@@ -1,9 +1,43 @@
 # asha-marketplace
 
-**Version**: 1.5.0
-**Description**: Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination
+**Version**: 1.6.0
+**Description**: Claude Code plugins for research, development, creative writing, and session coordination
 
-A collection of general-purpose Claude Code plugins for technical teams, creative projects, and systematic decision-making workflows.
+A collection of domain-focused Claude Code plugins organized by workflow type.
+
+---
+
+## Plugin Domains
+
+| Domain | Plugin | Purpose |
+|--------|--------|---------|
+| **Research** | `panel` | Multi-perspective analysis, expert panels, decision-making |
+| **Development** | `code` | Code review, orchestration patterns, TDD workflows |
+| **Creative** | `write` | Fiction writing, prose craft, worldbuilding |
+| **Formatting** | `output-styles` | Response styling and output formats |
+| **Core** | `asha` | Session coordination, memory persistence, general techniques |
+
+### When to Use Each
+
+**panel** — When you need multiple perspectives on a question
+- Architecture decisions, trade-off analysis
+- Creative brainstorming with diverse viewpoints
+- Risk assessment, devil's advocacy
+
+**code** — When you're building software
+- Code review before commits
+- Multi-agent feature implementation
+- Bug investigation, refactoring
+
+**write** — When you're writing fiction
+- Chapter drafting with staged review
+- Character development with voice testing
+- Manuscript revision workflows
+
+**asha** — Always (foundation)
+- Session memory across conversations
+- Identity persistence via Memory Bank
+- General techniques (research verification, high-stakes safety, diversity sampling)
 
 ---
 
@@ -14,8 +48,9 @@ A collection of general-purpose Claude Code plugins for technical teams, creativ
 **Plugin Name**: `panel-system`
 **Command**: `/panel`
 **Version**: 4.2.0
+**Domain**: Research & Analysis
 
-Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challenger) + dynamically recruited specialists. Supports multiple output formats and context injection.
+Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challenger) + dynamically recruited specialists.
 
 ```bash
 /panel Should we implement GraphQL or REST for the new API
@@ -28,31 +63,78 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 - Consensus tracking with percentage thresholds
 - Output formats: markdown (default), github, json
 - Context injection from files or URLs
-- Dynamic specialist recruitment from agent library
+- Dynamic specialist recruitment
 
 **[Full Documentation →](plugins/panel/README.md)**
 
 ---
 
-### Local Review
+### Code
 
-**Plugin Name**: `local-review`
-**Command**: `/review` (or `/local-review:review`)
-**Version**: 1.0.2
+**Plugin Name**: `code`
+**Command**: `/code:review`
+**Version**: 1.0.0
+**Domain**: Development
 
-Parallel code review with 4 specialized reviewers plus validation pass to filter false positives.
+Development workflows with orchestration patterns, code review, and specialized agents.
 
 ```bash
-/review              # Review staged changes
-/review <path>       # Review specific file(s)
-/review --all        # Review all uncommitted changes
+/code:review              # Review staged changes
+/code:review <path>       # Review specific file(s)
+/code:review --all        # Review all uncommitted changes
 ```
 
-**Reviewers**:
-- **Security**: Injection, auth flaws, hardcoded secrets
-- **Logic**: Algorithms, conditionals, state management
-- **Edge Cases**: Null handling, boundaries, race conditions
-- **Style**: Naming, duplication, complexity
+**Agents**:
+- **codebase-historian** — Prior art discovery, pattern archaeology
+
+**Modules**:
+- **code.md** — ACE cognitive cycle, convention matching, high-stakes protocols
+- **orchestration.md** — Quality gates, Socratic planning, scale-adaptive workflows
+
+**Recipes** (multi-agent workflows):
+| Recipe | Use Case |
+|--------|----------|
+| `feature-implementation.yaml` | New features end-to-end |
+| `bug-investigation.yaml` | Bug diagnosis and fix |
+| `refactor-safe.yaml` | Code cleanup with safety |
+| `security-audit.yaml` | Security hardening |
+
+**[Full Documentation →](plugins/code/README.md)**
+
+---
+
+### Write
+
+**Plugin Name**: `write`
+**Version**: 1.0.0
+**Domain**: Creative Writing
+
+Creative writing workflows for fiction development: prose craft, worldbuilding, editing, and storytelling agents.
+
+```bash
+/plugin install write@asha-marketplace
+```
+
+**Agents**:
+| Agent | Role |
+|-------|------|
+| **outline-architect** | Story structure, beat sheets, chapter outlines |
+| **prose-writer** | Draft generation with voice anchoring |
+| **consistency-checker** | Continuity tracking (characters, timelines, lore) |
+| **developmental-editor** | Arc analysis, pacing, structural review |
+| **line-editor** | Sentence craft, word choice, polish |
+
+**Modules**:
+- **writing.md** — Prose craft guidelines, sentence rhythm, staged draft protocol
+
+**Recipes** (multi-agent workflows):
+| Recipe | Use Case |
+|--------|----------|
+| `chapter-creation.yaml` | New chapter from concept to polish |
+| `manuscript-revision.yaml` | Complete revision of existing draft |
+| `character-development.yaml` | Deep character creation with voice testing |
+
+**[Full Documentation →](plugins/write/README.md)**
 
 ---
 
@@ -61,6 +143,7 @@ Parallel code review with 4 specialized reviewers plus validation pass to filter
 **Plugin Name**: `output-styles`
 **Command**: `/style`
 **Version**: 1.0.1
+**Domain**: Formatting
 
 Switchable output styles for Claude Code responses.
 
@@ -87,23 +170,37 @@ Switchable output styles for Claude Code responses.
 ### Asha
 
 **Plugin Name**: `asha`
-**Commands**: `/asha:init`, `/asha:save`, `/asha:index`, `/asha:cleanup`
-**Version**: 1.5.0
+**Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
+**Version**: 1.6.0
+**Domain**: Core Scaffold
 
-Cognitive scaffold framework for session coordination and memory persistence.
+Cognitive scaffold framework for session coordination and memory persistence. Foundation layer that other plugins build on.
 
 ```bash
 /asha:init                # Initialize Asha in project
 /asha:save                # Save session to Memory Bank
+/asha:note "text"         # Add timestamped note to scratchpad
+/asha:status              # Show session status
 /asha:index               # Index files for semantic search
 /asha:cleanup             # Remove legacy installation files
 ```
 
-**Features**:
-- Memory Bank architecture (activeContext, projectbrief, etc.)
-- Session watching and archival
-- Vector DB semantic search (optional)
-- Git integration for persistence
+**Core Modules** (general techniques):
+| Module | Purpose |
+|--------|---------|
+| `CORE.md` | Bootstrap protocol, identity, memory architecture |
+| `cognitive.md` | ACE cycle, parallel execution, tool efficiency |
+| `research.md` | Authority verification, citation standards, epistemic hygiene |
+| `memory-ops.md` | Session synthesis, Memory Bank maintenance |
+| `high-stakes.md` | Safety protocols for destructive operations |
+| `verbalized-sampling.md` | Mode collapse recovery, diversity generation |
+
+**Memory Bank Templates**:
+- `activeContext.md` — Current session state
+- `projectbrief.md` — Project foundation
+- `communicationStyle.md` — Identity and voice
+- `techEnvironment.md` — Tools and platform config
+- `workflowProtocols.md` — Project-specific patterns
 
 ---
 
@@ -118,10 +215,14 @@ Cognitive scaffold framework for session coordination and memory persistence.
 ### Install Plugins
 
 ```bash
-/plugin install panel-system@asha-marketplace
-/plugin install local-review@asha-marketplace
-/plugin install output-styles@asha-marketplace
+# Foundation (recommended first)
 /plugin install asha@asha-marketplace
+
+# Domain plugins (install as needed)
+/plugin install panel-system@asha-marketplace
+/plugin install code@asha-marketplace
+/plugin install write@asha-marketplace
+/plugin install output-styles@asha-marketplace
 ```
 
 ### Verify Installation
@@ -139,32 +240,32 @@ asha-marketplace/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace metadata
 ├── plugins/
-│   ├── panel/                    # Panel system plugin
+│   ├── panel/                    # Research & analysis
 │   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
 │   │   ├── commands/
-│   │   │   └── panel.md
 │   │   ├── agents/
-│   │   │   └── recruiter.md
-│   │   ├── docs/characters/
-│   │   └── README.md
-│   ├── local-review/             # Code review plugin
+│   │   └── docs/characters/
+│   ├── code/                     # Development workflows
 │   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   └── commands/
-│   │       └── review.md
-│   ├── output-styles/            # Output styling plugin
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
 │   │   ├── commands/
-│   │   │   └── style.md
+│   │   ├── agents/
+│   │   ├── modules/
+│   │   └── recipes/
+│   ├── write/                    # Creative writing
+│   │   ├── .claude-plugin/
+│   │   ├── agents/
+│   │   ├── modules/
+│   │   └── recipes/
+│   ├── output-styles/            # Response formatting
+│   │   ├── .claude-plugin/
+│   │   ├── commands/
 │   │   ├── hooks/
 │   │   └── styles/
-│   └── asha/                     # Session coordination plugin
+│   └── asha/                     # Core scaffold
 │       ├── .claude-plugin/
-│       │   └── plugin.json
 │       ├── commands/
 │       ├── hooks/
+│       ├── modules/
 │       ├── templates/
 │       └── tools/
 ├── README.md
@@ -221,7 +322,8 @@ To propose new plugins or improvements:
 Individual plugins licensed separately. See each plugin's LICENSE file.
 
 - **Panel System**: MIT License
-- **Local Review**: MIT License
+- **Code**: MIT License
+- **Write**: MIT License
 - **Output Styles**: MIT License
 - **Asha**: MIT License
 
@@ -233,17 +335,29 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 
 **Documentation**:
 - Panel system: `plugins/panel/README.md`
+- Code workflows: `plugins/code/README.md`
+- Writing workflows: `plugins/write/README.md`
 - Development guide: `CLAUDE.md`
 
 ---
 
 ## Version History
 
+### v1.6.0 (2026-01-26)
+- **Domain restructuring**: Organized plugins by workflow type
+- **New plugin: code** — Development workflows, orchestration patterns, codebase-historian agent
+- **New plugin: write** — Creative writing with 5 specialized agents and recipes
+- **Absorbed local-review** into code plugin as `/code:review`
+- Cleaned up asha to core scaffold only (moved domain content to code/write)
+
+### v1.5.0 (2026-01-16)
+- Fixed hook handler permissions and naming consistency
+- Added version validation script
+- Asha plugin v1.5.0 with robust memory indexing
+
 ### v1.3.0 (2026-01-07)
-- **Audit & cleanup**: Removed stale memory-session-manager references
+- Audit & cleanup: Removed stale memory-session-manager references
 - Panel system v4.2.0 with --format and --context flags
-- Added local-review, output-styles, and asha plugins to documentation
-- Fixed merge conflicts in README
 
 ### v1.2.0 (2025-11-17)
 - Sterilization: Removed universe-specific references
@@ -251,7 +365,6 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 
 ### v1.1.0 (2025-11-08)
 - Panel system v4.1.0 with dynamic recruitment architecture
-- 3 core roles + recruited specialists
 
 ### v1.0.0 (2025-11-08)
 - Initial marketplace release

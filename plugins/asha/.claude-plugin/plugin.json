@@ -1,7 +1,7 @@
 {
   "name": "asha",
-  "version": "1.5.0",
-  "description": "Cognitive scaffold framework for session coordination, memory persistence, session monitoring, and ReAct pattern analysis",
+  "version": "1.6.0",
+  "description": "Cognitive scaffold framework for session coordination and memory persistence. Core identity, Memory Bank templates, and session tools.",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"

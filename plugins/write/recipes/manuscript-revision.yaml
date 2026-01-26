@@ -1,0 +1,136 @@
+name: manuscript-revision
+version: "1.0"
+description: Complete revision pass on existing manuscript
+complexity: full
+
+agents:
+  - name: consistency-checker
+    role: Full continuity audit
+    model: sonnet
+    trigger: "@revision-requested"
+    output: "@continuity-report-ready"
+    checkpoint: true
+
+  - name: developmental-editor
+    role: Full structural analysis
+    model: opus
+    trigger: "@continuity-reviewed"
+    output: "@dev-edit-complete"
+    checkpoint: true
+
+  - name: outline-architect
+    role: Restructure as needed
+    model: sonnet
+    trigger: "@restructure-approved"
+    output: "@new-structure-ready"
+    checkpoint: true
+    condition: "If restructuring needed"
+
+  - name: prose-writer
+    role: Implement structural changes
+    model: sonnet
+    trigger: "@structure-approved"
+    output: "@revision-draft-complete"
+    checkpoint: false
+
+  - name: line-editor
+    role: Full manuscript line edit
+    model: sonnet
+    trigger: "@revision-draft-complete"
+    output: "@line-edit-complete"
+    checkpoint: true
+
+flow:
+  start: "@revision-requested"
+  end: "@revision-complete"
+
+  transitions:
+    - from: "@revision-requested"
+      to: "@continuity-report-ready"
+      agent: consistency-checker
+
+    # CHECKPOINT: Human reviews continuity issues
+    - from: "@continuity-report-ready"
+      to: "@continuity-reviewed"
+      type: checkpoint
+      description: "Human reviews continuity report, decides what to fix"
+
+    - from: "@continuity-reviewed"
+      to: "@dev-edit-complete"
+      agent: developmental-editor
+
+    # CHECKPOINT: Human reviews structural analysis
+    - from: "@dev-edit-complete"
+      to: "@restructure-decision"
+      type: checkpoint
+      description: "Human decides: proceed to line edit or restructure"
+
+    # Branch: Restructure needed
+    - from: "@restructure-decision"
+      to: "@restructure-approved"
+      condition: "Major structural changes needed"
+
+    - from: "@restructure-approved"
+      to: "@new-structure-ready"
+      agent: outline-architect
+
+    # CHECKPOINT: Human approves new structure
+    - from: "@new-structure-ready"
+      to: "@structure-approved"
+      type: checkpoint
+      description: "Human approves revised structure"
+
+    # Branch: No restructure needed
+    - from: "@restructure-decision"
+      to: "@structure-approved"
+      condition: "Structure sound, minor fixes only"
+
+    - from: "@structure-approved"
+      to: "@revision-draft-complete"
+      agent: prose-writer
+
+    - from: "@revision-draft-complete"
+      to: "@line-edit-complete"
+      agent: line-editor
+
+    # CHECKPOINT: Human reviews line edit
+    - from: "@line-edit-complete"
+      to: "@revision-complete"
+      type: checkpoint
+      description: "Human approves final polish"
+
+failure:
+  max_retries: 3
+  on_blocked: escalate_to_user
+
+checkpoints:
+  continuity-review:
+    description: "Human reviews all continuity issues"
+    required: true
+    bypass: never
+    artifacts:
+      - continuity_report.md
+
+  dev-edit-review:
+    description: "Human reviews structural analysis"
+    required: true
+    bypass: never
+    artifacts:
+      - dev_edit_report.md
+
+  structure-approval:
+    description: "Human approves structure (new or existing)"
+    required: true
+    bypass: never
+
+  final-approval:
+    description: "Human approves polished manuscript"
+    required: true
+    bypass: never
+
+notes:
+  - "Full manuscript revision is a FULL complexity workflow"
+  - "Multiple checkpoints prevent wasted work"
+  - "Branching: restructure path or direct to line edit"
+  - "Opus used for developmental analysis (critical decisions)"
+  - "Human makes final decisions at every major stage"

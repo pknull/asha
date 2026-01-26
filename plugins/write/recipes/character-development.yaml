@@ -1,0 +1,126 @@
+name: character-development
+version: "1.0"
+description: Deep character creation with voice testing
+complexity: standard
+
+agents:
+  - name: outline-architect
+    role: Define character concept and role
+    model: sonnet
+    trigger: "@character-requested"
+    output: "@concept-ready"
+    checkpoint: true
+
+  - name: prose-writer
+    role: Generate backstory prose
+    model: sonnet
+    trigger: "@concept-approved"
+    output: "@backstory-complete"
+    checkpoint: true
+
+  - name: consistency-checker
+    role: Verify against existing characters/world
+    model: sonnet
+    trigger: "@backstory-approved"
+    output: "@consistency-checked"
+    checkpoint: false
+
+  - name: prose-writer
+    role: Voice testing - generate sample dialogue
+    model: sonnet
+    trigger: "@consistency-checked"
+    output: "@voice-samples-ready"
+    checkpoint: true
+
+flow:
+  start: "@character-requested"
+  end: "@character-approved"
+
+  transitions:
+    - from: "@character-requested"
+      to: "@concept-ready"
+      agent: outline-architect
+
+    # CHECKPOINT: Human approves character concept
+    - from: "@concept-ready"
+      to: "@concept-approved"
+      type: checkpoint
+      description: "Human reviews character role, motivation, arc potential"
+
+    - from: "@concept-approved"
+      to: "@backstory-complete"
+      agent: prose-writer
+
+    # CHECKPOINT: Human approves backstory
+    - from: "@backstory-complete"
+      to: "@backstory-approved"
+      type: checkpoint
+      description: "Human reviews backstory for depth and consistency"
+
+    - from: "@backstory-approved"
+      to: "@consistency-checked"
+      agent: consistency-checker
+
+    - from: "@consistency-checked"
+      to: "@voice-samples-ready"
+      agent: prose-writer
+
+    # CHECKPOINT: Human approves voice
+    - from: "@voice-samples-ready"
+      to: "@character-approved"
+      type: checkpoint
+      description: "Human reviews voice samples, confirms character is ready"
+
+    # Revision loop
+    - from: "@voice-rejected"
+      to: "@voice-samples-ready"
+      agent: prose-writer
+      note: "Generate new voice samples with adjustments"
+
+failure:
+  max_retries: 3
+  on_blocked: escalate_to_user
+
+checkpoints:
+  concept-approval:
+    description: "Character concept fits story needs"
+    required: true
+    bypass: never
+    artifacts:
+      - character_concept.md
+
+  backstory-approval:
+    description: "Backstory is rich and consistent"
+    required: true
+    bypass: never
+    artifacts:
+      - character_backstory.md
+
+  voice-approval:
+    description: "Voice is distinct and speakable"
+    required: true
+    bypass: never
+    artifacts:
+      - voice_samples.md
+      - voice_anchors.md
+
+outputs:
+  character_sheet:
+    description: "Complete character profile"
+    sections:
+      - name
+      - role_in_story
+      - physical_description
+      - personality_traits
+      - motivation
+      - backstory_summary
+      - relationships
+      - voice_anchors
+      - arc_potential
+
+notes:
+  - "Three checkpoints: concept, backstory, voice"
+  - "Consistency check ensures character fits existing world"
+  - "Voice samples are CRITICAL - generate 5-10 lines minimum"
+  - "Voice anchors go in character sheet for future use"
+  - "Character isn't done until voice feels natural"
