@@ -1,3 +1,8 @@
+---
+description: "Re-enable Memory logging after silence mode"
+allowed-tools: ["Bash", "Read"]
+---
+
 # Restore Memory Logging
 
 Re-enables Memory logging after silence mode.

@@ -1,6 +1,6 @@
 {
   "name": "asha",
-  "version": "1.7.0",
+  "version": "1.7.1",
   "description": "Cognitive scaffold framework for session coordination and memory persistence. Core identity, Memory Bank templates, session tools, and workflow automation.",
   "author": {
     "name": "pknull",

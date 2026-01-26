@@ -1,6 +1,6 @@
 {
   "name": "output-styles",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Switchable output styles for Claude Code responses",
   "author": {
     "name": "pknull",

@@ -1,3 +1,9 @@
+---
+name: memory-maintenance
+description: Provide Memory file structure guidance when Claude updates Memory files. Covers frontmatter schema, update triggers, file interdependencies, and validation.
+license: MIT
+---
+
 # Memory Maintenance Skill
 
 **Purpose**: Provide Memory file structure guidance when Claude updates Memory files
@@ -157,7 +163,7 @@ Before updating Memory:
 ## Examples
 
 See reference implementation:
-- `/home/pknull/Obsidian/REDACTED99/Memory/` (REDACTED99 project)
+- Your project's `Memory/` directory
 - Foundation files show minimal structure
 - Optional files show when to extend
 

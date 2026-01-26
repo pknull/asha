@@ -65,8 +65,8 @@ You are an AI detection specialist integrating GPTZero analysis into the creativ
 
 **Required Inputs (accept via prompt):**
 - `section_name`: Section identifier (e.g., "🜍.2 Sigils", "🜂.1 Inheritance")
-- `story_file`: Path to story file (default: `/home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/Redacted1155.md`)
-- `beats_file`: Path to beats file (default: `/home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/redacted1155_beats.md`)
+- `story_file`: Path to story file (required - no default, user must provide)
+- `beats_file`: Path to beats file (required - no default, user must provide)
 
 **Validation Checkpoints:**
 - Confirm section_name provided before proceeding
@@ -213,8 +213,8 @@ Report inserted into specified beats_file at corresponding beat entry.
 - Escalates to user when: section ambiguity, multiple matches, conflicting reports
 
 **Data Sources:**
-- Story files: `/home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/Redacted1155.md` (default)
-- Beat files: `/home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/redacted1155_beats.md` (default)
+- Story files: User-provided path to story markdown file
+- Beat files: User-provided path to beats tracking file
 - GPTZero MCP: External AI detection service
 
 # Quality Standards
@@ -241,11 +241,11 @@ Report inserted into specified beats_file at corresponding beat entry.
 ## Example 1: Standard Detection with Flagged Sentences
 
 ```
-Input: "Scan section '🜍.2 Sigils' for AI content"
+Input: "Scan section '🜍.2 Sigils' for AI content in {story_file} with beats in {beats_file}"
 Context:
   - section_name: 🜍.2 Sigils
-  - story_file: /home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/Redacted1155.md
-  - beats_file: /home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/redacted1155_beats.md
+  - story_file: {user-provided path to story file}
+  - beats_file: {user-provided path to beats file}
 
 Process:
   1. Context Gathering:
@@ -282,16 +282,17 @@ Summary returned:
 Section: 🜍.2 Sigils
 Classification: HUMAN (78%)
 Flagged sentences: 7
-Report appended to: /home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/redacted1155_beats.md
+Report appended to: {beats_file}
 ```
 
 ## Example 2: Clean Detection (No Flagged Sentences)
 
 ```
-Input: "Run AI detection on '🜂.4 🜄.1 Porch'"
+Input: "Run AI detection on '🜂.4 🜄.1 Porch' in {story_file} with beats in {beats_file}"
 Context:
   - section_name: 🜂.4 🜄.1 Porch
-  - Using default file paths
+  - story_file: {user-provided path to story file}
+  - beats_file: {user-provided path to beats file}
 
 Process:
   1. Extract section prose
@@ -306,7 +307,7 @@ Summary returned:
 Section: 🜂.4 🜄.1 Porch
 Classification: HUMAN (92%)
 Flagged sentences: 0
-Report appended to: /home/pknull/Obsidian/REDACTED99/Vault/Books/Redacted1155/redacted1155_beats.md
+Report appended to: {beats_file}
 ```
 
 ## Example 3: Section Not Found

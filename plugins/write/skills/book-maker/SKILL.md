@@ -1,3 +1,9 @@
+---
+name: book-maker
+description: Python-based markdown to PDF/EPUB converter with custom font embedding. Generates both formats in a single run using pypandoc.
+license: MIT
+---
+
 # Book Maker Skill
 
 Python-based markdown to PDF/EPUB converter with custom font embedding. Generates both formats in a single run.

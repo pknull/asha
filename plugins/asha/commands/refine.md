@@ -1,3 +1,9 @@
+---
+description: "Show status of automatic prompt correction via LanguageTool"
+argument-hint: "status"
+allowed-tools: ["Bash"]
+---
+
 # Automatic Prompt Correction (Always Active)
 
 **Status**: ALWAYS RUNNING - Intelligent overhead management
