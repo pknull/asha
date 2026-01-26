@@ -1,0 +1,55 @@
+\usepackage{titlesec}
+\usepackage{fontspec}
+\usepackage{setspace}
+\usepackage{ragged2e}
+
+\setmainfont{Quivira}[
+    Path=./fonts/,
+    Extension=.otf,
+    Ligatures=TeX
+]
+
+
+\pagestyle{plain}
+
+% Define custom commands for styles
+% Book Title style
+\newcommand{\booktitle}{\fontsize{36}{43.2pt} \bfseries \centering}
+
+% Section Heading style
+\newcommand{\sectionheading}{\fontsize{18}{21.6pt} \bfseries \centering}
+
+% Chapter Title style
+\newcommand{\chaptertitle}{\fontsize{16}{19.2pt} \bfseries \centering}
+
+% Body Text style
+\newcommand{\bodytext}{\fontsize{12}{13.8pt} \setstretch{1.15}}
+
+% Block Quote style
+\newcommand{\blockquote}{\fontsize{12}{12pt} \normalfont}
+
+% Scene Break style
+\newcommand{\scenebreakstyle}{\fontsize{12}{12pt} \centering}
+
+% Format headings
+\titleformat{\part}[display]{\booktitle}{}{0pt}{\vspace{2ex}}
+\titleformat{\chapter}[display]{\sectionheading}{}{0pt}{\vspace{2ex}}
+\titleformat{\section}[display]{\chaptertitle}{}{0pt}{\vspace{1ex}}
+
+% Set paragraph indentation and spacing
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{1em}
+
+% Define block quote environment
+\renewenvironment{quote}{
+  \blockquote
+  \setlength{\leftskip}{0.5in}
+  \setlength{\rightskip}{0.5in}
+}{}
+
+% Define scene break command
+\newcommand{\scenebreak}{
+  \begin{center}
+    * * *
+  \end{center}
+}

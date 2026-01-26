@@ -1,0 +1,14 @@
+{
+  "name": "image",
+  "version": "1.0.0",
+  "description": "Image generation workflows: Stable Diffusion prompts, ComfyUI workflows, and AI image iteration",
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "license": "MIT",
+  "keywords": ["image", "stable-diffusion", "comfyui", "ai-art", "prompts"],
+  "agents": [
+    "./agents/comfyui-prompt-engineer.md"
+  ]
+}

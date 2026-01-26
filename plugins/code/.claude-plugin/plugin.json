@@ -10,6 +10,7 @@
   "keywords": ["code", "development", "review", "tdd", "orchestration", "workflows"],
   "commands": "./commands",
   "agents": [
+    "./agents/architect.md",
     "./agents/codebase-historian.md"
   ]
 }

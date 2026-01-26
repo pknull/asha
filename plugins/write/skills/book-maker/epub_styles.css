@@ -1,0 +1,100 @@
+/* Default body style */
+body {
+  font-family: "Lora", serif;
+  font-size: 12pt;
+  text-align: left;
+  line-height: 1.15;
+  margin: 1em;
+}
+
+/* Book Title style */
+h1.title {
+  font-family: "LuxuriousRoman", serif;
+  font-size: 36pt;
+  font-weight: bold;
+  text-align: center;
+  margin-top: 0pt;
+  margin-bottom: 24pt;
+}
+
+/* Section Heading style */
+h1 {
+  font-family: "Lora", serif;
+  font-size: 18pt;
+  font-weight: bold;
+  text-align: center;
+  margin-top: 0pt;
+  margin-bottom: 12pt;
+}
+
+/* Chapter Title style */
+h2 {
+  font-family: "Lora", serif;
+  font-size: 16pt;
+  font-weight: bold;
+  text-align: center;
+  margin-top: 0pt;
+  margin-bottom: 12pt;
+}
+
+/* Paragraph style */
+p {
+  text-indent: 0pt;
+  margin-top: 0pt;
+  margin-bottom: 1em;
+}
+
+/* Block quote style */
+blockquote {
+  font-family: "Lora", serif;
+  font-size: 12pt;
+  margin-left: 0.5in;
+  margin-right: 0.5in;
+  margin-top: 6pt;
+  margin-bottom: 6pt;
+}
+
+/* Scene break style */
+.scene-break {
+  font-family: "LuxuriousRoman", serif;
+  font-size: 12pt;
+  text-align: center;
+  margin-top: 6pt;
+  margin-bottom: 6pt;
+}
+
+/* Font declarations for embedding */
+@font-face {
+  font-family: "Lora";
+  font-style: normal;
+  font-weight: normal;
+  src: url("../fonts/Lora-Regular.ttf");
+}
+
+@font-face {
+  font-family: "Lora";
+  font-style: normal;
+  font-weight: bold;
+  src: url("../fonts/Lora-Bold.ttf");
+}
+
+@font-face {
+  font-family: "Lora";
+  font-style: italic;
+  font-weight: normal;
+  src: url("../fonts/Lora-Italic.ttf");
+}
+
+@font-face {
+  font-family: "Lora";
+  font-style: italic;
+  font-weight: bold;
+  src: url("../fonts/Lora-BoldItalic.ttf");
+}
+
+@font-face {
+  font-family: "LuxuriousRoman";
+  font-style: normal;
+  font-weight: normal;
+  src: url("../fonts/LuxuriousRoman-Regular.ttf");
+}

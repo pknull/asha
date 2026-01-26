@@ -1,18 +1,25 @@
 {
   "name": "write",
-  "version": "1.0.0",
-  "description": "Creative writing workflows: prose craft, worldbuilding, editing, and storytelling agents for fiction development",
+  "version": "1.1.0",
+  "description": "Creative writing workflows: prose craft, worldbuilding, editing, AI detection, and storytelling agents for fiction development",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"
   },
   "license": "MIT",
-  "keywords": ["writing", "fiction", "prose", "editing", "worldbuilding", "storytelling"],
+  "keywords": ["writing", "fiction", "prose", "editing", "worldbuilding", "storytelling", "ai-detection"],
   "agents": [
     "./agents/outline-architect.md",
     "./agents/prose-writer.md",
+    "./agents/fiction-writer.md",
     "./agents/consistency-checker.md",
     "./agents/developmental-editor.md",
-    "./agents/line-editor.md"
-  ]
+    "./agents/line-editor.md",
+    "./agents/ai-detector.md",
+    "./agents/prose-analysis.md",
+    "./agents/intimacy-designer.md",
+    "./agents/manuscript-editor.md"
+  ],
+  "commands": "./commands",
+  "skills": "./skills"
 }
