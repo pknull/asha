@@ -1,11 +1,11 @@
 ---
-version: "1.8"
-lastUpdated: "2026-01-26 19:40 UTC"
+version: "1.9"
+lastUpdated: "2026-01-27 08:15 UTC"
 lifecycle: "maintenance"
 stakeholder: "all"
-changeTrigger: "Session save - v1.7.0 agent migration and standards compliance audit"
+changeTrigger: "Session save - Redis whitepaper analysis, keeperProfile.md creation"
 validatedBy: "ai"
-dependencies: ["communicationStyle.md"]
+dependencies: ["communicationStyle.md", "keeperProfile.md"]
 ---
 
 # activeContext
@@ -20,11 +20,10 @@ dependencies: ["communicationStyle.md"]
 - All plugin versions incremented for upgrade path
 
 **Recent Activities** (last 7 days):
-- **2026-01-26 PM**: Agent migration and standards audit - Migrated 9 new agents from REDACTED99 (partner-sentiment, task-manager, architect, comfyui-prompt-engineer, ai-detector, fiction-writer, intimacy-designer, manuscript-editor, prose-analysis); added new image plugin; audited against Claude Code skills best practices blog post; fixed 10 hardcoded paths, added frontmatter to 6 files, added allowed-tools to 2 commands; bumped all affected plugin versions
-- **2026-01-26 AM**: Domain restructuring complete - Created code plugin (codebase-historian, orchestration, recipes); created write plugin (5 agents, writing.md, recipes); absorbed local-review into code as /code:review; moved ACE cycle to asha/cognitive.md; cleaned up all stale references; panel approved structure with 100% consensus; code review identified and fixed 7 issues
+- **2026-01-27**: Redis whitepaper analysis - Analyzed "Build an AI app in 5 steps" whitepaper for Asha improvements; concluded existing Memory Bank architecture is sound; created `keeperProfile.md` for persistent user preferences; added to `communicationStyle.md` dependencies (v4.7); key insight: "facts" are best handled as a section in activeContext.md, not a new system
+- **2026-01-26 PM**: Agent migration and standards audit - Migrated 9 new agents from REDACTED99; added new image plugin; audited against Claude Code skills best practices; fixed 10 hardcoded paths, added frontmatter to 6 files; bumped all affected plugin versions
+- **2026-01-26 AM**: Domain restructuring complete - Created code plugin; created write plugin; absorbed local-review into code as /code:review; moved ACE cycle to asha/cognitive.md
 - **2026-01-25**: memory_index.py robustness improvements - Added faulthandler/signal handling; Ollama retry logic; robust embedding handling; bumped Asha to v1.5.0
-- **2026-01-18**: Ralph loop test expansion - Doubled test coverage from 91→182 tests
-- **2026-01-17**: Audit remediation - Fixed hook permissions; synchronized versions; created test framework
 
 ## Critical Reference Information
 
@@ -47,8 +46,16 @@ dependencies: ["communicationStyle.md"]
 **Deferred**:
 - Add CHANGELOG.md (low priority per audit)
 - Consider scoped Bash permissions (e.g., `Bash(git:*)`) per blog post recommendation
+- Add "## Key Facts" section to activeContext.md when atomic facts accumulate
+- Consider reranking enhancement for memory_index.py (recency/source weighting)
 
 ## Session Learnings
+
+**Redis Whitepaper Analysis (2026-01-27)**:
+- Semantic caching doesn't apply to Asha (not a persistent service)
+- Agentic memory slots = already have via Memory Bank files
+- "Facts" don't need a new system - a section in activeContext.md suffices
+- Preference persistence solved via keeperProfile.md + bootstrap dependency chain
 
 **Standards Reference**: https://leehanchung.github.io/blogs/2025/10/26/claude-skills-deep-dive/
 
