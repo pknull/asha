@@ -901,6 +901,20 @@ git push -u origin <branch-name>
 
 ## Version History
 
+### v1.8.0 (2026-01-28)
+- **New plugin: schedule** — Cron-style task automation with natural language time parsing
+  - Natural language parser (20+ expressions: "Every weekday at 9am", "Every 15 minutes", etc.)
+  - Task management with rate limiting, duplicate detection, dangerous command blocking
+  - systemd timer and cron backend support with automatic detection
+  - Execution wrapper with timeout handling, status tracking, audit logging
+  - End-to-end tested: tasks execute on schedule, Claude responds correctly
+
+### v1.7.0 (2026-01-26)
+- **New plugin: image** — Image generation workflows with Stable Diffusion prompt engineering, ComfyUI workflow design
+- Standards compliance audit per Claude Code skills best practices
+- Fixed hardcoded paths, added frontmatter to agent files
+- All plugin versions incremented for upgrade path
+
 ### v1.6.0 (2026-01-26)
 - **Domain restructuring**: Organized plugins by workflow type (panel=research, code=dev, write=creative, asha=core)
 - **New plugin: code** — Development workflows with codebase-historian agent, orchestration patterns, quality gates, swarm recipes

@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination",
-    "version": "1.7.0",
+    "version": "1.8.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
