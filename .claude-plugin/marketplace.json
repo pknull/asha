@@ -45,6 +45,12 @@
       "description": "Image generation workflows: Stable Diffusion prompt engineering, ComfyUI workflow design, parameter optimization, and LoRA/model selection for AI art generation.",
       "source": "./plugins/image",
       "strict": false
+    },
+    {
+      "name": "schedule",
+      "description": "Scheduled task execution for Claude Code. Manage cron-style recurring tasks with natural language time expressions. Supports cron and systemd backends with rate limiting, audit logging, and security constraints.",
+      "source": "./plugins/schedule",
+      "strict": false
     }
   ]
 }

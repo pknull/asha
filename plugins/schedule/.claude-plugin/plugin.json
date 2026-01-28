@@ -1,0 +1,14 @@
+{
+  "name": "schedule",
+  "version": "0.1.0",
+  "description": "Scheduled task execution for Claude Code. Manage cron-style recurring tasks with natural language time expressions.",
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "license": "MIT",
+  "keywords": ["cron", "schedule", "automation", "tasks", "timer"],
+  "commands": "./commands",
+  "agents": ["./agents/scheduler.md"],
+  "hooks": "./hooks/hooks.json"
+}
