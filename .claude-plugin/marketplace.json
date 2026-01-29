@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination",
-    "version": "1.8.0",
+    "version": "1.9.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
     {
       "name": "panel-system",
-      "description": "Dynamic multi-perspective analysis with 3 core roles + recruited specialists. Supports --format (github/json/markdown) and --context flags. Consensus tracking with percentage thresholds.",
+      "description": "Dynamic multi-perspective analysis with persistence (v5.0.0). Supports --resume for interrupted panels, --list/--show for discovery, --format (github/json/markdown), --context. Per-phase state files in Work/panels/.",
       "source": "./plugins/panel",
       "strict": false
     },
@@ -36,7 +36,7 @@
     },
     {
       "name": "asha",
-      "description": "Cognitive scaffold framework for session coordination and memory persistence. Provides /asha:init, /asha:save, /asha:note, /asha:status, /asha:index, /asha:cleanup commands, partner-sentiment and task-manager agents, scratchpad notes, session monitoring, vector DB semantic search, and ReAct pattern analysis (--react flag).",
+      "description": "Cognitive scaffold framework with cross-project identity layer (~/.asha/). Session coordination, Memory Bank, keeper profile calibration, vector DB semantic search, and ReAct analysis. Identity persists across all Asha-enabled projects.",
       "source": "./plugins/asha",
       "strict": false
     },

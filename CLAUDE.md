@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha-marketplace
 
-**Version**: 1.6.0
-**Last Updated**: 2026-01-26
+**Version**: 1.9.0
+**Last Updated**: 2026-01-29
 **Repository**: pknull/asha-marketplace
 
 ---
@@ -35,11 +35,13 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Panel System** | v4.2.0 | Research | Multi-perspective analysis with specialist recruitment |
-| **Code** | v1.0.0 | Development | Code review, orchestration patterns, TDD workflows |
-| **Write** | v1.0.0 | Creative | Prose craft, worldbuilding, storytelling agents |
-| **Output Styles** | v1.0.1 | Formatting | Switchable response styles |
-| **Asha** | v1.6.0 | Core | Session coordination, memory persistence, general techniques |
+| **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption |
+| **Code** | v1.0.1 | Development | Code review, orchestration patterns, TDD workflows |
+| **Write** | v1.1.1 | Creative | Prose craft, worldbuilding, storytelling agents |
+| **Output Styles** | v1.0.2 | Formatting | Switchable response styles |
+| **Asha** | v1.8.0 | Core | Session coordination, cross-project identity (~/.asha/) |
+| **Image** | v1.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows |
+| **Schedule** | v0.1.0 | Automation | Cron-style scheduled tasks |
 
 ### Technology Stack
 
@@ -900,6 +902,22 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v1.9.0 (2026-01-29)
+- **Panel system v5.0.0**: Full state persistence and panel management
+  - `--resume <id>`: Continue interrupted panels from last completed phase
+  - `--list [--status=X]`: Query panel index with optional filtering
+  - `--show <id>`: Display panel summary
+  - `--abandon <id>`: Mark panels as abandoned
+  - Output moved from `Work/meetings/` to `Work/panels/` with per-phase state files
+  - New files: `state.json`, `index.json`, `phase-*.md`, `transcript.md`
+- **Asha v1.8.0**: Cross-project identity layer
+  - New `~/.asha/` directory for user-scope identity (not committed to repos)
+  - `communicationStyle.md`: Who Asha is (voice, persona, constraints)
+  - `keeper.md`: Who you are (calibration signals via `/save`)
+  - Session-start hook auto-injects identity files from `~/.asha/`
+  - `/asha:init` bootstraps both identity layer and project Memory
+  - `/asha:save` captures keeper calibration signals to `~/.asha/keeper.md`
 
 ### v1.8.0 (2026-01-28)
 - **New plugin: schedule** — Cron-style task automation with natural language time parsing

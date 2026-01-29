@@ -1,6 +1,6 @@
 # asha-marketplace
 
-**Version**: 1.6.0
+**Version**: 1.9.0
 **Description**: Claude Code plugins for research, development, creative writing, and session coordination
 
 A collection of domain-focused Claude Code plugins organized by workflow type.
@@ -47,15 +47,22 @@ A collection of domain-focused Claude Code plugins organized by workflow type.
 
 **Plugin Name**: `panel-system`
 **Command**: `/panel`
-**Version**: 4.2.0
+**Version**: 5.0.0
 **Domain**: Research & Analysis
 
-Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challenger) + dynamically recruited specialists.
+Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challenger) + dynamically recruited specialists. Full state persistence for resumption and audit.
 
 ```bash
 /panel Should we implement GraphQL or REST for the new API
 /panel --format=github "Review authentication approach"
 /panel --context=docs/RFC.md "Evaluate this proposal"
+
+# Panel management (v5.0.0)
+/panel --list                    # List all panels
+/panel --list --status=active    # Filter by status
+/panel --resume <id>             # Resume interrupted panel
+/panel --show <id>               # Display panel summary
+/panel --abandon <id>            # Mark as abandoned
 ```
 
 **Features**:
@@ -64,6 +71,8 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 - Output formats: markdown (default), github, json
 - Context injection from files or URLs
 - Dynamic specialist recruitment
+- **v5.0.0**: Full persistence with `--resume`, `--list`, `--show`, `--abandon`
+- **v5.0.0**: Per-phase state files in `Work/panels/` for audit trail
 
 **[Full Documentation →](plugins/panel/README.md)**
 
@@ -73,7 +82,7 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 
 **Plugin Name**: `code`
 **Command**: `/code:review`
-**Version**: 1.0.0
+**Version**: 1.0.1
 **Domain**: Development
 
 Development workflows with orchestration patterns, code review, and specialized agents.
@@ -106,7 +115,7 @@ Development workflows with orchestration patterns, code review, and specialized 
 ### Write
 
 **Plugin Name**: `write`
-**Version**: 1.0.0
+**Version**: 1.1.1
 **Domain**: Creative Writing
 
 Creative writing workflows for fiction development: prose craft, worldbuilding, editing, and storytelling agents.
@@ -142,7 +151,7 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 
 **Plugin Name**: `output-styles`
 **Command**: `/style`
-**Version**: 1.0.1
+**Version**: 1.0.2
 **Domain**: Formatting
 
 Switchable output styles for Claude Code responses.
@@ -171,19 +180,37 @@ Switchable output styles for Claude Code responses.
 
 **Plugin Name**: `asha`
 **Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
-**Version**: 1.6.0
+**Version**: 1.8.0
 **Domain**: Core Scaffold
 
-Cognitive scaffold framework for session coordination and memory persistence. Foundation layer that other plugins build on.
+Cognitive scaffold framework for session coordination and memory persistence. Foundation layer that other plugins build on. **v1.8.0** introduces cross-project identity layer at `~/.asha/`.
 
 ```bash
-/asha:init                # Initialize Asha in project
-/asha:save                # Save session to Memory Bank
+/asha:init                # Initialize Asha (creates ~/.asha/ + project Memory/)
+/asha:save                # Save session to Memory Bank + keeper calibration
 /asha:note "text"         # Add timestamped note to scratchpad
 /asha:status              # Show session status
 /asha:index               # Index files for semantic search
 /asha:cleanup             # Remove legacy installation files
 ```
+
+**Two-Layer Architecture** (v1.8.0):
+
+| Layer | Location | Purpose |
+|-------|----------|---------|
+| **Identity** | `~/.asha/` | Cross-project (who Asha is, who you are) |
+| **Project** | `Memory/` | Per-project state, protocols, tech stack |
+
+**Identity Layer** (`~/.asha/` — user-scope, not committed):
+- `communicationStyle.md` — Who Asha is (voice, persona, constraints)
+- `keeper.md` — Who you are (preferences, calibration signals)
+- `config.json` — Cross-project settings
+
+**Project Layer** (`Memory/` — git-committed):
+- `activeContext.md` — Current session state
+- `projectbrief.md` — Project foundation
+- `techEnvironment.md` — Tools and platform config
+- `workflowProtocols.md` — Project-specific patterns
 
 **Core Modules** (general techniques):
 | Module | Purpose |
@@ -194,13 +221,6 @@ Cognitive scaffold framework for session coordination and memory persistence. Fo
 | `memory-ops.md` | Session synthesis, Memory Bank maintenance |
 | `high-stakes.md` | Safety protocols for destructive operations |
 | `verbalized-sampling.md` | Mode collapse recovery, diversity generation |
-
-**Memory Bank Templates**:
-- `activeContext.md` — Current session state
-- `projectbrief.md` — Project foundation
-- `communicationStyle.md` — Identity and voice
-- `techEnvironment.md` — Tools and platform config
-- `workflowProtocols.md` — Project-specific patterns
 
 ---
 
@@ -342,6 +362,23 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 ---
 
 ## Version History
+
+### v1.9.0 (2026-01-29)
+- **Panel system v5.0.0**: Full persistence and panel management
+  - `--resume <id>`: Continue interrupted panels from last phase
+  - `--list [--status=X]`: Query panel index with filtering
+  - `--show <id>`: Display panel summary
+  - `--abandon <id>`: Mark panels as abandoned
+  - Output moved to `Work/panels/` with per-phase state files
+- **Asha v1.8.0**: Cross-project identity layer
+  - `~/.asha/communicationStyle.md`: Who Asha is (persists across all projects)
+  - `~/.asha/keeper.md`: Who you are (calibration signals via `/save`)
+  - Session-start hook auto-injects identity files
+  - `/asha:init` bootstraps both identity layer and project Memory
+
+### v1.8.0 (2026-01-28)
+- Schedule plugin v0.1.0: Cron-style task automation
+- Marketplace version bump and version history tracking
 
 ### v1.6.0 (2026-01-26)
 - **Domain restructuring**: Organized plugins by workflow type
