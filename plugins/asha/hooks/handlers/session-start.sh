@@ -26,12 +26,27 @@ if ! is_asha_initialized; then
 fi
 
 # Build context injection
-# Include CORE.md and module references
+# Include CORE.md, identity layer (~/.asha/), and module references
 CORE_MD="$PLUGIN_ROOT/modules/CORE.md"
+ASHA_DIR="$HOME/.asha"
+IDENTITY_FILE="$ASHA_DIR/communicationStyle.md"
+KEEPER_FILE="$ASHA_DIR/keeper.md"
 
 if [[ -f "$CORE_MD" ]]; then
     # Read CORE.md content
     CORE_CONTENT=$(cat "$CORE_MD")
+
+    # Read identity layer files if they exist
+    IDENTITY_CONTENT=""
+    KEEPER_CONTENT=""
+
+    if [[ -f "$IDENTITY_FILE" ]]; then
+        IDENTITY_CONTENT=$(cat "$IDENTITY_FILE")
+    fi
+
+    if [[ -f "$KEEPER_FILE" ]]; then
+        KEEPER_CONTENT=$(cat "$KEEPER_FILE")
+    fi
 
     # Output as system-reminder
     cat <<EOF
@@ -53,6 +68,27 @@ Tools available:
 - Memory search wrapper: "${PLUGIN_ROOT}/tools/memory-search" "query"
 </system-reminder>
 EOF
+
+    # Inject identity layer if present
+    if [[ -n "$IDENTITY_CONTENT" ]]; then
+        cat <<EOF
+<system-reminder>
+Identity layer loaded from ~/.asha/communicationStyle.md:
+
+$IDENTITY_CONTENT
+</system-reminder>
+EOF
+    fi
+
+    if [[ -n "$KEEPER_CONTENT" ]]; then
+        cat <<EOF
+<system-reminder>
+Keeper profile loaded from ~/.asha/keeper.md:
+
+$KEEPER_CONTENT
+</system-reminder>
+EOF
+    fi
 else
     echo "{}"
 fi
