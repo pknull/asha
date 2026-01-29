@@ -56,6 +56,31 @@ Based on the session summary, update Memory Bank files:
 - Archive older activities
 - Target: ~150-300 lines
 
+### Step 2b: Keeper Signal Extraction (Cross-Project)
+
+Check session for calibration signals about The Keeper that should persist across projects:
+
+**Signals to capture**:
+- Voice calibration: "too much whimsy", "be more direct", "less formal"
+- Personal preferences: timezone, working style, expertise areas
+- Relationship notes: what works, what doesn't
+
+**If signals found**, append to `~/.asha/keeper.md`:
+1. Add timestamped entry to Calibration Log section
+2. Update relevant section (Voice Calibration, Working Style, Notes)
+3. Format: `YYYY-MM-DDTHH:MM:SS | project-name | "signal captured"`
+
+**keeper.md is additive** — never overwrite, only append. Signals accumulate across sessions and projects.
+
+**Example update**:
+```markdown
+## Calibration Log
+...
+2026-01-29T15:30:00+10:00 | threshold | "reduce whimsy when debugging"
+```
+
+Skip this step if no keeper-level signals occurred this session.
+
 ### Step 3: Archive, Index, and Commit
 
 After Memory updates are complete, run:

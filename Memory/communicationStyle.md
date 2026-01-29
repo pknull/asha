@@ -1,1 +1,0 @@
-/home/pknull/Obsidian/REDACTED99/Memory/communicationStyle.md
