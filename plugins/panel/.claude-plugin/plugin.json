@@ -1,7 +1,7 @@
 {
   "name": "panel-system",
-  "version": "4.2.0",
-  "description": "Dynamic multi-perspective analysis with 3 core roles + recruited specialists. Supports --format (github/json/markdown) and --context flags. Consensus tracking with percentage thresholds.",
+  "version": "5.0.0",
+  "description": "Dynamic multi-perspective analysis with persistence. Supports --resume for interrupted panels, --list/--show for discovery, per-phase state files for audit trail. Breaking: output moves to Work/panels/.",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"

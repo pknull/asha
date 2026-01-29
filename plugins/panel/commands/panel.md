@@ -25,9 +25,26 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 /panel --context=spec.md --format=github "Evaluate this proposal"
 ```
 
+### Panel Management
+
+```bash
+/panel --list                    # List all panels (active and completed)
+/panel --list --status=active    # List only active/interrupted panels
+/panel --list --status=completed # List only completed panels
+/panel --list --status=abandoned # List abandoned panels
+/panel --show <id>               # Display panel summary by ID
+/panel --resume <id>             # Resume interrupted panel from last phase
+/panel --abandon <id>            # Mark panel as abandoned
+```
+
 **Flags**:
 - `--format=<type>`: Output format (`markdown` default, `github`, `json`)
 - `--context=<file>`: Pre-load reference material into panel context
+- `--list`: List panels in index (combine with `--status` to filter)
+- `--status=<type>`: Filter for `--list` (`active`, `completed`, `abandoned`)
+- `--show <id>`: Display summary of specific panel
+- `--resume <id>`: Continue panel from last completed phase
+- `--abandon <id>`: Mark panel as abandoned (cannot resume)
 
 **That's it.** The panel handles everything automatically:
 - The Analyst analyzes topic and recruits 2-5 specialist agents from available library
@@ -89,6 +106,11 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 ## 11-Phase Protocol
 
 **Phase -1: Topic Analysis & Workforce Recruitment** (The Analyst)
+- **Initialize persistence**:
+  * Generate panel ID: `YYYY-MM-DD--<slug>` (slug from topic, lowercase, hyphens)
+  * Create directory: `Work/panels/<id>/`
+  * Initialize state.json with status `active`
+  * Add entry to `Work/panels/index.json`
 - Analyze topic domain (technical, creative, research-heavy, security-critical)
 - Determine required expertise areas (2-5 domains typical)
 - Search agent library systematically (`.claude/agents/*.md`)
@@ -102,6 +124,8 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 - Deploy `agent-fabricator` if gaps detected (no agent scores >4)
 - Set decision rule (consensus default, unanimous for security)
 - Infer primary goals from topic context
+- **Write phase file**: `phase-00-recruitment.md`
+- **Update state.json**: Record panel composition, goals, decision rule
 
 **Phase 0: Goal Clarification** (The Moderator)
 - Request clarification if topic is ambiguous or underspecified
@@ -163,6 +187,18 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
   * **60-79%**: Moderate consensus (address dissent before proceeding)
   * **<60%**: Weak consensus (requires additional deliberation or escalation)
 - List Next Steps with owners, deliverables, due dates
+- **Write phase file**: `phase-08-decision.md`
+- **Finalize persistence**:
+  * Write `transcript.md` (full panel transcript)
+  * Update state.json: status `completed`, final decision, consensus
+  * Update index.json with decision summary
+
+**Per-Phase Persistence** (all phases):
+After completing each phase, update `state.json`:
+- Increment `current_phase`
+- Add phase number to `completed_phases`
+- Update `updated` timestamp
+- Store phase-specific data (positions, findings, etc.)
 
 ## Decision Report (Fixed Output)
 
@@ -309,26 +345,161 @@ Core roles have documented profiles in `plugins/panel/docs/characters/`:
 
 Recruited specialists are documented in `.claude/agents/*.md` (agent count varies by host project).
 
-## Logging
+## Persistence Architecture
 
-Panel transcripts are automatically saved to:
+Panels are saved to `Work/panels/` with full state for resumption and audit.
+
+### Directory Structure
+
 ```
-Work/meetings/YYYY-MM-DD--panel--<slug>.md
+Work/panels/
+├── index.json                           # Panel discovery index
+└── YYYY-MM-DD--<slug>/                  # Per-panel directory
+    ├── state.json                       # Resumable state
+    ├── phase-00-recruitment.md          # Phase -1 output
+    ├── phase-01-framing.md              # Phase 1 output
+    ├── phase-02-infrastructure.md       # Phase 2 output
+    ├── phase-03-positions.md            # Phase 3 output
+    ├── phase-04-cross-examination.md    # Phase 4 output
+    ├── phase-05-research.md             # Phase 5 output (if activated)
+    ├── phase-06-reflection.md           # Phase 6 output
+    ├── phase-07-synthesis.md            # Phase 7 output
+    ├── phase-08-decision.md             # Phase 8 output (final report)
+    └── transcript.md                    # Full panel transcript
 ```
 
-Suggested frontmatter:
-```yaml
----
-date: YYYY-MM-DD
-topic: "<one-line topic>"
-mode: "inworld|outworld"
-decision_rule: "consensus|unanimous"
-experts: ["moderator", "adversary", "recruited-agent-1", "recruited-agent-2", ...]
----
+### index.json Schema
+
+```json
+{
+  "panels": [
+    {
+      "id": "2026-01-29--graphql-vs-rest",
+      "topic": "Should we implement GraphQL or REST for the new API",
+      "status": "completed|active|abandoned",
+      "created": "2026-01-29T10:30:00+10:00",
+      "updated": "2026-01-29T11:45:00+10:00",
+      "current_phase": 8,
+      "decision": "REST with GraphQL gateway for specific use cases",
+      "consensus": 85
+    }
+  ]
+}
 ```
+
+### state.json Schema
+
+```json
+{
+  "id": "2026-01-29--graphql-vs-rest",
+  "topic": "Should we implement GraphQL or REST for the new API",
+  "status": "active|completed|abandoned",
+  "created": "2026-01-29T10:30:00+10:00",
+  "updated": "2026-01-29T11:45:00+10:00",
+  "current_phase": 4,
+  "completed_phases": [0, 1, 2, 3],
+  "decision_rule": "consensus",
+  "context_files": ["docs/RFC.md"],
+  "panel": {
+    "core": ["The Moderator", "Analyst", "Challenger"],
+    "specialists": [
+      {"agent": "architect", "session_name": "The Systems Designer", "score": 9},
+      {"agent": "research-assistant", "session_name": "The Evidence Gatherer", "score": 8}
+    ]
+  },
+  "goals": ["Determine optimal API strategy", "Consider team expertise"],
+  "positions": {
+    "The Systems Designer": {"position": "...", "recommendation": "..."},
+    "The Challenger": {"position": "...", "recommendation": "..."}
+  }
+}
+```
+
+### Phase File Format
+
+Each `phase-NN-*.md` contains:
+
+```markdown
+---
+panel_id: "2026-01-29--graphql-vs-rest"
+phase: 3
+phase_name: "Initial Positions"
+started: "2026-01-29T10:45:00+10:00"
+completed: "2026-01-29T11:00:00+10:00"
+---
+
+# Phase 3: Initial Positions
+
+[Phase content here]
+```
+
+### Resume Protocol
+
+When `--resume <id>` is invoked:
+
+1. Load `Work/panels/<id>/state.json`
+2. Verify status is `active` (not `completed` or `abandoned`)
+3. Read completed phase files to restore context
+4. Continue from `current_phase + 1`
+5. Update state.json after each phase completion
+
+### Abandon Protocol
+
+When `--abandon <id>` is invoked:
+
+1. Load state.json
+2. Set `status: "abandoned"`
+3. Update index.json
+4. Panel cannot be resumed after abandonment
+
+## Management Command Protocols
+
+### --list Protocol
+
+1. Read `Work/panels/index.json` (create if missing)
+2. Filter by `--status` if provided
+3. Display table:
+   ```
+   ID                          | Status    | Phase | Topic                    | Updated
+   ----------------------------|-----------|-------|--------------------------|-------------------
+   2026-01-29--graphql-vs-rest | completed | 8     | GraphQL vs REST for API  | 2026-01-29 11:45
+   2026-01-28--fish-enhancement| active    | 4     | How do we pimp fish      | 2026-01-28 16:20
+   ```
+
+### --show Protocol
+
+1. Load `Work/panels/<id>/state.json`
+2. Display summary:
+   - Topic, status, decision rule
+   - Panel composition with session names
+   - Completed phases list
+   - Current phase (if active)
+   - Decision and consensus (if completed)
+
+### --resume Protocol
+
+1. Validate panel exists and status is `active`
+2. Load state.json and all completed phase files
+3. Reconstruct panel context:
+   - Goals, decision rule, context files
+   - Panel composition with session names
+   - Positions from completed phases
+4. Announce: "Resuming panel '<topic>' from Phase N"
+5. Continue protocol from next incomplete phase
+6. Update state.json after each phase
+7. Update index.json on completion
+
+### --abandon Protocol
+
+1. Validate panel exists and status is `active`
+2. Set status to `abandoned` in state.json
+3. Update index.json
+4. Confirm: "Panel '<topic>' marked abandoned"
 
 ## Notes
 
+- **Persistence**: All panels saved to `Work/panels/` for audit and resumption
+- **Phase files**: Each phase writes to separate file for granular recovery
 - **Dynamic recruitment**: No static panelists—Analyst assigns 2-5 specialists per topic
 - **Session-specific names**: Agents given evocative contextual names for panel depth
 - **Evidence standards**: Use markers where appropriate: [Inference], [Speculation], [Unverified]
