@@ -1,11 +1,11 @@
 ---
-version: "2.0"
-lastUpdated: "2026-01-28 12:30 UTC"
+version: "2.1"
+lastUpdated: "2026-01-29 12:30 UTC"
 lifecycle: "maintenance"
 stakeholder: "all"
-changeTrigger: "Session save - schedule plugin created and deployed"
+changeTrigger: "v1.9.0 release - panel persistence, cross-project identity"
 validatedBy: "ai"
-dependencies: ["communicationStyle.md", "keeperProfile.md"]
+dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 ---
 
 # activeContext
@@ -15,29 +15,32 @@ dependencies: ["communicationStyle.md", "keeperProfile.md"]
 **Primary Focus**: Claude Code plugin marketplace providing domain-focused plugins for research, development, creative writing, automation, and session coordination.
 
 **Active Work**:
-- Marketplace v1.8.0 with 7 plugins (added schedule plugin)
-- Schedule plugin fully tested end-to-end with systemd timer execution
+- Marketplace v1.9.0 with 7 plugins
+- Panel System v5.0.0: Full persistence and panel management
+- Asha v1.8.0: Cross-project identity layer (`~/.asha/`)
 
 **Recent Activities** (last 7 days):
-- **2026-01-28**: Schedule plugin created - Full cron-style task automation plugin from research through deployment. Natural language time parser (20+ expressions), task management with security validation (rate limiting, dangerous command blocking, duplicate detection), systemd/cron backend with auto-detection, execution wrapper with logging. End-to-end tested: tasks execute on schedule, Claude responds correctly. Marketplace bumped to v1.8.0.
-- **2026-01-27**: Redis whitepaper analysis - Analyzed "Build an AI app in 5 steps" whitepaper; concluded Memory Bank architecture is sound; created `keeperProfile.md` for persistent user preferences
-- **2026-01-26 PM**: Agent migration and standards audit - Migrated 9 agents from REDACTED99; added image plugin; standards compliance audit
-- **2026-01-26 AM**: Domain restructuring complete - Created code plugin; created write plugin; moved ACE cycle to asha/cognitive.md
+- **2026-01-29**: v1.9.0 release - Major features:
+  - **Panel System v5.0.0**: State persistence with `--resume <id>`, `--list`, `--show <id>`, `--abandon <id>`. Output moved to `Work/panels/` with per-phase state files.
+  - **Asha v1.8.0**: Cross-project identity via `~/.asha/` directory (user-scope, not committed). `communicationStyle.md` defines who Asha is; `keeper.md` captures calibration signals via `/save`. Session-start hook auto-injects identity.
+- **2026-01-28**: Schedule plugin created - Full cron-style task automation plugin. Natural language time parser (20+ expressions), task management with security validation, systemd/cron backend. End-to-end tested.
+- **2026-01-27**: Redis whitepaper analysis - Concluded Memory Bank architecture is sound; created `keeperProfile.md` (now superseded by `~/.asha/keeper.md`)
+- **2026-01-26**: Domain restructuring + agent migration - Created code/write plugins; migrated 9 agents from REDACTED99; standards compliance audit
 
 ## Critical Reference Information
 
-- **Plugins**: panel-system (v4.2.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.7.1), image (v1.0.0), schedule (v0.1.0)
+- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.8.0), image (v1.0.0), schedule (v0.1.0)
 - **Domain separation**: panel=research, code=development, write=creative, image=generation, schedule=automation, asha=core scaffold
+- **Identity layer**: `~/.asha/` (cross-project, user-scope) contains communicationStyle.md + keeper.md
 - **Main docs**: CLAUDE.md contains comprehensive repository guide
 - **Vector DB**: Indexed, ollama + chromadb operational
-- **Shared files**: communicationStyle.md → /home/pknull/Obsidian/REDACTED99/Memory/communicationStyle.md
 - **Test suite**: `./tests/run-tests.sh` runs all tests
 
 ## Next Steps
 
 **Immediate**:
-- [x] Update CLAUDE.md version history with v1.7.0 and v1.8.0 changes (done)
-- [ ] Run test suite to validate all changes
+- [ ] Run test suite to validate v1.9.0 changes
+- [ ] Test panel persistence (`/panel --resume`, `--list`, `--show`)
 
 **Blocked**:
 - None
@@ -45,8 +48,8 @@ dependencies: ["communicationStyle.md", "keeperProfile.md"]
 **Deferred**:
 - Add CHANGELOG.md (low priority per audit)
 - Consider scoped Bash permissions (e.g., `Bash(git:*)`) per blog post recommendation
-- Add "## Key Facts" section to activeContext.md when atomic facts accumulate
 - Consider reranking enhancement for memory_index.py (recency/source weighting)
+- ai-detector: Check API credits before scanning (see TODO.md)
 
 ## Session Learnings
 
@@ -54,7 +57,13 @@ dependencies: ["communicationStyle.md", "keeperProfile.md"]
 - Semantic caching doesn't apply to Asha (not a persistent service)
 - Agentic memory slots = already have via Memory Bank files
 - "Facts" don't need a new system - a section in activeContext.md suffices
-- Preference persistence solved via keeperProfile.md + bootstrap dependency chain
+- Preference persistence solved via `~/.asha/keeper.md` + bootstrap dependency chain
+
+**Identity Layer (2026-01-29)**:
+- Cross-project identity moved to `~/.asha/` (user-scope, not committed)
+- `communicationStyle.md`: Who Asha is (voice, persona, constraints)
+- `keeper.md`: Who The Keeper is (calibration signals accumulated via `/save`)
+- Session-start hook auto-injects both files, ensuring identity persists across all projects
 
 **Standards Reference**: https://leehanchung.github.io/blogs/2025/10/26/claude-skills-deep-dive/
 
