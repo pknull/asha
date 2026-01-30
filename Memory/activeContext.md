@@ -1,6 +1,6 @@
 ---
-version: "2.1"
-lastUpdated: "2026-01-29 12:30 UTC"
+version: "2.2"
+lastUpdated: "2026-01-30 21:25 UTC"
 lifecycle: "maintenance"
 stakeholder: "all"
 changeTrigger: "v1.9.0 release - panel persistence, cross-project identity"
@@ -20,6 +20,7 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 - Asha v1.8.0: Cross-project identity layer (`~/.asha/`)
 
 **Recent Activities** (last 7 days):
+- **2026-01-30**: Housekeeping - Verified git clean, version tracking correct. Confirmed asha 1.8.0→1.8.1 bump tracked memory script fix (orphaned indexer process). Clarified marketplace update policy: only for structural changes (new plugins, removals, major features), not patch bumps.
 - **2026-01-29**: v1.9.0 release - Major features:
   - **Panel System v5.0.0**: State persistence with `--resume <id>`, `--list`, `--show <id>`, `--abandon <id>`. Output moved to `Work/panels/` with per-phase state files.
   - **Asha v1.8.0**: Cross-project identity via `~/.asha/` directory (user-scope, not committed). `communicationStyle.md` defines who Asha is; `keeper.md` captures calibration signals via `/save`. Session-start hook auto-injects identity.
@@ -29,7 +30,7 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 
 ## Critical Reference Information
 
-- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.8.0), image (v1.0.0), schedule (v0.1.0)
+- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.8.1), image (v1.0.0), schedule (v0.1.0)
 - **Domain separation**: panel=research, code=development, write=creative, image=generation, schedule=automation, asha=core scaffold
 - **Identity layer**: `~/.asha/` (cross-project, user-scope) contains communicationStyle.md + keeper.md
 - **Main docs**: CLAUDE.md contains comprehensive repository guide
@@ -41,6 +42,7 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 **Immediate**:
 - [ ] Run test suite to validate v1.9.0 changes
 - [ ] Test panel persistence (`/panel --resume`, `--list`, `--show`)
+- [ ] Finalize CLAUDE.md version to reflect asha 1.8.1
 
 **Blocked**:
 - None
