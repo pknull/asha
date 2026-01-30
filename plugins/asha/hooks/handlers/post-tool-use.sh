@@ -190,7 +190,10 @@ case "$TOOL_NAME" in
                 PYTHON_CMD=$(get_python_cmd)
                 if [[ -f "$MEMORY_INDEX" && -n "$PYTHON_CMD" ]]; then
                     # Run incremental ingest in background (non-blocking)
-                    ("$PYTHON_CMD" "$MEMORY_INDEX" ingest --changed >/dev/null 2>&1) &
+                    # Skip if already running to prevent process accumulation
+                    if ! pgrep -f "memory_index.py ingest" >/dev/null 2>&1; then
+                        ("$PYTHON_CMD" "$MEMORY_INDEX" ingest --changed >/dev/null 2>&1) &
+                    fi
                 fi
             fi
         fi

@@ -31,6 +31,7 @@ import os
 import sys
 import json
 import atexit
+import fcntl
 import faulthandler
 import signal
 import subprocess
@@ -159,9 +160,6 @@ def setup_diagnostics():
         pass
 
     def _handle_signal(signum, frame):
-        if signum == signal.SIGHUP:
-            log_debug(f"signal {signum} received, ignoring, last_file={CURRENT_FILE}")
-            return
         log_debug(f"signal {signum} received, last_file={CURRENT_FILE}")
         sys.exit(1)
 
@@ -853,6 +851,22 @@ def ingest(changed_only: bool = False):
     require_dependencies("ingest")
     init_paths()
     setup_diagnostics()
+
+    # Acquire exclusive lock to prevent concurrent ingestion
+    lock_file_path = VECTOR_DB_PATH / ".ingest.lock"
+    VECTOR_DB_PATH.mkdir(parents=True, exist_ok=True)
+    lock_file = open(lock_file_path, 'w')
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log_debug("ingest skipped: another instance is running")
+        print("⏭️  Skipping: another indexer is already running", file=sys.stderr)
+        lock_file.close()
+        return
+
+    # Ensure lock is released on exit
+    atexit.register(lambda: lock_file.close())
+
     log_debug(f"ingest start: changed_only={changed_only}")
 
     print("=" * 60)
