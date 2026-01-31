@@ -6,8 +6,6 @@
 # 1. Project's .asha/.venv/ (plugin pattern)
 # 2. System python3
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
 # Detect project directory
 if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
     PROJECT_DIR="$CLAUDE_PROJECT_DIR"

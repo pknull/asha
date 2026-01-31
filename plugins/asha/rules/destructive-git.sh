@@ -10,6 +10,7 @@
 check_violation() {
     local tool_name="$1"
     local command="$2"
+    # shellcheck disable=SC2034  # project_dir unused but required for API consistency
     local project_dir="$3"
 
     # Only applies to Bash operations

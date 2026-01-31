@@ -1,6 +1,6 @@
 # Asha
 
-**Version**: 1.6.0
+**Version**: 1.9.0
 **Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
 
 Cognitive scaffold framework for session coordination, memory persistence, and session monitoring.

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -euo pipefail
 # block-secrets.sh - PreToolUse hook for Asha
 # Blocks access to sensitive credential files
 #

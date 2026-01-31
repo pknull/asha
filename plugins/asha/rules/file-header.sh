@@ -24,7 +24,7 @@ check_violation() {
     local required_sections=""
 
     # Shell scripts in .claude/
-    if [[ "$file_path" =~ ^$project_dir/\.claude/.*\.sh$ ]]; then
+    if [[ "$file_path" =~ ^"$project_dir"/\.claude/.*\.sh$ ]]; then
         should_check=true
         required_sections="OUTCOME PATTERN CONSTRAINT"
     fi
@@ -49,7 +49,7 @@ check_violation() {
     done
 
     if [[ -n "$missing" ]]; then
-        local rel_path="${file_path#$project_dir/}"
+        local rel_path="${file_path#"$project_dir"/}"
         echo "Missing header sections in $rel_path:$missing"
         return 0
     fi

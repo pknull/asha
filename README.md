@@ -180,7 +180,7 @@ Switchable output styles for Claude Code responses.
 
 **Plugin Name**: `asha`
 **Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
-**Version**: 1.8.0
+**Version**: 1.9.0
 **Domain**: Core Scaffold
 
 Cognitive scaffold framework for session coordination and memory persistence. Foundation layer that other plugins build on. **v1.8.0** introduces cross-project identity layer at `~/.asha/`.

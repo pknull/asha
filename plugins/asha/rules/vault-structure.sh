@@ -19,7 +19,7 @@ check_violation() {
     [[ ! "$file_path" =~ ^$project_dir/Vault/ ]] && return 1
 
     # Extract subdirectory after Vault/
-    local rel_path="${file_path#$project_dir/Vault/}"
+    local rel_path="${file_path#"$project_dir"/Vault/}"
     local first_dir="${rel_path%%/*}"
 
     # Expected top-level directories in Vault

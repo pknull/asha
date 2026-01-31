@@ -79,9 +79,11 @@ for rule_file in "$RULES_DIR"/*.sh; do
 
         if [[ -n "$violation_msg" ]]; then
             timestamp=$(date -u '+%H:%M UTC')
-            echo "" >> "$SESSION_FILE"
-            echo "> [!warning] Violation [$severity] $timestamp" >> "$SESSION_FILE"
-            echo "> **$rule_name**: $violation_msg" >> "$SESSION_FILE"
+            {
+                echo ""
+                echo "> [!warning] Violation [$severity] $timestamp"
+                echo "> **$rule_name**: $violation_msg"
+            } >> "$SESSION_FILE"
         fi
     )
 done

@@ -39,7 +39,7 @@ get_plugin_root() {
     local script_dir
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     if [[ -f "$script_dir/../../modules/CORE.md" ]]; then
-        echo "$(cd "$script_dir/../.." && pwd)"
+        cd "$script_dir/../.." && pwd
         return 0
     fi
 

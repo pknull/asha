@@ -92,9 +92,10 @@ echo ""
 echo -e "${BLUE}--- Test Suite 5: Shell Script Linting ---${NC}"
 if command -v shellcheck &>/dev/null; then
     SHELL_ERRORS=0
+    # Exclude false positives for dynamic source paths
     while IFS= read -r -d '' script; do
         if head -1 "$script" | grep -qE "^#!.*bash"; then
-            if ! shellcheck -x "$script" 2>/dev/null; then
+            if ! shellcheck -x -e SC1090 -e SC1091 "$script" 2>/dev/null; then
                 echo -e "${RED}  ✗ $script${NC}"
                 SHELL_ERRORS=$((SHELL_ERRORS + 1))
             fi

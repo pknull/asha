@@ -47,7 +47,7 @@
       "strict": false
     },
     {
-      "name": "schedule",
+      "name": "scheduler",
       "description": "Scheduled task execution for Claude Code. Manage cron-style recurring tasks with natural language time expressions. Supports cron and systemd backends with rate limiting, audit logging, and security constraints.",
       "source": "./plugins/schedule",
       "strict": false

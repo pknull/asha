@@ -25,7 +25,7 @@ check_violation() {
     [[ "$tool_name" != "Write" && "$tool_name" != "Edit" ]] && return 1
 
     # Check if targeting Memory/ directory
-    if [[ "$file_path" =~ ^$project_dir/Memory/ ]]; then
+    if [[ "$file_path" =~ ^"$project_dir"/Memory/ ]]; then
         # Check against mutable patterns (no violation)
         for pattern in "${MUTABLE_PATTERNS[@]}"; do
             if [[ "$file_path" == *"$pattern"* ]]; then
@@ -34,7 +34,7 @@ check_violation() {
         done
 
         # Flag: Immutable Memory file modification detected
-        echo "Immutable Memory file modified: ${file_path#$project_dir/}"
+        echo "Immutable Memory file modified: ${file_path#"$project_dir"/}"
         return 0
     fi
 

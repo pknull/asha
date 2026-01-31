@@ -2221,19 +2221,19 @@ TEST75_DIR=$(mktemp -d)
 mkdir -p "$TEST75_DIR/Memory/sessions"
 mkdir -p "$TEST75_DIR/.asha"
 echo '{"initialized": true}' > "$TEST75_DIR/.asha/config.json"
-export CLAUDE_PROJECT_DIR="$TEST75_DIR"
-export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/asha"
 
-OUTPUT=$("$REPO_ROOT/plugins/asha/hooks/handlers/session-start.sh" 2>/dev/null || true)
+# Run with environment override (prefix assignment)
+OUTPUT=$(CLAUDE_PROJECT_DIR="$TEST75_DIR" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/asha" \
+    "$REPO_ROOT/plugins/asha/hooks/handlers/session-start.sh" 2>&1 || true)
 rm -rf "$TEST75_DIR"
 
-# Check output contains module paths
-if echo "$OUTPUT" | grep -q "modules/.*\.md"; then
+# Check output contains module paths (using fixed string match for reliability)
+if [[ "$OUTPUT" == *"cognitive.md"* ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  SessionStart output missing module paths"
+    echo "  SessionStart output missing module paths (len=${#OUTPUT})"
     FAILED=$((FAILED + 1))
 fi
 
@@ -2394,8 +2394,8 @@ for hooks_json in "$REPO_ROOT"/plugins/*/hooks/hooks.json; do
     plugin_dir=$(dirname "$(dirname "$hooks_json")")
     plugin_name=$(basename "$plugin_dir")
 
-    # Extract command paths from hooks.json
-    HANDLER_PATHS=$(grep -o '"command": "[^"]*"' "$hooks_json" | sed 's/"command": "//;s/"$//' | sed 's|\${CLAUDE_PLUGIN_ROOT}||')
+    # Extract command paths from hooks.json (|| true handles empty results)
+    HANDLER_PATHS=$(grep -o '"command": "[^"]*"' "$hooks_json" 2>/dev/null | sed 's/"command": "//;s/"$//' | sed 's|\${CLAUDE_PLUGIN_ROOT}||' || true)
 
     for handler_path in $HANDLER_PATHS; do
         full_path="$plugin_dir$handler_path"

@@ -1,5 +1,5 @@
 {
-  "name": "schedule",
+  "name": "scheduler",
   "version": "0.1.0",
   "description": "Scheduled task execution for Claude Code. Manage cron-style recurring tasks with natural language time expressions.",
   "author": {

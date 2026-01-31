@@ -83,7 +83,7 @@ if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
         "Edit"|"Write")
             FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
             if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-                REL_PATH=${FILE_PATH#$PROJECT_DIR/}
+                REL_PATH=${FILE_PATH#"$PROJECT_DIR"/}
                 CONTEXT="attempting to access $REL_PATH"
             fi
             ;;
@@ -114,7 +114,7 @@ case "$TOOL_NAME" in
         FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
             if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
-                REL_PATH=${FILE_PATH#$PROJECT_DIR/}
+                REL_PATH=${FILE_PATH#"$PROJECT_DIR"/}
             else
                 REL_PATH="$FILE_PATH"
             fi
@@ -126,7 +126,7 @@ case "$TOOL_NAME" in
         FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
         if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
             if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
-                REL_PATH=${FILE_PATH#$PROJECT_DIR/}
+                REL_PATH=${FILE_PATH#"$PROJECT_DIR"/}
             else
                 REL_PATH="$FILE_PATH"
             fi
@@ -137,7 +137,7 @@ case "$TOOL_NAME" in
     "NotebookEdit")
         NOTEBOOK_PATH=$(echo "$TOOL_INPUT" | jq -r '.notebook_path // empty' 2>/dev/null)
         if [[ -n "$NOTEBOOK_PATH" && "$NOTEBOOK_PATH" != "null" ]]; then
-            REL_PATH=${NOTEBOOK_PATH#$PROJECT_DIR/}
+            REL_PATH=${NOTEBOOK_PATH#"$PROJECT_DIR"/}
             sed -i "/## Significant Operations/a - [$TIMESTAMP] Modified: $REL_PATH (Notebook)" "$SESSION_FILE"
         fi
         ;;

@@ -27,7 +27,8 @@ detect_project_dir() {
     fi
 
     # Layer 3: Search upward for Memory/ directory
-    local search_dir="$(pwd)"
+    local search_dir
+    search_dir="$(pwd)"
     while [[ "$search_dir" != "/" ]]; do
         if [[ -d "$search_dir/Memory" ]]; then
             echo "$search_dir"
@@ -52,7 +53,7 @@ get_plugin_root() {
         echo "$CLAUDE_PLUGIN_ROOT"
     else
         # Script is in tools/, go up one level
-        echo "$(cd "$(dirname "$0")/.." && pwd)"
+        cd "$(dirname "$0")/.." && pwd
     fi
 }
 
@@ -92,7 +93,7 @@ archive_watching_file() {
     fi
 
     # Count non-trivial lines (exclude comments, headers, blank lines)
-    CONTENT_LINES=$(grep -v '^<!--' "$WATCHING_FILE" | grep -v '^#' | grep -v '^---' | grep -v '^$' | wc -l)
+    CONTENT_LINES=$(grep -cvE '^(<!--|#|---|$)' "$WATCHING_FILE" || echo 0)
 
     if [[ $CONTENT_LINES -lt 10 ]]; then
         log "Watching file has <10 content lines, skipping archive"

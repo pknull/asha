@@ -11,7 +11,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
     exit 0
 fi
 
-STYLE_NAME=$(cat "$CONFIG_FILE" 2>/dev/null | tr -d '[:space:]')
+STYLE_NAME=$(tr -d '[:space:]' < "$CONFIG_FILE" 2>/dev/null)
 
 # Validate style exists
 STYLE_FILE="$PLUGIN_ROOT/styles/${STYLE_NAME}.md"
