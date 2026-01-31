@@ -36,7 +36,7 @@
     },
     {
       "name": "asha",
-      "description": "Cognitive scaffold framework with cross-project identity layer (~/.asha/). Session coordination, Memory Bank, keeper profile calibration, vector DB semantic search, and ReAct analysis. Identity persists across all Asha-enabled projects.",
+      "description": "Cognitive scaffold framework with cross-project identity layer (~/.asha/). Session coordination, Memory Bank, keeper profile calibration, vector DB semantic search, ReAct analysis, and credential protection (block-secrets hook). Identity persists across all Asha-enabled projects.",
       "source": "./plugins/asha",
       "strict": false
     },
