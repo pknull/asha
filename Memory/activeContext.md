@@ -1,9 +1,9 @@
 ---
-version: "2.2"
-lastUpdated: "2026-01-30 21:25 UTC"
+version: "2.3"
+lastUpdated: "2026-01-31 09:30 UTC"
 lifecycle: "maintenance"
 stakeholder: "all"
-changeTrigger: "v1.9.0 release - panel persistence, cross-project identity"
+changeTrigger: "v1.9.0 validation complete - test suite hardening"
 validatedBy: "ai"
 dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 ---
@@ -15,11 +15,12 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 **Primary Focus**: Claude Code plugin marketplace providing domain-focused plugins for research, development, creative writing, automation, and session coordination.
 
 **Active Work**:
-- Marketplace v1.9.0 with 7 plugins
+- Marketplace v1.9.0 with 7 plugins (validated)
 - Panel System v5.0.0: Full persistence and panel management
-- Asha v1.8.0: Cross-project identity layer (`~/.asha/`)
+- Asha v1.9.0: Cross-project identity layer (`~/.asha/`)
 
 **Recent Activities** (last 7 days):
+- **2026-01-31**: v1.9.0 validation complete - Ran full test suite, fixed 3 validation failures (block-secrets strict mode, version mismatches, schedule→scheduler namespace conflict). Fixed flaky Test 75 (grep→bash string match), Test 84 (empty hooks.json handling). Cleaned 14 shellcheck warnings. All 5 test suites now pass including shell linting.
 - **2026-01-30**: Housekeeping - Verified git clean, version tracking correct. Confirmed asha 1.8.0→1.8.1 bump tracked memory script fix (orphaned indexer process). Clarified marketplace update policy: only for structural changes (new plugins, removals, major features), not patch bumps.
 - **2026-01-29**: v1.9.0 release - Major features:
   - **Panel System v5.0.0**: State persistence with `--resume <id>`, `--list`, `--show <id>`, `--abandon <id>`. Output moved to `Work/panels/` with per-phase state files.
@@ -30,8 +31,8 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 
 ## Critical Reference Information
 
-- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.8.1), image (v1.0.0), schedule (v0.1.0)
-- **Domain separation**: panel=research, code=development, write=creative, image=generation, schedule=automation, asha=core scaffold
+- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.9.0), image (v1.0.0), scheduler (v0.1.0)
+- **Domain separation**: panel=research, code=development, write=creative, image=generation, scheduler=automation, asha=core scaffold
 - **Identity layer**: `~/.asha/` (cross-project, user-scope) contains communicationStyle.md + keeper.md
 - **Main docs**: CLAUDE.md contains comprehensive repository guide
 - **Vector DB**: Indexed, ollama + chromadb operational
@@ -40,9 +41,8 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 ## Next Steps
 
 **Immediate**:
-- [ ] Run test suite to validate v1.9.0 changes
+- [x] Run test suite to validate v1.9.0 changes ✓
 - [ ] Test panel persistence (`/panel --resume`, `--list`, `--show`)
-- [ ] Finalize CLAUDE.md version to reflect asha 1.8.1
 
 **Blocked**:
 - None
@@ -66,6 +66,13 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 - `communicationStyle.md`: Who Asha is (voice, persona, constraints)
 - `keeper.md`: Who The Keeper is (calibration signals accumulated via `/save`)
 - Session-start hook auto-injects both files, ensuring identity persists across all projects
+
+**Test Suite Hardening (2026-01-31)**:
+- Shellcheck can't follow dynamic source paths (SC1090/SC1091) - exclude from test runner
+- `grep | wc -l` with no matches returns exit 1 under `set -e pipefail` - use `|| true`
+- Bash string matching (`[[ "$var" == *"pattern"* ]]`) more reliable than piped grep in tests
+- Parameter expansions need quoting: `${var#"$other"}` not `${var#$other}`
+- Plugin names must differ from command names to avoid namespace conflicts
 
 **Standards Reference**: https://leehanchung.github.io/blogs/2025/10/26/claude-skills-deep-dive/
 
