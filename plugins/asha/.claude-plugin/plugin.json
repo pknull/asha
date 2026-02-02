@@ -1,6 +1,6 @@
 {
   "name": "asha",
-  "version": "1.9.0",
+  "version": "1.10.0",
   "description": "Cognitive scaffold framework with cross-project identity layer (~/.asha/). Session coordination, Memory Bank, keeper profile, and workflow automation.",
   "author": {
     "name": "pknull",
@@ -8,7 +8,8 @@
   },
   "agents": [
     "./agents/partner-sentiment.md",
-    "./agents/task-manager.md"
+    "./agents/task-manager.md",
+    "./agents/verify-app.md"
   ],
   "commands": "./commands",
   "hooks": "./hooks/hooks.json",

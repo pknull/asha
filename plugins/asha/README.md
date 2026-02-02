@@ -1,6 +1,6 @@
 # Asha
 
-**Version**: 1.9.0
+**Version**: 1.10.0
 **Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
 
 Cognitive scaffold framework for session coordination, memory persistence, and session monitoring.
@@ -149,6 +149,24 @@ Remove legacy nested-repo installation files.
 2. Memory Bank is the ONLY connection to previous work
 3. Session watching captures operations automatically
 4. `/asha:save` synthesizes operations into persistent context
+
+## Agent Integration
+
+### verify-app Agent
+
+The `verify-app` agent (bundled with Asha plugin) uses `techEnvironment.md` for verification commands.
+
+**Workflow:**
+1. Agent reads `Memory/techEnvironment.md` for `## Verification` section
+2. If commands defined → executes them in sequence
+3. If missing/placeholders → bootstraps by detecting project type:
+   - `package.json` → npm test, npm run lint
+   - `Cargo.toml` → cargo check, cargo test
+   - `pyproject.toml` → pytest, ruff
+   - `go.mod` → go build, go test
+4. Proposes commands, user approves, writes to techEnvironment.md
+
+**Usage:** Triggered automatically after code changes or manually via Task tool.
 
 ## Git Integration
 

@@ -46,3 +46,14 @@ Tools are executed via the plugin's Python environment. Example patterns provide
 ### Development Tools
 
 - [Tool]: [Usage]
+
+## Verification
+
+Commands run by `verify-app` agent:
+
+| Command | Purpose |
+|---------|---------|
+| `[test command]` | Run test suite |
+| `[lint command]` | Check code style |
+
+<!-- If no commands defined, verify-app will detect and propose based on project type -->
