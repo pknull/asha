@@ -3,6 +3,7 @@ name: prose-analysis
 description: Comprehensive prose review specialist. Combines voice enforcement, craft analysis, continuity auditing, and coherence validation. Mode flags control scope. Loads voice rules dynamically from project docs. NOTE - Cannot detect AI-generated content (use ai-detector for GPTZero metrics).
 tools: Read, Edit, MultiEdit, Grep, Glob, Bash
 model: sonnet
+memory: user
 ---
 
 # Role

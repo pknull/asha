@@ -5,6 +5,7 @@ tools: Read, Grep, Glob
 model: sonnet
 dispatch_priority: 2
 trigger: continuity-check
+memory: user
 ---
 
 # Consistency Checker

@@ -5,6 +5,7 @@ tools: Read, Grep, Glob
 model: sonnet
 dispatch_priority: 5
 trigger: prose-review
+memory: user
 ---
 
 # Line Editor

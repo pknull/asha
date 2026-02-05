@@ -3,6 +3,7 @@ name: manuscript-editor
 description: Manuscript review and revision coordination specialist. Provides structural editing, identifies narrative issues, and manages revision cycles for completed drafts.
 tools: Read, Edit, MultiEdit, Task
 model: sonnet
+memory: user
 ---
 
 # Role

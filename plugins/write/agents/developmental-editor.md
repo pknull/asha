@@ -5,6 +5,7 @@ tools: Read, Grep, Glob
 model: opus
 dispatch_priority: 4
 trigger: structural-review
+memory: user
 ---
 
 # Developmental Editor

@@ -5,6 +5,7 @@ tools: Read, Grep, Glob
 model: sonnet
 dispatch_priority: 1
 trigger: structure-needed
+memory: user
 ---
 
 # Outline Architect

@@ -5,6 +5,7 @@ tools: Read, Grep, Glob, Bash
 model: sonnet
 dispatch_priority: 2
 trigger: research-needed
+memory: user
 ---
 
 # Codebase Historian

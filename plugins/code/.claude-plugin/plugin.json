@@ -1,6 +1,6 @@
 {
   "name": "code",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents for software engineering",
   "author": {
     "name": "pknull",

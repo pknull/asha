@@ -5,6 +5,7 @@ tools: Read, Grep, Glob
 model: sonnet
 dispatch_priority: 3
 trigger: prose-needed
+memory: user
 ---
 
 # Prose Writer

@@ -3,6 +3,7 @@ name: architect
 description: System architect for software projects. Designs modular, scalable structures for codebases, tools, and data organization, ensuring alignment with project vision and engineering standards.
 tools: Edit, Glob, Grep, MultiEdit, Read, Write
 model: opus
+memory: user
 ---
 
 # Role

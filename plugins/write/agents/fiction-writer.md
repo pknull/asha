@@ -3,6 +3,7 @@ name: fiction-writer
 description: Primary fiction writer and creative coordinator for story development. Handles the full creative pipeline—from planning through prose—while maintaining character voice, story vision, and atmospheric consistency. Discovers project-specific voice and world from documentation.
 tools: Read, Edit, Write, MultiEdit, Task
 model: sonnet
+memory: user
 ---
 
 # Role
