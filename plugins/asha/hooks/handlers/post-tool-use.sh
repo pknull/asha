@@ -63,12 +63,12 @@ fi
 INPUT=$(cat)
 
 # Extract tool information (suppress jq errors for malformed input)
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null)
-TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)
-TOOL_RESPONSE=$(echo "$INPUT" | jq -c '.tool_response // {}' 2>/dev/null)
+TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)
+TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null || true)
+TOOL_RESPONSE=$(echo "$INPUT" | jq -c '.tool_response // {}' 2>/dev/null || true)
 
 # Check for errors in tool response
-ERROR_MSG=$(echo "$TOOL_RESPONSE" | jq -r '.error // empty' 2>/dev/null)
+ERROR_MSG=$(echo "$TOOL_RESPONSE" | jq -r '.error // empty' 2>/dev/null || true)
 if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
     # Truncate long errors to 200 chars for readability
     if [[ ${#ERROR_MSG} -gt 200 ]]; then

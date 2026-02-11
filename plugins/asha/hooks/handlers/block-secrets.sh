@@ -9,7 +9,7 @@ set -euo pipefail
 # Triggered by: Read, Edit, Write, MultiEdit operations
 
 # Override check - explicit opt-in allows access
-[[ "$CLAUDE_ALLOW_SECRETS" == "1" ]] && exit 0
+[[ "${CLAUDE_ALLOW_SECRETS:-}" == "1" ]] && exit 0
 
 # Patterns to block (regex)
 BLOCKED_PATTERNS=(
@@ -34,7 +34,7 @@ BLOCKED_PATTERNS=(
   '\.git-credentials$' # Git credential store
 )
 
-FILE_PATH="$CLAUDE_FILE_PATH"
+FILE_PATH="${CLAUDE_FILE_PATH:-}"
 
 # Skip if no file path provided
 [[ -z "$FILE_PATH" ]] && exit 0

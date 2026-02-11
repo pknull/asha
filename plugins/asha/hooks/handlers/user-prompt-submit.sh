@@ -65,7 +65,7 @@ fi
 INPUT=$(cat)
 
 # Extract user prompt (suppress jq errors for malformed input)
-PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null)
+PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null || true)
 
 # Session logging (original logic)
 if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
@@ -104,7 +104,7 @@ if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
         LT_RESPONSE=$(curl -s -X POST http://localhost:8081/v2/check \
             --data-urlencode "text=$PROMPT" \
             --data "language=en-US" \
-            --max-time 3 2>/dev/null)
+            --max-time 3 2>/dev/null || true)
 
         # Check if we got matches (server available and found corrections)
         if [[ -n "$LT_RESPONSE" && "$LT_RESPONSE" != "null" ]]; then
@@ -172,7 +172,7 @@ try:
 except Exception as e:
     # On error, signal unchanged
     print('UNCHANGED')
-" 2>/dev/null)
+" 2>/dev/null || true)
 
             # Parse correction result
             if [[ "$CORRECTION_RESULT" != "UNCHANGED" && -n "$CORRECTION_RESULT" ]]; then
