@@ -1,6 +1,6 @@
 {
   "name": "asha",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "Cognitive scaffold framework with cross-project identity layer (~/.asha/). Session coordination, Memory Bank, keeper profile, and workflow automation.",
   "author": {
     "name": "pknull",

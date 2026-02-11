@@ -295,6 +295,19 @@ Skip if session was routine. Record only when you learned something transferable
 EOF
     fi
 
+    # Step 3b: Facet auto-ingestion
+    FACET_INGEST="$PLUGIN_ROOT/tools/facet_ingest.py"
+    if [[ -f "$FACET_INGEST" && -n "$PYTHON_CMD" ]]; then
+        FACET_RESULT=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" "$PYTHON_CMD" "$FACET_INGEST" ingest 2>/dev/null || echo '{"ingested": 0}')
+        INGESTED=$(echo "$FACET_RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('ingested',0))" 2>/dev/null || echo "0")
+        if [[ "$INGESTED" -gt 0 ]]; then
+            echo ""
+            echo "## FACET INGESTION"
+            echo "Auto-ingested $INGESTED facet(s) from previous sessions into ReasoningBank."
+            echo ""
+        fi
+    fi
+
     # Step 4: Memory cleanup check
     CLEANUP_NEEDED=$(check_memory_cleanup_needed)
     if [[ "$CLEANUP_NEEDED" == "true" ]]; then

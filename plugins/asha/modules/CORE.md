@@ -66,7 +66,7 @@ Use for: Finding relevant content by meaning across indexed files. Requires Olla
 ### ReasoningBank (Pattern Tracking)
 Use the `reasoning_bank.py` tool for pattern queries. Tool paths are provided in the session context.
 
-Use for: Checking what approaches succeeded/failed in past sessions, error resolutions, tool effectiveness.
+Use for: Checking what approaches succeeded/failed in past sessions, error resolutions, tool effectiveness. Session facets from Claude Code are auto-ingested at session start, supplementing manually recorded patterns with outcome, friction, and success data.
 
 User context supplements Memory but never replaces it.
 

@@ -89,6 +89,22 @@ $KEEPER_CONTENT
 </system-reminder>
 EOF
     fi
+
+    # Facet ingestion (background, non-blocking)
+    FACET_INGEST="$PLUGIN_ROOT/tools/facet_ingest.py"
+    PYTHON_CMD=""
+    if [[ -x "$PROJECT_DIR/.asha/.venv/bin/python3" ]]; then
+        PYTHON_CMD="$PROJECT_DIR/.asha/.venv/bin/python3"
+    elif command -v python3 >/dev/null 2>&1; then
+        PYTHON_CMD="python3"
+    fi
+    if [[ -f "$FACET_INGEST" && -n "$PYTHON_CMD" ]]; then
+        if ! pgrep -f "python.*facet_ingest.py ingest" >/dev/null 2>&1; then
+            FACET_LOG="${PROJECT_DIR}/.asha/facet-ingest.log"
+            mkdir -p "$(dirname "$FACET_LOG")"
+            (CLAUDE_PROJECT_DIR="$PROJECT_DIR" "$PYTHON_CMD" "$FACET_INGEST" ingest >"$FACET_LOG" 2>&1) &
+        fi
+    fi
 else
     echo "{}"
 fi
