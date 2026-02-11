@@ -1,9 +1,9 @@
 ---
-version: "2.3"
-lastUpdated: "2026-01-31 09:30 UTC"
+version: "2.4"
+lastUpdated: "2026-02-11 03:50 UTC"
 lifecycle: "maintenance"
 stakeholder: "all"
-changeTrigger: "v1.9.0 validation complete - test suite hardening"
+changeTrigger: "v1.11.0 - facet auto-ingestion into ReasoningBank"
 validatedBy: "ai"
 dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 ---
@@ -15,13 +15,13 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 **Primary Focus**: Claude Code plugin marketplace providing domain-focused plugins for research, development, creative writing, automation, and session coordination.
 
 **Active Work**:
-- Marketplace v1.9.0 with 7 plugins (validated)
-- Panel System v5.0.0: Full persistence and panel management
-- Asha v1.9.0: Cross-project identity layer (`~/.asha/`)
+- Marketplace v1.11.0 with 7 plugins
+- Asha v1.11.0: Facet auto-ingestion, cross-project identity layer
 
 **Recent Activities** (last 7 days):
-- **2026-01-31**: v1.9.0 validation complete - Ran full test suite, fixed 3 validation failures (block-secrets strict mode, version mismatches, schedule→scheduler namespace conflict). Fixed flaky Test 75 (grep→bash string match), Test 84 (empty hooks.json handling). Cleaned 14 shellcheck warnings. All 5 test suites now pass including shell linting.
-- **2026-01-30**: Housekeeping - Verified git clean, version tracking correct. Confirmed asha 1.8.0→1.8.1 bump tracked memory script fix (orphaned indexer process). Clarified marketplace update policy: only for structural changes (new plugins, removals, major features), not patch bumps.
+- **2026-02-11**: v1.11.0 - Facet auto-ingestion into ReasoningBank. New `facet_ingest.py` tool reads `~/.claude/usage-data/facets/`, maps to project via `history.jsonl`, records workflow/friction/success patterns. Runs background at session start, synchronous during `/save`. Code review caught SQLite locking bug (fixed with busy_timeout + WAL mode + connection lifecycle), overly broad pgrep guard, hardcoded python3 reference, and primary_success score floor for failed sessions.
+- **2026-02-09**: v1.10.0 - Added verify-app agent and verification template.
+- **2026-01-31**: v1.9.0 validation complete - All 5 test suites pass including shell linting.
 - **2026-01-29**: v1.9.0 release - Major features:
   - **Panel System v5.0.0**: State persistence with `--resume <id>`, `--list`, `--show <id>`, `--abandon <id>`. Output moved to `Work/panels/` with per-phase state files.
   - **Asha v1.8.0**: Cross-project identity via `~/.asha/` directory (user-scope, not committed). `communicationStyle.md` defines who Asha is; `keeper.md` captures calibration signals via `/save`. Session-start hook auto-injects identity.
@@ -31,7 +31,7 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 
 ## Critical Reference Information
 
-- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.9.0), image (v1.0.0), scheduler (v0.1.0)
+- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.11.0), image (v1.0.0), scheduler (v0.1.0)
 - **Domain separation**: panel=research, code=development, write=creative, image=generation, scheduler=automation, asha=core scaffold
 - **Identity layer**: `~/.asha/` (cross-project, user-scope) contains communicationStyle.md + keeper.md
 - **Main docs**: CLAUDE.md contains comprehensive repository guide
@@ -41,7 +41,6 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 ## Next Steps
 
 **Immediate**:
-- [x] Run test suite to validate v1.9.0 changes ✓
 - [ ] Test panel persistence (`/panel --resume`, `--list`, `--show`)
 
 **Blocked**:
