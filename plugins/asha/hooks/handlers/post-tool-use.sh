@@ -14,6 +14,10 @@ if [[ -z "$PROJECT_DIR" ]]; then
 fi
 
 PLUGIN_ROOT=$(get_plugin_root)
+if [[ -z "$PLUGIN_ROOT" ]]; then
+    echo "{}"
+    exit 0
+fi
 
 # Only run if Asha is initialized
 if ! is_asha_initialized; then
@@ -42,10 +46,11 @@ mkdir -p "$PROJECT_DIR/Work/markers"
 
 # Ensure session file exists
 if [[ ! -f "$SESSION_FILE" ]]; then
+    SESSION_ID=$(od -An -tx1 -N4 /dev/urandom | tr -d ' \n')
     cat > "$SESSION_FILE" <<EOF
 ---
 sessionStart: $(date -u '+%Y-%m-%d %H:%M UTC')
-sessionID: $(head /dev/urandom | tr -dc a-f0-9 | head -c 8)
+sessionID: $SESSION_ID
 ---
 
 ## Significant Operations

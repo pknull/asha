@@ -3,7 +3,8 @@
 # Source this file in hooks: source "$(dirname "$0")/common.sh"
 
 # Detect project directory
-# Returns project directory path or exits with code 1 if not found
+# Returns project directory path on stdout, or empty string if not found
+# Always returns 0 (safe under set -e)
 detect_project_dir() {
     # Use CLAUDE_PROJECT_DIR if set (Claude Code hook invocation)
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
@@ -21,12 +22,14 @@ detect_project_dir() {
         fi
     fi
 
-    # All detection methods failed
-    return 1
+    # All detection methods failed — return empty string, not error
+    echo ""
+    return 0
 }
 
 # Get plugin root directory (where asha plugin is installed)
-# Returns plugin directory path
+# Returns plugin directory path on stdout, or empty string if not found
+# Always returns 0 (safe under set -e)
 get_plugin_root() {
     # Use CLAUDE_PLUGIN_ROOT if set
     if [[ -n "${CLAUDE_PLUGIN_ROOT:-}" ]]; then
@@ -43,25 +46,28 @@ get_plugin_root() {
         return 0
     fi
 
-    return 1
+    # Not found — return empty string, not error
+    echo ""
+    return 0
 }
 
 # Check if Asha is initialized in current project
 # Returns 0 if initialized, 1 otherwise
 is_asha_initialized() {
     local project_dir
-    project_dir=$(detect_project_dir) || return 1
-
-    [[ -f "$project_dir/.asha/config.json" ]]
+    project_dir=$(detect_project_dir)
+    [[ -n "$project_dir" ]] && [[ -f "$project_dir/.asha/config.json" ]]
 }
 
 # Get Python command (venv if available, else system)
+# Returns python path on stdout, or empty string if not found
+# Always returns 0 (safe under set -e)
 get_python_cmd() {
     local project_dir
-    project_dir=$(detect_project_dir) || return 1
+    project_dir=$(detect_project_dir)
 
     # Check project's .asha/.venv first
-    if [[ -x "$project_dir/.asha/.venv/bin/python3" ]]; then
+    if [[ -n "$project_dir" ]] && [[ -x "$project_dir/.asha/.venv/bin/python3" ]]; then
         echo "$project_dir/.asha/.venv/bin/python3"
         return 0
     fi
@@ -72,5 +78,7 @@ get_python_cmd() {
         return 0
     fi
 
-    return 1
+    # Not found — return empty string, not error
+    echo ""
+    return 0
 }

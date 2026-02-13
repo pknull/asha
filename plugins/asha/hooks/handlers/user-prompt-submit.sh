@@ -44,7 +44,7 @@ if [[ ! -f "$SESSION_FILE" ]]; then
     cat > "$SESSION_FILE" <<EOF
 ---
 sessionStart: $(date -u '+%Y-%m-%d %H:%M UTC')
-sessionID: $(shuf -n 1 /usr/share/dict/words 2>/dev/null | tr -d "'" | tr '[:upper:]' '[:lower:]' || head /dev/urandom | tr -dc a-f0-9 | head -c 8)
+sessionID: $(shuf -n 1 /usr/share/dict/words 2>/dev/null | tr -d "'" | tr '[:upper:]' '[:lower:]' || od -An -tx1 -N4 /dev/urandom | tr -d ' \n')
 ---
 
 ## Significant Operations

@@ -14,6 +14,10 @@ if [[ -z "$PROJECT_DIR" ]]; then
 fi
 
 PLUGIN_ROOT=$(get_plugin_root)
+if [[ -z "$PLUGIN_ROOT" ]]; then
+    echo "{}"
+    exit 0
+fi
 
 # Only run if Asha is initialized
 if ! is_asha_initialized; then
@@ -30,7 +34,7 @@ if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
 fi
 
 # Extract session end reason
-REASON=$(echo "$INPUT" | jq -r '.reason // empty')
+REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null || true)
 
 # Only archive on clean logout/exit/idle (not on /clear which continues session)
 if [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" || "$REASON" == "idle" ]]; then

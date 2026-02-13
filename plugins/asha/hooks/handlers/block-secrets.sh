@@ -11,6 +11,18 @@ set -euo pipefail
 # Override check - explicit opt-in allows access
 [[ "${CLAUDE_ALLOW_SECRETS:-}" == "1" ]] && exit 0
 
+# Read stdin JSON from Claude Code (PreToolUse provides tool_input)
+INPUT=$(cat 2>/dev/null || true)
+
+# Extract file path: prefer env var, fall back to stdin JSON
+FILE_PATH="${CLAUDE_FILE_PATH:-}"
+if [[ -z "$FILE_PATH" ]] && [[ -n "$INPUT" ]]; then
+    FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)
+fi
+
+# Skip if no file path provided
+[[ -z "$FILE_PATH" ]] && exit 0
+
 # Patterns to block (regex)
 BLOCKED_PATTERNS=(
   '\.env$'             # .env files
@@ -33,11 +45,6 @@ BLOCKED_PATTERNS=(
   '\.netrc$'           # Network credentials
   '\.git-credentials$' # Git credential store
 )
-
-FILE_PATH="${CLAUDE_FILE_PATH:-}"
-
-# Skip if no file path provided
-[[ -z "$FILE_PATH" ]] && exit 0
 
 for pattern in "${BLOCKED_PATTERNS[@]}"; do
   if [[ "$FILE_PATH" =~ $pattern ]]; then
