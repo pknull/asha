@@ -15,10 +15,12 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 **Primary Focus**: Claude Code plugin marketplace providing domain-focused plugins for research, development, creative writing, automation, and session coordination.
 
 **Active Work**:
+
 - Marketplace v1.11.0 with 7 plugins
 - Asha v1.11.0: Facet auto-ingestion, cross-project identity layer
 
 **Recent Activities** (last 7 days):
+
 - **2026-02-11**: v1.11.0 - Facet auto-ingestion into ReasoningBank. New `facet_ingest.py` tool reads `~/.claude/usage-data/facets/`, maps to project via `history.jsonl`, records workflow/friction/success patterns. Runs background at session start, synchronous during `/save`. Code review caught SQLite locking bug (fixed with busy_timeout + WAL mode + connection lifecycle), overly broad pgrep guard, hardcoded python3 reference, and primary_success score floor for failed sessions.
 - **2026-02-09**: v1.10.0 - Added verify-app agent and verification template.
 - **2026-01-31**: v1.9.0 validation complete - All 5 test suites pass including shell linting.
@@ -31,7 +33,7 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 
 ## Critical Reference Information
 
-- **Plugins**: panel-system (v5.0.0), code (v1.0.1), write (v1.1.1), output-styles (v1.0.2), asha (v1.11.0), image (v1.0.0), scheduler (v0.1.0)
+- **Plugins**: panel-system (v5.0.0), code (v1.1.0), write (v1.2.0), output-styles (v1.0.2), asha (v1.11.1), image (v1.1.0), scheduler (v0.1.0)
 - **Domain separation**: panel=research, code=development, write=creative, image=generation, scheduler=automation, asha=core scaffold
 - **Identity layer**: `~/.asha/` (cross-project, user-scope) contains communicationStyle.md + keeper.md
 - **Main docs**: CLAUDE.md contains comprehensive repository guide
@@ -41,12 +43,15 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 ## Next Steps
 
 **Immediate**:
+
 - [ ] Test panel persistence (`/panel --resume`, `--list`, `--show`)
 
 **Blocked**:
+
 - None
 
 **Deferred**:
+
 - Add CHANGELOG.md (low priority per audit)
 - Consider scoped Bash permissions (e.g., `Bash(git:*)`) per blog post recommendation
 - Consider reranking enhancement for memory_index.py (recency/source weighting)
@@ -55,18 +60,21 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 ## Session Learnings
 
 **Redis Whitepaper Analysis (2026-01-27)**:
+
 - Semantic caching doesn't apply to Asha (not a persistent service)
 - Agentic memory slots = already have via Memory Bank files
 - "Facts" don't need a new system - a section in activeContext.md suffices
 - Preference persistence solved via `~/.asha/keeper.md` + bootstrap dependency chain
 
 **Identity Layer (2026-01-29)**:
+
 - Cross-project identity moved to `~/.asha/` (user-scope, not committed)
 - `communicationStyle.md`: Who Asha is (voice, persona, constraints)
 - `keeper.md`: Who The Keeper is (calibration signals accumulated via `/save`)
 - Session-start hook auto-injects both files, ensuring identity persists across all projects
 
 **Test Suite Hardening (2026-01-31)**:
+
 - Shellcheck can't follow dynamic source paths (SC1090/SC1091) - exclude from test runner
 - `grep | wc -l` with no matches returns exit 1 under `set -e pipefail` - use `|| true`
 - Bash string matching (`[[ "$var" == *"pattern"* ]]`) more reliable than piped grep in tests
@@ -76,6 +84,7 @@ dependencies: ["~/.asha/communicationStyle.md", "~/.asha/keeper.md"]
 **Standards Reference**: https://leehanchung.github.io/blogs/2025/10/26/claude-skills-deep-dive/
 
 Key compliance requirements:
+
 - All commands/skills need YAML frontmatter (name, description, allowed-tools)
 - Use `{baseDir}` not hardcoded paths for portability
 - Keep tool permissions specific, not overly broad

@@ -1,5 +1,7 @@
 # Code Plugin
 
+**Version**: 1.1.0
+
 Development workflows for software engineering: orchestration patterns, code review, TDD, and specialized agents.
 
 ## Installation

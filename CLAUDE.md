@@ -36,11 +36,11 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption |
-| **Code** | v1.0.1 | Development | Code review, orchestration patterns, TDD workflows |
-| **Write** | v1.1.1 | Creative | Prose craft, worldbuilding, storytelling agents |
+| **Code** | v1.1.0 | Development | Code review, orchestration patterns, TDD workflows |
+| **Write** | v1.2.0 | Creative | Prose craft, worldbuilding, storytelling agents |
 | **Output Styles** | v1.0.2 | Formatting | Switchable response styles |
-| **Asha** | v1.8.0 | Core | Session coordination, cross-project identity (~/.asha/) |
-| **Image** | v1.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows |
+| **Asha** | v1.11.1 | Core | Session coordination, cross-project identity (~/.asha/) |
+| **Image** | v1.1.0 | Creative | Stable Diffusion prompts, ComfyUI workflows |
 | **Schedule** | v0.1.0 | Automation | Cron-style scheduled tasks |
 
 ### Technology Stack
@@ -241,6 +241,7 @@ Every plugin follows this structure:
 ### Adding a New Plugin
 
 1. **Create plugin directory structure**
+
    ```bash
    mkdir -p plugins/[plugin-name]/{.claude-plugin,commands,agents,docs}
    ```
@@ -264,6 +265,7 @@ Every plugin follows this structure:
    - Add LICENSE file (MIT recommended)
 
 6. **Test installation**
+
    ```bash
    /plugin marketplace add pknull/asha-marketplace
    /plugin install [plugin-name]@asha-marketplace
@@ -310,6 +312,7 @@ Every plugin follows this structure:
 ### File Format Conventions
 
 **Command Files** (`commands/*.md`):
+
 ```markdown
 ---
 description: "Brief description"
@@ -327,6 +330,7 @@ allowed-tools: ["Tool1", "Tool2"]
 ```
 
 **Agent Files** (`agents/*.md`):
+
 ```markdown
 ---
 title: Agent Name
@@ -348,6 +352,7 @@ domain: [domain]
 ```
 
 **Character Files** (`docs/characters/*.md`):
+
 ```markdown
 ---
 title: Character Name
@@ -376,17 +381,20 @@ status: draft
 ### Versioning Convention
 
 **Format**: `X.Y.Z` or `X.Y`
+
 - **Major (X)**: Breaking changes, structural refactors
 - **Minor (Y)**: New features, content updates
 - **Patch (Z)**: Bug fixes, typos (optional for docs)
 
 **Examples**:
-- Panel system: v4.2.0
+
+- Panel system: v5.0.0
 - Memory files: v2.1 (no patch for documentation)
 
 ### Timestamp Convention
 
 **Format**: `YYYY-MM-DD HH:MM UTC`
+
 - Always use UTC timezone
 - Used in: frontmatter, session files, archives
 - Example: `2025-11-17 14:30 UTC`
@@ -394,6 +402,7 @@ status: draft
 ### Bash Script Safety
 
 **All scripts must include**:
+
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
@@ -403,6 +412,7 @@ source "$(dirname "$0")/common.sh"
 ```
 
 **Error Handling Pattern**:
+
 ```bash
 # Silent fallback for optional features
 if ! command -v jq &>/dev/null; then
@@ -466,6 +476,7 @@ dependencies: ["file1.md", "file2.md"]  # Optional
 ### Hook Behavior with Markers
 
 **All hooks check markers first**:
+
 ```bash
 # Exit silently if silence marker exists
 if [ -f "$PROJECT_DIR/Memory/markers/silence" ]; then
@@ -533,6 +544,7 @@ fi
    - [ ] LICENSE file present
 
 5. **Installation Test**
+
    ```bash
    /plugin marketplace add pknull/asha-marketplace
    /plugin install [plugin-name]@asha-marketplace
@@ -541,6 +553,7 @@ fi
    ```
 
 6. **Functional Test**
+
    ```bash
    /[command]  # Test each command
    # Verify expected behavior
@@ -550,6 +563,7 @@ fi
 ### No Automated Test Suite
 
 This repository uses **manual validation** and **documentation-driven testing**:
+
 - Character files validated against schema
 - Frontmatter validated on read
 - Hook JSON schema compliance checked by Claude Code
@@ -562,6 +576,7 @@ This repository uses **manual validation** and **documentation-driven testing**:
 ### Branch Strategy
 
 Development occurs on feature branches:
+
 - Branch pattern: `claude/claude-md-[session-id]-[random-id]`
 - Example: `claude/claude-md-mi3ish2l1isy92na-01En42UogD6rR8J78vFWiNZu`
 
@@ -576,6 +591,7 @@ Development occurs on feature branches:
 ```
 
 **Types**:
+
 - `feat`: New feature
 - `fix`: Bug fix
 - `docs`: Documentation changes
@@ -584,6 +600,7 @@ Development occurs on feature branches:
 - `chore`: Maintenance tasks
 
 **Examples**:
+
 ```
 feat: Add memory-maintenance skill for autonomous guidance
 fix: Move silence/rp-active markers from Work to Memory
@@ -594,16 +611,19 @@ refactor: Consolidate marker path references
 ### Push Protocol
 
 **Always use**:
+
 ```bash
 git push -u origin <branch-name>
 ```
 
 **Branch must**:
+
 - Start with `claude/`
 - End with matching session ID
 - Otherwise push fails with 403 HTTP error
 
 **Network retry logic** (on failure):
+
 1. Wait 2s, retry
 2. Wait 4s, retry
 3. Wait 8s, retry
@@ -613,11 +633,13 @@ git push -u origin <branch-name>
 ### Pull Request Workflow
 
 1. **Ensure all changes committed**
+
    ```bash
    git status  # Should be clean
    ```
 
 2. **Push to feature branch**
+
    ```bash
    git push -u origin <branch-name>
    ```
@@ -634,11 +656,13 @@ git push -u origin <branch-name>
 ### Task: Add New Command to Existing Plugin
 
 1. **Create command file**
+
    ```bash
    # Location: plugins/[plugin-name]/commands/[command].md
    ```
 
 2. **Add frontmatter** (optional)
+
    ```yaml
    ---
    description: "Command description"
@@ -657,6 +681,7 @@ git push -u origin <branch-name>
    - If using array: Add `"./commands/[command].md"` to array
 
 5. **Test command**
+
    ```bash
    /plugin install [plugin-name]@asha-marketplace
    /[command]
@@ -665,12 +690,14 @@ git push -u origin <branch-name>
 ### Task: Add New Hook
 
 1. **Create hook script**
+
    ```bash
    # Location: plugins/[plugin-name]/hooks/[hook-name]
    chmod +x plugins/[plugin-name]/hooks/[hook-name]
    ```
 
 2. **Add safety headers**
+
    ```bash
    #!/usr/bin/env bash
    set -euo pipefail
@@ -684,6 +711,7 @@ git push -u origin <branch-name>
    - Output JSON for success/failure
 
 4. **Register in hooks.json**
+
    ```json
    {
      "hooks": {
@@ -706,6 +734,7 @@ git push -u origin <branch-name>
 ### Task: Update Character Profile
 
 1. **Read existing character file**
+
    ```bash
    # Location: plugins/panel/docs/characters/[Character].md
    ```
@@ -718,6 +747,7 @@ git push -u origin <branch-name>
    - Capability Requirements: Required agents
 
 3. **Preserve frontmatter**
+
    ```yaml
    ---
    title: Character Name
@@ -739,11 +769,13 @@ git push -u origin <branch-name>
    - Patch (Z): Bug fixes, typos
 
 2. **Update plugin.json**
+
    ```json
    "version": "X.Y.Z"
    ```
 
 3. **Update marketplace.json** (if needed)
+
    ```json
    "metadata": {
      "version": "X.Y.Z"
@@ -756,6 +788,7 @@ git push -u origin <branch-name>
    - Any version references in docs
 
 5. **Commit with version tag**
+
    ```bash
    git commit -m "chore: Bump version to X.Y.Z"
    git tag vX.Y.Z
@@ -764,12 +797,14 @@ git push -u origin <branch-name>
 ### Task: Debug Hook Not Triggering
 
 1. **Check marker files**
+
    ```bash
    ls -la Memory/markers/
    # Remove silence/rp-active if present
    ```
 
 2. **Verify project directory detection**
+
    ```bash
    # Set environment variable explicitly
    export CLAUDE_PROJECT_DIR=$(pwd)
@@ -781,6 +816,7 @@ git push -u origin <branch-name>
    - Verify command path uses `${CLAUDE_PLUGIN_ROOT}`
 
 4. **Test hook manually**
+
    ```bash
    cd plugins/[plugin-name]/hooks
    CLAUDE_PROJECT_DIR=/path/to/project ./[hook-name]
@@ -788,6 +824,7 @@ git push -u origin <branch-name>
    ```
 
 5. **Check hook permissions**
+
    ```bash
    chmod +x plugins/[plugin-name]/hooks/[hook-name]
    ```
@@ -904,6 +941,7 @@ git push -u origin <branch-name>
 ## Version History
 
 ### v1.9.0 (2026-01-29)
+
 - **Panel system v5.0.0**: Full state persistence and panel management
   - `--resume <id>`: Continue interrupted panels from last completed phase
   - `--list [--status=X]`: Query panel index with optional filtering
@@ -920,6 +958,7 @@ git push -u origin <branch-name>
   - `/asha:save` captures keeper calibration signals to `~/.asha/keeper.md`
 
 ### v1.8.0 (2026-01-28)
+
 - **New plugin: schedule** — Cron-style task automation with natural language time parsing
   - Natural language parser (20+ expressions: "Every weekday at 9am", "Every 15 minutes", etc.)
   - Task management with rate limiting, duplicate detection, dangerous command blocking
@@ -928,12 +967,14 @@ git push -u origin <branch-name>
   - End-to-end tested: tasks execute on schedule, Claude responds correctly
 
 ### v1.7.0 (2026-01-26)
+
 - **New plugin: image** — Image generation workflows with Stable Diffusion prompt engineering, ComfyUI workflow design
 - Standards compliance audit per Claude Code skills best practices
 - Fixed hardcoded paths, added frontmatter to agent files
 - All plugin versions incremented for upgrade path
 
 ### v1.6.0 (2026-01-26)
+
 - **Domain restructuring**: Organized plugins by workflow type (panel=research, code=dev, write=creative, asha=core)
 - **New plugin: code** — Development workflows with codebase-historian agent, orchestration patterns, quality gates, swarm recipes
 - **New plugin: write** — Creative writing with 5 specialized agents (outline-architect, prose-writer, consistency-checker, developmental-editor, line-editor) and recipes
@@ -942,17 +983,20 @@ git push -u origin <branch-name>
 - Cleaned up asha to core scaffold only (moved domain content to code/write)
 
 ### v1.5.0 (2026-01-16)
+
 - Fixed hook handler permissions (711 → 755) and naming consistency (added .sh extensions)
 - Added version validation script (tests/validate-versions.sh)
 - Synchronized versions across README.md, CLAUDE.md, and plugin.json files
 - Asha plugin v1.5.0 with robust memory indexing (retry logic, diagnostics)
 
 ### v1.3.0 (2026-01-07)
+
 - Audit and cleanup: Removed stale memory-session-manager references
 - Panel system v4.2.0 with --format and --context flags
 - Fixed repository structure documentation
 
 ### v1.2.0 (2025-11-17)
+
 - Removed REDACTED99-specific universe references
 - Updated character names to general-purpose versions:
   - "Asha" → "The Moderator"
@@ -962,6 +1006,7 @@ git push -u origin <branch-name>
 - Updated all examples and task patterns with new names
 
 ### v1.0.0 (2025-11-17)
+
 - Initial CLAUDE.md creation
 - Comprehensive repository analysis
 - Documentation of all conventions and patterns

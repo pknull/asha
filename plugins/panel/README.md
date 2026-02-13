@@ -1,11 +1,12 @@
 # Claude Code Panel Plugin
 
-**Version**: 4.2.0
+**Version**: 5.0.0
 **Plugin Name**: `panel-system`
 **Command**: `/panel`
 **Description**: Dynamic multi-perspective analysis with 3 core roles + recruited specialists
 
 Just type `/panel <your topic>` and the system automatically:
+
 - The Analyst analyzes topic and recruits 2-5 specialist agents from available library
 - Assigns specialists with evocative session-specific names
 - The Challenger argues against proposals and demands proof of necessity
@@ -43,12 +44,14 @@ The panel system enables automatic expert analysis by:
 ### Core Roles (Always Present)
 
 **The Moderator** (Moderator/Facilitator)
+
 - Manages 11-phase protocol execution
 - Ensures procedural integrity and timebox enforcement
 - Synthesizes final decision report
 - **Question**: "What is the PROCESS?"
 
 **The Analyst** (Workforce Intelligence)
+
 - Analyzes topic to determine needed expertise
 - Scores available agent library (0-10) for capability match
 - Recruits 2-5 specialist agents with session-specific names
@@ -56,6 +59,7 @@ The panel system enables automatic expert analysis by:
 - **Question**: "Who has CAPABILITY?"
 
 **The Challenger** (Opposition & Quality Gate)
+
 - **Default stance: OPPOSE** - argues against proposals and defends status quo
 - Demands evidence before changing working systems: "Show me user complaints, failure data, metrics"
 - Forces proponents to prove necessity: "The current system works. Prove it doesn't."
@@ -69,22 +73,26 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 **Examples by Topic Type**:
 
 **Creative Writing Panel** (Redacted229 Chapter 9 evaluation):
+
 - `prose-analysis` → **"The Editor"** (craft assessment)
 - `intimacy-designer` → **"The Architect of Dread"** (genre mechanics)
 - `narrative-architect` → **"The Structuralist"** (story coherence)
 - `character-developer` → **"The Psychologist"** (character authenticity)
 
 **Technical Architecture Panel** (GraphQL vs REST):
+
 - `research-assistant` → **"The Evidence Gatherer"** (source validation)
 - `architect` → **"The Systems Designer"** (architecture patterns)
 - `ml-engineer` → **"The Model Capability Analyst"** (performance analysis)
 
 **Culinary Innovation Panel** (How do we pimp fish):
+
 - `research-assistant` → **"The Culinary Historian"** (technique research)
 - `trend-analyst` → **"The Flavor Prophet"** (emerging patterns)
 - `creative-director` → **"The Presentation Architect"** (plating design)
 
 **Session-Specific Naming**: Same agent becomes different "character" depending on context:
+
 - `prose-analysis` → "The Editor" (creative), "The Code Reviewer" (technical), "The Stylist" (marketing)
 - `research-assistant` → "The Archivist" (historical), "The Evidence Gatherer" (legal), "The Data Scout" (analytics)
 
@@ -93,6 +101,7 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 ## 11-Phase Protocol
 
 **Phase -1: Topic Analysis & Workforce Recruitment** (The Analyst)
+
 - Analyze topic domain and determine required expertise (2-5 domains typical)
 - Score available agent library (0-10) for capability match
 - Assign specialists with session-specific names
@@ -100,36 +109,45 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 - Set decision rule (consensus default, unanimous for security)
 
 **Phase 0: Goal Clarification** (The Moderator)
+
 - Request clarification if topic ambiguous
 - Skip if well-specified
 
 **Phase 1: Framing** (The Moderator)
+
 - State topic, goals, decision rule
 - Introduce panel composition (core roles + recruited specialists)
 
 **Phase 2: Infrastructure Check** (The Moderator)
+
 - Compare against existing assets to avoid duplication
 
 **Phase 3: Initial Positions** (All Panelists)
+
 - Specialists deploy assigned agents to gather evidence
 - The Challenger takes opposition stance: "DON'T do this because..." and demands proof
 - Present 5-bullet briefs with citations
 
 **Phase 4: Cross-Examination** (The Challenger-led)
+
 - Challenge assumptions, find contradictions
 - The Analyst may assign additional agents if gaps revealed
 
 **Phase 5: Research Gate** (The Moderator)
+
 - Authorize additional research if evidence gaps exist
 - Enforce confidence scoring (≥0.8 high confidence)
 
 **Phase 6: Reflection Round** (All Panelists)
+
 - Revise positions based on evidence and challenges
 
 **Phase 7: Synthesis** (Recruited Architect or The Moderator)
+
 - Structure viable options with tradeoffs
 
 **Phase 8: Decision** (The Moderator)
+
 - Apply decision rule, record dissent, list next steps
 
 ---
@@ -224,6 +242,7 @@ This plugin assumes your Claude Code project uses:
 ## Character Profiles
 
 Core roles have documented profiles in `plugins/panel/docs/characters/`:
+
 - **The Moderator.md** - Moderator/Facilitator
 - **The Analyst.md** - Workforce Intelligence
 - **The Challenger.md** - Opposition & Quality Gate
@@ -265,6 +284,7 @@ Reports saved to: `Work/meetings/YYYY-MM-DD--panel--<slug>.md`
 4. **Deploys agent-fabricator** - If gaps detected (no agent scores >4)
 
 **Examples**:
+
 - Creative panel: `prose-analysis` becomes "The Editor", `intimacy-designer` becomes "The Architect of Dread"
 - Technical panel: `architect` becomes "The Systems Designer", `ml-engineer` becomes "The Model Capability Analyst"
 - Culinary panel: `research-assistant` becomes "The Culinary Historian", `trend-analyst` becomes "The Flavor Prophet"
@@ -299,6 +319,7 @@ Same agent, different contextual identity based on topic domain.
 ## Version History
 
 ### 4.1.2 (2025-11-17)
+
 - **BREAKING**: Renamed plugin from `"panel"` to `"panel-system"` to resolve namespace conflict
 - **Fix**: `/panel` command now works as short form (no longer requires `/panel:panel`)
 - **Root cause**: Plugin name matching command name created ambiguous namespace
@@ -306,10 +327,12 @@ Same agent, different contextual identity based on topic domain.
 - **Migration**: Uninstall old `panel` plugin, reinstall as `panel-system`
 
 ### 4.1.1 (2025-11-17) - DEPRECATED
+
 - Attempted fix using directory-based command discovery (did not resolve issue)
 - Superseded by v4.1.2 plugin rename approach
 
 ### 4.1.0 (2025-11-08)
+
 - **Dynamic recruitment architecture**: 3 core roles + recruited specialists with session-specific names
 - **Removed static characters**: Deleted 5 universal character profiles (Architect, Archivist, Curator, Engineer, Ethicist)
 - **Retained core roles**: The Moderator (facilitation), The Analyst (workforce), The Challenger (opposition)
@@ -318,6 +341,7 @@ Same agent, different contextual identity based on topic domain.
 - **Quality restoration**: Returns panel depth and domain expertise from v3.0 architecture
 
 ### 4.0.0 (2025-11-08)
+
 - **Simplified invocation**: `/panel <topic>` only (removed flags, YAML, profiles, rosters)
 - **8 universal characters**: Static analytical perspectives with automatic selection
 - **Removed modes**: No more inworld/outworld distinction
@@ -325,11 +349,13 @@ Same agent, different contextual identity based on topic domain.
 - **Quality regression**: Generic analysis without deep domain expertise (fixed in v4.1)
 
 ### 3.0.2 (2025-11-08)
+
 - Added character validation script
 - Fixed plugin.json validation errors
 - Restructured marketplace with plugins/ subdirectory
 
 ### 3.0.0 (Initial Release)
+
 - 11-phase protocol with manual composition
 - Profile/roster system
 - Inworld/outworld modes
@@ -352,6 +378,7 @@ MIT License - See LICENSE file for details
 ## Pattern Implementation
 
 Based on CSIRO Agent Design Patterns (Liu et al. 2025):
+
 - **Passive Goal Creator** (Phase 0): Clarifies ambiguous topics
 - **Role-Based Cooperation**: Core roles with hierarchical workflow
 - **Debate-Based Cooperation**: Cross-Examination enables argument exchange

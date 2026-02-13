@@ -1,6 +1,6 @@
 # Output Styles
 
-**Version**: 1.0.1
+**Version**: 1.0.2
 **Command**: `/style`
 
 Switchable output styles for Claude Code responses.

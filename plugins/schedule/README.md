@@ -1,5 +1,7 @@
 # Schedule Plugin
 
+**Version**: 0.1.0
+
 Scheduled task execution for Claude Code. Manage cron-style recurring tasks with natural language time expressions.
 
 ## Overview
@@ -69,12 +71,14 @@ Natural language parsing supports common patterns:
 ### Default Permissions
 
 Tasks default to **read-only** mode:
+
 - Allowed tools: `Read`, `Grep`, `Glob`
 - No file modification or shell execution
 
 ### Elevated Permissions
 
 Request explicitly when creating:
+
 ```bash
 /schedule "Daily at 2am" "Fix linting errors" --allow Edit,Write
 ```
@@ -88,6 +92,7 @@ Request explicitly when creating:
 ### Blocked Patterns
 
 Commands containing dangerous patterns are rejected:
+
 - `rm -rf`, `rm -r /`
 - `mkfs.`, `dd if=`
 - Fork bombs
@@ -172,6 +177,7 @@ User: /schedule "Every day at 9am" "Review code"
 ### Task not running
 
 1. Check scheduler is active:
+
    ```bash
    # For cron
    crontab -l | grep CLAUDE-MANAGED
@@ -181,11 +187,13 @@ User: /schedule "Every day at 9am" "Review code"
    ```
 
 2. Verify Claude CLI is available in cron environment:
+
    ```bash
    which claude
    ```
 
 3. Check task logs:
+
    ```bash
    /schedule logs <task-id>
    ```
@@ -193,6 +201,7 @@ User: /schedule "Every day at 9am" "Review code"
 ### Sync failed
 
 Run manual sync with verbose output:
+
 ```bash
 python3 ~/.claude/plugins/cache/.../schedule/tools/sync-schedules.py --project-dir .
 ```
@@ -200,6 +209,7 @@ python3 ~/.claude/plugins/cache/.../schedule/tools/sync-schedules.py --project-d
 ### Permission denied
 
 Ensure task-runner.sh is executable:
+
 ```bash
 chmod +x ~/.claude/plugins/cache/.../schedule/tools/task-runner.sh
 ```
@@ -213,6 +223,7 @@ Task executions can be logged to Memory Bank session files if the asha plugin is
 ### With Code Plugin
 
 Chain commands:
+
 ```bash
 /schedule "Daily at 9am" "Run /code:review on recent changes"
 ```
@@ -224,6 +235,7 @@ Works independently. Only requires Claude Code CLI and system scheduler.
 ## Version History
 
 ### v0.1.0 (2026-01-28)
+
 - Initial release
 - Natural language time parsing
 - cron and systemd support

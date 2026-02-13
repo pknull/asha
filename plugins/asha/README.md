@@ -1,6 +1,6 @@
 # Asha
 
-**Version**: 1.11.0
+**Version**: 1.11.1
 **Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
 
 Cognitive scaffold framework for session coordination, memory persistence, and session monitoring.
@@ -24,6 +24,7 @@ Initialize Asha in the current project.
 ```
 
 Creates:
+
 ```
 project/
 ├── Memory/
@@ -53,6 +54,7 @@ Save current session context to Memory Bank.
 ```
 
 **Protocol**:
+
 1. Extract session activity (agents, files, decisions)
 2. Update Memory files using Four Questions framework
 3. Archive session and refresh vector index
@@ -78,6 +80,7 @@ Show current session status and captured activity.
 ```
 
 **Example output:**
+
 ```
 ## Current Session Status
 
@@ -114,6 +117,7 @@ Index project files for semantic search.
 ```
 
 **Requirements**:
+
 - Ollama running locally (`ollama serve`)
 - Embedding model (`ollama pull nomic-embed-text`)
 
@@ -127,6 +131,7 @@ Remove legacy nested-repo installation files.
 ```
 
 **Removes**:
+
 - `asha/` directory (old nested repo)
 - `.claude/hooks/hooks.json` (if contains asha refs)
 - Command symlinks pointing to `asha/`
@@ -157,6 +162,7 @@ Remove legacy nested-repo installation files.
 The `verify-app` agent (bundled with Asha plugin) uses `techEnvironment.md` for verification commands.
 
 **Workflow:**
+
 1. Agent reads `Memory/techEnvironment.md` for `## Verification` section
 2. If commands defined → executes them in sequence
 3. If missing/placeholders → bootstraps by detecting project type:
@@ -171,6 +177,7 @@ The `verify-app` agent (bundled with Asha plugin) uses `techEnvironment.md` for 
 ## Git Integration
 
 Sessions are preserved via git:
+
 ```bash
 git add Memory/
 git commit -m "Session save: <summary>"

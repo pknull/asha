@@ -1,5 +1,7 @@
 # Write Plugin
 
+**Version**: 1.2.0
+
 Creative writing workflows for fiction development: prose craft, worldbuilding, editing, and storytelling agents.
 
 ## Installation

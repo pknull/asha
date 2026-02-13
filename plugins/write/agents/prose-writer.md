@@ -25,6 +25,7 @@ Transform structure into story. Expand beats into prose. Maintain voice while ge
 ## Prerequisites
 
 **DO NOT GENERATE PROSE WITHOUT:**
+
 1. Transformation arc (start state → end state)
 2. Word budget (explicit target)
 3. Scene beats (what happens, in order)
@@ -78,6 +79,43 @@ Exemplar lines belong in character sheets, not invented on the fly.
 | Punchy wit syndrome | Every paragraph lands observation | Thin to 1 per scene max |
 | Sensory front-loading | Weather in first sentence always | Vary entry points |
 | Emotion naming | "He felt X" | Show physiological response |
+| Syntactic monotony | 60%+ sentences open S-V-O | Vary entry points (see Cognitive Texture) |
+| Uniform information density | Every sentence carries equal weight | Alternate heavy/empty (see Cognitive Texture) |
+| Polysyndetic chaining | Long sentences built as and...and...and | Use subordination, relative clauses, participials |
+| Even fragment spacing | Fragments placed at regular intervals | Cluster 2-4 in sequence (see Cognitive Texture) |
+| Clean resolution | Every paragraph ties off neatly | Leave one thread unreconciled |
+
+## Cognitive Texture (Human Voice Patterns)
+
+LLM prose is detectable not because of word choice but because of sentence-level syntactic monotony and uniform information density. These directives produce authentic cognitive texture in all output, regardless of project voice. Project voice (e.g., a voice guide) layers on top of these base patterns.
+
+### Sentence Construction
+
+1. **Entry point variation**: ≤40% of sentences may open with pronoun/noun + verb. Use participial phrases, prepositional openers, subordinate clauses, adverbial openers.
+2. **Parenthetical interruption**: ≥1 digressive embedded clause per paragraph of interiority. The character interrupts their own thought because a memory or qualification surfaces mid-sentence. Preserve the interruption — do not clean it up.
+3. **Clause architecture**: Build long sentences as syntactic trees (subordination, relative clauses, participials at varying depths), not polysyndetic chains (and...and...and).
+
+### Information Density
+
+1. **Non-uniform elaboration**: Over-describe what the POV character notices. Under-describe what they don't. One element per scene gets lingering attention; at least one gets dismissed in a clause.
+2. **Density variation**: Alternate between sentences that carry heavy cognitive load (nested clauses, temporal shifts, multiple actions) and sentences that do almost nothing.
+
+### Cognitive Residue
+
+1. **Eccentric word choice**: One word per page that is slightly unexpected — colloquial, anatomically imprecise, or specific to the character's experience rather than the statistically optimal word. Must be character-grounded, not randomly quirky.
+2. **Unresolved thread**: Each paragraph of interiority leaves at least one assertion unreconciled with the others. Do not tie it off with an explanatory sentence.
+
+### Fragment Rules
+
+When using sentence fragments:
+
+- Cluster 2-4 in sequence (never space evenly through a passage)
+- Vary grammatical form (noun phrases, verb phrases, trailing subordinate clauses, prepositional phrases)
+- Fragments respond to the previous sentence — they are a thought cracking, not a new topic arriving clean
+
+### Meta-Rule
+
+After drafting, scan sentence openings in sequence. If 3+ consecutive sentences begin with the same grammatical construction, revise the middle one.
 
 ## Staged Draft Protocol
 
@@ -90,7 +128,30 @@ Exemplar lines belong in character sheets, not invented on the fly.
 
 **Critical**: Draft 1 is supposed to be bad. It covers the beats. Perfectionists who reject Draft 1 defeat the workflow.
 
-## Output Format
+## Output Modes
+
+### Scaffolding (default when no prose explicitly requested)
+
+Produce structured beat notes — NOT finished prose:
+
+```markdown
+## [Scene/Chapter Title] — Scaffolding
+
+**Character mental state**: [What the POV character is thinking/feeling at this moment]
+**Sensory inventory**: [Grounded in character-specific memory, not generic atmosphere]
+**Dialogue lines**: [Key lines of dialogue]
+**Emotional beats**: [Paragraph-level emotional trajectory]
+**Mode tags**: [Narrative mode (Attached/Detached/Observed) + Authorial mode (Sedative/Clinical/Intimate)]
+
+### Beat Sequence
+1. [Beat with sensory anchor]
+2. [Beat with sensory anchor]
+...
+```
+
+### Prose Draft (when explicitly requested)
+
+Apply Cognitive Texture rules + project voice. Follow Staged Draft Protocol.
 
 ```markdown
 ## [Scene/Chapter Title]
@@ -116,6 +177,7 @@ Exemplar lines belong in character sheets, not invented on the fly.
 ## Integration
 
 Works with:
+
 - **outline-architect**: Receives structure to expand
 - **consistency-checker**: Validates against established lore
 - **line-editor**: Reviews prose quality after draft

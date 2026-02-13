@@ -1,6 +1,6 @@
 # asha-marketplace
 
-**Version**: 1.9.0
+**Version**: 1.11.0
 **Description**: Claude Code plugins for research, development, creative writing, and session coordination
 
 A collection of domain-focused Claude Code plugins organized by workflow type.
@@ -20,21 +20,25 @@ A collection of domain-focused Claude Code plugins organized by workflow type.
 ### When to Use Each
 
 **panel** — When you need multiple perspectives on a question
+
 - Architecture decisions, trade-off analysis
 - Creative brainstorming with diverse viewpoints
 - Risk assessment, devil's advocacy
 
 **code** — When you're building software
+
 - Code review before commits
 - Multi-agent feature implementation
 - Bug investigation, refactoring
 
 **write** — When you're writing fiction
+
 - Chapter drafting with staged review
 - Character development with voice testing
 - Manuscript revision workflows
 
 **asha** — Always (foundation)
+
 - Session memory across conversations
 - Identity persistence via Memory Bank
 - General techniques (research verification, high-stakes safety, diversity sampling)
@@ -66,6 +70,7 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 ```
 
 **Features**:
+
 - 11-phase structured decision protocol
 - Consensus tracking with percentage thresholds
 - Output formats: markdown (default), github, json
@@ -82,7 +87,7 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 
 **Plugin Name**: `code`
 **Command**: `/code:review`
-**Version**: 1.0.1
+**Version**: 1.1.0
 **Domain**: Development
 
 Development workflows with orchestration patterns, code review, and specialized agents.
@@ -94,13 +99,16 @@ Development workflows with orchestration patterns, code review, and specialized 
 ```
 
 **Agents**:
+
 - **codebase-historian** — Prior art discovery, pattern archaeology
 
 **Modules**:
+
 - **code.md** — ACE cognitive cycle, convention matching, high-stakes protocols
 - **orchestration.md** — Quality gates, Socratic planning, scale-adaptive workflows
 
 **Recipes** (multi-agent workflows):
+
 | Recipe | Use Case |
 |--------|----------|
 | `feature-implementation.yaml` | New features end-to-end |
@@ -115,7 +123,7 @@ Development workflows with orchestration patterns, code review, and specialized 
 ### Write
 
 **Plugin Name**: `write`
-**Version**: 1.1.1
+**Version**: 1.2.0
 **Domain**: Creative Writing
 
 Creative writing workflows for fiction development: prose craft, worldbuilding, editing, and storytelling agents.
@@ -125,6 +133,7 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 ```
 
 **Agents**:
+
 | Agent | Role |
 |-------|------|
 | **outline-architect** | Story structure, beat sheets, chapter outlines |
@@ -134,9 +143,11 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 | **line-editor** | Sentence craft, word choice, polish |
 
 **Modules**:
+
 - **writing.md** — Prose craft guidelines, sentence rhythm, staged draft protocol
 
 **Recipes** (multi-agent workflows):
+
 | Recipe | Use Case |
 |--------|----------|
 | `chapter-creation.yaml` | New chapter from concept to polish |
@@ -163,6 +174,7 @@ Switchable output styles for Claude Code responses.
 ```
 
 **Available Styles**:
+
 | Style | Description |
 |-------|-------------|
 | ultra-concise | Minimal words, direct actions |
@@ -180,10 +192,10 @@ Switchable output styles for Claude Code responses.
 
 **Plugin Name**: `asha`
 **Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
-**Version**: 1.9.0
+**Version**: 1.11.1
 **Domain**: Core Scaffold
 
-Cognitive scaffold framework for session coordination and memory persistence. Foundation layer that other plugins build on. **v1.8.0** introduces cross-project identity layer at `~/.asha/`.
+Cognitive scaffold framework for session coordination and memory persistence. Foundation layer that other plugins build on. Cross-project identity layer at `~/.asha/`, facet auto-ingestion into ReasoningBank.
 
 ```bash
 /asha:init                # Initialize Asha (creates ~/.asha/ + project Memory/)
@@ -194,7 +206,7 @@ Cognitive scaffold framework for session coordination and memory persistence. Fo
 /asha:cleanup             # Remove legacy installation files
 ```
 
-**Two-Layer Architecture** (v1.8.0):
+**Two-Layer Architecture**:
 
 | Layer | Location | Purpose |
 |-------|----------|---------|
@@ -202,17 +214,20 @@ Cognitive scaffold framework for session coordination and memory persistence. Fo
 | **Project** | `Memory/` | Per-project state, protocols, tech stack |
 
 **Identity Layer** (`~/.asha/` — user-scope, not committed):
+
 - `communicationStyle.md` — Who Asha is (voice, persona, constraints)
 - `keeper.md` — Who you are (preferences, calibration signals)
 - `config.json` — Cross-project settings
 
 **Project Layer** (`Memory/` — git-committed):
+
 - `activeContext.md` — Current session state
 - `projectbrief.md` — Project foundation
 - `techEnvironment.md` — Tools and platform config
 - `workflowProtocols.md` — Project-specific patterns
 
 **Core Modules** (general techniques):
+
 | Module | Purpose |
 |--------|---------|
 | `CORE.md` | Bootstrap protocol, identity, memory architecture |
@@ -316,6 +331,7 @@ Run the full test suite:
 **Total: 182 tests** (183 with shellcheck)
 
 Individual test suites:
+
 ```bash
 ./tests/validate-plugins.sh    # Plugin configuration
 ./tests/validate-versions.sh   # Version consistency
@@ -354,6 +370,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 **Issues and feature requests**: https://github.com/pknull/asha-marketplace/issues
 
 **Documentation**:
+
 - Panel system: `plugins/panel/README.md`
 - Code workflows: `plugins/code/README.md`
 - Writing workflows: `plugins/write/README.md`
@@ -364,6 +381,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 ## Version History
 
 ### v1.9.0 (2026-01-29)
+
 - **Panel system v5.0.0**: Full persistence and panel management
   - `--resume <id>`: Continue interrupted panels from last phase
   - `--list [--status=X]`: Query panel index with filtering
@@ -377,10 +395,12 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
   - `/asha:init` bootstraps both identity layer and project Memory
 
 ### v1.8.0 (2026-01-28)
+
 - Schedule plugin v0.1.0: Cron-style task automation
 - Marketplace version bump and version history tracking
 
 ### v1.6.0 (2026-01-26)
+
 - **Domain restructuring**: Organized plugins by workflow type
 - **New plugin: code** — Development workflows, orchestration patterns, codebase-historian agent
 - **New plugin: write** — Creative writing with 5 specialized agents and recipes
@@ -388,20 +408,25 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 - Cleaned up asha to core scaffold only (moved domain content to code/write)
 
 ### v1.5.0 (2026-01-16)
+
 - Fixed hook handler permissions and naming consistency
 - Added version validation script
 - Asha plugin v1.5.0 with robust memory indexing
 
 ### v1.3.0 (2026-01-07)
+
 - Audit & cleanup: Removed stale memory-session-manager references
 - Panel system v4.2.0 with --format and --context flags
 
 ### v1.2.0 (2025-11-17)
+
 - Sterilization: Removed universe-specific references
 - Renamed character files to universal archetypes
 
 ### v1.1.0 (2025-11-08)
+
 - Panel system v4.1.0 with dynamic recruitment architecture
 
 ### v1.0.0 (2025-11-08)
+
 - Initial marketplace release
