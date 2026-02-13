@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha-marketplace
 
-**Version**: 1.9.0
-**Last Updated**: 2026-01-29
+**Version**: 1.11.0
+**Last Updated**: 2026-02-13
 **Repository**: pknull/asha-marketplace
 
 ---

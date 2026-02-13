@@ -83,6 +83,12 @@ for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
         "asha")
             readme_version=$(awk '/### Asha$/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
             ;;
+        "image")
+            readme_version=$(grep -oP '^\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/plugins/image/README.md" | head -1)
+            ;;
+        "scheduler")
+            readme_version=$(grep -oP '^\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/plugins/schedule/README.md" | head -1)
+            ;;
         *)
             readme_version=""
             ;;
