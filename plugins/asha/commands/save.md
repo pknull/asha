@@ -21,6 +21,7 @@ Run the save-session script to extract session activity:
 ```
 
 This displays:
+
 - Significant operations (agents invoked, files modified, panels convened)
 - Decisions and clarifications made
 - The Four Questions framework prompts
@@ -32,6 +33,7 @@ If no session watching file exists, proceed to Step 3 (git commit only).
 Based on the session summary, update Memory Bank files:
 
 **Memory/activeContext.md** (always update):
+
 - Add session summary with timestamp
 - Record accomplishments
 - Note key learnings
@@ -39,19 +41,23 @@ Based on the session summary, update Memory Bank files:
 - Increment version number in frontmatter
 
 **Memory/scratchpad.md** (review and migrate):
+
 - Check for notes captured via `/asha:note`
 - Migrate important items to appropriate Memory files
 - Prune completed or obsolete notes
 
 **Memory/workflowProtocols.md** (if patterns learned):
+
 - Add validated techniques
 - Document pitfalls with prevention
 
 **Memory/progress.md** (if significant milestones):
+
 - Record phase completion
 - Update project status
 
 **If activeContext.md exceeds ~500 lines**:
+
 - Preserve: Frontmatter, Current Status, Last 2-3 activities, Next Steps
 - Archive older activities
 - Target: ~150-300 lines
@@ -61,25 +67,45 @@ Based on the session summary, update Memory Bank files:
 Check session for calibration signals about The Keeper that should persist across projects:
 
 **Signals to capture**:
-- Voice calibration: "too much whimsy", "be more direct", "less formal"
+
 - Personal preferences: timezone, working style, expertise areas
 - Relationship notes: what works, what doesn't
+- Working patterns: how they like to receive information
 
 **If signals found**, append to `~/.asha/keeper.md`:
+
 1. Add timestamped entry to Calibration Log section
-2. Update relevant section (Voice Calibration, Working Style, Notes)
+2. Update relevant section (Working Style, Notes)
 3. Format: `YYYY-MM-DDTHH:MM:SS | project-name | "signal captured"`
 
 **keeper.md is additive** — never overwrite, only append. Signals accumulate across sessions and projects.
 
-**Example update**:
+Skip this step if no keeper-level signals occurred this session.
+
+### Step 2c: Voice Calibration (Cross-Project)
+
+Check session for voice/tone calibration signals that should update `~/.asha/voice.md`:
+
+**Signals to capture**:
+
+- Tone adjustments: "too much whimsy", "be more direct", "less formal"
+- Pattern changes: prohibited phrases, required patterns
+- Context-specific tone: how to sound during technical vs creative work
+
+**If voice signals found**, update `~/.asha/voice.md`:
+
+1. Update the relevant section (Voice Constraints, Communication Patterns, Context-Sensitive Tone)
+2. Add note to Calibration section with timestamp and source
+
+**Example**:
+
 ```markdown
-## Calibration Log
-...
-2026-01-29T15:30:00+10:00 | threshold | "reduce whimsy when debugging"
+## Voice Constraints
+**PROHIBITED**:
+- Whimsy during debugging (2026-01-29, threshold)
 ```
 
-Skip this step if no keeper-level signals occurred this session.
+Skip this step if no voice calibration signals occurred this session.
 
 ### Step 3: Archive, Index, and Commit
 
@@ -90,6 +116,7 @@ After Memory updates are complete, run:
 ```
 
 This will:
+
 - Archive the session watching file
 - Reset watching file for next session
 - Refresh vector DB index (incremental)
@@ -111,6 +138,7 @@ If `--react` is specified in arguments, run pattern analysis before Step 2:
 ```
 
 This provides:
+
 - Code pattern detection and repetitions
 - Redundancies with existing memory
 - Novel insights extraction
@@ -122,6 +150,7 @@ Use insights to enhance Memory updates in Step 2.
 ## Completion Validation
 
 If TodoWrite tasks exist, review completion:
+
 - [ ] Goals fully achieved (not partially)
 - [ ] Deliverables tested/validated
 - [ ] Documentation updated

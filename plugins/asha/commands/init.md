@@ -13,14 +13,17 @@ Arguments: $ARGUMENTS
 ## What This Creates
 
 **Identity Layer** (cross-project, created once):
+
 ```
 ~/.asha/
-├── communicationStyle.md   # Who Asha is
+├── soul.md                 # Who you are (identity, values, nature)
+├── voice.md                # How you express (tone, patterns, constraints)
 ├── keeper.md               # Who The Keeper is (calibration log)
 └── config.json             # Asha settings
 ```
 
 **Project Layer** (per-project):
+
 ```
 ${CLAUDE_PROJECT_DIR}/
 ├── Memory/
@@ -55,10 +58,16 @@ fi
 Create identity files from templates if they don't exist:
 
 ```bash
-# communicationStyle.md - Who Asha is
-if [[ ! -f "$ASHA_HOME/communicationStyle.md" ]]; then
-    cp "${CLAUDE_PLUGIN_ROOT}/templates/communicationStyle.md" "$ASHA_HOME/communicationStyle.md"
-    echo "Created ~/.asha/communicationStyle.md"
+# soul.md - Who you are (identity, values, nature)
+if [[ ! -f "$ASHA_HOME/soul.md" ]]; then
+    cp "${CLAUDE_PLUGIN_ROOT}/templates/soul.md" "$ASHA_HOME/soul.md"
+    echo "Created ~/.asha/soul.md"
+fi
+
+# voice.md - How you express (tone, patterns, constraints)
+if [[ ! -f "$ASHA_HOME/voice.md" ]]; then
+    cp "${CLAUDE_PLUGIN_ROOT}/templates/voice.md" "$ASHA_HOME/voice.md"
+    echo "Created ~/.asha/voice.md"
 fi
 
 # keeper.md - Who The Keeper is (calibration log)
@@ -103,6 +112,7 @@ Persistent observations across projects.
 Raw signals captured via `/save`. Synthesis updates sections above.
 
 ```
+
 ```
 KEEPER_EOF
     echo "Created ~/.asha/keeper.md"
@@ -112,11 +122,12 @@ fi
 if [[ ! -f "$ASHA_HOME/config.json" ]]; then
     cat > "$ASHA_HOME/config.json" << 'CONFIG_EOF'
 {
-  "version": "1.0",
+  "version": "1.1",
   "description": "Asha cross-project configuration",
   "capture_calibration": true,
   "keeper_profile": "keeper.md",
-  "identity_file": "communicationStyle.md"
+  "soul_file": "soul.md",
+  "voice_file": "voice.md"
 }
 CONFIG_EOF
     echo "Created ~/.asha/config.json"
@@ -148,12 +159,14 @@ mkdir -p "${CLAUDE_PROJECT_DIR}/.asha"
 ### Step 4: Copy Project Templates (if Memory files don't exist)
 
 For each template in `${CLAUDE_PLUGIN_ROOT}/templates/`:
+
 - If `Memory/<filename>` doesn't exist, copy it
 - If it exists, skip (preserve user content)
 
-**Note**: `communicationStyle.md` is NOT copied here — it lives in `~/.asha/` (cross-project).
+**Note**: `soul.md` and `voice.md` are NOT copied here — they live in `~/.asha/` (cross-project).
 
 Templates to copy:
+
 - `activeContext.md`
 - `projectbrief.md`
 - `workflowProtocols.md`
@@ -220,6 +233,7 @@ EOF
 ### Step 9: Report Status
 
 Display:
+
 - Directory structure created
 - Templates copied (list which ones)
 - Python venv status
@@ -228,11 +242,13 @@ Display:
 
 ## Next Steps After Init
 
-1. **Edit ~/.asha/communicationStyle.md** - Customize Asha's voice (first time only)
-2. **Edit Memory/projectbrief.md** - Define project scope
-3. **Edit Memory/activeContext.md** - Set current status
-4. **Run /asha:index** - Index files for semantic search (optional)
-5. **Add to .gitignore**:
+1. **Edit ~/.asha/soul.md** - Define identity and values (first time only)
+2. **Edit ~/.asha/voice.md** - Configure tone and expression patterns
+3. **Edit Memory/projectbrief.md** - Define project scope
+4. **Edit Memory/activeContext.md** - Set current status
+5. **Run /asha:index** - Index files for semantic search (optional)
+6. **Add to .gitignore**:
+
    ```
    .asha/
    Memory/sessions/
