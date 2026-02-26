@@ -68,7 +68,7 @@ EVENTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 # Valid event types and subtypes
-VALID_TYPES = {"task", "context", "event"}
+VALID_TYPES = {"task", "context", "event", "claim"}
 VALID_SUBTYPES = {
     "task": {"created", "status_change", "completed", "blocked"},
     "context": {"decision", "reference", "config_change", "learning"},
@@ -195,6 +195,89 @@ def query_events(
         "count": min(len(events), limit),
         "total_matched": len(events),
         "total_scanned": scanned
+    }
+
+
+# =============================================================================
+# File Claims - Dynamic file locking for agent coordination
+# =============================================================================
+
+def claim_file(
+    file_path: str,
+    agent: str,
+    reason: Optional[str] = None
+) -> dict:
+    """
+    Claim a file for exclusive work. Other agents should check claims before editing.
+
+    Claims are soft locks - advisory, not enforced. jj handles actual conflicts.
+    """
+    return emit_event(
+        event_type="claim",
+        subtype="acquire",
+        payload={
+            "file_path": file_path,
+            "agent": agent,
+            "reason": reason or "Working on file"
+        }
+    )
+
+
+def release_file(
+    file_path: str,
+    agent: str
+) -> dict:
+    """Release a claimed file."""
+    return emit_event(
+        event_type="claim",
+        subtype="release",
+        payload={
+            "file_path": file_path,
+            "agent": agent
+        }
+    )
+
+
+def check_claims(
+    file_path: Optional[str] = None
+) -> dict:
+    """
+    Check active file claims.
+
+    Returns claims that have acquire but no matching release.
+    """
+    # Get all claim events from current session
+    result = query_events(event_type="claim", limit=500)
+
+    claims: Dict[str, dict] = {}  # file_path -> claim info
+
+    for event in reversed(result["events"]):  # Process oldest first
+        path = event["payload"].get("file_path")
+        if not path:
+            continue
+
+        if event["subtype"] == "acquire":
+            claims[path] = {
+                "file_path": path,
+                "agent": event["payload"].get("agent"),
+                "reason": event["payload"].get("reason"),
+                "claimed_at": event["timestamp"],
+                "event_id": event["id"]
+            }
+        elif event["subtype"] == "release":
+            # Release clears the claim
+            if path in claims:
+                del claims[path]
+
+    # Filter to specific file if requested
+    if file_path:
+        if file_path in claims:
+            return {"claims": [claims[file_path]], "count": 1}
+        return {"claims": [], "count": 0}
+
+    return {
+        "claims": list(claims.values()),
+        "count": len(claims)
     }
 
 
@@ -483,6 +566,21 @@ Examples:
     # Stats command
     subparsers.add_parser("stats", help="Show event store statistics")
 
+    # Claim command
+    claim_parser = subparsers.add_parser("claim", help="Claim a file for exclusive work")
+    claim_parser.add_argument("file_path", help="Path to file to claim")
+    claim_parser.add_argument("--agent", "-a", required=True, help="Agent name claiming the file")
+    claim_parser.add_argument("--reason", "-r", help="Reason for claim")
+
+    # Release command
+    release_parser = subparsers.add_parser("release", help="Release a claimed file")
+    release_parser.add_argument("file_path", help="Path to file to release")
+    release_parser.add_argument("--agent", "-a", required=True, help="Agent name releasing the file")
+
+    # Check-claims command
+    claims_parser = subparsers.add_parser("claims", help="Check active file claims")
+    claims_parser.add_argument("--file", "-f", help="Check specific file")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -534,6 +632,25 @@ Examples:
 
         elif args.command == "stats":
             result = get_stats()
+            print(json.dumps(result, indent=2))
+
+        elif args.command == "claim":
+            result = claim_file(
+                file_path=args.file_path,
+                agent=args.agent,
+                reason=args.reason
+            )
+            print(json.dumps(result, indent=2))
+
+        elif args.command == "release":
+            result = release_file(
+                file_path=args.file_path,
+                agent=args.agent
+            )
+            print(json.dumps(result, indent=2))
+
+        elif args.command == "claims":
+            result = check_claims(file_path=args.file)
             print(json.dumps(result, indent=2))
 
     except Exception as e:
