@@ -1,6 +1,7 @@
 #!/bin/bash
 # save-session.sh - Portable session save logic for Asha Memory Bank (plugin version)
 # Can be called manually, via /asha:save command, or automatically via session-end hook
+# Now uses event_store.py for structured event management
 
 set -euo pipefail
 
@@ -59,9 +60,13 @@ get_plugin_root() {
 
 PLUGIN_ROOT=$(get_plugin_root)
 MEMORY_DIR="$PROJECT_DIR/Memory"
+EVENTS_DIR="$MEMORY_DIR/events"
+EVENTS_FILE="$EVENTS_DIR/events.jsonl"
+ACTIVE_CONTEXT="$MEMORY_DIR/activeContext.md"
+
+# Legacy markdown paths (for backward compatibility during transition)
 WATCHING_FILE="$MEMORY_DIR/sessions/current-session.md"
 ARCHIVE_DIR="$MEMORY_DIR/sessions/archive"
-ACTIVE_CONTEXT="$MEMORY_DIR/activeContext.md"
 
 TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
 TIMESTAMP_FILE=$(date -u '+%Y-%m-%d_%H-%M')
@@ -70,7 +75,7 @@ TIMESTAMP_FILE=$(date -u '+%Y-%m-%d_%H-%M')
 # MODE DETECTION
 # ==============================================================================
 
-MODE="${1:---interactive}"  # --interactive (default) or --automatic
+MODE="${1:---interactive}"  # --interactive (default), --automatic, --synthesize, etc.
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -85,69 +90,76 @@ error() {
     exit 1
 }
 
-# Archive session watching file
-archive_watching_file() {
-    if [[ ! -f "$WATCHING_FILE" ]]; then
-        log "No watching file to archive"
-        return 0
+# Get Python command (project venv if available)
+get_python_cmd() {
+    if [[ -x "$PROJECT_DIR/.asha/.venv/bin/python3" ]]; then
+        echo "$PROJECT_DIR/.asha/.venv/bin/python3"
+    elif command -v python3 >/dev/null 2>&1; then
+        echo "python3"
     fi
-
-    # Count non-trivial lines (exclude comments, headers, blank lines)
-    CONTENT_LINES=$(grep -cvE '^(<!--|#|---|$)' "$WATCHING_FILE" || echo 0)
-
-    if [[ $CONTENT_LINES -lt 10 ]]; then
-        log "Watching file has <10 content lines, skipping archive"
-        return 0
-    fi
-
-    mkdir -p "$ARCHIVE_DIR"
-    ARCHIVE_PATH="$ARCHIVE_DIR/session-$TIMESTAMP_FILE.md"
-    cp "$WATCHING_FILE" "$ARCHIVE_PATH"
-    log "Archived watching file: $ARCHIVE_PATH ($CONTENT_LINES events)"
-
-    echo "$ARCHIVE_PATH"  # Return path for caller
 }
 
-# Reset watching file to template
-reset_watching_file() {
-    mkdir -p "$(dirname "$WATCHING_FILE")"
+# Get event summary from event_store.py
+get_event_summary() {
+    local days="${1:-7}"
+    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
+    PYTHON_CMD=$(get_python_cmd)
 
-    # Generate dictionary-based session ID (2 random words from /usr/share/dict/words)
-    if [[ -f /usr/share/dict/words ]]; then
-        WORD1=$(grep -E '^[a-z]{4,8}$' /usr/share/dict/words | shuf -n 1)
-        WORD2=$(grep -E '^[a-z]{4,8}$' /usr/share/dict/words | shuf -n 1)
-        SESSION_ID="${WORD1}-${WORD2}"
+    if [[ -f "$EVENT_STORE" && -n "$PYTHON_CMD" ]]; then
+        "$PYTHON_CMD" "$EVENT_STORE" query --type event --limit 50 2>/dev/null | \
+            "$PYTHON_CMD" -c "
+import sys, json
+data = json.load(sys.stdin)
+events = data.get('events', [])
+if not events:
+    print('No recent events found.')
+    sys.exit(0)
+
+# Group by subtype
+by_subtype = {}
+for e in events:
+    st = e.get('subtype', 'unknown')
+    if st not in by_subtype:
+        by_subtype[st] = []
+    by_subtype[st].append(e)
+
+for subtype, evts in sorted(by_subtype.items()):
+    print(f'## {subtype.replace(\"_\", \" \").title()} ({len(evts)})')
+    for e in evts[:10]:
+        detail = e.get('payload', {}).get('detail', str(e.get('payload', {}))[:80])
+        ts = e.get('timestamp', '')[:16]
+        print(f'  - [{ts}] {detail}')
+    print()
+" 2>/dev/null || echo "Could not retrieve events"
     else
-        # Fallback to hex if dictionary not available
-        SESSION_ID=$(head /dev/urandom | tr -dc a-f0-9 | head -c 8)
+        echo "Event store not available"
     fi
-    cat > "$WATCHING_FILE" <<EOF
----
-sessionStart: $TIMESTAMP
-sessionID: $SESSION_ID
----
-
-## Significant Operations
-<!-- Auto-appended: agent deployments, file writes, panel sessions -->
-
-## Decisions & Clarifications
-<!-- Auto-appended: AskUserQuestion responses -->
-
-## Errors & Anomalies
-<!-- Auto-appended: tool failures -->
-EOF
-    log "Reset watching file with new session ID: $SESSION_ID"
 }
 
-# Extract section from watching file
-extract_section() {
-    local section_name="$1"
-    local file="$2"
+# Synthesize activeContext from events
+synthesize_from_events() {
+    local days="${1:-7}"
+    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
+    PYTHON_CMD=$(get_python_cmd)
 
-    sed -n "/^## $section_name/,/^## /p" "$file" | \
-        grep -v "^##" | \
-        grep -v '^<!--' | \
-        grep -v '^$' || true
+    if [[ -f "$EVENT_STORE" && -n "$PYTHON_CMD" ]]; then
+        "$PYTHON_CMD" "$EVENT_STORE" synthesize --days "$days" 2>/dev/null
+    else
+        error "Event store not available at $EVENT_STORE"
+    fi
+}
+
+# Rotate old events to archive
+rotate_events() {
+    local days="${1:-30}"
+    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
+    PYTHON_CMD=$(get_python_cmd)
+
+    if [[ -f "$EVENT_STORE" && -n "$PYTHON_CMD" ]]; then
+        RESULT=$("$PYTHON_CMD" "$EVENT_STORE" rotate --days "$days" 2>/dev/null)
+        ARCHIVED=$(echo "$RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('archived',0))" 2>/dev/null || echo "0")
+        log "Rotated events: $ARCHIVED archived"
+    fi
 }
 
 # Check if Memory cleanup needed
@@ -165,13 +177,26 @@ check_memory_cleanup_needed() {
     fi
 }
 
-# Get Python command (project venv if available)
-get_python_cmd() {
-    if [[ -x "$PROJECT_DIR/.asha/.venv/bin/python3" ]]; then
-        echo "$PROJECT_DIR/.asha/.venv/bin/python3"
-    elif command -v python3 >/dev/null 2>&1; then
-        echo "python3"
+# Legacy: Archive markdown watching file (for transition period)
+archive_watching_file() {
+    if [[ ! -f "$WATCHING_FILE" ]]; then
+        return 0
     fi
+
+    # Count non-trivial lines
+    CONTENT_LINES=$(grep -cvE '^(<!--|#|---|$)' "$WATCHING_FILE" || echo 0)
+
+    if [[ $CONTENT_LINES -lt 10 ]]; then
+        return 0
+    fi
+
+    mkdir -p "$ARCHIVE_DIR"
+    ARCHIVE_PATH="$ARCHIVE_DIR/session-$TIMESTAMP_FILE.md"
+    cp "$WATCHING_FILE" "$ARCHIVE_PATH"
+    log "Archived legacy watching file: $ARCHIVE_PATH"
+
+    # Clear the legacy file
+    rm -f "$WATCHING_FILE"
 }
 
 # ==============================================================================
@@ -181,17 +206,38 @@ get_python_cmd() {
 automatic_mode() {
     log "Running in AUTOMATIC mode (session-end hook)"
 
-    # Archive watching file
-    ARCHIVE_PATH=$(archive_watching_file)
+    # Archive legacy markdown if exists
+    archive_watching_file
 
-    if [[ -n "$ARCHIVE_PATH" ]]; then
-        # Reset watching file for next session
-        reset_watching_file
-        log "📋 Session archived: $(basename "$ARCHIVE_PATH")"
+    # Rotate old events (keep last 30 days in active file)
+    rotate_events 30
+
+    # Output valid JSON for hook
+    echo "{}"
+}
+
+# ==============================================================================
+# SYNTHESIZE MODE (generate activeContext from events)
+# ==============================================================================
+
+synthesize_mode() {
+    local days="${1:-7}"
+    log "Running in SYNTHESIZE mode (generating activeContext from events)"
+
+    # Generate synthesized content
+    CONTENT=$(synthesize_from_events "$days")
+
+    if [[ -z "$CONTENT" ]]; then
+        error "Failed to synthesize content from events"
     fi
 
-    # Output valid JSON for hook (no hookSpecificOutput needed for SessionEnd)
-    echo "{}"
+    # Output to stdout or write to file
+    if [[ "${2:-}" == "--write" ]]; then
+        echo "$CONTENT" > "$ACTIVE_CONTEXT"
+        log "Written synthesized activeContext.md ($days days of events)"
+    else
+        echo "$CONTENT"
+    fi
 }
 
 # ==============================================================================
@@ -201,32 +247,13 @@ automatic_mode() {
 interactive_mode() {
     log "Running in INTERACTIVE mode (/asha:save command)"
 
-    # Step 1: Check for session watching file
-    if [[ -f "$WATCHING_FILE" ]]; then
-        log "Found session watching file, extracting context..."
-
-        SIGNIFICANT_OPS=$(extract_section "Significant Operations" "$WATCHING_FILE")
-        DECISIONS=$(extract_section "Decisions & Clarifications" "$WATCHING_FILE")
-
-        echo ""
-        echo "=== SESSION WATCHING FILE SUMMARY ==="
-        echo ""
-
-        if [[ -n "$SIGNIFICANT_OPS" ]]; then
-            echo "## Significant Operations"
-            echo "$SIGNIFICANT_OPS"
-            echo ""
-        fi
-
-        if [[ -n "$DECISIONS" ]]; then
-            echo "## Decisions & Clarifications"
-            echo "$DECISIONS"
-            echo ""
-        fi
-
-        echo "======================================"
-        echo ""
-    fi
+    # Step 1: Show event summary
+    echo ""
+    echo "=== SESSION EVENT SUMMARY ==="
+    echo ""
+    get_event_summary 7
+    echo "======================================"
+    echo ""
 
     # Step 2: Four Questions Protocol
     cat <<'EOF'
@@ -317,56 +344,37 @@ EOF
 ⚠️  MEMORY CLEANUP REQUIRED
 Memory/activeContext.md: $LINE_COUNT lines (>500 threshold)
 
-After synthesis, trim to operational size:
-- Preserve: Frontmatter, Current Status, Last 2-3 activities, Critical Reference, Next Steps
-- Archive: Older activities (>2-3 sessions old)
-- Target: ~150-300 lines for optimal bootstrap
+Consider regenerating from events:
+  $0 --synthesize 7 --write
 
 EOF
     fi
 
-    # Step 5: Next steps instructions
-    cat <<'EOF'
+    # Step 5: Synthesis instructions
+    cat <<EOF
 
-## MEMORY UPDATE INSTRUCTIONS
+## MEMORY UPDATE OPTIONS
 
-Based on Four Questions answers, update Memory Bank files:
+**Option A: Event-based synthesis** (recommended)
+Regenerate activeContext.md from events:
+\`\`\`bash
+$0 --synthesize 7 --write
+\`\`\`
 
-1. **Memory/activeContext.md** (always update):
-   - Add session summary with timestamp
-   - Record accomplishments (Q2)
-   - Note key learnings (Q3)
-   - Update Next Steps (Q4)
-   - Increment version number
-
-2. **Memory/workflowProtocols.md** (if Q3 reveals patterns):
-   - Add validated techniques
-   - Document pitfalls with prevention
-
-3. **Memory/progress.md** (if significant milestones):
-   - Record phase completion
-   - Update project status
+**Option B: Manual update** (for adding context not captured in events)
+Edit Memory/activeContext.md directly, then:
+\`\`\`bash
+$0 --archive-only
+\`\`\`
 
 ## GIT COMMIT
 
 After Memory Bank updates:
-1. Archive watching file (if exists)
-2. Stage all changed files: `git add Memory/`
-3. Commit with descriptive message documenting session updates
-4. Push to remote: `git push`
+1. Stage all changed files: \`git add Memory/\`
+2. Commit with descriptive message
+3. Push to remote: \`git push\`
 
 EOF
-
-    # Step 6: Archive instructions
-    if [[ -f "$WATCHING_FILE" ]]; then
-        log ""
-        log "After Memory Bank updates complete, run:"
-        log "  $0 --archive-only"
-        log ""
-        log "This will:"
-        log "  - Archive current watching file to archive/"
-        log "  - Create fresh watching file for next session"
-    fi
 }
 
 # ==============================================================================
@@ -375,11 +383,6 @@ EOF
 
 analyze_mode() {
     log "Running in ANALYZE mode (--react flag)"
-
-    if [[ ! -f "$WATCHING_FILE" ]]; then
-        log "No session watching file found, skipping analysis"
-        return 0
-    fi
 
     LOCAL_REACT="$PLUGIN_ROOT/tools/local_react_save.py"
     PYTHON_CMD=$(get_python_cmd)
@@ -394,8 +397,16 @@ analyze_mode() {
         return 1
     fi
 
-    # Run the ReAct analysis
-    "$PYTHON_CMD" "$LOCAL_REACT" "$WATCHING_FILE" "$MEMORY_DIR"
+    # Run the ReAct analysis with events
+    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
+    if [[ -f "$EVENT_STORE" ]]; then
+        # Export recent events for analysis
+        EVENTS_JSON=$("$PYTHON_CMD" "$EVENT_STORE" query --limit 100 2>/dev/null || echo '{"events":[]}')
+        echo "$EVENTS_JSON" | "$PYTHON_CMD" "$LOCAL_REACT" - "$MEMORY_DIR"
+    else
+        log "Event store not available, cannot analyze"
+        return 1
+    fi
 }
 
 # ==============================================================================
@@ -405,16 +416,11 @@ analyze_mode() {
 archive_only_mode() {
     log "Running in ARCHIVE-ONLY mode"
 
-    ARCHIVE_PATH=$(archive_watching_file)
+    # Archive legacy markdown if exists
+    archive_watching_file
 
-    if [[ -n "$ARCHIVE_PATH" ]]; then
-        log "Session watching file archived and reset"
-    else
-        log "No archiving needed (file empty or missing)"
-    fi
-
-    # Always reset watching file to ensure continuity
-    reset_watching_file
+    # Rotate old events
+    rotate_events 30
 
     # Refresh vector DB index if memory_index.py exists
     MEMORY_INDEX="$PLUGIN_ROOT/tools/memory_index.py"
@@ -426,6 +432,8 @@ archive_only_mode() {
         done
         log "Vector DB index refresh complete"
     fi
+
+    log "Archive and cleanup complete"
 }
 
 # ==============================================================================
@@ -439,13 +447,18 @@ case "$MODE" in
     --interactive)
         interactive_mode
         ;;
+    --synthesize)
+        DAYS="${2:-7}"
+        WRITE_FLAG="${3:-}"
+        synthesize_mode "$DAYS" "$WRITE_FLAG"
+        ;;
     --archive-only)
         archive_only_mode
         ;;
-    --analyze)
+    --analyze|--react)
         analyze_mode
         ;;
     *)
-        error "Unknown mode: $MODE. Use --interactive, --automatic, --archive-only, or --analyze"
+        error "Unknown mode: $MODE. Use --interactive, --automatic, --synthesize, --archive-only, or --analyze"
         ;;
 esac

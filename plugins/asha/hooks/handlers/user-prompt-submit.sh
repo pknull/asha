@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 # UserPromptSubmit Hook - Session logging + optional prompt refinement
-# Logs significant user prompts to current-session.md
+# Emits user decision events to Memory/events/events.jsonl
 # If Work/markers/prompt-refine exists, refines prompts via LanguageTool before sending
 
 # Source common utilities
@@ -10,6 +10,12 @@ source "$(dirname "$0")/common.sh"
 PROJECT_DIR=$(detect_project_dir)
 if [[ -z "$PROJECT_DIR" ]]; then
     # Cannot detect project directory - exit silently (no error spam to user)
+    echo "{}"
+    exit 0
+fi
+
+PLUGIN_ROOT=$(get_plugin_root)
+if [[ -z "$PLUGIN_ROOT" ]]; then
     echo "{}"
     exit 0
 fi
@@ -32,34 +38,28 @@ if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
     exit 0
 fi
 
-SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
-TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
-
-# Ensure Memory directory structure exists
-mkdir -p "$PROJECT_DIR/Memory/sessions"
+# Ensure directory structure exists
+mkdir -p "$PROJECT_DIR/Memory/events"
 mkdir -p "$PROJECT_DIR/Work/markers"
 
-# Ensure session file exists with proper structure
-if [[ ! -f "$SESSION_FILE" ]]; then
-    cat > "$SESSION_FILE" <<EOF
----
-sessionStart: $(date -u '+%Y-%m-%d %H:%M UTC')
-sessionID: $(shuf -n 1 /usr/share/dict/words 2>/dev/null | tr -d "'" | tr '[:upper:]' '[:lower:]' || od -An -tx1 -N4 /dev/urandom | tr -d ' \n')
----
+# Helper function to emit events to event_store.py
+emit_event() {
+    local event_type="$1"
+    local subtype="$2"
+    local payload="$3"
 
-## Significant Operations
-<!-- Auto-appended: agent deployments, file writes, panel sessions -->
+    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
+    PYTHON_CMD=$(get_python_cmd)
 
-## Decisions & Clarifications
-<!-- Auto-appended: AskUserQuestion responses, mode selections -->
-
-## Discoveries & Patterns
-<!-- Auto-appended: ACE cycle outputs, explicit insights -->
-
-## Candidates for Next Steps
-<!-- Auto-appended: identified follow-up tasks -->
-EOF
-fi
+    if [[ -f "$EVENT_STORE" && -n "$PYTHON_CMD" ]]; then
+        # Run in background to avoid blocking
+        ("$PYTHON_CMD" "$EVENT_STORE" emit \
+            --type "$event_type" \
+            --subtype "$subtype" \
+            --payload "$payload" \
+            --source "hook" >/dev/null 2>&1) &
+    fi
+}
 
 # Read stdin JSON from Claude Code
 INPUT=$(cat)
@@ -67,7 +67,7 @@ INPUT=$(cat)
 # Extract user prompt (suppress jq errors for malformed input)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null || true)
 
-# Session logging (original logic)
+# Session logging via events
 if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
     PROMPT_LENGTH=${#PROMPT}
 
@@ -80,8 +80,10 @@ if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
             PROMPT_SHORT="$PROMPT"
         fi
 
-        # Append to Decisions & Clarifications section
-        sed -i "/## Decisions & Clarifications/a - [$TIMESTAMP] User: $PROMPT_SHORT" "$SESSION_FILE"
+        # Emit decision event
+        PAYLOAD=$(jq -nc --arg prompt "$PROMPT_SHORT" \
+            '{detail: $prompt, source: "user_input"}')
+        emit_event "context" "decision" "$PAYLOAD"
     fi
 fi
 
@@ -185,9 +187,10 @@ except Exception as e:
                     # Signal statusline: last prompt was corrected
                     touch "$PROJECT_DIR/Work/markers/last-correction" 2>/dev/null || true
 
-                    # Log significant correction to session file
-                    CORRECTION_LOG="- [$TIMESTAMP] Prompt corrected ($DIFF_PERCENT% change): \`$PROMPT\` → \`$REFINED\`"
-                    sed -i "/## Discoveries & Patterns/a $CORRECTION_LOG" "$SESSION_FILE" 2>/dev/null || true
+                    # Emit learning event for significant correction
+                    PAYLOAD=$(jq -nc --arg original "$PROMPT" --arg refined "$REFINED" --arg change "$DIFF_PERCENT" \
+                        '{insight: "Prompt corrected (\($change)% change)", original: $original, refined: $refined}')
+                    emit_event "context" "learning" "$PAYLOAD"
 
                     # Inject correction as system-reminder (via stdout)
                     cat <<EOF

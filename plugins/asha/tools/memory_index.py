@@ -38,6 +38,7 @@ import subprocess
 import traceback
 import hashlib
 import re
+from typing import Optional
 import time
 from pathlib import Path
 from datetime import datetime
@@ -484,8 +485,25 @@ def extract_keywords(query: str) -> list[str]:
     return keywords
 
 
-def search(query: str, limit: int = 5) -> dict:
-    """Search for relevant content using semantic similarity"""
+def search(
+    query: str,
+    limit: int = 5,
+    content_type: Optional[str] = None,
+    source_path: Optional[str] = None,
+    time_after: Optional[str] = None,
+    time_before: Optional[str] = None
+) -> dict:
+    """
+    Search for relevant content using semantic similarity with optional filters.
+
+    Args:
+        query: Search query text
+        limit: Maximum results to return
+        content_type: Filter by content type (memory, character, code, etc.)
+        source_path: Filter by source file path prefix
+        time_after: Filter by ingested_at >= this ISO8601 timestamp
+        time_before: Filter by ingested_at <= this ISO8601 timestamp
+    """
     require_dependencies("search")
     _, collection = init_db()
 
@@ -495,10 +513,29 @@ def search(query: str, limit: int = 5) -> dict:
         print("❌ Failed to get embedding from Ollama", file=sys.stderr, flush=True)
         return {"results": [], "method": "semantic", "error": "embedding_failed"}
 
+    # Build where clause for filters
+    where_clause = None
+    where_conditions = []
+
+    if content_type:
+        where_conditions.append({"content_type": content_type})
+    if source_path:
+        where_conditions.append({"source_file": {"$contains": source_path}})
+    if time_after:
+        where_conditions.append({"ingested_at": {"$gte": time_after}})
+    if time_before:
+        where_conditions.append({"ingested_at": {"$lte": time_before}})
+
+    if len(where_conditions) == 1:
+        where_clause = where_conditions[0]
+    elif len(where_conditions) > 1:
+        where_clause = {"$and": where_conditions}
+
     # Search
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=limit,
+        where=where_clause,
         include=["documents", "metadatas", "distances"]
     )
 
@@ -1036,6 +1073,12 @@ def main():
         print("  stats                    - Show index statistics")
         print("  check                    - Verify dependencies are installed")
         print()
+        print("Search filters:")
+        print("  --content-type <type>    - Filter by content type (memory, character, code, etc.)")
+        print("  --source-path <prefix>   - Filter by source file path prefix")
+        print("  --time-after <ISO8601>   - Filter by ingested_at >= timestamp")
+        print("  --time-before <ISO8601>  - Filter by ingested_at <= timestamp")
+        print()
         print("Requires: chromadb, requests, ollama running locally")
         sys.exit(1)
 
@@ -1046,15 +1089,56 @@ def main():
             print("Error: search requires a query", file=sys.stderr)
             sys.exit(1)
 
+        # Parse flags
         use_fallback = "--fallback" in sys.argv
-        # Remove --fallback from args for query construction
-        args = [a for a in sys.argv[2:] if a != "--fallback"]
-        query = " ".join(args)
+        content_type = None
+        source_path = None
+        time_after = None
+        time_before = None
+
+        args = sys.argv[2:]
+        query_parts = []
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg == "--fallback":
+                i += 1
+                continue
+            elif arg == "--content-type" and i + 1 < len(args):
+                content_type = args[i + 1]
+                i += 2
+                continue
+            elif arg == "--source-path" and i + 1 < len(args):
+                source_path = args[i + 1]
+                i += 2
+                continue
+            elif arg == "--time-after" and i + 1 < len(args):
+                time_after = args[i + 1]
+                i += 2
+                continue
+            elif arg == "--time-before" and i + 1 < len(args):
+                time_before = args[i + 1]
+                i += 2
+                continue
+            else:
+                query_parts.append(arg)
+                i += 1
+
+        query = " ".join(query_parts)
+        if not query:
+            print("Error: search requires a query", file=sys.stderr)
+            sys.exit(1)
 
         if use_fallback:
             results = search_with_fallback(query)
         else:
-            results = search(query)
+            results = search(
+                query,
+                content_type=content_type,
+                source_path=source_path,
+                time_after=time_after,
+                time_before=time_before
+            )
 
         print(json.dumps(results, indent=2))
 

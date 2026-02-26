@@ -473,6 +473,172 @@ def update_pattern_score(pattern_id: int, score: float, feedback: Optional[str] 
 
 
 # =============================================================================
+# Decay & Boost Operations
+# =============================================================================
+
+def apply_decay(days_threshold: int = 30, decay_rate: float = 0.10, min_score: float = 0.1) -> dict:
+    """
+    Apply decay to patterns not accessed recently.
+
+    Patterns that haven't been updated in `days_threshold` days have their
+    success_score reduced by `decay_rate` (e.g., 0.10 = 10% reduction).
+    Scores are floored at `min_score` to prevent complete removal.
+
+    Args:
+        days_threshold: Days of inactivity before decay applies (default: 30)
+        decay_rate: Fraction to reduce score by (default: 0.10 = 10%)
+        min_score: Minimum score floor (default: 0.1)
+    """
+    if not 0.0 < decay_rate < 1.0:
+        return {"error": "decay_rate must be between 0.0 and 1.0"}
+
+    conn = init_db()
+    cursor = conn.cursor()
+
+    # Find and decay old patterns
+    cursor.execute("""
+        UPDATE patterns
+        SET success_score = MAX(?, success_score * (1 - ?)),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE julianday('now') - julianday(updated_at) > ?
+        AND success_score > ?
+    """, (min_score, decay_rate, days_threshold, min_score))
+
+    affected = cursor.rowcount
+    conn.commit()
+    conn.close()
+
+    return {
+        "status": "decayed",
+        "patterns_affected": affected,
+        "days_threshold": days_threshold,
+        "decay_rate": decay_rate
+    }
+
+
+def boost_pattern(pattern_id: int, outcome: str, boost_rate: float = 0.05) -> dict:
+    """
+    Boost or reduce pattern confidence based on usage outcome.
+
+    When a pattern is retrieved and confirmed useful, boost its score.
+    When a pattern leads to failure, reduce its score.
+
+    Args:
+        pattern_id: ID of the pattern to adjust
+        outcome: "success" (boost) or "failure" (reduce)
+        boost_rate: Amount to adjust score by (default: 0.05 = 5%)
+    """
+    if outcome not in ("success", "failure"):
+        return {"error": "outcome must be 'success' or 'failure'"}
+
+    if not 0.0 < boost_rate < 1.0:
+        return {"error": "boost_rate must be between 0.0 and 1.0"}
+
+    conn = init_db()
+    cursor = conn.cursor()
+
+    # Calculate adjustment
+    adjustment = boost_rate if outcome == "success" else -boost_rate
+
+    cursor.execute("""
+        UPDATE patterns
+        SET success_score = MIN(1.0, MAX(0.0, success_score + ?)),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+    """, (adjustment, pattern_id))
+
+    affected = cursor.rowcount
+    conn.commit()
+
+    if affected:
+        # Get new score
+        cursor.execute("SELECT success_score FROM patterns WHERE id = ?", (pattern_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return {
+            "status": "boosted" if outcome == "success" else "reduced",
+            "pattern_id": pattern_id,
+            "adjustment": adjustment,
+            "new_score": row["success_score"] if row else None
+        }
+
+    conn.close()
+    return {"error": f"Pattern {pattern_id} not found"}
+
+
+# =============================================================================
+# Caching Layer
+# =============================================================================
+
+# Simple in-memory cache with TTL
+_query_cache: dict = {}
+_cache_timestamps: dict = {}
+CACHE_TTL_SECONDS = 3600  # 1 hour
+
+
+def _cache_key(pattern_type: Optional[str], context: Optional[str], min_score: float) -> str:
+    """Generate cache key from query parameters"""
+    return f"{pattern_type or ''}:{context or ''}:{min_score}"
+
+
+def query_patterns_cached(
+    pattern_type: Optional[str] = None,
+    context: Optional[str] = None,
+    min_score: float = 0.0,
+    limit: int = 10
+) -> dict:
+    """
+    Query patterns with caching.
+
+    Results are cached for CACHE_TTL_SECONDS to avoid repeated database queries.
+    Cache is invalidated when any pattern is updated.
+    """
+    import time
+
+    key = _cache_key(pattern_type, context, min_score)
+    now = time.time()
+
+    # Check cache validity
+    if key in _query_cache and key in _cache_timestamps:
+        if now - _cache_timestamps[key] < CACHE_TTL_SECONDS:
+            cached = _query_cache[key]
+            # Apply limit to cached results
+            return {
+                "results": cached["results"][:limit],
+                "count": min(cached["count"], limit),
+                "cached": True
+            }
+
+    # Cache miss or expired - query database
+    result = query_patterns(
+        pattern_type=pattern_type,
+        context=context,
+        min_score=min_score,
+        limit=100  # Cache more than requested for future queries
+    )
+
+    # Store in cache
+    _query_cache[key] = result
+    _cache_timestamps[key] = now
+
+    # Return with limit applied
+    return {
+        "results": result["results"][:limit],
+        "count": min(result["count"], limit),
+        "cached": False
+    }
+
+
+def clear_cache() -> dict:
+    """Clear the query cache"""
+    global _query_cache, _cache_timestamps
+    count = len(_query_cache)
+    _query_cache = {}
+    _cache_timestamps = {}
+    return {"status": "cleared", "entries_removed": count}
+
+
+# =============================================================================
 # Statistics & Export
 # =============================================================================
 
@@ -572,6 +738,9 @@ Examples:
   %(prog)s error --type ImportError --signature "No module named 'foo'" --resolution "pip install foo"
   %(prog)s tool --name grep --use-case "finding definitions" --success
   %(prog)s feedback --id 42 --score 1.0 --note "worked perfectly"
+  %(prog)s decay --days 30 --rate 0.1
+  %(prog)s boost --id 42 --outcome success
+  %(prog)s cache --clear
   %(prog)s stats
   %(prog)s export
         """
@@ -617,6 +786,22 @@ Examples:
     feedback_parser.add_argument("--id", "-i", type=int, required=True, help="Pattern ID to update")
     feedback_parser.add_argument("--score", "-s", type=float, required=True, help="New success score 0.0-1.0")
     feedback_parser.add_argument("--note", "-n", help="Feedback note")
+
+    # Decay command
+    decay_parser = subparsers.add_parser("decay", help="Apply decay to unused patterns")
+    decay_parser.add_argument("--days", "-d", type=int, default=30, help="Days threshold (default: 30)")
+    decay_parser.add_argument("--rate", "-r", type=float, default=0.10, help="Decay rate 0.0-1.0 (default: 0.10)")
+    decay_parser.add_argument("--min-score", type=float, default=0.1, help="Minimum score floor (default: 0.1)")
+
+    # Boost command
+    boost_parser = subparsers.add_parser("boost", help="Boost pattern after confirmed use")
+    boost_parser.add_argument("--id", "-i", type=int, required=True, help="Pattern ID to boost")
+    boost_parser.add_argument("--outcome", "-o", required=True, choices=["success", "failure"], help="Usage outcome")
+    boost_parser.add_argument("--rate", "-r", type=float, default=0.05, help="Boost rate 0.0-1.0 (default: 0.05)")
+
+    # Cache command
+    cache_parser = subparsers.add_parser("cache", help="Manage query cache")
+    cache_parser.add_argument("--clear", action="store_true", help="Clear the cache")
 
     # Stats command
     subparsers.add_parser("stats", help="Show database statistics")
@@ -688,6 +873,26 @@ Examples:
             score=args.score,
             feedback=args.note
         )
+
+    elif args.command == "decay":
+        result = apply_decay(
+            days_threshold=args.days,
+            decay_rate=args.rate,
+            min_score=args.min_score
+        )
+
+    elif args.command == "boost":
+        result = boost_pattern(
+            pattern_id=args.id,
+            outcome=args.outcome,
+            boost_rate=args.rate
+        )
+
+    elif args.command == "cache":
+        if args.clear:
+            result = clear_cache()
+        else:
+            result = {"cache_entries": len(_query_cache), "hint": "Use --clear to clear cache"}
 
     elif args.command == "stats":
         result = get_stats()
