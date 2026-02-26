@@ -1,6 +1,6 @@
 # Code Plugin
 
-**Version**: 1.1.0
+**Version**: 1.2.0
 
 Development workflows for software engineering: orchestration patterns, code review, TDD, and specialized agents.
 
@@ -24,6 +24,7 @@ Development workflows for software engineering: orchestration patterns, code rev
 
 - **code.md** - Convention matching, code comments, reference format (uses `asha/cognitive.md` for ACE cycle)
 - **orchestration.md** - Quality gates, Socratic planning, scale-adaptive workflows, two-stage review, failure tracking
+- **parallel-agents.md** - jj/git hybrid workflow, module ownership, file claims, TDD-first coordination
 
 ### Recipes
 
