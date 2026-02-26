@@ -198,6 +198,7 @@ DEFAULT_EXCLUDE_DIRS = [
     # Version control
     ".git",
     ".git-rewrite",  # git filter-branch artifacts
+    ".jj",  # jujutsu VCS internals
     # Python
     ".venv", "venv", "env", "__pycache__", ".pytest_cache", ".mypy_cache",
     # Node
