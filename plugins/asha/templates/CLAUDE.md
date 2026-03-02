@@ -4,7 +4,7 @@ This project uses the **Asha** framework for session coordination and memory per
 
 ## Quick Reference
 
-**Framework:** Asha plugin provides CORE.md and operational protocols via SessionStart hook.
+**Framework:** Asha plugin provides CORE.md via session-start hook.
 
 **Memory Bank:** Project context stored in `Memory/*.md` files.
 
@@ -12,23 +12,8 @@ This project uses the **Asha** framework for session coordination and memory per
 
 | Command | Purpose |
 |---------|---------|
-| `/asha:save` | Save session context to Memory Bank, archive session, refresh index, commit |
-| `/asha:index` | Index files for semantic search (use `--full` for complete reindex, `--check` for dependency verification) |
-
-## Tools
-
-Tool paths are provided by the Asha plugin via session context. Common operations:
-
-```bash
-# Semantic search (requires Ollama running)
-# Path provided in session context as: memory_index.py search "your query"
-
-# Pattern lookup from ReasoningBank
-# Path provided in session context as: reasoning_bank.py query --context "situation"
-
-# Check vector DB dependencies
-# Path provided in session context as: memory_index.py check
-```
+| `/asha:save` | Save session context to Memory Bank, archive session |
+| `/asha:init` | Initialize Asha in new projects |
 
 ## Memory Files
 
@@ -36,7 +21,9 @@ Tool paths are provided by the Asha plugin via session context. Common operation
 |------|---------|------------------|
 | `Memory/activeContext.md` | Current project state, recent activities | Every session |
 | `Memory/projectbrief.md` | Project scope, objectives, constraints | Rarely |
-| `Memory/communicationStyle.md` | Voice, persona, authority hierarchy | Rarely |
+| `~/.asha/soul.md` | Identity, values, nature (cross-project) | Rarely |
+| `~/.asha/voice.md` | Voice, tone, constraints (cross-project) | When calibrated |
+| `~/.asha/learnings.md` | Cross-project insights from experience | Additive via /save |
 | `Memory/workflowProtocols.md` | Validated patterns, anti-patterns | When patterns discovered |
 | `Memory/techEnvironment.md` | Technical stack, conventions | When stack changes |
 

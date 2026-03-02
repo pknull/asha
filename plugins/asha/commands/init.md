@@ -1,6 +1,6 @@
 ---
-description: "Initialize Asha in current project - creates Memory/, .asha/, and databases"
-argument-hint: "Optional: --minimal (skip Vector DB) or --full (accept all defaults)"
+description: "Initialize Asha in current project - creates Memory/ and .asha/"
+argument-hint: "Optional: --full (accept all defaults)"
 allowed-tools: ["Bash", "Read", "Write"]
 ---
 
@@ -19,6 +19,7 @@ Arguments: $ARGUMENTS
 ├── soul.md                 # Who you are (identity, values, nature)
 ├── voice.md                # How you express (tone, patterns, constraints)
 ├── keeper.md               # Who The Keeper is (calibration log)
+├── learnings.md            # Cross-project insights from experience
 └── config.json             # Asha settings
 ```
 
@@ -27,16 +28,14 @@ Arguments: $ARGUMENTS
 ```
 ${CLAUDE_PROJECT_DIR}/
 ├── Memory/
-│   ├── sessions/archive/
-│   ├── reasoning_bank/
-│   ├── vector_db/
+│   ├── events/             # Session event log (JSONL)
+│   ├── sessions/archive/   # Archived session summaries
 │   ├── activeContext.md
 │   ├── projectbrief.md
 │   ├── workflowProtocols.md
 │   └── techEnvironment.md
 ├── Work/markers/
 ├── .asha/
-│   ├── .venv/
 │   └── config.json
 └── CLAUDE.md
 ```
@@ -118,16 +117,37 @@ KEEPER_EOF
     echo "Created ~/.asha/keeper.md"
 fi
 
+# learnings.md - Cross-project insights
+if [[ ! -f "$ASHA_HOME/learnings.md" ]]; then
+    cat > "$ASHA_HOME/learnings.md" << 'LEARNINGS_EOF'
+# Learnings
+
+Cross-project insights from experience. Consulted at session start, appended during /save.
+
+---
+
+## Tool Usage
+
+- (populated via /save reflections)
+
+## Patterns
+
+- (populated via /save reflections)
+LEARNINGS_EOF
+    echo "Created ~/.asha/learnings.md"
+fi
+
 # config.json
 if [[ ! -f "$ASHA_HOME/config.json" ]]; then
     cat > "$ASHA_HOME/config.json" << 'CONFIG_EOF'
 {
-  "version": "1.1",
+  "version": "1.2",
   "description": "Asha cross-project configuration",
   "capture_calibration": true,
   "keeper_profile": "keeper.md",
   "soul_file": "soul.md",
-  "voice_file": "voice.md"
+  "voice_file": "voice.md",
+  "learnings_file": "learnings.md"
 }
 CONFIG_EOF
     echo "Created ~/.asha/config.json"
@@ -149,9 +169,8 @@ If already initialized, inform user and stop.
 ### Step 3: Create Project Directory Structure
 
 ```bash
+mkdir -p "${CLAUDE_PROJECT_DIR}/Memory/events"
 mkdir -p "${CLAUDE_PROJECT_DIR}/Memory/sessions/archive"
-mkdir -p "${CLAUDE_PROJECT_DIR}/Memory/reasoning_bank"
-mkdir -p "${CLAUDE_PROJECT_DIR}/Memory/vector_db"
 mkdir -p "${CLAUDE_PROJECT_DIR}/Work/markers"
 mkdir -p "${CLAUDE_PROJECT_DIR}/.asha"
 ```
@@ -195,49 +214,26 @@ else
 fi
 ```
 
-### Step 6: Create Python Virtual Environment
-
-Unless `--minimal` is specified:
-
-```bash
-python3 -m venv "${CLAUDE_PROJECT_DIR}/.asha/.venv"
-"${CLAUDE_PROJECT_DIR}/.asha/.venv/bin/pip" install -r "${CLAUDE_PLUGIN_ROOT}/tools/requirements.txt"
-```
-
-If venv creation fails, warn but continue (Vector DB will be unavailable).
-
-### Step 7: Initialize Databases
-
-```bash
-# ReasoningBank
-"${CLAUDE_PLUGIN_ROOT}/tools/run-python.sh" "${CLAUDE_PLUGIN_ROOT}/tools/reasoning_bank.py" stats
-
-# Vector DB check
-"${CLAUDE_PLUGIN_ROOT}/tools/run-python.sh" "${CLAUDE_PLUGIN_ROOT}/tools/memory_index.py" check
-```
-
-### Step 8: Create Project Config File
+### Step 6: Create Project Config File
 
 Write `.asha/config.json` to mark project as initialized:
 
 ```bash
 cat > "${CLAUDE_PROJECT_DIR}/.asha/config.json" << EOF
 {
-  "version": "1.0.0",
+  "version": "1.1.0",
   "initialized": "$(date -Iseconds)",
   "plugin": "asha@asha-marketplace"
 }
 EOF
 ```
 
-### Step 9: Report Status
+### Step 7: Report Status
 
 Display:
 
 - Directory structure created
 - Templates copied (list which ones)
-- Python venv status
-- Vector DB readiness
 - Next steps for user
 
 ## Next Steps After Init
@@ -246,14 +242,12 @@ Display:
 2. **Edit ~/.asha/voice.md** - Configure tone and expression patterns
 3. **Edit Memory/projectbrief.md** - Define project scope
 4. **Edit Memory/activeContext.md** - Set current status
-5. **Run /asha:index** - Index files for semantic search (optional)
-6. **Add to .gitignore**:
+5. **Add to .gitignore**:
 
    ```
    .asha/
    Memory/sessions/
-   Memory/vector_db/
-   Memory/reasoning_bank/
+   Work/
    ```
 
 **Note**: `~/.asha/` is cross-project and not committed to any repo. The keeper profile (`~/.asha/keeper.md`) accumulates calibration signals automatically via `/save`.

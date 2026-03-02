@@ -284,58 +284,7 @@ Please answer these questions to guide Memory Bank updates:
 
 EOF
 
-    # Step 3: ReasoningBank pattern recording prompt
-    REASONING_BANK="$PLUGIN_ROOT/tools/reasoning_bank.py"
-    PYTHON_CMD=$(get_python_cmd)
-    if [[ -f "$REASONING_BANK" && -n "$PYTHON_CMD" ]]; then
-        cat <<EOF
-
-## REASONING BANK (Pattern Learning)
-
-Record significant patterns from this session for cross-session learning:
-
-**Workflow patterns** (what approaches worked/failed):
-\`\`\`bash
-$PYTHON_CMD "$REASONING_BANK" record --type workflow \\
-    --context "situation description" \\
-    --action "approach taken" \\
-    --outcome "result" \\
-    --score 0.9  # 0.0=failed, 1.0=perfect
-\`\`\`
-
-**Error resolutions** (for recurring issues):
-\`\`\`bash
-$PYTHON_CMD "$REASONING_BANK" error \\
-    --type "ErrorType" \\
-    --signature "error message pattern" \\
-    --resolution "what fixed it" \\
-    --prevention "how to avoid"
-\`\`\`
-
-**Query before acting** (check what worked before):
-\`\`\`bash
-$PYTHON_CMD "$REASONING_BANK" query --context "similar situation"
-\`\`\`
-
-Skip if session was routine. Record only when you learned something transferable.
-
-EOF
-    fi
-
-    # Step 3b: Facet auto-ingestion
-    FACET_INGEST="$PLUGIN_ROOT/tools/facet_ingest.py"
-    if [[ -f "$FACET_INGEST" && -n "$PYTHON_CMD" ]]; then
-        FACET_RESULT=$(CLAUDE_PROJECT_DIR="$PROJECT_DIR" "$PYTHON_CMD" "$FACET_INGEST" ingest 2>/dev/null || echo '{"ingested": 0}')
-        INGESTED=$(echo "$FACET_RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('ingested',0))" 2>/dev/null || echo "0")
-        if [[ "$INGESTED" -gt 0 ]]; then
-            echo ""
-            echo "## FACET INGESTION"
-            echo "Auto-ingested $INGESTED facet(s) from previous sessions into ReasoningBank."
-            echo ""
-        fi
-    fi
-
-    # Step 4: Memory cleanup check
+    # Step 3: Memory cleanup check
     CLEANUP_NEEDED=$(check_memory_cleanup_needed)
     if [[ "$CLEANUP_NEEDED" == "true" ]]; then
         LINE_COUNT=$(wc -l < "$ACTIVE_CONTEXT")
@@ -377,37 +326,6 @@ After Memory Bank updates:
 EOF
 }
 
-# ==============================================================================
-# ANALYZE MODE (ReAct pattern analysis)
-# ==============================================================================
-
-analyze_mode() {
-    log "Running in ANALYZE mode (--react flag)"
-
-    LOCAL_REACT="$PLUGIN_ROOT/tools/local_react_save.py"
-    PYTHON_CMD=$(get_python_cmd)
-
-    if [[ ! -f "$LOCAL_REACT" ]]; then
-        log "local_react_save.py not found at $LOCAL_REACT"
-        return 1
-    fi
-
-    if [[ -z "$PYTHON_CMD" ]]; then
-        log "Python not available, cannot run ReAct analysis"
-        return 1
-    fi
-
-    # Run the ReAct analysis with events
-    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
-    if [[ -f "$EVENT_STORE" ]]; then
-        # Export recent events for analysis
-        EVENTS_JSON=$("$PYTHON_CMD" "$EVENT_STORE" query --limit 100 2>/dev/null || echo '{"events":[]}')
-        echo "$EVENTS_JSON" | "$PYTHON_CMD" "$LOCAL_REACT" - "$MEMORY_DIR"
-    else
-        log "Event store not available, cannot analyze"
-        return 1
-    fi
-}
 
 # ==============================================================================
 # ARCHIVE-ONLY MODE (called after manual Memory updates)
@@ -421,17 +339,6 @@ archive_only_mode() {
 
     # Rotate old events
     rotate_events 30
-
-    # Refresh vector DB index if memory_index.py exists
-    MEMORY_INDEX="$PLUGIN_ROOT/tools/memory_index.py"
-    PYTHON_CMD=$(get_python_cmd)
-    if [[ -f "$MEMORY_INDEX" && -n "$PYTHON_CMD" ]]; then
-        log "Refreshing vector DB index (incremental)..."
-        "$PYTHON_CMD" "$MEMORY_INDEX" ingest --changed 2>&1 | while read -r line; do
-            log "  $line"
-        done
-        log "Vector DB index refresh complete"
-    fi
 
     log "Archive and cleanup complete"
 }
@@ -455,10 +362,7 @@ case "$MODE" in
     --archive-only)
         archive_only_mode
         ;;
-    --analyze|--react)
-        analyze_mode
-        ;;
     *)
-        error "Unknown mode: $MODE. Use --interactive, --automatic, --synthesize, --archive-only, or --analyze"
+        error "Unknown mode: $MODE. Use --interactive, --automatic, --synthesize, or --archive-only"
         ;;
 esac

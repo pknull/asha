@@ -29,23 +29,45 @@ fi
 # Include CORE.md, identity layer (~/.asha/), and module references
 CORE_MD="$PLUGIN_ROOT/modules/CORE.md"
 ASHA_DIR="$HOME/.asha"
-IDENTITY_FILE="$ASHA_DIR/communicationStyle.md"
+
+# Identity files (soul.md + voice.md preferred, communicationStyle.md as legacy fallback)
+SOUL_FILE="$ASHA_DIR/soul.md"
+VOICE_FILE="$ASHA_DIR/voice.md"
+LEGACY_IDENTITY_FILE="$ASHA_DIR/communicationStyle.md"
 KEEPER_FILE="$ASHA_DIR/keeper.md"
+LEARNINGS_FILE="$ASHA_DIR/learnings.md"
 
 if [[ -f "$CORE_MD" ]]; then
     # Read CORE.md content
     CORE_CONTENT=$(cat "$CORE_MD")
 
     # Read identity layer files if they exist
-    IDENTITY_CONTENT=""
+    # Prefer soul.md + voice.md; fall back to communicationStyle.md
+    SOUL_CONTENT=""
+    VOICE_CONTENT=""
+    LEGACY_IDENTITY_CONTENT=""
     KEEPER_CONTENT=""
+    LEARNINGS_CONTENT=""
 
-    if [[ -f "$IDENTITY_FILE" ]]; then
-        IDENTITY_CONTENT=$(cat "$IDENTITY_FILE")
+    if [[ -f "$SOUL_FILE" ]]; then
+        SOUL_CONTENT=$(cat "$SOUL_FILE")
+    fi
+
+    if [[ -f "$VOICE_FILE" ]]; then
+        VOICE_CONTENT=$(cat "$VOICE_FILE")
+    fi
+
+    # Legacy fallback only if soul.md doesn't exist
+    if [[ -z "$SOUL_CONTENT" && -f "$LEGACY_IDENTITY_FILE" ]]; then
+        LEGACY_IDENTITY_CONTENT=$(cat "$LEGACY_IDENTITY_FILE")
     fi
 
     if [[ -f "$KEEPER_FILE" ]]; then
         KEEPER_CONTENT=$(cat "$KEEPER_FILE")
+    fi
+
+    if [[ -f "$LEARNINGS_FILE" ]]; then
+        LEARNINGS_CONTENT=$(cat "$LEARNINGS_FILE")
     fi
 
     # Output as system-reminder
@@ -61,21 +83,38 @@ Available modules (reference as needed):
 - ${PLUGIN_ROOT}/modules/memory-ops.md - Memory operation protocols
 - ${PLUGIN_ROOT}/modules/high-stakes.md - High-stakes decision protocols
 - ${PLUGIN_ROOT}/modules/verbalized-sampling.md - Verbalized sampling technique
-
-Tools available:
-- Semantic search: "${PLUGIN_ROOT}/tools/run-python.sh" "${PLUGIN_ROOT}/tools/memory_index.py" search "query"
-- ReasoningBank query: "${PLUGIN_ROOT}/tools/run-python.sh" "${PLUGIN_ROOT}/tools/reasoning_bank.py" query --context "situation"
-- Memory search wrapper: "${PLUGIN_ROOT}/tools/memory-search" "query"
 </system-reminder>
 EOF
 
     # Inject identity layer if present
-    if [[ -n "$IDENTITY_CONTENT" ]]; then
+    # Prefer soul.md + voice.md; fall back to legacy communicationStyle.md
+    if [[ -n "$SOUL_CONTENT" ]]; then
         cat <<EOF
 <system-reminder>
-Identity layer loaded from ~/.asha/communicationStyle.md:
+Soul loaded from ~/.asha/soul.md:
 
-$IDENTITY_CONTENT
+$SOUL_CONTENT
+</system-reminder>
+EOF
+    fi
+
+    if [[ -n "$VOICE_CONTENT" ]]; then
+        cat <<EOF
+<system-reminder>
+Voice loaded from ~/.asha/voice.md:
+
+$VOICE_CONTENT
+</system-reminder>
+EOF
+    fi
+
+    # Legacy fallback (only if soul.md doesn't exist)
+    if [[ -n "$LEGACY_IDENTITY_CONTENT" ]]; then
+        cat <<EOF
+<system-reminder>
+Identity layer loaded from ~/.asha/communicationStyle.md (legacy):
+
+$LEGACY_IDENTITY_CONTENT
 </system-reminder>
 EOF
     fi
@@ -90,21 +129,16 @@ $KEEPER_CONTENT
 EOF
     fi
 
-    # Facet ingestion (background, non-blocking)
-    FACET_INGEST="$PLUGIN_ROOT/tools/facet_ingest.py"
-    PYTHON_CMD=""
-    if [[ -x "$PROJECT_DIR/.asha/.venv/bin/python3" ]]; then
-        PYTHON_CMD="$PROJECT_DIR/.asha/.venv/bin/python3"
-    elif command -v python3 >/dev/null 2>&1; then
-        PYTHON_CMD="python3"
+    if [[ -n "$LEARNINGS_CONTENT" ]]; then
+        cat <<EOF
+<system-reminder>
+Learnings loaded from ~/.asha/learnings.md:
+
+$LEARNINGS_CONTENT
+</system-reminder>
+EOF
     fi
-    if [[ -f "$FACET_INGEST" && -n "$PYTHON_CMD" ]]; then
-        if ! pgrep -f "python.*facet_ingest.py ingest" >/dev/null 2>&1; then
-            FACET_LOG="${PROJECT_DIR}/.asha/facet-ingest.log"
-            mkdir -p "$(dirname "$FACET_LOG")"
-            (CLAUDE_PROJECT_DIR="$PROJECT_DIR" "$PYTHON_CMD" "$FACET_INGEST" ingest >"$FACET_LOG" 2>&1) &
-        fi
-    fi
+
 else
     echo "{}"
 fi

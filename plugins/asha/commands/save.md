@@ -1,6 +1,6 @@
 ---
 description: "Save current session context to Memory Bank with git commit and push"
-argument-hint: "Optional: --react (include pattern analysis) or commit message details"
+argument-hint: "Optional: commit message details"
 allowed-tools: ["Bash", "Read", "Edit", "Write", "TodoWrite"]
 ---
 
@@ -107,7 +107,35 @@ Check session for voice/tone calibration signals that should update `~/.asha/voi
 
 Skip this step if no voice calibration signals occurred this session.
 
-### Step 3: Archive, Index, and Commit
+### Step 2d: Session Learnings (Cross-Project)
+
+Review the session for insights, patterns learned, or "now I know" moments:
+
+**Questions to consider**:
+
+- What worked well that should be repeated?
+- What failed that seemed reasonable at the time?
+- What tool usage patterns were discovered?
+- What assumptions were validated or invalidated?
+
+**If insights identified**, append to `~/.asha/learnings.md`:
+
+1. Distill to a single-line pattern (not narrative)
+2. Add under the appropriate category (Tool Usage, Memory Systems, Hooks, etc.)
+3. Format: `- Brief description of what not to do — why / what to do instead`
+
+**Example**:
+
+```markdown
+## Tool Usage
+- Don't use `ollama run` CLI for large inputs — use HTTP API with num_predict cap
+```
+
+**learnings.md is additive** — insights accumulate. Future sessions consult this file at startup.
+
+Skip this step if no new insights emerged this session.
+
+### Step 3: Archive and Commit
 
 After Memory updates are complete, run:
 
@@ -117,9 +145,8 @@ After Memory updates are complete, run:
 
 This will:
 
-- Archive the session watching file
-- Reset watching file for next session
-- Refresh vector DB index (incremental)
+- Archive the session event log
+- Rotate old events (keep last 30 days)
 
 Then commit (and push if remote exists):
 
@@ -128,24 +155,6 @@ git add Memory/
 git commit -m "Session save: <brief summary>"
 git remote -v | grep -q . && git push || echo "No remote configured, skipping push"
 ```
-
-## ReAct Analysis (--react flag)
-
-If `--react` is specified in arguments, run pattern analysis before Step 2:
-
-```bash
-"${CLAUDE_PLUGIN_ROOT}/tools/save-session.sh" --analyze
-```
-
-This provides:
-
-- Code pattern detection and repetitions
-- Redundancies with existing memory
-- Novel insights extraction
-- Abstraction and refactoring opportunities
-- Cross-project sharing suggestions
-
-Use insights to enhance Memory updates in Step 2.
 
 ## Completion Validation
 

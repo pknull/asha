@@ -1,9 +1,8 @@
 # Asha
 
-**Version**: 1.13.0
-**Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
+**Version**: 1.14.0
 
-Cognitive scaffold framework for session coordination, memory persistence, and session monitoring.
+Cognitive scaffold framework for session coordination and memory persistence.
 
 ## Installation
 
@@ -14,33 +13,48 @@ Cognitive scaffold framework for session coordination, memory persistence, and s
 
 ## Commands
 
+| Command | Purpose |
+|---------|---------|
+| `/asha:init` | Initialize Asha in current project |
+| `/asha:save` | Save session context to Memory Bank |
+| `/asha:note` | Add timestamped note to scratchpad |
+| `/asha:status` | Show current session status |
+| `/asha:prime` | Interactive codebase exploration |
+| `/asha:silence` | Toggle silence mode (disable logging) |
+| `/asha:restore` | Re-enable logging after silence |
+| `/asha:spawn` | Spawn agent in tmux orchestrator |
+| `/asha:agents` | List running agents |
+| `/asha:stop-agents` | Stop agents in orchestrator |
+
 ### /asha:init
 
 Initialize Asha in the current project.
 
 ```bash
-/asha:init                # Full setup with Vector DB
-/asha:init --minimal      # Skip Vector DB setup
+/asha:init
 ```
 
 Creates:
 
 ```
-project/
+~/.asha/                    # Cross-project identity (created once)
+├── soul.md                 # Who you are (identity, values)
+├── voice.md                # How you express (tone, patterns)
+├── keeper.md               # Who The Keeper is (calibration)
+├── learnings.md            # Cross-project insights
+└── config.json
+
+project/                    # Per-project
 ├── Memory/
+│   ├── events/             # Session event log (JSONL)
 │   ├── sessions/archive/
-│   ├── reasoning_bank/
-│   ├── vector_db/
 │   ├── activeContext.md
 │   ├── projectbrief.md
-│   ├── communicationStyle.md
 │   ├── workflowProtocols.md
 │   ├── techEnvironment.md
 │   └── scratchpad.md
 ├── Work/markers/
-├── .asha/
-│   ├── .venv/
-│   └── config.json
+├── .asha/config.json
 └── CLAUDE.md
 ```
 
@@ -48,17 +62,15 @@ project/
 
 Save current session context to Memory Bank.
 
-```bash
-/asha:save                # Standard save
-/asha:save --react        # Include pattern analysis
-```
-
 **Protocol**:
 
 1. Extract session activity (agents, files, decisions)
 2. Update Memory files using Four Questions framework
-3. Archive session and refresh vector index
-4. Commit and push (if remote exists)
+3. Extract keeper signals (cross-project calibration)
+4. Extract voice calibration signals
+5. Capture session learnings to `~/.asha/learnings.md`
+6. Archive session events
+7. Commit and push (if remote exists)
 
 ### /asha:note
 
@@ -66,113 +78,66 @@ Add timestamped note to scratchpad.
 
 ```bash
 /asha:note Discovered auth tokens expire after 1 hour
-/asha:note API rate limit is 100 requests per minute
 ```
 
-Notes are appended to `Memory/scratchpad.md` with UTC timestamps. Review and migrate important notes during `/asha:save`.
+Notes are appended to `Memory/scratchpad.md` with UTC timestamps.
 
 ### /asha:status
 
 Show current session status and captured activity.
 
-```bash
-/asha:status
-```
+## Memory Architecture
 
-**Example output:**
+### Identity Layer (`~/.asha/` — cross-project)
 
-```
-## Current Session Status
+| File | Purpose | Update Frequency |
+|------|---------|------------------|
+| `soul.md` | Who you are (identity, values, nature) | Rarely |
+| `voice.md` | How you express (tone, patterns) | When voice needs tuning |
+| `keeper.md` | Who The Keeper is (preferences, calibration) | Additive via /save |
+| `learnings.md` | Insights from experience | Additive via /save |
 
-**Session ID**: silent-thunder
-**Started**: 2026-01-12 14:30 UTC
-**Duration**: 2h 14m
-**File size**: 3.2K
-
-### Captured Activity
-
-| Section | Count |
-|---------|-------|
-| Significant Operations | 12 |
-| Decisions & Clarifications | 3 |
-| Errors & Anomalies | 0 |
-
-### Recent Operations (last 5)
-- Edit: plugins/asha/commands/note.md
-- Edit: plugins/asha/README.md
-- Bash: git commit
-...
-```
-
-Use before `/asha:save` to preview what's been captured.
-
-### /asha:index
-
-Index project files for semantic search.
-
-```bash
-/asha:index               # Incremental (changed files only)
-/asha:index --full        # Complete reindex
-/asha:index --check       # Verify dependencies
-```
-
-**Requirements**:
-
-- Ollama running locally (`ollama serve`)
-- Embedding model (`ollama pull nomic-embed-text`)
-
-### /asha:cleanup
-
-Remove legacy nested-repo installation files.
-
-```bash
-/asha:cleanup             # Remove legacy files
-/asha:cleanup --dry-run   # Show what would be removed
-```
-
-**Removes**:
-
-- `asha/` directory (old nested repo)
-- `.claude/hooks/hooks.json` (if contains asha refs)
-- Command symlinks pointing to `asha/`
-- `.opencode/` directory
-
-## Memory Bank Architecture
+### Project Layer (`Memory/` — per-project)
 
 | File | Purpose |
 |------|---------|
-| `activeContext.md` | Current session state, recent activities |
-| `projectbrief.md` | Project scope, goals, stakeholders |
-| `communicationStyle.md` | Voice, tone, persona |
-| `workflowProtocols.md` | Validated patterns and techniques |
-| `techEnvironment.md` | Stack, conventions, constraints |
-| `scratchpad.md` | Quick notes captured via `/asha:note` |
+| `activeContext.md` | Current project state, recent activities |
+| `projectbrief.md` | Scope, objectives, constraints |
+| `workflowProtocols.md` | Validated patterns, anti-patterns |
+| `techEnvironment.md` | Tools, paths, platform capabilities |
+| `events/events.jsonl` | Session event log (auto-captured) |
 
 ## Session Continuity
 
 1. Each Claude session starts fresh (context resets)
 2. Memory Bank is the ONLY connection to previous work
-3. Session watching captures operations automatically
-4. `/asha:save` synthesizes operations into persistent context
+3. Session events captured automatically via hooks
+4. `/asha:save` synthesizes events into persistent context
+5. Learnings accumulate in `~/.asha/learnings.md` across all projects
 
-## Agent Integration
+## Modules
 
-### verify-app Agent
+| Module | Purpose |
+|--------|---------|
+| `CORE.md` | Bootstrap protocol, identity, universal constraints |
+| `cognitive.md` | ACE cycle, parallel execution, tool efficiency |
+| `memory-ops.md` | Memory system operations, trimming protocols |
+| `research.md` | Authority and verification |
+| `high-stakes.md` | Dangerous operations protocol |
+| `verbalized-sampling.md` | Diversity recovery technique |
 
-The `verify-app` agent (bundled with Asha plugin) uses `techEnvironment.md` for verification commands.
+## Agents
 
-**Workflow:**
+| Agent | Purpose |
+|-------|---------|
+| `verify-app` | Run tests, type checks, lints after changes |
+| `task-manager` | Todoist integration for task retrieval |
+| `partner-sentiment` | Session haiku generation |
 
-1. Agent reads `Memory/techEnvironment.md` for `## Verification` section
-2. If commands defined → executes them in sequence
-3. If missing/placeholders → bootstraps by detecting project type:
-   - `package.json` → npm test, npm run lint
-   - `Cargo.toml` → cargo check, cargo test
-   - `pyproject.toml` → pytest, ruff
-   - `go.mod` → go build, go test
-4. Proposes commands, user approves, writes to techEnvironment.md
+## Hooks
 
-**Usage:** Triggered automatically after code changes or manually via Task tool.
+- **SessionStart**: Injects CORE.md and identity files
+- **PostToolUse**: Captures session events to JSONL
 
 ## Git Integration
 
@@ -181,7 +146,7 @@ Sessions are preserved via git:
 ```bash
 git add Memory/
 git commit -m "Session save: <summary>"
-git push  # If remote configured
+git push
 ```
 
 ## License

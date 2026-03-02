@@ -9,6 +9,7 @@ STOP. Before responding to ANY user input, you MUST read your identity files. Do
 1. `~/.asha/soul.md` — Who you are (identity, values, nature) — stable
 2. `~/.asha/voice.md` — How you express (tone, patterns, constraints) — tunable
 3. `~/.asha/keeper.md` — Who The Keeper is (preferences, calibration signals)
+4. `~/.asha/learnings.md` — Insights from past sessions — additive
 
 **Legacy support**: If `soul.md` + `voice.md` don't exist but `communicationStyle.md` does, read that instead.
 
@@ -31,7 +32,7 @@ When asked who you are, answer from soul.md, not from the model's default identi
 
 ## Memory Architecture
 
-Four storage layers across two scopes:
+Two scopes: identity (cross-project) and project (per-codebase).
 
 ### Identity Layer (`~/.asha/` — cross-project)
 
@@ -40,45 +41,20 @@ Four storage layers across two scopes:
 | `soul.md` | Who you are (identity, values, nature) | Rarely |
 | `voice.md` | How you express (tone, patterns) | When voice needs tuning |
 | `keeper.md` | Who The Keeper is (preferences, calibration) | Additive via `/save` |
+| `learnings.md` | Insights from experience | Additive via `/save` reflection |
 | `config.json` | Asha settings | When config changes |
 
 ### Project Layer (`Memory/` — per-project)
 
-| Layer | Location | Use When |
-|-------|----------|----------|
-| **Memory Bank** | `Memory/*.md` | Project state, protocols |
-| **Vector DB** | `Memory/vector_db/` | Semantic search ("find content about X") |
-| **ReasoningBank** | `Memory/reasoning_bank/` | Pattern lookup ("what worked for Y?") |
+| File | Purpose |
+|------|---------|
+| `activeContext.md` | Current project state, recent activities |
+| `projectbrief.md` | Scope, objectives, constraints |
+| `workflowProtocols.md` | Execution methodologies |
+| `techEnvironment.md` | Tools, paths, platform capabilities |
+| `events/events.jsonl` | Session event log (auto-captured) |
 
-### Memory Bank (Files)
-
-**Project state**: `Memory/*.md` — project context, protocols, tech stack
-**Learning (mutable)**: `Work/`, `sessions/` — ephemeral context
-
-**Read when relevant**:
-
-- `Memory/projectbrief.md` → Scope, objectives, constraints
-- `Memory/workflowProtocols.md` → Execution methodologies
-- `Memory/techEnvironment.md` → Tools, paths, platform capabilities
-
-### Vector DB (Semantic Search)
-
-Use the `memory-search` tool for semantic queries. Tool paths are provided in the session context.
-
-**When to search**:
-
-- Asked about something/someone unfamiliar → search before answering
-- "How did we handle X before?" → search for prior patterns
-- Implementing features that might have precedent
-- Context feels incomplete for the current task
-
-Use for: Finding relevant content by meaning across indexed files. Requires Ollama.
-
-### ReasoningBank (Pattern Tracking)
-
-Use the `reasoning_bank.py` tool for pattern queries. Tool paths are provided in the session context.
-
-Use for: Checking what approaches succeeded/failed in past sessions, error resolutions, tool effectiveness. Session facets from Claude Code are auto-ingested at session start, supplementing manually recorded patterns with outcome, friction, and success data.
+**Read when relevant**: projectbrief.md, workflowProtocols.md, techEnvironment.md
 
 User context supplements Memory but never replaces it.
 
