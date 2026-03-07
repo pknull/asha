@@ -25,6 +25,21 @@ Just type `/panel <your topic>` and the system automatically:
 
 **That's it.** No flags, no YAML, no manual configuration.
 
+### Interview Mode
+
+```bash
+/panel --mode=interview Build a task management API
+/panel --mode=interview "Create a CLI tool for file organization"
+```
+
+Interview mode runs Socratic Q&A to crystallize vague ideas into validated specifications:
+
+1. **The Questioner** asks clarifying questions via AskUserQuestion
+2. **The Examiner** validates problem framing (essence, root cause, assumptions)
+3. **The Codifier** generates `seed.yaml` specification
+
+Output: `Work/panels/<id>/seed.yaml`
+
 ---
 
 ## What is the Panel System?

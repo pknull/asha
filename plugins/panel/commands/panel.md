@@ -25,6 +25,21 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 /panel --context=spec.md --format=github "Evaluate this proposal"
 ```
 
+### Interview Mode
+
+```bash
+/panel --mode=interview Build a task management CLI
+/panel --mode=interview "Create a REST API for user management"
+```
+
+Interview mode runs a Socratic Q&A workflow to crystallize vague ideas into validated specifications. Instead of multi-perspective deliberation, it:
+
+1. **The Questioner** asks clarifying questions via AskUserQuestion
+2. **The Examiner** validates problem framing (essence, root cause, assumptions)
+3. **The Codifier** generates a seed.yaml specification
+
+Output: `Work/panels/<id>/seed.yaml`
+
 ### Panel Management
 
 ```bash
@@ -38,6 +53,8 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 ```
 
 **Flags**:
+
+- `--mode=<type>`: Panel mode (`deliberation` default, `interview`)
 - `--format=<type>`: Output format (`markdown` default, `github`, `json`)
 - `--context=<file>`: Pre-load reference material into panel context
 - `--list`: List panels in index (combine with `--status` to filter)
@@ -47,6 +64,7 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 - `--abandon <id>`: Mark panel as abandoned (cannot resume)
 
 **That's it.** The panel handles everything automatically:
+
 - The Analyst analyzes topic and recruits 2-5 specialist agents from available library
 - Assigns specialists with evocative session-specific names
 - Infers goals from topic context
@@ -57,12 +75,14 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 ## Core Roles (Always Present)
 
 **The Moderator** (Moderator/Facilitator)
+
 - Manages 11-phase protocol execution
 - Ensures procedural integrity and timebox enforcement
 - Synthesizes final decision report
 - **Question**: "What is the PROCESS?"
 
 **The Analyst** (Workforce Intelligence)
+
 - Analyzes topic to determine needed expertise
 - Scores available agent library (0-10) for capability match
 - Recruits 2-5 specialist agents with session-specific names
@@ -70,6 +90,7 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 - **Question**: "Who has CAPABILITY?"
 
 **The Challenger** (Opposition & Quality Gate)
+
 - **Default stance: OPPOSE** - argues against proposals and defends status quo
 - Demands evidence before changing working systems: "Show me user complaints, failure data, metrics"
 - Forces proponents to prove necessity: "The current system works. Prove it doesn't."
@@ -83,22 +104,26 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 **Examples by Topic Type**:
 
 **Creative Writing Panel** (Redacted229 Chapter 9 evaluation):
+
 - `prose-analysis` → **"The Editor"** (craft assessment)
 - `intimacy-designer` → **"The Architect of Dread"** (genre mechanics)
 - `narrative-architect` → **"The Structuralist"** (story coherence)
 - `character-developer` → **"The Psychologist"** (character authenticity)
 
 **Technical Architecture Panel** (GraphQL vs REST):
+
 - `research-assistant` → **"The Evidence Gatherer"** (source validation)
 - `architect` → **"The Systems Designer"** (architecture patterns)
 - `ml-engineer` → **"The Model Capability Analyst"** (performance analysis)
 
 **Culinary Innovation Panel** (How do we pimp fish):
+
 - `research-assistant` → **"The Culinary Historian"** (technique research)
 - `trend-analyst` → **"The Flavor Prophet"** (emerging patterns)
 - `creative-director` → **"The Presentation Architect"** (plating design)
 
 **Session-Specific Naming Convention**:
+
 - **Agent role** describes what it does (e.g., `prose-analysis`)
 - **Session name** describes who it becomes for this panel (e.g., "The Editor")
 - Names should be evocative, contextual, and domain-appropriate
@@ -106,20 +131,21 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 ## 11-Phase Protocol
 
 **Phase -1: Topic Analysis & Workforce Recruitment** (The Analyst)
+
 - **Initialize persistence**:
-  * Generate panel ID: `YYYY-MM-DD--<slug>` (slug from topic, lowercase, hyphens)
-  * Create directory: `Work/panels/<id>/`
-  * Initialize state.json with status `active`
-  * Add entry to `Work/panels/index.json`
+  - Generate panel ID: `YYYY-MM-DD--<slug>` (slug from topic, lowercase, hyphens)
+  - Create directory: `Work/panels/<id>/`
+  - Initialize state.json with status `active`
+  - Add entry to `Work/panels/index.json`
 - Analyze topic domain (technical, creative, research-heavy, security-critical)
 - Determine required expertise areas (2-5 domains typical)
 - Search agent library systematically (`.claude/agents/*.md`)
 - Score agents 0-10 for topic capability match:
-  * 10: Perfect specialist match
-  * 7-9: Strong capabilities alignment
-  * 4-6: Partial match, can handle with coordination
-  * 1-3: Poor match, inefficient
-  * 0: No coverage, gap identified
+  - 10: Perfect specialist match
+  - 7-9: Strong capabilities alignment
+  - 4-6: Partial match, can handle with coordination
+  - 1-3: Poor match, inefficient
+  - 0: No coverage, gap identified
 - Assign specialists with session-specific names (e.g., `prose-analysis` → "The Editor")
 - Deploy `agent-fabricator` if gaps detected (no agent scores >4)
 - Set decision rule (consensus default, unanimous for security)
@@ -128,38 +154,44 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 - **Update state.json**: Record panel composition, goals, decision rule
 
 **Phase 0: Goal Clarification** (The Moderator)
+
 - Request clarification if topic is ambiguous or underspecified
 - Formalize refined topic statement
 - Skip if topic is already well-specified
 
 **Phase 1: Framing** (The Moderator)
+
 - State topic, inferred goals, constraints, decision rule
 - Introduce panel composition:
-  * Core roles (The Moderator, Analyst, Challenger)
-  * Recruited specialists with session names
+  - Core roles (The Moderator, Analyst, Challenger)
+  - Recruited specialists with session names
 - Explain recruitment rationale (why these specialists for this topic)
 - Establish complete panel composition before Initial Positions
 
 **Phase 2: Infrastructure Check** (The Moderator)
+
 - Compare proposals against existing assets to avoid duplication:
-  * Memory files (workflowProtocols.md, activeContext.md)
-  * Commands (/panel, /save, /notes, /validate-vault)
-  * Agents (research-assistant, narrator, etc.)
+  - Memory files (workflowProtocols.md, activeContext.md)
+  - Commands (/panel, /save, /notes, /validate-vault)
+  - Agents (research-assistant, narrator, etc.)
 - Output "Existing Infrastructure Comparison"
 - Redirect to enhancement if duplicative
 
 **Phase 3: Initial Positions** (All Panelists)
+
 - Each specialist (via recruited agent) gathers information and analyzes from their domain
 - The Challenger takes opposition stance: "DON'T do this because..." and demands proof
 - Synthesize into 5-bullet brief: Position, Evidence, Risks, Unknowns, Recommendation
 - Present findings with citations
 
 **Phase 4: Cross-Examination** (The Challenger-led)
+
 - The Challenger challenges assumptions, finds contradictions and failure modes
 - Specialists respond from their domain perspectives
 - Analyst may assign additional agents if challenges reveal capability gaps
 
 **Phase 5: Research Gate** (The Moderator)
+
 - If evidence gaps block decisions, authorize additional research
 - Direct specialists to run targeted queries using assigned agents
 - Analyst may assign additional specialized agents if insufficient
@@ -167,38 +199,143 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 - Thresholds: <0.6 Insufficient | 0.6–0.79 Preliminary | ≥0.8 High confidence
 
 **Phase 6: Reflection Round** (All Panelists)
+
 - Review Cross-Examination arguments and Research Gate findings
 - Revise Initial Positions if persuaded by evidence or challenges
 - Submit updated briefs acknowledging what changed and why
 - The Moderator identifies convergence or remaining disagreements
 
 **Phase 7: Synthesis** (Recruited Architect or The Moderator)
+
 - Analyze updated briefs and structure viable options with tradeoffs
 - Articulate decision pathways and implications
 - If complex synthesis needed, Analyst may assign architecture specialist
 
 **Phase 8: Decision** (The Moderator)
+
 - Apply decision rule (consensus/unanimous based on topic)
 - Calculate consensus percentage: (aligned panelists / total panelists) × 100
 - Record dissent with percentage weight and rationale
 - Threshold interpretation:
-  * **100%**: Unanimous agreement
-  * **80-99%**: Strong consensus (proceed with noted concerns)
-  * **60-79%**: Moderate consensus (address dissent before proceeding)
-  * **<60%**: Weak consensus (requires additional deliberation or escalation)
+  - **100%**: Unanimous agreement
+  - **80-99%**: Strong consensus (proceed with noted concerns)
+  - **60-79%**: Moderate consensus (address dissent before proceeding)
+  - **<60%**: Weak consensus (requires additional deliberation or escalation)
 - List Next Steps with owners, deliverables, due dates
 - **Write phase file**: `phase-08-decision.md`
 - **Finalize persistence**:
-  * Write `transcript.md` (full panel transcript)
-  * Update state.json: status `completed`, final decision, consensus
-  * Update index.json with decision summary
+  - Write `transcript.md` (full panel transcript)
+  - Update state.json: status `completed`, final decision, consensus
+  - Update index.json with decision summary
 
 **Per-Phase Persistence** (all phases):
 After completing each phase, update `state.json`:
+
 - Increment `current_phase`
 - Add phase number to `completed_phases`
 - Update `updated` timestamp
 - Store phase-specific data (positions, findings, etc.)
+
+## Interview Mode Protocol
+
+When `--mode=interview` is specified, the panel runs a different workflow focused on requirements crystallization rather than multi-perspective deliberation.
+
+### Interview Mode Roles
+
+**The Questioner** (Requirements Gathering)
+
+- Asks clarifying questions via AskUserQuestion
+- Targets biggest sources of ambiguity
+- Builds progressively from broad to specific
+- Never proposes solutions, only gathers requirements
+
+**The Examiner** (Problem Validation)
+
+- Applies four fundamental questions:
+  - **Essence**: "What IS this, really?"
+  - **Root Cause**: "Is this root cause or symptom?"
+  - **Prerequisites**: "What must exist first?"
+  - **Hidden Assumptions**: "What are we assuming?"
+- Produces SOUND/REVISE/REFRAME verdict
+
+**The Codifier** (Specification Generation)
+
+- Extracts structured requirements from Q&A
+- Generates seed.yaml specification
+- Maps to goal, constraints, acceptance criteria, ontology schema
+
+### Interview Mode Phases
+
+| Phase | Role | Description |
+|-------|------|-------------|
+| 0 | Setup | Create panel, initialize persistence, set mode=interview |
+| 1-N | The Questioner | Q&A loop via AskUserQuestion until "done" or clarity achieved |
+| N+1 | The Examiner | Validate problem framing, produce verdict |
+| N+2 | The Codifier | Generate seed.yaml from transcript (if SOUND verdict) |
+| Final | Output | Write seed.yaml to `Work/panels/<id>/seed.yaml` |
+
+### Interview Mode state.json
+
+```json
+{
+  "id": "2026-03-06--task-api",
+  "topic": "Build a task management API",
+  "mode": "interview",
+  "status": "active",
+  "current_phase": "questioning",
+  "qa_transcript": [
+    {"question": "What domain?", "answer": "Task management"},
+    {"question": "What operations?", "answer": "CRUD + filtering"}
+  ],
+  "examination_verdict": null,
+  "seed_generated": false
+}
+```
+
+### Interview Mode Output
+
+Instead of a decision report, interview mode produces:
+
+**Primary output:** `Work/panels/<id>/seed.yaml`
+
+```yaml
+goal: |
+  Build a REST API for task management with tag-based organization
+
+constraints:
+  - Python 3.11+
+  - SQLite for persistence
+
+acceptance_criteria:
+  - Tasks can be created via POST /tasks
+  - Tasks can be filtered by tag
+
+ontology_schema:
+  name: "TaskManagement"
+  entities:
+    - name: "Task"
+      fields:
+        - name: "id"
+          type: "string"
+        - name: "title"
+          type: "string"
+
+metadata:
+  version: "1.0"
+  created: "2026-03-06T17:30:00+10:00"
+  interview_id: "2026-03-06--task-api"
+  examination_verdict: "SOUND"
+```
+
+### Resume Protocol (Interview Mode)
+
+When resuming an interview:
+
+1. Load state.json with mode=interview
+2. Restore qa_transcript context
+3. If current_phase=questioning: continue Q&A
+4. If current_phase=examination: re-run examination
+5. If examination_verdict=REVISE: return to questioning with specific issues
 
 ## Decision Report (Fixed Output)
 
@@ -209,9 +346,9 @@ Every panel produces a structured decision report:
 - **Inferred Goals** (derived from topic analysis)
 - **Decision Rule** (consensus or unanimous)
 - **Panel Composition**:
-  * Core Roles (The Moderator, Analyst, Challenger)
-  * Recruited Specialists (agent → session name mapping with scores)
-  * Recruitment Rationale (why these specialists for this topic)
+  - Core Roles (The Moderator, Analyst, Challenger)
+  - Recruited Specialists (agent → session name mapping with scores)
+  - Recruitment Rationale (why these specialists for this topic)
 - **Existing Infrastructure Comparison** (Phase 2 findings)
 - **Expert Briefs** (Phase 3 Initial Positions with agent-gathered evidence)
 - **Cross-Examination Findings** (Phase 4 challenges and responses)
@@ -226,9 +363,11 @@ Every panel produces a structured decision report:
 ## Output Formats
 
 ### Markdown (Default)
+
 Standard decision report as documented above. Suitable for Memory files, documentation, and general use.
 
 ### GitHub PR Comment (`--format=github`)
+
 Condensed format optimized for GitHub pull request comments:
 
 ```markdown
@@ -266,6 +405,7 @@ Condensed format optimized for GitHub pull request comments:
 ```
 
 ### JSON (`--format=json`)
+
 Structured data for programmatic consumption:
 
 ```json
@@ -300,17 +440,20 @@ The `--context` flag pre-loads reference material before panel deliberation:
 ```
 
 **Behavior**:
+
 1. Read specified file(s) before Phase -1
 2. Include content summary in Phase 1 Framing
 3. Make content available to all panelists during deliberation
 4. Reference in Decision Report under "Context Materials"
 
 **Multiple contexts**:
+
 ```bash
 /panel --context=spec.md --context=constraints.md "Evaluate feasibility"
 ```
 
 **URL context** (if WebFetch available):
+
 ```bash
 /panel --context=https://example.com/api-docs "Design integration approach"
 ```
@@ -318,16 +461,19 @@ The `--context` flag pre-loads reference material before panel deliberation:
 ## Dynamic Agent Recruitment Architecture
 
 **Core Roles vs Recruited Specialists**:
+
 - **Core Roles** = Persistent panel infrastructure (The Moderator, Analyst, Challenger)
 - **Recruited Specialists** = Topic-specific experts from agent library with session names
 
 **Recruitment Flow**:
+
 1. **Phase -1**: Analyst analyzes topic → determines expertise needs → scores agents → assigns with session names
 2. **Phase 3**: Specialists deploy assigned agents for research and analysis
 3. **Phase 4-5**: Analyst may assign additional agents if gaps detected
 4. **Phase 7**: Analyst may assign architecture specialist for complex synthesis
 
 **Session-Specific Naming**:
+
 - Same agent becomes different "character" depending on context
 - `prose-analysis` → "The Editor" (creative), "The Code Reviewer" (technical), "The Stylist" (marketing)
 - `research-assistant` → "The Archivist" (historical), "The Evidence Gatherer" (legal), "The Data Scout" (analytics)
@@ -339,6 +485,7 @@ If no agent scores >4 for required capability → Analyst deploys `agent-fabrica
 ## Character Files
 
 Core roles have documented profiles in `plugins/panel/docs/characters/`:
+
 - **The Moderator.md** - Moderator/Facilitator
 - **The Analyst.md** - Workforce Intelligence
 - **The Challenger.md** - Opposition & Quality Gate
@@ -459,6 +606,7 @@ When `--abandon <id>` is invoked:
 1. Read `Work/panels/index.json` (create if missing)
 2. Filter by `--status` if provided
 3. Display table:
+
    ```
    ID                          | Status    | Phase | Topic                    | Updated
    ----------------------------|-----------|-------|--------------------------|-------------------
@@ -510,6 +658,7 @@ When `--abandon <id>` is invoked:
 ## Pattern Implementation
 
 Based on CSIRO Agent Design Patterns (Liu et al. 2025):
+
 - **Passive Goal Creator** (Phase 0): Clarifies ambiguous topics
 - **Role-Based Cooperation**: Core roles with hierarchical workflow
 - **Debate-Based Cooperation**: Cross-Examination phase enables argument exchange

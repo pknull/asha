@@ -1,15 +1,18 @@
 {
   "name": "panel-system",
-  "version": "5.0.0",
-  "description": "Dynamic multi-perspective analysis with persistence. Supports --resume for interrupted panels, --list/--show for discovery, per-phase state files for audit trail. Breaking: output moves to Work/panels/.",
+  "version": "5.1.0",
+  "description": "Dynamic multi-perspective analysis with persistence. Supports --mode=interview for Socratic Q&A workflow, --resume for interrupted panels, --list/--show for discovery, per-phase state files for audit trail.",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"
   },
   "license": "MIT",
-  "keywords": ["panel", "analysis", "multi-perspective", "ttrpg", "creative-writing", "decision-making", "collaboration"],
+  "keywords": ["panel", "analysis", "multi-perspective", "interview", "requirements", "specification", "ttrpg", "creative-writing", "decision-making", "collaboration"],
   "commands": "./commands",
   "agents": [
-    "./agents/recruiter.md"
+    "./agents/recruiter.md",
+    "./agents/questioner.md",
+    "./agents/examiner.md",
+    "./agents/codifier.md"
   ]
 }
