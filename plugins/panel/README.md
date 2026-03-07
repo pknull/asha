@@ -28,8 +28,8 @@ Just type `/panel <your topic>` and the system automatically:
 ### Interview Mode
 
 ```bash
-/panel --mode=interview Build a task management API
-/panel --mode=interview "Create a CLI tool for file organization"
+/panel --interview Build a task management API
+/panel --interview "Create a CLI tool for file organization"
 ```
 
 Interview mode runs Socratic Q&A to crystallize vague ideas into validated specifications:

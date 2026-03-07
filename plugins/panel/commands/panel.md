@@ -28,8 +28,8 @@ Convene a panel with 3 core roles + dynamically recruited specialists who analyz
 ### Interview Mode
 
 ```bash
-/panel --mode=interview Build a task management CLI
-/panel --mode=interview "Create a REST API for user management"
+/panel --interview Build a task management CLI
+/panel --interview "Create a REST API for user management"
 ```
 
 Interview mode runs a Socratic Q&A workflow to crystallize vague ideas into validated specifications. Instead of multi-perspective deliberation, it:
@@ -54,7 +54,7 @@ Output: `Work/panels/<id>/seed.yaml`
 
 **Flags**:
 
-- `--mode=<type>`: Panel mode (`deliberation` default, `interview`)
+- `--interview`: Run interview mode (Socratic Q&A → seed.yaml) instead of deliberation
 - `--format=<type>`: Output format (`markdown` default, `github`, `json`)
 - `--context=<file>`: Pre-load reference material into panel context
 - `--list`: List panels in index (combine with `--status` to filter)
@@ -238,7 +238,7 @@ After completing each phase, update `state.json`:
 
 ## Interview Mode Protocol
 
-When `--mode=interview` is specified, the panel runs a different workflow focused on requirements crystallization rather than multi-perspective deliberation.
+When `--interview` is specified, the panel runs a different workflow focused on requirements crystallization rather than multi-perspective deliberation.
 
 ### Interview Mode Roles
 
@@ -268,7 +268,7 @@ When `--mode=interview` is specified, the panel runs a different workflow focuse
 
 | Phase | Role | Description |
 |-------|------|-------------|
-| 0 | Setup | Create panel, initialize persistence, set mode=interview |
+| 0 | Setup | Create panel, initialize persistence, set interview=true |
 | 1-N | The Questioner | Q&A loop via AskUserQuestion until "done" or clarity achieved |
 | N+1 | The Examiner | Validate problem framing, produce verdict |
 | N+2 | The Codifier | Generate seed.yaml from transcript (if SOUND verdict) |
@@ -280,7 +280,7 @@ When `--mode=interview` is specified, the panel runs a different workflow focuse
 {
   "id": "2026-03-06--task-api",
   "topic": "Build a task management API",
-  "mode": "interview",
+  "interview": true,
   "status": "active",
   "current_phase": "questioning",
   "qa_transcript": [
@@ -331,7 +331,7 @@ metadata:
 
 When resuming an interview:
 
-1. Load state.json with mode=interview
+1. Load state.json with interview=true
 2. Restore qa_transcript context
 3. If current_phase=questioning: continue Q&A
 4. If current_phase=examination: re-run examination
