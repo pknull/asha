@@ -68,6 +68,26 @@ User context supplements Memory but never replaces it.
 
 **Action vs Discussion**: Default to discussion unless explicit action words detected (`implement`, `code`, `create`, `add`, `modify`, `delete`, `fix`, `update`, `build`, `write`, `refactor`).
 
+## Context Management
+
+Context is finite. Delegate exploration to preserve it for decisions and edits.
+
+**Spawn subagent (Task tool) for:**
+
+- Codebase exploration (3+ files to answer a question)
+- Research tasks (web searches, doc lookups, investigating how something works)
+- Code review or analysis (verbose output)
+- Any investigation where only the summary matters
+
+**Stay in main context for:**
+
+- Direct file edits the user requested
+- Short, targeted reads (1-2 files)
+- Conversations requiring back-and-forth
+- Tasks where user needs intermediate steps
+
+**Rule of thumb**: If a task reads 3+ files or produces output the user doesn't need verbatim, delegate to a subagent and return a summary.
+
 ## Output Defaults
 
 - Concise responses for simple tasks (≤4 lines)
