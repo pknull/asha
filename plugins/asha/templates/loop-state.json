@@ -1,0 +1,24 @@
+{
+  "id": "",
+  "objective": "",
+  "status": "pending",
+  "created": "",
+  "lastCheckpoint": null,
+  "config": {
+    "maxIterations": 10,
+    "checkpointInterval": 3,
+    "verifyCommand": "",
+    "rollbackRef": ""
+  },
+  "progress": {
+    "iteration": 0,
+    "completed": [],
+    "remaining": [],
+    "errors": []
+  },
+  "safetyGates": {
+    "testsConfigured": false,
+    "rollbackPath": false,
+    "isolated": false
+  }
+}

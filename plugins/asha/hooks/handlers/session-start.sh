@@ -25,6 +25,48 @@ if ! is_asha_initialized; then
     exit 0
 fi
 
+# ==============================================================================
+# ORPHAN RECOVERY - Synthesize previous session if it didn't end cleanly
+# ==============================================================================
+
+# Generate new session ID
+NEW_SESSION_ID="session_$(date -u '+%Y%m%d_%H%M%S')_$$"
+SESSION_MARKER="$PROJECT_DIR/Work/markers/session-id"
+mkdir -p "$(dirname "$SESSION_MARKER")"
+
+# Check for orphaned session
+PATTERN_ANALYZER="$PLUGIN_ROOT/tools/pattern_analyzer.py"
+PYTHON_CMD=""
+
+# Get Python command
+if [[ -x "$PROJECT_DIR/.asha/.venv/bin/python3" ]]; then
+    PYTHON_CMD="$PROJECT_DIR/.asha/.venv/bin/python3"
+elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_CMD="python3"
+fi
+
+if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
+    # Check if there's an orphaned session
+    ORPHAN_RESULT=$("$PYTHON_CMD" "$PATTERN_ANALYZER" check-orphan --current-session "$NEW_SESSION_ID" 2>/dev/null || echo '{}')
+    ORPHAN_SESSION=$(echo "$ORPHAN_RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('orphaned_session') or '')" 2>/dev/null || true)
+
+    if [[ -n "$ORPHAN_SESSION" ]]; then
+        # Recover orphaned session
+        echo "<system-reminder>" >&2
+        echo "Recovering orphaned session: $ORPHAN_SESSION" >&2
+        "$PYTHON_CMD" "$PATTERN_ANALYZER" recover --session-id "$ORPHAN_SESSION" >/dev/null 2>&1 || true
+        echo "Orphaned session recovered and synthesized." >&2
+        echo "</system-reminder>" >&2
+    fi
+fi
+
+# Store current session ID
+echo "$NEW_SESSION_ID" > "$SESSION_MARKER"
+
+# ==============================================================================
+# CONTEXT INJECTION
+# ==============================================================================
+
 # Build context injection
 # Include CORE.md, identity layer (~/.asha/), and module references
 CORE_MD="$PLUGIN_ROOT/modules/CORE.md"

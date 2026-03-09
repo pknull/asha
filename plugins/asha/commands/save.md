@@ -1,168 +1,71 @@
 ---
-description: "Save current session context to Memory Bank with git commit and push"
-argument-hint: "Optional: commit message details"
-allowed-tools: ["Bash", "Read", "Edit", "Write", "TodoWrite"]
+description: "Manually trigger session synthesis and git commit"
+argument-hint: "[--no-push] [commit message]"
+allowed-tools: ["Bash", "Read", "Edit"]
 ---
 
-# Save Session Context
+# Save Session
 
-Systematic session completion protocol using the Four Questions framework.
+Trigger synthesis now. Use when you want to checkpoint mid-session or ensure state is captured before exiting.
 
-Additional context: $ARGUMENTS
+**Note:** Session-end hook runs synthesis automatically on clean exit. This command is for explicit mid-session saves or when you want to add a custom commit message.
 
-## Protocol
+## What It Does
 
-### Step 1: Get Session Summary
+1. **Runs pattern analyzer** — synthesizes activeContext.md from events
+2. **Extracts patterns** — updates learnings.md with discovered patterns
+3. **Captures calibration** — voice.md and keeper.md signals if detected
+4. **Archives events** — rotates old events to archive
+5. **Git commit + push** — commits Memory/ changes
 
-Run the save-session script to extract session activity:
+## Usage
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/tools/save-session.sh" --interactive
+/save                           # Synthesize + commit + push
+/save --no-push                 # Synthesize + commit only
+/save "Completed auth feature"  # Custom commit message
 ```
 
-This displays:
+## Execution
 
-- Significant operations (agents invoked, files modified, panels convened)
-- Decisions and clarifications made
-- The Four Questions framework prompts
+Run the synthesis pipeline:
 
-If no session watching file exists, proceed to Step 3 (git commit only).
-
-### Step 2: Answer Four Questions & Update Memory
-
-Based on the session summary, update Memory Bank files:
-
-**Memory/activeContext.md** (always update):
-
-- Add session summary with timestamp
-- Record accomplishments
-- Note key learnings
-- Update Next Steps section
-- Increment version number in frontmatter
-
-**Memory/scratchpad.md** (review and migrate):
-
-- Check for notes captured via `/asha:note`
-- Migrate important items to appropriate Memory files
-- Prune completed or obsolete notes
-
-**Memory/workflowProtocols.md** (if patterns learned):
-
-- Add validated techniques
-- Document pitfalls with prevention
-
-**Memory/progress.md** (if significant milestones):
-
-- Record phase completion
-- Update project status
-
-**If activeContext.md exceeds ~500 lines**:
-
-- Preserve: Frontmatter, Current Status, Last 2-3 activities, Next Steps
-- Archive older activities
-- Target: ~150-300 lines
-
-### Step 2b: Keeper Signal Extraction (Cross-Project)
-
-Check session for calibration signals about The Keeper that should persist across projects:
-
-**Signals to capture**:
-
-- Personal preferences: timezone, working style, expertise areas
-- Relationship notes: what works, what doesn't
-- Working patterns: how they like to receive information
-
-**If signals found**, append to `~/.asha/keeper.md`:
-
-1. Add timestamped entry to Calibration Log section
-2. Update relevant section (Working Style, Notes)
-3. Format: `YYYY-MM-DDTHH:MM:SS | project-name | "signal captured"`
-
-**keeper.md is additive** — never overwrite, only append. Signals accumulate across sessions and projects.
-
-Skip this step if no keeper-level signals occurred this session.
-
-### Step 2c: Voice Calibration (Cross-Project)
-
-Check session for voice/tone calibration signals that should update `~/.asha/voice.md`:
-
-**Signals to capture**:
-
-- Tone adjustments: "too much whimsy", "be more direct", "less formal"
-- Pattern changes: prohibited phrases, required patterns
-- Context-specific tone: how to sound during technical vs creative work
-
-**If voice signals found**, update `~/.asha/voice.md`:
-
-1. Update the relevant section (Voice Constraints, Communication Patterns, Context-Sensitive Tone)
-2. Add note to Calibration section with timestamp and source
-
-**Example**:
-
-```markdown
-## Voice Constraints
-**PROHIBITED**:
-- Whimsy during debugging (2026-01-29, threshold)
+```bash
+"${CLAUDE_PLUGIN_ROOT}/tools/pattern_analyzer.py" synthesize --days 7
 ```
 
-Skip this step if no voice calibration signals occurred this session.
-
-### Step 2d: Session Learnings (Cross-Project)
-
-Review the session for insights, patterns learned, or "now I know" moments:
-
-**Questions to consider**:
-
-- What worked well that should be repeated?
-- What failed that seemed reasonable at the time?
-- What tool usage patterns were discovered?
-- What assumptions were validated or invalidated?
-
-**If insights identified**, append to `~/.asha/learnings.md`:
-
-1. Distill to a single-line pattern (not narrative)
-2. Add under the appropriate category (Tool Usage, Memory Systems, Hooks, etc.)
-3. Format: `- Brief description of what not to do — why / what to do instead`
-
-**Example**:
-
-```markdown
-## Tool Usage
-- Don't use `ollama run` CLI for large inputs — use HTTP API with num_predict cap
-```
-
-**learnings.md is additive** — insights accumulate. Future sessions consult this file at startup.
-
-Skip this step if no new insights emerged this session.
-
-### Step 3: Archive and Commit
-
-After Memory updates are complete, run:
+Then archive and rotate events:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/tools/save-session.sh" --archive-only
 ```
 
-This will:
-
-- Archive the session event log
-- Rotate old events (keep last 30 days)
-
-Then commit (and push if remote exists):
+Then commit Memory changes:
 
 ```bash
+cd "$PROJECT_DIR"
 git add Memory/
-git commit -m "Session save: <brief summary>"
-git remote -v | grep -q . && git push || echo "No remote configured, skipping push"
+git commit -m "Session save: ${ARGUMENTS:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
 ```
 
-## Completion Validation
+Push unless `--no-push` specified:
 
-If TodoWrite tasks exist, review completion:
+```bash
+git push
+```
 
-- [ ] Goals fully achieved (not partially)
-- [ ] Deliverables tested/validated
-- [ ] Documentation updated
-- [ ] No critical blockers remaining
+## When to Use
 
-Update TodoWrite: Mark truly complete tasks as completed; refine incomplete tasks.
+- **Mid-session checkpoint** — long session, want progress saved
+- **Before risky operation** — about to do something destructive
+- **Custom commit message** — want descriptive message instead of auto-generated
+- **Explicit calibration** — want to manually review what gets captured
+
+## Output
+
+Shows synthesis results:
+
+- Events processed
+- Patterns found
+- Calibration signals captured
+- Files updated

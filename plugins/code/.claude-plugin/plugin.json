@@ -1,7 +1,7 @@
 {
   "name": "code",
-  "version": "1.2.0",
-  "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents for software engineering",
+  "version": "1.11.0",
+  "description": "Development workflows: orchestration, code review, TDD, framework skills (Django, Spring Boot), and specialized agents",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"
@@ -9,8 +9,23 @@
   "license": "MIT",
   "keywords": ["code", "development", "review", "tdd", "orchestration", "workflows"],
   "commands": "./commands",
+  "skills": "./skills",
+  "hooks": "./hooks/hooks.json",
   "agents": [
     "./agents/architect.md",
-    "./agents/codebase-historian.md"
+    "./agents/build-error-resolver.md",
+    "./agents/code-reviewer.md",
+    "./agents/codebase-historian.md",
+    "./agents/database-reviewer.md",
+    "./agents/debugger.md",
+    "./agents/doc-updater.md",
+    "./agents/e2e-runner.md",
+    "./agents/go-build-resolver.md",
+    "./agents/go-reviewer.md",
+    "./agents/javascript-pro.md",
+    "./agents/python-pro.md",
+    "./agents/refactor-cleaner.md",
+    "./agents/tdd.md",
+    "./agents/typescript-pro.md"
   ]
 }

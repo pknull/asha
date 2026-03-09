@@ -209,8 +209,33 @@ automatic_mode() {
     # Archive legacy markdown if exists
     archive_watching_file
 
+    # Run pattern analyzer synthesis (updates activeContext, learnings, voice, keeper)
+    PATTERN_ANALYZER="$PLUGIN_ROOT/tools/pattern_analyzer.py"
+    PYTHON_CMD=$(get_python_cmd)
+
+    if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
+        log "Running pattern analysis and synthesis..."
+        RESULT=$("$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days 7 2>/dev/null || echo '{"status":"error"}')
+
+        # Log results
+        EVENTS_COUNT=$(echo "$RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('events_processed',0))" 2>/dev/null || echo "0")
+        PATTERNS_COUNT=$(echo "$RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('patterns_found',0))" 2>/dev/null || echo "0")
+        log "Synthesis complete: $EVENTS_COUNT events processed, $PATTERNS_COUNT patterns found"
+    else
+        log "Pattern analyzer not available, skipping synthesis"
+    fi
+
     # Rotate old events (keep last 30 days in active file)
     rotate_events 30
+
+    # Git commit + push if configured
+    if [[ -f "$PROJECT_DIR/.asha/config.json" ]]; then
+        AUTO_COMMIT=$(cat "$PROJECT_DIR/.asha/config.json" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('autoCommit', False))" 2>/dev/null || echo "False")
+        if [[ "$AUTO_COMMIT" == "True" ]]; then
+            log "Auto-committing Memory changes..."
+            (cd "$PROJECT_DIR" && git add Memory/ && git commit -m "Session auto-save: $(date -u '+%Y-%m-%d %H:%M UTC')" && git push) 2>/dev/null || true
+        fi
+    fi
 
     # Output valid JSON for hook
     echo "{}"
