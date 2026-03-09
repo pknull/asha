@@ -1,6 +1,6 @@
 {
   "name": "asha",
-  "version": "1.17.0",
+  "version": "1.18.0",
   "description": "Cognitive scaffold with automatic learning. Cross-project identity (~/.asha/), session synthesis, pattern extraction, and continuous calibration.",
   "author": {
     "name": "pknull",

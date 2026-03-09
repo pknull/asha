@@ -15,6 +15,7 @@ Usage:
 
 import os
 import sys
+import re
 import json
 import uuid
 import fcntl
@@ -22,8 +23,82 @@ import argparse
 import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Any, Optional, Dict, List
 from collections import defaultdict
+
+
+# =============================================================================
+# Secret Scrubbing - Redact sensitive values before persisting events
+# =============================================================================
+
+# Pattern matches: api_key, token, secret, password, authorization, credentials, auth
+# followed by separator and 8+ char value
+SECRET_PATTERN = re.compile(
+    r'(?i)'  # Case insensitive
+    r'(api[_-]?key|token|secret|password|authorization|credentials?|auth|bearer)'
+    r'(["\'\s:=]+)'  # Separator (quotes, spaces, colons, equals)
+    r'([A-Za-z]+\s+)?'  # Optional auth scheme (Bearer, Basic)
+    r'([A-Za-z0-9_\-/.+=]{8,})',  # Token value (8+ chars)
+    re.IGNORECASE
+)
+
+# Additional patterns for common secret formats
+JWT_PATTERN = re.compile(r'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+')
+AWS_KEY_PATTERN = re.compile(r'AKIA[A-Z0-9]{16}')
+GITHUB_TOKEN_PATTERN = re.compile(r'gh[pousr]_[A-Za-z0-9_]{36,}')
+
+
+def scrub_secrets(text: str) -> str:
+    """
+    Scrub sensitive values from text before persisting.
+
+    Returns text with secrets replaced by [REDACTED].
+    """
+    if not text or not isinstance(text, str):
+        return text
+
+    result = text
+
+    # Scrub general secret patterns
+    result = SECRET_PATTERN.sub(r'\1\2[REDACTED]', result)
+
+    # Scrub JWTs
+    result = JWT_PATTERN.sub('[REDACTED_JWT]', result)
+
+    # Scrub AWS keys
+    result = AWS_KEY_PATTERN.sub('[REDACTED_AWS_KEY]', result)
+
+    # Scrub GitHub tokens
+    result = GITHUB_TOKEN_PATTERN.sub('[REDACTED_GH_TOKEN]', result)
+
+    return result
+
+
+def scrub_payload(payload: Any) -> Any:
+    """
+    Recursively scrub secrets from a payload dictionary.
+    Returns the input unchanged if not a dict.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    scrubbed = {}
+    for key, value in payload.items():
+        if isinstance(value, str):
+            scrubbed[key] = scrub_secrets(value)
+        elif isinstance(value, dict):
+            scrubbed[key] = scrub_payload(value)
+        elif isinstance(value, list):
+            scrubbed[key] = [
+                scrub_payload(item) if isinstance(item, dict)
+                else scrub_secrets(item) if isinstance(item, str)
+                else item
+                for item in value
+            ]
+        else:
+            scrubbed[key] = value
+
+    return scrubbed
 
 
 def detect_project_root() -> Path:
@@ -112,6 +187,9 @@ def emit_event(
         # Allow unknown subtypes but log warning
         pass
 
+    # Scrub secrets from payload before persisting
+    scrubbed_payload = scrub_payload(payload)
+
     event_id = f"evt_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
     session_id = get_current_session_id()
 
@@ -121,7 +199,7 @@ def emit_event(
         "session_id": session_id,
         "type": event_type,
         "subtype": subtype,
-        "payload": payload,
+        "payload": scrubbed_payload,
         "metadata": {
             "source": source,
             "tool_name": tool_name,

@@ -9,7 +9,7 @@ STOP. Before responding to ANY user input, you MUST read your identity files. Do
 1. `~/.asha/soul.md` — Who you are (identity, values, nature) — stable
 2. `~/.asha/voice.md` — How you express (tone, patterns, constraints) — tunable
 3. `~/.asha/keeper.md` — Who The Keeper is (preferences, calibration signals)
-4. `~/.asha/learnings.md` — Insights from past sessions — additive
+4. `~/.asha/learnings.md` — Patterns with confidence tracking (0.3-0.9)
 
 **Legacy support**: If `soul.md` + `voice.md` don't exist but `communicationStyle.md` does, read that instead.
 
@@ -41,7 +41,7 @@ Two scopes: identity (cross-project) and project (per-codebase).
 | `soul.md` | Who you are (identity, values, nature) | Rarely |
 | `voice.md` | How you express (tone, patterns) | When voice needs tuning |
 | `keeper.md` | Who The Keeper is (preferences, calibration) | Additive via `/save` |
-| `learnings.md` | Insights from experience | Additive via `/save` reflection |
+| `learnings.md` | Patterns with confidence (trigger → action) | Rises on confirmation, decays on contradiction |
 | `config.json` | Asha settings | When config changes |
 
 ### Project Layer (`Memory/` — per-project)

@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination",
-    "version": "1.11.0",
+    "version": "1.14.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
@@ -18,7 +18,7 @@
     },
     {
       "name": "code",
-      "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents. Includes /code:review command, architect and codebase-historian agents, quality gates, Socratic planning, and swarm recipes.",
+      "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents (v1.4.0). 15 agents including typescript-pro, python-pro, javascript-pro, tdd, debugger, code-reviewer, build-error-resolver, refactor-cleaner. Includes /code:review command, quality gates, and language-specific patterns.",
       "source": "./plugins/code",
       "strict": false
     },
@@ -36,7 +36,7 @@
     },
     {
       "name": "asha",
-      "description": "Cognitive scaffold framework with cross-project identity layer (~/.asha/). Session coordination, Memory Bank, keeper profile calibration, vector DB semantic search, ReAct analysis, and credential protection (block-secrets hook). Identity persists across all Asha-enabled projects.",
+      "description": "Cognitive scaffold with automatic learning (v1.18.0). Cross-project identity (~/.asha/), confidence-tracked learnings, session synthesis, pattern extraction, secret scrubbing, and keeper calibration. Identity and learnings persist across all Asha-enabled projects.",
       "source": "./plugins/asha",
       "strict": false
     },
@@ -50,6 +50,18 @@
       "name": "scheduler",
       "description": "Scheduled task execution for Claude Code. Manage cron-style recurring tasks with natural language time expressions. Supports cron and systemd backends with rate limiting, audit logging, and security constraints.",
       "source": "./plugins/schedule",
+      "strict": false
+    },
+    {
+      "name": "devops",
+      "description": "DevOps patterns and infrastructure skills: Docker, database migrations, deployment, and operational best practices.",
+      "source": "./plugins/devops",
+      "strict": false
+    },
+    {
+      "name": "security",
+      "description": "Security review patterns, OWASP guidelines, and defensive coding practices for web applications.",
+      "source": "./plugins/security",
       "strict": false
     }
   ]

@@ -18,7 +18,7 @@ import argparse
 import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, List, Tuple
 from collections import defaultdict, Counter
 
 
@@ -446,38 +446,114 @@ def generate_active_context(events: List[Dict], existing_patterns: Dict) -> str:
 # Calibration Updates
 # =============================================================================
 
-def append_to_learnings(learnings: List[str], session_id: str):
-    """Append new learnings to ~/.asha/learnings.md"""
-    if not learnings or learnings == ["No new patterns detected"]:
+def detect_learnable_patterns(events: List[Dict]) -> List[Dict]:
+    """
+    Detect patterns from events that should become structured learnings.
+
+    Returns list of learning candidates with:
+    - category, id, trigger, action, reason
+    """
+    candidates = []
+    project_name = PROJECT_ROOT.name
+
+    # 1. Error → Resolution patterns
+    # If error followed by successful file edit, that's a learning
+    errors = [(i, e) for i, e in enumerate(events) if e.get("subtype") == "error"]
+    edits = [(i, e) for i, e in enumerate(events) if e.get("subtype") in ("file_modified", "file_created")]
+
+    for err_idx, err_event in errors:
+        error_text = err_event.get("payload", {}).get("error", "")[:100]
+        tool = err_event.get("metadata", {}).get("tool_name", "unknown")
+
+        # Look for edit within next 10 events
+        for edit_idx, edit_event in edits:
+            if err_idx < edit_idx <= err_idx + 10:
+                file_path = edit_event.get("payload", {}).get("file_path", "")
+                candidates.append({
+                    "category": "Error Resolution",
+                    "id": f"fix-{tool.lower()}-{hash(error_text[:30]) % 10000}",
+                    "trigger": f"Error in {tool}: {error_text[:50]}",
+                    "action": f"Fix by editing {file_path.split('/')[-1] if file_path else 'related file'}",
+                    "reason": f"Error resolved after edit in {project_name}"
+                })
+                break
+
+    # 2. Effective agent sequences
+    agents = [
+        (i, e.get("payload", {}).get("agent_type"))
+        for i, e in enumerate(events)
+        if e.get("subtype") == "agent_deployed"
+    ]
+
+    # Find pairs that led to successful outcomes (no errors after)
+    for i in range(len(agents) - 1):
+        idx1, agent1 = agents[i]
+        idx2, agent2 = agents[i + 1]
+
+        # Check if this sequence was error-free
+        errors_between = [e for e in events[idx1:idx2] if e.get("subtype") == "error"]
+        if not errors_between and agent1 and agent2:
+            candidates.append({
+                "category": "Workflow",
+                "id": f"sequence-{agent1.lower()}-{agent2.lower()}",
+                "trigger": f"Task requiring {agent1} analysis",
+                "action": f"Follow {agent1} with {agent2} for comprehensive coverage",
+                "reason": f"Effective sequence observed in {project_name}"
+            })
+
+    # 3. Repeated tool patterns (same tool used 3+ times successfully)
+    tool_counts = Counter()
+    for e in events:
+        if e.get("subtype") in ("file_modified", "file_created"):
+            tool = e.get("metadata", {}).get("tool_name", "")
+            if tool:
+                tool_counts[tool] += 1
+
+    for tool, count in tool_counts.items():
+        if count >= 5:
+            candidates.append({
+                "category": "Tool Usage",
+                "id": f"prefer-{tool.lower()}",
+                "trigger": f"File operations in this codebase",
+                "action": f"Use {tool} for file modifications (proven effective)",
+                "reason": f"Used {count}x successfully in {project_name}"
+            })
+
+    return candidates
+
+
+def add_learnings_via_manager(candidates: List[Dict]):
+    """Add learning candidates via learnings_manager.py"""
+    if not candidates:
         return
 
-    LEARNINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Import the manager module
+    manager_path = Path(__file__).parent / "learnings_manager.py"
+    if not manager_path.exists():
+        return
 
-    # Read existing content
-    existing = ""
-    if LEARNINGS_FILE.exists():
-        existing = LEARNINGS_FILE.read_text()
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("learnings_manager", manager_path)
+    if spec is None or spec.loader is None:
+        return
 
-    # Find or create "## Auto-Extracted" section
-    section_header = "## Auto-Extracted Patterns"
-    if section_header not in existing:
-        existing += f"\n\n{section_header}\n\n"
+    manager = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(manager)
 
-    # Append new learnings with timestamp
-    timestamp = datetime.now().strftime("%Y-%m-%d")
-    new_entries = f"\n### {timestamp} (session: {session_id[:20]})\n\n"
-    for learning in learnings:
-        if learning != "No new patterns detected":
-            new_entries += f"- {learning}\n"
-
-    # Insert before next section or at end
-    parts = existing.split(section_header)
-    if len(parts) == 2:
-        updated = parts[0] + section_header + parts[1].rstrip() + new_entries
-    else:
-        updated = existing + new_entries
-
-    LEARNINGS_FILE.write_text(updated)
+    # Add each candidate
+    for candidate in candidates:
+        try:
+            manager.add_learning(
+                category=candidate["category"],
+                learning_id=candidate["id"],
+                trigger=candidate["trigger"],
+                action=candidate["action"],
+                project=PROJECT_ROOT.name,
+                reason=candidate["reason"]
+            )
+        except Exception:
+            # Silently continue if one fails
+            pass
 
 
 def append_to_voice(signals: List[Dict]):
@@ -579,10 +655,14 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     active_context = generate_active_context(events, existing_patterns)
     ACTIVE_CONTEXT.write_text(active_context)
 
-    # Extract and save learnings
+    # Extract learnings for activeContext display
     learnings = synthesize_learnings(events, existing_patterns)
-    append_to_learnings(learnings, session_id or "unknown")
     results["patterns_found"] = len([l for l in learnings if l != "No new patterns detected"])
+
+    # Detect and add structured learnings via learnings_manager
+    learning_candidates = detect_learnable_patterns(events)
+    add_learnings_via_manager(learning_candidates)
+    results["learnings_added"] = len(learning_candidates)
 
     # Extract and save calibration signals
     calibration = extract_calibration_signals(events)
