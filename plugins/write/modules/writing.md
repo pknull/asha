@@ -37,6 +37,7 @@ For fiction and narrative prose, sentence length distribution signals emotional 
 **Source**: `Memory/communicationStyle.md` contains project-specific presentation layer
 
 **Two-Layer Architecture**:
+
 - **Judgment Layer**: Authority verification, fact-checking, error correction
 - **Expression Layer**: Voice, tone, persona — adapts to context independently
 
@@ -98,13 +99,16 @@ Exemplar lines belong in character sheets, not in prompts.
 
 ## Quality Gates for Writing
 
-| Phase | Gate | Agent | Blocking |
-|-------|------|-------|----------|
+| Phase | Gate | Agent/Skill | Blocking |
+|-------|------|-------------|----------|
 | Pre-Draft | Structure Approved | outline-architect | Yes |
 | Pre-Draft | Continuity Clear | consistency-checker | Yes |
 | Post-Draft 1 | Beats Covered | prose-writer | Yes |
+| **Post-Draft 1** | **Perplexity Pass** | **perplexity-gate** | **Yes** |
 | Post-Draft 2 | Structure Sound | developmental-editor | Yes |
 | Post-Draft 3 | Prose Polished | line-editor | Yes |
+
+**Perplexity Gate**: Measures token-level variance using local Ollama + Ministral. Detects "flat" AI prose patterns (PPL < 22). On failure, triggers VS-Tail sampling rewrite (max 3 attempts). See `skills/perplexity-gate/SKILL.md`.
 
 ---
 

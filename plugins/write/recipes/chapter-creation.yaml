@@ -1,6 +1,6 @@
 name: chapter-creation
-version: "1.0"
-description: Create a chapter from concept to polished prose
+version: "1.1"
+description: Create a chapter from concept to polished prose with perplexity gate
 complexity: standard
 
 agents:
@@ -25,10 +25,31 @@ agents:
     output: "@draft-complete"
     checkpoint: false
 
+  # NEW: Perplexity gate after Draft 1
+  - name: perplexity-gate
+    role: Check prose flatness before structural edit
+    model: sonnet
+    trigger: "@draft-complete"
+    output: "@perplexity-passed | @perplexity-failed"
+    checkpoint: false
+    skill: perplexity-gate
+
+  # NEW: Diversity rewriter for failed perplexity
+  - name: diversity-rewriter
+    role: Rewrite flat passages using VS-Tail sampling
+    model: sonnet
+    trigger: "@perplexity-failed"
+    output: "@rewrite-complete"
+    checkpoint: false
+    technique: verbalized-sampling
+    config:
+      variant: VS-Tail
+      target: flagged_sentences
+
   - name: developmental-editor
     role: Review structure and pacing
     model: opus
-    trigger: "@draft-complete"
+    trigger: "@perplexity-passed"
     output: "@dev-review-ready"
     checkpoint: true
 
@@ -69,7 +90,32 @@ flow:
       to: "@draft-complete"
       agent: prose-writer
 
+    # NEW: Perplexity gate after Draft 1
     - from: "@draft-complete"
+      to: "@perplexity-checking"
+      agent: perplexity-gate
+
+    - from: "@perplexity-checking"
+      to: "@perplexity-passed"
+      condition: "verdict == PASS"
+
+    - from: "@perplexity-checking"
+      to: "@perplexity-failed"
+      condition: "verdict == FAIL"
+
+    # Rewrite loop for failed perplexity
+    - from: "@perplexity-failed"
+      to: "@rewrite-complete"
+      agent: diversity-rewriter
+      note: "Apply VS-Tail sampling to flagged sections"
+
+    - from: "@rewrite-complete"
+      to: "@perplexity-checking"
+      agent: perplexity-gate
+      note: "Re-check after rewrite (max 3 iterations)"
+
+    # Continue normal flow after perplexity pass
+    - from: "@perplexity-passed"
       to: "@dev-review-ready"
       agent: developmental-editor
 
@@ -98,6 +144,12 @@ flow:
       agent: prose-writer
       note: "Revise based on feedback"
 
+    # Perplexity escalation after max retries
+    - from: "@perplexity-escalation"
+      to: "@perplexity-human-review"
+      type: checkpoint
+      description: "Human reviews after 3 failed perplexity rewrites"
+
 failure:
   max_retries: 3
   on_blocked: escalate_to_user
@@ -117,6 +169,14 @@ checkpoints:
     artifacts:
       - dev_edit_report.md
 
+  perplexity-escalation:
+    description: "Human reviews after 3 failed perplexity rewrites"
+    required: false
+    trigger: "perplexity gate fails 3 consecutive times"
+    artifacts:
+      - perplexity_report.md
+      - flagged_sentences.md
+
 gates:
   - name: continuity
     description: "New content doesn't contradict existing"
@@ -128,8 +188,23 @@ gates:
     blocking: true
     bypass: never
 
+  - name: perplexity
+    description: "Prose has sufficient token-level variance (not AI-flat)"
+    blocking: true
+    max_retries: 3
+    on_max_retries: escalate_to_user
+    bypass: "Human override with justification"
+    skill: perplexity-gate
+    thresholds:
+      sentence_ppl_low: 22
+      low_ratio_fail: 0.30
+      consecutive_low_fail: 4
+
 notes:
   - "Consistency check runs FIRST to catch issues early"
-  - "Two checkpoints: outline approval and structure approval"
+  - "Three checkpoints: outline approval, perplexity escalation (conditional), structure approval"
   - "Prose-writer runs twice: Draft 1 and Draft 3 (voice pass)"
   - "Opus used for developmental edit (high reasoning)"
+  - "NEW: Perplexity gate runs after Draft 1 with max 3 rewrite attempts"
+  - "Perplexity uses local Ollama + Ministral for measurement"
+  - "VS-Tail sampling (p < 0.10) used for diversity recovery on flat prose"
