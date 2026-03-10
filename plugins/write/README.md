@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.3.0
+**Version**: 1.4.0
 
 Creative writing workflows for fiction development: prose craft, worldbuilding, editing, AI detection, and storytelling agents.
 
@@ -25,6 +25,10 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 | **prose-analysis** | Multi-mode prose review (voice, continuity, coherence) |
 | **intimacy-designer** | Adult content specialist (scene frameworks, boundary arbitration) |
 | **manuscript-editor** | Structural editing and revision coordination |
+| **novel-character-reviewer** | Character consistency validation against project bible |
+| **novel-continuity-reviewer** | Timeline, spatial logic, knowledge boundary validation |
+| **novel-state-updater** | State extraction after sections pass validation |
+| **novel-style-linter** | Voice compliance, variance metrics, POV/tense checking |
 
 ### Commands
 
@@ -173,6 +177,15 @@ If using the asha plugin for Memory Bank:
 The consistency-checker queries these locations.
 
 ## Version History
+
+### 1.4.0
+
+- Added 4 novel-specific agents from REDACTED99 project:
+  - novel-character-reviewer (character consistency)
+  - novel-continuity-reviewer (timeline, spatial, knowledge)
+  - novel-state-updater (state extraction after validation)
+  - novel-style-linter (voice compliance, variance)
+- Total agents: 13
 
 ### 1.3.0
 
