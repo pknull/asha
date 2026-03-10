@@ -1,0 +1,12 @@
+{
+  "name": "security",
+  "version": "1.0.0",
+  "description": "Security review patterns, OWASP guidelines, and defensive coding practices",
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "license": "MIT",
+  "keywords": ["security", "owasp", "authentication", "authorization", "vulnerabilities"],
+  "skills": "./skills"
+}

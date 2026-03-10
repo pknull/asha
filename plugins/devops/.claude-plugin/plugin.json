@@ -1,0 +1,12 @@
+{
+  "name": "devops",
+  "version": "1.0.0",
+  "description": "DevOps patterns and infrastructure skills: Docker, database migrations, deployment, and operational best practices",
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "license": "MIT",
+  "keywords": ["devops", "docker", "infrastructure", "deployment", "migrations"],
+  "skills": "./skills"
+}
