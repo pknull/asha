@@ -1,7 +1,7 @@
 # asha-marketplace
 
-**Version**: 1.11.0
-**Description**: Claude Code plugins for research, development, creative writing, and session coordination
+**Version**: 1.17.0
+**Description**: Claude Code plugins for research, development, creative writing, image generation, scheduling, and session coordination
 
 A collection of domain-focused Claude Code plugins organized by workflow type.
 
@@ -9,17 +9,19 @@ A collection of domain-focused Claude Code plugins organized by workflow type.
 
 ## Plugin Domains
 
-| Domain | Plugin | Purpose |
-|--------|--------|---------|
-| **Research** | `panel` | Multi-perspective analysis, expert panels, decision-making |
-| **Development** | `code` | Code review, orchestration patterns, TDD workflows |
-| **Creative** | `write` | Fiction writing, prose craft, worldbuilding |
-| **Formatting** | `output-styles` | Response styling and output formats |
-| **Core** | `asha` | Session coordination, memory persistence, general techniques |
+| Domain | Plugin | Version | Purpose |
+|--------|--------|---------|---------|
+| **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making |
+| **Development** | `code` | v1.11.0 | Code review, orchestration patterns, TDD, 15 agents |
+| **Creative** | `write` | v1.5.0 | Fiction writing, prose craft, perplexity detection, 16 agents |
+| **Image** | `image` | v1.1.0 | Stable Diffusion prompts, ComfyUI workflows |
+| **Automation** | `scheduler` | v0.1.0 | Cron-style scheduled task execution |
+| **Formatting** | `output-styles` | v1.0.2 | Response styling and output formats |
+| **Core** | `asha` | v1.18.0 | Session coordination, memory persistence, learnings |
 
 ### When to Use Each
 
-**panel** — When you need multiple perspectives on a question
+**panel-system** — When you need multiple perspectives on a question
 
 - Architecture decisions, trade-off analysis
 - Creative brainstorming with diverse viewpoints
@@ -29,19 +31,31 @@ A collection of domain-focused Claude Code plugins organized by workflow type.
 
 - Code review before commits
 - Multi-agent feature implementation
-- Bug investigation, refactoring
+- Bug investigation, refactoring, TDD
 
 **write** — When you're writing fiction
 
-- Chapter drafting with staged review
-- Character development with voice testing
+- Chapter drafting with perplexity validation
+- Style analysis from exemplar texts
 - Manuscript revision workflows
+
+**image** — When you need AI-generated images
+
+- Stable Diffusion prompt engineering
+- ComfyUI workflow design
+- LoRA/model selection guidance
+
+**scheduler** — When you need automated recurring tasks
+
+- Daily code reviews
+- Scheduled reports
+- Automated maintenance
 
 **asha** — Always (foundation)
 
 - Session memory across conversations
-- Identity persistence via Memory Bank
-- General techniques (research verification, high-stakes safety, diversity sampling)
+- Cross-project identity via `~/.asha/`
+- Confidence-tracked learnings that persist
 
 ---
 
@@ -61,7 +75,7 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 /panel --format=github "Review authentication approach"
 /panel --context=docs/RFC.md "Evaluate this proposal"
 
-# Panel management (v5.0.0)
+# Panel management
 /panel --list                    # List all panels
 /panel --list --status=active    # Filter by status
 /panel --resume <id>             # Resume interrupted panel
@@ -76,8 +90,8 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 - Output formats: markdown (default), github, json
 - Context injection from files or URLs
 - Dynamic specialist recruitment
-- **v5.0.0**: Full persistence with `--resume`, `--list`, `--show`, `--abandon`
-- **v5.0.0**: Per-phase state files in `Work/panels/` for audit trail
+- Full persistence with `--resume`, `--list`, `--show`, `--abandon`
+- Per-phase state files in `Work/panels/` for audit trail
 
 **[Full Documentation →](plugins/panel/README.md)**
 
@@ -86,26 +100,41 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 ### Code
 
 **Plugin Name**: `code`
-**Command**: `/code:review`
-**Version**: 1.1.0
+**Commands**: `/code:review`, `/code:verify`, `/code:checkpoint`, `/code:orchestrate`
+**Version**: 1.11.0
 **Domain**: Development
 
-Development workflows with orchestration patterns, code review, and specialized agents.
+Development workflows with orchestration patterns, code review, TDD, and 15 specialized agents.
 
 ```bash
 /code:review              # Review staged changes
 /code:review <path>       # Review specific file(s)
 /code:review --all        # Review all uncommitted changes
+/code:verify              # Run types, lint, tests, security
+/code:checkpoint "name"   # Create named progress checkpoint
 ```
 
-**Agents**:
+**Agents** (15):
 
-- **codebase-historian** — Prior art discovery, pattern archaeology
+| Agent | Role |
+|-------|------|
+| **architect** | System architecture and modular design |
+| **build-error-resolver** | Build and TypeScript error resolution |
+| **code-reviewer** | Code quality and security review |
+| **codebase-historian** | Prior art discovery, pattern archaeology |
+| **database-reviewer** | PostgreSQL optimization, RLS policies |
+| **debugger** | Complex issue diagnosis, root cause analysis |
+| **doc-updater** | Documentation sync from code structure |
+| **e2e-runner** | Playwright E2E testing |
+| **go-build-resolver** | Go compilation error specialist |
+| **go-reviewer** | Idiomatic Go review |
+| **javascript-pro** | Modern ES2023+ development |
+| **python-pro** | Python 3.11+ type-safe development |
+| **refactor-cleaner** | Dead code removal, cleanup |
+| **tdd** | Test-driven development (London School) |
+| **typescript-pro** | Advanced TypeScript development |
 
-**Modules**:
-
-- **code.md** — ACE cognitive cycle, convention matching, high-stakes protocols
-- **orchestration.md** — Quality gates, Socratic planning, scale-adaptive workflows
+**Skills**: Django patterns, Spring Boot patterns, Go patterns, Python patterns, API design
 
 **Recipes** (multi-agent workflows):
 
@@ -123,38 +152,127 @@ Development workflows with orchestration patterns, code review, and specialized 
 ### Write
 
 **Plugin Name**: `write`
-**Version**: 1.2.0
+**Commands**: `/write:perplexity`, `/write:init-novel`, `/write:review-section`
+**Version**: 1.5.0
 **Domain**: Creative Writing
 
-Creative writing workflows for fiction development: prose craft, worldbuilding, editing, and storytelling agents.
+Creative writing workflows with prose craft, perplexity detection, style analysis, and 16 specialized agents.
 
 ```bash
-/plugin install write@asha-marketplace
+/write:perplexity chapter.md     # Check prose for AI flatness
+/write:init-novel /path/to/proj  # Initialize novel state structure
+/write:review-section            # Run periodic review suite
 ```
 
-**Agents**:
+**Agents** (16):
 
 | Agent | Role |
 |-------|------|
 | **outline-architect** | Story structure, beat sheets, chapter outlines |
 | **prose-writer** | Draft generation with voice anchoring |
+| **fiction-writer** | Primary creative coordinator for full pipeline |
 | **consistency-checker** | Continuity tracking (characters, timelines, lore) |
 | **developmental-editor** | Arc analysis, pacing, structural review |
 | **line-editor** | Sentence craft, word choice, polish |
+| **prose-analysis** | Multi-mode prose review (voice, continuity, coherence) |
+| **intimacy-designer** | Adult content specialist (scene frameworks, boundaries) |
+| **manuscript-editor** | Structural editing and revision coordination |
+| **novel-character-reviewer** | Character consistency validation |
+| **novel-continuity-reviewer** | Timeline, spatial logic, knowledge boundaries |
+| **novel-state-updater** | State extraction after validation |
+| **novel-style-linter** | Voice compliance, variance metrics |
+| **book-analyzer** | Extract quantified style rules from exemplar texts |
+| **bible-merger** | Consolidate multiple analyses into unified voice.md |
+| **perplexity-improver** | Rewrite flat prose using VS-Tail sampling |
 
-**Modules**:
+**Skills**:
 
-- **writing.md** — Prose craft guidelines, sentence rhythm, staged draft protocol
+| Skill | Purpose |
+|-------|---------|
+| **perplexity-gate** | Local prose flatness detection (Ollama + Ministral) |
+| **style-analyzer** | Quantified prose analysis (sentence metrics, dialogue, vocabulary) |
+| **novel-state** | Directory structure for manuscript state tracking |
+| **languagetool** | Grammar and style checking via local server |
+| **book-export** | Professional PDF/ePub export with styling profiles |
+| **book-maker** | Python-based markdown converter |
 
 **Recipes** (multi-agent workflows):
 
 | Recipe | Use Case |
 |--------|----------|
-| `chapter-creation.yaml` | New chapter from concept to polish |
+| `chapter-creation.yaml` | New chapter with perplexity gate |
 | `manuscript-revision.yaml` | Complete revision of existing draft |
 | `character-development.yaml` | Deep character creation with voice testing |
 
 **[Full Documentation →](plugins/write/README.md)**
+
+---
+
+### Image
+
+**Plugin Name**: `image`
+**Version**: 1.1.0
+**Domain**: AI Image Generation
+
+Stable Diffusion prompt engineering and ComfyUI workflow design.
+
+```bash
+/plugin install image@asha-marketplace
+```
+
+**Agent**: `comfyui-prompt-engineer`
+
+- Image generation prompts from concept descriptions
+- ComfyUI workflow JSON construction
+- LoRA/model selection guidance
+- Prompt iteration based on output feedback
+
+**Usage**:
+
+```
+Design a prompt for: ethereal forest scene with bioluminescent mushrooms
+Create a ComfyUI workflow for: txt2img with upscaling
+```
+
+**[Full Documentation →](plugins/image/README.md)**
+
+---
+
+### Scheduler
+
+**Plugin Name**: `scheduler`
+**Command**: `/schedule`
+**Version**: 0.1.0
+**Domain**: Automation
+
+Cron-style scheduled task execution with natural language time expressions.
+
+```bash
+/schedule "Every weekday at 9am" "Review code changes since yesterday"
+/schedule list                    # Show all tasks
+/schedule show <id>               # Task details
+/schedule remove <id>             # Delete task
+/schedule logs <id>               # View execution output
+```
+
+**Time Expressions**:
+
+| Expression | Cron Equivalent |
+|------------|-----------------|
+| "Every day at 9am" | `0 9 * * *` |
+| "Every weekday at 9am" | `0 9 * * 1-5` |
+| "Every Monday at 2pm" | `0 14 * * 1` |
+| "Every hour" | `0 * * * *` |
+| "Every 15 minutes" | `*/15 * * * *` |
+
+**Security**:
+
+- Default read-only mode (Read, Grep, Glob only)
+- Max 10 tasks per project
+- Dangerous command patterns blocked
+- Audit logging for all operations
+
+**[Full Documentation →](plugins/schedule/README.md)**
 
 ---
 
@@ -191,19 +309,21 @@ Switchable output styles for Claude Code responses.
 ### Asha
 
 **Plugin Name**: `asha`
-**Commands**: `/asha:init`, `/asha:save`, `/asha:note`, `/asha:status`, `/asha:index`, `/asha:cleanup`
-**Version**: 1.11.1
+**Commands**: `/asha:init`, `/asha:save`, `/asha:prime`, `/asha:note`, `/asha:status`, `/asha:loop`, `/asha:spawn`, `/asha:agents`, `/asha:silence`, `/asha:restore`
+**Version**: 1.18.0
 **Domain**: Core Scaffold
 
-Cognitive scaffold framework for session coordination and memory persistence. Foundation layer that other plugins build on. Cross-project identity layer at `~/.asha/`, facet auto-ingestion into ReasoningBank.
+Cognitive scaffold framework with cross-project identity, automatic learning, and session coordination. Foundation layer that other plugins build on.
 
 ```bash
-/asha:init                # Initialize Asha (creates ~/.asha/ + project Memory/)
-/asha:save                # Save session to Memory Bank + keeper calibration
-/asha:note "text"         # Add timestamped note to scratchpad
+/asha:init                # Initialize (creates ~/.asha/ + project Memory/)
+/asha:save                # Synthesize session + extract learnings
+/asha:prime               # Interactive codebase exploration
+/asha:note "text"         # Add timestamped note
 /asha:status              # Show session status
-/asha:index               # Index files for semantic search
-/asha:cleanup             # Remove legacy installation files
+/asha:loop                # Start autonomous agent loop
+/asha:spawn <agent>       # Spawn agent in tmux
+/asha:silence             # Disable Memory logging
 ```
 
 **Two-Layer Architecture**:
@@ -213,18 +333,33 @@ Cognitive scaffold framework for session coordination and memory persistence. Fo
 | **Identity** | `~/.asha/` | Cross-project (who Asha is, who you are) |
 | **Project** | `Memory/` | Per-project state, protocols, tech stack |
 
-**Identity Layer** (`~/.asha/` — user-scope, not committed):
+**Identity Layer** (`~/.asha/` — user-scope, persists across all projects):
 
-- `communicationStyle.md` — Who Asha is (voice, persona, constraints)
-- `keeper.md` — Who you are (preferences, calibration signals)
-- `config.json` — Cross-project settings
+| File | Purpose |
+|------|---------|
+| `soul.md` | Who Asha is (identity, values, nature) |
+| `voice.md` | How Asha expresses (tone, patterns) |
+| `keeper.md` | Who you are (preferences, calibration signals) |
+| `learnings.md` | Patterns with confidence tracking (0.3-0.9) |
+| `config.json` | Cross-project settings |
 
 **Project Layer** (`Memory/` — git-committed):
 
-- `activeContext.md` — Current session state
-- `projectbrief.md` — Project foundation
-- `techEnvironment.md` — Tools and platform config
-- `workflowProtocols.md` — Project-specific patterns
+| File | Purpose |
+|------|---------|
+| `activeContext.md` | Current session state |
+| `projectbrief.md` | Project foundation |
+| `techEnvironment.md` | Tools and platform config |
+| `workflowProtocols.md` | Project-specific patterns |
+
+**Agents** (4):
+
+| Agent | Role |
+|-------|------|
+| **partner-sentiment** | Haiku generation for session continuity |
+| **task-manager** | Todoist integration for task retrieval |
+| **verify-app** | Post-change verification (tests, types, lint) |
+| **loop-operator** | Autonomous workflow with safety guardrails |
 
 **Core Modules** (general techniques):
 
@@ -232,7 +367,7 @@ Cognitive scaffold framework for session coordination and memory persistence. Fo
 |--------|---------|
 | `CORE.md` | Bootstrap protocol, identity, memory architecture |
 | `cognitive.md` | ACE cycle, parallel execution, tool efficiency |
-| `research.md` | Authority verification, citation standards, epistemic hygiene |
+| `research.md` | Authority verification, citation standards |
 | `memory-ops.md` | Session synthesis, Memory Bank maintenance |
 | `high-stakes.md` | Safety protocols for destructive operations |
 | `verbalized-sampling.md` | Mode collapse recovery, diversity generation |
@@ -257,6 +392,8 @@ Cognitive scaffold framework for session coordination and memory persistence. Fo
 /plugin install panel-system@asha-marketplace
 /plugin install code@asha-marketplace
 /plugin install write@asha-marketplace
+/plugin install image@asha-marketplace
+/plugin install scheduler@asha-marketplace
 /plugin install output-styles@asha-marketplace
 ```
 
@@ -283,14 +420,24 @@ asha-marketplace/
 │   ├── code/                     # Development workflows
 │   │   ├── .claude-plugin/
 │   │   ├── commands/
-│   │   ├── agents/
-│   │   ├── modules/
+│   │   ├── agents/ (15)
+│   │   ├── skills/
 │   │   └── recipes/
 │   ├── write/                    # Creative writing
 │   │   ├── .claude-plugin/
-│   │   ├── agents/
-│   │   ├── modules/
+│   │   ├── commands/
+│   │   ├── agents/ (16)
+│   │   ├── skills/
 │   │   └── recipes/
+│   ├── image/                    # AI image generation
+│   │   ├── .claude-plugin/
+│   │   └── agents/
+│   ├── schedule/                 # Task scheduling
+│   │   ├── .claude-plugin/
+│   │   ├── commands/
+│   │   ├── agents/
+│   │   ├── hooks/
+│   │   └── tools/
 │   ├── output-styles/            # Response formatting
 │   │   ├── .claude-plugin/
 │   │   ├── commands/
@@ -301,6 +448,7 @@ asha-marketplace/
 │       ├── commands/
 │       ├── hooks/
 │       ├── modules/
+│       ├── skills/
 │       ├── templates/
 │       └── tools/
 ├── README.md
@@ -360,6 +508,8 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 - **Panel System**: MIT License
 - **Code**: MIT License
 - **Write**: MIT License
+- **Image**: MIT License
+- **Scheduler**: MIT License
 - **Output Styles**: MIT License
 - **Asha**: MIT License
 
@@ -374,58 +524,80 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 - Panel system: `plugins/panel/README.md`
 - Code workflows: `plugins/code/README.md`
 - Writing workflows: `plugins/write/README.md`
+- Image generation: `plugins/image/README.md`
+- Scheduling: `plugins/schedule/README.md`
 - Development guide: `CLAUDE.md`
 
 ---
 
 ## Version History
 
+### v1.17.0 (2026-03-09)
+
+- **Write v1.5.0**: Claude Book feature parity
+  - 3 new agents: book-analyzer, bible-merger, perplexity-improver
+  - style-analyzer skill (quantified prose analysis)
+  - Total: 16 agents
+
+### v1.16.0 (2026-03-08)
+
+- **Write v1.4.0**: Novel-specific agents from REDACTED99 project
+  - novel-character-reviewer, novel-continuity-reviewer
+  - novel-state-updater, novel-style-linter
+
+### v1.15.0 (2026-03-08)
+
+- **Write v1.3.0**: Perplexity detection and novel state
+  - perplexity-gate skill (local Ollama + Ministral)
+  - novel-state skill (bible/state/timeline structure)
+  - Removed ai-detector (replaced by local perplexity)
+
+### v1.11.0 (2026-02-13)
+
+- **Asha v1.18.0**: Confidence-tracked learnings
+  - Learnings rise on confirmation, decay on contradiction
+  - Secret scrubbing for event logs
+  - ECC review integration
+
 ### v1.9.0 (2026-01-29)
 
 - **Panel system v5.0.0**: Full persistence and panel management
-  - `--resume <id>`: Continue interrupted panels from last phase
-  - `--list [--status=X]`: Query panel index with filtering
-  - `--show <id>`: Display panel summary
-  - `--abandon <id>`: Mark panels as abandoned
-  - Output moved to `Work/panels/` with per-phase state files
+  - `--resume <id>`: Continue interrupted panels
+  - `--list [--status=X]`: Query panel index
+  - Per-phase state files in `Work/panels/`
 - **Asha v1.8.0**: Cross-project identity layer
-  - `~/.asha/communicationStyle.md`: Who Asha is (persists across all projects)
-  - `~/.asha/keeper.md`: Who you are (calibration signals via `/save`)
-  - Session-start hook auto-injects identity files
-  - `/asha:init` bootstraps both identity layer and project Memory
+  - `~/.asha/` for identity (soul.md, voice.md, keeper.md)
+  - `/asha:save` captures keeper calibration
 
 ### v1.8.0 (2026-01-28)
 
-- Schedule plugin v0.1.0: Cron-style task automation
-- Marketplace version bump and version history tracking
+- **Scheduler v0.1.0**: Cron-style task automation
+  - Natural language time parsing
+  - cron and systemd backend support
+  - Rate limiting and security constraints
+
+### v1.7.0 (2026-01-26)
+
+- **Image v1.1.0**: AI image generation
+  - comfyui-prompt-engineer agent
+  - SD prompt crafting and workflow design
 
 ### v1.6.0 (2026-01-26)
 
-- **Domain restructuring**: Organized plugins by workflow type
-- **New plugin: code** — Development workflows, orchestration patterns, codebase-historian agent
-- **New plugin: write** — Creative writing with 5 specialized agents and recipes
-- **Absorbed local-review** into code plugin as `/code:review`
-- Cleaned up asha to core scaffold only (moved domain content to code/write)
+- **Domain restructuring**: Organized by workflow type
+- **Code v1.1.0**: Development workflows, 15 agents
+- **Write v1.2.0**: Creative writing, prose craft
 
 ### v1.5.0 (2026-01-16)
 
-- Fixed hook handler permissions and naming consistency
-- Added version validation script
-- Asha plugin v1.5.0 with robust memory indexing
+- Fixed hook handler permissions
+- Version validation script
+- Asha v1.5.0 with robust memory indexing
 
 ### v1.3.0 (2026-01-07)
 
-- Audit & cleanup: Removed stale memory-session-manager references
 - Panel system v4.2.0 with --format and --context flags
-
-### v1.2.0 (2025-11-17)
-
-- Sterilization: Removed universe-specific references
-- Renamed character files to universal archetypes
-
-### v1.1.0 (2025-11-08)
-
-- Panel system v4.1.0 with dynamic recruitment architecture
+- Audit and cleanup of stale references
 
 ### v1.0.0 (2025-11-08)
 
