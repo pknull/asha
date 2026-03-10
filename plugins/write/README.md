@@ -1,8 +1,8 @@
 # Write Plugin
 
-**Version**: 1.4.0
+**Version**: 1.5.0
 
-Creative writing workflows for fiction development: prose craft, worldbuilding, editing, AI detection, and storytelling agents.
+Creative writing workflows for fiction development: prose craft, worldbuilding, editing, style analysis, perplexity detection, and storytelling agents.
 
 ## Installation
 
@@ -29,6 +29,9 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 | **novel-continuity-reviewer** | Timeline, spatial logic, knowledge boundary validation |
 | **novel-state-updater** | State extraction after sections pass validation |
 | **novel-style-linter** | Voice compliance, variance metrics, POV/tense checking |
+| **book-analyzer** | Extract quantified style rules from exemplar texts |
+| **bible-merger** | Consolidate multiple style analyses into unified voice.md |
+| **perplexity-improver** | Rewrite flat prose using VS-Tail sampling |
 
 ### Commands
 
@@ -47,6 +50,7 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 | **languagetool** | Grammar and style checking via local LanguageTool server |
 | **book-export** | Professional PDF/ePub export with styling profiles |
 | **book-maker** | Python-based markdown converter with custom fonts |
+| **style-analyzer** | Quantified prose analysis for voice.md generation (sentence metrics, dialogue, vocabulary, forbidden patterns) |
 
 ### Modules
 
@@ -177,6 +181,15 @@ If using the asha plugin for Memory Bank:
 The consistency-checker queries these locations.
 
 ## Version History
+
+### 1.5.0
+
+- Added 3 new agents for Claude Book feature parity:
+  - book-analyzer (extract quantified style rules from exemplar texts)
+  - bible-merger (consolidate multiple analyses into unified voice.md)
+  - perplexity-improver (rewrite flat prose using VS-Tail sampling)
+- Added style-analyzer skill (sentence metrics, dialogue profiles, vocabulary analysis, AI signal detection)
+- Total agents: 16
 
 ### 1.4.0
 

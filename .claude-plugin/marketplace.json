@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination",
-    "version": "1.16.0",
+    "version": "1.17.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
@@ -24,7 +24,7 @@
     },
     {
       "name": "write",
-      "description": "Creative writing workflows (v1.4.0): prose craft, worldbuilding, perplexity detection, and novel state management. 13 agents including novel-character-reviewer, novel-continuity-reviewer, novel-state-updater, novel-style-linter. perplexity-gate and novel-state skills.",
+      "description": "Creative writing workflows (v1.5.0): prose craft, worldbuilding, perplexity detection, style analysis, and novel state management. 16 agents including book-analyzer, bible-merger, perplexity-improver. perplexity-gate, novel-state, and style-analyzer skills.",
       "source": "./plugins/write",
       "strict": false
     },

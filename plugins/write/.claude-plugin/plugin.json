@@ -1,7 +1,7 @@
 {
   "name": "write",
-  "version": "1.4.0",
-  "description": "Creative writing workflows: prose craft, worldbuilding, editing, perplexity detection, and storytelling agents for fiction development",
+  "version": "1.5.0",
+  "description": "Creative writing workflows: prose craft, worldbuilding, editing, perplexity detection, style analysis, and storytelling agents for fiction development",
   "author": {
     "name": "pknull",
     "email": "noreply@example.com"
@@ -15,7 +15,9 @@
     "worldbuilding",
     "storytelling",
     "perplexity",
-    "novel-state"
+    "novel-state",
+    "style-analysis",
+    "voice"
   ],
   "agents": [
     "./agents/outline-architect.md",
@@ -30,7 +32,10 @@
     "./agents/novel-character-reviewer.md",
     "./agents/novel-continuity-reviewer.md",
     "./agents/novel-state-updater.md",
-    "./agents/novel-style-linter.md"
+    "./agents/novel-style-linter.md",
+    "./agents/book-analyzer.md",
+    "./agents/bible-merger.md",
+    "./agents/perplexity-improver.md"
   ],
   "commands": "./commands",
   "skills": "./skills"
