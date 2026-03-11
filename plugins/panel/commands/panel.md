@@ -6,39 +6,52 @@ allowed-tools: ["Task", "Read", "Write", "Edit", "Grep", "Glob"]
 
 # Panel - Expert Multi-Perspective Analysis
 
-Convene a panel with 3 core roles + dynamically recruited specialists who analyze your topic from distinct perspectives and produce a structured decision through an 11-phase protocol.
+Convene a panel that decomposes complex problems, clarifies ambiguities, then deliberates with full context. The default workflow runs the complete pipeline:
+
+```
+Decompose → Clarify → Deliberate
+(structure)  (gaps)    (decision)
+```
 
 ## Usage
 
 ```bash
-/panel How do we pimp fish
-/panel Should we implement GraphQL or REST for the new API
-/panel Evaluate Chapter 9's horror effectiveness
-```
+# Full pipeline (default) - decompose, clarify unclear steps, then deliberate
+/panel "Build a microservices auth system"
+/panel "Should we implement GraphQL or REST for the new API"
 
-### Options
-
-```bash
+# With options
 /panel --format=github "Topic here"     # Output as GitHub PR comment
 /panel --format=json "Topic here"       # Output as structured JSON
 /panel --context=docs/RFC.md "Topic"    # Inject reference material
-/panel --context=spec.md --format=github "Evaluate this proposal"
 ```
 
-### Interview Mode
+### Quick Mode (Skip Decomposition)
 
 ```bash
-/panel --interview Build a task management CLI
+/panel --quick "Should we use tabs or spaces"
+/panel --quick "Evaluate Chapter 9's effectiveness"
+```
+
+For simple, well-defined topics that don't need decomposition. Jumps straight to deliberation (Phases -1 through 8).
+
+### Think Mode (Decomposition Only)
+
+```bash
+/panel --think "Break down this architecture"
+/panel --think "What are all the pieces of building a CLI tool"
+```
+
+Just runs The Thinker for problem decomposition. No interview, no deliberation. Output: `Work/thinking/<id>/summary.md`
+
+### Interview Mode (Requirements Only)
+
+```bash
+/panel --interview "Build a task management CLI"
 /panel --interview "Create a REST API for user management"
 ```
 
-Interview mode runs a Socratic Q&A workflow to crystallize vague ideas into validated specifications. Instead of multi-perspective deliberation, it:
-
-1. **The Questioner** asks clarifying questions via AskUserQuestion
-2. **The Examiner** validates problem framing (essence, root cause, assumptions)
-3. **The Codifier** generates a seed.yaml specification
-
-Output: `Work/panels/<id>/seed.yaml`
+Just runs Socratic Q&A workflow for requirements crystallization. No decomposition, no deliberation. Output: `Work/panels/<id>/seed.yaml`
 
 ### Panel Management
 
@@ -52,18 +65,22 @@ Output: `Work/panels/<id>/seed.yaml`
 /panel --abandon <id>            # Mark panel as abandoned
 ```
 
-**Flags**:
+### Flags Reference
 
-- `--interview`: Run interview mode (Socratic Q&A → seed.yaml) instead of deliberation
-- `--format=<type>`: Output format (`markdown` default, `github`, `json`)
-- `--context=<file>`: Pre-load reference material into panel context
-- `--list`: List panels in index (combine with `--status` to filter)
-- `--status=<type>`: Filter for `--list` (`active`, `completed`, `abandoned`)
-- `--show <id>`: Display summary of specific panel
-- `--resume <id>`: Continue panel from last completed phase
-- `--abandon <id>`: Mark panel as abandoned (cannot resume)
+| Flag | Purpose |
+|------|---------|
+| `--quick` | Skip decomposition, go straight to deliberation |
+| `--think` | Decomposition only (no interview, no deliberation) |
+| `--interview` | Requirements Q&A only (no decomposition, no deliberation) |
+| `--format=<type>` | Output format (`markdown` default, `github`, `json`) |
+| `--context=<file>` | Pre-load reference material into panel context |
+| `--list` | List panels in index (combine with `--status` to filter) |
+| `--status=<type>` | Filter for `--list` (`active`, `completed`, `abandoned`) |
+| `--show <id>` | Display summary of specific panel |
+| `--resume <id>` | Continue panel from last completed phase |
+| `--abandon <id>` | Mark panel as abandoned (cannot resume) |
 
-**That's it.** The panel handles everything automatically:
+**The panel handles everything automatically:**
 
 - The Analyst analyzes topic and recruits 2-5 specialist agents from available library
 - Assigns specialists with evocative session-specific names
@@ -74,9 +91,17 @@ Output: `Work/panels/<id>/seed.yaml`
 
 ## Core Roles (Always Present)
 
+**The Thinker** (Sequential Problem Decomposition)
+
+- Breaks complex problems into numbered, dependency-aware steps
+- Assesses clarity of each step (HIGH/MEDIUM/LOW)
+- Supports revision and branching for alternative approaches
+- Maintains audit trail in `Work/thinking/<id>/`
+- **Question**: "What are the PIECES?"
+
 **The Moderator** (Moderator/Facilitator)
 
-- Manages 11-phase protocol execution
+- Manages full pipeline and phase protocol execution
 - Ensures procedural integrity and timebox enforcement
 - Synthesizes final decision report
 - **Question**: "What is the PROCESS?"
@@ -128,7 +153,58 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 - **Session name** describes who it becomes for this panel (e.g., "The Editor")
 - Names should be evocative, contextual, and domain-appropriate
 
-## 11-Phase Protocol
+## Full Pipeline Protocol (Default)
+
+The default `/panel` command runs 3 stages:
+
+1. **Decomposition** (Phase -2): The Thinker breaks problem into steps
+2. **Clarification** (Phase -1.5): Interview for LOW/MEDIUM clarity steps
+3. **Deliberation** (Phases -1 through 8): Full panel analysis
+
+### Stage 1: Decomposition (Phase -2)
+
+**The Thinker** (Sequential Problem Decomposition)
+
+- Generate thinking session ID: `YYYY-MM-DD--<slug>`
+- Create `Work/thinking/<id>/` directory
+- Break problem into numbered steps with:
+  - Dependencies between steps
+  - Clarity ratings: HIGH (actionable) / MEDIUM (needs detail) / LOW (needs investigation)
+  - Revision support (supersede, don't delete)
+  - Branching for alternative approaches
+- Output: `Work/thinking/<id>/summary.md`, `thoughts.jsonl`, `state.json`
+- **Write phase file**: `phase--2-decomposition.md`
+
+**Decomposition Decision Point**:
+
+- If ALL steps are HIGH clarity → proceed to Phase -1 (skip interview)
+- If ANY steps are LOW or MEDIUM clarity → proceed to Phase -1.5 (interview)
+
+### Stage 2: Clarification (Phase -1.5)
+
+**Conditional**: Only runs if decomposition found unclear steps.
+
+For each LOW/MEDIUM clarity step:
+
+1. **The Questioner** asks clarifying questions via AskUserQuestion
+2. **The Examiner** validates the step's problem framing
+3. Update decomposition with clarified information
+
+- **Write phase file**: `phase--1.5-clarification.md`
+- Update `Work/thinking/<id>/summary.md` with clarifications
+
+**Clarification Exit Criteria**:
+
+- All steps now HIGH clarity, OR
+- User indicates "done" / sufficient clarity achieved
+
+### Stage 3: Deliberation (Phases -1 through 8)
+
+Standard panel protocol with decomposition context injected.
+
+---
+
+## Deliberation Protocol (11 Phases)
 
 **Phase -1: Topic Analysis & Workforce Recruitment** (The Analyst)
 
@@ -486,6 +562,7 @@ If no agent scores >4 for required capability → Analyst deploys `agent-fabrica
 
 Core roles have documented profiles in `plugins/panel/docs/characters/`:
 
+- **The Thinker.md** - Sequential Problem Decomposition
 - **The Moderator.md** - Moderator/Facilitator
 - **The Analyst.md** - Workforce Intelligence
 - **The Challenger.md** - Opposition & Quality Gate
@@ -499,20 +576,29 @@ Panels are saved to `Work/panels/` with full state for resumption and audit.
 ### Directory Structure
 
 ```
-Work/panels/
-├── index.json                           # Panel discovery index
-└── YYYY-MM-DD--<slug>/                  # Per-panel directory
-    ├── state.json                       # Resumable state
-    ├── phase-00-recruitment.md          # Phase -1 output
-    ├── phase-01-framing.md              # Phase 1 output
-    ├── phase-02-infrastructure.md       # Phase 2 output
-    ├── phase-03-positions.md            # Phase 3 output
-    ├── phase-04-cross-examination.md    # Phase 4 output
-    ├── phase-05-research.md             # Phase 5 output (if activated)
-    ├── phase-06-reflection.md           # Phase 6 output
-    ├── phase-07-synthesis.md            # Phase 7 output
-    ├── phase-08-decision.md             # Phase 8 output (final report)
-    └── transcript.md                    # Full panel transcript
+Work/
+├── thinking/                            # Decomposition sessions
+│   └── YYYY-MM-DD--<slug>/
+│       ├── state.json                   # Thinking state
+│       ├── thoughts.jsonl               # Append-only audit log
+│       └── summary.md                   # Human-readable decomposition
+│
+└── panels/
+    ├── index.json                       # Panel discovery index
+    └── YYYY-MM-DD--<slug>/              # Per-panel directory
+        ├── state.json                   # Resumable state
+        ├── phase--2-decomposition.md    # Phase -2 output (full pipeline)
+        ├── phase--1.5-clarification.md  # Phase -1.5 output (if unclear steps)
+        ├── phase-00-recruitment.md      # Phase -1 output
+        ├── phase-01-framing.md          # Phase 1 output
+        ├── phase-02-infrastructure.md   # Phase 2 output
+        ├── phase-03-positions.md        # Phase 3 output
+        ├── phase-04-cross-examination.md # Phase 4 output
+        ├── phase-05-research.md         # Phase 5 output (if activated)
+        ├── phase-06-reflection.md       # Phase 6 output
+        ├── phase-07-synthesis.md        # Phase 7 output
+        ├── phase-08-decision.md         # Phase 8 output (final report)
+        └── transcript.md                # Full panel transcript
 ```
 
 ### index.json Schema
@@ -541,14 +627,21 @@ Work/panels/
   "id": "2026-01-29--graphql-vs-rest",
   "topic": "Should we implement GraphQL or REST for the new API",
   "status": "active|completed|abandoned",
+  "mode": "full|quick|think|interview",
   "created": "2026-01-29T10:30:00+10:00",
   "updated": "2026-01-29T11:45:00+10:00",
   "current_phase": 4,
-  "completed_phases": [0, 1, 2, 3],
+  "completed_phases": [-2, -1.5, 0, 1, 2, 3],
   "decision_rule": "consensus",
   "context_files": ["docs/RFC.md"],
+  "decomposition": {
+    "thinking_id": "2026-01-29--graphql-vs-rest",
+    "total_steps": 6,
+    "unclear_steps": [2, 5],
+    "clarified": true
+  },
   "panel": {
-    "core": ["The Moderator", "Analyst", "Challenger"],
+    "core": ["The Moderator", "Analyst", "Challenger", "The Thinker"],
     "specialists": [
       {"agent": "architect", "session_name": "The Systems Designer", "score": 9},
       {"agent": "research-assistant", "session_name": "The Evidence Gatherer", "score": 8}
@@ -646,14 +739,15 @@ When `--abandon <id>` is invoked:
 
 ## Notes
 
-- **Persistence**: All panels saved to `Work/panels/` for audit and resumption
+- **Full pipeline default**: Decompose → Clarify → Deliberate is the standard flow
+- **Persistence**: Thinking sessions in `Work/thinking/`, panels in `Work/panels/`
 - **Phase files**: Each phase writes to separate file for granular recovery
 - **Dynamic recruitment**: No static panelists—Analyst assigns 2-5 specialists per topic
 - **Session-specific names**: Agents given evocative contextual names for panel depth
 - **Evidence standards**: Use markers where appropriate: [Inference], [Speculation], [Unverified]
-- **Optional phases**: Skip Phase 0 if topic well-specified, skip Phase 6 for simple decisions
-- **Tool segregation**: Memory/Tools via filesystem; Vault via Obsidian tools; BookStack via MCP
-- **Core role consistency**: The Moderator, Analyst, Challenger always present; specialists vary by topic
+- **Conditional phases**: Phase -1.5 only runs if unclear steps exist; Phase 0 skipped if topic well-specified
+- **Mode shortcuts**: `--quick` for simple topics, `--think` for decomposition only, `--interview` for Q&A only
+- **Core roles**: The Moderator, Analyst, Challenger, The Thinker always present; specialists vary by topic
 
 ## Pattern Implementation
 
