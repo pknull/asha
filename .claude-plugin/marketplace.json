@@ -6,13 +6,13 @@
   },
   "metadata": {
     "description": "Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination",
-    "version": "1.17.0",
+    "version": "1.18.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
     {
       "name": "panel-system",
-      "description": "Dynamic multi-perspective analysis with persistence (v5.0.0). Supports --resume for interrupted panels, --list/--show for discovery, --format (github/json/markdown), --context. Per-phase state files in Work/panels/.",
+      "description": "Dynamic multi-perspective analysis with persistence (v5.2.0). Full pipeline default: decompose → clarify → deliberate. The Thinker for sequential decomposition. Supports --quick, --think, --interview, --resume, --list/--show, --format, --context.",
       "source": "./plugins/panel",
       "strict": false
     },
