@@ -21,7 +21,7 @@
   "agents": [
     "./agents/architect.md",
     "./agents/build-error-resolver.md",
-    "./agents/code-reviewer.md",
+    "./agents/reviewer.md",
     "./agents/codebase-historian.md",
     "./agents/database-reviewer.md",
     "./agents/debugger.md",
