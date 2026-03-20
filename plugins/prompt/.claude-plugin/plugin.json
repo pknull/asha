@@ -1,0 +1,20 @@
+{
+  "name": "prompt",
+  "version": "1.0.0",
+  "description": "Prompt engineering for external AI tools: anti-patterns, templates, and tool-specific guidance",
+  "author": {
+    "name": "pknull",
+    "email": "noreply@example.com"
+  },
+  "license": "MIT",
+  "keywords": [
+    "prompt",
+    "engineering",
+    "templates",
+    "llm",
+    "ai-tools"
+  ],
+  "agents": [
+    "./agents/prompt-engineer.md"
+  ]
+}
