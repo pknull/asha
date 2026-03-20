@@ -1,5 +1,5 @@
 ---
-name: code-reviewer
+name: reviewer
 description: Expert code reviewer specializing in code quality, security vulnerabilities, and best practices across multiple languages. MUST BE USED for all code changes.
 tools: Bash, Edit, Glob, Grep, MultiEdit, Read, WebFetch, WebSearch, Write
 memory: user

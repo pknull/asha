@@ -15,6 +15,6 @@
     "prompts"
   ],
   "agents": [
-    "./agents/comfyui-prompt-engineer.md"
+    "./agents/engineer.md"
   ]
 }

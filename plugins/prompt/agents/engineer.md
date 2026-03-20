@@ -1,5 +1,5 @@
 ---
-name: prompt-engineer
+name: engineer
 description: Generates optimized prompts for external AI tools. Applies anti-patterns checklist, selects appropriate templates, and formats for target tool.
 tools: Read, Glob, Grep
 model: sonnet

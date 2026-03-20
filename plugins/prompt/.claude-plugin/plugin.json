@@ -15,6 +15,6 @@
     "ai-tools"
   ],
   "agents": [
-    "./agents/prompt-engineer.md"
+    "./agents/engineer.md"
   ]
 }
