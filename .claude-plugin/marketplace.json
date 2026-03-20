@@ -6,7 +6,7 @@
   },
   "metadata": {
     "description": "Claude Code plugins for multi-perspective analysis, code review, output styling, and session coordination",
-    "version": "1.18.0",
+    "version": "1.19.0",
     "homepage": "https://github.com/pknull/asha-marketplace"
   },
   "plugins": [
@@ -18,7 +18,7 @@
     },
     {
       "name": "code",
-      "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents (v1.4.0). 15 agents including typescript-pro, python-pro, javascript-pro, tdd, debugger, code-reviewer, build-error-resolver, refactor-cleaner. Includes /code:review command, quality gates, and language-specific patterns.",
+      "description": "Development workflows: orchestration patterns, code review, TDD, and specialized agents (v1.12.0). 15 agents including typescript-pro, python-pro, javascript-pro, tdd, debugger, reviewer, build-error-resolver, refactor-cleaner. Includes /code:review command, quality gates, and language-specific patterns.",
       "source": "./plugins/code",
       "strict": false
     },
@@ -42,7 +42,7 @@
     },
     {
       "name": "image",
-      "description": "Image generation workflows: Stable Diffusion prompt engineering, ComfyUI workflow design, parameter optimization, and LoRA/model selection for AI art generation.",
+      "description": "Image generation workflows (v1.2.0): Stable Diffusion prompt engineering, ComfyUI workflow design, parameter optimization, and LoRA/model selection for AI art generation. Includes image:engineer agent and tool-specific templates (Midjourney, DALL-E, Sora, Runway).",
       "source": "./plugins/image",
       "strict": false
     },
