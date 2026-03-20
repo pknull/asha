@@ -39,16 +39,22 @@ Ask if ambiguous. Common targets:
 
 ### 2. Load References
 
+**Plugin paths** (use Glob to find):
+
+- Prompt plugin: `~/.claude/plugins/cache/asha-marketplace/prompt/*/`
+- Image plugin: `~/.claude/plugins/cache/asha-marketplace/image/*/`
+- Code plugin: `~/.claude/plugins/cache/asha-marketplace/code/*/`
+
 Based on target tool, read relevant templates:
 
 ```
-Image gen     → image/templates/{tool}.md
-Code/IDE      → code/templates/{tool}.md
-LLM           → prompt/templates/llm/{model}.md
-Structure     → prompt/templates/structure/{type}.md
+Image gen     → {image-plugin}/templates/{tool}.md
+Code/IDE      → {code-plugin}/templates/{tool}.md
+LLM           → {prompt-plugin}/templates/llm/{model}.md
+Structure     → {prompt-plugin}/templates/structure/{type}.md
 ```
 
-Always load: `prompt/anti-patterns.md`
+Always load: `{prompt-plugin}/anti-patterns.md`
 
 ### 3. Extract Intent
 

@@ -66,7 +66,7 @@
     },
     {
       "name": "prompt",
-      "description": "Prompt engineering for external AI tools (v1.0.1). 35 anti-patterns checklist, LLM templates (Claude, GPT, o1, Gemini, Ollama), structure templates (RTF, CO-STAR, RISEN, Chain-of-Thought). Spawns prompt:engineer agent that loads tool-specific templates from domain plugins.",
+      "description": "Prompt engineering for external AI tools (v1.0.2). 35 anti-patterns checklist, LLM templates (Claude, GPT, o1, Gemini, Ollama), structure templates (RTF, CO-STAR, RISEN, Chain-of-Thought). Spawns prompt:engineer agent that loads tool-specific templates from domain plugins.",
       "source": "./plugins/prompt",
       "strict": false
     }
