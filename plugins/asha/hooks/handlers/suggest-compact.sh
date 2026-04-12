@@ -31,8 +31,8 @@ if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
     exit 0
 fi
 
-# Read stdin (required for hooks)
-INPUT=$(cat)
+# Consume stdin (required for hooks, discard content)
+cat > /dev/null
 
 # Paths
 EVENTS_FILE="$PROJECT_DIR/Memory/events/events.jsonl"
@@ -110,5 +110,5 @@ This is informational only - continue if the current task is progressing well.
 EOF
 fi
 
-# Pass through original input
-echo "$INPUT"
+# Return empty JSON (hooks must return valid JSON)
+echo "{}"

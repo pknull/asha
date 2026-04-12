@@ -28,10 +28,9 @@ fi
 # Read stdin JSON from Claude Code (required for hooks)
 INPUT=$(cat)
 
-# Clean up RP marker if it exists (in case user forgot to explicitly end RP session)
-if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
-    rm "$PROJECT_DIR/Work/markers/rp-active"
-fi
+# Clean up session markers (auto-removed at session-end)
+rm -f "$PROJECT_DIR/Work/markers/rp-active"
+rm -f "$PROJECT_DIR/Work/markers/silence"
 
 # Extract session end reason
 REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null || true)

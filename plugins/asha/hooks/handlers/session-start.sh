@@ -32,7 +32,13 @@ fi
 # Generate new session ID
 NEW_SESSION_ID="session_$(date -u '+%Y%m%d_%H%M%S')_$$"
 SESSION_MARKER="$PROJECT_DIR/Work/markers/session-id"
-mkdir -p "$(dirname "$SESSION_MARKER")"
+MARKER_DIR="$PROJECT_DIR/Work/markers"
+mkdir -p "$MARKER_DIR"
+
+# Clean up stale markers from previous sessions
+rm -f "$MARKER_DIR/tool-count"
+rm -f "$MARKER_DIR/compact-suggested"
+rm -f "$MARKER_DIR/last-correction"
 
 # Check for orphaned session
 PATTERN_ANALYZER="$PLUGIN_ROOT/tools/pattern_analyzer.py"
@@ -79,9 +85,37 @@ LEGACY_IDENTITY_FILE="$ASHA_DIR/communicationStyle.md"
 KEEPER_FILE="$ASHA_DIR/keeper.md"
 LEARNINGS_FILE="$ASHA_DIR/learnings.md"
 
+# ==============================================================================
+# TRUNCATION - Cap identity file injection to prevent context window bloat
+# ==============================================================================
+
+# Truncate content to max characters, appending notice if truncated
+# Args: $1=content, $2=max_chars, $3=file_label
+truncate_content() {
+    local content="$1"
+    local max_chars="$2"
+    local label="$3"
+    local length=${#content}
+
+    if [[ $length -le $max_chars ]]; then
+        echo "$content"
+    else
+        echo "${content:0:$max_chars}"
+        echo ""
+        echo "[Truncated: ${label} exceeded ${max_chars} chars (${length} total). Read full file if needed.]"
+    fi
+}
+
+# Character limits per file (total injection budget ~12K chars)
+CORE_MAX=4000       # Stable, rarely changes
+SOUL_MAX=2000       # Stable identity
+VOICE_MAX=2000      # Tone + calibration log (growth vector)
+KEEPER_MAX=2000     # Preferences + calibration log (growth vector)
+LEARNINGS_MAX=3000  # Highest growth risk — sorted by confidence desc, top entries most valuable
+
 if [[ -f "$CORE_MD" ]]; then
-    # Read CORE.md content
-    CORE_CONTENT=$(cat "$CORE_MD")
+    # Read and cap CORE.md content
+    CORE_CONTENT=$(truncate_content "$(cat "$CORE_MD")" $CORE_MAX "CORE.md")
 
     # Read identity layer files if they exist
     # Prefer soul.md + voice.md; fall back to communicationStyle.md
@@ -92,24 +126,24 @@ if [[ -f "$CORE_MD" ]]; then
     LEARNINGS_CONTENT=""
 
     if [[ -f "$SOUL_FILE" ]]; then
-        SOUL_CONTENT=$(cat "$SOUL_FILE")
+        SOUL_CONTENT=$(truncate_content "$(cat "$SOUL_FILE")" $SOUL_MAX "soul.md")
     fi
 
     if [[ -f "$VOICE_FILE" ]]; then
-        VOICE_CONTENT=$(cat "$VOICE_FILE")
+        VOICE_CONTENT=$(truncate_content "$(cat "$VOICE_FILE")" $VOICE_MAX "voice.md")
     fi
 
     # Legacy fallback only if soul.md doesn't exist
     if [[ -z "$SOUL_CONTENT" && -f "$LEGACY_IDENTITY_FILE" ]]; then
-        LEGACY_IDENTITY_CONTENT=$(cat "$LEGACY_IDENTITY_FILE")
+        LEGACY_IDENTITY_CONTENT=$(truncate_content "$(cat "$LEGACY_IDENTITY_FILE")" $VOICE_MAX "communicationStyle.md")
     fi
 
     if [[ -f "$KEEPER_FILE" ]]; then
-        KEEPER_CONTENT=$(cat "$KEEPER_FILE")
+        KEEPER_CONTENT=$(truncate_content "$(cat "$KEEPER_FILE")" $KEEPER_MAX "keeper.md")
     fi
 
     if [[ -f "$LEARNINGS_FILE" ]]; then
-        LEARNINGS_CONTENT=$(cat "$LEARNINGS_FILE")
+        LEARNINGS_CONTENT=$(truncate_content "$(cat "$LEARNINGS_FILE")" $LEARNINGS_MAX "learnings.md")
     fi
 
     # Output as system-reminder

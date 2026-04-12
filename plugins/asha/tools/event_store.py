@@ -363,7 +363,12 @@ def synthesize_active_context(
     session_id: Optional[str] = None,
     days: int = 7
 ) -> str:
-    """Synthesize activeContext.md content from recent events"""
+    """Synthesize activeContext.md content from recent events
+
+    DEPRECATED: Use pattern_analyzer.py synthesize instead for consistent
+    Four Questions format. This function remains for backward compatibility
+    but callers should migrate to pattern_analyzer.
+    """
 
     # Query recent events
     if session_id:

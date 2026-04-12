@@ -556,6 +556,23 @@ def add_learnings_via_manager(candidates: List[Dict]):
             pass
 
 
+MAX_CALIBRATION_ENTRIES = 20  # Cap calibration logs to prevent unbounded growth
+
+
+def trim_calibration_section(section_content: str, max_entries: int = MAX_CALIBRATION_ENTRIES) -> str:
+    """Trim a calibration log section to the most recent N entries."""
+    lines = section_content.strip().split('\n')
+    # Keep only lines that look like calibration entries (start with "- ")
+    entries = [l for l in lines if l.strip().startswith('- ')]
+    non_entries = [l for l in lines if not l.strip().startswith('- ') and l.strip()]
+
+    # Keep the most recent entries (last N)
+    trimmed_entries = entries[-max_entries:]
+
+    result_lines = non_entries + trimmed_entries
+    return '\n'.join(result_lines)
+
+
 def append_to_voice(signals: List[Dict]):
     """Append voice calibration signals to ~/.asha/voice.md"""
     if not signals:
@@ -580,7 +597,10 @@ def append_to_voice(signals: List[Dict]):
 
     parts = existing.split(section_header)
     if len(parts) == 2:
-        updated = parts[0] + section_header + parts[1].rstrip() + "\n" + new_entries
+        combined_section = parts[1].rstrip() + "\n" + new_entries
+        # Trim to max entries to prevent unbounded growth
+        trimmed_section = trim_calibration_section(combined_section)
+        updated = parts[0] + section_header + "\n\n" + trimmed_section + "\n"
     else:
         updated = existing + new_entries
 
@@ -613,10 +633,31 @@ def append_to_keeper(signals: List[Dict]):
         text = signal["text"][:60].replace('"', "'")
         new_entries += f"{timestamp} | {project} | \"{text}\"\n"
 
-    # Insert before closing ```
+    # Insert before closing ``` and trim to max entries
     if "```" in existing:
         parts = existing.rsplit("```", 1)
-        updated = parts[0].rstrip() + "\n" + new_entries + "```" + parts[1]
+        # Extract existing entries from code block
+        block_content = parts[0]
+        # Find the opening ``` for the calibration block
+        block_parts = block_content.rsplit("```", 1)
+        if len(block_parts) == 2:
+            before_block = block_parts[0]
+            block_entries = block_parts[1].strip().split('\n')
+            # Filter to actual log entries (contain " | ")
+            log_entries = [l for l in block_entries if ' | ' in l]
+            non_log = [l for l in block_entries if ' | ' not in l and l.strip()]
+            # Add new entries
+            new_entry_lines = [l for l in new_entries.strip().split('\n') if l.strip()]
+            all_entries = log_entries + new_entry_lines
+            # Trim to most recent N entries
+            trimmed = all_entries[-MAX_CALIBRATION_ENTRIES:]
+            # Reconstruct
+            block_body = '\n'.join(non_log + trimmed)
+            updated = before_block + "```\n" + block_body + "\n```" + parts[1]
+        else:
+            # Simple case: just append and trim
+            updated = parts[0].rstrip() + "\n" + new_entries + "```" + parts[1]
+
         KEEPER_FILE.write_text(updated)
 
 
@@ -651,8 +692,18 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     # Load existing patterns for confidence tracking
     existing_patterns = load_existing_patterns()
 
-    # Generate activeContext.md
+    # Generate activeContext.md (with protection against overwriting manual edits)
     active_context = generate_active_context(events, existing_patterns)
+
+    if ACTIVE_CONTEXT.exists():
+        # Check if activeContext was manually modified since last synthesis
+        existing_content = ACTIVE_CONTEXT.read_text()
+        if 'synthesizedFrom: "events"' not in existing_content:
+            # File was manually edited (no synthesis marker) — back it up
+            backup_path = ACTIVE_CONTEXT.parent / "activeContext.backup.md"
+            backup_path.write_text(existing_content)
+            results["activeContext_backup"] = str(backup_path)
+
     ACTIVE_CONTEXT.write_text(active_context)
 
     # Extract learnings for activeContext display
