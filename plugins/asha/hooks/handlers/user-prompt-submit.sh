@@ -111,22 +111,21 @@ if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
         # Check if we got matches (server available and found corrections)
         if [[ -n "$LT_RESPONSE" && "$LT_RESPONSE" != "null" ]]; then
             # Extract matches and apply corrections
-            # Python calculates difference percentage
-            CORRECTION_RESULT=$(python3 -c "
+            # Pass data via environment variables to avoid shell injection
+            CORRECTION_RESULT=$(LT_RESPONSE_DATA="$LT_RESPONSE" LT_ORIGINAL_TEXT="$PROMPT" python3 -c "
 import json
+import os
 import sys
 
 try:
-    response = json.loads('''$LT_RESPONSE''')
-    original_text = '''$PROMPT'''
+    response = json.loads(os.environ['LT_RESPONSE_DATA'])
+    original_text = os.environ['LT_ORIGINAL_TEXT']
 
     matches = response.get('matches', [])
     if not matches:
-        # No corrections needed
         print('UNCHANGED')
         sys.exit(0)
 
-    # Sort matches by offset in reverse order (apply from end to start)
     matches.sort(key=lambda m: m['offset'], reverse=True)
 
     corrected_text = original_text
@@ -136,16 +135,13 @@ try:
         replacements = match.get('replacements', [])
 
         if replacements:
-            # Use first suggestion
             replacement = replacements[0]['value']
             corrected_text = corrected_text[:offset] + replacement + corrected_text[offset+length:]
 
-    # Calculate difference percentage using Levenshtein distance
     if corrected_text == original_text:
         print('UNCHANGED')
         sys.exit(0)
 
-    # Levenshtein distance (edit distance) - proper handling of insertions/deletions
     def levenshtein(s1, s2):
         if len(s1) < len(s2):
             return levenshtein(s2, s1)
@@ -168,11 +164,9 @@ try:
     original_chars = len(original_text)
     diff_percent = (edit_distance / original_chars * 100) if original_chars > 0 else 0
 
-    # Output format: DIFF_PERCENT|CORRECTED_TEXT
     print(f'{diff_percent:.1f}|{corrected_text}')
 
 except Exception as e:
-    # On error, signal unchanged
     print('UNCHANGED')
 " 2>/dev/null || true)
 

@@ -60,15 +60,12 @@ get_plugin_root() {
 
 PLUGIN_ROOT=$(get_plugin_root)
 MEMORY_DIR="$PROJECT_DIR/Memory"
-EVENTS_DIR="$MEMORY_DIR/events"
-EVENTS_FILE="$EVENTS_DIR/events.jsonl"
 ACTIVE_CONTEXT="$MEMORY_DIR/activeContext.md"
 
 # Legacy markdown paths (for backward compatibility during transition)
 WATCHING_FILE="$MEMORY_DIR/sessions/current-session.md"
 ARCHIVE_DIR="$MEMORY_DIR/sessions/archive"
 
-TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M UTC')
 TIMESTAMP_FILE=$(date -u '+%Y-%m-%d_%H-%M')
 
 # ==============================================================================
@@ -136,16 +133,23 @@ for subtype, evts in sorted(by_subtype.items()):
     fi
 }
 
-# Synthesize activeContext from events
+# Synthesize activeContext from events (via pattern_analyzer for Four Questions format)
 synthesize_from_events() {
     local days="${1:-7}"
-    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
+    PATTERN_ANALYZER="$PLUGIN_ROOT/tools/pattern_analyzer.py"
     PYTHON_CMD=$(get_python_cmd)
 
-    if [[ -f "$EVENT_STORE" && -n "$PYTHON_CMD" ]]; then
-        "$PYTHON_CMD" "$EVENT_STORE" synthesize --days "$days" 2>/dev/null
+    if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
+        # Use pattern_analyzer for consistent Four Questions output format
+        RESULT=$("$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days "$days" 2>/dev/null || echo '{"status":"error"}')
+        # Read the generated activeContext.md
+        if [[ -f "$ACTIVE_CONTEXT" ]]; then
+            cat "$ACTIVE_CONTEXT"
+        else
+            error "Pattern analyzer did not generate activeContext.md"
+        fi
     else
-        error "Event store not available at $EVENT_STORE"
+        error "Pattern analyzer not available at $PATTERN_ANALYZER"
     fi
 }
 
@@ -230,7 +234,7 @@ automatic_mode() {
 
     # Git commit + push if configured
     if [[ -f "$PROJECT_DIR/.asha/config.json" ]]; then
-        AUTO_COMMIT=$(cat "$PROJECT_DIR/.asha/config.json" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('autoCommit', False))" 2>/dev/null || echo "False")
+        AUTO_COMMIT=$("$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('autoCommit', False))" < "$PROJECT_DIR/.asha/config.json" 2>/dev/null || echo "False")
         if [[ "$AUTO_COMMIT" == "True" ]]; then
             log "Auto-committing Memory changes..."
             (cd "$PROJECT_DIR" && git add Memory/ && git commit -m "Session auto-save: $(date -u '+%Y-%m-%d %H:%M UTC')" && git push) 2>/dev/null || true
