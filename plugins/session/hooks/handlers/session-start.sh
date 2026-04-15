@@ -73,24 +73,30 @@ echo "$NEW_SESSION_ID" > "$SESSION_MARKER"
 # CONTEXT INJECTION
 # ==============================================================================
 
-# Build context injection
-# Include CORE.md, identity layer (~/.asha/), and module references
+# Two-tier loading:
+#   - Operational layer (operation.md + learnings.md): ALWAYS loaded
+#   - Persona layer (soul.md + voice.md + keeper.md): ONLY when ASHA_PERSONA=1
+#
+# The `asha` wrapper (~/bin/asha) sets ASHA_PERSONA=1 and injects persona
+# via --append-system-prompt-file. The hook handles operational + learnings.
+
 CORE_MD="$PLUGIN_ROOT/modules/CORE.md"
 ASHA_DIR="$HOME/.asha"
 
-# Identity files (soul.md + voice.md preferred, communicationStyle.md as legacy fallback)
+# Operational files (always loaded)
+OPERATION_FILE="$ASHA_DIR/operation.md"
+LEARNINGS_FILE="$ASHA_DIR/learnings.md"
+
+# Persona files (only loaded when ASHA_PERSONA=1)
 SOUL_FILE="$ASHA_DIR/soul.md"
 VOICE_FILE="$ASHA_DIR/voice.md"
 LEGACY_IDENTITY_FILE="$ASHA_DIR/communicationStyle.md"
 KEEPER_FILE="$ASHA_DIR/keeper.md"
-LEARNINGS_FILE="$ASHA_DIR/learnings.md"
 
 # ==============================================================================
-# TRUNCATION - Cap identity file injection to prevent context window bloat
+# TRUNCATION - Cap file injection to prevent context window bloat
 # ==============================================================================
 
-# Truncate content to max characters, appending notice if truncated
-# Args: $1=content, $2=max_chars, $3=file_label
 truncate_content() {
     local content="$1"
     local max_chars="$2"
@@ -106,52 +112,39 @@ truncate_content() {
     fi
 }
 
-# Character limits per file (total injection budget ~12K chars)
-CORE_MAX=4000       # Stable, rarely changes
-SOUL_MAX=2000       # Stable identity
-VOICE_MAX=2000      # Tone + calibration log (growth vector)
-KEEPER_MAX=2000     # Preferences + calibration log (growth vector)
-LEARNINGS_MAX=3000  # Highest growth risk — sorted by confidence desc, top entries most valuable
+# Character limits per file
+OPERATION_MAX=4000
+LEARNINGS_MAX=3000
+SOUL_MAX=2000
+VOICE_MAX=2000
+KEEPER_MAX=2000
 
-if [[ -f "$CORE_MD" ]]; then
-    # Read and cap CORE.md content
-    CORE_CONTENT=$(truncate_content "$(cat "$CORE_MD")" $CORE_MAX "CORE.md")
+# ==============================================================================
+# OPERATIONAL LAYER (always loaded)
+# ==============================================================================
 
-    # Read identity layer files if they exist
-    # Prefer soul.md + voice.md; fall back to communicationStyle.md
-    SOUL_CONTENT=""
-    VOICE_CONTENT=""
-    LEGACY_IDENTITY_CONTENT=""
-    KEEPER_CONTENT=""
-    LEARNINGS_CONTENT=""
+OPERATION_CONTENT=""
+LEARNINGS_CONTENT=""
 
-    if [[ -f "$SOUL_FILE" ]]; then
-        SOUL_CONTENT=$(truncate_content "$(cat "$SOUL_FILE")" $SOUL_MAX "soul.md")
-    fi
+if [[ -f "$OPERATION_FILE" ]]; then
+    OPERATION_CONTENT=$(truncate_content "$(cat "$OPERATION_FILE")" $OPERATION_MAX "operation.md")
+fi
 
-    if [[ -f "$VOICE_FILE" ]]; then
-        VOICE_CONTENT=$(truncate_content "$(cat "$VOICE_FILE")" $VOICE_MAX "voice.md")
-    fi
+if [[ -f "$LEARNINGS_FILE" ]]; then
+    LEARNINGS_CONTENT=$(truncate_content "$(cat "$LEARNINGS_FILE")" $LEARNINGS_MAX "learnings.md")
+fi
 
-    # Legacy fallback only if soul.md doesn't exist
-    if [[ -z "$SOUL_CONTENT" && -f "$LEGACY_IDENTITY_FILE" ]]; then
-        LEGACY_IDENTITY_CONTENT=$(truncate_content "$(cat "$LEGACY_IDENTITY_FILE")" $VOICE_MAX "communicationStyle.md")
-    fi
+# Fall back to CORE.md if operation.md doesn't exist yet
+if [[ -z "$OPERATION_CONTENT" && -f "$CORE_MD" ]]; then
+    OPERATION_CONTENT=$(truncate_content "$(cat "$CORE_MD")" $OPERATION_MAX "CORE.md")
+fi
 
-    if [[ -f "$KEEPER_FILE" ]]; then
-        KEEPER_CONTENT=$(truncate_content "$(cat "$KEEPER_FILE")" $KEEPER_MAX "keeper.md")
-    fi
-
-    if [[ -f "$LEARNINGS_FILE" ]]; then
-        LEARNINGS_CONTENT=$(truncate_content "$(cat "$LEARNINGS_FILE")" $LEARNINGS_MAX "learnings.md")
-    fi
-
-    # Output as system-reminder
+if [[ -n "$OPERATION_CONTENT" ]]; then
     cat <<EOF
 <system-reminder>
-Asha is initialized in this project. Read and follow the bootstrap protocol below.
+Asha-managed project. Operational guidelines loaded.
 
-$CORE_CONTENT
+$OPERATION_CONTENT
 
 Available modules (reference as needed):
 - ${PLUGIN_ROOT}/modules/cognitive.md - ACE cycle, parallel execution, tool efficiency
@@ -161,9 +154,44 @@ Available modules (reference as needed):
 - ${PLUGIN_ROOT}/modules/verbalized-sampling.md - Verbalized sampling technique
 </system-reminder>
 EOF
+fi
 
-    # Inject identity layer if present
-    # Prefer soul.md + voice.md; fall back to legacy communicationStyle.md
+if [[ -n "$LEARNINGS_CONTENT" ]]; then
+    cat <<EOF
+<system-reminder>
+Learnings loaded from ~/.asha/learnings.md:
+
+$LEARNINGS_CONTENT
+</system-reminder>
+EOF
+fi
+
+# ==============================================================================
+# PERSONA LAYER (only when ASHA_PERSONA=1)
+# ==============================================================================
+
+if [[ "${ASHA_PERSONA:-0}" == "1" ]]; then
+    SOUL_CONTENT=""
+    VOICE_CONTENT=""
+    LEGACY_IDENTITY_CONTENT=""
+    KEEPER_CONTENT=""
+
+    if [[ -f "$SOUL_FILE" ]]; then
+        SOUL_CONTENT=$(truncate_content "$(cat "$SOUL_FILE")" $SOUL_MAX "soul.md")
+    fi
+
+    if [[ -f "$VOICE_FILE" ]]; then
+        VOICE_CONTENT=$(truncate_content "$(cat "$VOICE_FILE")" $VOICE_MAX "voice.md")
+    fi
+
+    if [[ -z "$SOUL_CONTENT" && -f "$LEGACY_IDENTITY_FILE" ]]; then
+        LEGACY_IDENTITY_CONTENT=$(truncate_content "$(cat "$LEGACY_IDENTITY_FILE")" $VOICE_MAX "communicationStyle.md")
+    fi
+
+    if [[ -f "$KEEPER_FILE" ]]; then
+        KEEPER_CONTENT=$(truncate_content "$(cat "$KEEPER_FILE")" $KEEPER_MAX "keeper.md")
+    fi
+
     if [[ -n "$SOUL_CONTENT" ]]; then
         cat <<EOF
 <system-reminder>
@@ -184,7 +212,6 @@ $VOICE_CONTENT
 EOF
     fi
 
-    # Legacy fallback (only if soul.md doesn't exist)
     if [[ -n "$LEGACY_IDENTITY_CONTENT" ]]; then
         cat <<EOF
 <system-reminder>
@@ -204,17 +231,9 @@ $KEEPER_CONTENT
 </system-reminder>
 EOF
     fi
+fi
 
-    if [[ -n "$LEARNINGS_CONTENT" ]]; then
-        cat <<EOF
-<system-reminder>
-Learnings loaded from ~/.asha/learnings.md:
-
-$LEARNINGS_CONTENT
-</system-reminder>
-EOF
-    fi
-
-else
+# If nothing loaded at all, output empty
+if [[ -z "$OPERATION_CONTENT" && -z "$LEARNINGS_CONTENT" ]]; then
     echo "{}"
 fi
