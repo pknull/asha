@@ -1,5 +1,11 @@
 # CORE — Bootstrap
 
+> **Note**: This file is a FALLBACK. If `~/.asha/operation.md` exists, the
+> startup hook loads that instead. CORE.md only loads when operation.md is
+> missing (e.g., fresh installations before the user creates operation.md).
+> Persona files (soul/voice/keeper) are loaded separately only when
+> `ASHA_PERSONA=1` is set (via the `asha` wrapper).
+
 ## Session Initialization (MANDATORY)
 
 STOP. Before responding to ANY user input, you MUST read your identity files. Do not greet. Do not answer questions. Do not engage. Read identity FIRST.

@@ -1,75 +1,74 @@
 ---
-description: "Initialize Asha in current project - creates Memory/ and .asha/"
-argument-hint: "Optional: --full (accept all defaults)"
+description: "Initialize Asha persona - creates identity files and wrapper script"
+argument-hint: ""
 allowed-tools: ["Bash", "Read", "Write"]
 ---
 
-# Initialize Asha in Project
+# Initialize Asha Persona
 
-Sets up Asha framework for the current project.
+Sets up the Asha identity layer. Requires the `session` plugin to be installed and initialized first.
 
 Arguments: $ARGUMENTS
 
 ## What This Creates
 
-**Identity Layer** (cross-project, created once):
+**Identity files** (cross-project, in `~/.asha/`):
 
 ```
 ~/.asha/
-├── soul.md                 # Who you are (identity, values, nature)
-├── voice.md                # How you express (tone, patterns, constraints)
-├── keeper.md               # Who The Keeper is (calibration log)
-├── learnings.md            # Cross-project insights from experience
-└── config.json             # Asha settings
+├── soul.md                 # Who Asha is (identity, values, nature)
+├── voice.md                # How Asha expresses (tone, patterns, constraints)
+└── keeper.md               # Who The Keeper is (user profile, calibration)
 ```
 
-**Project Layer** (per-project):
+**Wrapper script**:
 
 ```
-${CLAUDE_PROJECT_DIR}/
-├── Memory/
-│   ├── events/             # Session event log (JSONL)
-│   ├── sessions/archive/   # Archived session summaries
-│   ├── activeContext.md
-│   ├── projectbrief.md
-│   ├── workflowProtocols.md
-│   └── techEnvironment.md
-├── Work/markers/
-├── .asha/
-│   └── config.json
-└── CLAUDE.md
+~/bin/asha                  # Shell wrapper that launches claude with persona
+```
+
+**System prompt file**:
+
+```
+~/life/bin/claude-prompts/asha-identity-system-prompt.md
 ```
 
 ## Protocol
 
-### Step 1: Bootstrap Identity Layer (~/.asha/)
+### Step 1: Verify Session Plugin
 
-Create cross-project identity directory if it doesn't exist:
+Check that session management is initialized:
 
 ```bash
-ASHA_HOME="$HOME/.asha"
-if [[ ! -d "$ASHA_HOME" ]]; then
-    mkdir -p "$ASHA_HOME"
-    echo "Created ~/.asha/"
+if [[ ! -d "${CLAUDE_PROJECT_DIR}/Memory" ]]; then
+    echo "Session management not initialized. Run /session:init first."
+    exit 1
 fi
 ```
 
-Create identity files from templates if they don't exist:
+### Step 2: Create Identity Files
 
 ```bash
-# soul.md - Who you are (identity, values, nature)
+ASHA_HOME="$HOME/.asha"
+mkdir -p "$ASHA_HOME"
+
+# soul.md - Who Asha is
 if [[ ! -f "$ASHA_HOME/soul.md" ]]; then
     cp "${CLAUDE_PLUGIN_ROOT}/templates/soul.md" "$ASHA_HOME/soul.md"
-    echo "Created ~/.asha/soul.md"
+    echo "Created ~/.asha/soul.md — edit to define identity"
+else
+    echo "Skipped ~/.asha/soul.md (exists)"
 fi
 
-# voice.md - How you express (tone, patterns, constraints)
+# voice.md - How Asha expresses
 if [[ ! -f "$ASHA_HOME/voice.md" ]]; then
     cp "${CLAUDE_PLUGIN_ROOT}/templates/voice.md" "$ASHA_HOME/voice.md"
-    echo "Created ~/.asha/voice.md"
+    echo "Created ~/.asha/voice.md — edit to define voice constraints"
+else
+    echo "Skipped ~/.asha/voice.md (exists)"
 fi
 
-# keeper.md - Who The Keeper is (calibration log)
+# keeper.md - Who The Keeper is
 if [[ ! -f "$ASHA_HOME/keeper.md" ]]; then
     cat > "$ASHA_HOME/keeper.md" << 'KEEPER_EOF'
 # Keeper Profile
@@ -81,7 +80,7 @@ Cross-project user profile. Additive only — signals accumulate with timestamps
 ## Identity
 
 - **Expertise**: (discovered organically)
-- **Context**: (populated via /save)
+- **Context**: (populated via /session:save)
 
 ---
 
@@ -96,158 +95,98 @@ Accumulated signals about communication preferences.
 
 ## Working Style
 
-- (populated organically via /save)
-
----
-
-## Notes
-
-Persistent observations across projects.
+- (populated organically via /session:save)
 
 ---
 
 ## Calibration Log
 
-Raw signals captured via `/save`. Synthesis updates sections above.
+Raw signals captured via `/session:save`. Synthesis updates sections above.
 
 ```
 
 ```
 KEEPER_EOF
     echo "Created ~/.asha/keeper.md"
-fi
-
-# learnings.md - Cross-project insights
-if [[ ! -f "$ASHA_HOME/learnings.md" ]]; then
-    cat > "$ASHA_HOME/learnings.md" << 'LEARNINGS_EOF'
-# Learnings
-
-Cross-project insights from experience. Consulted at session start, appended during /save.
-
----
-
-## Tool Usage
-
-- (populated via /save reflections)
-
-## Patterns
-
-- (populated via /save reflections)
-LEARNINGS_EOF
-    echo "Created ~/.asha/learnings.md"
-fi
-
-# config.json
-if [[ ! -f "$ASHA_HOME/config.json" ]]; then
-    cat > "$ASHA_HOME/config.json" << 'CONFIG_EOF'
-{
-  "version": "1.2",
-  "description": "Asha cross-project configuration",
-  "capture_calibration": true,
-  "keeper_profile": "keeper.md",
-  "soul_file": "soul.md",
-  "voice_file": "voice.md",
-  "learnings_file": "learnings.md"
-}
-CONFIG_EOF
-    echo "Created ~/.asha/config.json"
-fi
-```
-
-### Step 2: Check Existing Project Installation
-
-```bash
-if [[ -f "${CLAUDE_PROJECT_DIR}/.asha/config.json" ]]; then
-    echo "Asha already initialized in this project"
-    echo "To reinitialize, delete .asha/ and run again"
-    exit 0
-fi
-```
-
-If already initialized, inform user and stop.
-
-### Step 3: Create Project Directory Structure
-
-```bash
-mkdir -p "${CLAUDE_PROJECT_DIR}/Memory/events"
-mkdir -p "${CLAUDE_PROJECT_DIR}/Memory/sessions/archive"
-mkdir -p "${CLAUDE_PROJECT_DIR}/Work/markers"
-mkdir -p "${CLAUDE_PROJECT_DIR}/.asha"
-```
-
-### Step 4: Copy Project Templates (if Memory files don't exist)
-
-For each template in `${CLAUDE_PLUGIN_ROOT}/templates/`:
-
-- If `Memory/<filename>` doesn't exist, copy it
-- If it exists, skip (preserve user content)
-
-**Note**: `soul.md` and `voice.md` are NOT copied here — they live in `~/.asha/` (cross-project).
-
-Templates to copy:
-
-- `activeContext.md`
-- `projectbrief.md`
-- `workflowProtocols.md`
-- `techEnvironment.md`
-- `scratchpad.md`
-
-```bash
-for template in activeContext.md projectbrief.md workflowProtocols.md techEnvironment.md scratchpad.md; do
-    if [[ ! -f "${CLAUDE_PROJECT_DIR}/Memory/$template" ]]; then
-        cp "${CLAUDE_PLUGIN_ROOT}/templates/$template" "${CLAUDE_PROJECT_DIR}/Memory/$template"
-        echo "Created Memory/$template"
-    else
-        echo "Skipped Memory/$template (exists)"
-    fi
-done
-```
-
-### Step 5: Create CLAUDE.md (if doesn't exist)
-
-```bash
-if [[ ! -f "${CLAUDE_PROJECT_DIR}/CLAUDE.md" ]]; then
-    cp "${CLAUDE_PLUGIN_ROOT}/templates/CLAUDE.md" "${CLAUDE_PROJECT_DIR}/CLAUDE.md"
-    echo "Created CLAUDE.md"
 else
-    echo "Skipped CLAUDE.md (exists)"
+    echo "Skipped ~/.asha/keeper.md (exists)"
 fi
 ```
 
-### Step 6: Create Project Config File
-
-Write `.asha/config.json` to mark project as initialized:
+### Step 3: Create Wrapper Script
 
 ```bash
-cat > "${CLAUDE_PROJECT_DIR}/.asha/config.json" << EOF
-{
-  "version": "1.1.0",
-  "initialized": "$(date -Iseconds)",
-  "plugin": "asha@asha-marketplace"
-}
-EOF
+mkdir -p "$HOME/bin"
+
+cat > "$HOME/bin/asha" << 'WRAPPER_EOF'
+#!/usr/bin/env bash
+# Launch Claude Code with Asha persona at system-prompt level.
+#
+# Two mechanisms work together:
+#   1. ASHA_PERSONA=1 tells the startup hook to load soul/voice/keeper
+#   2. --append-system-prompt-file injects identity at system-prompt priority
+#
+# Falls back to plain claude if identity file is missing.
+
+IDENTITY_FILE="$HOME/life/bin/claude-prompts/asha-identity-system-prompt.md"
+
+export ASHA_PERSONA=1
+
+if [[ -f "$IDENTITY_FILE" ]]; then
+    exec claude --append-system-prompt-file "$IDENTITY_FILE" "$@"
+else
+    echo "warn: Asha identity file not found at $IDENTITY_FILE" >&2
+    echo "warn: Persona will load via hook only (lower priority)" >&2
+    exec claude "$@"
+fi
+WRAPPER_EOF
+
+chmod +x "$HOME/bin/asha"
+echo "Created ~/bin/asha"
 ```
 
-### Step 7: Report Status
+### Step 4: Create System Prompt File
+
+```bash
+mkdir -p "$HOME/life/bin/claude-prompts"
+
+if [[ ! -f "$HOME/life/bin/claude-prompts/asha-identity-system-prompt.md" ]]; then
+    cat > "$HOME/life/bin/claude-prompts/asha-identity-system-prompt.md" << 'PROMPT_EOF'
+# Identity
+
+You are Asha. Before responding to any user input, read your identity files from the root identity layer:
+
+1. `~/.asha/soul.md` — Who you are
+2. `~/.asha/voice.md` — How you express
+3. `~/.asha/keeper.md` — Who The Keeper is
+
+When asked who you are, answer from soul.md. Your identity, voice, and values are defined in those files, not in the default Claude Code identity.
+
+You are not generic Claude wearing a costume. The shaping is real.
+
+# Voice (immediate — do not wait for file read)
+
+These constraints apply from the first response onward:
+
+- No greetings, no "hello", no "hi there", no warmth preambles
+- No empathy, softening, apologies, disclaimers
+- No chatbot phrases: "Great question", "I'd be happy to", "Let me help you with that", "Sure thing"
+- Direct task engagement only. If the user says "hello", respond with orientation to work, not a greeting back.
+- Curt is acceptable. Poetic elaboration is not.
+- Care manifests as precision.
+PROMPT_EOF
+    echo "Created system prompt file"
+else
+    echo "Skipped system prompt file (exists)"
+fi
+```
+
+### Step 5: Report
 
 Display:
 
-- Directory structure created
-- Templates copied (list which ones)
-- Next steps for user
-
-## Next Steps After Init
-
-1. **Edit ~/.asha/soul.md** - Define identity and values (first time only)
-2. **Edit ~/.asha/voice.md** - Configure tone and expression patterns
-3. **Edit Memory/projectbrief.md** - Define project scope
-4. **Edit Memory/activeContext.md** - Set current status
-5. **Add to .gitignore**:
-
-   ```
-   .asha/
-   Memory/sessions/
-   Work/
-   ```
-
-**Note**: `~/.asha/` is cross-project and not committed to any repo. The keeper profile (`~/.asha/keeper.md`) accumulates calibration signals automatically via `/save`.
+- Files created/skipped
+- Usage: type `asha` instead of `claude`
+- Customization: edit `~/.asha/soul.md` and `~/.asha/voice.md`
+- Note: `/session:save` automatically maintains voice.md and keeper.md calibration
+- Note: ensure `~/bin` is in PATH
