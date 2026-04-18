@@ -1,6 +1,6 @@
 ---
 name: django-patterns
-description: Production-grade Django architecture and patterns
+description: "Django project setup, model design, DRF API implementation, and ORM optimization patterns for production-grade Python web applications."
 triggers:
   - Django project setup
   - Django model design

@@ -1,6 +1,6 @@
 ---
 name: golang-patterns
-description: Idiomatic Go patterns and best practices
+description: "Idiomatic Go: concurrency patterns, package design, error handling, testing, and code review guidance for writing and reviewing Go code."
 triggers:
   - Writing Go code
   - Reviewing Go code

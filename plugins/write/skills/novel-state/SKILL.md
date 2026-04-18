@@ -1,6 +1,6 @@
 ---
 name: novel-state
-description: Novel writing state management structure. Documents the bible/state/timeline directory pattern for tracking manuscript state across sessions.
+description: "Set up novel manuscript state: bible/state/timeline directory structure, chapter snapshots, immutable style references, and timeline tracking across sessions."
 license: MIT
 ---
 

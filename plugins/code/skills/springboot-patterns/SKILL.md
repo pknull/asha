@@ -1,6 +1,6 @@
 ---
 name: springboot-patterns
-description: Production-grade Spring Boot architecture and patterns
+description: "Spring Boot project setup, JPA/repository design, REST API implementation, and Spring service layer patterns for production-grade Java applications."
 triggers:
   - Spring Boot project setup
   - REST API implementation

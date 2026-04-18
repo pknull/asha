@@ -1,6 +1,6 @@
 ---
 name: python-patterns
-description: Idiomatic Python patterns and best practices
+description: "Modern Python (3.10+): async implementation, type annotations, dataclasses, error handling, and code review patterns for writing and reviewing Python code."
 triggers:
   - Writing Python code
   - Reviewing Python code
