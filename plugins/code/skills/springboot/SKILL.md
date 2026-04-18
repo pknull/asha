@@ -1,5 +1,5 @@
 ---
-description: "Spring Boot development patterns, security, TDD, and verification workflows"
+description: "Active Spring Boot / Spring / Java / Kotlin API development: project structure, REST controllers, JPA repositories, security config, TDD, and verification workflows."
 triggers:
   - "spring boot"
   - "spring"

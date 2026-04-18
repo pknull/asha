@@ -1,6 +1,6 @@
 ---
 name: api-design
-description: REST API design patterns and conventions for production systems
+description: "Design REST API endpoints: resource naming, versioning, response formats, error schemas, pagination, and authentication conventions for production systems."
 triggers:
   - Creating API endpoints
   - Designing REST resources
