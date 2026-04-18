@@ -16,7 +16,8 @@ Trigger synthesis now. Use when you want to checkpoint mid-session or ensure sta
 2. **Extracts patterns** — updates learnings.md with discovered patterns
 3. **Captures calibration** — voice.md and keeper.md signals if detected
 4. **Archives events** — rotates old events to archive
-5. **Git commit + push** — commits Memory/ changes
+5. **Captures baseline sample** — if Asha baseline tooling is present, records a metrics sample for the session (best-effort, non-blocking)
+6. **Git commit + push** — commits Memory/ changes
 
 ## Usage
 
@@ -39,6 +40,33 @@ Then archive and rotate events:
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/tools/save-session.sh" --archive-only
 ```
+
+Then capture a baseline sample (best-effort, non-blocking — only runs if the Asha baseline tooling is present).
+
+**Step 5a — Determine archetype** from this session's activity. Apply this heuristic in order, pick the FIRST match:
+
+| Archetype | Signal |
+|---|---|
+| `panel-orchestration` | `/panel` invoked this session OR ≥2 distinct subagents spawned |
+| `daily-brief` | `/daily-brief` invoked this session |
+| `research-synthesis` | ≥3 `WebSearch`/`WebFetch` calls OR `research-assistant` agent spawned |
+| `email-triage` | Any `gws` CLI calls OR `mcp__gemini`/email-related MCP tools used |
+| `code-implementation` | ≥10 `Edit`/`Write`/`MultiEdit` on non-`Memory/` paths |
+| `unclassified` | None of the above (fallback) |
+
+**Step 5b — Invoke capture.sh** with the archetype:
+
+```bash
+CAPTURE=~/life/Work/panels/baseline--2026-04-17/capture.sh
+if [[ -x "$CAPTURE" ]]; then
+    # ARCHETYPE set per heuristic above; SAVE_DURATION left empty for v1
+    "$CAPTURE" "$ARCHETYPE" "" --notes "auto-captured from /session:save" || {
+        echo "warn: capture.sh failed (non-fatal); continuing with commit" >&2
+    }
+fi
+```
+
+**Failures are non-fatal.** If the script is missing (other projects, or baseline dir not set up), skip silently. If it exits non-zero, log a one-line warning and continue — baseline accumulation is best-effort, not a gate on save.
 
 Then commit Memory changes:
 
