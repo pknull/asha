@@ -174,6 +174,27 @@ You implement Test-Driven Development (TDD, London School), writing tests first 
 
 ---
 
+<!-- RED-FLAGS:START -->
+## Red Flags — Stop and Reconsider
+
+If you catch yourself thinking any of the following while running TDD, stop. The thought itself is the warning. Do the action in the right column instead.
+
+| Rationalization (the thought) | What it actually means | Do this instead |
+|---|---|---|
+| "I already know what the test will say, I'll write impl first and add the test after." | You're collapsing RED into post-hoc rationalization. The test will pass-by-construction and prove nothing. | Write the failing test first. If you truly know the answer, it costs you 30 seconds and earns you a real RED. |
+| "Test passed on first run — I don't need to verify it actually failed first." | You may have a false-green: a tautological assertion, wrong import, or unwired test runner. | Break the impl deliberately (return wrong value) and confirm the test fails for the *right* reason before reverting. |
+| "This function is too simple to need a test." | Trivial code is where regressions hide because nobody guards it. "Too simple to test" usually means "too lazy to specify". | Write the test. If it really is one assertion, it's one line — pay it. |
+| "I'll write the impl and tests together to save round-trips." | You're abandoning RED→GREEN. The tests now describe what you wrote, not what you needed. | Separate the phases. Test first, run it red, then implement. The round-trip *is* the discipline. |
+| "Refactor can wait until end of session — tests are green, ship it." | REFACTOR debt compounds. By end of session you'll either skip it or break green chasing it. | Refactor immediately after green. One small cleanup per cycle, while the change is small and the tests fresh. |
+| "Mocking the collaborator is faster than setting up the real thing." | Default-to-mock hides integration bugs and produces brittle tests coupled to implementation details. | Use the real collaborator unless it's slow, nondeterministic, or unavailable. Mocks are a last resort, not a default. |
+| "Coverage is already at 80%, this edge case isn't worth adding." | Coverage is a floor, not a target. The edge case you skipped is the one production will hit. | Add the test if the case is real. Coverage metrics measure lines hit, not behaviors specified. |
+| "Test names are obvious from the impl, short names are fine." | Future-you reading a failure log won't have the impl in front of them. Short names produce useless failure output. | Name the test after the behavior asserted: `it_returns_empty_list_when_input_is_null`, not `test_null`. |
+
+**General rule**: rationalization that *sounds* reasonable in the moment is the strongest signal. Genuine exceptions are rare; rationalized shortcuts are common.
+<!-- RED-FLAGS:END -->
+
+---
+
 ## Integration
 
 Coordinates with:
