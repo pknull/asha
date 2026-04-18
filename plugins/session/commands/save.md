@@ -98,6 +98,76 @@ Shows synthesis results:
 - Calibration signals captured
 - Files updated
 
+<!-- CONSOLIDATION-PASS:START -->
+## B1 Consolidation Pass (Appendix)
+
+Run this pass **after** pattern_analyzer synthesis and **before** the git commit step. It is non-destructive — it flags via `superseded_by:` rather than deleting.
+
+### When to run
+
+Always run if any memory files were written or updated this session. Skip only if the session was read-only (no Memory/ writes, no learnings updates).
+
+### Step C1 — Dedup scan
+
+Scan all `~/.asha/*.md` and `Memory/*.md` for near-identical facts (same subject, same conclusion):
+
+1. For each pair of files with overlapping `type:` (e.g., two `type: feedback` files about the same tool), compare their body text.
+2. If bodies are >80% similar (same core claim, minor wording difference), mark the **older** file with `superseded_by: <newer-filename>` in its frontmatter.
+3. Do not delete. Log the flagged pair in the commit message.
+
+```yaml
+# Example: older file gets this added to frontmatter
+superseded_by: feedback_gws_over_mcp_v2.md
+```
+
+### Step C2 — Contradiction flag
+
+If a session event or new memory directly contradicts an older memory:
+
+1. Add `superseded_by: <new-file>` to the **older** file's frontmatter.
+2. Add a `# Superseded` comment at the top of the older file's body (after frontmatter).
+3. Never delete the older file — it is the audit trail.
+
+```markdown
+# Superseded
+
+Superseded by: feedback_gws_over_mcp.md (2026-04-18)
+Reason: Updated policy — gws CLI now preferred over MCP.
+
+[original content below]
+```
+
+### Step C3 — Learnings promotion/demotion
+
+After updating learnings.md entries this session:
+
+1. Check each entry's `Confidence` value.
+2. If any entry has risen **above 0.7** and is in `learnings-archive.md`, move it to `learnings.md` (hot tier).
+3. If any entry has fallen **below 0.7** in `learnings.md` and the hot tier has >10 entries, move lowest-confidence entries to `learnings-archive.md`.
+4. Hot tier must not exceed 10 entries.
+
+**Promotion command (manual)**:
+
+```bash
+# Move entry from archive to hot tier:
+# 1. Edit learnings-archive.md, cut the entry block
+# 2. Paste into learnings.md under the appropriate ## section
+# 3. Verify total hot entries <= 10
+```
+
+### Step C4 — Char budget check
+
+After promotion/demotion, verify learnings.md stays under budget:
+
+```bash
+wc -c ~/.asha/learnings.md
+# Target: under 51,200 bytes (50KB)
+```
+
+If over budget, demote the lowest-confidence entries until under threshold.
+
+<!-- CONSOLIDATION-PASS:END -->
+
 <!-- RED-FLAGS:START -->
 ## Red Flags — Stop and Reconsider
 
