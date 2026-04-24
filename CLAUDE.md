@@ -1,8 +1,21 @@
 # CLAUDE.md - AI Assistant Guide for asha-marketplace
 
 **Version**: 1.11.0
-**Last Updated**: 2026-02-13
+**Last Updated**: 2026-02-13 (superseded sections noted inline)
 **Repository**: pknull/asha-marketplace
+
+---
+
+> ### ⚠ Install model has changed
+>
+> This repo no longer ships as a Claude plugin marketplace. The three-file
+> registration chain (`marketplace.json` → `installed_plugins.json` →
+> `enabledPlugins`) is deprecated. Primitives are now installed via direct
+> symlinks into `~/.claude/*` by **`./install.sh`**.
+>
+> Any section below that describes `/plugin marketplace add`, plugin.json
+> entry points, or marketplace.json registration is **historical** and
+> retained only for context. Authoritative: **[INSTALLER.md](INSTALLER.md)**.
 
 ---
 

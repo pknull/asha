@@ -7,6 +7,26 @@ A collection of domain-focused Claude Code plugins organized by workflow type.
 
 ---
 
+## Install model: symlink-mount (no marketplace registry)
+
+Instead of the legacy three-file plugin registration chain
+(`marketplace.json` → `installed_plugins.json` → `enabledPlugins`),
+installation is now a plain symlink operation:
+
+```bash
+./install.sh              # symlinks primitives into ~/.claude/*
+./uninstall.sh            # removes marketplace-sourced symlinks
+./deprecate-marketplace.sh  # one-shot cleanup of legacy registration state
+```
+
+See **[INSTALLER.md](INSTALLER.md)** for the model and `plugins/test/README.md`
+for the smoke-test plugin.
+
+The tables below still describe what each plugin does; the "install" mechanism
+is only the one above.
+
+---
+
 ## Plugin Domains
 
 | Domain | Plugin | Version | Purpose |
