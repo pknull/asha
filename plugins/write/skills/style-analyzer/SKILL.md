@@ -21,13 +21,22 @@ Extracts measurable style patterns from exemplar texts to build objective voice 
 
 ```bash
 # Analyze single file (markdown output)
-python "${CLAUDE_PLUGIN_ROOT}/skills/style-analyzer/scripts/analyze_style.py" source.txt
+python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt
 
 # Analyze directory of texts
-python "${CLAUDE_PLUGIN_ROOT}/skills/style-analyzer/scripts/analyze_style.py" exemplars/
+python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" exemplars/
 
 # JSON output for programmatic use
-python "${CLAUDE_PLUGIN_ROOT}/skills/style-analyzer/scripts/analyze_style.py" source.txt --json
+python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --json
+
+# Suppress specific cliche categories (e.g., fantasy project)
+python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --suppress shimmer_family shadow_worship
+
+# Auto-read suppressions from voice.md
+python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --voice bible/voice.md
+
+# List all available category IDs
+python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" --list-categories
 ```
 
 ### Agent Integration
@@ -72,12 +81,15 @@ The book-analyzer agent uses this script for metric extraction:
 
 ### Forbidden Patterns
 
-Detects and counts:
+Detects and counts across 36 named cliche categories:
 
 - **Filter words**: "he saw", "she heard", "they felt"
 - **Hedging**: "seemed to", "appeared to", "somewhat"
-- **Clichés**: "heart pounded", "blood ran cold"
+- **Fiction cliche categories** (28): body-as-metaphor, cardiac sequence, breath-as-device, hands-as-surrogate, impossible faces, smile catalogue, shimmer family, shadow worship, silence-as-drama, something vagueness, agency removers, cool observer mode, overworked dialogue tags, vague depth adjectives, melodramatic emotion, weight/gravity, transition crutches, introspection filler, pseudo-profound nouns, redundant intensifiers, overworked metaphor families, weather projection, metallic taste trinity, "kind of" construction, threshold metaphor, unsaid apologies, time freezing, things living in body
+- **Structural tells** (8): em-dash density, triplet framing, inspirational pivot, countdown pattern, self-answered rhetorical, anaphora, "here's the thing" phrases, "think of it as" analogies
 - **AI signals**: "delve", "utilize", "palpable", etc.
+
+Projects can suppress categories via `--suppress` or `suppress_categories` in voice.md.
 
 ### Repetition Analysis
 

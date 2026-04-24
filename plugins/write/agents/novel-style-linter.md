@@ -53,6 +53,22 @@ Read `bible/voice.md` and check:
 - [ ] Prohibited patterns absent
 - [ ] Tone matches established voice
 
+### 4b. Category Suppression
+
+Read `suppress_categories` from `bible/voice.md`. If present, pass those category IDs to the style-analyzer via `--suppress` so genre-appropriate patterns are not flagged:
+
+```bash
+python3 "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "section.md" --json --suppress shimmer_family shadow_worship
+```
+
+Alternatively, pass voice.md directly:
+
+```bash
+python3 "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "section.md" --json --voice bible/voice.md
+```
+
+Report suppressed categories in output so human reviewers know what was skipped.
+
 ### 5. Show vs Tell
 
 - Sensation before explanation

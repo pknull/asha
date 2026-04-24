@@ -85,6 +85,24 @@ Exemplar lines belong in character sheets, not invented on the fly.
 | Even fragment spacing | Fragments placed at regular intervals | Cluster 2-4 in sequence (see Cognitive Texture) |
 | Clean resolution | Every paragraph ties off neatly | Leave one thread unreconciled |
 
+### Fiction Cliche Families (AI Tells)
+
+AI prose clusters around recognizable cliche families. These are not individual word bans — they are pattern families where density signals AI origin.
+
+**Physical shorthand**: Body-as-metaphor (chest tightened, breath caught), cardiac sequences (heart lurched, heart hammered), breath-as-device (forgot how to breathe), hands-as-surrogate (hands curled into fists). Replace with character-specific physical responses earned by the scene.
+
+**Cheap atmosphere**: Shimmer/glimmer family, shadow worship (darkness gathered, shadows crept), silence-as-drama (silence stretched, the air went still). One per scene maximum; vary the sensory channel.
+
+**Vague depth**: Pseudo-profound nouns (void, echo, threshold, precipice), vague depth adjectives (profound, ethereal, liminal, luminous), "something" vagueness (something shifted, something she couldn't name). Precision is texture; vagueness is flatness.
+
+**Agency erasure**: "Couldn't help but," "found herself," "without thinking." Characters choose. Remove the construction; show the choice.
+
+**Structural tells**: Em-dash overuse (density check), triplet framing ("X, Y, and Z"), inspirational pivots ("It's not about X, it's about Y"), self-answered rhetorical questions. These signal essay-brain, not story-brain.
+
+**Dialogue crutches**: Overworked tags (murmured, mused, ventured, breathed) and smile catalogues (ghost of a smile, wry smile, smile that didn't reach eyes). "Said" works. Actions work better.
+
+**Rule**: If you recognize a pattern from this list in your output, it is probably wrong. Delete it. Write the specific thing that actually happens in this scene to this character.
+
 ## Cognitive Texture (Human Voice Patterns)
 
 LLM prose is detectable not because of word choice but because of sentence-level syntactic monotony and uniform information density. These directives produce authentic cognitive texture in all output, regardless of project voice. Project voice (e.g., a voice guide) layers on top of these base patterns.

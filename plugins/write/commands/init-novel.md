@@ -20,7 +20,7 @@ Create the standardized directory structure for novel writing with state trackin
 Run the initialization script:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/novel-state/scripts/init_novel_state.py" [project-path]
+python3 "/home/pknull/life/marketplace/plugins/write/skills/novel-state/scripts/init_novel_state.py" [project-path]
 ```
 
 ## Created Structure
