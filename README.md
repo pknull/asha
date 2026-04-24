@@ -1,4 +1,4 @@
-# asha-marketplace
+# asha
 
 **Version**: 1.17.0
 **Description**: Claude Code plugins for research, development, creative writing, image generation, scheduling, and session coordination
@@ -237,7 +237,7 @@ Creative writing workflows with prose craft, perplexity detection, style analysi
 Stable Diffusion prompt engineering and ComfyUI workflow design.
 
 ```bash
-/plugin install image@asha-marketplace
+/plugin install image@asha
 ```
 
 **Agent**: `comfyui-prompt-engineer`
@@ -399,22 +399,22 @@ Cognitive scaffold framework with cross-project identity, automatic learning, an
 ### Add Marketplace
 
 ```bash
-/plugin marketplace add pknull/asha-marketplace
+/plugin marketplace add pknull/asha
 ```
 
 ### Install Plugins
 
 ```bash
 # Foundation (recommended first)
-/plugin install asha@asha-marketplace
+/plugin install asha@asha
 
 # Domain plugins (install as needed)
-/plugin install panel-system@asha-marketplace
-/plugin install code@asha-marketplace
-/plugin install write@asha-marketplace
-/plugin install image@asha-marketplace
-/plugin install scheduler@asha-marketplace
-/plugin install output-styles@asha-marketplace
+/plugin install panel-system@asha
+/plugin install code@asha
+/plugin install write@asha
+/plugin install image@asha
+/plugin install scheduler@asha
+/plugin install output-styles@asha
 ```
 
 ### Verify Installation
@@ -428,7 +428,7 @@ Cognitive scaffold framework with cross-project identity, automatic learning, an
 ## Plugin Directory Structure
 
 ```
-asha-marketplace/
+asha/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace metadata
 ├── plugins/
@@ -537,7 +537,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 
 ## Support
 
-**Issues and feature requests**: https://github.com/pknull/asha-marketplace/issues
+**Issues and feature requests**: https://github.com/pknull/asha/issues
 
 **Documentation**:
 

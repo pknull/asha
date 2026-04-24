@@ -2,8 +2,9 @@
 # uninstall.sh — reverse the symlink-mount install.
 #
 # Scans ~/.claude/{skills,agents,commands,output-styles} for symlinks whose
-# realpath resolves inside this marketplace tree and removes them.
-# Strips ~/.claude/settings.json hook entries tagged "source": "marketplace:*".
+# realpath resolves inside this asha tree and removes them. Strips
+# ~/.claude/settings.json hook entries tagged "source": "asha:*" (and
+# legacy "source": "marketplace:*" for migration cleanup).
 #
 # Source tree is never touched.
 #
@@ -126,7 +127,7 @@ main() {
 
   [[ -f "$SETTINGS_FILE" ]] || die "$SETTINGS_FILE not found"
 
-  say "uninstall.sh: marketplace root = $ABS_MARKET_ROOT"
+  say "uninstall.sh: asha root = $ABS_MARKET_ROOT"
   [[ $DRY_RUN -eq 1 ]] && say "   (dry-run)"
 
   local total=0 n
@@ -141,33 +142,35 @@ main() {
   # Prune now-empty namespace dirs under commands/ and agents/.
   prune_empty_namespace_dirs
 
-  # Strip settings.json hook entries tagged marketplace:*.
+  # Strip settings.json hook entries tagged asha:* (or legacy marketplace:*).
+  # The dual-match keeps uninstall safe across the rename window.
+  local tag_regex='^(asha|marketplace):'
   local before after removed
-  before="$(jq -r '[.hooks // {} | .[] | .[]? | .hooks[]? | select((.source // "") | startswith("marketplace:"))] | length' "$SETTINGS_FILE")"
+  before="$(jq -r --arg re "$tag_regex" '[.hooks // {} | .[] | .[]? | .hooks[]? | select((.source // "") | test($re))] | length' "$SETTINGS_FILE")"
   if [[ "$before" -gt 0 ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
       say "would remove $before tagged hook entr$([[ $before -eq 1 ]] && echo y || echo ies) from settings.json"
     else
       backup_settings_once
-      settings_update '
+      settings_update "
         if .hooks then
           .hooks |= with_entries(
             .value |= (
               map(
-                .hooks |= map(select(((.source // "") | startswith("marketplace:")) | not))
+                .hooks |= map(select(((.source // \"\") | test(\"$tag_regex\")) | not))
               )
               | map(select(.hooks | length > 0))
             )
           )
           | .hooks |= with_entries(select(.value | length > 0))
         else . end
-      '
-      after="$(jq -r '[.hooks // {} | .[] | .[]? | .hooks[]? | select((.source // "") | startswith("marketplace:"))] | length' "$SETTINGS_FILE")"
+      "
+      after="$(jq -r --arg re "$tag_regex" '[.hooks // {} | .[] | .[]? | .hooks[]? | select((.source // "") | test($re))] | length' "$SETTINGS_FILE")"
       removed=$((before - after))
       say "removed $removed tagged hook entr$([[ $removed -eq 1 ]] && echo y || echo ies) from settings.json"
     fi
   else
-    log "no marketplace-tagged hooks in settings.json"
+    log "no asha-tagged hooks in settings.json"
   fi
 
   say ""

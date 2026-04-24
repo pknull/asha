@@ -32,13 +32,13 @@ Trigger synthesis now. Use when you want to checkpoint mid-session or ensure sta
 Run the synthesis pipeline:
 
 ```bash
-"/home/pknull/life/marketplace/plugins/session/tools/pattern_analyzer.py" synthesize --days 7
+"/home/pknull/life/asha/plugins/session/tools/pattern_analyzer.py" synthesize --days 7
 ```
 
 Then archive and rotate events:
 
 ```bash
-"/home/pknull/life/marketplace/plugins/session/tools/save-session.sh" --archive-only
+"/home/pknull/life/asha/plugins/session/tools/save-session.sh" --archive-only
 ```
 
 Then capture a baseline sample (best-effort, non-blocking — only runs if the Asha baseline tooling is present).

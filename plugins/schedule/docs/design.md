@@ -747,7 +747,7 @@ exit $EXIT_CODE
       "matcher": "*",
       "hooks": [{
         "type": "command",
-        "command": "/home/pknull/life/marketplace/plugins/schedule/hooks/handlers/session-start.sh"
+        "command": "/home/pknull/life/asha/plugins/schedule/hooks/handlers/session-start.sh"
       }]
     }]
   }

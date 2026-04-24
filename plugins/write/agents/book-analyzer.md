@@ -157,7 +157,7 @@ grep -E "(seemed to|appeared to|felt like)" *.md
 For large texts, use Python helper:
 
 ```bash
-python3 "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "source.txt" --json
+python3 "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "source.txt" --json
 ```
 
 Or compute inline for smaller samples (<10K words).

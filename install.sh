@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# install.sh — symlink-mount installer for the asha marketplace.
+# install.sh — symlink-mount installer for the asha repo.
 #
 # Symlinks skills / agents / commands / output-styles from plugins/<ns>/…
 # into the native ~/.claude/* scan directories, and merges per-plugin
 # hooks.json entries into ~/.claude/settings.json, tagged with
-# "source": "marketplace:<ns>" for reversible removal by uninstall.sh.
+# "source": "asha:<ns>" for reversible removal by uninstall.sh.
 #
 # Hook SCRIPTS are not symlinked — they stay in source. settings.json
 # entries point at absolute source paths so each script's internal
@@ -178,8 +178,8 @@ install_agents() {
   done
   [[ $has -eq 1 ]] || return 0
 
-  # Per-plugin subdirectory keeps marketplace-sourced agents isolated from
-  # the user's flat-scan collection (relevant when ~/.claude/agents is itself
+  # Per-plugin subdirectory keeps asha-sourced agents isolated from the
+  # user's flat-scan collection (relevant when ~/.claude/agents is itself
   # a symlink into a tracked dotfiles repo).
   ensure_dir "$CLAUDE_HOME/agents/${ns}"
   for agent in "$src_dir"/*.md; do
@@ -219,9 +219,9 @@ install_styles() {
   done
 }
 
-# Merge hooks.json into settings.json, tagged with "source": "marketplace:<ns>".
+# Merge hooks.json into settings.json, tagged with "source": "asha:<ns>".
 # Rewrites ${CLAUDE_PLUGIN_ROOT} -> absolute plugin path so commands resolve.
-# Idempotent: first removes any existing entries tagged marketplace:<ns>, then
+# Idempotent: first removes any existing entries tagged asha:<ns>, then
 # re-adds from the plugin manifest.
 install_hooks() {
   local plugin_dir="$1" ns="$2"
@@ -242,7 +242,7 @@ install_hooks() {
 
   backup_settings_once
 
-  local source_tag="marketplace:$ns"
+  local source_tag="asha:$ns"
 
   # Step 1: remove any pre-existing entries with our source tag (idempotent).
   # We walk .hooks.<lifecycle>[].hooks[] and filter out those with .source == tag.
@@ -263,7 +263,7 @@ install_hooks() {
 
   # Step 2: build tagged hook entries from the plugin manifest.
   # Rewrite ${CLAUDE_PLUGIN_ROOT} -> abs_root inside each command string.
-  # Tag each inner hook entry with source=marketplace:<ns>.
+  # Tag each inner hook entry with source=asha:<ns>.
   local tagged
   tagged="$(jq \
     --arg root "$abs_root" \
@@ -351,7 +351,7 @@ main() {
   ensure_dir "$CLAUDE_HOME/commands"
   ensure_dir "$CLAUDE_HOME/output-styles"
 
-  say "install.sh: marketplace root = $MARKET_ROOT"
+  say "install.sh: asha root = $MARKET_ROOT"
   [[ $DRY_RUN -eq 1 ]] && say "   (dry-run: no filesystem or settings.json changes)"
   [[ $FORCE   -eq 1 ]] && say "   (force: will replace mismatched symlinks)"
   [[ -n "$ONLY"     ]] && say "   (only: $ONLY)"
