@@ -1,23 +1,25 @@
 # Symlink-Mount Installer
 
-Flat, no-registry install model for this marketplace's primitives.
-Replaces the three-file plugin registration chain (`marketplace.json`
-→ `installed_plugins.json` → `enabledPlugins`).
+Flat, no-registry install model for the asha repo's primitives. This
+repo is NOT a Claude plugin marketplace — the old three-file registration
+chain (`marketplace.json` → `installed_plugins.json` → `enabledPlugins`)
+was retired in favour of direct symlinks into `~/.claude/*`.
 
 ## Model
 
-1. The marketplace folder (`~/life/marketplace/`) stays where it is — it is
-   the single source of truth.
+1. The source tree (`~/life/asha/`) stays in place; it is the single
+   source of truth.
 2. `./install.sh` creates symlinks into `~/.claude/{skills,agents,commands,output-styles}/`
-   pointing back into `plugins/<ns>/...`.
+   pointing back into `plugins/<ns>/…`.
 3. Hook scripts are **not** symlinked. They are registered in
    `~/.claude/settings.json` via absolute source paths, tagged with
-   `"source": "marketplace:<ns>"`.
+   `"source": "asha:<ns>"`.
 4. `./uninstall.sh` scans those `~/.claude/*` locations for symlinks whose
-   target resolves inside this marketplace and removes them, plus strips any
-   tagged hook entries from `settings.json`.
+   target resolves inside this repo and removes them, plus strips any
+   tagged hook entries from `settings.json` (matches both `asha:*` and
+   the legacy `marketplace:*` tag during the rename transition).
 
-No plugin manifests (`.claude-plugin/plugin.json`) are consulted after install.
+No plugin manifests (`.claude-plugin/plugin.json`) are consulted.
 
 ## Namespaces
 
@@ -44,7 +46,7 @@ source dirs are shorter.
 ├── commands/<ns>/<cmd>.md             # symlink -> plugins/<ns>/commands/<cmd>.md
 ├── output-styles/<ns>-<style>.md      # symlink -> plugins/<ns>/styles/<style>.md
 └── settings.json
-    └── hooks.<Lifecycle>[].hooks[]    # tagged "source": "marketplace:<ns>"
+    └── hooks.<Lifecycle>[].hooks[]    # tagged "source": "asha:<ns>"
                                        # command = abs path into plugins/<ns>/hooks/
 ```
 
@@ -53,7 +55,6 @@ source dirs are shorter.
 ```
 ./install.sh [--dry-run] [--only ns1,ns2,...] [--force] [--verbose]
 ./uninstall.sh [--dry-run] [--verbose]
-./deprecate-marketplace.sh [--dry-run]       # one-shot legacy cleanup
 ```
 
 `install.sh` is idempotent: re-running skips links already correct, refuses
@@ -73,11 +74,16 @@ string. Use it as a canary:
 
 See `plugins/test/README.md` for the full smoke-test matrix.
 
+## Drift check
+
+`~/life/bin/asha-drift-check.sh` runs 7 checks and exits 0 on clean,
+1 on drift. Scheduled via systemd user timer `asha-drift-check.timer`
+(persistent across reboots). Output appends to `~/life/asha/drift-check.log`.
+
 ## Backups
 
-Every mutating operation backs up `~/.claude/settings.json` (and
-`installed_plugins.json` for `deprecate-marketplace.sh`) with a timestamped
-`.bak-<YYYYMMDD-HHMMSS>` suffix before editing.
+Every mutating operation backs up `~/.claude/settings.json` with a
+timestamped `.bak-<YYYYMMDD-HHMMSS>` suffix before editing.
 
 ## Known edges
 
@@ -96,10 +102,11 @@ Those subdirs show as untracked in the dotfiles repo. Either:
 ### Output styles are plugin-local
 
 The `/output-styles:style` command reads from its *own plugin's* `styles/`
-directory only (`${CLAUDE_PLUGIN_ROOT}/styles/`). It does NOT scan
-`~/.claude/output-styles/` at the user level. Consequence: a plugin *other*
-than `output-styles` cannot contribute styles via the symlink-mount model —
-the symlink is created but no scanner ever sees it.
+directory only (`${CLAUDE_PLUGIN_ROOT}/styles/`, now substituted to an
+absolute path in this repo). It does NOT scan `~/.claude/output-styles/`
+at the user level. Consequence: a plugin *other* than `output-styles`
+cannot contribute styles via the symlink-mount model — the symlink is
+created but no scanner ever sees it.
 
 The installer still creates the symlinks (they're harmless), but expect
 every style under `~/.claude/output-styles/` except the ones inside the

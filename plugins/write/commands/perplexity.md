@@ -27,7 +27,7 @@ Measure prose "flatness" using local Ollama + Ministral. Detects predictable AI-
 Run the perplexity check script:
 
 ```bash
-python3 "/home/pknull/life/marketplace/plugins/write/skills/perplexity-gate/scripts/check_perplexity.py" <input> [options]
+python3 "/home/pknull/life/asha/plugins/write/skills/perplexity-gate/scripts/check_perplexity.py" <input> [options]
 ```
 
 ## Thresholds

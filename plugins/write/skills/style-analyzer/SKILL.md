@@ -21,22 +21,22 @@ Extracts measurable style patterns from exemplar texts to build objective voice 
 
 ```bash
 # Analyze single file (markdown output)
-python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt
+python "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt
 
 # Analyze directory of texts
-python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" exemplars/
+python "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" exemplars/
 
 # JSON output for programmatic use
-python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --json
+python "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --json
 
 # Suppress specific cliche categories (e.g., fantasy project)
-python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --suppress shimmer_family shadow_worship
+python "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --suppress shimmer_family shadow_worship
 
 # Auto-read suppressions from voice.md
-python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --voice bible/voice.md
+python "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" source.txt --voice bible/voice.md
 
 # List all available category IDs
-python "/home/pknull/life/marketplace/plugins/write/skills/style-analyzer/scripts/analyze_style.py" --list-categories
+python "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" --list-categories
 ```
 
 ### Agent Integration

@@ -1,8 +1,8 @@
-# CLAUDE.md - AI Assistant Guide for asha-marketplace
+# CLAUDE.md - AI Assistant Guide for asha
 
 **Version**: 1.11.0
 **Last Updated**: 2026-02-13 (superseded sections noted inline)
-**Repository**: pknull/asha-marketplace
+**Repository**: pknull/asha
 
 ---
 
@@ -21,7 +21,7 @@
 
 ## Purpose of This Document
 
-This guide helps AI assistants (like Claude) understand the asha-marketplace codebase structure, development workflows, architectural patterns, and key conventions. Use this as your primary reference when working on this repository.
+This guide helps AI assistants (like Claude) understand the asha codebase structure, development workflows, architectural patterns, and key conventions. Use this as your primary reference when working on this repository.
 
 ---
 
@@ -42,7 +42,7 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 
 ## Project Overview
 
-**asha-marketplace** is a Claude Code plugin marketplace providing tools for multi-perspective analysis, code review, output styling, and session coordination.
+**asha** is a Claude Code plugin marketplace providing tools for multi-perspective analysis, code review, output styling, and session coordination.
 
 ### Current Plugins
 
@@ -69,7 +69,7 @@ This guide helps AI assistants (like Claude) understand the asha-marketplace cod
 ## Repository Structure
 
 ```
-asha-marketplace/
+asha/
 ├── .claude-plugin/
 │   └── marketplace.json              # Marketplace registry and plugin list
 ├── plugins/
@@ -229,12 +229,12 @@ Every plugin follows this structure:
 
 ```json
 {
-  "name": "asha-marketplace",
+  "name": "asha",
   "owner": {"name": "pknull", "email": "noreply@example.com"},
   "metadata": {
     "description": "...",
     "version": "1.3.0",
-    "homepage": "https://github.com/pknull/asha-marketplace"
+    "homepage": "https://github.com/pknull/asha"
   },
   "plugins": [
     {
@@ -280,8 +280,8 @@ Every plugin follows this structure:
 6. **Test installation**
 
    ```bash
-   /plugin marketplace add pknull/asha-marketplace
-   /plugin install [plugin-name]@asha-marketplace
+   /plugin marketplace add pknull/asha
+   /plugin install [plugin-name]@asha
    /plugin list
    ```
 
@@ -559,8 +559,8 @@ fi
 5. **Installation Test**
 
    ```bash
-   /plugin marketplace add pknull/asha-marketplace
-   /plugin install [plugin-name]@asha-marketplace
+   /plugin marketplace add pknull/asha
+   /plugin install [plugin-name]@asha
    /plugin list
    # Verify plugin appears and version is correct
    ```
@@ -696,7 +696,7 @@ git push -u origin <branch-name>
 5. **Test command**
 
    ```bash
-   /plugin install [plugin-name]@asha-marketplace
+   /plugin install [plugin-name]@asha
    /[command]
    ```
 
@@ -888,7 +888,7 @@ git push -u origin <branch-name>
 2. **Check for Memory file references**
    - Memory files live in user projects, not this repo
    - This repo only documents Memory structure
-   - Don't create Memory files in asha-marketplace
+   - Don't create Memory files in asha
 
 3. **Distinguish character from implementation**
    - Characters are narrative personas (The Moderator, The Analyst, The Challenger)
@@ -902,7 +902,7 @@ git push -u origin <branch-name>
 
 ### Common Pitfalls to Avoid
 
-1. **Don't create Memory/ in asha-marketplace**
+1. **Don't create Memory/ in asha**
    - Memory lives in user projects
    - This repo documents but doesn't instantiate
 
@@ -946,7 +946,7 @@ git push -u origin <branch-name>
 ### External References
 
 - **Claude Code Documentation**: https://docs.claude.com/en/docs/claude-code/
-- **Repository Issues**: https://github.com/pknull/asha-marketplace/issues
+- **Repository Issues**: https://github.com/pknull/asha/issues
 - **MIT License**: https://opensource.org/licenses/MIT
 
 ---
@@ -1029,6 +1029,6 @@ git push -u origin <branch-name>
 
 ---
 
-**Maintained by**: AI assistants working on asha-marketplace
+**Maintained by**: AI assistants working on asha
 **Review Cycle**: Update when major structural changes occur
 **Validation**: Verify against actual codebase quarterly
