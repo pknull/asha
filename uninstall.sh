@@ -28,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 MARKET_ROOT="$SCRIPT_DIR"
 ABS_MARKET_ROOT="$(readlink -f "$MARKET_ROOT")"
 HARNESSES_DIR="$MARKET_ROOT/harnesses"
+PLUGINS_DIR="$MARKET_ROOT/plugins"
 
 DRY_RUN=0
 VERBOSE=0
