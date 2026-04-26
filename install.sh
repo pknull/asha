@@ -1,30 +1,41 @@
 #!/usr/bin/env bash
-# install.sh — symlink-mount installer for the asha repo.
+# install.sh — symlink-mount installer for the asha repo (multi-harness dispatcher).
 #
-# Symlinks skills / agents / commands / output-styles from plugins/<ns>/…
-# into the native ~/.claude/* scan directories, and merges per-plugin
-# hooks.json entries into ~/.claude/settings.json, tagged with
-# "source": "asha:<ns>" for reversible removal by uninstall.sh.
+# Symlinks plugin primitives (skills/agents/commands/output-styles) into the
+# native scan directories of one or more agent harnesses, and merges per-plugin
+# hooks into the harness's settings/config, tagged with "asha:<ns>" for
+# reversible removal by uninstall.sh.
 #
-# Hook SCRIPTS are not symlinked — they stay in source. settings.json
-# entries point at absolute source paths so each script's internal
-# $(dirname "$0") resolves to its real directory (preserves source
-# sibling lookups like common.sh).
+# Hook scripts are NOT symlinked — they stay in source. Settings entries point
+# at absolute source paths so each script's $(dirname "$0") resolves correctly.
 #
 # Usage:
-#   ./install.sh [--dry-run] [--only ns1,ns2,...] [--force] [--verbose]
+#   ./install.sh [--target T] [--bin B] [--default D] [--only ns1,ns2,...]
+#                [--dry-run] [--force] [--verbose]
 #
-# --dry-run  : print the action plan only; no filesystem or JSON writes.
-# --only     : comma-separated plugin directory names (e.g. "devops,prompt").
-# --force    : overwrite an existing destination symlink that points elsewhere.
-# --verbose  : echo each action.
+# Targets:
+#   --target claude           install primitives for Claude Code (default)
+#   --target codex            install primitives for OpenAI Codex CLI
+#   --target both             install for both
+#
+# Bin:
+#   --bin claude              install ~/.local/bin/asha → asha-claude wrapper
+#   --bin codex               install ~/.local/bin/asha → asha-codex wrapper
+#   --bin all                 install both wrappers; --default picks the symlink target
+#   --default {claude,codex}  default harness when --bin all (default: claude)
+#
+# Other flags:
+#   --only      comma-separated plugin directory names (e.g. "devops,prompt")
+#   --dry-run   print the action plan only; no filesystem or settings writes
+#   --force     overwrite an existing destination symlink that points elsewhere
+#   --verbose   echo each action
 #
 # Exit codes:
 #   0  success (or dry-run completed)
 #   1  usage error
 #   2  conflict: destination exists and --force not given
 #   3  dependency missing (jq)
-#   4  merge failure (settings.json edit)
+#   4  merge failure (settings edit)
 
 set -euo pipefail
 
@@ -35,28 +46,29 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 MARKET_ROOT="$SCRIPT_DIR"
 PLUGINS_DIR="$MARKET_ROOT/plugins"
 NAMESPACES_FILE="$MARKET_ROOT/namespaces.json"
-
-CLAUDE_HOME="$HOME/.claude"
-SETTINGS_FILE="$CLAUDE_HOME/settings.json"
+HARNESSES_DIR="$MARKET_ROOT/harnesses"
 
 DRY_RUN=0
 FORCE=0
 VERBOSE=0
 ONLY=""
+TARGET="claude"          # default — preserves single-harness back-compat
+BIN=""                   # empty = no bin install
+BIN_DEFAULT="claude"
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Shared helpers (used by all harness implementations)
 # ---------------------------------------------------------------------------
 
-die() { echo "ERROR: $*" >&2; exit "${2:-1}"; }
-log() { [[ $VERBOSE -eq 1 ]] && echo "  $*"; return 0; }
-say() { echo "$*"; }
+die()  { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+log()  { [[ $VERBOSE -eq 1 ]] && echo "  $*"; return 0; }
+say()  { echo "$*"; }
+info() { echo "$*" >&2; }
 
 require_jq() {
   command -v jq >/dev/null 2>&1 || die "jq not found in PATH" 3
 }
 
-# Ensure a directory exists (dry-run safe).
 ensure_dir() {
   local d="$1"
   if [[ $DRY_RUN -eq 1 ]]; then
@@ -68,7 +80,6 @@ ensure_dir() {
 
 # Create one symlink. Idempotent (skip if already correct). Refuses on
 # mismatched existing target unless --force.
-#
 # Args: SOURCE DEST KIND
 mklink() {
   local src="$1" dest="$2" kind="$3"
@@ -113,204 +124,21 @@ ns_for() {
   echo "$ns"
 }
 
-# Atomic-write jq edit to ~/.claude/settings.json.
-# First positional arg = jq expression; remaining args forwarded to jq
-# (e.g. --argjson add "$tagged_json"). Write-to-temp-then-rename.
-settings_update() {
-  local jq_expr="$1"
-  shift
-  local tmp="$SETTINGS_FILE.tmp.$$"
-
-  if [[ $DRY_RUN -eq 1 ]]; then
-    log "would apply jq filter to $SETTINGS_FILE"
-    return 0
+selected_plugins() {
+  if [[ -n "$ONLY" ]]; then
+    IFS=',' read -ra arr <<<"$ONLY"
+    printf '%s\n' "${arr[@]}"
+  else
+    find "$PLUGINS_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort
   fi
-
-  jq "$@" "$jq_expr" "$SETTINGS_FILE" > "$tmp" || { rm -f "$tmp"; die "jq filter failed" 4; }
-
-  jq empty "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; die "resulting settings.json invalid" 4; }
-
-  mv "$tmp" "$SETTINGS_FILE"
-}
-
-# Back up settings.json once per run if we're about to mutate it.
-_backup_done=0
-backup_settings_once() {
-  if [[ $DRY_RUN -eq 1 ]]; then return 0; fi
-  if [[ $_backup_done -eq 1 ]]; then return 0; fi
-  local stamp
-  stamp="$(date +%Y%m%d-%H%M%S)"
-  local bkp="$SETTINGS_FILE.bak-$stamp"
-  cp -p "$SETTINGS_FILE" "$bkp"
-  say "backed up settings.json -> $bkp"
-  _backup_done=1
 }
 
 # ---------------------------------------------------------------------------
-# Per-primitive installers
-# ---------------------------------------------------------------------------
-
-install_skills() {
-  local plugin_dir="$1" ns="$2"
-  local src_dir="$PLUGINS_DIR/$plugin_dir/skills"
-  [[ -d "$src_dir" ]] || return 0
-
-  local skill
-  for skill in "$src_dir"/*/; do
-    [[ -d "$skill" ]] || continue
-    local skill_name
-    skill_name="$(basename "$skill")"
-    [[ -f "$skill/SKILL.md" ]] || { log "skip skill (no SKILL.md): $skill"; continue; }
-    mklink "${skill%/}" "$CLAUDE_HOME/skills/${ns}-${skill_name}" "skill-dir"
-  done
-}
-
-install_agents() {
-  local plugin_dir="$1" ns="$2"
-  local src_dir="$PLUGINS_DIR/$plugin_dir/agents"
-  [[ -d "$src_dir" ]] || return 0
-
-  # Skip creating a per-plugin subdir when there's nothing to install. An empty
-  # subdir would just pollute the scan path (and any parent that mirrors it).
-  local agent has=0
-  for agent in "$src_dir"/*.md; do
-    [[ -f "$agent" ]] && { has=1; break; }
-  done
-  [[ $has -eq 1 ]] || return 0
-
-  # Per-plugin subdirectory keeps asha-sourced agents isolated from the
-  # user's flat-scan collection (relevant when ~/.claude/agents is itself
-  # a symlink into a tracked dotfiles repo).
-  ensure_dir "$CLAUDE_HOME/agents/${ns}"
-  for agent in "$src_dir"/*.md; do
-    [[ -f "$agent" ]] || continue
-    local agent_name
-    agent_name="$(basename "$agent")"
-    mklink "$agent" "$CLAUDE_HOME/agents/${ns}/${agent_name}" "agent"
-  done
-}
-
-install_commands() {
-  local plugin_dir="$1" ns="$2"
-  local src_dir="$PLUGINS_DIR/$plugin_dir/commands"
-  [[ -d "$src_dir" ]] || return 0
-
-  ensure_dir "$CLAUDE_HOME/commands/${ns}"
-  local cmd
-  for cmd in "$src_dir"/*.md; do
-    [[ -f "$cmd" ]] || continue
-    local cmd_name
-    cmd_name="$(basename "$cmd")"
-    mklink "$cmd" "$CLAUDE_HOME/commands/${ns}/${cmd_name}" "command"
-  done
-}
-
-install_styles() {
-  local plugin_dir="$1" ns="$2"
-  local src_dir="$PLUGINS_DIR/$plugin_dir/styles"
-  [[ -d "$src_dir" ]] || return 0
-
-  local style
-  for style in "$src_dir"/*.md; do
-    [[ -f "$style" ]] || continue
-    local style_name
-    style_name="$(basename "$style")"
-    mklink "$style" "$CLAUDE_HOME/output-styles/${ns}-${style_name}" "output-style"
-  done
-}
-
-# Merge hooks.json into settings.json, tagged with "source": "asha:<ns>".
-# Rewrites ${CLAUDE_PLUGIN_ROOT} -> absolute plugin path so commands resolve.
-# Idempotent: first removes any existing entries tagged asha:<ns>, then
-# re-adds from the plugin manifest.
-install_hooks() {
-  local plugin_dir="$1" ns="$2"
-  local plugin_root="$PLUGINS_DIR/$plugin_dir"
-  local abs_root
-  abs_root="$(readlink -f "$plugin_root")"
-  local hooks_json
-  # Support both ./hooks/hooks.json and ./hooks.json just in case.
-  if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
-  elif [[ -f "$plugin_root/hooks.json"      ]]; then hooks_json="$plugin_root/hooks.json"
-  else return 0
-  fi
-
-  # Skip empty / no-op manifests.
-  local lifecycles_count
-  lifecycles_count="$(jq -r '.hooks // {} | length' "$hooks_json")"
-  [[ "$lifecycles_count" -gt 0 ]] || { log "hooks.json empty for $plugin_dir"; return 0; }
-
-  backup_settings_once
-
-  local source_tag="asha:$ns"
-
-  # Step 1: remove any pre-existing entries with our source tag (idempotent).
-  # We walk .hooks.<lifecycle>[].hooks[] and filter out those with .source == tag.
-  # Also purge matcher-groups that end up with an empty .hooks array.
-  settings_update '
-    if .hooks then
-      .hooks |= with_entries(
-        .value |= (
-          map(
-            .hooks |= map(select((.source // "") != "'"$source_tag"'"))
-          )
-          | map(select(.hooks | length > 0))
-        )
-      )
-      | .hooks |= with_entries(select(.value | length > 0))
-    else . end
-  '
-
-  # Step 2: build tagged hook entries from the plugin manifest.
-  # Rewrite ${CLAUDE_PLUGIN_ROOT} -> abs_root inside each command string.
-  # Tag each inner hook entry with source=asha:<ns>.
-  local tagged
-  tagged="$(jq \
-    --arg root "$abs_root" \
-    --arg tag  "$source_tag" '
-      .hooks
-      | to_entries
-      | map({
-          key: .key,
-          value: (
-            .value
-            | map(
-                .hooks |= map(
-                  . + {
-                    command: (.command | gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $root)),
-                    source: $tag
-                  }
-                )
-              )
-          )
-        })
-      | from_entries
-    ' "$hooks_json")"
-
-  # Step 3: merge tagged entries into settings.json. For each lifecycle, append
-  # the plugin's matcher-groups to the existing array, creating keys as needed.
-  settings_update '
-      .hooks = (.hooks // {})
-      | reduce ($add | to_entries[]) as $e (
-          .;
-          .hooks[$e.key] = ((.hooks[$e.key] // []) + $e.value)
-        )
-    ' \
-    --argjson add "$tagged"
-
-  local n
-  n="$(jq -r --arg tag "$source_tag" '
-      [.hooks // {} | .[] | .[]? | .hooks[]? | select(.source == $tag)] | length
-    ' "$SETTINGS_FILE")"
-  log "registered $n hook entr$([[ $n -eq 1 ]] && echo y || echo ies) for $ns"
-}
-
-# ---------------------------------------------------------------------------
-# Main
+# Argument parsing
 # ---------------------------------------------------------------------------
 
 usage() {
-  sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
@@ -322,53 +150,178 @@ parse_args() {
       --verbose|-v) VERBOSE=1 ;;
       --only)    shift; ONLY="${1:-}" ;;
       --only=*)  ONLY="${1#--only=}" ;;
+      --target)  shift; TARGET="${1:-}" ;;
+      --target=*) TARGET="${1#--target=}" ;;
+      --bin)     shift; BIN="${1:-}" ;;
+      --bin=*)   BIN="${1#--bin=}" ;;
+      --default) shift; BIN_DEFAULT="${1:-}" ;;
+      --default=*) BIN_DEFAULT="${1#--default=}" ;;
       -h|--help) usage ;;
       *)         die "unknown argument: $1" 1 ;;
     esac
     shift
   done
+
+  case "$TARGET" in
+    claude|codex|both) ;;
+    *) die "invalid --target '$TARGET' (expected: claude|codex|both)" 1 ;;
+  esac
+  if [[ -n "$BIN" ]]; then
+    case "$BIN" in
+      claude|codex|all) ;;
+      *) die "invalid --bin '$BIN' (expected: claude|codex|all)" 1 ;;
+    esac
+  fi
+  case "$BIN_DEFAULT" in
+    claude|codex) ;;
+    *) die "invalid --default '$BIN_DEFAULT' (expected: claude|codex)" 1 ;;
+  esac
 }
 
-selected_plugins() {
-  if [[ -n "$ONLY" ]]; then
-    IFS=',' read -ra arr <<<"$ONLY"
-    printf '%s\n' "${arr[@]}"
+# ---------------------------------------------------------------------------
+# Bin installer
+# ---------------------------------------------------------------------------
+#
+# Installs harness-aware wrapper scripts and a default `asha` command. The
+# real wrappers live in $MARKET_ROOT/bin/asha-{claude,codex}; this function
+# symlinks them into $HOME/.local/bin so they're on PATH (XDG standard).
+#
+# Layout:
+#   ~/.local/bin/asha-claude → $MARKET_ROOT/bin/asha-claude
+#   ~/.local/bin/asha-codex  → $MARKET_ROOT/bin/asha-codex
+#   ~/.local/bin/asha        → asha-{claude|codex}   (relative; switchable)
+#
+# The bare `asha` command's target is selected by the user:
+#   --bin claude           → asha → asha-claude
+#   --bin codex            → asha → asha-codex
+#   --bin all              → both wrappers + asha → asha-${BIN_DEFAULT}
+#
+# Legacy ~/bin/asha (typically dotfile-tracked) is detected and the user is
+# informed how to retire it. We never touch the dotfiles repo.
+
+install_bin() {
+  local choice="$1"
+  local user_bin="$HOME/.local/bin"
+
+  say ""
+  say "== bin installer (--bin $choice, --default $BIN_DEFAULT) =="
+
+  ensure_dir "$user_bin"
+
+  case "$choice" in
+    claude|all)
+      mklink "$MARKET_ROOT/bin/asha-claude" "$user_bin/asha-claude" "wrapper"
+      ;;
+  esac
+  case "$choice" in
+    codex|all)
+      mklink "$MARKET_ROOT/bin/asha-codex"  "$user_bin/asha-codex"  "wrapper"
+      ;;
+  esac
+
+  # Pick the bare `asha` command's target.
+  local default_target
+  case "$choice" in
+    claude) default_target="asha-claude" ;;
+    codex)  default_target="asha-codex"  ;;
+    all)    default_target="asha-${BIN_DEFAULT}" ;;
+  esac
+  _install_asha_default_link "$user_bin" "$default_target"
+
+  _detect_legacy_asha
+}
+
+# Create or retarget ~/.local/bin/asha as a *relative* symlink to the chosen
+# wrapper sibling. Idempotent.
+_install_asha_default_link() {
+  local user_bin="$1" target_name="$2"
+  local link="$user_bin/asha"
+
+  if [[ -L "$link" ]]; then
+    local existing
+    existing="$(readlink "$link" 2>/dev/null || true)"
+    if [[ "$existing" == "$target_name" ]]; then
+      log "ok: $link -> $target_name"
+      return 0
+    fi
+    if [[ $FORCE -eq 0 ]]; then
+      die "refusing to retarget $link (currently -> $existing); use --force" 2
+    fi
+    log "retargeting: $link ($existing -> $target_name)"
+    [[ $DRY_RUN -eq 1 ]] || rm "$link"
+  elif [[ -e "$link" ]]; then
+    if [[ $FORCE -eq 0 ]]; then
+      die "$link exists as a non-symlink; use --force to replace" 2
+    fi
+    log "removing non-link at $link"
+    [[ $DRY_RUN -eq 1 ]] || rm -rf "$link"
+  fi
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "  LINK [asha-default]  $target_name -> $link"
   else
-    find "$PLUGINS_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort
+    ln -s "$target_name" "$link"
+    say "  asha command -> $target_name"
   fi
 }
+
+# Detect a legacy ~/bin/asha (typically dotfile-tracked) and inform the user.
+# Does NOT touch dotfiles repos. Skips if the legacy entry already points
+# into our managed bin dir.
+_detect_legacy_asha() {
+  local legacy="$HOME/bin/asha"
+  [[ -e "$legacy" ]] || return 0
+
+  if [[ -L "$legacy" ]]; then
+    local target
+    target="$(readlink -f "$legacy" 2>/dev/null || true)"
+    case "$target" in
+      "$MARKET_ROOT"/*) return 0 ;;   # already pointing into asha repo
+    esac
+  fi
+
+  say ""
+  say "NOTE: legacy wrapper detected at $legacy"
+  say "      ~/.local/bin precedes ~/bin in your PATH, so the new wrapper takes precedence."
+  say "      To retire the old one, in the repo where it's tracked (e.g. dotfiles):"
+  say "        git rm bin/asha && git commit -m 'retire bin/asha (replaced by asha installer)'"
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 main() {
   parse_args "$@"
   require_jq
 
-  [[ -d "$PLUGINS_DIR" ]]    || die "plugins dir not found: $PLUGINS_DIR"
+  [[ -d "$PLUGINS_DIR" ]]     || die "plugins dir not found: $PLUGINS_DIR"
   [[ -f "$NAMESPACES_FILE" ]] || die "namespaces.json not found: $NAMESPACES_FILE"
-  [[ -f "$SETTINGS_FILE" ]]   || die "claude settings.json not found: $SETTINGS_FILE"
-
-  ensure_dir "$CLAUDE_HOME/skills"
-  ensure_dir "$CLAUDE_HOME/agents"
-  ensure_dir "$CLAUDE_HOME/commands"
-  ensure_dir "$CLAUDE_HOME/output-styles"
+  [[ -d "$HARNESSES_DIR" ]]   || die "harnesses dir not found: $HARNESSES_DIR"
 
   say "install.sh: asha root = $MARKET_ROOT"
-  [[ $DRY_RUN -eq 1 ]] && say "   (dry-run: no filesystem or settings.json changes)"
+  say "   target = $TARGET"
+  [[ $DRY_RUN -eq 1 ]] && say "   (dry-run: no filesystem or settings changes)"
   [[ $FORCE   -eq 1 ]] && say "   (force: will replace mismatched symlinks)"
   [[ -n "$ONLY"     ]] && say "   (only: $ONLY)"
 
-  local plugin_dir ns
-  while read -r plugin_dir; do
-    [[ -n "$plugin_dir" ]] || continue
-    [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || { echo "WARN: not a plugin dir: $plugin_dir" >&2; continue; }
-    ns="$(ns_for "$plugin_dir")"
-    say ""
-    say "== $plugin_dir  (ns=$ns) =="
-    install_skills   "$plugin_dir" "$ns"
-    install_agents   "$plugin_dir" "$ns"
-    install_commands "$plugin_dir" "$ns"
-    install_styles   "$plugin_dir" "$ns"
-    install_hooks    "$plugin_dir" "$ns"
-  done < <(selected_plugins)
+  local targets
+  case "$TARGET" in
+    claude) targets=(claude) ;;
+    codex)  targets=(codex)  ;;
+    both)   targets=(claude codex) ;;
+  esac
+
+  local t
+  for t in "${targets[@]}"; do
+    local harness_script="$HARNESSES_DIR/$t.sh"
+    [[ -f "$harness_script" ]] || die "harness script missing: $harness_script"
+    # shellcheck disable=SC1090
+    source "$harness_script"
+    "${t}_install"
+  done
+
+  [[ -n "$BIN" ]] && install_bin "$BIN"
 
   say ""
   say "done."
