@@ -125,9 +125,15 @@ codex_install_skills() {
   done
 }
 
-# Install command MDs as Codex skills (one skill dir per command, SKILL.md
-# is a symlink to the source command MD). Dir name comes from the source's
-# `name:` frontmatter.
+# Install command MDs as Codex skills. Codex 0.125's skill loader rejects
+# YAML frontmatter with non-schema keys (argument-hint, allowed-tools — both
+# Claude-specific). We can't symlink directly: must generate a SKILL.md with
+# the Claude keys stripped. The generated file is a content-mode duplicate of
+# the source body; drift-check verifies freshness via mtime.
+#
+# Source command MD frontmatter retained: name, description.
+# Stripped: argument-hint, allowed-tools (anything else Claude-specific can be
+# added to _CODEX_DROP_FRONTMATTER_KEYS as it's discovered).
 codex_install_command_skills() {
   local plugin_dir="$1" ns="$2"
   _codex_is_skip_plugin "$plugin_dir" && return 0
@@ -148,16 +154,84 @@ codex_install_command_skills() {
     local skill_dir="$CODEX_SKILLS_DIR/$declared_name"
 
     # Collision guard: if the skill dir is already a symlink, a plugin skill
-    # claimed this name first. Skip — never ensure_dir-traverse into a symlink
-    # because mklink would write SKILL.md into the source tree.
+    # claimed this name first. Skip.
     if [[ -L "$skill_dir" ]]; then
       log "[codex] skip command-skill '$declared_name' (plugin skill already claims this name)"
       continue
     fi
 
     ensure_dir "$skill_dir"
-    mklink "$cmd" "$skill_dir/SKILL.md" "codex-command-skill"
+    _codex_emit_command_skill "$cmd" "$skill_dir/SKILL.md"
   done
+}
+
+# Generate a Codex-clean SKILL.md from a Claude command MD. Strips the keys
+# Codex's parser rejects (argument-hint, allowed-tools) and any other keys
+# we've identified as non-portable. Idempotent (only writes when content differs).
+_codex_emit_command_skill() {
+  local src="$1" dest="$2"
+
+  # Use python so we can do correct YAML-style frontmatter manipulation.
+  local content
+  content="$(python3 - "$src" <<'PYEOF'
+import re, sys
+
+KEYS_TO_DROP = {"argument-hint", "allowed-tools"}
+
+src = sys.argv[1]
+text = open(src).read()
+if not text.startswith("---\n"):
+    sys.stderr.write(f"WARN: no frontmatter, emitting body only: {src}\n")
+    sys.stdout.write(text)
+    sys.exit(0)
+
+end = text.find("\n---\n", 4)
+if end == -1:
+    sys.stderr.write(f"WARN: no closing ---, emitting body only: {src}\n")
+    sys.stdout.write(text)
+    sys.exit(0)
+
+fm = text[4:end]
+body = text[end+5:]
+
+# Drop blocks. We treat any line starting with `<key>:` as a top-level key,
+# and skip until the next top-level key or end. Indented continuation lines
+# belong to the previous key.
+out_lines = []
+skip_until_next_key = False
+for line in fm.split("\n"):
+    # Top-level key match: starts at column 0, has a colon
+    m = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*:", line)
+    if m:
+        key = m.group(1)
+        skip_until_next_key = key in KEYS_TO_DROP
+        if not skip_until_next_key:
+            out_lines.append(line)
+    else:
+        # Continuation (indented) — keep iff the most recent top-level key was kept
+        if not skip_until_next_key:
+            out_lines.append(line)
+
+new_fm = "\n".join(out_lines)
+sys.stdout.write(f"---\n{new_fm}\n---\n{body}")
+PYEOF
+)"
+
+  # Idempotent write
+  if [[ -f "$dest" ]]; then
+    local current; current="$(cat "$dest")"
+    if [[ "$current" == "$content" ]]; then
+      log "[codex] command-skill unchanged: $dest"
+      return 0
+    fi
+  fi
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "  EMIT [codex-command-skill]  $src -> $dest"
+  else
+    printf '%s' "$content" > "$dest"
+    log "emitted [codex-command-skill]: $dest (from $src)"
+  fi
 }
 
 # Install agent MD files. Codex 0.125 multi-agent YAML schema is unverified;
@@ -400,14 +474,42 @@ codex_uninstall() {
 
   local total=0 n
 
-  # Skills: remove asha-rooted symlinks at depth 1 (whole-dir skill symlinks)
-  # AND nested SKILL.md symlinks at depth 2 (command-skills).
+  # Skills cleanup: three kinds of asha-installed entries to remove —
+  #   1. Whole-dir symlinks (plugin skills) — remove via remove_symlinks_under
+  #   2. SKILL.md symlinks inside our created dirs (legacy command-skills,
+  #      pre-frontmatter-strip era) — same scan handles them
+  #   3. Generated SKILL.md files inside our created dirs (current command-
+  #      skills with stripped frontmatter) — match by source name lookup
   if [[ -d "$CODEX_SKILLS_DIR" ]]; then
     n="$(remove_symlinks_under "$CODEX_SKILLS_DIR" 2)"
     [[ "$n" -gt 0 ]] && say "[codex] removed $n skill symlink(s) from $CODEX_SKILLS_DIR"
     total=$((total + n))
 
-    # Prune now-empty skill dirs that we created (only real dirs, not Codex's .system)
+    # Generated command-skills (real files): identify by walking plugin command MDs,
+    # reading their declared name, and checking if a non-symlink SKILL.md exists.
+    local removed_generated=0
+    while IFS= read -r cmd; do
+      [[ -f "$cmd" ]] || continue
+      case "$cmd" in *output-styles*) continue ;; esac
+      local declared_name
+      declared_name="$(_codex_skill_name_from_md "$cmd")"
+      [[ -z "$declared_name" ]] && continue
+      local skill_md="$CODEX_SKILLS_DIR/$declared_name/SKILL.md"
+      # Only remove if it's a real file (not symlink — symlinks were handled above)
+      if [[ -f "$skill_md" && ! -L "$skill_md" ]]; then
+        if [[ $DRY_RUN -eq 1 ]]; then
+          info "  RM (generated)  $skill_md"
+        else
+          rm -f "$skill_md"
+          log "removed generated command-skill: $skill_md"
+        fi
+        removed_generated=$((removed_generated+1))
+      fi
+    done < <(find "$PLUGINS_DIR" -mindepth 3 -maxdepth 3 -path '*/commands/*.md' -type f 2>/dev/null)
+    [[ $removed_generated -gt 0 ]] && say "[codex] removed $removed_generated generated command-skill(s)"
+    total=$((total + removed_generated))
+
+    # Prune now-empty skill dirs that we created (only real dirs, not .system)
     while IFS= read -r d; do
       [[ -z "$d" ]] && continue
       [[ -L "$d" ]] && continue
