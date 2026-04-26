@@ -1,4 +1,5 @@
 ---
+name: code-verify
 description: "Run code verification (types, lint, tests, security)"
 argument-hint: "[--quick | --full] [--file PATH]"
 allowed-tools: ["Bash", "Read"]

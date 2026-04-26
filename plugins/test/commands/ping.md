@@ -1,4 +1,5 @@
 ---
+name: test-ping
 description: Marketplace installer canary. Prints a sentinel line to confirm the /test:ping slash command resolved via Claude Code's user-level command scanner.
 ---
 

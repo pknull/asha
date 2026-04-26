@@ -1,4 +1,5 @@
 ---
+name: session-status
 description: "Show current session status and captured activity"
 argument-hint: ""
 allowed-tools: ["Bash", "Read"]

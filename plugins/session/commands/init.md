@@ -1,4 +1,5 @@
 ---
+name: session-init
 description: "Initialize session management in current project - creates Memory/ and .asha/"
 argument-hint: "Optional: --full (accept all defaults)"
 allowed-tools: ["Bash", "Read", "Write"]
