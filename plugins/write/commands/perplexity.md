@@ -1,4 +1,5 @@
 ---
+name: write-perplexity
 description: "Check prose for AI flatness using local perplexity measurement"
 argument-hint: "<file-or-text> [--threshold N] [--json]"
 allowed-tools: ["Bash", "Read"]

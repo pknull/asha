@@ -1,4 +1,5 @@
 ---
+name: session-save
 description: "Manually trigger session synthesis and git commit"
 argument-hint: "[--no-push] [commit message]"
 allowed-tools: ["Bash", "Read", "Edit"]

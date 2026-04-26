@@ -1,4 +1,5 @@
 ---
+name: write-init-novel
 description: "Initialize novel state directory structure (bible/state/timeline)"
 argument-hint: "[project-path]"
 allowed-tools: ["Bash"]

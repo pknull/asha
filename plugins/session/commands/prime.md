@@ -1,4 +1,5 @@
 ---
+name: session-prime
 description: "Interactive codebase exploration through guided conversation"
 argument-hint: "Optional: project-name or directory-path"
 allowed-tools: ["Read", "Glob", "Grep", "Bash"]

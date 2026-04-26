@@ -1,4 +1,5 @@
 ---
+name: session-silence
 description: "Toggle silence mode to disable Memory logging"
 argument-hint: "Optional: 'on' or 'off' to set explicitly"
 allowed-tools: ["Bash"]

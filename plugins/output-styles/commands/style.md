@@ -1,4 +1,5 @@
 ---
+name: output-styles-style
 description: "Switch output styles for Claude Code responses"
 argument-hint: "[style-name] | off"
 allowed-tools: ["Read", "Write", "Bash", "Glob"]

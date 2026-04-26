@@ -1,4 +1,5 @@
 ---
+name: code-checkpoint
 description: Create or verify named progress checkpoints with jj
 argument-hint: "[create|verify|list|clear] [name]"
 ---

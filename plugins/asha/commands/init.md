@@ -1,4 +1,5 @@
 ---
+name: asha-init
 description: "Initialize Asha persona - creates identity files and wrapper script"
 argument-hint: ""
 allowed-tools: ["Bash", "Read", "Write"]
