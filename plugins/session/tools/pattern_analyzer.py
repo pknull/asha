@@ -14,10 +14,11 @@ Usage:
 import os
 import re
 import json
+import hashlib
 import argparse
 import subprocess
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
 from collections import defaultdict, Counter
 
@@ -74,6 +75,71 @@ KEEPER_PATTERNS = [
     (r"my (preference|style|workflow) is", "preference"),
     (r"I('m| am) (a|an) (\w+) (developer|engineer|writer)", "identity"),
 ]
+
+
+# -----------------------------------------------------------------------------
+# activeContext.md backup + manual-edit detection
+#
+# Backups live in ~/.cache/asha/<project-slug>/ so they are invisible to git in
+# every consumer project, no per-project .gitignore needed. A sha256 sidecar
+# records the last successful auto-synth output; the next run compares it to
+# the on-disk file to decide whether the user touched it manually.
+# -----------------------------------------------------------------------------
+
+def _project_slug() -> str:
+    """Stable slug for cache namespacing — derived from project root path."""
+    return hashlib.sha1(str(PROJECT_ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
+
+
+def _asha_cache_dir() -> Path:
+    """Per-project asha cache directory (~/.cache/asha/<slug>/)."""
+    base = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    return base / "asha" / _project_slug()
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _synthhash_path() -> Path:
+    return _asha_cache_dir() / "activeContext.synthhash"
+
+
+def _read_synthhash() -> Optional[str]:
+    sidecar = _synthhash_path()
+    if not sidecar.exists():
+        return None
+    value = sidecar.read_text().strip()
+    return value or None
+
+
+def _write_synthhash(content: str) -> None:
+    cache_dir = _asha_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _synthhash_path().write_text(_content_hash(content))
+
+
+def _was_manually_edited(existing_content: str) -> bool:
+    """True when the on-disk activeContext.md diverges from the last auto-synth.
+
+    Prefers the sha256 sidecar (robust). Falls back to the legacy substring
+    check on first run after upgrade or on a fresh project, so existing
+    auto-synth files don't trigger spurious backups.
+    """
+    last_hash = _read_synthhash()
+    if last_hash is not None:
+        return _content_hash(existing_content) != last_hash
+    return 'synthesizedFrom: "events"' not in existing_content
+
+
+def _backup_active_context(existing_content: str) -> Path:
+    """Write a timestamped backup outside the project's git tree."""
+    cache_dir = _asha_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = cache_dir / f"activeContext-{timestamp}.backup.md"
+    backup_path.write_text(existing_content)
+    return backup_path
 
 
 def load_events(session_id: Optional[str] = None, days: int = 7) -> List[Dict]:
@@ -696,15 +762,13 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     active_context = generate_active_context(events, existing_patterns)
 
     if ACTIVE_CONTEXT.exists():
-        # Check if activeContext was manually modified since last synthesis
         existing_content = ACTIVE_CONTEXT.read_text()
-        if 'synthesizedFrom: "events"' not in existing_content:
-            # File was manually edited (no synthesis marker) — back it up
-            backup_path = ACTIVE_CONTEXT.parent / "activeContext.backup.md"
-            backup_path.write_text(existing_content)
+        if _was_manually_edited(existing_content):
+            backup_path = _backup_active_context(existing_content)
             results["activeContext_backup"] = str(backup_path)
 
     ACTIVE_CONTEXT.write_text(active_context)
+    _write_synthhash(active_context)
 
     # Extract learnings for activeContext display
     learnings = synthesize_learnings(events, existing_patterns)
