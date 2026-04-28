@@ -142,6 +142,124 @@ def _backup_active_context(existing_content: str) -> Path:
     return backup_path
 
 
+# -----------------------------------------------------------------------------
+# Section-aware merge for activeContext.md
+#
+# When a user has manually curated sections in activeContext.md (Next Steps,
+# Known Gaps, custom sections, etc.) we must NOT clobber that content with the
+# generic auto-synth output. Backup-then-overwrite is recovery, not prevention.
+#
+# Approach: take ONLY the auto-managed sections from the synth output and
+# preserve every other section from the existing file. Auto-managed = sections
+# whose content is fully derived from event analysis and would be re-derived on
+# next run anyway. Everything else is treated as user territory.
+# -----------------------------------------------------------------------------
+
+# Sections whose content the synthesizer is authoritative for. Anything outside
+# this set is preserved verbatim from the on-disk file when merging.
+AUTO_MANAGED_SECTIONS = frozenset({
+    "What Was Accomplished",
+    "What Was Learned",
+})
+
+
+def _split_sections(content: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """Split markdown into (preamble, [(heading, body), ...]).
+
+    Preamble = everything before the first ## heading (frontmatter, # title, etc.).
+    Each section body is the lines between its ## heading and the next ## heading,
+    with surrounding blank lines trimmed.
+    """
+    lines = content.splitlines()
+    preamble_lines: List[str] = []
+    sections: List[Tuple[str, List[str]]] = []
+    current_heading: Optional[str] = None
+    current_body: List[str] = []
+
+    heading_re = re.compile(r"^##\s+(.+?)\s*$")
+
+    for line in lines:
+        m = heading_re.match(line)
+        if m:
+            if current_heading is None:
+                preamble_lines = current_body
+            else:
+                sections.append((current_heading, current_body))
+            current_heading = m.group(1).strip()
+            current_body = []
+        else:
+            current_body.append(line)
+
+    if current_heading is None:
+        preamble_lines = current_body
+    else:
+        sections.append((current_heading, current_body))
+
+    preamble = "\n".join(preamble_lines).rstrip()
+    body_sections = [(h, "\n".join(b).strip()) for h, b in sections]
+    return preamble, body_sections
+
+
+def _is_auto_managed_heading(heading: str) -> bool:
+    """Match a heading against AUTO_MANAGED_SECTIONS with prefix tolerance.
+
+    Treats "What Was Accomplished" and "What Was Accomplished (this session)"
+    as the same auto-managed slot, so a user-renamed variant doesn't survive
+    as a duplicate alongside the canonical auto-output.
+    """
+    for canonical in AUTO_MANAGED_SECTIONS:
+        if heading == canonical:
+            return True
+        if heading.startswith(canonical + " ") or heading.startswith(canonical + "("):
+            return True
+    return False
+
+
+def _merge_preserving_curated(auto_content: str, existing_content: str) -> str:
+    """Merge auto-synth output with existing file, preserving curated sections.
+
+    - Frontmatter + preamble: from auto (timestamp, title)
+    - Sections matching AUTO_MANAGED_SECTIONS (with prefix tolerance): from auto
+    - All other sections present in existing: preserved verbatim from existing
+    - Sections present only in auto (not user-curated): from auto
+    - Sections present only in existing (custom sections): appended at end
+    """
+    auto_preamble, auto_sections = _split_sections(auto_content)
+    _, existing_sections = _split_sections(existing_content)
+
+    existing_map = {h: b for h, b in existing_sections}
+
+    merged: List[Tuple[str, str]] = []
+    seen_existing_headings = set()
+
+    for heading, auto_body in auto_sections:
+        if _is_auto_managed_heading(heading):
+            merged.append((heading, auto_body))
+            # Mark any existing variant of this auto-managed slot as consumed
+            for ex_heading, _ in existing_sections:
+                if _is_auto_managed_heading(ex_heading):
+                    seen_existing_headings.add(ex_heading)
+        elif heading in existing_map:
+            merged.append((heading, existing_map[heading]))
+            seen_existing_headings.add(heading)
+        else:
+            merged.append((heading, auto_body))
+
+    # Custom sections the user added that the auto template doesn't generate
+    for heading, existing_body in existing_sections:
+        if heading not in seen_existing_headings:
+            merged.append((heading, existing_body))
+
+    out: List[str] = [auto_preamble, ""]
+    for heading, body in merged:
+        out.append(f"## {heading}")
+        out.append("")
+        if body:
+            out.append(body)
+            out.append("")
+    return "\n".join(out).rstrip() + "\n"
+
+
 def load_events(session_id: Optional[str] = None, days: int = 7) -> List[Dict]:
     """Load events from JSONL file with optional filtering"""
     if not EVENTS_FILE.exists():
@@ -758,7 +876,11 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     # Load existing patterns for confidence tracking
     existing_patterns = load_existing_patterns()
 
-    # Generate activeContext.md (with protection against overwriting manual edits)
+    # Generate activeContext.md. When the on-disk file has been manually
+    # curated (Next Steps, Known Gaps, etc.) we MERGE rather than overwrite:
+    # auto-managed sections (What Was Accomplished, What Was Learned) come
+    # from the synth; every other section is preserved verbatim. Backup is
+    # still written as a defensive recovery point.
     active_context = generate_active_context(events, existing_patterns)
 
     if ACTIVE_CONTEXT.exists():
@@ -766,6 +888,8 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
         if _was_manually_edited(existing_content):
             backup_path = _backup_active_context(existing_content)
             results["activeContext_backup"] = str(backup_path)
+            active_context = _merge_preserving_curated(active_context, existing_content)
+            results["activeContext_merged"] = True
 
     ACTIVE_CONTEXT.write_text(active_context)
     _write_synthhash(active_context)
