@@ -157,8 +157,13 @@ def _backup_active_context(existing_content: str) -> Path:
 
 # Sections whose content the synthesizer is authoritative for. Anything outside
 # this set is preserved verbatim from the on-disk file when merging.
+#
+# "What Was Accomplished" is intentionally NOT in this set: the synthesizer's
+# output for it is a generic file-count list that's less informative than a
+# human narrative, so we let users own that section after the first synth.
+# "What Was Learned" stays auto-managed because pattern detection there
+# surfaces signal users wouldn't write themselves.
 AUTO_MANAGED_SECTIONS = frozenset({
-    "What Was Accomplished",
     "What Was Learned",
 })
 
@@ -876,11 +881,14 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     # Load existing patterns for confidence tracking
     existing_patterns = load_existing_patterns()
 
-    # Generate activeContext.md. When the on-disk file has been manually
-    # curated (Next Steps, Known Gaps, etc.) we MERGE rather than overwrite:
-    # auto-managed sections (What Was Accomplished, What Was Learned) come
-    # from the synth; every other section is preserved verbatim. Backup is
-    # still written as a defensive recovery point.
+    # Generate activeContext.md. We MERGE unconditionally when an existing
+    # file is present: auto-managed sections (What Was Accomplished, What
+    # Was Learned) come from the synth; every other section is preserved
+    # verbatim. The merge is identity when existing is pure auto, so
+    # running it always is safe and avoids the trap where the synthhash
+    # gets updated to merged content and the next run "doesn't see"
+    # manual sections to protect. Backup still fires only on detected
+    # manual edits, as a defensive recovery point.
     active_context = generate_active_context(events, existing_patterns)
 
     if ACTIVE_CONTEXT.exists():
@@ -888,8 +896,10 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
         if _was_manually_edited(existing_content):
             backup_path = _backup_active_context(existing_content)
             results["activeContext_backup"] = str(backup_path)
-            active_context = _merge_preserving_curated(active_context, existing_content)
+        merged = _merge_preserving_curated(active_context, existing_content)
+        if merged != active_context:
             results["activeContext_merged"] = True
+        active_context = merged
 
     ACTIVE_CONTEXT.write_text(active_context)
     _write_synthhash(active_context)
