@@ -136,8 +136,13 @@ def parse_learnings() -> Dict[str, List[Learning]]:
                 evidence=evidence_list
             ))
 
-        # If no structured entries, parse legacy bullet format
-        if not learnings[category]:
+        # If no structured entries, parse legacy bullet format.
+        # Guard: if the section already has ### subheadings, the user is
+        # using structured format even if it doesn't match the canonical
+        # field order. Falling through to bullet parsing would fragment
+        # each "- **Field**: value" line into its own learning entry,
+        # destroying curated content. Skip legacy parsing in that case.
+        if not learnings[category] and not re.search(r'^### ', section, re.MULTILINE):
             legacy_bullets = re.findall(r'^- (.+)$', section, re.MULTILINE)
             for i, bullet in enumerate(legacy_bullets):
                 # Generate ID from first few words
