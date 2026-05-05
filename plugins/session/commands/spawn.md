@@ -1,4 +1,5 @@
 ---
+name: session-spawn
 description: "Spawn AI agent in tmux orchestrator session"
 argument-hint: "<name> <type> [prompt] [working-dir]"
 allowed-tools: ["Bash"]

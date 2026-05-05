@@ -54,6 +54,67 @@ Session continuity acknowledgment via haiku:
 - version, lastUpdated, lifecycle, stakeholder
 - changeTrigger, validatedBy, dependencies
 
+### B1 Extended Schema (Init 2 — active as of 2026-04-18)
+
+Two new frontmatter fields added by B1 migration:
+
+```yaml
+type: persona | human | project | feedback | operational | reference
+superseded_by: null | <filename>
+```
+
+**`type:` field** — Classifies memory file purpose:
+
+| Value | Files | Loaded at |
+|-------|-------|-----------|
+| `persona` | soul.md, voice.md, keeper-voice.md | When `ASHA_PERSONA=1` |
+| `human` | keeper.md, creatorProfile.md | Always |
+| `project` | activeContext.md, projectbrief.md, project_*.md | Always |
+| `feedback` | feedback_*.md | Always |
+| `operational` | operation.md, learnings.md, memory-ops.md, agent-coordination.md | Always |
+| `reference` | reference_*.md | On demand |
+
+Rules:
+- Every `.md` file in `~/.asha/`, `Memory/`, and the auto-memory store must have `type:`.
+- Migration script: `/home/pknull/life/tools/asha-b1/migrate.py` — idempotent, add `--execute` to write.
+- Validate: `grep -rL "^type:" ~/.asha/*.md Memory/*.md` should return nothing.
+
+**`superseded_by:` field** — Pointer to the file that replaces this one:
+
+- Set to `null` when active.
+- Set to `<filename>` when a newer file makes this one obsolete.
+- **Never delete superseded files** — they are the audit trail.
+- The consolidation pass in `/asha:save` populates this field; humans may also set it manually.
+
+```yaml
+# Active file
+type: feedback
+superseded_by: null
+
+# Superseded file (old version — keep, do not delete)
+type: feedback
+superseded_by: feedback_gws_over_mcp_v2.md
+```
+
+### Hot/Cold Tier for learnings.md
+
+`learnings.md` is split into two files to keep the always-loaded hot tier bounded:
+
+| File | Tier | Loaded at | Contains |
+|------|------|-----------|---------|
+| `~/.asha/learnings.md` | Hot | Every session start | Top ≤10 entries by Confidence ≥ 0.7 |
+| `~/.asha/learnings-archive.md` | Cold | On demand / not auto-loaded | Entries with Confidence < 0.7 or below top-10 cutoff |
+
+**Threshold**: Confidence ≥ 0.7 = hot. Anything lower is cold.
+
+**Char budget**: Hot tier (`learnings.md`) must stay under 50KB. Check with `wc -c ~/.asha/learnings.md`.
+
+**Promotion**: When a cold entry's Confidence rises to ≥ 0.7, move it to `learnings.md`.
+
+**Demotion**: When a hot entry drops below 0.7, or hot tier exceeds 10 entries, move lowest-confidence entries to `learnings-archive.md`.
+
+**Consolidation**: `/asha:save` consolidation pass (Step C3) handles automatic promotion/demotion. See `save.md` appendix.
+
 ### Periodic Trimming
 
 `activeContext.md` accumulates session history. Without trimming, "last 7 days" sections drift into weeks or months.

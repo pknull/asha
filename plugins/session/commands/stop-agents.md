@@ -1,4 +1,5 @@
 ---
+name: session-stop-agents
 description: "Stop agents in tmux orchestrator session"
 argument-hint: "Optional: agent name, 'all', or '--force'"
 allowed-tools: ["Bash"]

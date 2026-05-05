@@ -1,4 +1,5 @@
 ---
+name: write-review-section
 description: "Run periodic review suite on completed section (reads project config)"
 argument-hint: "<section-path> [--full]"
 allowed-tools: ["Task", "Read", "Grep", "Glob"]

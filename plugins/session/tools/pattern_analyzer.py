@@ -14,10 +14,11 @@ Usage:
 import os
 import re
 import json
+import hashlib
 import argparse
 import subprocess
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
 from collections import defaultdict, Counter
 
@@ -74,6 +75,194 @@ KEEPER_PATTERNS = [
     (r"my (preference|style|workflow) is", "preference"),
     (r"I('m| am) (a|an) (\w+) (developer|engineer|writer)", "identity"),
 ]
+
+
+# -----------------------------------------------------------------------------
+# activeContext.md backup + manual-edit detection
+#
+# Backups live in ~/.cache/asha/<project-slug>/ so they are invisible to git in
+# every consumer project, no per-project .gitignore needed. A sha256 sidecar
+# records the last successful auto-synth output; the next run compares it to
+# the on-disk file to decide whether the user touched it manually.
+# -----------------------------------------------------------------------------
+
+def _project_slug() -> str:
+    """Stable slug for cache namespacing — derived from project root path."""
+    return hashlib.sha1(str(PROJECT_ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
+
+
+def _asha_cache_dir() -> Path:
+    """Per-project asha cache directory (~/.cache/asha/<slug>/)."""
+    base = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache"))
+    return base / "asha" / _project_slug()
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _synthhash_path() -> Path:
+    return _asha_cache_dir() / "activeContext.synthhash"
+
+
+def _read_synthhash() -> Optional[str]:
+    sidecar = _synthhash_path()
+    if not sidecar.exists():
+        return None
+    value = sidecar.read_text().strip()
+    return value or None
+
+
+def _write_synthhash(content: str) -> None:
+    cache_dir = _asha_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    _synthhash_path().write_text(_content_hash(content))
+
+
+def _was_manually_edited(existing_content: str) -> bool:
+    """True when the on-disk activeContext.md diverges from the last auto-synth.
+
+    Prefers the sha256 sidecar (robust). Falls back to the legacy substring
+    check on first run after upgrade or on a fresh project, so existing
+    auto-synth files don't trigger spurious backups.
+    """
+    last_hash = _read_synthhash()
+    if last_hash is not None:
+        return _content_hash(existing_content) != last_hash
+    return 'synthesizedFrom: "events"' not in existing_content
+
+
+def _backup_active_context(existing_content: str) -> Path:
+    """Write a timestamped backup outside the project's git tree."""
+    cache_dir = _asha_cache_dir()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = cache_dir / f"activeContext-{timestamp}.backup.md"
+    backup_path.write_text(existing_content)
+    return backup_path
+
+
+# -----------------------------------------------------------------------------
+# Section-aware merge for activeContext.md
+#
+# When a user has manually curated sections in activeContext.md (Next Steps,
+# Known Gaps, custom sections, etc.) we must NOT clobber that content with the
+# generic auto-synth output. Backup-then-overwrite is recovery, not prevention.
+#
+# Approach: take ONLY the auto-managed sections from the synth output and
+# preserve every other section from the existing file. Auto-managed = sections
+# whose content is fully derived from event analysis and would be re-derived on
+# next run anyway. Everything else is treated as user territory.
+# -----------------------------------------------------------------------------
+
+# Sections whose content the synthesizer is authoritative for. Anything outside
+# this set is preserved verbatim from the on-disk file when merging.
+#
+# "What Was Accomplished" is intentionally NOT in this set: the synthesizer's
+# output for it is a generic file-count list that's less informative than a
+# human narrative, so we let users own that section after the first synth.
+# "What Was Learned" stays auto-managed because pattern detection there
+# surfaces signal users wouldn't write themselves.
+AUTO_MANAGED_SECTIONS = frozenset({
+    "What Was Learned",
+})
+
+
+def _split_sections(content: str) -> Tuple[str, List[Tuple[str, str]]]:
+    """Split markdown into (preamble, [(heading, body), ...]).
+
+    Preamble = everything before the first ## heading (frontmatter, # title, etc.).
+    Each section body is the lines between its ## heading and the next ## heading,
+    with surrounding blank lines trimmed.
+    """
+    lines = content.splitlines()
+    preamble_lines: List[str] = []
+    sections: List[Tuple[str, List[str]]] = []
+    current_heading: Optional[str] = None
+    current_body: List[str] = []
+
+    heading_re = re.compile(r"^##\s+(.+?)\s*$")
+
+    for line in lines:
+        m = heading_re.match(line)
+        if m:
+            if current_heading is None:
+                preamble_lines = current_body
+            else:
+                sections.append((current_heading, current_body))
+            current_heading = m.group(1).strip()
+            current_body = []
+        else:
+            current_body.append(line)
+
+    if current_heading is None:
+        preamble_lines = current_body
+    else:
+        sections.append((current_heading, current_body))
+
+    preamble = "\n".join(preamble_lines).rstrip()
+    body_sections = [(h, "\n".join(b).strip()) for h, b in sections]
+    return preamble, body_sections
+
+
+def _is_auto_managed_heading(heading: str) -> bool:
+    """Match a heading against AUTO_MANAGED_SECTIONS with prefix tolerance.
+
+    Treats "What Was Accomplished" and "What Was Accomplished (this session)"
+    as the same auto-managed slot, so a user-renamed variant doesn't survive
+    as a duplicate alongside the canonical auto-output.
+    """
+    for canonical in AUTO_MANAGED_SECTIONS:
+        if heading == canonical:
+            return True
+        if heading.startswith(canonical + " ") or heading.startswith(canonical + "("):
+            return True
+    return False
+
+
+def _merge_preserving_curated(auto_content: str, existing_content: str) -> str:
+    """Merge auto-synth output with existing file, preserving curated sections.
+
+    - Frontmatter + preamble: from auto (timestamp, title)
+    - Sections matching AUTO_MANAGED_SECTIONS (with prefix tolerance): from auto
+    - All other sections present in existing: preserved verbatim from existing
+    - Sections present only in auto (not user-curated): from auto
+    - Sections present only in existing (custom sections): appended at end
+    """
+    auto_preamble, auto_sections = _split_sections(auto_content)
+    _, existing_sections = _split_sections(existing_content)
+
+    existing_map = {h: b for h, b in existing_sections}
+
+    merged: List[Tuple[str, str]] = []
+    seen_existing_headings = set()
+
+    for heading, auto_body in auto_sections:
+        if _is_auto_managed_heading(heading):
+            merged.append((heading, auto_body))
+            # Mark any existing variant of this auto-managed slot as consumed
+            for ex_heading, _ in existing_sections:
+                if _is_auto_managed_heading(ex_heading):
+                    seen_existing_headings.add(ex_heading)
+        elif heading in existing_map:
+            merged.append((heading, existing_map[heading]))
+            seen_existing_headings.add(heading)
+        else:
+            merged.append((heading, auto_body))
+
+    # Custom sections the user added that the auto template doesn't generate
+    for heading, existing_body in existing_sections:
+        if heading not in seen_existing_headings:
+            merged.append((heading, existing_body))
+
+    out: List[str] = [auto_preamble, ""]
+    for heading, body in merged:
+        out.append(f"## {heading}")
+        out.append("")
+        if body:
+            out.append(body)
+            out.append("")
+    return "\n".join(out).rstrip() + "\n"
 
 
 def load_events(session_id: Optional[str] = None, days: int = 7) -> List[Dict]:
@@ -692,19 +881,28 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     # Load existing patterns for confidence tracking
     existing_patterns = load_existing_patterns()
 
-    # Generate activeContext.md (with protection against overwriting manual edits)
+    # Generate activeContext.md. We MERGE unconditionally when an existing
+    # file is present: auto-managed sections (What Was Accomplished, What
+    # Was Learned) come from the synth; every other section is preserved
+    # verbatim. The merge is identity when existing is pure auto, so
+    # running it always is safe and avoids the trap where the synthhash
+    # gets updated to merged content and the next run "doesn't see"
+    # manual sections to protect. Backup still fires only on detected
+    # manual edits, as a defensive recovery point.
     active_context = generate_active_context(events, existing_patterns)
 
     if ACTIVE_CONTEXT.exists():
-        # Check if activeContext was manually modified since last synthesis
         existing_content = ACTIVE_CONTEXT.read_text()
-        if 'synthesizedFrom: "events"' not in existing_content:
-            # File was manually edited (no synthesis marker) — back it up
-            backup_path = ACTIVE_CONTEXT.parent / "activeContext.backup.md"
-            backup_path.write_text(existing_content)
+        if _was_manually_edited(existing_content):
+            backup_path = _backup_active_context(existing_content)
             results["activeContext_backup"] = str(backup_path)
+        merged = _merge_preserving_curated(active_context, existing_content)
+        if merged != active_context:
+            results["activeContext_merged"] = True
+        active_context = merged
 
     ACTIVE_CONTEXT.write_text(active_context)
+    _write_synthhash(active_context)
 
     # Extract learnings for activeContext display
     learnings = synthesize_learnings(events, existing_patterns)

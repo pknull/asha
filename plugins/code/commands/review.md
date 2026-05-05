@@ -1,4 +1,5 @@
 ---
+name: code-review
 description: "Review code changes with parallel specialized reviewers"
 argument-hint: "[path] | --all"
 allowed-tools: ["Task", "Bash", "Read", "Grep", "Glob"]

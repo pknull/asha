@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# asha-claude — launch Claude Code with Asha persona at system-prompt level.
+#
+# Two mechanisms work together:
+#   1. ASHA_PERSONA=1 tells the SessionStart hook to load soul/voice/keeper
+#   2. --append-system-prompt-file injects the identity assertion at
+#      system-prompt priority (highest)
+#
+# Falls back to plain claude if identity file is missing.
+#
+# This wrapper ships with the asha repo. The bin installer (install.sh --bin
+# claude) places ~/.local/bin/asha → here. The legacy ~/bin/asha (in dotfiles)
+# is retired by install.sh after detection.
+
+# Resolve identity path relative to this script (handles symlinked invocation).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+IDENTITY_FILE="$ASHA_ROOT/identity/asha-identity-system-prompt.md"
+
+export ASHA_PERSONA=1
+
+if [[ -f "$IDENTITY_FILE" ]]; then
+    exec claude --append-system-prompt-file "$IDENTITY_FILE" "$@"
+else
+    echo "warn: Asha identity file not found at $IDENTITY_FILE" >&2
+    echo "warn: Persona will load via hook only (lower priority)" >&2
+    exec claude "$@"
+fi

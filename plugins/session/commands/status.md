@@ -1,4 +1,5 @@
 ---
+name: session-status
 description: "Show current session status and captured activity"
 argument-hint: ""
 allowed-tools: ["Bash", "Read"]
@@ -37,7 +38,7 @@ fi
 ### Step 3: Query Event Store for Session Activity
 
 ```bash
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"
+PLUGIN_ROOT="/home/pknull/life/asha/plugins/session"
 PYTHON_CMD="python3"
 
 if [[ -x "${CLAUDE_PROJECT_DIR}/.asha/.venv/bin/python3" ]]; then

@@ -45,6 +45,22 @@ VOICE_TEMPLATE = '''# Voice Guide
 - [ ] Sensory grounding in setting
 - [ ] (add project-specific required patterns)
 
+## Suppress Categories
+
+Cliche categories from the style-analyzer that this project opts out of.
+Use category IDs (run `analyze_style.py --list-categories` to see all).
+
+Common suppressions by genre:
+- `shimmer_family` — fantasy with intentional luminous imagery
+- `shadow_worship` — horror/gothic using darkness deliberately
+- `overworked_metaphors` — projects with intentional elemental motifs
+- `metallic_taste_trinity` — projects with deliberate blood/violence motifs
+- `pseudo_profound_nouns` — literary fiction using abstract nouns deliberately
+
+```yaml
+suppress_categories: []
+```
+
 ## Grep Patterns
 
 Automated checks for prohibited patterns:

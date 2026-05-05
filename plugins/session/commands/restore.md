@@ -1,4 +1,5 @@
 ---
+name: session-restore
 description: "Re-enable Memory logging after silence mode"
 allowed-tools: ["Bash", "Read"]
 ---

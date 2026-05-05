@@ -1,9 +1,29 @@
-# asha-marketplace
+# asha
 
 **Version**: 1.17.0
 **Description**: Claude Code plugins for research, development, creative writing, image generation, scheduling, and session coordination
 
 A collection of domain-focused Claude Code plugins organized by workflow type.
+
+---
+
+## Install model: symlink-mount (no marketplace registry)
+
+Instead of the legacy three-file plugin registration chain
+(`marketplace.json` → `installed_plugins.json` → `enabledPlugins`),
+installation is now a plain symlink operation:
+
+```bash
+./install.sh              # symlinks primitives into ~/.claude/*
+./uninstall.sh            # removes marketplace-sourced symlinks
+./deprecate-marketplace.sh  # one-shot cleanup of legacy registration state
+```
+
+See **[INSTALLER.md](INSTALLER.md)** for the model and `plugins/test/README.md`
+for the smoke-test plugin.
+
+The tables below still describe what each plugin does; the "install" mechanism
+is only the one above.
 
 ---
 
@@ -217,7 +237,7 @@ Creative writing workflows with prose craft, perplexity detection, style analysi
 Stable Diffusion prompt engineering and ComfyUI workflow design.
 
 ```bash
-/plugin install image@asha-marketplace
+/plugin install image@asha
 ```
 
 **Agent**: `comfyui-prompt-engineer`
@@ -379,22 +399,22 @@ Cognitive scaffold framework with cross-project identity, automatic learning, an
 ### Add Marketplace
 
 ```bash
-/plugin marketplace add pknull/asha-marketplace
+/plugin marketplace add pknull/asha
 ```
 
 ### Install Plugins
 
 ```bash
 # Foundation (recommended first)
-/plugin install asha@asha-marketplace
+/plugin install asha@asha
 
 # Domain plugins (install as needed)
-/plugin install panel-system@asha-marketplace
-/plugin install code@asha-marketplace
-/plugin install write@asha-marketplace
-/plugin install image@asha-marketplace
-/plugin install scheduler@asha-marketplace
-/plugin install output-styles@asha-marketplace
+/plugin install panel-system@asha
+/plugin install code@asha
+/plugin install write@asha
+/plugin install image@asha
+/plugin install scheduler@asha
+/plugin install output-styles@asha
 ```
 
 ### Verify Installation
@@ -408,7 +428,7 @@ Cognitive scaffold framework with cross-project identity, automatic learning, an
 ## Plugin Directory Structure
 
 ```
-asha-marketplace/
+asha/
 ├── .claude-plugin/
 │   └── marketplace.json          # Marketplace metadata
 ├── plugins/
@@ -517,7 +537,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 
 ## Support
 
-**Issues and feature requests**: https://github.com/pknull/asha-marketplace/issues
+**Issues and feature requests**: https://github.com/pknull/asha/issues
 
 **Documentation**:
 

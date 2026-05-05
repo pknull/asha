@@ -1,4 +1,5 @@
 ---
+name: session-agents
 description: "List running agents in tmux orchestrator session"
 allowed-tools: ["Bash"]
 ---
