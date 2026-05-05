@@ -1,4 +1,5 @@
 ---
+name: code-orchestrate
 description: "Multi-agent workflow with sequential and parallel phases"
 argument-hint: "[feature|bugfix|refactor|security|custom] <description>"
 ---

@@ -1,4 +1,5 @@
 ---
+name: write-init-novel
 description: "Initialize novel state directory structure (bible/state/timeline)"
 argument-hint: "[project-path]"
 allowed-tools: ["Bash"]
@@ -20,7 +21,7 @@ Create the standardized directory structure for novel writing with state trackin
 Run the initialization script:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/novel-state/scripts/init_novel_state.py" [project-path]
+python3 "/home/pknull/life/asha/plugins/write/skills/novel-state/scripts/init_novel_state.py" [project-path]
 ```
 
 ## Created Structure

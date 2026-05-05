@@ -1,4 +1,5 @@
 ---
+name: session-loop
 description: "Start, resume, or manage autonomous agent loops with safety guardrails"
 argument-hint: "<start|resume|status|stop> [loop-id] [options]"
 allowed-tools:

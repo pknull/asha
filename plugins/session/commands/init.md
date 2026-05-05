@@ -1,4 +1,5 @@
 ---
+name: session-init
 description: "Initialize session management in current project - creates Memory/ and .asha/"
 argument-hint: "Optional: --full (accept all defaults)"
 allowed-tools: ["Bash", "Read", "Write"]
@@ -157,7 +158,7 @@ mkdir -p "${CLAUDE_PROJECT_DIR}/.asha"
 ```bash
 for template in activeContext.md projectbrief.md workflowProtocols.md techEnvironment.md scratchpad.md; do
     if [[ ! -f "${CLAUDE_PROJECT_DIR}/Memory/$template" ]]; then
-        cp "${CLAUDE_PLUGIN_ROOT}/templates/$template" "${CLAUDE_PROJECT_DIR}/Memory/$template"
+        cp "/home/pknull/life/asha/plugins/session/templates/$template" "${CLAUDE_PROJECT_DIR}/Memory/$template"
         echo "Created Memory/$template"
     else
         echo "Skipped Memory/$template (exists)"
@@ -169,7 +170,7 @@ done
 
 ```bash
 if [[ ! -f "${CLAUDE_PROJECT_DIR}/CLAUDE.md" ]]; then
-    cp "${CLAUDE_PLUGIN_ROOT}/templates/CLAUDE.md" "${CLAUDE_PROJECT_DIR}/CLAUDE.md"
+    cp "/home/pknull/life/asha/plugins/session/templates/CLAUDE.md" "${CLAUDE_PROJECT_DIR}/CLAUDE.md"
     echo "Created CLAUDE.md"
 else
     echo "Skipped CLAUDE.md (exists)"

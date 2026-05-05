@@ -220,6 +220,16 @@ Then read specifications from other agents (character notes, scene frameworks, w
 - **Preserve**: Natural imperfections, awkward phrasing, incomplete thoughts, genuine voice roughness
 - **Apply**: Contextual voice markers from style guide for each psychological state
 
+**AI Cliche Families to Avoid** (density signals AI, not individual words):
+- **Body/breath/cardiac shorthand**: "chest tightened," "breath caught," "heart lurched" — replace with scene-specific physical reality
+- **Atmosphere cliches**: shimmer/glimmer/gleam family, shadow worship, silence-as-drama ("silence stretched") — one atmospheric shorthand per scene max, vary the sense
+- **Vague profundity**: "something shifted," pseudo-profound nouns (void, echo, threshold), depth adjectives (profound, ethereal, liminal) — precision replaces vagueness
+- **Agency removal**: "couldn't help but," "found herself" — characters choose; show the choice
+- **Structural tells**: em-dash density, triplet framing, "It's not about X, it's about Y," self-answered rhetorical questions
+- **Dialogue tells**: overworked tags (murmured, mused, ventured), smile catalogue (ghost/shadow/hint of a smile)
+
+See `style-analyzer` categories for full pattern lists. Projects can suppress specific categories via `suppress_categories` in voice.md.
+
 > These techniques reduce formulaic patterns but cannot guarantee prose will pass AI detection. Statistical fingerprints from underlying model may persist. For verification, use ai-detector agent.
 
 ## 3. Delivery

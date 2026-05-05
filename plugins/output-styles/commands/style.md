@@ -1,4 +1,5 @@
 ---
+name: output-styles-style
 description: "Switch output styles for Claude Code responses"
 argument-hint: "[style-name] | off"
 allowed-tools: ["Read", "Write", "Bash", "Glob"]
@@ -20,7 +21,7 @@ Switch between output styles for Claude Code responses.
 
 ### List Styles (no argument)
 
-Read all `.md` files from `${CLAUDE_PLUGIN_ROOT}/styles/` directory and display:
+Read all `.md` files from `/home/pknull/life/asha/plugins/output-styles/styles/` directory and display:
 
 ```markdown
 ## Available Output Styles
@@ -43,7 +44,7 @@ Usage: `/style <name>` to switch, `/style off` to disable
 
 ### Switch Style
 
-1. Validate the style name exists in `${CLAUDE_PLUGIN_ROOT}/styles/{name}.md`
+1. Validate the style name exists in `/home/pknull/life/asha/plugins/output-styles/styles/{name}.md`
 2. Write the style name to `~/.claude/active-output-style`
 3. Confirm the switch:
 

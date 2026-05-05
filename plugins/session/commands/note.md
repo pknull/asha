@@ -1,4 +1,5 @@
 ---
+name: session-note
 description: "Add timestamped note to Memory scratchpad"
 argument-hint: "<note text>"
 allowed-tools: ["Bash", "Write", "Read"]

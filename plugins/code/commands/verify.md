@@ -1,4 +1,5 @@
 ---
+name: code-verify
 description: "Run code verification (types, lint, tests, security)"
 argument-hint: "[--quick | --full] [--file PATH]"
 allowed-tools: ["Bash", "Read"]
@@ -40,13 +41,13 @@ Run unified code verification across your project. Automatically detects project
 Run the verification engine:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/tools/verify.py" $ARGUMENTS
+python3 "/home/pknull/life/asha/plugins/code/tools/verify.py" $ARGUMENTS
 ```
 
 If arguments are empty, default to standard level:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/tools/verify.py" --level standard --verbose
+python3 "/home/pknull/life/asha/plugins/code/tools/verify.py" --level standard --verbose
 ```
 
 ## Output

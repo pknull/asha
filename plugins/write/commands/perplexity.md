@@ -1,4 +1,5 @@
 ---
+name: write-perplexity
 description: "Check prose for AI flatness using local perplexity measurement"
 argument-hint: "<file-or-text> [--threshold N] [--json]"
 allowed-tools: ["Bash", "Read"]
@@ -27,7 +28,7 @@ Measure prose "flatness" using local Ollama + Ministral. Detects predictable AI-
 Run the perplexity check script:
 
 ```bash
-python3 "${CLAUDE_PLUGIN_ROOT}/skills/perplexity-gate/scripts/check_perplexity.py" <input> [options]
+python3 "/home/pknull/life/asha/plugins/write/skills/perplexity-gate/scripts/check_perplexity.py" <input> [options]
 ```
 
 ## Thresholds

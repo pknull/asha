@@ -1,4 +1,5 @@
 ---
+name: panel-system-panel
 description: "Convene multi-perspective expert panel for analysis and decision-making"
 argument-hint: "Topic or question to analyze"
 allowed-tools: ["Task", "Read", "Write", "Edit", "Grep", "Glob"]
