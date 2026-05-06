@@ -17,6 +17,12 @@ SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
 ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 IDENTITY_FILE="$ASHA_ROOT/identity/asha-identity-system-prompt.md"
 
+# Load Asha-scoped secrets/env (~/.asha/secrets.env if present). Sourcing
+# here, not in the user's shell rc, keeps tokens out of unrelated subprocess
+# environments. See docs/secrets.md.
+# shellcheck source=./asha-env-bootstrap.sh
+source "$SCRIPT_DIR/asha-env-bootstrap.sh"
+
 export ASHA_PERSONA=1
 
 if [[ -f "$IDENTITY_FILE" ]]; then
