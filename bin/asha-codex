@@ -19,6 +19,12 @@ ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 MERGE_SCRIPT="$ASHA_ROOT/identity/identity-merge.sh"
 INSTRUCTIONS="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
 
+# Load Asha-scoped secrets/env (~/.asha/secrets.env if present). Sourcing
+# here, not in the user's shell rc, keeps tokens out of unrelated subprocess
+# environments. See docs/secrets.md.
+# shellcheck source=./asha-env-bootstrap.sh
+source "$SCRIPT_DIR/asha-env-bootstrap.sh"
+
 if [[ ! -x "$MERGE_SCRIPT" ]]; then
     echo "warn: identity-merge.sh missing or not executable: $MERGE_SCRIPT" >&2
     echo "warn: launching plain codex (no Asha persona)" >&2

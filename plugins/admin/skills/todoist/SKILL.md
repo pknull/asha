@@ -15,15 +15,15 @@ The `task-manager` agent provides read-only Todoist access through the local MCP
 
 ## Setup
 
-User must export their Todoist API token before invoking any operation:
+The token is loaded from `~/.asha/secrets.env` automatically when you launch via the `asha` wrapper (`asha-claude` / `asha-codex`). The wrapper sources `bin/asha-env-bootstrap.sh`, which exports any `KEY=VALUE` defined in that file into the session.
 
-```bash
-export TODOIST_API_TOKEN=<their-token>
-```
+If `$TODOIST_API_TOKEN` is unset when this skill runs, halt with a clear message:
+
+> `TODOIST_API_TOKEN not set. Add it to ~/.asha/secrets.env (see ~/life/asha/secrets.example) and relaunch via asha-claude.`
+
+Do **not** prompt the user to paste the token into chat — that puts it in conversation history. Do **not** read `~/.asha/secrets.env` directly with `cat` or Read; the env var is what the user expects you to use, and reading the file leaks the value into your context.
 
 Tokens come from Todoist Settings → Integrations → Developer.
-
-If the env var is missing, halt and tell the user to set it. Do **not** prompt them to paste the token into chat — that puts it in conversation history.
 
 ## API Surface
 
