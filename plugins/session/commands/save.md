@@ -83,6 +83,36 @@ Push unless `--no-push` specified:
 git push
 ```
 
+## Verification Gate (run BEFORE commit)
+
+After synthesis writes activeContext.md and BEFORE staging it, verify the file is a usable handoff. Cold-start sessions depend on it. If any of these checks fail, stop and surface the issue to the user — do not paper over it with a commit.
+
+**Check 1 — "What Was Accomplished" is concrete, not auto-generic.**
+
+The synthesizer will write a generic block like `Created N file(s): ...` / `Modified N file(s): ...` when it has nothing better. That block is useless to a future session. If you see it as the LEAD section in activeContext, replace it with a concrete narrative of what actually happened this session (file paths, tool names, decisions, blockers).
+
+```bash
+# Quick grep — if this matches and it's near the top, you have the auto-fallback
+grep -n "Created [0-9]* file(s)\|Modified [0-9]* file(s)" "$PROJECT_DIR/Memory/activeContext.md" | head -3
+```
+
+**Check 2 — "Next Steps" is actionable.**
+
+Per CLAUDE.md "Session Handoff Quality": if Next Steps contains only `Review and plan next session` or similar generic text, replace it with concrete pickups before commit.
+
+**Check 3 — No duplicate "What Was Accomplished" headers.**
+
+After the merge fix landed, this should not happen, but verify defensively. A bare `## What Was Accomplished` co-existing with a `## What Was Accomplished (date — note)` is the synthesizer-clobber bug; report it as a regression.
+
+```bash
+grep -c "^## What Was Accomplished" "$PROJECT_DIR/Memory/activeContext.md"
+# Expect: 1 (or N matching parenthetical user variants). NOT N+1.
+```
+
+**Check 4 — Show me the green for any code/config you wrote this session.**
+
+If this session edited code, hook scripts, or config under version control, run the relevant verification (tests, type check, lint, smoke invocation) and paste the result inline. If you cannot verify, say "unverified" explicitly and list what would need to be checked. Never commit-then-claim-done.
+
 ## When to Use
 
 - **Mid-session checkpoint** — long session, want progress saved
@@ -183,6 +213,8 @@ If you catch yourself thinking any of the following while running `/save`, stop.
 | "User said save, push is the default, I'll go ahead even though they mentioned not wanting to push earlier." | You are about to push on autopilot against a `--no-push` intent the user already signaled. Memory commits are remote-visible. | Honor `--no-push`. If intent is ambiguous, ask one line before pushing. |
 | "Event log is empty — nothing happened this session, nothing to save." | An empty event log during a real session is itself a signal (silence marker on, hook misfire, watcher dead). Treating it as "no-op" hides the failure. | Investigate why the log is empty before committing. Note the cause in the commit message or activeContext. |
 | "Auto-generated commit message is fine, this session was routine." | If the session crossed a milestone or made a load-bearing decision, the auto-message buries it under a timestamp and the next reviewer can't find it. | Ask one line: "Anything specific to flag in the commit message?" — takes seconds, prevents history archaeology later. |
+| "The 'What Was Accomplished' block in activeContext is just a generic file count, but the user can fix it later — committing now." | Cold-start sessions read activeContext as authoritative. A `Created N file(s)` lead block teaches the next instance that this is acceptable handoff. The clobber bug recurs through laziness, not through the merge code. | Replace the auto-fallback block with a concrete session narrative BEFORE commit. See Verification Gate Check 1. |
+| "I made code changes but ran out of time — I'll skip the test/type-check and let CI catch it." | "Show me the green" exists because completion claims without verification recur 3+ times in this user's history. Skipping is how the pattern stays alive. | Run the verification. If you cannot, mark it `unverified` in activeContext Next Steps with the specific command that needs to be run. |
 
 **General rule**: rationalization that *sounds* reasonable in the moment is the strongest signal. Genuine exceptions are rare; rationalized shortcuts are common.
 <!-- RED-FLAGS:END -->
