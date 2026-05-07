@@ -11,7 +11,7 @@ triggers:
 
 # Todoist via REST API
 
-The `task-manager` agent provides read-only Todoist access through the local MCP server (`mcp__todoist-ai__get-overview`, `find-tasks`, `find-tasks-by-date`, `user-info`). When you need write operations (create, update, complete, delete) — or when the MCP server is down — call the REST API directly.
+Direct REST API access for Todoist task create/find/update/complete. Replaces the retired `todoist-ai` MCP daemon (retired 2026-05-06 along with `gemini-google-search` and `bookstack`). The `task-manager` agent depends on that MCP and will fabricate data without it — do **not** use it; call this skill instead.
 
 ## Setup
 
@@ -67,23 +67,35 @@ Optional fields: `description`, `project_id`, `labels` (array of strings), `due_
 
 Response includes the new task's `id` — capture it if the user might want to reference the task later in the same session.
 
-### Find tasks by content
+### Find tasks by content / filter
+
+Filtered queries use a **dedicated endpoint**: `/api/v1/tasks/filter?query=...`. Note the path: `/tasks/filter`, NOT `/tasks?filter=`. The `?filter=` query param on `/tasks` is silently ignored — the endpoint returns the first 40 tasks regardless of filter, which is the kind of bug that wastes ten minutes of debugging if you don't know to look for it.
 
 ```bash
-curl -sS "https://api.todoist.com/api/v1/tasks?filter=search:%20ABMX" \
+curl -sS "https://api.todoist.com/api/v1/tasks/filter?query=search%3A%20ABMX" \
   -H "Authorization: Bearer $TODOIST_API_TOKEN"
 ```
 
-The filter string is URL-encoded. Common filters: `search: <text>`, `today`, `overdue`, `p1`, `@labelname`, `#projectname`. Combine with `&` (logical AND) or `|` (OR).
+The query string is URL-encoded. Common filters: `search: <text>`, `today`, `overdue`, `p1`, `@labelname`, `#projectname`. Combine with `&` (logical AND, encoded `%26`) or `|` (OR, encoded `%7C`).
 
 ### Find tasks by date
 
 ```bash
-curl -sS "https://api.todoist.com/api/v1/tasks?filter=due:%202026-05-08" \
+curl -sS "https://api.todoist.com/api/v1/tasks/filter?query=due%3A%202026-05-08" \
   -H "Authorization: Bearer $TODOIST_API_TOKEN"
 ```
 
-For a date range, prefer the read-only MCP agent's `find-tasks-by-date` which has clean range parameters.
+For a date range, use a `due before:` / `due after:` combo, or two filter calls — the v1 API doesn't have native range params on this endpoint.
+
+### Response shape and pagination
+
+Both `/tasks` and `/tasks/filter` return:
+
+```json
+{ "results": [ {...}, {...} ], "next_cursor": "..." | null }
+```
+
+Always parse `data["results"]` (or `data.get("results", [])` in Python), not the top-level object. To page through more than the default 40 results, append `&limit=200&cursor=$NEXT_CURSOR` until `next_cursor` is null.
 
 ### Update a task
 
@@ -126,10 +138,9 @@ Always check exit status of `curl` and parse the response. A successful POST ret
 
 ## When NOT to use this skill
 
-- **Read-only operations**: prefer the `task-manager` agent or its underlying `mcp__todoist-ai__*` tools when available — they're already wired up and handle pagination/parsing.
 - **Bulk operations**: more than ~10 tasks at once, use the Todoist Sync API (`/sync/v9/sync`) instead of looping `/api/v1/tasks` calls. Different shape — see Todoist's developer docs.
 - **Real-time updates**: this skill is fire-and-forget. For watching changes, the Sync API supports webhooks.
 
 ## Verifying after creation
 
-After creating a task, optionally verify by calling `find-tasks` (read-only MCP) for the same content string. This catches silent failures where the API returned 200 but the task didn't actually persist (very rare, but worth the courtesy when the user is acting on the create).
+After creating a task, optionally verify by calling the filter endpoint (`/api/v1/tasks/filter?query=search:%20<content>`) for the same content string. This catches silent failures where the API returned 200 but the task didn't actually persist (very rare, but worth the courtesy when the user is acting on the create).
