@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# run-tests.sh - Run all test suites for asha-marketplace
+# run-tests.sh - Run all test suites for the asha repo (post-marketplace).
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,7 +15,7 @@ TOTAL_PASSED=0
 TOTAL_FAILED=0
 TOTAL_SKIPPED=0
 
-echo -e "${BLUE}=== Asha Marketplace Test Suite ===${NC}"
+echo -e "${BLUE}=== Asha Test Suite ===${NC}"
 echo "Repository: $REPO_ROOT"
 echo ""
 

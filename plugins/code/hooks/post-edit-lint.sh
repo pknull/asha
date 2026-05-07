@@ -19,17 +19,15 @@ fi
 EXT="${FILE_PATH##*.}"
 EXT="${EXT,,}"
 
-# Track if we ran anything
-RAN_TOOL=false
 TOOL_OUTPUT=""
 
 case "$EXT" in
     # TypeScript / JavaScript
     ts|tsx|js|jsx|mjs|cjs)
         if command -v biome &>/dev/null; then
-            TOOL_OUTPUT=$(biome format --write "$FILE_PATH" 2>&1) && RAN_TOOL=true
+            TOOL_OUTPUT=$(biome format --write "$FILE_PATH" 2>&1)
         elif command -v prettier &>/dev/null; then
-            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1) && RAN_TOOL=true
+            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1)
         fi
         # Type check (non-blocking, runs in background)
         if [[ "$EXT" == "ts" || "$EXT" == "tsx" ]] && command -v tsc &>/dev/null; then
@@ -50,9 +48,8 @@ case "$EXT" in
         if command -v ruff &>/dev/null; then
             ruff format "$FILE_PATH" 2>/dev/null || true
             TOOL_OUTPUT=$(ruff check "$FILE_PATH" 2>&1) || true
-            RAN_TOOL=true
         elif command -v black &>/dev/null; then
-            TOOL_OUTPUT=$(black --quiet "$FILE_PATH" 2>&1) && RAN_TOOL=true
+            TOOL_OUTPUT=$(black --quiet "$FILE_PATH" 2>&1)
         fi
         # Type check (non-blocking, runs in background)
         if command -v mypy &>/dev/null; then
@@ -64,7 +61,6 @@ case "$EXT" in
     go)
         if command -v gofmt &>/dev/null; then
             gofmt -w "$FILE_PATH" 2>/dev/null || true
-            RAN_TOOL=true
         fi
         if command -v go &>/dev/null; then
             TOOL_OUTPUT=$(go vet "$FILE_PATH" 2>&1) || true
@@ -74,30 +70,28 @@ case "$EXT" in
     # Rust
     rs)
         if command -v rustfmt &>/dev/null; then
-            TOOL_OUTPUT=$(rustfmt "$FILE_PATH" 2>&1) && RAN_TOOL=true
+            TOOL_OUTPUT=$(rustfmt "$FILE_PATH" 2>&1)
         fi
         ;;
 
     # Markdown
     md)
         if command -v prettier &>/dev/null; then
-            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1) && RAN_TOOL=true
+            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1)
         elif command -v markdownlint &>/dev/null; then
             TOOL_OUTPUT=$(markdownlint "$FILE_PATH" 2>&1) || true
-            RAN_TOOL=true
         fi
         ;;
 
     # JSON
     json)
         if command -v prettier &>/dev/null; then
-            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1) && RAN_TOOL=true
+            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1)
         elif command -v jq &>/dev/null; then
             # Format in place using jq
             TMP=$(mktemp)
             if jq '.' "$FILE_PATH" > "$TMP" 2>/dev/null; then
                 mv "$TMP" "$FILE_PATH"
-                RAN_TOOL=true
             else
                 rm -f "$TMP"
             fi
@@ -107,14 +101,14 @@ case "$EXT" in
     # YAML
     yaml|yml)
         if command -v prettier &>/dev/null; then
-            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1) && RAN_TOOL=true
+            TOOL_OUTPUT=$(prettier --write "$FILE_PATH" 2>&1)
         fi
         ;;
 
     # Shell
     sh|bash)
         if command -v shfmt &>/dev/null; then
-            shfmt -w "$FILE_PATH" 2>/dev/null && RAN_TOOL=true
+            shfmt -w "$FILE_PATH" 2>/dev/null
         fi
         if command -v shellcheck &>/dev/null; then
             TOOL_OUTPUT=$(shellcheck "$FILE_PATH" 2>&1) || true
