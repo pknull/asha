@@ -28,6 +28,18 @@ Direct Todoist REST API access. Handles task creation, search, completion, and u
 
 **Requires**: `TODOIST_API_TOKEN` env var.
 
+## Usage
+
+Each skill is invoked by name (`/admin-todoist`, `/admin-gemini`, `/admin-bookstack`). The model picks the skill when the conversation matches its trigger description and routes the request to the right curl recipe. No explicit invocation is needed for the common cases — say "remind me to X" and the todoist skill engages automatically.
+
+Examples:
+
+- "Add a Todoist task for the dentist next Tuesday at 10am p2."
+- "What's overdue in Todoist?"
+- "Mark task 6gVq6vw4W5rHC5ww complete."
+
+Each skill documents its own API recipes; see `skills/<name>/SKILL.md` for the full surface.
+
 ## Adding a new integration
 
 Each integration is its own skill directory under `skills/`. They don't reference each other — removing or replacing one doesn't ripple to siblings. To add (e.g.) `gws` or `bookstack`:

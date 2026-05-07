@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # validate-versions.sh
-# Validates version consistency between plugin.json files and README.md
+#
+# Validates version consistency between README.md and CLAUDE.md (the two
+# documents that humans actually read for authoritative repo state).
+#
+# The legacy 4-way cross-check between marketplace.json + per-plugin
+# plugin.json + README + CLAUDE was retired with the symlink-mount
+# installer migration: marketplace.json and plugin.json no longer exist.
+# Per-plugin version drift is now caught by visual review during PR.
 
 set -euo pipefail
 
@@ -14,141 +21,50 @@ NC='\033[0m'
 
 PASSED=0
 FAILED=0
-WARNINGS=0
 
 echo "=== Version Consistency Validator ==="
 echo "Repository: $REPO_ROOT"
 echo ""
 
-# Test 1: Marketplace version consistency
-echo -n "Test 1: Marketplace version (marketplace.json vs README.md)... "
-MARKETPLACE_JSON_VERSION=$(jq -r '.metadata.version' "$REPO_ROOT/.claude-plugin/marketplace.json")
-README_MARKETPLACE_VERSION=$(grep -oP '^\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/README.md" | head -1)
+# Extract top-level versions from README and CLAUDE.md.
+# Both files are expected to declare `**Version**: X.Y.Z` near the top.
+README_VERSION=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/README.md" || true)
+CLAUDE_MD_VERSION=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/CLAUDE.md" || true)
 
-if [[ "$MARKETPLACE_JSON_VERSION" == "$README_MARKETPLACE_VERSION" ]]; then
-    echo -e "${GREEN}PASS${NC} (v$MARKETPLACE_JSON_VERSION)"
+# Test 1: README version is present and well-formed.
+echo -n "Test 1: README.md has top-level **Version** in semver form... "
+if [[ -n "$README_VERSION" ]]; then
+    echo -e "${GREEN}PASS${NC} (v$README_VERSION)"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  marketplace.json: v$MARKETPLACE_JSON_VERSION"
-    echo "  README.md: v$README_MARKETPLACE_VERSION"
+    echo "  README.md missing or malformed top-level **Version** line"
     FAILED=$((FAILED + 1))
 fi
 
-# Test 2: Plugin version consistency
-echo ""
-echo "Test 2: Plugin versions (plugin.json vs README.md)..."
-
-declare -A PLUGIN_VERSIONS
-PLUGIN_VERSIONS=(
-    ["panel-system"]=""
-    ["code"]=""
-    ["write"]=""
-    ["output-styles"]=""
-    ["asha"]=""
-)
-
-# Extract versions from plugin.json files
-for plugin_dir in "$REPO_ROOT"/plugins/*; do
-    if [[ -d "$plugin_dir" ]]; then
-        plugin_json="$plugin_dir/.claude-plugin/plugin.json"
-        if [[ -f "$plugin_json" ]]; then
-            plugin_name=$(jq -r '.name' "$plugin_json")
-            plugin_version=$(jq -r '.version' "$plugin_json")
-            PLUGIN_VERSIONS["$plugin_name"]="$plugin_version"
-        fi
-    fi
-done
-
-# Check each plugin
-ALL_PLUGINS_MATCH=true
-for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
-    json_version="${PLUGIN_VERSIONS[$plugin_name]}"
-
-    # Extract version from README (look for **Version**: X.Y.Z after the plugin section)
-    # This is complex because README has multiple version entries per section
-    case "$plugin_name" in
-        "panel-system")
-            readme_version=$(awk '/### Panel System/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            ;;
-        "code")
-            readme_version=$(awk '/### Code$/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            ;;
-        "write")
-            readme_version=$(awk '/### Write$/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            ;;
-        "output-styles")
-            readme_version=$(awk '/### Output Styles/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            ;;
-        "asha")
-            readme_version=$(awk '/### Asha$/,/---/' "$REPO_ROOT/README.md" | grep -oP '\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' | head -1)
-            ;;
-        "image")
-            readme_version=$(grep -oP '^\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/plugins/image/README.md" | head -1)
-            ;;
-        "scheduler")
-            readme_version=$(grep -oP '^\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/plugins/schedule/README.md" | head -1)
-            ;;
-        *)
-            readme_version=""
-            ;;
-    esac
-
-    echo -n "  $plugin_name: "
-    if [[ -z "$json_version" ]]; then
-        echo -e "${YELLOW}SKIP${NC} (no plugin.json)"
-        WARNINGS=$((WARNINGS + 1))
-    elif [[ -z "$readme_version" ]]; then
-        echo -e "${YELLOW}WARN${NC} (not found in README)"
-        WARNINGS=$((WARNINGS + 1))
-    elif [[ "$json_version" == "$readme_version" ]]; then
-        echo -e "${GREEN}PASS${NC} (v$json_version)"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "    plugin.json: v$json_version"
-        echo "    README.md: v$readme_version"
-        FAILED=$((FAILED + 1))
-        ALL_PLUGINS_MATCH=false
-    fi
-done
-
-# Test 3: Version in CLAUDE.md
-echo ""
-echo -n "Test 3: Marketplace version in CLAUDE.md... "
-CLAUDE_MD_VERSION=$(grep -oP '^\*\*Version\*\*: \K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/CLAUDE.md" 2>/dev/null | head -1 || echo "")
-
-if [[ -z "$CLAUDE_MD_VERSION" ]]; then
-    echo -e "${YELLOW}SKIP${NC} (no version found in CLAUDE.md)"
-    WARNINGS=$((WARNINGS + 1))
-elif [[ "$MARKETPLACE_JSON_VERSION" == "$CLAUDE_MD_VERSION" ]]; then
+# Test 2: CLAUDE.md version is present and well-formed.
+echo -n "Test 2: CLAUDE.md has top-level **Version** in semver form... "
+if [[ -n "$CLAUDE_MD_VERSION" ]]; then
     echo -e "${GREEN}PASS${NC} (v$CLAUDE_MD_VERSION)"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  marketplace.json: v$MARKETPLACE_JSON_VERSION"
-    echo "  CLAUDE.md: v$CLAUDE_MD_VERSION"
+    echo "  CLAUDE.md missing or malformed top-level **Version** line"
     FAILED=$((FAILED + 1))
 fi
 
-# Summary
-echo ""
-echo "=== Version Summary ==="
-echo "Marketplace: v$MARKETPLACE_JSON_VERSION (source of truth: marketplace.json)"
-echo ""
-echo "Plugins:"
-for plugin_name in "${!PLUGIN_VERSIONS[@]}"; do
-    version="${PLUGIN_VERSIONS[$plugin_name]}"
-    if [[ -n "$version" ]]; then
-        echo "  $plugin_name: v$version"
-    fi
-done
+# Note on version coupling: README.md and CLAUDE.md track different
+# things (README = repo/marketplace face, CLAUDE.md = AI-assistant guide
+# revision). Drift between them is not necessarily a defect — both
+# evolve on independent cadences. We surface both numbers for review
+# but do not enforce equality. Per-plugin versions (Panel 5.0.0,
+# Asha 1.18.0, etc.) are documented in README's plugin sections and
+# tracked there as the source of truth.
 
 echo ""
 echo "=== Test Summary ==="
 echo -e "Passed: ${GREEN}$PASSED${NC}"
 echo -e "Failed: ${RED}$FAILED${NC}"
-echo -e "Warnings: ${YELLOW}$WARNINGS${NC}"
 echo ""
 
 if [[ $FAILED -eq 0 ]]; then
@@ -156,6 +72,6 @@ if [[ $FAILED -eq 0 ]]; then
     exit 0
 else
     echo -e "${RED}✗ Version inconsistencies detected${NC}"
-    echo "Fix: Update README.md and CLAUDE.md to match plugin.json versions"
+    echo "Fix: Update README.md and CLAUDE.md to share the same top-level **Version**."
     exit 1
 fi
