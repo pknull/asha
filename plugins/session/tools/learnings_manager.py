@@ -90,14 +90,50 @@ LEARNING_PATTERN = re.compile(
 )
 
 EVIDENCE_PATTERN = re.compile(
-    r'  - (?P<date>[\d-]+) \| (?P<project>[\w-]+) \| (?P<note>.+?)(?:\s*\[(?P<effect>\w+)\])?$'
+    # MULTILINE is required: without it, $ matches only end-of-string and the
+    # non-greedy .+? swallows whole evidence blocks, so an entry with N
+    # evidence lines parses as a single Learning whose `note` field contains
+    # all but the last line concatenated. The earlier evidence lines silently
+    # vanish on the next write_learnings round-trip. Repro: any entry with
+    # 2+ evidence bullets, e.g. "Used 158x" + "Used 35x" became one match
+    # capturing only "Used 35x".
+    r'  - (?P<date>[\d-]+) \| (?P<project>[\w-]+) \| (?P<note>.+?)(?:\s*\[(?P<effect>\w+)\])?$',
+    re.MULTILINE
 )
 
 CATEGORY_PATTERN = re.compile(r'^## (.+)$', re.MULTILINE)
 
+# Round-trip preservation cache. Populated by parse_learnings, consumed by
+# write_learnings. Keyed by category name; each value is the original raw
+# text of that category section (everything between '## Foo' and the next
+# '## ' or EOF). On write, structured entries inside that text are replaced
+# in-place via regex substitution; non-canonical content (intro prose,
+# malformed entries, trailing notes) survives verbatim. Without this, every
+# parse → write round-trip silently destroys anything that didn't match the
+# canonical schema. Tracked by Todoist 6gVq6vw4W5rHC5ww.
+_parsed_sections_cache: Dict[str, str] = {}
+_parsed_preamble_cache: str = ""
+
+_DEFAULT_PREAMBLE = (
+    "# Learnings\n\n"
+    "Cross-project patterns with confidence tracking. "
+    "Consulted at session start.\n\n"
+    "---\n"
+)
+
 
 def parse_learnings() -> Dict[str, List[Learning]]:
-    """Parse learnings.md into structured data"""
+    """Parse learnings.md into structured data.
+
+    Side effect: populates _parsed_sections_cache and _parsed_preamble_cache
+    so that a subsequent write_learnings can preserve non-canonical content
+    (intro prose, malformed entries, trailing notes) in its original
+    position. Pure callers that only consume the dict are unaffected.
+    """
+    global _parsed_sections_cache, _parsed_preamble_cache
+    _parsed_sections_cache = {}
+    _parsed_preamble_cache = ""
+
     if not LEARNINGS_PATH.exists():
         return {}
 
@@ -107,12 +143,21 @@ def parse_learnings() -> Dict[str, List[Learning]]:
     # Split by category
     parts = CATEGORY_PATTERN.split(content)
 
+    # parts[0] is everything before the first ## heading — capture as preamble
+    if parts:
+        _parsed_preamble_cache = parts[0]
+
     # parts[0] is header, then alternating category name and content
     for i in range(1, len(parts), 2):
         if i + 1 >= len(parts):
             break
         category = parts[i]
         section = parts[i + 1]
+
+        # Cache original section text for round-trip preservation.
+        # Last write wins if the same category appears twice — degenerate
+        # input, not worth complicating for.
+        _parsed_sections_cache[category] = section
 
         learnings[category] = []
 
@@ -173,44 +218,90 @@ def parse_learnings() -> Dict[str, List[Learning]]:
     return learnings
 
 
-def write_learnings(learnings: Dict[str, List[Learning]]):
-    """Write learnings back to markdown format"""
+def _render_learning(learning: Learning) -> str:
+    """Render a Learning as its canonical markdown block (no trailing newline)."""
     lines = [
-        "# Learnings",
-        "",
-        "Cross-project patterns with confidence tracking. Consulted at session start.",
-        "",
-        "---",
-        ""
+        f"### {learning.id}",
+        f"- **Confidence**: {learning.confidence}",
+        f"- **Trigger**: {learning.trigger}",
+        f"- **Action**: {learning.action}",
+        "- **Evidence**:",
     ]
+    for ev in learning.evidence[-5:]:
+        effect_marker = f" [{ev.effect}]" if ev.effect != "confirm" else ""
+        lines.append(f"  - {ev.date} | {ev.project} | {ev.note}{effect_marker}")
+    return "\n".join(lines)
+
+
+def _reconstruct_section(original: str, entries: List[Learning]) -> str:
+    """Re-render structured entries inside a category section, preserving
+    everything else verbatim.
+
+    For each '### id'-shaped block matched by LEARNING_PATTERN, substitute
+    in the corresponding Learning's freshly rendered block. Anything that
+    doesn't match the pattern (intro prose, malformed entries with
+    different field orders, trailing notes) is left untouched. New
+    entries (id present in `entries` but not in the original text) are
+    appended at the end of the section.
+    """
+    entries_by_id = {l.id: l for l in entries}
+    seen_ids: set = set()
+
+    def repl(match):
+        entry_id = match.group('id')
+        if entry_id in entries_by_id:
+            seen_ids.add(entry_id)
+            # Preserve the trailing newline that the regex captured (the
+            # evidence group ends with \n) so adjacent paragraphs stay
+            # separated.
+            rendered = _render_learning(entries_by_id[entry_id])
+            return rendered + "\n"
+        # Entry was deleted from the in-memory dict — drop the original
+        # block. Callers that wanted to remove an entry get what they asked
+        # for; preservation is for non-matching content, not deletions.
+        return ""
+
+    rewritten = LEARNING_PATTERN.sub(repl, original)
+
+    new_entries = [e for e in entries if e.id not in seen_ids]
+    if new_entries:
+        rendered_new = "\n\n".join(_render_learning(e) for e in new_entries)
+        rewritten = rewritten.rstrip() + "\n\n" + rendered_new + "\n"
+
+    return rewritten
+
+
+def write_learnings(learnings: Dict[str, List[Learning]]):
+    """Write learnings back to markdown format, preserving non-canonical
+    content captured by parse_learnings.
+
+    Output layout: `<preamble>\\n\\n## Cat1\\n\\n<body1>\\n\\n## Cat2\\n\\n<body2>\\n`.
+    Bodies are stripped of leading/trailing whitespace before being joined,
+    so successive round-trips are idempotent (no unbounded blank-line growth).
+    """
+    # Preamble: prefer cached original (preserves user customization);
+    # fall back to canonical default for fresh files.
+    preamble_raw = _parsed_preamble_cache if _parsed_preamble_cache.strip() else _DEFAULT_PREAMBLE
+    sections = [preamble_raw.strip()]
 
     for category, entries in sorted(learnings.items()):
         if not entries:
             continue
 
-        lines.append(f"## {category}")
-        lines.append("")
+        original_section = _parsed_sections_cache.get(category, "")
+        if original_section.strip():
+            # Existing category — reconstruct in place, preserve extras
+            body = _reconstruct_section(original_section, entries).strip()
+        else:
+            # New category (not in original file) — emit canonical layout,
+            # confidence-sorted
+            sorted_entries = sorted(entries, key=lambda x: x.confidence, reverse=True)
+            body = "\n\n".join(_render_learning(l) for l in sorted_entries)
 
-        # Sort by confidence descending
-        for learning in sorted(entries, key=lambda x: x.confidence, reverse=True):
-            lines.append(f"### {learning.id}")
-            lines.append(f"- **Confidence**: {learning.confidence}")
-            lines.append(f"- **Trigger**: {learning.trigger}")
-            lines.append(f"- **Action**: {learning.action}")
-            lines.append("- **Evidence**:")
+        sections.append(f"## {category}\n\n{body}")
 
-            # Show last 5 evidence entries
-            for ev in learning.evidence[-5:]:
-                effect_marker = f" [{ev.effect}]" if ev.effect != "confirm" else ""
-                lines.append(f"  - {ev.date} | {ev.project} | {ev.note}{effect_marker}")
-
-            lines.append("")
-
-        lines.append("")
-
-    # Ensure directory exists
     LEARNINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LEARNINGS_PATH.write_text('\n'.join(lines))
+    LEARNINGS_PATH.write_text("\n\n".join(sections) + "\n")
 
 
 # =============================================================================
