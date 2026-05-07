@@ -158,13 +158,22 @@ def _backup_active_context(existing_content: str) -> Path:
 # Sections whose content the synthesizer is authoritative for. Anything outside
 # this set is preserved verbatim from the on-disk file when merging.
 #
-# "What Was Accomplished" is intentionally NOT in this set: the synthesizer's
-# output for it is a generic file-count list that's less informative than a
-# human narrative, so we let users own that section after the first synth.
 # "What Was Learned" stays auto-managed because pattern detection there
 # surfaces signal users wouldn't write themselves.
 AUTO_MANAGED_SECTIONS = frozenset({
     "What Was Learned",
+})
+
+# Sections the synthesizer will generate generically but the user is expected to
+# hand-curate over time (often with parenthetical context like "What Was
+# Accomplished (date — topic)"). When ANY existing variant matches one of these
+# slots by prefix, all such existing variants are preserved verbatim and the
+# auto's generic version is dropped. Without this, auto's bare "## What Was
+# Accomplished" gets prepended above the user's parenthetical curation.
+USER_OWNED_SECTIONS = frozenset({
+    "What Was Accomplished",
+    "Current Blockers",
+    "Next Steps",
 })
 
 
@@ -205,14 +214,13 @@ def _split_sections(content: str) -> Tuple[str, List[Tuple[str, str]]]:
     return preamble, body_sections
 
 
-def _is_auto_managed_heading(heading: str) -> bool:
-    """Match a heading against AUTO_MANAGED_SECTIONS with prefix tolerance.
+def _matches_canonical(heading: str, canonical_set: frozenset) -> bool:
+    """Check if heading matches any canonical name with prefix tolerance.
 
-    Treats "What Was Accomplished" and "What Was Accomplished (this session)"
-    as the same auto-managed slot, so a user-renamed variant doesn't survive
-    as a duplicate alongside the canonical auto-output.
+    Treats e.g. "What Was Accomplished" and "What Was Accomplished (date — note)"
+    as the same slot.
     """
-    for canonical in AUTO_MANAGED_SECTIONS:
+    for canonical in canonical_set:
         if heading == canonical:
             return True
         if heading.startswith(canonical + " ") or heading.startswith(canonical + "("):
@@ -220,11 +228,24 @@ def _is_auto_managed_heading(heading: str) -> bool:
     return False
 
 
+def _is_auto_managed_heading(heading: str) -> bool:
+    """Match a heading against AUTO_MANAGED_SECTIONS with prefix tolerance."""
+    return _matches_canonical(heading, AUTO_MANAGED_SECTIONS)
+
+
+def _is_user_owned_heading(heading: str) -> bool:
+    """Match a heading against USER_OWNED_SECTIONS with prefix tolerance."""
+    return _matches_canonical(heading, USER_OWNED_SECTIONS)
+
+
 def _merge_preserving_curated(auto_content: str, existing_content: str) -> str:
     """Merge auto-synth output with existing file, preserving curated sections.
 
     - Frontmatter + preamble: from auto (timestamp, title)
     - Sections matching AUTO_MANAGED_SECTIONS (with prefix tolerance): from auto
+    - Sections matching USER_OWNED_SECTIONS (with prefix tolerance): if any
+      existing variant matches the slot, preserve all such variants verbatim
+      and drop auto's version. Otherwise (first synth) auto goes through.
     - All other sections present in existing: preserved verbatim from existing
     - Sections present only in auto (not user-curated): from auto
     - Sections present only in existing (custom sections): appended at end
@@ -236,14 +257,27 @@ def _merge_preserving_curated(auto_content: str, existing_content: str) -> str:
 
     merged: List[Tuple[str, str]] = []
     seen_existing_headings = set()
+    consumed_user_owned_slots = set()
 
     for heading, auto_body in auto_sections:
         if _is_auto_managed_heading(heading):
             merged.append((heading, auto_body))
-            # Mark any existing variant of this auto-managed slot as consumed
             for ex_heading, _ in existing_sections:
                 if _is_auto_managed_heading(ex_heading):
                     seen_existing_headings.add(ex_heading)
+        elif _is_user_owned_heading(heading):
+            # Find every existing variant matching this user-owned slot
+            existing_variants = [
+                (h, b) for h, b in existing_sections
+                if _is_user_owned_heading(h) and h not in consumed_user_owned_slots
+            ]
+            if existing_variants:
+                for h, b in existing_variants:
+                    merged.append((h, b))
+                    seen_existing_headings.add(h)
+                    consumed_user_owned_slots.add(h)
+            else:
+                merged.append((heading, auto_body))
         elif heading in existing_map:
             merged.append((heading, existing_map[heading]))
             seen_existing_headings.add(heading)
