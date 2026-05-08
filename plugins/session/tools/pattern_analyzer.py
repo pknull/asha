@@ -220,12 +220,22 @@ def _matches_canonical(heading: str, canonical_set: frozenset) -> bool:
     Treats e.g. "What Was Accomplished" and "What Was Accomplished (date — note)"
     as the same slot.
     """
+    return _canonical_for_heading(heading, canonical_set) is not None
+
+
+def _canonical_for_heading(heading: str, canonical_set: frozenset) -> Optional[str]:
+    """Return the canonical name this heading maps to, or None if no match.
+
+    "What Was Accomplished" → "What Was Accomplished"
+    "What Was Accomplished (2026-05-08 — note)" → "What Was Accomplished"
+    "Some Custom Section" → None
+    """
     for canonical in canonical_set:
         if heading == canonical:
-            return True
+            return canonical
         if heading.startswith(canonical + " ") or heading.startswith(canonical + "("):
-            return True
-    return False
+            return canonical
+    return None
 
 
 def _is_auto_managed_heading(heading: str) -> bool:
@@ -236,6 +246,35 @@ def _is_auto_managed_heading(heading: str) -> bool:
 def _is_user_owned_heading(heading: str) -> bool:
     """Match a heading against USER_OWNED_SECTIONS with prefix tolerance."""
     return _matches_canonical(heading, USER_OWNED_SECTIONS)
+
+
+# Bullet bodies the synthesize_* functions emit when there's no real signal.
+# Used by _is_pure_stub_body to drop empty auto sections at merge time so
+# stubs don't accumulate when a session has nothing to synthesize for that slot.
+_STUB_BULLET_PATTERNS = (
+    re.compile(r"^- None detected\s*$"),
+    re.compile(r"^- Review and plan next session\s*$"),
+    re.compile(r"^- No new patterns detected\s*$"),
+    re.compile(r"^- \[ \] Continue work in .+/?\s*$"),
+    re.compile(r"^- No significant changes recorded\s*$"),
+)
+
+
+def _is_pure_stub_body(heading: str, body: str) -> bool:
+    """A user-owned section body is a pure stub if it contains only the
+    fallback bullets the synthesize_* functions emit when no real signal
+    is present. Used to drop empty auto sections rather than letting them
+    accumulate in activeContext.md when nothing real is happening.
+    """
+    if not _is_user_owned_heading(heading):
+        return False
+    non_blank = [ln for ln in body.splitlines() if ln.strip()]
+    if not non_blank:
+        return True
+    return all(
+        any(p.match(ln.rstrip()) for p in _STUB_BULLET_PATTERNS)
+        for ln in non_blank
+    )
 
 
 def _merge_preserving_curated(auto_content: str, existing_content: str) -> str:
@@ -266,10 +305,17 @@ def _merge_preserving_curated(auto_content: str, existing_content: str) -> str:
                 if _is_auto_managed_heading(ex_heading):
                     seen_existing_headings.add(ex_heading)
         elif _is_user_owned_heading(heading):
-            # Find every existing variant matching this user-owned slot
+            # Find every existing variant matching THIS specific user-owned slot.
+            # Without slot scoping, processing one user-owned heading would consume
+            # ALL user-owned existing variants (e.g. processing "What Was Accomplished"
+            # would consume existing "Current Blockers" and "Next Steps" too),
+            # leaving subsequent user-owned auto headings to fall through to else
+            # and emit their stub bodies. Slot-isolated lookup prevents that.
+            slot = _canonical_for_heading(heading, USER_OWNED_SECTIONS)
             existing_variants = [
                 (h, b) for h, b in existing_sections
-                if _is_user_owned_heading(h) and h not in consumed_user_owned_slots
+                if _canonical_for_heading(h, USER_OWNED_SECTIONS) == slot
+                and h not in consumed_user_owned_slots
             ]
             if existing_variants:
                 for h, b in existing_variants:
@@ -277,7 +323,11 @@ def _merge_preserving_curated(auto_content: str, existing_content: str) -> str:
                     seen_existing_headings.add(h)
                     consumed_user_owned_slots.add(h)
             else:
-                merged.append((heading, auto_body))
+                # No existing variant for this slot. Drop pure-stub auto bodies
+                # (None detected / Review and plan next session / etc.) so they
+                # don't accumulate when nothing real is happening.
+                if not _is_pure_stub_body(heading, auto_body):
+                    merged.append((heading, auto_body))
         elif heading in existing_map:
             merged.append((heading, existing_map[heading]))
             seen_existing_headings.add(heading)
@@ -796,6 +846,27 @@ def trim_calibration_section(section_content: str, max_entries: int = MAX_CALIBR
     return '\n'.join(result_lines)
 
 
+def _filter_new_calibration_signals(signals: List[Dict], existing_content: str, truncate: int) -> List[Dict]:
+    """Drop signals whose (truncated) text is already present in existing_content.
+
+    Prevents the synthesizer from re-emitting the same signal-window on every
+    save. Matches the same truncation the writer will apply, so the comparison
+    is against what would actually land in the file.
+    """
+    if not signals:
+        return signals
+    new = []
+    for signal in signals:
+        truncated = signal.get("text", "")[:truncate]
+        # The truncated text appears in existing keeper/voice as a quoted
+        # substring; substring search is sufficient and avoids depending on
+        # exact line format across writers.
+        if truncated and truncated in existing_content:
+            continue
+        new.append(signal)
+    return new
+
+
 def append_to_voice(signals: List[Dict]):
     """Append voice calibration signals to ~/.asha/voice.md"""
     if not signals:
@@ -806,6 +877,13 @@ def append_to_voice(signals: List[Dict]):
     existing = ""
     if VOICE_FILE.exists():
         existing = VOICE_FILE.read_text()
+
+    # Drop any signal whose text is already in the file. Without this the
+    # synthesizer re-emits the same window on every save (events haven't
+    # been advanced past, so they keep re-matching the patterns).
+    signals = _filter_new_calibration_signals(signals, existing, truncate=80)
+    if not signals:
+        return
 
     # Find or create calibration log section
     section_header = "## Calibration Log"
@@ -847,13 +925,34 @@ def append_to_keeper(signals: List[Dict]):
         # Keeper file should already exist with structure
         return
 
+    # Drop any signal whose (truncated and quote-normalized) text is already
+    # in the file. Without this the synthesizer re-emits the same window on
+    # every save, since extract_calibration_signals scans the full event
+    # window and append_to_keeper writes a fresh save-time timestamp on each
+    # entry — so identical text reappears under new timestamps endlessly.
+    # The match must use the same truncation (60) and quote-normalization
+    # (\" → ') that we apply when writing, so the comparison is against the
+    # exact form already on disk.
+    truncated_signals = []
+    for signal in signals:
+        truncated_signals.append({
+            **signal,
+            "text": signal["text"][:60].replace('"', "'"),
+        })
+    truncated_signals = _filter_new_calibration_signals(
+        truncated_signals, existing, truncate=60
+    )
+    if not truncated_signals:
+        return
+    signals = truncated_signals
+
     # Append to calibration log (inside the code block)
     timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+10:00")
     project = PROJECT_ROOT.name
 
     new_entries = ""
     for signal in signals:
-        text = signal["text"][:60].replace('"', "'")
+        text = signal["text"]  # already truncated + quote-normalized above
         new_entries += f"{timestamp} | {project} | \"{text}\"\n"
 
     # Insert before closing ``` and trim to max entries
