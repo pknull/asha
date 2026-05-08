@@ -42,6 +42,14 @@ Then archive and rotate events:
 "/home/pknull/life/asha/plugins/session/tools/save-session.sh" --archive-only
 ```
 
+Then run the boundary guardrail to strip auto-fallback stub blocks the synthesizer re-appends and dedup re-emitted calibration signals against the existing keeper log. This treats `pattern_analyzer.py`'s output as untrusted input — durable fix at the boundary, no upstream chase required.
+
+```bash
+"/home/pknull/life/asha/plugins/session/tools/save_guardrail.py" all "$PROJECT_DIR"
+```
+
+Surface any non-zero counts in chat output so the user sees what was cleaned. If the guardrail itself errors (missing file, parse failure), report it and continue — the gate must not block save on a guardrail bug.
+
 Then capture a baseline sample (best-effort, non-blocking — only runs if the Asha baseline tooling is present).
 
 **Step 5a — Determine archetype** from this session's activity. Apply this heuristic in order, pick the FIRST match:
