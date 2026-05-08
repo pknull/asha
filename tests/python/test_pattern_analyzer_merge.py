@@ -185,6 +185,236 @@ class MergePreservingCuratedTests(unittest.TestCase):
         self.assertIn("fresh pattern from events", merged)
         self.assertNotIn("stale hand-curated learning", merged)
 
+    # -------------------------------------------------------------------------
+    # Bug repro: stub-section recurrence (slot-isolation in user-owned merge)
+    # -------------------------------------------------------------------------
+
+    def test_blockers_and_next_steps_slot_isolated_during_merge(self):
+        """When auto emits all four stub sections AND existing has all four
+        user-curated, the merge must preserve each user's variant in its own
+        slot — NOT consume them all when 'What Was Accomplished' is
+        processed and then fall through to else-branch stubs for the rest.
+        """
+        auto = (
+            "---\nversion: \"2.0\"\n---\n\n"
+            "# Active Context\n\n"
+            "## What Was Accomplished\n\n"
+            "- Created 1 file(s): foo\n\n"
+            "## What Was Learned\n\n"
+            "- pattern X\n\n"
+            "## Current Blockers\n\n"
+            "- None detected\n\n"
+            "## Next Steps\n\n"
+            "- Review and plan next session\n\n"
+        )
+        existing = (
+            "---\nversion: \"2.0\"\n---\n\n"
+            "# Active Context\n\n"
+            "## What Was Accomplished (2026-05-08 — real session)\n\n"
+            "- Real curated work happened here.\n\n"
+            "## Current Blockers\n\n"
+            "- Real blocker that matters.\n\n"
+            "## Next Steps\n\n"
+            "- [ ] Real concrete pickup with file paths.\n\n"
+        )
+
+        merged = self.pa._merge_preserving_curated(auto, existing)
+
+        # User's curated content survives in EACH slot.
+        self.assertIn("Real curated work happened here.", merged)
+        self.assertIn("Real blocker that matters.", merged)
+        self.assertIn("Real concrete pickup with file paths.", merged)
+        # Auto's stub bodies are NOT in the merged output.
+        self.assertNotIn("- None detected", merged)
+        self.assertNotIn("- Review and plan next session", merged)
+        self.assertNotIn("Created 1 file(s)", merged)
+        # No bare stub headers floating without curated content above.
+        # (The user's variants are the only Current Blockers / Next Steps headers.)
+        bare_blockers = merged.count("\n## Current Blockers\n")
+        bare_next = merged.count("\n## Next Steps\n")
+        self.assertEqual(bare_blockers, 1, "exactly one Current Blockers section")
+        self.assertEqual(bare_next, 1, "exactly one Next Steps section")
+
+    def test_pure_stub_dropped_when_no_existing_variant(self):
+        """First-synth case for a slot: if auto emits a pure-stub body and
+        there's no existing variant for that slot, the stub is dropped
+        entirely rather than seeded into the file (where future merges
+        would preserve it indefinitely as 'existing user-owned content').
+        """
+        auto = (
+            "---\nversion: \"2.0\"\n---\n\n"
+            "# Active Context\n\n"
+            "## What Was Accomplished\n\n"
+            "- Real accomplishment from events\n\n"
+            "## Current Blockers\n\n"
+            "- None detected\n\n"
+            "## Next Steps\n\n"
+            "- Review and plan next session\n\n"
+        )
+        existing = (
+            "---\nversion: \"2.0\"\n---\n\n"
+            "# Active Context\n\n"
+            "## Some Custom Section\n\n"
+            "- existing custom content\n\n"
+        )
+
+        merged = self.pa._merge_preserving_curated(auto, existing)
+
+        self.assertIn("Real accomplishment from events", merged)
+        # Stub-only sections are dropped when no existing variant exists.
+        self.assertNotIn("## Current Blockers", merged)
+        self.assertNotIn("## Next Steps", merged)
+        self.assertNotIn("None detected", merged)
+        self.assertNotIn("Review and plan next session", merged)
+        # Custom section preserved.
+        self.assertIn("## Some Custom Section", merged)
+
+    def test_real_blockers_pass_through_when_no_existing(self):
+        """If auto emits a NON-stub Current Blockers (real errors detected)
+        and no existing variant exists, it should pass through unchanged."""
+        auto = (
+            "---\nversion: \"2.0\"\n---\n\n"
+            "# Active Context\n\n"
+            "## Current Blockers\n\n"
+            "- Error: connection refused on localhost:8080\n"
+            "- Blocked: pending review on PR #42\n\n"
+        )
+        existing = (
+            "---\nversion: \"2.0\"\n---\n\n"
+            "# Active Context\n\n"
+            "## Some Custom\n\n"
+            "- nope\n\n"
+        )
+
+        merged = self.pa._merge_preserving_curated(auto, existing)
+
+        self.assertIn("## Current Blockers", merged)
+        self.assertIn("Error: connection refused on localhost:8080", merged)
+        self.assertIn("Blocked: pending review on PR #42", merged)
+
+
+class CalibrationDedupTests(unittest.TestCase):
+    """Validate that calibration signal writers dedup against existing content."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="asha_pa_calib_")
+        self.project = Path(self.tmp) / "project"
+        (self.project / "Memory" / "events").mkdir(parents=True)
+
+        self._saved_env = {
+            "CLAUDE_PROJECT_DIR": os.environ.get("CLAUDE_PROJECT_DIR"),
+            "HOME": os.environ.get("HOME"),
+        }
+        # Redirect HOME so VOICE_FILE / KEEPER_FILE land under tmp.
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.project)
+        os.environ["HOME"] = str(self.tmp)
+
+        for mod in ("pattern_analyzer",):
+            sys.modules.pop(mod, None)
+        import pattern_analyzer  # type: ignore[reportMissingImports]  # noqa: E402
+        self.pa = pattern_analyzer
+
+        # Re-resolve VOICE_FILE / KEEPER_FILE to tmp HOME.
+        self.pa.VOICE_FILE = Path(self.tmp) / ".asha" / "voice.md"
+        self.pa.KEEPER_FILE = Path(self.tmp) / ".asha" / "keeper.md"
+        self.pa.VOICE_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self):
+        for key, prior in self._saved_env.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_filter_new_calibration_signals_drops_duplicates(self):
+        existing = (
+            "## Calibration Log\n\n"
+            "```\n"
+            "2026-05-07T10:00:00 | life | \"already in keeper\"\n"
+            "```\n"
+        )
+        signals = [
+            {"text": "already in keeper", "category": "x", "timestamp": "2026-05-08"},
+            {"text": "fresh new signal", "category": "y", "timestamp": "2026-05-08"},
+        ]
+        filtered = self.pa._filter_new_calibration_signals(signals, existing, truncate=60)
+        self.assertEqual(len(filtered), 1)
+        self.assertEqual(filtered[0]["text"], "fresh new signal")
+
+    def test_append_to_keeper_skips_duplicates(self):
+        """Live keeper.md write path: a signal whose text is already
+        present must not be re-emitted with a fresh timestamp."""
+        keeper_initial = (
+            "---\ntype: human\n---\n# Keeper\n\n"
+            "## Calibration Log\n\n"
+            "```\n"
+            "2026-05-07T10:00:00+10:00 | life | \"already-known signal\"\n"
+            "```\n"
+        )
+        self.pa.KEEPER_FILE.write_text(keeper_initial)
+
+        signals = [
+            # Duplicate (already in keeper truncated to 60 chars)
+            {"text": "already-known signal", "category": "x", "timestamp": "2026-05-08"},
+            # New
+            {"text": "this is a brand new calibration signal", "category": "y", "timestamp": "2026-05-08"},
+        ]
+        self.pa.append_to_keeper(signals)
+
+        result = self.pa.KEEPER_FILE.read_text()
+        # Original entry unchanged.
+        self.assertIn("2026-05-07T10:00:00+10:00 | life | \"already-known signal\"", result)
+        # No second occurrence with a 2026-05-08 timestamp.
+        already_known_count = result.count("\"already-known signal\"")
+        self.assertEqual(already_known_count, 1, "duplicate signal must not be re-emitted")
+        # New signal landed.
+        self.assertIn("brand new calibration signal", result)
+
+    def test_append_to_keeper_no_signals_after_filter_is_noop(self):
+        """If every signal is already present, the file should be unchanged."""
+        keeper_initial = (
+            "---\ntype: human\n---\n# Keeper\n\n"
+            "## Calibration Log\n\n"
+            "```\n"
+            "2026-05-07T10:00:00+10:00 | life | \"signal one\"\n"
+            "2026-05-07T10:00:00+10:00 | life | \"signal two\"\n"
+            "```\n"
+        )
+        self.pa.KEEPER_FILE.write_text(keeper_initial)
+        before = self.pa.KEEPER_FILE.read_text()
+
+        signals = [
+            {"text": "signal one", "category": "x", "timestamp": "2026-05-08"},
+            {"text": "signal two", "category": "y", "timestamp": "2026-05-08"},
+        ]
+        self.pa.append_to_keeper(signals)
+
+        after = self.pa.KEEPER_FILE.read_text()
+        self.assertEqual(before, after, "all-duplicate batch must be a no-op")
+
+    def test_append_to_voice_skips_duplicates(self):
+        voice_initial = (
+            "## Calibration Log\n\n"
+            "- 2026-05-07: \"reduce whimsy in technical writing\" (whimsy)\n\n"
+        )
+        self.pa.VOICE_FILE.write_text(voice_initial)
+
+        signals = [
+            # Duplicate
+            {"text": "reduce whimsy in technical writing", "category": "whimsy",
+             "timestamp": "2026-05-08T10:00:00Z"},
+            # New
+            {"text": "watch for AI-tell phrasings in prose", "category": "ai_tell",
+             "timestamp": "2026-05-08T10:00:00Z"},
+        ]
+        self.pa.append_to_voice(signals)
+
+        result = self.pa.VOICE_FILE.read_text()
+        # Duplicate count remains 1.
+        self.assertEqual(result.count("reduce whimsy in technical writing"), 1)
+        self.assertIn("AI-tell phrasings in prose", result)
+
 
 if __name__ == "__main__":
     unittest.main()
