@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# Asha → GitHub Copilot CLI wrapper.
+#
+# Bootstraps Asha identity merge + secrets, regenerates the merged identity
+# file, then exec's `copilot`. Persona injection mechanism: Copilot CLI 1.0.x
+# does NOT have an --instructions-file flag (verified empirically against
+# `copilot --help` 2026-05-09). The advertised mechanism is auto-loading of
+# project-scope AGENTS.md and .github/copilot-instructions.md.
+#
+# This wrapper therefore takes a deliberately minimal stance:
+#   1. Regenerate $INSTRUCTIONS_PATH (merged Asha identity) so the user has it
+#      available to source manually or install into their project's AGENTS.md.
+#   2. Log a one-line pointer to the merged identity file path.
+#   3. Exec `copilot` plain. If you want Asha persona loaded for a project,
+#      `copilot init` once in that project, then concatenate the merged
+#      identity into the generated .github/copilot-instructions.md, or copy
+#      to AGENTS.md at project root.
+#
+# Override entry binary: ASHA_COPILOT_CMD=gh-copilot asha-copilot
+# Override merged identity path: ASHA_COPILOT_INSTRUCTIONS_FILE=/path asha-copilot
+
+set -euo pipefail
+
+# Resolve identity path relative to this script (handles symlinked invocation).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+MERGE_SCRIPT="$ASHA_ROOT/identity/identity-merge.sh"
+INSTRUCTIONS_PATH="${ASHA_COPILOT_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-copilot.md}"
+
+# Allow user to override the entry binary (`copilot` vs `gh copilot`, etc.).
+_COPILOT_CMD="${ASHA_COPILOT_CMD:-copilot}"
+
+# Load Asha-scoped secrets/env (~/.asha/secrets.env if present). Sourcing
+# here, not in the user's shell rc, keeps tokens out of unrelated subprocess
+# environments. See docs/secrets.md.
+# shellcheck source=./asha-env-bootstrap.sh
+source "$SCRIPT_DIR/asha-env-bootstrap.sh"
+
+# Parity with asha-claude: signal to any SessionStart-style hook that this
+# launch wants the Asha persona loaded.
+export ASHA_PERSONA=1
+
+if [[ ! -x "$MERGE_SCRIPT" ]]; then
+    echo "warn: identity-merge.sh missing or not executable: $MERGE_SCRIPT" >&2
+    echo "warn: launching plain $_COPILOT_CMD (no Asha persona)" >&2
+    exec "$_COPILOT_CMD" "$@"
+fi
+
+# Regenerate the merged identity file (idempotent — exits early if current).
+if ! "$MERGE_SCRIPT" "$INSTRUCTIONS_PATH"; then
+    echo "warn: identity merge failed; launching plain $_COPILOT_CMD" >&2
+    exec "$_COPILOT_CMD" "$@"
+fi
+
+# Persona injection: Copilot CLI 1.0.x has no --instructions-file flag.
+# It auto-loads project-scope AGENTS.md and .github/copilot-instructions.md
+# (verified empirically against `copilot --help` 2026-05-09). The merged
+# identity at $INSTRUCTIONS_PATH is regenerated above so users can manually
+# source it into their project AGENTS.md / copilot-instructions.md.
+echo "[asha-copilot] merged identity available at: $INSTRUCTIONS_PATH" >&2
+echo "[asha-copilot] to load Asha persona for current project, append it to" >&2
+echo "[asha-copilot]   .github/copilot-instructions.md  (run \`copilot init\` first if missing)" >&2
+echo "[asha-copilot]   or AGENTS.md at project root" >&2
+
+exec "$_COPILOT_CMD" "$@"
