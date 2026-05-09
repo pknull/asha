@@ -14,7 +14,9 @@
 # Targets:
 #   --target claude           uninstall from Claude Code (default)
 #   --target codex            uninstall from OpenAI Codex CLI
-#   --target both             uninstall from both
+#   --target copilot          uninstall from GitHub Copilot CLI
+#   --target both             uninstall from claude+codex (back-compat)
+#   --target all              uninstall from claude+codex+copilot
 #
 # Exit codes:
 #   0  success (or dry-run)
@@ -84,8 +86,8 @@ parse_args() {
   done
 
   case "$TARGET" in
-    claude|codex|both) ;;
-    *) die "invalid --target '$TARGET' (expected: claude|codex|both)" 1 ;;
+    claude|codex|copilot|both|all) ;;
+    *) die "invalid --target '$TARGET' (expected: claude|codex|copilot|both|all)" 1 ;;
   esac
 }
 
@@ -101,9 +103,11 @@ main() {
 
   local targets
   case "$TARGET" in
-    claude) targets=(claude) ;;
-    codex)  targets=(codex)  ;;
-    both)   targets=(claude codex) ;;
+    claude)  targets=(claude) ;;
+    codex)   targets=(codex)  ;;
+    copilot) targets=(copilot) ;;
+    both)    targets=(claude codex) ;;
+    all)     targets=(claude codex copilot) ;;
   esac
 
   local t total=0

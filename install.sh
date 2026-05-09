@@ -16,13 +16,16 @@
 # Targets:
 #   --target claude           install primitives for Claude Code (default)
 #   --target codex            install primitives for OpenAI Codex CLI
-#   --target both             install for both
+#   --target copilot          install primitives for GitHub Copilot CLI
+#   --target both             install for claude+codex (back-compat)
+#   --target all              install for claude+codex+copilot
 #
 # Bin:
 #   --bin claude              install ~/.local/bin/asha → asha-claude wrapper
 #   --bin codex               install ~/.local/bin/asha → asha-codex wrapper
-#   --bin all                 install both wrappers; --default picks the symlink target
-#   --default {claude,codex}  default harness when --bin all (default: claude)
+#   --bin copilot             install ~/.local/bin/asha → asha-copilot wrapper
+#   --bin all                 install all wrappers; --default picks the symlink target
+#   --default {claude,codex,copilot}  default harness when --bin all (default: claude)
 #
 # Other flags:
 #   --only      comma-separated plugin directory names (e.g. "devops,prompt")
@@ -138,7 +141,7 @@ selected_plugins() {
 # ---------------------------------------------------------------------------
 
 usage() {
-  sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,41p' "$0" | sed 's/^# \{0,1\}//'
   exit 1
 }
 
@@ -163,18 +166,18 @@ parse_args() {
   done
 
   case "$TARGET" in
-    claude|codex|both) ;;
-    *) die "invalid --target '$TARGET' (expected: claude|codex|both)" 1 ;;
+    claude|codex|copilot|both|all) ;;
+    *) die "invalid --target '$TARGET' (expected: claude|codex|copilot|both|all)" 1 ;;
   esac
   if [[ -n "$BIN" ]]; then
     case "$BIN" in
-      claude|codex|all) ;;
-      *) die "invalid --bin '$BIN' (expected: claude|codex|all)" 1 ;;
+      claude|codex|copilot|all) ;;
+      *) die "invalid --bin '$BIN' (expected: claude|codex|copilot|all)" 1 ;;
     esac
   fi
   case "$BIN_DEFAULT" in
-    claude|codex) ;;
-    *) die "invalid --default '$BIN_DEFAULT' (expected: claude|codex)" 1 ;;
+    claude|codex|copilot) ;;
+    *) die "invalid --default '$BIN_DEFAULT' (expected: claude|codex|copilot)" 1 ;;
   esac
 }
 
@@ -218,13 +221,19 @@ install_bin() {
       mklink "$MARKET_ROOT/bin/asha-codex"  "$user_bin/asha-codex"  "wrapper"
       ;;
   esac
+  case "$choice" in
+    copilot|all)
+      mklink "$MARKET_ROOT/bin/asha-copilot" "$user_bin/asha-copilot" "wrapper"
+      ;;
+  esac
 
   # Pick the bare `asha` command's target.
   local default_target
   case "$choice" in
-    claude) default_target="asha-claude" ;;
-    codex)  default_target="asha-codex"  ;;
-    all)    default_target="asha-${BIN_DEFAULT}" ;;
+    claude)  default_target="asha-claude" ;;
+    codex)   default_target="asha-codex"  ;;
+    copilot) default_target="asha-copilot" ;;
+    all)     default_target="asha-${BIN_DEFAULT}" ;;
   esac
   _install_asha_default_link "$user_bin" "$default_target"
 
@@ -307,9 +316,11 @@ main() {
 
   local targets
   case "$TARGET" in
-    claude) targets=(claude) ;;
-    codex)  targets=(codex)  ;;
-    both)   targets=(claude codex) ;;
+    claude)  targets=(claude) ;;
+    codex)   targets=(codex)  ;;
+    copilot) targets=(copilot) ;;
+    both)    targets=(claude codex) ;;
+    all)     targets=(claude codex copilot) ;;
   esac
 
   local t
