@@ -1,12 +1,12 @@
 ---
 name: code-orchestrate
 description: "Multi-agent workflow with sequential and parallel phases"
-argument-hint: "[feature|bugfix|refactor|security|custom] <description>"
+argument-hint: "[--tier=trivial|low|medium|high] [feature|bugfix|refactor|security|custom] <description>"
 ---
 
 # Orchestrate Command
 
-Run multi-agent workflows with sequential and parallel phases.
+Run multi-agent workflows with sequential and parallel phases. Routes by complexity (Phase 0) and records self-review calibration data per run.
 
 ## Usage
 
@@ -16,6 +16,10 @@ Run multi-agent workflows with sequential and parallel phases.
 /orchestrate refactor "Extract payment module"
 /orchestrate security "Audit API endpoints"
 /orchestrate custom "architect,[tdd,code-reviewer],security-auditor" "Redesign caching"
+
+# Tier override (skip Phase 0 inference):
+/orchestrate --tier=high feature "Refactor namespace registry"
+/orchestrate --tier=trivial bugfix "Fix typo in panel README"
 ```
 
 ## Workflow Types
@@ -44,6 +48,43 @@ This runs:
 1. `architect` (sequential)
 2. `backend-dev` + `frontend-dev` (parallel)
 3. `code-reviewer` + `security-auditor` (parallel)
+
+## Phase 0: Routing (always runs first)
+
+Before any agent work, classify the task by complexity and select the implementation model. Full rules in [`../modules/complexity-routing.md`](../modules/complexity-routing.md).
+
+### Routing Protocol
+
+1. Load `.claude/orchestrate-rules.json` from repo root if present
+2. Determine change scope:
+   - Pre-implementation tasks: infer from task description
+   - Tasks operating on an existing diff: read `git diff --name-only`
+3. Apply tier rules:
+   - **Trivial** → Haiku
+   - **Low / Medium** → Sonnet
+   - **High** → Opus plan-review (architect agent) prepended, then Sonnet implementation
+4. Honor `--tier=X` user override; skip inference and note `(user override)` in declaration
+
+### Tier escalation triggers (any one promotes to High)
+
+- Path match in `high_complexity_paths` (project rules)
+- New plugin directory created
+- Cross-plugin scope (≥2 plugin dirs touched)
+- Self-edit risk: installer, hooks, namespace registry, session-load code
+- User override `--tier=high`
+
+### Tier declaration
+
+Emit before Phase 1:
+
+```
+[ROUTING]
+Tier:   {Trivial|Low|Medium|High}
+Model:  {Haiku|Sonnet|Opus+Sonnet}
+Reason: {one-line justification — cite path matches, scope, or override}
+```
+
+For **High** tier: prepend `architect` (Opus) to the workflow as a plan-review phase. The architect produces a design handoff; Sonnet implements against it.
 
 ## Execution Protocol
 
@@ -100,6 +141,23 @@ Between phases, create handoff document:
 [Suggested next steps]
 ```
 
+### Implementer self-review (REQUIRED before review phase)
+
+The implementing agent (whichever produces code in this workflow) MUST end its handoff with a `claimed_status` declaration:
+
+```markdown
+### claimed_status
+ready | needs-work | blocked
+
+[If needs-work or blocked: bullet list of known issues or blockers]
+```
+
+- **ready** — implementer believes all gates will pass
+- **needs-work** — known issues remain (must list them)
+- **blocked** — cannot proceed without external input (must say what)
+
+This declaration is the calibration signal — the review phase compares it against actual gate outcomes and records the delta.
+
 For parallel phase outputs, merge into single handoff:
 
 ```markdown
@@ -143,6 +201,31 @@ ISSUES FOUND
 RECOMMENDATION
 [SHIP | NEEDS WORK | BLOCKED]
 ```
+
+## Phase Final: Calibration Log
+
+After the review phase completes (pass or fail), append one JSONL row to `~/.asha/metrics/orchestrate.jsonl`:
+
+```json
+{"ts":"<ISO-8601 UTC>","workflow":"<feature|bugfix|...>","tier":"<trivial|low|medium|high>","model":"<haiku|sonnet|opus+sonnet>","claimed":"<ready|needs-work|blocked>","review":"pass|fail","gates_failed":["<gate>",...],"task":"<one-line task description>"}
+```
+
+Steps:
+
+1. `mkdir -p ~/.asha/metrics` (defensive)
+2. Compose the row from Phase 0 declaration + implementer's `claimed_status` + review outcome
+3. Append (don't overwrite) to `~/.asha/metrics/orchestrate.jsonl`
+4. If write fails, log to stderr and continue — calibration is observability, never a blocker
+
+Inspect over time:
+
+```
+~/life/asha/bin/calibration              # last 30 runs summary
+~/life/asha/bin/calibration --tier=high  # filter by tier
+~/life/asha/bin/calibration --tail=10    # last 10 runs detail
+```
+
+Sustained false-positive rate (claimed=ready AND review=fail) above ~25% means the implementer agent's self-review is miscalibrated.
 
 ## Available Agents
 

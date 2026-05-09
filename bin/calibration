@@ -1,0 +1,133 @@
+#!/usr/bin/env python3
+"""Read ~/.asha/metrics/orchestrate.jsonl and report self-review calibration.
+
+Usage:
+  calibration                     # last 30 runs summary
+  calibration --tier=high         # filter by tier
+  calibration --workflow=feature  # filter by workflow type
+  calibration --tail=10           # last N runs detail (default summary mode)
+  calibration --all               # all runs in summary
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from collections import Counter, defaultdict
+from pathlib import Path
+
+LOG_PATH = Path.home() / ".asha" / "metrics" / "orchestrate.jsonl"
+
+
+def load_rows(path: Path) -> list[dict]:
+    if not path.exists():
+        return []
+    rows = []
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as e:
+            print(f"warn: skipping malformed line {lineno}: {e}", file=sys.stderr)
+    return rows
+
+
+def filter_rows(rows: list[dict], tier: str | None, workflow: str | None) -> list[dict]:
+    out = rows
+    if tier:
+        out = [r for r in out if r.get("tier") == tier]
+    if workflow:
+        out = [r for r in out if r.get("workflow") == workflow]
+    return out
+
+
+def summarize(rows: list[dict]) -> None:
+    if not rows:
+        print("no calibration data")
+        return
+
+    total = len(rows)
+    claimed_ready = [r for r in rows if r.get("claimed") == "ready"]
+    false_positives = [r for r in claimed_ready if r.get("review") == "fail"]
+    fp_rate = (len(false_positives) / len(claimed_ready) * 100) if claimed_ready else 0.0
+
+    print(f"runs: {total}")
+    print(f"claimed_ready: {len(claimed_ready)}")
+    print(f"ready_but_failed_review: {len(false_positives)}  ({fp_rate:.0f}% false-positive rate)")
+
+    by_tier: dict[str, list[dict]] = defaultdict(list)
+    for r in rows:
+        by_tier[r.get("tier", "unknown")].append(r)
+
+    print("\nby tier:")
+    for tier in ("trivial", "low", "medium", "high", "unknown"):
+        tier_rows = by_tier.get(tier, [])
+        if not tier_rows:
+            continue
+        passes = sum(1 for r in tier_rows if r.get("review") == "pass")
+        fp = sum(1 for r in tier_rows if r.get("claimed") == "ready" and r.get("review") == "fail")
+        line = f"  {tier:8s} {passes}/{len(tier_rows)} pass"
+        if fp:
+            line += f"  ({fp} false positive{'s' if fp != 1 else ''})"
+        print(line)
+
+    gate_failures: Counter[str] = Counter()
+    for r in rows:
+        for gate in r.get("gates_failed", []):
+            gate_failures[gate] += 1
+    if gate_failures:
+        print("\nrecurring gate failures:")
+        for gate, count in gate_failures.most_common(5):
+            print(f"  {gate} ({count}x)")
+
+
+def tail(rows: list[dict], n: int) -> None:
+    if not rows:
+        print("no calibration data")
+        return
+    for r in rows[-n:]:
+        ts = r.get("ts", "?")
+        tier = r.get("tier", "?")
+        claimed = r.get("claimed", "?")
+        review = r.get("review", "?")
+        workflow = r.get("workflow", "?")
+        task = r.get("task", "")
+        gates = ",".join(r.get("gates_failed", []))
+        marker = " ⚠" if claimed == "ready" and review == "fail" else ""
+        print(f"{ts}  {tier:7s} {workflow:8s} claimed={claimed:10s} review={review}{marker}")
+        if task:
+            print(f"           task: {task}")
+        if gates:
+            print(f"           gates_failed: {gates}")
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--tier", help="filter by tier (trivial|low|medium|high)")
+    p.add_argument("--workflow", help="filter by workflow type (feature|bugfix|refactor|...)")
+    p.add_argument("--tail", type=int, help="show last N runs in detail mode")
+    p.add_argument("--all", action="store_true", help="include all runs (default: last 30 in summary)")
+    args = p.parse_args()
+
+    rows = load_rows(LOG_PATH)
+    rows = filter_rows(rows, args.tier, args.workflow)
+
+    if not rows:
+        print(f"no data at {LOG_PATH}")
+        return 0
+
+    if args.tail is not None:
+        tail(rows, args.tail)
+        return 0
+
+    if not args.all:
+        rows = rows[-30:]
+    summarize(rows)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

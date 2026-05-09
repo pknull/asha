@@ -1,0 +1,20 @@
+{
+  "$schema_version": 1,
+  "_comment": "Project rules for /code:orchestrate Phase 0 routing. Globs match repo-relative paths from `git diff --name-only`. See plugins/code/modules/complexity-routing.md.",
+  "high_complexity_paths": [
+    "install.sh",
+    "uninstall.sh",
+    "INSTALLER.md",
+    "namespaces.json",
+    "plugins/*/hooks/**",
+    "plugins/*/.claude-plugin/plugin.json",
+    "bin/**",
+    "harnesses/**",
+    ".claude-plugin/marketplace.json"
+  ],
+  "trivial_complexity_paths": [
+    "**/README.md",
+    "LICENSE",
+    "**/LICENSE"
+  ]
+}
