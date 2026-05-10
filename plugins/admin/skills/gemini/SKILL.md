@@ -2,8 +2,8 @@
 name: gemini
 description: Google search with citations via Gemini API grounded-search. Use when user asks for current info, recent events, "what's the latest", news, version checks, or anything that needs fresh web data with sources. Bypasses MCP — direct REST.
 triggers:
-  - "search the web for X" / "google X" / "look up X"
-  - "what's the latest" / "news on X" / "recent updates to Y"
+  - search the web for X / google X / look up X
+  - what's the latest / news on X / recent updates to Y
   - Version checks, release info, current pricing
   - Citation-required research questions
   - When the gemini-google-search MCP is unavailable
