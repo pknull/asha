@@ -2,8 +2,8 @@
 name: bookstack
 description: Self-hosted BookStack wiki access via REST API. Use for searching the wiki, reading/creating/updating pages, listing books and chapters, managing attachments and images. Replaces the bookstack MCP. Requires BOOKSTACK_BASE_URL and BOOKSTACK_API_TOKEN.
 triggers:
-  - "look up X in the wiki" / "search bookstack for X"
-  - "what does the wiki say about Y"
+  - look up X in the wiki / search bookstack for X
+  - what does the wiki say about Y
   - Creating, updating, or reading a wiki page
   - Listing books, chapters, pages, shelves
   - Uploading attachments or images to a page

@@ -3,7 +3,7 @@ name: todoist
 description: Direct Todoist REST API access for task create/find/update/complete. Bypasses MCP server fragility. Use when user mentions Todoist, asks to create/check/complete a todo, or needs full read+write Todoist coverage.
 triggers:
   - Todoist task creation
-  - "add a todo" / "remind me to" / "track this"
+  - add a todo / remind me to / track this
   - Querying tasks by date or content
   - Completing or updating tasks
   - When local todoist-ai MCP is down or task-manager agent only exposes read tools
