@@ -403,10 +403,13 @@ _copilot_strip_asha_entries() {
 # can be re-enabled when scope question is answered.
 copilot_install_hooks() {
   if [[ "${ASHA_COPILOT_HOOKS_FORCE:-0}" != "1" ]]; then
-    echo "[copilot] hooks: deferred — Copilot CLI hooks are project-scope (.github/hooks/) only." >&2
-    echo "[copilot] hooks: to manually install, copy plugin hooks/hooks.json files into" >&2
-    echo '[copilot] hooks:   <project>/.github/hooks/  with ${CLAUDE_PLUGIN_ROOT} pre-expanded.' >&2
-    echo "[copilot] hooks: set ASHA_COPILOT_HOOKS_FORCE=1 to write to ~/.copilot/hooks/hooks.json anyway." >&2
+    echo "[copilot] hooks: deferred — Copilot CLI v1.0.44 fires hooks from" >&2
+    echo "[copilot] hooks:   ~/.copilot/hooks/hooks.json (verified empirically 2026-05-10)" >&2
+    echo "[copilot] hooks:   BUT does NOT pipe JSON payload data to scripts. fd 0 is a" >&2
+    echo "[copilot] hooks:   socket but never written to. Asha hooks would fire as empty" >&2
+    echo "[copilot] hooks:   heartbeats — session-watching captures timestamps with no" >&2
+    echo "[copilot] hooks:   tool/prompt content. Worse than no hooks (false signal)." >&2
+    echo "[copilot] hooks: set ASHA_COPILOT_HOOKS_FORCE=1 to install anyway (hollow events)." >&2
     return 0
   fi
 
