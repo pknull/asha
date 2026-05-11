@@ -1,8 +1,17 @@
 #!/bin/bash
 set -euo pipefail
-# UserPromptSubmit Hook - Session logging + optional prompt refinement
-# Emits user decision events to Memory/events/events.jsonl
-# If Work/markers/prompt-refine exists, refines prompts via LanguageTool before sending
+# UserPromptSubmit Hook — INTERVENTION ONLY (capture moved to /save jsonl_reader)
+#
+# What this hook USED to do: emit context/decision events for every prompt
+# >15 chars (or containing '?') to Memory/events/events.jsonl. That capture
+# is now derived at /save time by jsonl_reader, parsing the host's native
+# session transcript directly. The hook's emit path was redundant.
+#
+# What this hook STILL does:
+#   - Optionally refine the user's prompt via LanguageTool (localhost:8081),
+#     and inject a <system-reminder> when the correction is ≥10% diff. This is
+#     intervention (modifies the model's input) and has no transcript-tail
+#     equivalent.
 
 # Source common utilities
 source "$(dirname "$0")/common.sh"
@@ -38,54 +47,14 @@ if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
     exit 0
 fi
 
-# Ensure directory structure exists
-mkdir -p "$PROJECT_DIR/Memory/events"
+# Ensure marker directory exists (Memory/events no longer written here).
 mkdir -p "$PROJECT_DIR/Work/markers"
-
-# Helper function to emit events to event_store.py
-emit_event() {
-    local event_type="$1"
-    local subtype="$2"
-    local payload="$3"
-
-    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
-    PYTHON_CMD=$(get_python_cmd)
-
-    if [[ -f "$EVENT_STORE" && -n "$PYTHON_CMD" ]]; then
-        # Run in background to avoid blocking
-        ("$PYTHON_CMD" "$EVENT_STORE" emit \
-            --type "$event_type" \
-            --subtype "$subtype" \
-            --payload "$payload" \
-            --source "hook" >/dev/null 2>&1) &
-    fi
-}
 
 # Read stdin JSON from Claude Code
 INPUT=$(cat)
 
-# Extract user prompt (suppress jq errors for malformed input)
+# Extract user prompt (used by LanguageTool refinement below).
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null || true)
-
-# Session logging via events
-if [[ -n "$PROMPT" && "$PROMPT" != "null" ]]; then
-    PROMPT_LENGTH=${#PROMPT}
-
-    # Log if prompt is substantial (>15 chars) or contains question mark
-    if [[ $PROMPT_LENGTH -gt 15 || "$PROMPT" == *"?"* ]]; then
-        # Truncate to 120 chars for readability
-        if [[ $PROMPT_LENGTH -gt 120 ]]; then
-            PROMPT_SHORT="${PROMPT:0:120}..."
-        else
-            PROMPT_SHORT="$PROMPT"
-        fi
-
-        # Emit decision event
-        PAYLOAD=$(jq -nc --arg prompt "$PROMPT_SHORT" \
-            '{detail: $prompt, source: "user_input"}')
-        emit_event "context" "decision" "$PAYLOAD"
-    fi
-fi
 
 # ============================================================================
 # AUTOMATIC PROMPT REFINEMENT (LanguageTool integration)
@@ -181,10 +150,9 @@ except Exception as e:
                     # Signal statusline: last prompt was corrected
                     touch "$PROJECT_DIR/Work/markers/last-correction" 2>/dev/null || true
 
-                    # Emit learning event for significant correction
-                    PAYLOAD=$(jq -nc --arg original "$PROMPT" --arg refined "$REFINED" --arg change "$DIFF_PERCENT" \
-                        '{insight: "Prompt corrected (\($change)% change)", original: $original, refined: $refined}')
-                    emit_event "context" "learning" "$PAYLOAD"
+                    # (capture-side emit_event removed — significant prompt
+                    # corrections are now derivable by diffing transcript
+                    # prompts against the marker file at /save time.)
 
                     # Inject correction as system-reminder (via stdout)
                     cat <<EOF

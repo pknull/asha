@@ -1,7 +1,19 @@
 #!/bin/bash
 set -euo pipefail
-# PostToolUse Hook - Captures file modifications and agent deployments
-# Emits structured events to Memory/events/events.jsonl
+# PostToolUse Hook — INTERVENTION ONLY (capture moved to /save jsonl_reader)
+#
+# What this hook USED to do: emit structured events to
+# Memory/events/events.jsonl on every tool call (file_modified, file_created,
+# agent_deployed, decision_point, command, error). All of that is now
+# regenerated on demand at /save time by jsonl_reader, parsing the host's
+# native session transcript directly. The hook's capture path was redundant.
+#
+# What this hook STILL does:
+#   - Track agent deployments in ReasoningBank (Task tool only)
+#   - Trigger vector DB incremental ingest for Memory/.claude .md edits
+#   - Run violation checker on Write/Edit/Bash
+# These are intervention/side-effect concerns that have no transcript-tail
+# equivalent and stay here.
 
 # Source common utilities
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -25,148 +37,35 @@ if ! is_asha_initialized; then
     exit 0
 fi
 
-# Skip logging if silence mode active (master override)
+# Skip if silence mode active (master override)
 if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
     echo "{}"
     exit 0
 fi
 
-# Skip logging during RP sessions
+# Skip during RP sessions
 if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
     echo "{}"
     exit 0
 fi
 
-# Ensure directory structure exists
-mkdir -p "$PROJECT_DIR/Memory/events"
+# Ensure marker directory exists (Memory/events no longer written here).
 mkdir -p "$PROJECT_DIR/Work/markers"
-
-# Helper function to emit events to event_store.py
-emit_event() {
-    local event_type="$1"
-    local subtype="$2"
-    local payload="$3"
-    local tool_name="${4:-}"
-
-    EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
-    PYTHON_CMD=$(get_python_cmd)
-
-    if [[ -f "$EVENT_STORE" && -n "$PYTHON_CMD" ]]; then
-        # Run in background to avoid blocking
-        if [[ -n "$tool_name" ]]; then
-            ("$PYTHON_CMD" "$EVENT_STORE" emit \
-                --type "$event_type" \
-                --subtype "$subtype" \
-                --payload "$payload" \
-                --source "hook" \
-                --tool "$tool_name" >/dev/null 2>&1) &
-        else
-            ("$PYTHON_CMD" "$EVENT_STORE" emit \
-                --type "$event_type" \
-                --subtype "$subtype" \
-                --payload "$payload" \
-                --source "hook" >/dev/null 2>&1) &
-        fi
-    fi
-}
 
 # Read stdin JSON from Claude Code
 INPUT=$(cat)
 
-# Extract tool information (suppress jq errors for malformed input)
+# Extract tool information (used by intervention paths below).
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null || true)
-TOOL_RESPONSE=$(echo "$INPUT" | jq -c '.tool_response // {}' 2>/dev/null || true)
 
-# Check for errors in tool response
-ERROR_MSG=$(echo "$TOOL_RESPONSE" | jq -r '.error // empty' 2>/dev/null || true)
-if [[ -n "$ERROR_MSG" && "$ERROR_MSG" != "null" ]]; then
-    # Truncate long errors to 200 chars for readability
-    if [[ ${#ERROR_MSG} -gt 200 ]]; then
-        ERROR_SHORT="${ERROR_MSG:0:200}..."
-    else
-        ERROR_SHORT="$ERROR_MSG"
-    fi
-
-    # Extract context from tool input if available
-    CONTEXT=""
-    case "$TOOL_NAME" in
-        "Edit"|"Write")
-            FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
-            if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-                REL_PATH=${FILE_PATH#"$PROJECT_DIR"/}
-                CONTEXT="attempting to access $REL_PATH"
-            fi
-            ;;
-        "Task")
-            AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty' 2>/dev/null)
-            if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "null" ]]; then
-                CONTEXT="deploying $AGENT_TYPE agent"
-            fi
-            ;;
-        "Bash")
-            COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty' 2>/dev/null | head -c 50)
-            if [[ -n "$COMMAND" && "$COMMAND" != "null" ]]; then
-                CONTEXT="running: $COMMAND"
-            fi
-            ;;
-    esac
-
-    # Emit error event
-    PAYLOAD=$(jq -nc --arg error "$ERROR_SHORT" --arg context "$CONTEXT" \
-        '{error: $error, context: $context}')
-    emit_event "event" "error" "$PAYLOAD" "$TOOL_NAME"
-fi
-
+# ReasoningBank tracking for Task agent deployments (intervention — feeds
+# tool-selection learning, not session capture).
 case "$TOOL_NAME" in
-    "Edit")
-        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
-        if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
-                REL_PATH=${FILE_PATH#"$PROJECT_DIR"/}
-            else
-                REL_PATH="$FILE_PATH"
-            fi
-            PAYLOAD=$(jq -nc --arg file_path "$REL_PATH" --arg detail "Modified: $REL_PATH" \
-                '{file_path: $file_path, detail: $detail}')
-            emit_event "event" "file_modified" "$PAYLOAD" "$TOOL_NAME"
-        fi
-        ;;
-
-    "Write")
-        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null)
-        if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-            if [[ "$FILE_PATH" =~ ^$PROJECT_DIR/ ]]; then
-                REL_PATH=${FILE_PATH#"$PROJECT_DIR"/}
-            else
-                REL_PATH="$FILE_PATH"
-            fi
-            PAYLOAD=$(jq -nc --arg file_path "$REL_PATH" --arg detail "Created: $REL_PATH" \
-                '{file_path: $file_path, detail: $detail}')
-            emit_event "event" "file_created" "$PAYLOAD" "$TOOL_NAME"
-        fi
-        ;;
-
-    "NotebookEdit")
-        NOTEBOOK_PATH=$(echo "$TOOL_INPUT" | jq -r '.notebook_path // empty' 2>/dev/null)
-        if [[ -n "$NOTEBOOK_PATH" && "$NOTEBOOK_PATH" != "null" ]]; then
-            REL_PATH=${NOTEBOOK_PATH#"$PROJECT_DIR"/}
-            PAYLOAD=$(jq -nc --arg file_path "$REL_PATH" --arg detail "Modified notebook: $REL_PATH" \
-                '{file_path: $file_path, detail: $detail}')
-            emit_event "event" "file_modified" "$PAYLOAD" "$TOOL_NAME"
-        fi
-        ;;
-
     "Task")
         AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty' 2>/dev/null)
         DESCRIPTION=$(echo "$TOOL_INPUT" | jq -r '.description // empty' 2>/dev/null)
-
         if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "null" ]]; then
-            PAYLOAD=$(jq -nc --arg agent_type "$AGENT_TYPE" --arg description "$DESCRIPTION" \
-                '{agent_type: $agent_type, description: $description, detail: "Agent: \($agent_type) → \($description)"}')
-            emit_event "event" "agent_deployed" "$PAYLOAD" "$TOOL_NAME"
-
-            # Track agent deployment in ReasoningBank (background, non-blocking)
             REASONING_BANK="$PLUGIN_ROOT/tools/reasoning_bank.py"
             PYTHON_CMD=$(get_python_cmd)
             if [[ -f "$REASONING_BANK" && -n "$PYTHON_CMD" ]]; then
@@ -175,24 +74,6 @@ case "$TOOL_NAME" in
                     --use-case "${DESCRIPTION:-unspecified}" \
                     --success >/dev/null 2>&1) &
             fi
-        fi
-        ;;
-
-    "AskUserQuestion")
-        QUESTIONS=$(echo "$TOOL_INPUT" | jq -r '.questions[]? | .header // empty' 2>/dev/null | paste -sd ',' -)
-        if [[ -n "$QUESTIONS" && "$QUESTIONS" != "null" ]]; then
-            PAYLOAD=$(jq -nc --arg questions "$QUESTIONS" \
-                '{questions: $questions, detail: "Decision Point: \($questions)"}')
-            emit_event "event" "decision_point" "$PAYLOAD" "$TOOL_NAME"
-        fi
-        ;;
-
-    "Skill")
-        COMMAND=$(echo "$TOOL_INPUT" | jq -r '.skill // empty' 2>/dev/null)
-        if [[ "$COMMAND" == "panel"* || "$COMMAND" == "save"* || "$COMMAND" == *":"* ]]; then
-            PAYLOAD=$(jq -nc --arg command "$COMMAND" \
-                '{command: $command, detail: "Skill: \($command)"}')
-            emit_event "event" "command" "$PAYLOAD" "$TOOL_NAME"
         fi
         ;;
 esac

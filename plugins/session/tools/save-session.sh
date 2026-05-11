@@ -96,6 +96,60 @@ get_python_cmd() {
     fi
 }
 
+# Detect the active harness from environment markers.
+# Returns: claude | copilot | codex | unknown
+detect_harness() {
+    if [[ -n "${CLAUDECODE:-}" ]]; then
+        echo "claude"
+    elif [[ -n "${COPILOT_CLI:-}" ]]; then
+        echo "copilot"
+    elif [[ -n "${CODEX_CLI:-}" ]] || [[ -n "${OPENAI_CODEX:-}" ]]; then
+        echo "codex"
+    else
+        echo "unknown"
+    fi
+}
+
+# Regenerate events.jsonl from the host's native session transcript via
+# jsonl_reader. Replaces the hook-driven events.jsonl pipeline; consumed by
+# pattern_analyzer.py via the ASHA_EVENTS_FILE env override.
+#
+# Args:
+#   $1: harness (claude|copilot|codex)
+#   $2: output path (where to write the regenerated events.jsonl)
+#   $3: session_id to embed in the synth events
+# Returns: 0 on success, non-zero if jsonl_reader couldn't locate a transcript.
+regenerate_events_from_transcript() {
+    local harness="$1"
+    local output_path="$2"
+    local session_id="$3"
+
+    READER="$PLUGIN_ROOT/tools/jsonl_reader.py"
+    PYTHON_CMD=$(get_python_cmd)
+
+    if [[ ! -f "$READER" ]] || [[ -z "$PYTHON_CMD" ]]; then
+        log "regenerate-events: jsonl_reader.py or python missing"
+        return 1
+    fi
+
+    mkdir -p "$(dirname "$output_path")"
+
+    if "$PYTHON_CMD" "$READER" \
+        --harness "$harness" \
+        --project-dir "$PROJECT_DIR" \
+        --session-id "$session_id" \
+        > "$output_path" 2>/tmp/jsonl_reader.err
+    then
+        local count
+        count=$(wc -l < "$output_path" 2>/dev/null | tr -d ' ')
+        log "regenerate-events: wrote $count events to $output_path"
+        return 0
+    else
+        log "regenerate-events: failed (see /tmp/jsonl_reader.err)"
+        return 1
+    fi
+}
+
 # Get event summary from event_store.py
 get_event_summary() {
     local days="${1:-7}"
@@ -201,6 +255,61 @@ archive_watching_file() {
 
     # Clear the legacy file
     rm -f "$WATCHING_FILE"
+}
+
+# ==============================================================================
+# FROM-TRANSCRIPT MODE (regenerate events.jsonl from host transcript, then synth)
+#
+# This is the consolidation path. Replaces hook-written Memory/events/events.jsonl
+# with a freshly-derived one parsed from the host's native session log
+# (~/.claude/projects/.../<sid>.jsonl, etc.). Pattern_analyzer reads the
+# regenerated file via the ASHA_EVENTS_FILE env override; no other code paths
+# need to know.
+#
+# During the migration window this mode writes to a SIDE FILE
+# (Memory/events/events-from-transcript.jsonl) so the legacy hook-written
+# events.jsonl can be diffed against it for verification (Step 2.5 gate).
+# Once verified, the side-file path becomes the default.
+# ==============================================================================
+
+from_transcript_mode() {
+    log "Running in FROM-TRANSCRIPT mode (regenerate events from host log)"
+
+    HARNESS=$(detect_harness)
+    if [[ "$HARNESS" == "unknown" ]]; then
+        error "Cannot detect harness from env (need CLAUDECODE/COPILOT_CLI/CODEX_CLI)"
+    fi
+    log "harness: $HARNESS"
+
+    # Derive a session_id from the harness's session ID env var if available.
+    case "$HARNESS" in
+        claude)  SID="${CLAUDE_CODE_SESSION_ID:-session_$(date -u '+%Y%m%d_%H%M%S')}" ;;
+        copilot) SID="session_$(date -u '+%Y%m%d_%H%M%S')_copilot" ;;
+        codex)   SID="session_$(date -u '+%Y%m%d_%H%M%S')_codex" ;;
+    esac
+
+    SIDE_FILE="$PROJECT_DIR/Memory/events/events-from-transcript.jsonl"
+    regenerate_events_from_transcript "$HARNESS" "$SIDE_FILE" "$SID" \
+        || error "Could not regenerate events from transcript"
+
+    # Run pattern_analyzer pointing at the side file via env override.
+    PATTERN_ANALYZER="$PLUGIN_ROOT/tools/pattern_analyzer.py"
+    PYTHON_CMD=$(get_python_cmd)
+
+    if [[ ! -f "$PATTERN_ANALYZER" ]] || [[ -z "$PYTHON_CMD" ]]; then
+        error "Pattern analyzer not available"
+    fi
+
+    log "Running synthesis against transcript-derived events..."
+    ASHA_EVENTS_FILE="$SIDE_FILE" \
+        "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days 7 \
+        > /tmp/synth-from-transcript.json 2>&1 \
+        || log "synthesis returned non-zero (see /tmp/synth-from-transcript.json)"
+
+    log "Done. activeContext.md written from transcript-derived events."
+    log "  side file:  $SIDE_FILE"
+    log "  synth log:  /tmp/synth-from-transcript.json"
+    echo "{}"
 }
 
 # ==============================================================================
@@ -391,7 +500,10 @@ case "$MODE" in
     --archive-only)
         archive_only_mode
         ;;
+    --from-transcript)
+        from_transcript_mode
+        ;;
     *)
-        error "Unknown mode: $MODE. Use --interactive, --automatic, --synthesize, or --archive-only"
+        error "Unknown mode: $MODE. Use --interactive, --automatic, --synthesize, --archive-only, or --from-transcript"
         ;;
 esac
