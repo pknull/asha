@@ -1,0 +1,14 @@
+{"type":"file-history-snapshot","sessionId":"test-claude-001","timestamp":"2026-05-10T10:00:00.000Z"}
+{"type":"system","timestamp":"2026-05-10T10:00:01.000Z","sessionId":"test-claude-001","content":"system prompt content here"}
+{"type":"last-prompt","lastPrompt":"Refactor the auth module to use JWT instead of sessions","leafUuid":"a1b2c3d4-0001","sessionId":"test-claude-001"}
+{"type":"user","timestamp":"2026-05-10T10:00:05.123Z","sessionId":"test-claude-001","cwd":"/home/test/project","message":{"content":[{"type":"tool_result","tool_use_id":"tu_001","content":"file contents..."}]}}
+{"type":"assistant","timestamp":"2026-05-10T10:00:10.456Z","sessionId":"test-claude-001","cwd":"/home/test/project","message":{"content":[{"type":"text","text":"I'll refactor the auth module."}]}}
+{"type":"assistant","timestamp":"2026-05-10T10:00:15.789Z","sessionId":"test-claude-001","cwd":"/home/test/project","message":{"content":[{"type":"tool_use","id":"tu_002","name":"Read","input":{"file_path":"/home/test/project/src/auth.py"}}]}}
+{"type":"assistant","timestamp":"2026-05-10T10:00:20.000Z","sessionId":"test-claude-001","cwd":"/home/test/project","message":{"content":[{"type":"tool_use","id":"tu_003","name":"Edit","input":{"file_path":"/home/test/project/src/auth.py","old_string":"session","new_string":"jwt"}}]}}
+{"type":"assistant","timestamp":"2026-05-10T10:00:25.000Z","sessionId":"test-claude-001","cwd":"/home/test/project","message":{"content":[{"type":"tool_use","id":"tu_004","name":"Write","input":{"file_path":"/home/test/project/src/jwt_helpers.py","content":"# new file\nimport jwt\n"}}]}}
+{"type":"assistant","timestamp":"2026-05-10T10:00:30.000Z","sessionId":"test-claude-001","cwd":"/home/test/project","message":{"content":[{"type":"tool_use","id":"tu_005","name":"AskUserQuestion","input":{"questions":[{"header":"Auth strategy","question":"Which JWT library?","options":[{"label":"PyJWT","description":"standard"},{"label":"python-jose","description":"alternative"}]}]}}]}}
+{"type":"last-prompt","lastPrompt":"Use PyJWT","leafUuid":"a1b2c3d4-0002","sessionId":"test-claude-001"}
+{"type":"last-prompt","lastPrompt":"Refactor the auth module to use JWT instead of sessions","leafUuid":"a1b2c3d4-0003","sessionId":"test-claude-001"}
+{"type":"assistant","timestamp":"2026-05-10T10:01:00.000Z","sessionId":"test-claude-001","cwd":"/home/test/project","message":{"content":[{"type":"tool_use","id":"tu_006","name":"Task","input":{"subagent_type":"reviewer","description":"Review auth refactor","prompt":"Review the JWT refactor"}}]}}
+{"type":"attachment","timestamp":"2026-05-10T10:01:05.000Z","sessionId":"test-claude-001"}
+{"type":"ai-title","timestamp":"2026-05-10T10:01:10.000Z","sessionId":"test-claude-001","title":"JWT auth refactor"}

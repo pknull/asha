@@ -1,0 +1,6 @@
+{"type":"user.message","data":{"content":"valid line one"},"id":"g-001","timestamp":"2026-05-10T10:00:00.000Z"}
+this is not json at all and should be skipped with a warning
+{"type":"some.completely.unknown.event.type","data":{"foo":"bar"},"id":"g-003","timestamp":"2026-05-10T10:00:02.000Z"}
+{"type":"user.message","data":{"content":"valid line three"},"id":"g-004","timestamp":"2026-05-10T10:00:03.000Z"}
+[1,2,3]
+{"malformed":"json","missing":"end"
