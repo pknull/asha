@@ -13,6 +13,7 @@ Usage:
 
 import os
 import re
+import sys
 import json
 import hashlib
 import argparse
@@ -120,9 +121,16 @@ def _read_synthhash() -> Optional[str]:
 
 
 def _write_synthhash(content: str) -> None:
-    cache_dir = _asha_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    _synthhash_path().write_text(_content_hash(content))
+    # Defensive: under sandboxed harnesses (Codex workspace-write) the cache
+    # dir may not be writable. Skip the sidecar rather than crash synthesis;
+    # the fallback `'synthesizedFrom: "events"' not in existing_content` check
+    # in _was_manually_edited still works without it.
+    try:
+        cache_dir = _asha_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        _synthhash_path().write_text(_content_hash(content))
+    except OSError:
+        pass
 
 
 def _was_manually_edited(existing_content: str) -> bool:
@@ -138,14 +146,23 @@ def _was_manually_edited(existing_content: str) -> bool:
     return 'synthesizedFrom: "events"' not in existing_content
 
 
-def _backup_active_context(existing_content: str) -> Path:
-    """Write a timestamped backup outside the project's git tree."""
-    cache_dir = _asha_cache_dir()
-    cache_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    backup_path = cache_dir / f"activeContext-{timestamp}.backup.md"
-    backup_path.write_text(existing_content)
-    return backup_path
+def _backup_active_context(existing_content: str) -> Optional[Path]:
+    """Write a timestamped backup outside the project's git tree.
+
+    Returns None if the cache dir isn't writable (e.g. under Codex's
+    workspace-write sandbox). Caller must tolerate None — backup is a
+    safety net, not a precondition for synthesis.
+    """
+    try:
+        cache_dir = _asha_cache_dir()
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = cache_dir / f"activeContext-{timestamp}.backup.md"
+        backup_path.write_text(existing_content)
+        return backup_path
+    except OSError as exc:
+        print(f"warn: backup skipped (cache not writable): {exc}", file=sys.stderr)
+        return None
 
 
 # -----------------------------------------------------------------------------
