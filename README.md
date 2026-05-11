@@ -1,29 +1,58 @@
 # asha
 
 **Version**: 1.17.0
-**Description**: Claude Code plugins for research, development, creative writing, image generation, scheduling, and session coordination
+**Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
-A collection of domain-focused Claude Code plugins organized by workflow type.
+Asha mounts skills, agents, commands, and hooks into each harness via direct symlinks, ships launch wrappers that inject a shared persona, and consolidates session capture across all three CLIs into one synthesis pipeline.
 
 ---
 
-## Install model: symlink-mount (no marketplace registry)
+## Install model: symlink-mount across three harnesses
 
-Instead of the legacy three-file plugin registration chain
-(`marketplace.json` → `installed_plugins.json` → `enabledPlugins`),
-installation is now a plain symlink operation:
+Plugins live in `plugins/<name>/`. The installer symlinks the right primitives into each harness's scan directories:
+
+| Harness | Mount root | Persona injection |
+|---|---|---|
+| **Claude Code** | `~/.claude/*` (skills, agents, hooks, settings.json entries) | `asha-claude` wrapper uses `--append-system-prompt-file` at launch |
+| **OpenAI Codex** | `~/.codex/*` (skills as `.md`, agents, hooks) | `asha-codex` wrapper uses `-c model_instructions_file=<merged-identity>` at launch |
+| **GitHub Copilot CLI** | `~/.copilot/*` (skills, agents) | `asha-copilot` writes merged identity to `~/.cache/asha/instructions-copilot.md`; user symlinks into project's `.github/copilot-instructions.md` (Copilot v1.0.x has no equivalent flag — pending upstream fix) |
+
+Install commands:
 
 ```bash
-./install.sh              # symlinks primitives into ~/.claude/*
-./uninstall.sh            # removes marketplace-sourced symlinks
-./deprecate-marketplace.sh  # one-shot cleanup of legacy registration state
+./install.sh                                # mount into ~/.claude/* (default target)
+./install.sh --target codex                 # mount into ~/.codex/*
+./install.sh --target copilot               # mount into ~/.copilot/*
+./install.sh --target all                   # mount into all three
+./install.sh --bin all --default claude     # also install asha-* wrappers in ~/.local/bin
+./uninstall.sh                              # remove asha-tagged symlinks/entries
+./deprecate-marketplace.sh                  # one-shot cleanup of legacy registration state
 ```
 
-See **[INSTALLER.md](INSTALLER.md)** for the model and `plugins/test/README.md`
-for the smoke-test plugin.
+After `./install.sh --bin all` you'll have:
 
-The tables below still describe what each plugin does; the "install" mechanism
-is only the one above.
+| Command | Effect |
+|---|---|
+| `asha-claude` | launch Claude Code with Asha persona injected |
+| `asha-codex` | launch Codex with Asha persona injected |
+| `asha-copilot` | launch Copilot; regenerates merged identity file for manual symlink |
+| `asha` | symlink to the default wrapper (set via `--default`) |
+
+See **[INSTALLER.md](INSTALLER.md)** for the full install model, per-harness limitations, and the bin/wrapper details.
+
+---
+
+## Capture pipeline: read native session transcripts on `/save`
+
+Each harness writes its own session transcript to disk:
+
+- Claude: `~/.claude/projects/<slug>/<sid>.jsonl`
+- Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
+- Copilot: `~/.copilot/session-state/<sid>/events.jsonl`
+
+The session plugin no longer captures tool calls through hooks. `/save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings.md` updates. Hooks remain only for *intervention* (block-secrets, post-edit-lint, prompt refinement, session-start context injection).
+
+This makes capture work uniformly across all three harnesses, including Copilot — whose hooks fire but never receive the documented payload data, the original blocker behind the consolidation.
 
 ---
 
@@ -396,31 +425,46 @@ Cognitive scaffold framework with cross-project identity, automatic learning, an
 
 ## Installation
 
-### Add Marketplace
+The legacy `/plugin marketplace add` flow is retired. Installation is now a direct symlink-mount via `./install.sh`. See **[INSTALLER.md](INSTALLER.md)** for the full model.
+
+### Quick start
 
 ```bash
-/plugin marketplace add pknull/asha
+# Clone the repo somewhere stable (this path becomes the symlink source root)
+git clone https://github.com/pknull/asha.git ~/some/dir/asha
+cd ~/some/dir/asha
+
+# Install primitives into all three harnesses + launch wrappers into ~/.local/bin
+./install.sh --target all --bin all --default claude
 ```
 
-### Install Plugins
+### Selective install
 
 ```bash
-# Foundation (recommended first)
-/plugin install asha@asha
-
-# Domain plugins (install as needed)
-/plugin install panel-system@asha
-/plugin install code@asha
-/plugin install write@asha
-/plugin install image@asha
-/plugin install scheduler@asha
-/plugin install output-styles@asha
+./install.sh                              # ~/.claude/* only (default)
+./install.sh --target codex               # ~/.codex/* only
+./install.sh --target copilot             # ~/.copilot/* only
+./install.sh --only code,session          # restrict to specific plugins
+./install.sh --dry-run                    # preview the action plan
 ```
 
-### Verify Installation
+### Verify installation
 
 ```bash
-/plugin list
+ls ~/.local/bin/asha*                     # wrappers (if --bin was used)
+ls ~/.claude/skills/                      # claude-mounted skills
+ls ~/.codex/skills/                       # codex-mounted skills
+ls ~/.copilot/skills/                     # copilot-mounted skills
+~/life/bin/asha-drift-check.sh            # check symlink integrity (separate script)
+```
+
+### Launch
+
+```bash
+asha-claude                # Claude Code with Asha persona
+asha-codex                 # Codex with Asha persona
+asha-copilot               # Copilot (persona requires per-project AGENTS.md symlink)
+asha                       # default wrapper (set via --default at install)
 ```
 
 ---
@@ -492,11 +536,13 @@ Run the full test suite:
 |-------|-------|-------------|
 | Plugin Validation | 5 | JSON schema, namespace conflicts, file existence |
 | Version Consistency | 6 | Cross-file version synchronization |
-| Python Unit Tests | 67 | reasoning_bank, memory_index, local_react_save |
+| Python Unit Tests | 99 | reasoning_bank, memory_index, local_react_save, **jsonl_reader (32)** |
 | Hook Handlers | 104 | Lifecycle hooks, rules, tools, repo hygiene |
 | Shell Linting | 1 | shellcheck (optional) |
 
-**Total: 182 tests** (183 with shellcheck)
+**Total: 214 tests** (215 with shellcheck)
+
+`jsonl_reader` tests pin the per-harness transcript-parser contract against committed fixtures (`tests/fixtures/{claude,codex,copilot}-*.jsonl`) so future host format changes fail loudly here rather than producing silently degraded synth output.
 
 Individual test suites:
 
