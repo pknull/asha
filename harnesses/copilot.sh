@@ -394,25 +394,27 @@ _copilot_strip_asha_entries() {
 # Walk all selected plugins, build their tagged hook JSON, merge into the
 # cleaned base, and atomically write the result.
 #
-# DEFERRED in v1: Copilot CLI 1.0.x reads hooks from project-scope only
-# (CWD-local or .github/hooks/ — verified empirically 2026-05-09). Writing
-# to ~/.copilot/hooks/hooks.json is a no-op for the CLI; cloud-agent uses
-# repo-rooted .github/hooks/. Until a per-project install path is designed,
-# this function logs a notice and exits without writing. The full install
-# logic below remains intact (gated by ASHA_COPILOT_HOOKS_FORCE=1) so it
-# can be re-enabled when scope question is answered.
+# RETIRED 2026-05-10: Asha capture (events.jsonl) now derived on-demand at
+# /save time from the host's native session log
+# (~/.copilot/session-state/<sid>/events.jsonl), via jsonl_reader. Hooks are
+# no longer the data source for synthesis. The previous Copilot-specific
+# blocker (v1.0.44 hooks fire but don't pipe payload data) is moot — we
+# don't need their payloads when the data is already on disk in events.jsonl.
+#
+# This function is now a permanent no-op for capture purposes. The
+# ASHA_COPILOT_HOOKS_FORCE escape hatch was removed (it only existed to
+# work around the payload-delivery gap; under the new architecture there
+# is nothing to force).
+#
+# Behavioral hooks (block-secrets, suggest-compact, etc.) — if/when Copilot
+# v1.1+ ships usable payload data — would need a separate install path.
+# For now: explicit no-op with provenance.
 copilot_install_hooks() {
-  if [[ "${ASHA_COPILOT_HOOKS_FORCE:-0}" != "1" ]]; then
-    echo "[copilot] hooks: deferred — Copilot CLI v1.0.44 fires hooks from" >&2
-    echo "[copilot] hooks:   ~/.copilot/hooks/hooks.json (verified empirically 2026-05-10)" >&2
-    echo "[copilot] hooks:   BUT does NOT pipe JSON payload data to scripts. fd 0 is a" >&2
-    echo "[copilot] hooks:   socket but never written to. Asha hooks would fire as empty" >&2
-    echo "[copilot] hooks:   heartbeats — session-watching captures timestamps with no" >&2
-    echo "[copilot] hooks:   tool/prompt content. Worse than no hooks (false signal)." >&2
-    echo "[copilot] hooks: set ASHA_COPILOT_HOOKS_FORCE=1 to install anyway (hollow events)." >&2
-    return 0
-  fi
+  echo "[copilot] hooks: not installed (capture moved to /save jsonl_reader)" >&2
+  return 0
 
+  # Dead code below kept temporarily for one release cycle in case rollback
+  # is needed; subsequent PR removes entirely.
   local cleaned
   cleaned="$(_copilot_strip_asha_entries)" || die "failed to strip existing asha hook entries" 4
 
@@ -485,19 +487,8 @@ copilot_install() {
 
   ensure_dir "$COPILOT_SKILLS_DIR"
 
-  # Bootstrap an empty hooks.json only if hook install is force-enabled.
-  # Default mode defers hook install entirely (Copilot CLI hooks are
-  # project-scope only — verified empirically 2026-05-09); bootstrapping
-  # would orphan the file with no install behind it.
-  if [[ "${ASHA_COPILOT_HOOKS_FORCE:-0}" == "1" && ! -f "$COPILOT_HOOKS_FILE" ]]; then
-    if [[ $DRY_RUN -eq 1 ]]; then
-      log "would bootstrap $COPILOT_HOOKS_FILE with {\"hooks\":{}}"
-    else
-      ensure_dir "$(dirname "$COPILOT_HOOKS_FILE")"
-      printf '%s\n' '{"hooks":{}}' > "$COPILOT_HOOKS_FILE"
-      log "bootstrapped $COPILOT_HOOKS_FILE"
-    fi
-  fi
+  # Hook install retired (capture now derived on-demand at /save time).
+  # No longer bootstrap COPILOT_HOOKS_FILE — would orphan the file.
 
   say "[copilot] target = $COPILOT_HOME"
 

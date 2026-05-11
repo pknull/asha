@@ -53,7 +53,13 @@ def detect_project_root() -> Path:
 
 # Paths
 PROJECT_ROOT = detect_project_root()
-EVENTS_FILE = PROJECT_ROOT / "Memory" / "events" / "events.jsonl"
+
+# EVENTS_FILE supports env override so /save can regenerate events from the
+# host's native transcript and point synthesis at the result without writing
+# over Memory/events/events.jsonl in place. Default preserves legacy path.
+_events_override = os.environ.get("ASHA_EVENTS_FILE")
+EVENTS_FILE = Path(_events_override) if _events_override else PROJECT_ROOT / "Memory" / "events" / "events.jsonl"
+
 ACTIVE_CONTEXT = PROJECT_ROOT / "Memory" / "activeContext.md"
 LEARNINGS_FILE = Path.home() / ".asha" / "learnings.md"
 VOICE_FILE = Path.home() / ".asha" / "voice.md"
