@@ -77,20 +77,15 @@ elif [[ -e "$_PROJECT_COPILOT_INSTR" ]] || [[ -e "$_PROJECT_AGENTS" ]]; then
 else
     # Fresh project — neither file exists. Refuse to launch (strict-fail).
     #
-    # Rationale: asha-copilot exists specifically to launch Copilot WITH Asha
-    # persona. If persona can't be loaded (Copilot v1.0.x has no flag-level
-    # injection), running anyway produces silent vanilla Copilot that LOOKS
-    # like asha-copilot succeeded. Better to refuse and tell the user how to
-    # fix it, OR have them run plain `copilot` if they wanted vanilla.
+    # Rationale: asha-copilot launches Copilot WITH Asha persona. If persona
+    # can't be loaded (Copilot v1.0.x has no flag-level injection), running
+    # anyway is silent vanilla Copilot that LOOKS like asha-copilot succeeded.
+    # The wrapper has one job; if it can't do it, the user runs plain
+    # `copilot` instead. No escape hatch — pure contract.
     #
     # The hint must be visible BEFORE Copilot's TUI takes over the screen —
     # exit 1 leaves it at the shell prompt where the user can read and act.
-    #
-    # Escape hatch: ASHA_COPILOT_ALLOW_VANILLA=1 acknowledges "yes, I want
-    # to launch through this wrapper even without persona" (for users who
-    # rely on the wrapper's secrets-bootstrap or want to test).
-    if [[ "${ASHA_COPILOT_ALLOW_VANILLA:-0}" != "1" ]]; then
-        cat >&2 <<EOF
+    cat >&2 <<EOF
 [asha-copilot] persona: NOT wired in this project
 
 asha-copilot launches Copilot WITH Asha persona, but Copilot CLI v1.0.x
@@ -107,16 +102,14 @@ Then re-run: asha-copilot
 To verify it worked, look for "2 custom instructions" in the startup banner:
   Environment loaded: 2 custom instructions, 45 skills, 1 MCP server, ...
 
-Alternatives:
-  copilot                              # plain vanilla Copilot, no persona
-  ASHA_COPILOT_ALLOW_VANILLA=1 asha-copilot   # run through wrapper anyway
+If you don't want persona, run plain \`copilot\` — asha-copilot is the
+wrapper that exists to load persona; without it there's nothing it adds
+that plain \`copilot\` doesn't already do.
 
 Persona injection is upstream-blocked on Copilot v1.0.x. When v1.1+ ships
 an instructions-file flag, this manual step goes away.
 EOF
-        exit 1
-    fi
-    echo "[asha-copilot] persona: NOT wired — launching vanilla (ALLOW_VANILLA=1)" >&2
+    exit 1
 fi
 
 exec "$_COPILOT_CMD" "$@"
