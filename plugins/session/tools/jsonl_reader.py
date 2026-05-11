@@ -136,8 +136,18 @@ def _locate_codex(project_dir: Path) -> Optional[Path]:
     base = Path(os.path.expanduser("~/.codex/sessions"))
     if not base.exists():
         return None
+
+    # Best signal: $CODEX_THREAD_ID matches the UUID suffix in the rollout
+    # filename (verified empirically 2026-05-11 — Codex's session UUID is
+    # the same value it exposes via env). Falls back to cwd-match against
+    # the session_meta line, then to newest rollout.
+    thread_id = os.environ.get("CODEX_THREAD_ID")
+    if thread_id:
+        matches = list(base.rglob(f"rollout-*-{thread_id}.jsonl"))
+        if matches:
+            return matches[0]
+
     rollouts = sorted(base.rglob("rollout-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    # Walk newest-first; the first rollout whose session_meta matches cwd wins.
     project_str = str(project_dir)
     for path in rollouts:
         try:
@@ -148,7 +158,6 @@ def _locate_codex(project_dir: Path) -> Optional[Path]:
                 return path
         except (OSError, json.JSONDecodeError):
             continue
-    # No cwd match — return newest rollout (caller decides whether to use it).
     return rollouts[0] if rollouts else None
 
 
@@ -338,6 +347,16 @@ def _parse_codex_line(line: dict) -> Iterator[Event]:
             if not text:
                 continue
             if role == "user" and btype in ("input_text", "text"):
+                # Codex injects synthetic "user" messages at session start
+                # containing AGENTS.md + <environment_context> + <INSTRUCTIONS>
+                # scaffold. These are not real user prompts; filter on
+                # head-of-message markers (verified empirically 2026-05-11).
+                head = text[:80].lstrip()
+                if (head.startswith("# AGENTS.md")
+                        or head.startswith("<environment_context>")
+                        or head.startswith("<INSTRUCTIONS>")
+                        or head.startswith("<permissions")):
+                    continue
                 yield Event(timestamp=ts, kind="prompt", actor="user", text=text)
             elif role == "assistant" and btype in ("output_text", "text"):
                 yield Event(timestamp=ts, kind="assistant_text", actor="assistant", text=text)
@@ -357,16 +376,11 @@ def _parse_codex_line(line: dict) -> Iterator[Event]:
         )
         return
 
+    # function_call_output / local_shell_call_output: Codex wraps normal
+    # command stdout in "Chunk ID:N / Wall time:X / Process exited..." blocks.
+    # These are not errors and have no synth-relevant signal beyond what the
+    # corresponding tool_use already captured. Skip.
     if item_type in ("function_call_output", "local_shell_call_output"):
-        out = payload.get("output") or {}
-        text = out if isinstance(out, str) else json.dumps(out, default=str)
-        yield Event(
-            timestamp=ts,
-            kind="tool_result",
-            actor="assistant",
-            detail=text[:500],
-            raw=payload,
-        )
         return
 
 

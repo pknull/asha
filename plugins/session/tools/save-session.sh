@@ -96,14 +96,17 @@ get_python_cmd() {
     fi
 }
 
-# Detect the active harness from environment markers.
+# Detect the active harness from environment markers. Verified empirically
+# (2026-05-11) by env probe inside each running CLI; do not rename without
+# re-verifying against the host.
+#
 # Returns: claude | copilot | codex | unknown
 detect_harness() {
     if [[ -n "${CLAUDECODE:-}" ]]; then
         echo "claude"
     elif [[ -n "${COPILOT_CLI:-}" ]]; then
         echo "copilot"
-    elif [[ -n "${CODEX_CLI:-}" ]] || [[ -n "${OPENAI_CODEX:-}" ]]; then
+    elif [[ -n "${CODEX_THREAD_ID:-}" ]] || [[ -n "${CODEX_MANAGED_BY_NPM:-}" ]]; then
         echo "codex"
     else
         echo "unknown"
