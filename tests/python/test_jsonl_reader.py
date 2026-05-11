@@ -92,9 +92,12 @@ class CodexParserTests(unittest.TestCase):
         self.assertIn("shell", names)
         self.assertIn("local_shell", names)
 
-    def test_function_call_output_becomes_tool_result(self):
+    def test_function_call_output_is_dropped(self):
+        # Codex wraps normal stdout in "Chunk ID:N / Wall time:X / Process
+        # exited..." blocks that aren't errors. Dropped to avoid leaking
+        # them as event/error in to_synth_events (verified live 2026-05-11).
         results = [e for e in self.events if e.kind == "tool_result"]
-        self.assertEqual(len(results), 1)
+        self.assertEqual(len(results), 0)
 
 
 class CopilotParserTests(unittest.TestCase):
