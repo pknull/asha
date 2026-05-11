@@ -8,3 +8,5 @@
 {"timestamp":"2026-05-10T10:00:25.000Z","type":"response_item","payload":{"type":"local_shell_call","name":"local_shell","action":"{\"cmd\":[\"sed\",\"-i\",\"s/foo/bar/\",\"lib/api.py\"]}"}}
 {"timestamp":"2026-05-10T10:00:30.000Z","type":"turn_context","payload":{"turn_id":"turn-001","status":"completed"}}
 {"timestamp":"2026-05-10T10:00:35.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add a test for the change"}]}}
+{"timestamp":"2026-05-10T10:00:40.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call_apply1","name":"apply_patch","input":"*** Begin Patch\n*** Update File: lib/api.py\n@@\n def foo():\n-    pass\n+    \"\"\"foo docstring.\"\"\"\n+    pass\n*** End Patch\n"}}
+{"timestamp":"2026-05-10T10:00:50.000Z","type":"response_item","payload":{"type":"custom_tool_call","status":"completed","call_id":"call_apply2","name":"apply_patch","input":"*** Begin Patch\n*** Add File: tests/test_api.py\n+def test_foo():\n+    foo()\n*** End Patch\n"}}

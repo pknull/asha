@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -363,9 +364,11 @@ def _parse_codex_line(line: dict) -> Iterator[Event]:
             # role=="developer" / "system" are scaffold messages — skip.
         return
 
-    if item_type in ("function_call", "local_shell_call", "shell_call"):
+    if item_type in ("function_call", "local_shell_call", "shell_call", "custom_tool_call"):
         name = payload.get("name") or item_type
-        args = payload.get("arguments") or payload.get("action") or {}
+        # function_call: `arguments` is a JSON-encoded string
+        # custom_tool_call: `input` is a raw string (e.g. apply_patch patch text)
+        args = payload.get("arguments") or payload.get("input") or payload.get("action") or {}
         yield Event(
             timestamp=ts,
             kind="tool_use",
@@ -401,7 +404,9 @@ def _parse_copilot_line(line: dict) -> Iterator[Event]:
 
     if line_type == "tool.execution_start":
         name = data.get("toolName") or data.get("tool") or ""
-        args = data.get("toolArgs") or data.get("args") or {}
+        # Real Copilot puts args in `arguments` (dict). `toolArgs` is null on
+        # live events but kept as fallback for older / fixture shapes.
+        args = data.get("arguments") or data.get("toolArgs") or data.get("args") or {}
         yield Event(
             timestamp=ts,
             kind="tool_use",
@@ -587,19 +592,50 @@ def _map_event(
     return None  # assistant_text, meta, etc.
 
 
+def _extract_tool_args(raw: dict) -> dict | str:
+    """Pull tool arguments from a harness-specific raw block.
+
+    Three shapes seen in the wild (verified live 2026-05-11):
+      - Claude tool_use         : raw["input"] is a dict
+      - Copilot exec_start.data : raw["arguments"] is a dict
+      - Codex function_call     : raw["arguments"] is a JSON-encoded STRING
+      - Codex custom_tool_call  : raw["input"] is a raw string
+                                  (e.g. apply_patch patch text)
+    """
+    if not isinstance(raw, dict):
+        return {}
+    inp = raw.get("input")
+    if isinstance(inp, dict):
+        return inp
+    args_field = raw.get("arguments")
+    if isinstance(args_field, dict):
+        return args_field
+    if isinstance(args_field, str):
+        try:
+            return json.loads(args_field)
+        except json.JSONDecodeError:
+            return args_field
+    if isinstance(inp, str):
+        return inp
+    return {}
+
+
+# Matches the file path on `*** Update File:`, `*** Add File:`, `*** Delete File:`
+# lines in Codex's apply_patch input. Verified live 2026-05-11.
+_APPLY_PATCH_UPDATE_RE = re.compile(r"\*\*\* Update File: ([^\n]+)")
+_APPLY_PATCH_ADD_RE = re.compile(r"\*\*\* Add File: ([^\n]+)")
+_APPLY_PATCH_DELETE_RE = re.compile(r"\*\*\* Delete File: ([^\n]+)")
+
+
 def _map_tool_use(
     ev: Event,
     project_dir: Path,
 ) -> Optional[tuple[str, str, dict, Optional[str]]]:
     tool = ev.tool or ""
-    # Use the FULL untruncated input from the raw block. ev.detail is a
-    # display-truncated JSON preview that won't reliably round-trip through
-    # json.loads (mid-string truncation breaks parsing).
-    args = ev.raw.get("input") if isinstance(ev.raw, dict) else None
-    if not isinstance(args, dict):
-        args = {}
+    args = _extract_tool_args(ev.raw)
 
-    if tool in ("Edit", "MultiEdit"):
+    # ---- Claude vocabulary ----
+    if tool in ("Edit", "MultiEdit") and isinstance(args, dict):
         fp = args.get("file_path", "")
         if not fp:
             return None
@@ -609,7 +645,7 @@ def _map_tool_use(
             "detail": f"Modified: {rel}",
         }, tool)
 
-    if tool == "Write":
+    if tool == "Write" and isinstance(args, dict):
         fp = args.get("file_path", "")
         if not fp:
             return None
@@ -619,7 +655,7 @@ def _map_tool_use(
             "detail": f"Created: {rel}",
         }, tool)
 
-    if tool == "NotebookEdit":
+    if tool == "NotebookEdit" and isinstance(args, dict):
         fp = args.get("notebook_path") or args.get("file_path") or ""
         if not fp:
             return None
@@ -629,7 +665,7 @@ def _map_tool_use(
             "detail": f"Modified notebook: {rel}",
         }, tool)
 
-    if tool in ("Task", "Agent"):
+    if tool in ("Task", "Agent") and isinstance(args, dict):
         agent = args.get("subagent_type") or args.get("agent_type") or ""
         desc = args.get("description") or args.get("prompt") or ""
         if not agent:
@@ -640,7 +676,7 @@ def _map_tool_use(
             "detail": f"Agent: {agent} → {desc}",
         }, tool)
 
-    if tool == "AskUserQuestion":
+    if tool == "AskUserQuestion" and isinstance(args, dict):
         questions_blocks = args.get("questions") or []
         headers: list[str] = []
         if isinstance(questions_blocks, list):
@@ -657,7 +693,7 @@ def _map_tool_use(
             "detail": f"Decision Point: {questions_str}",
         }, tool)
 
-    if tool == "Skill":
+    if tool == "Skill" and isinstance(args, dict):
         cmd = args.get("skill") or args.get("name") or ""
         if not (str(cmd).startswith("panel") or str(cmd).startswith("save") or ":" in str(cmd)):
             return None
@@ -666,8 +702,70 @@ def _map_tool_use(
             "detail": f"Skill: {cmd}",
         }, tool)
 
-    # Other tools (Bash, Read, Grep, Glob, WebSearch, WebFetch, etc.) intentionally
-    # not mapped — they produce no events in the current synthesizer vocabulary.
+    # ---- Codex apply_patch (custom_tool_call) ----
+    # Codex's structured file-edit tool. `args` is a raw patch string.
+    if tool == "apply_patch" and isinstance(args, str):
+        added = _APPLY_PATCH_ADD_RE.findall(args)
+        updated = _APPLY_PATCH_UPDATE_RE.findall(args)
+        deleted = _APPLY_PATCH_DELETE_RE.findall(args)
+        if added:
+            rel = _rel(added[0].strip(), project_dir)
+            more = f" (+{len(added) - 1} more)" if len(added) > 1 else ""
+            return ("event", "file_created", {
+                "file_path": rel,
+                "detail": f"Created: {rel}{more}",
+            }, tool)
+        if updated:
+            rel = _rel(updated[0].strip(), project_dir)
+            more = f" (+{len(updated) - 1} more)" if len(updated) > 1 else ""
+            return ("event", "file_modified", {
+                "file_path": rel,
+                "detail": f"Modified: {rel}{more}",
+            }, tool)
+        if deleted:
+            rel = _rel(deleted[0].strip(), project_dir)
+            return ("event", "file_modified", {
+                "file_path": rel,
+                "detail": f"Deleted: {rel}",
+            }, tool)
+        return None
+
+    # ---- Copilot file ops ----
+    if tool == "create" and isinstance(args, dict):
+        fp = args.get("path") or args.get("file_path") or ""
+        if not fp:
+            return None
+        rel = _rel(fp, project_dir)
+        return ("event", "file_created", {
+            "file_path": rel,
+            "detail": f"Created: {rel}",
+        }, tool)
+
+    # Copilot's edit tools — verify field name from a real edit example before
+    # adding. Common candidates: "str_replace_editor", "edit", "str_replace".
+    # Skipping for now to avoid Claude-name-style guessing.
+
+    if tool == "ask_user" and isinstance(args, dict):
+        # Copilot's question-to-user tool. Args structure varies; pull whatever
+        # text-ish field exists.
+        question = (args.get("question")
+                    or args.get("prompt")
+                    or args.get("message")
+                    or args.get("text")
+                    or "")
+        if not question:
+            return None
+        snippet = str(question)[:80]
+        return ("event", "decision_point", {
+            "questions": snippet,
+            "detail": f"Asked user: {snippet}",
+        }, tool)
+
+    # ---- Tools deliberately not mapped ----
+    # report_intent       Copilot internal narration; no synth value
+    # exec_command/bash   shell wrappers — too varied to parse reliably,
+    #                     parse from apply_patch / create when files change
+    # Read/Grep/Glob/...  observational; no state change
     return None
 
 

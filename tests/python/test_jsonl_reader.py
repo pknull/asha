@@ -99,6 +99,29 @@ class CodexParserTests(unittest.TestCase):
         results = [e for e in self.events if e.kind == "tool_result"]
         self.assertEqual(len(results), 0)
 
+    def test_custom_tool_call_apply_patch_becomes_tool_use(self):
+        # Codex's apply_patch is delivered as a custom_tool_call with the
+        # patch text in payload.input. The reader emits it as tool_use so
+        # _map_tool_use can later extract file paths from the patch.
+        apply_patches = [e for e in self.events
+                         if e.kind == "tool_use" and e.tool == "apply_patch"]
+        self.assertEqual(len(apply_patches), 2)
+
+    def test_apply_patch_maps_to_file_modified_or_created(self):
+        synth = jsonl_reader.to_synth_events(
+            self.events, project_dir=Path("/home/test/project"), session_id="x"
+        )
+        # First patch updates lib/api.py → file_modified
+        modified = [s for s in synth if s["subtype"] == "file_modified"
+                    and s["metadata"]["tool_name"] == "apply_patch"]
+        self.assertEqual(len(modified), 1)
+        self.assertEqual(modified[0]["payload"]["file_path"], "lib/api.py")
+        # Second patch adds tests/test_api.py → file_created
+        created = [s for s in synth if s["subtype"] == "file_created"
+                   and s["metadata"]["tool_name"] == "apply_patch"]
+        self.assertEqual(len(created), 1)
+        self.assertEqual(created[0]["payload"]["file_path"], "tests/test_api.py")
+
 
 class CopilotParserTests(unittest.TestCase):
     """Parse the Copilot events.jsonl fixture and verify extracted events."""
@@ -115,8 +138,8 @@ class CopilotParserTests(unittest.TestCase):
 
     def test_tool_execution_start_becomes_tool_use(self):
         tool_uses = [e for e in self.events if e.kind == "tool_use"]
-        # Two execution_start events in fixture.
-        self.assertEqual(len(tool_uses), 2)
+        # Five execution_start events in fixture: shell (×2) + create + ask_user + report_intent.
+        self.assertEqual(len(tool_uses), 5)
         self.assertEqual(tool_uses[0].tool, "shell")
 
     def test_tool_execution_complete_emits_only_on_error(self):
@@ -134,6 +157,40 @@ class CopilotParserTests(unittest.TestCase):
         agents = [e for e in self.events if e.kind == "agent"]
         self.assertEqual(len(agents), 1)
         self.assertEqual(agents[0].tool, "general-purpose")
+
+    def test_create_tool_uses_arguments_dict_not_toolargs(self):
+        # Real Copilot puts args in data.arguments (dict), with toolArgs null.
+        # Fixture-based check that the reader pulls from the right field.
+        creates = [e for e in self.events if e.tool == "create"]
+        self.assertEqual(len(creates), 1)
+        # detail should be the serialized arguments, NOT "{}"
+        self.assertIn("newfile.txt", creates[0].detail)
+
+    def test_create_tool_maps_to_file_created(self):
+        synth = jsonl_reader.to_synth_events(
+            self.events, project_dir=Path("/home/test/project"), session_id="x"
+        )
+        creates = [s for s in synth if s["subtype"] == "file_created"
+                   and s["metadata"]["tool_name"] == "create"]
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(creates[0]["payload"]["file_path"], "newfile.txt")
+
+    def test_ask_user_maps_to_decision_point(self):
+        synth = jsonl_reader.to_synth_events(
+            self.events, project_dir=Path("/home/test/project"), session_id="x"
+        )
+        dps = [s for s in synth if s["subtype"] == "decision_point"
+               and s["metadata"]["tool_name"] == "ask_user"]
+        self.assertEqual(len(dps), 1)
+        self.assertIn("license", dps[0]["payload"]["questions"].lower())
+
+    def test_report_intent_is_dropped(self):
+        synth = jsonl_reader.to_synth_events(
+            self.events, project_dir=Path("/home/test/project"), session_id="x"
+        )
+        # report_intent is Copilot internal narration with no synth value.
+        for s in synth:
+            self.assertNotEqual(s["metadata"]["tool_name"], "report_intent")
 
 
 class SchemaDriftTests(unittest.TestCase):
