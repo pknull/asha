@@ -54,12 +54,45 @@ fi
 
 # Persona injection: Copilot CLI 1.0.x has no --instructions-file flag.
 # It auto-loads project-scope AGENTS.md and .github/copilot-instructions.md
-# (verified empirically against `copilot --help` 2026-05-09). The merged
-# identity at $INSTRUCTIONS_PATH is regenerated above so users can manually
-# source it into their project AGENTS.md / copilot-instructions.md.
-echo "[asha-copilot] merged identity available at: $INSTRUCTIONS_PATH" >&2
-echo "[asha-copilot] to load Asha persona for current project, append it to" >&2
-echo "[asha-copilot]   .github/copilot-instructions.md  (run \`copilot init\` first if missing)" >&2
-echo "[asha-copilot]   or AGENTS.md at project root" >&2
+# (verified empirically 2026-05-09). The merged identity at $INSTRUCTIONS_PATH
+# is regenerated above; the user must wire it into one of those project-scope
+# files. Detect the current project's state and print a targeted hint.
+
+_PROJECT_COPILOT_INSTR="$PWD/.github/copilot-instructions.md"
+_PROJECT_AGENTS="$PWD/AGENTS.md"
+
+if [[ -L "$_PROJECT_COPILOT_INSTR" ]] \
+   && [[ "$(readlink -f "$_PROJECT_COPILOT_INSTR")" == "$(readlink -f "$INSTRUCTIONS_PATH")" ]]; then
+    # Symlinked to the cached identity — fully wired. Stay quiet.
+    echo "[asha-copilot] persona: wired via .github/copilot-instructions.md → cache" >&2
+
+elif [[ -e "$_PROJECT_COPILOT_INSTR" ]] || [[ -e "$_PROJECT_AGENTS" ]]; then
+    # Project has an instructions file but it isn't a symlink to ours. Could
+    # be user-curated, could be a stale copy, could be a multi-tool AGENTS.md.
+    # Don't presume; just note where the fresh merged identity lives.
+    echo "[asha-copilot] persona: project has its own instructions file" >&2
+    echo "[asha-copilot]   if it should pick up updated Asha identity, regenerate from:" >&2
+    echo "[asha-copilot]   $INSTRUCTIONS_PATH" >&2
+
+else
+    # Fresh project — neither file exists. Print the full per-project setup.
+    cat >&2 <<EOF
+[asha-copilot] persona: NOT wired in this project (Copilot will run vanilla)
+[asha-copilot]
+[asha-copilot] Copilot CLI v1.0.x has no --instructions-file flag. To make
+[asha-copilot] Copilot speak as Asha in this project, link the merged identity:
+[asha-copilot]
+[asha-copilot]   mkdir -p .github
+[asha-copilot]   ln -s $INSTRUCTIONS_PATH \\
+[asha-copilot]     .github/copilot-instructions.md
+[asha-copilot]   echo '.github/copilot-instructions.md' >> .gitignore
+[asha-copilot]
+[asha-copilot] Then restart asha-copilot. Verify at startup banner:
+[asha-copilot]   "Environment loaded: 2 custom instructions, ..." (the 2 means loaded)
+[asha-copilot]
+[asha-copilot] Persona injection is upstream-blocked on Copilot v1.0.x. When
+[asha-copilot] v1.1+ ships an instructions-file flag, this manual step goes away.
+EOF
+fi
 
 exec "$_COPILOT_CMD" "$@"
