@@ -1,0 +1,16 @@
+{"type":"session.start","data":{"sessionId":"test-copilot-001","version":1,"producer":"copilot-agent","copilotVersion":"1.0.44","startTime":"2026-05-10T10:00:00.000Z","context":{"cwd":"/home/test/project","gitRoot":"/home/test/project","branch":"main","headCommit":"abc123"}},"id":"e-001","timestamp":"2026-05-10T10:00:00.000Z"}
+{"type":"session.model_change","data":{"newModel":"gpt-5-mini","reasoningEffort":"medium"},"id":"e-002","timestamp":"2026-05-10T10:00:01.000Z","parentId":"e-001"}
+{"type":"system.message","data":{"role":"system","content":"You are GitHub Copilot CLI..."},"id":"e-003","timestamp":"2026-05-10T10:00:02.000Z"}
+{"type":"user.message","data":{"content":"List the files in the project"},"id":"e-004","timestamp":"2026-05-10T10:00:05.000Z"}
+{"type":"assistant.turn_start","data":{},"id":"e-005","timestamp":"2026-05-10T10:00:06.000Z"}
+{"type":"assistant.message","data":{"content":"I'll list them."},"id":"e-006","timestamp":"2026-05-10T10:00:07.000Z"}
+{"type":"tool.execution_start","data":{"toolName":"shell","toolArgs":{"cmd":"ls -la"}},"id":"e-007","timestamp":"2026-05-10T10:00:08.000Z"}
+{"type":"tool.execution_complete","data":{"toolName":"shell","toolResult":{"resultType":"success","textResultForLlm":"file listing here"}},"id":"e-008","timestamp":"2026-05-10T10:00:09.000Z"}
+{"type":"skill.invoked","data":{"skill":"orchestrate","args":"plan and execute the refactor"},"id":"e-009","timestamp":"2026-05-10T10:00:15.000Z"}
+{"type":"subagent.started","data":{"agentType":"general-purpose","description":"Investigate auth flow","prompt":"trace auth handlers"},"id":"e-010","timestamp":"2026-05-10T10:00:20.000Z"}
+{"type":"subagent.completed","data":{"agentType":"general-purpose","exitStatus":"success"},"id":"e-011","timestamp":"2026-05-10T10:00:30.000Z"}
+{"type":"hook.start","data":{"hook":"preToolUse"},"id":"e-012","timestamp":"2026-05-10T10:00:31.000Z"}
+{"type":"hook.end","data":{"hook":"preToolUse","exitCode":0},"id":"e-013","timestamp":"2026-05-10T10:00:32.000Z"}
+{"type":"tool.execution_start","data":{"toolName":"shell","toolArgs":{"cmd":"rm -rf /tmp/bad"}},"id":"e-014","timestamp":"2026-05-10T10:00:35.000Z"}
+{"type":"tool.execution_complete","data":{"toolName":"shell","toolResult":{"resultType":"error","error":"Permission denied"}},"id":"e-015","timestamp":"2026-05-10T10:00:36.000Z"}
+{"type":"assistant.turn_end","data":{},"id":"e-016","timestamp":"2026-05-10T10:00:40.000Z"}

@@ -1,0 +1,10 @@
+{"timestamp":"2026-05-10T10:00:00.000Z","type":"session_meta","payload":{"id":"test-codex-001","timestamp":"2026-05-10T10:00:00.000Z","cwd":"/home/test/project","originator":"codex-tui","cli_version":"0.130.0","model_provider":"openai"}}
+{"timestamp":"2026-05-10T10:00:01.000Z","type":"event_msg","payload":{"type":"task_started","turn_id":"turn-001","model_context_window":258400}}
+{"timestamp":"2026-05-10T10:00:02.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"<permissions> sandbox info </permissions>"}]}}
+{"timestamp":"2026-05-10T10:00:05.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add docstrings to the public API in lib/api.py"}]}}
+{"timestamp":"2026-05-10T10:00:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll read api.py first."}]}}
+{"timestamp":"2026-05-10T10:00:15.000Z","type":"response_item","payload":{"type":"function_call","name":"shell","arguments":"{\"cmd\":[\"cat\",\"lib/api.py\"]}"}}
+{"timestamp":"2026-05-10T10:00:20.000Z","type":"response_item","payload":{"type":"function_call_output","output":"def foo():\n    pass\n"}}
+{"timestamp":"2026-05-10T10:00:25.000Z","type":"response_item","payload":{"type":"local_shell_call","name":"local_shell","action":"{\"cmd\":[\"sed\",\"-i\",\"s/foo/bar/\",\"lib/api.py\"]}"}}
+{"timestamp":"2026-05-10T10:00:30.000Z","type":"turn_context","payload":{"turn_id":"turn-001","status":"completed"}}
+{"timestamp":"2026-05-10T10:00:35.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Add a test for the change"}]}}
