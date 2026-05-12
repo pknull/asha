@@ -25,6 +25,17 @@ source "$SCRIPT_DIR/asha-env-bootstrap.sh"
 
 export ASHA_PERSONA=1
 
+# Management subcommands (claude <subcommand>) run their own TUIs / one-shot
+# helpers that DO NOT start a model session. Injecting --append-system-prompt-file
+# forces them out of TTY mode (e.g. `claude agents` falls back to a plain text
+# dump instead of the interactive agent dashboard). Pass through cleanly for
+# these — the persona flag is only meaningful for session launches.
+case "${1:-}" in
+    agents|auth|auto-mode|doctor|install|mcp|plugin|plugins|project|setup-token|ultrareview|update|upgrade)
+        exec claude "$@"
+        ;;
+esac
+
 if [[ -f "$IDENTITY_FILE" ]]; then
     exec claude --append-system-prompt-file "$IDENTITY_FILE" "$@"
 else
