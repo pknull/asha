@@ -402,6 +402,45 @@ def load_events(session_id: Optional[str] = None, days: int = 7) -> List[Dict]:
     return sorted(events, key=lambda e: e.get("timestamp", ""))
 
 
+def _rebuild_events_from_transcript(project_dir: Path) -> int:
+    """Regenerate EVENTS_FILE from the host's native Claude transcript.
+
+    The post-tool-use hook stopped writing events.jsonl directly (capture was
+    moved to /save-time transcript reads). Without this rebuild, /save reads a
+    stale file and produces auto-fallback activeContext — see the matching
+    learning entry. Returns the number of synth events written, or 0 if no
+    transcript is detectable or the explicit ASHA_EVENTS_FILE override is set
+    (caller is responsible for its own event source in that case).
+    """
+    if os.environ.get("ASHA_EVENTS_FILE"):
+        return 0
+    try:
+        # pattern_analyzer.py and jsonl_reader.py live in the same tools/ dir;
+        # Python adds the script's directory to sys.path[0] on shebang launch.
+        import jsonl_reader  # type: ignore
+    except ImportError:
+        return 0
+    try:
+        transcript = jsonl_reader.locate_session_log("claude", project_dir)
+    except Exception:
+        return 0
+    if not transcript or not transcript.exists():
+        return 0
+    try:
+        events = list(jsonl_reader.stream_events(transcript, "claude"))
+        synth = jsonl_reader.to_synth_events(events, project_dir, "cli")
+    except Exception as exc:
+        print(f"warn: transcript rebuild failed: {exc}", file=sys.stderr)
+        return 0
+    if not synth:
+        return 0
+    EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(EVENTS_FILE, "w") as f:
+        for ev in synth:
+            f.write(json.dumps(ev) + "\n")
+    return len(synth)
+
+
 def get_last_session_id() -> Optional[str]:
     """Get the most recent session ID from events"""
     if not EVENTS_FILE.exists():
@@ -1020,6 +1059,14 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
         "calibration_signals": {"voice": 0, "keeper": 0},
         "eval": None
     }
+
+    # Refresh events from host transcript before loading. The post-tool-use
+    # hook no longer writes events.jsonl, so a no-op here means /save reads
+    # whatever stale data is on disk. Safe no-op when ASHA_EVENTS_FILE is set
+    # or no transcript is locatable.
+    rebuilt = _rebuild_events_from_transcript(PROJECT_ROOT)
+    if rebuilt:
+        results["events_rebuilt_from_transcript"] = rebuilt
 
     # Load events
     events = load_events(session_id=session_id, days=days)
