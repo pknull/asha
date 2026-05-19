@@ -20,14 +20,64 @@ Usage:
     python learnings_manager.py export
 """
 
+import os
 import re
 import sys
 import json
 import argparse
+import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
+
+
+def _detect_project_root_for_silence() -> Optional[Path]:
+    """Best-effort project root detection for silence-marker check.
+
+    Mirrors pattern_analyzer.detect_project_root semantics: env var first,
+    then git rev-parse, then upward search from CWD. Returns None if no root
+    can be found — callers should fail-open (allow the write) in that case
+    rather than block on missing context.
+    """
+    claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
+    if claude_project_dir:
+        candidate = Path(claude_project_dir)
+        if (candidate / "Memory").is_dir():
+            return candidate
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=True
+        )
+        git_root = Path(result.stdout.strip())
+        if (git_root / "Memory").is_dir():
+            return git_root
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        pass
+
+    search_dir = Path.cwd()
+    while search_dir != search_dir.parent:
+        if (search_dir / "Memory").is_dir():
+            return search_dir
+        search_dir = search_dir.parent
+
+    return None
+
+
+def _silence_marker_present() -> bool:
+    """Defense-in-depth check for Work/markers/silence in the current project.
+
+    Returns False (fail-open) when no project root is detectable, so that
+    out-of-project CLI invocations of learnings_manager are not silently
+    blocked. Pattern_analyzer is the primary guard; this is the safety net
+    for direct callers.
+    """
+    root = _detect_project_root_for_silence()
+    if root is None:
+        return False
+    return (root / "Work" / "markers" / "silence").exists()
 
 
 # =============================================================================
@@ -279,6 +329,12 @@ def write_learnings(learnings: Dict[str, List[Learning]]):
     Bodies are stripped of leading/trailing whitespace before being joined,
     so successive round-trips are idempotent (no unbounded blank-line growth).
     """
+    # Honor Work/markers/silence even when called directly (not via
+    # pattern_analyzer). Fails open if no project root is detectable so
+    # out-of-project CLI usage still works.
+    if _silence_marker_present():
+        return
+
     # Preamble: prefer cached original (preserves user customization);
     # fall back to canonical default for fresh files.
     preamble_raw = _parsed_preamble_cache if _parsed_preamble_cache.strip() else _DEFAULT_PREAMBLE
