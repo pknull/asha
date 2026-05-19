@@ -66,6 +66,7 @@ LEARNINGS_FILE = Path.home() / ".asha" / "learnings.md"
 VOICE_FILE = Path.home() / ".asha" / "voice.md"
 KEEPER_FILE = Path.home() / ".asha" / "keeper.md"
 PATTERNS_FILE = PROJECT_ROOT / "Memory" / "events" / "patterns.json"
+SILENCE_MARKER = PROJECT_ROOT / "Work" / "markers" / "silence"
 
 
 # Calibration signal patterns
@@ -1051,6 +1052,18 @@ def append_to_keeper(signals: List[Dict]):
 
 def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bool = False) -> Dict:
     """Run full synthesis pipeline"""
+    # Silence marker honored across the whole synthesis. Same semantics as
+    # the hook handlers: if the user has /silence on, an explicit /save must
+    # not write to Memory/, ~/.asha/learnings.md, voice.md, or keeper.md.
+    # Re-evaluate at call time (not import time) so a marker created mid-
+    # session is respected.
+    if SILENCE_MARKER.exists():
+        return {
+            "status": "skipped_silence",
+            "session_id": session_id,
+            "reason": f"silence marker present at {SILENCE_MARKER}",
+        }
+
     results = {
         "status": "success",
         "session_id": session_id,
