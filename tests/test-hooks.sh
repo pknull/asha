@@ -75,12 +75,16 @@ else
 fi
 
 # ============================================================================
-# Test 3: PostToolUse creates events directory if missing
+# Test 3: PostToolUse does NOT write Memory/events/events.jsonl
 # ============================================================================
-# Architecture note: v1.12+ replaced the per-session markdown session-file
-# (Memory/sessions/current-session.md) with an event-based system that
-# writes to Memory/events/events.jsonl. This test validates the new path.
-echo -n "Test 3: PostToolUse creates events directory if missing... "
+# Architecture note: capture was moved from hooks to jsonl_reader.py on
+# 2026-05-10 (commits referenced in memory:
+# project_asha_jsonl_consolidation.md). The hook still creates Work/markers/
+# for intervention paths (ReasoningBank, vector DB refresh, violation
+# checker), but Memory/events/events.jsonl is now regenerated at /save
+# time by parsing the host's native transcript. This test guards against
+# accidental revert of that consolidation.
+echo -n "Test 3: PostToolUse leaves Memory/events untouched (capture retired)... "
 setup_test_project
 rm -rf "$TEST_DIR/project/Memory/events"
 export CLAUDE_PROJECT_DIR="$TEST_DIR/project"
@@ -89,22 +93,32 @@ export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 echo '{"tool_name": "Read", "tool_input": {}}' | \
     "$REPO_ROOT/plugins/session/hooks/handlers/post-tool-use.sh" >/dev/null 2>&1 || true
 
-if [[ -d "$TEST_DIR/project/Memory/events" ]]; then
+# Give any (mistaken) background emit time to flush before asserting absence.
+sleep 0.3
+
+EVENTS_FILE="$TEST_DIR/project/Memory/events/events.jsonl"
+MARKERS_DIR="$TEST_DIR/project/Work/markers"
+if [[ ! -f "$EVENTS_FILE" ]] && [[ -d "$MARKERS_DIR" ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  Memory/events/ directory was not created"
+    [[ -f "$EVENTS_FILE" ]] && echo "  Memory/events/events.jsonl was written (capture should be retired)"
+    [[ ! -d "$MARKERS_DIR" ]] && echo "  Work/markers/ was not created (intervention path broken)"
     FAILED=$((FAILED + 1))
 fi
 
 # ============================================================================
-# Test 4: PostToolUse logs Edit operations to events.jsonl
+# Test 4: PostToolUse Edit operation does NOT emit events.jsonl line
 # ============================================================================
-echo -n "Test 4: PostToolUse logs Edit operations... "
+# Same architecture note as Test 3: the Edit-capture path was removed when
+# capture moved to jsonl_reader. The hook still routes Edit through the
+# vector-DB-refresh and violation-check intervention paths, but does not
+# write events.jsonl.
+echo -n "Test 4: PostToolUse Edit does not emit events.jsonl (capture retired)... "
 setup_test_project
-mkdir -p "$TEST_DIR/project/Memory/events"
 EVENTS_FILE="$TEST_DIR/project/Memory/events/events.jsonl"
+mkdir -p "$TEST_DIR/project/Memory/events"
 rm -f "$EVENTS_FILE"
 
 export CLAUDE_PROJECT_DIR="$TEST_DIR/project"
@@ -113,18 +127,17 @@ export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 echo '{"tool_name": "Edit", "tool_input": {"file_path": "/test/file.md"}, "tool_response": {}}' | \
     "$REPO_ROOT/plugins/session/hooks/handlers/post-tool-use.sh" >/dev/null 2>&1 || true
 
-# Hook emits via background subprocess — wait briefly for it to flush
-for _i in 1 2 3 4 5 6 7 8 9 10; do
-    [[ -s "$EVENTS_FILE" ]] && break
-    sleep 0.1
-done
+# Wait for any (mistaken) background emit to flush before asserting absence.
+sleep 0.3
 
-if [[ -f "$EVENTS_FILE" ]] && grep -q "file.md" "$EVENTS_FILE"; then
+# Pass iff events.jsonl is empty or absent. A non-empty file would mean
+# someone wired capture back into the hook — flag it.
+if [[ ! -s "$EVENTS_FILE" ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  Edit operation was not logged"
+    echo "  events.jsonl was written by hook — capture should be retired (see project_asha_jsonl_consolidation.md)"
     FAILED=$((FAILED + 1))
 fi
 
@@ -166,9 +179,13 @@ else
 fi
 
 # ============================================================================
-# Test 6: UserPromptSubmit emits event to events.jsonl
+# Test 6: UserPromptSubmit does NOT emit events.jsonl (capture retired)
 # ============================================================================
-echo -n "Test 6: UserPromptSubmit logs event to events.jsonl... "
+# Same architecture note as Tests 3/4: prompt capture moved to jsonl_reader
+# on 2026-05-10. The hook still does LanguageTool refinement and (when a
+# correction is ≥10%) writes Work/markers/last-correction + injects a
+# <system-reminder>, but it does not write Memory/events/events.jsonl.
+echo -n "Test 6: UserPromptSubmit does not emit events.jsonl (capture retired)... "
 TEST6_DIR=$(mktemp -d)
 mkdir -p "$TEST6_DIR/Memory/events"
 mkdir -p "$TEST6_DIR/Work/markers"
@@ -177,24 +194,24 @@ echo '{"initialized": true}' > "$TEST6_DIR/.asha/config.json"
 export CLAUDE_PROJECT_DIR="$TEST6_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
+# Stdout from the hook is the JSON {prompt:...} returned to Claude Code;
+# we discard it. We only want to observe filesystem side-effects.
 echo '{"prompt": "Hello world this is a test prompt"}' | \
     "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" >/dev/null 2>&1 || true
 
-EVENTS_FILE="$TEST6_DIR/Memory/events/events.jsonl"
-# Hook emits via background subprocess — wait briefly for it to flush
-for _i in 1 2 3 4 5 6 7 8 9 10; do
-    [[ -s "$EVENTS_FILE" ]] && break
-    sleep 0.1
-done
+# Wait for any (mistaken) background emit to flush before asserting absence.
+sleep 0.3
 
-if [[ -f "$EVENTS_FILE" ]] && [[ -s "$EVENTS_FILE" ]]; then
+EVENTS_FILE="$TEST6_DIR/Memory/events/events.jsonl"
+if [[ ! -s "$EVENTS_FILE" ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  No event written to Memory/events/events.jsonl"
+    echo "  events.jsonl was written by hook — capture should be retired (see project_asha_jsonl_consolidation.md)"
     FAILED=$((FAILED + 1))
 fi
+rm -rf "$TEST6_DIR"
 rm -rf "$TEST6_DIR"
 
 # ============================================================================
@@ -1746,9 +1763,12 @@ else
 fi
 
 # ============================================================================
-# Test 67: PostToolUse logs Edit operations correctly
+# Test 67: PostToolUse does NOT write file-path events (capture retired)
 # ============================================================================
-echo -n "Test 67: PostToolUse logs Edit with file path... "
+# Same architecture note as Tests 3/4/6: capture moved to jsonl_reader on
+# 2026-05-10. Hook still routes Edit through vector-DB and violation-check
+# intervention paths but does not emit events.jsonl. Guards the consolidation.
+echo -n "Test 67: PostToolUse Edit emits no events.jsonl line (capture retired)... "
 POST_TOOL_USE="$REPO_ROOT/plugins/session/hooks/handlers/post-tool-use.sh"
 TEST67_DIR=$(mktemp -d)
 mkdir -p "$TEST67_DIR/Memory/events"
@@ -1763,18 +1783,15 @@ export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 if command -v jq >/dev/null 2>&1; then
     echo '{"tool_name": "Edit", "tool_input": {"file_path": "/tmp/test/myfile.ts"}, "tool_response": {}}' | "$POST_TOOL_USE" 2>/dev/null || true
 
-    # Hook emits via background subprocess — wait briefly for it to flush
-    for _i in 1 2 3 4 5 6 7 8 9 10; do
-        [[ -s "$EVENTS_FILE_67" ]] && break
-        sleep 0.1
-    done
+    # Wait for any (mistaken) background emit to flush before asserting absence.
+    sleep 0.3
 
-    if [[ -f "$EVENTS_FILE_67" ]] && grep -q "myfile.ts" "$EVENTS_FILE_67" 2>/dev/null; then
+    if [[ ! -s "$EVENTS_FILE_67" ]]; then
         echo -e "${GREEN}PASS${NC}"
         PASSED=$((PASSED + 1))
     else
         echo -e "${RED}FAIL${NC}"
-        echo "  Edit event not written to events.jsonl"
+        echo "  events.jsonl was written by hook — capture should be retired (see project_asha_jsonl_consolidation.md)"
         FAILED=$((FAILED + 1))
     fi
 else
