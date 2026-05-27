@@ -496,6 +496,10 @@ def extract_tool_sequences(events: List[Dict]) -> List[Tuple[str, str, int]]:
     # Find pairs
     pair_counts = Counter()
     for i in range(len(agents) - 1):
+        # Skip X->X tautologies (e.g. an authoring loop re-invoking the same
+        # skill repeatedly): "follow X with X" is not an actionable sequence.
+        if agents[i] == agents[i + 1]:
+            continue
         pair = (agents[i], agents[i + 1])
         pair_counts[pair] += 1
 
@@ -826,9 +830,11 @@ def detect_learnable_patterns(events: List[Dict]) -> List[Dict]:
         idx1, agent1 = agents[i]
         idx2, agent2 = agents[i + 1]
 
-        # Check if this sequence was error-free
+        # Check if this sequence was error-free. Skip X->X tautologies: a skill
+        # invoked repeatedly in a row ("follow X with X") is not a learnable
+        # sequence and otherwise floods learnings.md with identical entries.
         errors_between = [e for e in events[idx1:idx2] if e.get("subtype") == "error"]
-        if not errors_between and agent1 and agent2:
+        if not errors_between and agent1 and agent2 and agent1 != agent2:
             candidates.append({
                 "category": "Workflow",
                 "id": f"sequence-{agent1.lower()}-{agent2.lower()}",
@@ -876,8 +882,20 @@ def add_learnings_via_manager(candidates: List[Dict]):
     manager = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(manager)
 
-    # Add each candidate
+    # Collapse duplicate ids within this run before adding. A repeated pattern
+    # should be ONE entry, not N identical appends (the synthesizer emits a
+    # candidate per adjacent pair, so a hot loop yields many same-id copies).
+    seen_ids: set = set()
+    unique_candidates: List[Dict] = []
     for candidate in candidates:
+        cid = candidate.get("id")
+        if cid in seen_ids:
+            continue
+        seen_ids.add(cid)
+        unique_candidates.append(candidate)
+
+    # Add each candidate
+    for candidate in unique_candidates:
         try:
             manager.add_learning(
                 category=candidate["category"],
