@@ -843,23 +843,14 @@ def detect_learnable_patterns(events: List[Dict]) -> List[Dict]:
                 "reason": f"Effective sequence observed in {project_name}"
             })
 
-    # 3. Repeated tool patterns (same tool used 3+ times successfully)
-    tool_counts = Counter()
-    for e in events:
-        if e.get("subtype") in ("file_modified", "file_created"):
-            tool = e.get("metadata", {}).get("tool_name", "")
-            if tool:
-                tool_counts[tool] += 1
-
-    for tool, count in tool_counts.items():
-        if count >= 5:
-            candidates.append({
-                "category": "Tool Usage",
-                "id": f"prefer-{tool.lower()}",
-                "trigger": f"File operations in this codebase",
-                "action": f"Use {tool} for file modifications (proven effective)",
-                "reason": f"Used {count}x successfully in {project_name}"
-            })
+    # 3. (removed) Repeated tool-use previously emitted "prefer-<tool>" learnings
+    # ("Use Edit for file modifications (proven effective)"). These are vacuous —
+    # Edit/Write ARE the file-modification tools, so the recommendation carries no
+    # information — and they regenerated into the SHARED hot-tier learnings.md on
+    # every save, crowding out real learnings across projects (observed re-emitting
+    # for 3+ consecutive saves incl. concurrent sessions). Removed at source, same
+    # spirit as the sequence-* tautology guard. save_guardrail's strip-prefer-noise
+    # op self-heals any already-present or stale-session copies.
 
     return candidates
 

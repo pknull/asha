@@ -3,7 +3,7 @@
 save_guardrail.py — Boundary guard for /session:save.
 
 Treats pattern_analyzer.py's output as untrusted input. Runs after synthesis,
-before commit. Three operations:
+before commit. Four operations:
 
   1. strip-stubs    Remove auto-fallback stub blocks the synthesizer re-appends
                     to Memory/activeContext.md (## Current Blockers / ## Next Steps
@@ -19,6 +19,13 @@ before commit. Three operations:
                     un-deduplicated across projects; one project's noise surfaces
                     in another's save).
 
+  4. strip-prefer-noise
+                    Remove vacuous '### prefer-*' tool-preference learnings
+                    ("Use Edit for file modifications (proven effective)") from
+                    the SHARED ~/.asha/learnings.md. Removed at source in
+                    pattern_analyzer.py; this self-heals already-present or
+                    stale-session copies.
+
 All operations are idempotent and write a one-line summary of what was removed
 to stderr. Default mode is --apply (changes files). Use --dry-run to inspect.
 
@@ -26,6 +33,7 @@ Usage:
     save_guardrail.py strip-stubs <activeContext.md> [--dry-run]
     save_guardrail.py dedup-keeper <keeper.md> [--dry-run]
     save_guardrail.py strip-sequence-noise <learnings.md> [--dry-run]
+    save_guardrail.py strip-prefer-noise <learnings.md> [--dry-run]
     save_guardrail.py all <project_dir> [--dry-run]
 """
 
@@ -228,16 +236,17 @@ def dedup_keeper(path: Path, dry_run: bool = False) -> int:
 # save. Strip them at the boundary; the detector fix prevents most generation,
 # this self-heals whatever still lands.
 SEQUENCE_ENTRY = re.compile(r"^### sequence-")
+PREFER_ENTRY = re.compile(r"^### prefer-")
 
 
-def strip_sequence_noise(path: Path, dry_run: bool = False) -> int:
-    """Remove '### sequence-*' entries (header + body) from learnings.md.
+def _strip_learning_entries(path: Path, pattern: "re.Pattern[str]", op: str, noun: str, dry_run: bool = False) -> int:
+    """Remove learnings.md entries whose '### ' header matches `pattern`.
 
-    A block runs from its '### sequence-' header until the next '### ' entry,
+    A block runs from its matching '### ' header until the next '### ' entry,
     the next '## ' section, or EOF. Returns the number of entries removed.
     """
     if not path.exists():
-        print(f"strip-sequence-noise: {path} not found, skipping", file=sys.stderr)
+        print(f"{op}: {path} not found, skipping", file=sys.stderr)
         return 0
 
     original = path.read_text()
@@ -247,10 +256,10 @@ def strip_sequence_noise(path: Path, dry_run: bool = False) -> int:
 
     for line in original.split("\n"):
         if line.startswith("### "):
-            skipping = bool(SEQUENCE_ENTRY.match(line))
+            skipping = bool(pattern.match(line))
             if skipping:
                 removed += 1
-                continue  # drop the sequence header itself
+                continue  # drop the matched header itself
         elif skipping and line.startswith("## "):
             skipping = False  # a section header ends the skipped entry's body
         if skipping:
@@ -266,11 +275,27 @@ def strip_sequence_noise(path: Path, dry_run: bool = False) -> int:
         rebuilt += "\n"
 
     if dry_run:
-        print(f"strip-sequence-noise: would remove {removed} sequence entry(ies) from {path}", file=sys.stderr)
+        print(f"{op}: would remove {removed} {noun} entry(ies) from {path}", file=sys.stderr)
     else:
         path.write_text(rebuilt)
-        print(f"strip-sequence-noise: removed {removed} sequence entry(ies) from {path}", file=sys.stderr)
+        print(f"{op}: removed {removed} {noun} entry(ies) from {path}", file=sys.stderr)
     return removed
+
+
+def strip_sequence_noise(path: Path, dry_run: bool = False) -> int:
+    """Remove '### sequence-*' tool-adjacency entries from learnings.md."""
+    return _strip_learning_entries(path, SEQUENCE_ENTRY, "strip-sequence-noise", "sequence", dry_run)
+
+
+def strip_prefer_noise(path: Path, dry_run: bool = False) -> int:
+    """Remove '### prefer-*' tool-preference entries from learnings.md.
+
+    The synthesizer used to emit 'prefer-<tool>' learnings ("Use Edit for file
+    modifications (proven effective)") whenever a tool was used 5+ times. They are
+    vacuous and crowd the SHARED hot tier; removed at source in pattern_analyzer.py,
+    this self-heals already-present / stale-session copies.
+    """
+    return _strip_learning_entries(path, PREFER_ENTRY, "strip-prefer-noise", "prefer", dry_run)
 
 
 # -----------------------------------------------------------------------------
@@ -279,7 +304,7 @@ def strip_sequence_noise(path: Path, dry_run: bool = False) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("operation", choices=("strip-stubs", "dedup-keeper", "strip-sequence-noise", "all"))
+    parser.add_argument("operation", choices=("strip-stubs", "dedup-keeper", "strip-sequence-noise", "strip-prefer-noise", "all"))
     parser.add_argument("target", help="Path to file (strip-stubs/dedup-keeper) or project dir (all)")
     parser.add_argument("--dry-run", action="store_true", help="Preview changes without writing")
     args = parser.parse_args()
@@ -293,6 +318,8 @@ def main() -> int:
         total_changes += dedup_keeper(target, dry_run=args.dry_run)
     elif args.operation == "strip-sequence-noise":
         total_changes += strip_sequence_noise(target, dry_run=args.dry_run)
+    elif args.operation == "strip-prefer-noise":
+        total_changes += strip_prefer_noise(target, dry_run=args.dry_run)
     elif args.operation == "all":
         active_context = target / "Memory" / "activeContext.md"
         keeper = Path.home() / ".asha" / "keeper.md"
@@ -300,6 +327,7 @@ def main() -> int:
         total_changes += strip_stubs(active_context, dry_run=args.dry_run)
         total_changes += dedup_keeper(keeper, dry_run=args.dry_run)
         total_changes += strip_sequence_noise(learnings, dry_run=args.dry_run)
+        total_changes += strip_prefer_noise(learnings, dry_run=args.dry_run)
 
     return 0 if total_changes == 0 or not args.dry_run else 0
 
