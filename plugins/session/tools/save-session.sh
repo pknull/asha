@@ -344,12 +344,27 @@ automatic_mode() {
     # Rotate old events (keep last 30 days in active file)
     rotate_events 30
 
-    # Git commit + push if configured
+    # Pre-flight verification gate (fail-safe). No agent is present to remediate
+    # on the auto path, so a HARD failure SKIPS the commit rather than committing
+    # a clobbered/foreign activeContext. Each gate result is logged to
+    # Memory/events/save-preflight.jsonl.
+    PREFLIGHT="$PLUGIN_ROOT/tools/save_preflight.py"
+    PREFLIGHT_OK=1
+    if [[ -f "$PREFLIGHT" && -n "$PYTHON_CMD" ]]; then
+        if ! "$PYTHON_CMD" "$PREFLIGHT" --mode guard --skip-push --project-dir "$PROJECT_DIR" >&2; then
+            PREFLIGHT_OK=0
+            log "pre-flight gate HARD FAIL — skipping auto-commit (see Memory/events/save-preflight.jsonl)"
+        fi
+    fi
+
+    # Git commit if configured AND the pre-flight gate passed. Push goes through
+    # the durable queue (push_retry) so a missing remote is queued, not silent.
     if [[ -f "$PROJECT_DIR/.asha/config.json" ]]; then
         AUTO_COMMIT=$("$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('autoCommit', False))" < "$PROJECT_DIR/.asha/config.json" 2>/dev/null || echo "False")
-        if [[ "$AUTO_COMMIT" == "True" ]]; then
+        if [[ "$AUTO_COMMIT" == "True" && "$PREFLIGHT_OK" == "1" ]]; then
             log "Auto-committing Memory changes..."
-            (cd "$PROJECT_DIR" && git add Memory/ && git commit -m "Session auto-save: $(date -u '+%Y-%m-%d %H:%M UTC')" && git push) 2>/dev/null || true
+            (cd "$PROJECT_DIR" && git add Memory/ && git commit -m "Session auto-save: $(date -u '+%Y-%m-%d %H:%M UTC')") 2>/dev/null || true
+            "$PYTHON_CMD" "$PLUGIN_ROOT/tools/push_retry.py" ensure --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
         fi
     fi
 
