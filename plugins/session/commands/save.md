@@ -30,6 +30,12 @@ Trigger synthesis now. Use when you want to checkpoint mid-session or ensure sta
 
 ## Execution
 
+First, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
+
+```bash
+"/home/pknull/life/asha/plugins/session/tools/push_retry.py" drain --project-dir "$PROJECT_DIR"
+```
+
 Run the synthesis pipeline:
 
 ```bash
@@ -77,18 +83,28 @@ fi
 
 **Failures are non-fatal.** If the script is missing (other projects, or baseline dir not set up), skip silently. If it exits non-zero, log a one-line warning and continue — baseline accumulation is best-effort, not a gate on save.
 
-Then commit Memory changes:
+Then run the pre-flight verification gate (engine-backed — the enforced version of the manual Verification Gate below). It self-heals `Memory/`, confirms synthesis ran on THIS session's transcript (not a concurrent session's), and blocks a clobbered or foreign-sourced `activeContext.md` from being committed:
+
+```bash
+"/home/pknull/life/asha/plugins/session/tools/save_preflight.py" --mode guard --skip-push --project-dir "$PROJECT_DIR"
+```
+
+If it exits non-zero (a HARD gate failed), STOP — fix the flagged issue (re-run synthesis with the correct transcript, regenerate the affected activeContext section) before committing. Do not commit over a hard failure. The same gates re-run post-commit via the Stop hook as a final net.
+
+Then commit Memory changes. Dropping the `save-pending` marker first arms the Stop hook to run the post-commit verification gate for this turn:
 
 ```bash
 cd "$PROJECT_DIR"
+mkdir -p "$PROJECT_DIR/Work/markers"
+printf '{"created":"%s","attempts":0}\n' "$(date -u +%FT%TZ)" > "$PROJECT_DIR/Work/markers/save-pending"
 git add Memory/
 git commit -m "Session save: ${ARGUMENTS:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
 ```
 
-Push unless `--no-push` specified:
+Push unless `--no-push` specified. This uses the durable push path: if a remote/upstream exists the commit is pushed; otherwise HEAD is recorded to the backoff retry queue (inspect with `push_retry.py status`) instead of failing silently:
 
 ```bash
-git push
+"/home/pknull/life/asha/plugins/session/tools/push_retry.py" ensure --project-dir "$PROJECT_DIR"
 ```
 
 ## Verification Gate (run BEFORE commit)

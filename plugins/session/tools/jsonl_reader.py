@@ -94,8 +94,14 @@ def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Opti
 
     `project_dir` defaults to $CLAUDE_PROJECT_DIR or cwd. Detection rules:
 
+      ANY     : $ASHA_TRANSCRIPT_PATH, if set, is used verbatim and overrides all
+                detection (the authoritative path from a hook payload). If set but
+                missing, returns None rather than guessing another session's log.
       claude  : $CLAUDE_CODE_SESSION_ID -> ~/.claude/projects/<slug>/<sid>.jsonl
-                Fallback: newest *.jsonl under the slug dir.
+                No blind mtime fallback: if the id is known but its log is absent,
+                or several logs share the slug dir, returns None to avoid pulling
+                a concurrent session's transcript. Set $ASHA_ALLOW_MTIME_FALLBACK=1
+                to restore the old newest-by-mtime behavior.
       codex   : newest rollout-*.jsonl under ~/.codex/sessions/ by mtime.
                 (Codex rollouts don't carry cwd in the filename; the
                 session_meta line inside has it. We pick newest and let
@@ -104,6 +110,16 @@ def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Opti
                 the parent process chain. Fallback: newest session whose
                 workspace.yaml.cwd == project_dir.
     """
+    # Authoritative override: when the caller knows the exact transcript (e.g. a
+    # Stop/SessionEnd hook payload's transcript_path), honor it verbatim and skip
+    # detection entirely. This is the robust fix for cross-session bleed in the
+    # shared ~/.claude/projects/<slug>/ dir. Explicit-but-missing => None, never
+    # a mtime guess that could belong to another session.
+    explicit = os.environ.get("ASHA_TRANSCRIPT_PATH")
+    if explicit:
+        ep = Path(os.path.expanduser(explicit))
+        return ep if ep.exists() else None
+
     if project_dir is None:
         env_pd = os.environ.get("CLAUDE_PROJECT_DIR") or os.environ.get("COPILOT_PROJECT_DIR")
         project_dir = Path(env_pd) if env_pd else Path.cwd()
@@ -128,9 +144,19 @@ def _locate_claude(project_dir: Path) -> Optional[Path]:
         candidate = base / f"{sid}.jsonl"
         if candidate.exists():
             return candidate
-    # Fallback: newest *.jsonl in the slug dir.
+        # Session id known but its transcript is absent: return None rather than
+        # substituting another session's newest-by-mtime log (cross-session bleed).
+        return None
+    # Session id unknown. Only fall back when there is exactly ONE transcript in
+    # the slug dir (unambiguous). Concurrent sessions share this dir, so a
+    # newest-by-mtime guess routinely picks the wrong session's work. The old
+    # behavior is available behind $ASHA_ALLOW_MTIME_FALLBACK=1 for recovery.
     candidates = sorted(base.glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0] if candidates else None
+    if len(candidates) == 1:
+        return candidates[0]
+    if os.environ.get("ASHA_ALLOW_MTIME_FALLBACK") == "1" and candidates:
+        return candidates[0]
+    return None
 
 
 def _locate_codex(project_dir: Path) -> Optional[Path]:

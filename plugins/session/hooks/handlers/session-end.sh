@@ -28,9 +28,19 @@ fi
 # Read stdin JSON from Claude Code (required for hooks)
 INPUT=$(cat)
 
+# Thread the authoritative session identity from the payload into the automatic
+# save so synthesis reads THIS session's transcript, not a concurrent session's
+# newest-by-mtime log. jsonl_reader/pattern_analyzer honor these env vars, and
+# exec (below) preserves the exported environment.
+TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+[[ -n "$TRANSCRIPT_PATH" ]] && export ASHA_TRANSCRIPT_PATH="$TRANSCRIPT_PATH"
+[[ -n "$SESSION_ID" ]] && export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
+
 # Clean up session markers (auto-removed at session-end)
 rm -f "$PROJECT_DIR/Work/markers/rp-active"
 rm -f "$PROJECT_DIR/Work/markers/silence"
+rm -f "$PROJECT_DIR/Work/markers/save-pending"
 
 # Extract session end reason
 REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null || true)

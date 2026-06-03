@@ -426,10 +426,20 @@ def _rebuild_events_from_transcript(project_dir: Path) -> int:
     except Exception:
         return 0
     if not transcript or not transcript.exists():
+        # No authoritative transcript for this session (id unknown + ambiguous
+        # slug dir, or explicit path missing). Skip the rebuild rather than pull
+        # a concurrent session's log; run_synthesis then no-ops on stale events.
+        print("warn: no current-session transcript located; skipping event "
+              "rebuild (set ASHA_TRANSCRIPT_PATH or CLAUDE_CODE_SESSION_ID)",
+              file=sys.stderr)
         return 0
+    # Stamp events with the real session id. A claude transcript is named
+    # <session_id>.jsonl, so its stem is authoritative even when the env var is
+    # unset, letting downstream load_events(session_id=...) isolate this session.
+    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or transcript.stem
     try:
         events = list(jsonl_reader.stream_events(transcript, "claude"))
-        synth = jsonl_reader.to_synth_events(events, project_dir, "cli")
+        synth = jsonl_reader.to_synth_events(events, project_dir, sid)
     except Exception as exc:
         print(f"warn: transcript rebuild failed: {exc}", file=sys.stderr)
         return 0
