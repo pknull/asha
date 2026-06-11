@@ -26,9 +26,20 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Resolve script dir, following symlinks. Portable (no GNU `readlink -f`).
+__asha_src="${BASH_SOURCE[0]}"
+while [ -h "$__asha_src" ]; do
+  __asha_dir="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+  __asha_src="$(readlink "$__asha_src")"
+  case "$__asha_src" in /*) ;; *) __asha_src="$__asha_dir/$__asha_src" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+unset __asha_src __asha_dir
 MARKET_ROOT="$SCRIPT_DIR"
-ABS_MARKET_ROOT="$(readlink -f "$MARKET_ROOT")"
+# Cross-platform shims (resolve_path); re-exported to sourced harness scripts.
+# shellcheck source=lib/portable.sh
+source "$MARKET_ROOT/lib/portable.sh"
+ABS_MARKET_ROOT="$(resolve_path "$MARKET_ROOT")"
 HARNESSES_DIR="$MARKET_ROOT/harnesses"
 PLUGINS_DIR="$MARKET_ROOT/plugins"
 
@@ -53,7 +64,7 @@ remove_symlinks_under() {
 
   while IFS= read -r -d '' link; do
     local target
-    target="$(readlink -f "$link" 2>/dev/null || true)"
+    target="$(resolve_path "$link" 2>/dev/null || true)"
     [[ -z "$target" ]] && { log "dangling: $link (removing)"; rm -f "$link"; count=$((count+1)); continue; }
     case "$target" in
       "$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*)

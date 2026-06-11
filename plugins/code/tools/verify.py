@@ -442,7 +442,7 @@ class RustChecker(BaseChecker):
         })
 
         # Clippy
-        if cmd_exists("cargo-clippy") or True:  # clippy is usually available
+        if cmd_exists("cargo-clippy"):
             checks.append({
                 "name": "cargo-clippy",
                 "cmd": ["cargo", "clippy", "--", "-D", "warnings"],

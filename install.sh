@@ -45,11 +45,23 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # Resolve script location (handles invocation via symlink)
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Resolve script dir, following symlinks. Portable (no GNU `readlink -f`).
+__asha_src="${BASH_SOURCE[0]}"
+while [ -h "$__asha_src" ]; do
+  __asha_dir="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+  __asha_src="$(readlink "$__asha_src")"
+  case "$__asha_src" in /*) ;; *) __asha_src="$__asha_dir/$__asha_src" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+unset __asha_src __asha_dir
 MARKET_ROOT="$SCRIPT_DIR"
 PLUGINS_DIR="$MARKET_ROOT/plugins"
 NAMESPACES_FILE="$MARKET_ROOT/namespaces.json"
 HARNESSES_DIR="$MARKET_ROOT/harnesses"
+
+# Cross-platform shims (resolve_path); re-exported to sourced harness scripts.
+# shellcheck source=lib/portable.sh
+source "$MARKET_ROOT/lib/portable.sh"
 
 DRY_RUN=0
 FORCE=0
@@ -87,11 +99,11 @@ ensure_dir() {
 mklink() {
   local src="$1" dest="$2" kind="$3"
   local abs_src
-  abs_src="$(readlink -f "$src")"
+  abs_src="$(resolve_path "$src")"
 
   if [[ -L "$dest" ]]; then
     local existing
-    existing="$(readlink -f "$dest" 2>/dev/null || true)"
+    existing="$(resolve_path "$dest" 2>/dev/null || true)"
     if [[ "$existing" == "$abs_src" ]]; then
       log "ok (already linked): $dest"
       return 0
@@ -132,7 +144,13 @@ selected_plugins() {
     IFS=',' read -ra arr <<<"$ONLY"
     printf '%s\n' "${arr[@]}"
   else
-    find "$PLUGINS_DIR" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort
+    # Portable plugin-dir enumeration (GNU `find -printf` is unavailable on
+    # BSD/macOS). Glob the immediate subdirectories and emit their basenames.
+    local d
+    for d in "$PLUGINS_DIR"/*/; do
+      [[ -d "$d" ]] || continue
+      basename "$d"
+    done | sort
   fi
 }
 
@@ -283,7 +301,7 @@ _detect_legacy_asha() {
 
   if [[ -L "$legacy" ]]; then
     local target
-    target="$(readlink -f "$legacy" 2>/dev/null || true)"
+    target="$(resolve_path "$legacy" 2>/dev/null || true)"
     case "$target" in
       "$MARKET_ROOT"/*) return 0 ;;   # already pointing into asha repo
     esac

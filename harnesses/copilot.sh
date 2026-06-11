@@ -427,7 +427,7 @@ copilot_install_hooks() {
     _copilot_is_skip_plugin "$plugin_dir" && continue
 
     plugin_root="$PLUGINS_DIR/$plugin_dir"
-    abs_root="$(readlink -f "$plugin_root")"
+    abs_root="$(resolve_path "$plugin_root")"
     if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
     elif [[ -f "$plugin_root/hooks.json"      ]]; then hooks_json="$plugin_root/hooks.json"
     else continue
@@ -483,7 +483,7 @@ copilot_install() {
   command -v jq      >/dev/null 2>&1 || die "jq required for Copilot install (JSON manipulation)" 3
   command -v python3 >/dev/null 2>&1 || die "python3 required for Copilot install (frontmatter + hook translation)" 3
 
-  : "${ABS_MARKET_ROOT:=$(readlink -f "$MARKET_ROOT")}"
+  : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
 
   ensure_dir "$COPILOT_SKILLS_DIR"
 
