@@ -217,10 +217,13 @@ sys.stdout.write(f"---\n{new_fm}\n---\n{body}")
 PYEOF
 )"
 
-  # Idempotent write
+  # Idempotent write. On the unchanged path, still bump dest mtime — the
+  # drift check compares source vs dest mtimes, so a content-identical dest
+  # with an old mtime would be flagged stale forever.
   if [[ -f "$dest" ]]; then
     local current; current="$(cat "$dest")"
     if [[ "$current" == "$content" ]]; then
+      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
       log "[codex] command-skill unchanged: $dest"
       return 0
     fi
