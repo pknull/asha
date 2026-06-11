@@ -58,13 +58,13 @@ Read `bible/voice.md` and check:
 Read `suppress_categories` from `bible/voice.md`. If present, pass those category IDs to the style-analyzer via `--suppress` so genre-appropriate patterns are not flagged:
 
 ```bash
-python3 "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "section.md" --json --suppress shimmer_family shadow_worship
+python3 "$ASHA_ROOT/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "section.md" --json --suppress shimmer_family shadow_worship
 ```
 
 Alternatively, pass voice.md directly:
 
 ```bash
-python3 "/home/pknull/life/asha/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "section.md" --json --voice bible/voice.md
+python3 "$ASHA_ROOT/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "section.md" --json --voice bible/voice.md
 ```
 
 Report suppressed categories in output so human reviewers know what was skipped.
