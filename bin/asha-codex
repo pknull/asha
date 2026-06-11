@@ -23,7 +23,7 @@ while [ -h "$__asha_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
 unset __asha_src __asha_dir
-ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+export ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 MERGE_SCRIPT="$ASHA_ROOT/identity/identity-merge.sh"
 INSTRUCTIONS="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
 

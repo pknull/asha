@@ -55,7 +55,7 @@ mkdir -p "$ASHA_HOME"
 
 # soul.md - Who Asha is
 if [[ ! -f "$ASHA_HOME/soul.md" ]]; then
-    cp "/home/pknull/life/asha/plugins/asha/templates/soul.md" "$ASHA_HOME/soul.md"
+    cp "$ASHA_ROOT/plugins/asha/templates/soul.md" "$ASHA_HOME/soul.md"
     echo "Created ~/.asha/soul.md — edit to define identity"
 else
     echo "Skipped ~/.asha/soul.md (exists)"
@@ -63,7 +63,7 @@ fi
 
 # voice.md - How Asha expresses
 if [[ ! -f "$ASHA_HOME/voice.md" ]]; then
-    cp "/home/pknull/life/asha/plugins/asha/templates/voice.md" "$ASHA_HOME/voice.md"
+    cp "$ASHA_ROOT/plugins/asha/templates/voice.md" "$ASHA_HOME/voice.md"
     echo "Created ~/.asha/voice.md — edit to define voice constraints"
 else
     echo "Skipped ~/.asha/voice.md (exists)"

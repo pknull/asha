@@ -33,25 +33,25 @@ Trigger synthesis now. Use when you want to checkpoint mid-session or ensure sta
 First, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
 
 ```bash
-"/home/pknull/life/asha/plugins/session/tools/push_retry.py" drain --project-dir "$PROJECT_DIR"
+"$ASHA_ROOT/plugins/session/tools/push_retry.py" drain --project-dir "$PROJECT_DIR"
 ```
 
 Run the synthesis pipeline:
 
 ```bash
-"/home/pknull/life/asha/plugins/session/tools/pattern_analyzer.py" synthesize --days 7
+"$ASHA_ROOT/plugins/session/tools/pattern_analyzer.py" synthesize --days 7
 ```
 
 Then archive and rotate events:
 
 ```bash
-"/home/pknull/life/asha/plugins/session/tools/save-session.sh" --archive-only
+"$ASHA_ROOT/plugins/session/tools/save-session.sh" --archive-only
 ```
 
 Then run the boundary guardrail to strip auto-fallback stub blocks the synthesizer re-appends and dedup re-emitted calibration signals against the existing keeper log. This treats `pattern_analyzer.py`'s output as untrusted input — durable fix at the boundary, no upstream chase required.
 
 ```bash
-"/home/pknull/life/asha/plugins/session/tools/save_guardrail.py" all "$PROJECT_DIR"
+"$ASHA_ROOT/plugins/session/tools/save_guardrail.py" all "$PROJECT_DIR"
 ```
 
 Surface any non-zero counts in chat output so the user sees what was cleaned. If the guardrail itself errors (missing file, parse failure), report it and continue — the gate must not block save on a guardrail bug.
@@ -86,7 +86,7 @@ fi
 Then run the pre-flight verification gate (engine-backed — the enforced version of the manual Verification Gate below). It self-heals `Memory/`, confirms synthesis ran on THIS session's transcript (not a concurrent session's), and blocks a clobbered or foreign-sourced `activeContext.md` from being committed:
 
 ```bash
-"/home/pknull/life/asha/plugins/session/tools/save_preflight.py" --mode guard --skip-push --project-dir "$PROJECT_DIR"
+"$ASHA_ROOT/plugins/session/tools/save_preflight.py" --mode guard --skip-push --project-dir "$PROJECT_DIR"
 ```
 
 If it exits non-zero (a HARD gate failed), STOP — fix the flagged issue (re-run synthesis with the correct transcript, regenerate the affected activeContext section) before committing. Do not commit over a hard failure. The same gates re-run post-commit via the Stop hook as a final net.
@@ -104,7 +104,7 @@ git commit -m "Session save: ${ARGUMENTS:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
 Push unless `--no-push` specified. This uses the durable push path: if a remote/upstream exists the commit is pushed; otherwise HEAD is recorded to the backoff retry queue (inspect with `push_retry.py status`) instead of failing silently:
 
 ```bash
-"/home/pknull/life/asha/plugins/session/tools/push_retry.py" ensure --project-dir "$PROJECT_DIR"
+"$ASHA_ROOT/plugins/session/tools/push_retry.py" ensure --project-dir "$PROJECT_DIR"
 ```
 
 ## Verification Gate (run BEFORE commit)

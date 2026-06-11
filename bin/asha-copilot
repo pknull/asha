@@ -30,7 +30,7 @@ while [ -h "$__asha_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
 unset __asha_src __asha_dir
-ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+export ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 # Cross-platform shims (resolve_path) for the persona-wiring check below.
 # shellcheck source=../lib/portable.sh
 source "$ASHA_ROOT/lib/portable.sh"

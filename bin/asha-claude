@@ -22,7 +22,7 @@ while [ -h "$__asha_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
 unset __asha_src __asha_dir
-ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+export ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 IDENTITY_FILE="$ASHA_ROOT/identity/asha-identity-system-prompt.md"
 
 # Load Asha-scoped secrets/env (~/.asha/secrets.env if present). Sourcing
