@@ -7,7 +7,7 @@ DevOps patterns and infrastructure skills for containerized development and data
 ## Installation
 
 ```bash
-/plugin install devops@asha-marketplace
+./install.sh
 ```
 
 ## Skills

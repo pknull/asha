@@ -184,7 +184,7 @@ cat > "${CLAUDE_PROJECT_DIR}/.asha/config.json" << EOF
 {
   "version": "2.0.0",
   "initialized": "$(date -Iseconds)",
-  "plugin": "session@asha-marketplace"
+  "plugin": "session"
 }
 EOF
 ```

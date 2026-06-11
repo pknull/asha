@@ -41,9 +41,9 @@ Ask if ambiguous. Common targets:
 
 **Plugin paths** (use Glob to find):
 
-- Prompt plugin: `~/.claude/plugins/cache/asha-marketplace/prompt/*/`
-- Image plugin: `~/.claude/plugins/cache/asha-marketplace/image/*/`
-- Code plugin: `~/.claude/plugins/cache/asha-marketplace/code/*/`
+- Prompt plugin: `$ASHA_ROOT/plugins/prompt/`
+- Image plugin: `$ASHA_ROOT/plugins/image/`
+- Code plugin: `$ASHA_ROOT/plugins/code/`
 
 Based on target tool, read relevant templates:
 

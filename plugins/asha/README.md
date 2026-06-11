@@ -17,10 +17,10 @@ Asha — threshold guardian and knowledge custodian. An identity layer for Claud
 
 ```bash
 # Install the session plugin first
-/plugin install session@asha-marketplace
+./install.sh
 
 # Then install the persona
-/plugin install asha@asha-marketplace
+./install.sh
 
 # Initialize persona files
 /asha:init

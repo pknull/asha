@@ -8,8 +8,7 @@ Switchable output styles for Claude Code responses.
 ## Installation
 
 ```bash
-/plugin marketplace add pknull/asha-marketplace
-/plugin install output-styles@asha-marketplace
+./install.sh
 ```
 
 ## Usage

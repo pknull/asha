@@ -7,7 +7,7 @@ Security review patterns, OWASP guidelines, and defensive coding practices for w
 ## Installation
 
 ```bash
-/plugin install security@asha-marketplace
+./install.sh
 ```
 
 ## Skills

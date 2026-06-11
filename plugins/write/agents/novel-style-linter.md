@@ -24,7 +24,7 @@ Read these files first to understand project-specific requirements.
 ### 1. Automated Variance Check
 
 ```bash
-python3 ~/.claude/plugins/cache/asha-marketplace/write/1.3.0/skills/perplexity-gate/scripts/check_perplexity.py "section.md" --model mistral
+python3 $ASHA_ROOT/plugins/write/skills/perplexity-gate/scripts/check_perplexity.py "section.md" --model mistral
 ```
 
 | Variance | Verdict |
