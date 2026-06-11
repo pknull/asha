@@ -76,7 +76,6 @@ superseded_by: null | <filename>
 
 Rules:
 - Every `.md` file in `~/.asha/`, `Memory/`, and the auto-memory store must have `type:`.
-- Migration script: `/home/pknull/life/tools/asha-b1/migrate.py` — idempotent, add `--execute` to write.
 - Validate: `grep -rL "^type:" ~/.asha/*.md Memory/*.md` should return nothing.
 
 **`superseded_by:` field** — Pointer to the file that replaces this one:

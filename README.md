@@ -455,7 +455,7 @@ ls ~/.local/bin/asha*                     # wrappers (if --bin was used)
 ls ~/.claude/skills/                      # claude-mounted skills
 ls ~/.codex/skills/                       # codex-mounted skills
 ls ~/.copilot/skills/                     # copilot-mounted skills
-~/life/bin/asha-drift-check.sh            # check symlink integrity (separate script)
+./bin/asha-drift-check.sh                 # check symlink integrity
 ```
 
 ### Launch

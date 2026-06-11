@@ -139,7 +139,7 @@ into every project's instructions would silently mutate user files.
 | Hook payload translator | Not needed | Same architecture change — synthesis reads native logs, not hook payloads. The `{toolName, toolArgs, toolResult}` → `{tool_name, tool_input, tool_response}` translator from the v1 plan is obsolete; `jsonl_reader.py` parses Copilot's `events.jsonl` directly into Asha's normalized event schema. |
 | MCP config | Not managed | `~/.copilot/mcp-config.json` is read directly by Copilot; not touched by this installer (matches Claude/Codex which also don't manage MCP) |
 | Persona auto-injection | **Deferred — manual per-project** | Copilot CLI v1.0.x has no `--instructions-file` (or equivalent) flag. The `asha-copilot` wrapper regenerates `~/.cache/asha/instructions-copilot.md` (~46 KB merged identity) on every launch but cannot inject it. To enable Asha persona for a project: `cp ~/.cache/asha/instructions-copilot.md <project>/.github/copilot-instructions.md` (or `<project>/AGENTS.md`). **Verified 2026-05-11**: in a project without one of those files, Copilot identifies as "GitHub Copilot CLI", not Asha. Workarounds considered (auto-symlink-in-`session:init`, copy-on-launch, etc.) were rejected as costly relative to the expected v1.1+ upstream fix. Claude (`--append-system-prompt-file`) and Codex (`-c model_instructions_file=`) are unaffected — they inject persona at launch with no per-project step. |
-| `drift-check` | Not Copilot-aware | `~/life/bin/asha-drift-check.sh` lives outside this repo; a Copilot-aware variant is a follow-up |
+| `drift-check` | Not Copilot-aware | `bin/asha-drift-check.sh` ships in the repo; a Copilot-aware variant is a follow-up |
 
 ## Namespaces
 
@@ -173,7 +173,7 @@ overlay; both `codex` and `asha-codex` use the same `~/.codex/`.
 
 ## Drift check
 
-`~/life/bin/asha-drift-check.sh` audits both harnesses. Exits 0 if clean,
+`bin/asha-drift-check.sh` audits both harnesses. Exits 0 if clean,
 1 on drift.
 
 ```bash
@@ -186,8 +186,8 @@ Checks (paraphrased):
 - **Claude:** no legacy enabledPlugins / installed_plugins.json / marketplaces; no dangling symlinks; tagged hook command paths exist
 - **Codex:** no dangling symlinks; `config.toml` parses as TOML; tagged hook paths exist; overlay `instructions.md` fresher than its sources; overlay `config.toml` fresher than `~/.codex/config.toml`; inherit symlinks intact
 
-Scheduled via `asha-drift-check.timer` (systemd user timer, persistent
-across reboots). Output appends to `~/life/asha/drift-check.log`.
+Optionally schedule it via a systemd user timer or cron; append output to a
+log of your choice (e.g. `drift-check.log`).
 
 ## Backups
 
