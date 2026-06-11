@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 1.11.0
-**Last Updated**: 2026-02-13 (superseded sections noted inline)
+**Version**: 1.12.0
+**Last Updated**: 2026-06-11 (superseded sections noted inline)
 **Repository**: pknull/asha
 
 ---
@@ -42,7 +42,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 ## Project Overview
 
-**asha** is a Claude Code plugin marketplace providing tools for multi-perspective analysis, code review, output styling, and session coordination.
+**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot) providing tools for multi-perspective analysis, code review, output styling, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md). Marketplace-flow sections below are historical (see the banner at top).
 
 ### Current Plugins
 
@@ -280,9 +280,7 @@ Every plugin follows this structure:
 6. **Test installation**
 
    ```bash
-   /plugin marketplace add pknull/asha
-   /plugin install [plugin-name]@asha
-   /plugin list
+   ./install.sh --only [plugin-name]   # or ./install.sh to (re)install all
    ```
 
 ### Modifying Existing Plugins
@@ -559,10 +557,8 @@ fi
 5. **Installation Test**
 
    ```bash
-   /plugin marketplace add pknull/asha
-   /plugin install [plugin-name]@asha
-   /plugin list
-   # Verify plugin appears and version is correct
+   ./install.sh --only [plugin-name]   # symlink-mount install
+   ls ~/.claude/commands ~/.claude/skills | grep [plugin-name]   # verify primitives mounted
    ```
 
 6. **Functional Test**
@@ -696,7 +692,7 @@ git push -u origin <branch-name>
 5. **Test command**
 
    ```bash
-   /plugin install [plugin-name]@asha
+   ./install.sh --only [plugin-name]
    /[command]
    ```
 

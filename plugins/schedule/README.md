@@ -13,7 +13,7 @@ The schedule plugin enables automated, recurring Claude Code task execution thro
 ## Installation
 
 ```bash
-/plugin install schedule@asha-marketplace
+./install.sh
 ```
 
 ### Prerequisites
@@ -203,7 +203,7 @@ User: /schedule "Every day at 9am" "Review code"
 Run manual sync with verbose output:
 
 ```bash
-python3 ~/.claude/plugins/cache/.../schedule/tools/sync-schedules.py --project-dir .
+python3 $ASHA_ROOT/plugins/schedule/tools/sync-schedules.py --project-dir .
 ```
 
 ### Permission denied
@@ -211,7 +211,7 @@ python3 ~/.claude/plugins/cache/.../schedule/tools/sync-schedules.py --project-d
 Ensure task-runner.sh is executable:
 
 ```bash
-chmod +x ~/.claude/plugins/cache/.../schedule/tools/task-runner.sh
+chmod +x $ASHA_ROOT/plugins/schedule/tools/task-runner.sh
 ```
 
 ## Integration

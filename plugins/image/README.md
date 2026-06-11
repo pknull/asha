@@ -18,7 +18,7 @@ Specialist for Stable Diffusion prompt crafting and ComfyUI workflow design. Use
 ## Installation
 
 ```bash
-claude plugin install image@asha-marketplace
+./install.sh
 ```
 
 ## Usage

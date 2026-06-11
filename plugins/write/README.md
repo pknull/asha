@@ -7,7 +7,7 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 ## Installation
 
 ```bash
-/plugin install write@asha-marketplace
+./install.sh
 ```
 
 ## Features

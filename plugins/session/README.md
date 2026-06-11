@@ -15,8 +15,7 @@ Session management with memory persistence, pattern extraction, and operational 
 ## Installation
 
 ```bash
-/plugin marketplace add pknull/asha-marketplace
-/plugin install session@asha-marketplace
+./install.sh
 ```
 
 Then initialize in your project:

@@ -7,7 +7,7 @@ Development workflows for software engineering: orchestration patterns, code rev
 ## Installation
 
 ```bash
-/plugin install code@asha-marketplace
+./install.sh
 ```
 
 ## Features

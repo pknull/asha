@@ -188,11 +188,8 @@ This plugin assumes your Claude Code project uses:
 ### Install from Marketplace
 
 ```bash
-# Add marketplace
-/plugin marketplace add pknull/asha-marketplace
-
-# Install panel plugin
-/plugin install panel-system@asha-marketplace
+# Install the panel plugin (all plugins: ./install.sh with no --only)
+./install.sh --only panel
 
 # Restart Claude Code to load plugin
 ```
@@ -338,7 +335,7 @@ Same agent, different contextual identity based on topic domain.
 - **BREAKING**: Renamed plugin from `"panel"` to `"panel-system"` to resolve namespace conflict
 - **Fix**: `/panel` command now works as short form (no longer requires `/panel:panel`)
 - **Root cause**: Plugin name matching command name created ambiguous namespace
-- **Installation**: Use `/plugin install panel-system@asha-marketplace`
+- **Installation**: Use `./install.sh`
 - **Migration**: Uninstall old `panel` plugin, reinstall as `panel-system`
 
 ### 4.1.1 (2025-11-17) - DEPRECATED
@@ -384,7 +381,7 @@ MIT License - See LICENSE file for details
 
 ## Support
 
-- **Issues**: https://github.com/pknull/asha-marketplace/issues
+- **Issues**: https://github.com/pknull/asha/issues
 - **Documentation**: `plugins/panel/docs/PANEL_PROTOCOL.md`
 - **Character Files**: `plugins/panel/docs/characters/`
 
