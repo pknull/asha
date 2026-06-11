@@ -329,7 +329,7 @@ _codex_build_hook_block() {
     _codex_is_skip_plugin "$plugin_dir" && continue
 
     plugin_root="$PLUGINS_DIR/$plugin_dir"
-    abs_root="$(readlink -f "$plugin_root")"
+    abs_root="$(resolve_path "$plugin_root")"
     if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
     elif [[ -f "$plugin_root/hooks.json"      ]]; then hooks_json="$plugin_root/hooks.json"
     else continue
@@ -411,7 +411,7 @@ _codex_migrate_legacy() {
   if [[ -d "$CODEX_LEGACY_PROMPTS_DIR" ]]; then
     local n=0
     while IFS= read -r -d '' link; do
-      local target; target="$(readlink -f "$link" 2>/dev/null || true)"
+      local target; target="$(resolve_path "$link" 2>/dev/null || true)"
       case "$target" in
         "$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*|"$MARKET_ROOT"|"$MARKET_ROOT"/*)
           [[ $DRY_RUN -eq 0 ]] && rm -f "$link"
@@ -433,7 +433,7 @@ _codex_migrate_legacy() {
 codex_install() {
   command -v python3 >/dev/null 2>&1 || die "python3 required for Codex install (TOML + frontmatter parsing)" 3
 
-  : "${ABS_MARKET_ROOT:=$(readlink -f "$MARKET_ROOT")}"
+  : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
 
   ensure_dir "$CODEX_SKILLS_DIR"
 

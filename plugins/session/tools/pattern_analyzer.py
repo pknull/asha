@@ -379,7 +379,11 @@ def load_events(session_id: Optional[str] = None, days: int = 7) -> List[Dict]:
         return []
 
     events = []
-    cutoff = (datetime.now() - timedelta(days=days)).isoformat() + "Z"
+    # Event timestamps come from the host transcript in UTC with a "Z" suffix,
+    # and the filter below compares them as strings. Build the cutoff in real
+    # UTC with the same suffix; the previous naive-local time mislabeled "Z"
+    # skewed the window by the machine's UTC offset.
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
     with open(EVENTS_FILE, 'r') as f:
         for line in f:
@@ -753,7 +757,7 @@ def generate_active_context(events: List[Dict], existing_patterns: Dict) -> str:
     # Frontmatter
     lines.append("---")
     lines.append(f'version: "2.0"')
-    lines.append(f'lastUpdated: "{datetime.now().strftime("%Y-%m-%d %H:%M")} UTC"')
+    lines.append(f'lastUpdated: "{datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")} UTC"')
     lines.append(f'lifecycle: "active"')
     lines.append(f'synthesizedFrom: "events"')
     lines.append("---")
@@ -821,7 +825,7 @@ def detect_learnable_patterns(events: List[Dict]) -> List[Dict]:
                 file_path = edit_event.get("payload", {}).get("file_path", "")
                 candidates.append({
                     "category": "Error Resolution",
-                    "id": f"fix-{tool.lower()}-{hash(error_text[:30]) % 10000}",
+                    "id": f"fix-{tool.lower()}-{int(hashlib.sha1(error_text[:30].encode('utf-8')).hexdigest()[:8], 16) % 10000}",
                     "trigger": f"Error in {tool}: {error_text[:50]}",
                     "action": f"Fix by editing {file_path.split('/')[-1] if file_path else 'related file'}",
                     "reason": f"Error resolved after edit in {project_name}"
@@ -1029,7 +1033,10 @@ def append_to_keeper(signals: List[Dict]):
     signals = truncated_signals
 
     # Append to calibration log (inside the code block)
-    timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S+10:00")
+    # Local time with the machine's real UTC offset (e.g. +10:00, -08:00),
+    # rather than a hardcoded author-timezone offset that mislabels the log on
+    # any other machine.
+    timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
     project = PROJECT_ROOT.name
 
     new_entries = ""

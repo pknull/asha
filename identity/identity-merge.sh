@@ -21,7 +21,15 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+# Resolve this script's dir, following symlinks. Portable (no GNU `readlink -f`).
+__asha_src="${BASH_SOURCE[0]}"
+while [ -h "$__asha_src" ]; do
+  __asha_dir="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+  __asha_src="$(readlink "$__asha_src")"
+  case "$__asha_src" in /*) ;; *) __asha_src="$__asha_dir/$__asha_src" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+unset __asha_src __asha_dir
 ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 IDENTITY_FILE="$SCRIPT_DIR/asha-identity-system-prompt.md"
 

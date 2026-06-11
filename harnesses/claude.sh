@@ -133,7 +133,7 @@ claude_install_hooks() {
   local plugin_dir="$1" ns="$2"
   local plugin_root="$PLUGINS_DIR/$plugin_dir"
   local abs_root
-  abs_root="$(readlink -f "$plugin_root")"
+  abs_root="$(resolve_path "$plugin_root")"
   local hooks_json
   if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
   elif [[ -f "$plugin_root/hooks.json"      ]]; then hooks_json="$plugin_root/hooks.json"
