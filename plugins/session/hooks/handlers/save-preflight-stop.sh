@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -euo pipefail
 # Stop hook: block /session:save completion until pre-flight gates pass.
 #
 # Scoped to save turns by the Work/markers/save-pending marker (dropped by
@@ -8,7 +9,6 @@
 # permanently wedge the session.
 #
 # Payload (stdin JSON) fields used: cwd, transcript_path, session_id, stop_hook_active.
-set -uo pipefail
 
 INPUT=$(cat)
 
