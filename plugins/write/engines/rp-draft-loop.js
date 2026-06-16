@@ -17,7 +17,14 @@ export const meta = {
 // See plugins/write/engines/README.md for the contract + the manifest->profileConfig resolver mapping. ----
 
 // ---- inputs ----
-const a = args || {}
+// The Workflow runtime passes `args` as a JSON string (not a parsed object), so parse it here.
+// Tolerate both forms (string → parse; object → use as-is; undefined → {}).
+let a
+try {
+  a = typeof args === 'string' ? JSON.parse(args) : (args || {})
+} catch (e) {
+  return { error: `rp-draft-loop: args was a string but not valid JSON: ${e.message}` }
+}
 const P = a.profileConfig
 if (!P) {
   return { error: 'rp-draft-loop is manifest-driven: pass args.profileConfig (a resolved flat mode manifest). See plugins/write/engines/README.md — resolve .claude/modes/<mode>.yaml first.' }
