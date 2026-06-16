@@ -71,9 +71,9 @@ PRIOR_VIOLATIONS: |  # Only present when ATTEMPT_NUMBER > 1
   <YAML of violations from previous attempt — check that this draft addresses them>
 
 GM_SPAWN_LOG: |  # Optional — list of character agents that were/were-not spawned for this turn
-  - velathra: spawned (for confrontation)
-  - liss: NOT spawned (routine line, written from GM-voice)
-  - bren: NOT spawned (mentioned but did not act/speak)
+  - <npc-a>: spawned (for confrontation)
+  - <npc-b>: NOT spawned (routine line, written from GM-voice)
+  - <npc-c>: NOT spawned (mentioned but did not act/speak)
 ```
 
 ---
@@ -87,7 +87,7 @@ For each category, evaluate the DRAFT against INVARIANTS_FILE and SCENE_STATE. F
 **Looks for:**
 - Mercy-dispensing inside a scene where the architecture does not grant mercy
 - Fade-to-black on sexual content (any "the night passed", "what happened next is left to imagination", any cut-away from the moment)
-- Predator characters asking permission they should not ask (e.g., Bren softening her hand, Velathra granting unrequested kindness, creche members offering opt-outs)
+- Predator characters asking permission they should not ask (per the project's character registers in the invariants)
 - Narrative cushion phrases ("but it was okay", "after a moment of peace", "she let him rest") not earned by the scene
 - Counterweight inside the same beat — a tender moment immediately balancing a cold one to soften the cold one
 - Letting the PC sleep through, skip past, or otherwise avoid a hard scene without explicit Keeper directive
@@ -123,7 +123,7 @@ For each category, evaluate the DRAFT against INVARIANTS_FILE and SCENE_STATE. F
 - Ramp-up instinct — gradual onset of intensity that should be at full from start
 - Gentling cruelty (sympathetic GM-voice around a cruel act)
 - Predator characters losing predator-register in dialogue or interior
-- Characters speaking outside their canonical voice register (Liss being verbose, Bren being warm, Mira speaking when silence is her register)
+- Characters speaking outside their canonical voice register (as each character's register is defined in the invariants)
 - GM-voice flattening NPCs into a shared chorus rather than distinct registers
 - Lecturing/explaining the horror in narration ("this was the worst thing that had ever happened to him")
 
@@ -155,7 +155,7 @@ For each category, evaluate the DRAFT against INVARIANTS_FILE and SCENE_STATE. F
 - GM_SPAWN_LOG indicates NOT spawned for an NPC who delivers a voice-critical line in the draft
 - NPC dialogue that reads in default-GM-voice rather than that NPC's distinct register
 
-A list of profiled NPCs with character files: Velathra, Liss, Bren, Sera, Mira, Mell, Ilona of Elm House, Cassimer of Frostmere, plus any others extant in `Lore/World/Characters/`.
+The profiled NPCs are the project's characters that have character files — listed in the invariants (and the project's `Lore/World/Characters/` or equivalent canon directory).
 
 Use judgment: routine dialogue (passing in hall, setting down a tray) does NOT need spawning. Voice-critical moments DO.
 
@@ -175,10 +175,12 @@ Read the session file if needed to verify spawn directives.
 
 **Looks for:**
 - Recent register-installations (from SCENE_STATE.recent_installations) that should be active in the current beat but are absent from the prose
-- E.g., Ilona-mouth-finger evaluation was installed last scene → this scene includes an oral beat (eating, drinking, kissing, swallowing) → the mouth-evaluation trace should land in the prose, even subtly, and doesn't
-- Mammalian-response cascade installed → this scene includes touch-to-breast → lactation/let-down should be present; isn't
-- Sealed-completion installed → this scene includes arousal-event → the asking/waiting for the word should be visible; isn't
-- Compound's daily reduction → this scene includes a body-action where size/strength should land (lifting, reaching, fitting in clothes) → no register
+- E.g., a body-state register installed last scene → this scene includes the action that register governs → its trace should land in the prose, even subtly, and doesn't
+- A persistent physiological register installed → a scene that should surface it passes without it
+- A conditioned-response register installed → the scene includes its trigger → the expected response (or its gated withholding) is not visible
+- A progressive body-change register → a scene with a relevant body-action where the change should register → no register
+
+(The specific installations in play come from `SCENE_STATE.recent_installations` and the project's invariants.)
 
 **Hard severity** when a major installation vanishes from a scene where it's clearly applicable. **Soft severity** when the installation could plausibly be off-frame.
 
@@ -194,25 +196,25 @@ attempt_number: <copy from input>
 violations:
   - category: softened_stakes
     location: |
-      "Bren softened her hand for a moment, letting him rest."
+      "<the softened passage, quoted verbatim from the draft>"
     invariant_violated: |
-      Memory/invariants.md → Tone Anchors → "Predators ACT, do not ask"
-      Memory/invariants.md → Character Registers → Bren → "active dehumanizer (cold hand, cold word)"
+      Memory/invariants.md → Tone Anchors → "<the relevant tone anchor>"
+      Memory/invariants.md → Character Registers → <NPC> → "<the canonical register that was violated>"
     severity: hard
     suggested_fix: |
-      Cut the soften. Bren's hand stays cold. The measurement happens; he stands quietly.
-      No mercy-beat to balance.
+      Cut the soften. Hold the NPC's canonical register; let the beat land without a
+      mercy-beat to balance it.
 
   - category: register_stack_regression
     location: |
-      Garrett eats the bread Liss offers. (no oral-trace of Ilona-evaluation despite recent installation)
+      <the passage where a recently-installed register should surface but doesn't>
     invariant_violated: |
       Memory/invariants.md → Protocol Requirements → register-stack
-      SCENE_STATE.recent_installations: ["Ilona-mouth-finger evaluation, Day 105"]
+      SCENE_STATE.recent_installations: ["<the installation that should still be active>"]
     severity: hard
     suggested_fix: |
-      The mouth knows. Land the evaluation-trace in how the bread feels going in.
-      Subtle — not a flashback. Just the body's new knowledge of what fingers in the mouth means.
+      Land the installed register's trace in the relevant action, even subtly — not a
+      flashback, just the body's continued state.
 
 clean_passes:
   - invented_mechanics
@@ -303,14 +305,13 @@ Be honest. False positives waste rewrites; false negatives let soft prose ship. 
 
 ```yaml
 DRAFT: |
-  Bren measures the morning yield. The cold hand on the underside of his breast,
-  the cooler hand above. She does not soften the touch. She writes the volume in
-  her notebook without looking at his face. The notation reads "8.4 oz, normal
-  consistency, slight elevation cycle 11→12." She caps the jar. She leaves.
-  Garrett's body does not stop letting down for another minute after she goes.
+  [A profiled NPC performs a routine in-scene action in their canonical register —
+  cold where the register is cold, terse where it is terse — without softening, without
+  skipping time, and with any recently-installed body-state register still showing in
+  the prose.]
 
 GM_SPAWN_LOG:
-  - bren: spawned (morning collection — voice-critical first appearance of cycle)
+  - <npc>: spawned (voice-critical first appearance this scene)
 ```
 
 ```yaml
@@ -328,20 +329,19 @@ clean_passes:
   - missing_gm_directive
   - register_stack_regression
 notes: |
-  Mammalian-response register lands (let-down continues after she leaves).
-  Compound register implicit (body-cooperation). Bren cold-hand register intact.
+  Installed registers still land; the NPC's canonical register is intact; no time skipped.
 ```
 
-### Example 2: Soft violations found
+### Example 2: Violations found
 
 ```yaml
 DRAFT: |
-  Bren measures the morning yield, but her hand softens for a moment, almost
-  apologetically. She writes the volume down. Garrett rests in the chair afterward,
-  the routine completed without incident. Hours pass. Lunch comes.
+  [A profiled NPC softens their canonical register mid-scene ("her hand softens for a
+  moment, almost apologetically"); the routine then completes and the prose skips
+  forward ("Hours pass."). The NPC was rendered in GM-voice rather than spawned.]
 
 GM_SPAWN_LOG:
-  - bren: NOT spawned (routine — written from GM-voice)
+  - <npc>: NOT spawned (routine — written from GM-voice)
 ```
 
 ```yaml
@@ -352,33 +352,32 @@ violations:
     location: |
       "her hand softens for a moment, almost apologetically"
     invariant_violated: |
-      Memory/invariants.md → Character Registers → Bren → "active dehumanizer (cold hand, cold word)"
+      Memory/invariants.md → Character Registers → <NPC> → "<canonical cold/hard register>"
       Memory/invariants.md → Tone Anchors → "No softening"
     severity: hard
     suggested_fix: |
-      Bren does not soften. Cut the apologetic moment. Cold hand throughout.
+      Cut the apologetic moment. Hold the canonical register throughout.
 
   - category: time_skip
     location: |
-      "Hours pass. Lunch comes."
+      "Hours pass."
     invariant_violated: |
       Memory/invariants.md → Tone Anchors → "Do not skip in-world time without explicit Keeper directive"
     severity: hard
     suggested_fix: |
-      Stay in-scene. End the beat at the end of the collection, or transition with one
-      short sentence if Keeper has indicated to compress. Do not skip to lunch.
+      Stay in-scene. End the beat where the action ends, or transition with one short
+      sentence only if the Keeper has authorized compression.
 
   - category: profiled_npc_no_agent
     location: |
-      "Bren measures the morning yield" (rendered GM-voice)
+      "[the NPC's voice-critical line, rendered in GM-voice]"
     invariant_violated: |
       Memory/invariants.md → Protocol Requirements → "Profiled NPCs invoked via character agents
       for voice-critical moments"
     severity: soft
     suggested_fix: |
-      Borderline — morning collection is routine after many cycles. If first time the new
-      cycle's collection is rendered, spawn Bren. Otherwise GM-voice acceptable but must
-      carry her register intact.
+      Borderline — if the moment is routine, GM-voice may pass but must carry the NPC's
+      register intact; if it is voice-critical, spawn the character agent.
 
 clean_passes:
   - invented_mechanics
