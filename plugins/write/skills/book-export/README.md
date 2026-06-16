@@ -13,7 +13,7 @@ Use the book-export skill to export [file] as [profile]
 **Examples**:
 ```
 Use the book-export skill to export Callum_Ch01.md as manuscript-draft
-Use the book-export skill to create beta-reader-pdf from The-Hush.md
+Use the book-export skill to create beta-reader-pdf from Example_Novel.md
 Use the book-export skill to generate publication-ebook for manuscript.md
 ```
 

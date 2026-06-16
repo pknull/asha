@@ -353,8 +353,8 @@ sudo apt-get install fonts-lora
 Create `metadata.yaml`:
 ```yaml
 ---
-title: "The Hush"
-subtitle: "A Cosmic Horror Novel"
+title: "Example Novel"
+subtitle: "A Subtitle"
 author: "Author Name"
 date: "2025-01-01"
 description: |
@@ -381,7 +381,7 @@ category:
 
 **Usage**:
 ```
-Use book-export skill with metadata.yaml to create publication-print from The-Hush.md
+Use book-export skill with metadata.yaml to create publication-print from Example_Novel.md
 ```
 
 ### Custom Output Location

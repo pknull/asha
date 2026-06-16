@@ -24,15 +24,15 @@ The skill looks for review configuration in this order:
 
 ```yaml
 ---
-project: "The Hush"
+project: "Example Novel"
 agents:
   - agent: prose-analysis
     modes: [voice, continuity, coherence, docs]
-    voice_guide: "Vault/Books/The_Hush/work/prose_voice.md"
-    documentation: "Vault/Books/The_Hush/work/TheHush_Complete_Documentation.md"
+    voice_guide: "Vault/Books/Example_Novel/work/prose_voice.md"
+    documentation: "Vault/Books/Example_Novel/work/Example_Novel_Complete_Documentation.md"
 full_review_adds:
   - agent: ai-detector
-report_path: "Work/reports/the-hush/"
+report_path: "Work/reports/example-novel/"
 ---
 ```
 
@@ -55,22 +55,22 @@ report_path: "Work/reports/"
 
 Review a section (all configured modes):
 ```
-/review-section Vault/Books/The_Hush/The_Hush.md:🜍.2
+/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03
 ```
 
 Voice/craft review only:
 ```
-/review-section Vault/Books/The_Hush/The_Hush.md:🜍.2 --voice
+/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --voice
 ```
 
 Facts-only review (continuity + docs):
 ```
-/review-section Vault/Books/The_Hush/The_Hush.md:🜍.2 --continuity --docs
+/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --continuity --docs
 ```
 
 Full review (adds ai-detector if configured):
 ```
-/review-section Vault/Books/The_Hush/The_Hush.md:🜍.2 --full
+/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --full
 ```
 
 The skill:
@@ -82,12 +82,9 @@ The skill:
 
 ## Section Identification
 
-For The Hush, sections are identified by alchemical symbols:
-- `🜍.2` — Sigils (Departure)
-- `🜂.2` — Laudanum
-- `🜄.0` — Orchard
+Some projects identify sections by custom symbols rather than plain numbers (e.g. alchemical or thematic glyphs).
 
-For other projects, use line ranges or chapter names:
+Otherwise, use line ranges or chapter names:
 - `Chapter3:100-250` — Lines 100-250 of Chapter 3
 - `Ch05` — Full chapter 5
 
@@ -131,7 +128,7 @@ To set up review for a new project:
 3. Specify documentation paths for doc-verification
 4. Set report output path
 
-See `Vault/Books/The_Hush/work/review-config.md` for a complete example.
+See `Vault/Books/Example_Novel/work/review-config.md` for a complete example.
 
 ## Notes
 

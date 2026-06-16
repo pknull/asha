@@ -294,7 +294,7 @@ For each candidate escape hatch:
 ### Phase 6: Documentation Verification (Anti-Hallucination)
 
 **Story Bible Sources** (project-specific):
-- The Hush: `Vault/Books/The_Hush/work/TheHush_Complete_Documentation.md`
+- Per project: a story-bible / documentation file under `Vault/Books/[Project]/work/`
 - Other projects: Check `Vault/Books/[Project]/work/` for documentation
 
 **Terminology Extraction**:
