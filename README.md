@@ -45,6 +45,37 @@ See **[INSTALLER.md](INSTALLER.md)** for the full install model, per-harness lim
 
 ---
 
+## Harness support & behavior
+
+Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and the same primitive is mounted differently in each — the table is the *what*, the notes are the *why*.
+
+| Capability | Claude Code | OpenAI Codex | GitHub Copilot |
+|---|---|---|---|
+| Skills | symlink (live) | symlink (live) | symlink (live) |
+| Agents | symlink, nested `agents/<ns>/` | symlink, flat `agents/<ns>-<agent>.md` | symlink, flat |
+| Commands | symlink `commands/<ns>/` (live) | **generated** `SKILL.md` (re-install to refresh) | **generated** `SKILL.md` |
+| Output styles | ✅ `/style` + 8 styles | ✗ skipped (no equivalent) | ✗ skipped |
+| Hooks | `settings.json` (JSON), tagged `"source":"asha:<ns>"` | `config.toml` fenced `# asha:` region | none (retired) |
+| Hook events | all | no `SessionEnd` / `Setup` | n/a |
+| Persona injection | `--append-system-prompt-file` | `-c model_instructions_file=` | doc-drop (no flag) |
+| First-run config | needs `~/.claude/settings.json` | needs `~/.codex/config.toml` | self-bootstraps |
+
+### Why the behaviors differ
+
+**Commands are *generated* for Codex/Copilot but *symlinked* for Claude.** A symlink is byte-identical to its source, so it only works when the artifact is already in the target harness's format. Claude commands carry Claude-only frontmatter (`argument-hint`, `allowed-tools`), and Codex/Copilot model everything as *skills* (no command primitive) whose parser rejects those keys. So a Claude command must be **translated** into a clean `SKILL.md` — keys stripped, `name`/`description` kept — which is a written copy, not a link. Skills and agents are already in a portable shape, so they're linked and edit live. Trade-off: editing a command source doesn't auto-propagate to Codex/Copilot — re-run `asha install <harness>`. (The generator bumps the dest mtime even when content is unchanged, so `drift-check`'s mtime comparison doesn't false-flag current command-skills.)
+
+**Output styles are Claude-only.** `/style` and the 8 style files have no Codex/Copilot equivalent, so the `output-styles` plugin is in those harnesses' skip list — which is why a Claude install carries ~9 more symlinks than the others for the same corpus.
+
+**Persona is injected three different ways** because each CLI exposes a different seam. Claude has `--append-system-prompt-file` (system-prompt priority). Codex has no such flag but accepts `-c model_instructions_file=` — a *single* merged file, so `identity-merge.sh` concatenates `~/.asha/{soul,voice,keeper,…}.md` plus the identity assertion at launch. Copilot v1.0.x has *no* injection flag, so Asha regenerates the merged identity to `~/.cache/asha/instructions-copilot.md` and you wire it once per project via `.github/copilot-instructions.md` / `AGENTS.md` (which Copilot auto-loads). Pending an upstream instructions-file flag.
+
+**Hooks: JSON for Claude, TOML for Codex, none for Copilot.** Claude reads `settings.json` (entries tagged `"source":"asha:<ns>"` for clean removal); Codex reads `config.toml` (a fenced `# asha:start … # asha:end` region) and doesn't support the `SessionEnd`/`Setup` events, which are dropped with a warning. Copilot's hook payload delivery was unreliable — and since `/save` now reads each harness's native session transcript directly (see Capture pipeline below), hooks are no longer needed for capture, so the Copilot hook install is retired.
+
+**First launch requires the harness's own config to already exist** for Claude and Codex. Their installers deliberately refuse to fabricate `settings.json` / `config.toml` (the harness owns that file's format), so `asha claude` / `asha codex` against a never-initialized harness emits a clean *"run `<harness>` once first"* message instead of a confusing failure. Copilot bootstraps its own config, so it has no such precondition.
+
+See **[INSTALLER.md](INSTALLER.md)** for the per-harness layout diagrams and the full rationale.
+
+---
+
 ## Capture pipeline: read native session transcripts on `/save`
 
 Each harness writes its own session transcript to disk:
