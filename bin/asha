@@ -1,0 +1,267 @@
+#!/usr/bin/env bash
+# bin/asha — Asha cross-agent dispatcher + launcher.
+#
+# Grammar:  asha [VERB] [HARNESS] [PASSTHROUGH...]
+#   VERB     install | uninstall          (optional; absent => launch)
+#   HARNESS  claude | codex | copilot     (launch) ; also both|all for verbs
+#            (absent on launch => default_harness from ~/.asha/config.json, else claude)
+#   PASSTHROUGH  forwarded to the harness CLI (launch) or to the engine (verb)
+#
+# Positional by construction, so `asha install claude` (verb+target) and
+# `asha claude install` (launch claude, forward `install`) never collide.
+#
+# Shim form: invoked as asha-claude|asha-codex|asha-copilot => launch that
+# harness with all args passed through.
+#
+# On launch, if Asha isn't configured for the harness (or is stale), prompt
+# [y/N] and run `asha install <harness>` first. Skip the prompt with --yes/-y
+# (before the harness) or ASHA_YES=1. A non-interactive launch of an
+# unconfigured harness errors instead of hanging.
+set -uo pipefail
+
+# ---- resolve self (portable symlink walk) ----
+__asha_src="${BASH_SOURCE[0]}"
+while [ -h "$__asha_src" ]; do
+  __asha_dir="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+  __asha_src="$(readlink "$__asha_src")"
+  case "$__asha_src" in /*) ;; *) __asha_src="$__asha_dir/$__asha_src" ;; esac
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
+unset __asha_src __asha_dir
+export ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+
+IDENTITY_DIR="$ASHA_ROOT/identity"
+MERGE_SCRIPT="$IDENTITY_DIR/identity-merge.sh"
+HARNESSES="claude codex copilot"
+
+die()  { echo "asha: $*" >&2; exit "${2:-1}"; }
+info() { echo "$*" >&2; }
+
+# ---- shared env: secrets + portable helpers ----
+# shellcheck source=./asha-env-bootstrap.sh
+[[ -r "$SCRIPT_DIR/asha-env-bootstrap.sh" ]] && source "$SCRIPT_DIR/asha-env-bootstrap.sh"
+# shellcheck source=../lib/portable.sh
+source "$ASHA_ROOT/lib/portable.sh"
+
+is_harness() { case " $HARNESSES " in *" ${1:-} "*) return 0 ;; *) return 1 ;; esac; }
+is_target()  { case "${1:-}" in claude|codex|copilot|both|all) return 0 ;; *) return 1 ;; esac; }
+
+# Has the harness itself been initialized (its native config exists)? The
+# claude/codex harness installers deliberately refuse to fabricate the harness's
+# own config file (settings.json / config.toml) and require it to pre-exist;
+# copilot bootstraps its own. Used to give a clean message before auto-config.
+harness_initialized() {
+  case "$1" in
+    claude)  [[ -f "$HOME/.claude/settings.json" ]] ;;
+    codex)   [[ -f "$HOME/.codex/config.toml" ]] ;;
+    copilot) return 0 ;;
+    *)       return 0 ;;
+  esac
+}
+
+default_harness() {
+  local cfg h
+  cfg="${ASHA_CONFIG:-$HOME/.asha/config.json}"
+  h=""
+  if [[ -f "$cfg" ]] && command -v jq >/dev/null 2>&1; then
+    h="$(jq -r '.default_harness // empty' "$cfg" 2>/dev/null || true)"
+  fi
+  if [[ -n "$h" ]] && is_harness "$h"; then echo "$h"; else echo claude; fi
+}
+
+# Probe: is Asha configured for harness $1?  rc 0 = fresh, 1 = none, 2 = stale.
+# Signal = a symlink under ~/.<h>/{skills,agents,commands,output-styles} that
+# resolves into $ASHA_ROOT/plugins/. A link into a *different* .../asha/plugins/
+# tree means configured-for-another-checkout (stale).
+harness_configured() {
+  local h
+  h="$1"
+  local home
+  home="$HOME/.$h"
+  local sub dir entry tgt foreign
+  foreign=0
+  for sub in skills agents commands output-styles; do
+    dir="$home/$sub"
+    [[ -d "$dir" ]] || continue
+    for entry in "$dir"/*; do
+      [[ -L "$entry" ]] || continue
+      tgt="$(resolve_path "$entry" 2>/dev/null || true)"
+      case "$tgt" in
+        "$ASHA_ROOT"/plugins/*) return 0 ;;
+        */asha/plugins/*)       foreign=1 ;;
+      esac
+    done
+  done
+  [[ $foreign -eq 1 ]] && return 2
+  return 1
+}
+
+maybe_configure() {
+  local h="$1" status="$2" reason
+  if ! harness_initialized "$h"; then
+    info ""
+    info "Asha can't configure '$h' yet: $h has not been initialized."
+    info "Run '$h' once so it creates its own config (e.g. ~/.$h/), then re-run: asha $h"
+    die "$h not initialized (no native config found)"
+  fi
+  reason="not configured"
+  [[ "$status" == "2" ]] && reason="configured for a different asha checkout (stale)"
+  info ""
+  info "Asha is $reason for '$h'."
+  info "Configuring writes symlinks under ~/.$h/, merges hooks into its config,"
+  info "and installs ~/.local/bin/asha. (Same as: asha install $h)"
+  if [[ "${ASHA_YES:-0}" != "1" && "${ASHA_FLAG_YES:-0}" != "1" ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+      printf 'Configure Asha for %s now? [y/N] ' "$h" >&2
+      local ans; read -r ans || ans=""
+      case "$ans" in y|Y|yes|YES) ;; *) die "aborted; not configured for $h" ;; esac
+    else
+      die "not configured for $h — re-run with --yes or ASHA_YES=1 (or: asha install $h)"
+    fi
+  fi
+  # shellcheck source=../lib/install.sh
+  source "$ASHA_ROOT/lib/install.sh"
+  ( set -euo pipefail; asha_install_main --target "$h" --bin "$h" ) \
+    || die "configuration failed for $h"
+}
+
+# ---- per-harness launch (lifted verbatim from the retired wrappers) ----
+exec_copilot() {
+  local instr cmd
+  instr="${ASHA_COPILOT_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-copilot.md}"
+  cmd="${ASHA_COPILOT_CMD:-copilot}"
+  export ASHA_PERSONA=1
+
+  if [[ ! -x "$MERGE_SCRIPT" ]]; then
+    info "warn: identity-merge.sh missing; launching plain $cmd (no persona)"
+    exec "$cmd" "$@"
+  fi
+  if ! "$MERGE_SCRIPT" "$instr"; then
+    info "warn: identity merge failed; launching plain $cmd"
+    exec "$cmd" "$@"
+  fi
+
+  # Copilot CLI v1.0.x has no --instructions-file flag; persona must be wired
+  # via a project-scope AGENTS.md / .github/copilot-instructions.md.
+  local proj_instr="$PWD/.github/copilot-instructions.md"
+  local proj_agents="$PWD/AGENTS.md"
+  if [[ -L "$proj_instr" ]] && [[ "$(resolve_path "$proj_instr")" == "$(resolve_path "$instr")" ]]; then
+    info "[asha copilot] persona: wired via .github/copilot-instructions.md -> cache"
+  elif [[ -e "$proj_instr" ]] || [[ -e "$proj_agents" ]]; then
+    info "[asha copilot] persona: project has its own instructions file"
+    info "[asha copilot]   if it should pick up updated Asha identity, regenerate from:"
+    info "[asha copilot]   $instr"
+  else
+    info "[asha copilot] persona: NOT wired in this project"
+    info ""
+    info "asha launches Copilot WITH Asha persona, but Copilot CLI v1.0.x has no"
+    info "--instructions-file flag. Wire it once for this project:"
+    info ""
+    info "  mkdir -p .github"
+    info "  ln -s $instr .github/copilot-instructions.md"
+    info "  echo '.github/copilot-instructions.md' >> .gitignore"
+    info ""
+    info "Then re-run: asha copilot"
+    info "For plain Copilot (no persona), run 'copilot' directly."
+    exit 1
+  fi
+  exec "$cmd" "$@"
+}
+
+launch() {
+  local h="$1"; shift
+  case "$h" in
+    claude)
+      # Management subcommands run their own TUIs / one-shot helpers and must
+      # not get --append-system-prompt-file (it forces them out of TTY mode).
+      case "${1:-}" in
+        agents|auth|auto-mode|doctor|install|mcp|plugin|plugins|project|setup-token|ultrareview|update|upgrade)
+          exec claude "$@" ;;
+      esac
+      local id="$IDENTITY_DIR/asha-identity-system-prompt.md"
+      export ASHA_PERSONA=1
+      if [[ -f "$id" ]]; then
+        exec claude --append-system-prompt-file "$id" "$@"
+      else
+        info "warn: identity file not found at $id; persona will load via hook only"
+        exec claude "$@"
+      fi
+      ;;
+    codex)
+      local instr="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
+      if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$instr"; then
+        exec codex -c "model_instructions_file=\"$instr\"" "$@"
+      fi
+      info "warn: identity merge failed; launching plain codex"
+      exec codex "$@"
+      ;;
+    copilot)
+      exec_copilot "$@"
+      ;;
+    *) die "unknown harness: $h" ;;
+  esac
+}
+
+asha_usage() {
+  cat <<'EOF'
+asha — cross-agent dispatcher
+
+Usage:
+  asha [HARNESS] [args...]         launch a harness (default: configured default, else claude)
+  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|both|all)
+  asha uninstall <target> [...]    remove Asha from a harness
+  asha-<harness> [args...]         shim form (launch that harness)
+
+Harnesses: claude | codex | copilot
+Flags:
+  --yes, -y        skip the first-run configure prompt (or set ASHA_YES=1)
+
+Examples:
+  asha codex                       launch codex (first run prompts to configure)
+  asha claude install              launch claude, forward `install` to it
+  asha install codex               provision Asha for codex
+  asha uninstall all               remove Asha from every harness
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Dispatch
+# ---------------------------------------------------------------------------
+
+cmd="$(basename "$0")"
+case "$cmd" in
+  asha-claude|asha-codex|asha-copilot)
+    launch "${cmd#asha-}" "$@"
+    ;;
+esac
+
+# Dispatcher form (invoked as `asha`).
+ASHA_FLAG_YES=0
+[[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]] && { ASHA_FLAG_YES=1; shift; }
+
+case "${1:-}" in
+  -h|--help|help) asha_usage; exit 0 ;;
+esac
+
+if [[ "${1:-}" == "install" || "${1:-}" == "uninstall" ]]; then
+  verb="$1"; shift
+  target_arg=""
+  if is_target "${1:-}"; then target_arg="$1"; shift; fi
+  # shellcheck disable=SC1090
+  source "$ASHA_ROOT/lib/$verb.sh"
+  if [[ -n "$target_arg" ]]; then
+    ( set -euo pipefail; "asha_${verb}_main" --target "$target_arg" "$@" )
+  else
+    ( set -euo pipefail; "asha_${verb}_main" "$@" )
+  fi
+  exit $?
+fi
+
+# Launch path.
+harness=""
+if is_harness "${1:-}"; then harness="$1"; shift; fi
+[[ -n "$harness" ]] || harness="$(default_harness)"
+
+harness_configured "$harness"; status=$?
+[[ $status -ne 0 ]] && maybe_configure "$harness" "$status"
+launch "$harness" "$@"

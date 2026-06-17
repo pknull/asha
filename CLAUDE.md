@@ -13,6 +13,11 @@
 > `enabledPlugins`) is deprecated. Primitives are now installed via direct
 > symlinks into `~/.claude/*` by **`./install.sh`**.
 >
+> Launch through the unified **`asha`** dispatcher — `asha <harness>` (claude|codex|copilot),
+> auto-configuring on first use. `asha-claude`/`asha-codex`/`asha-copilot` remain as
+> back-compat shims. Engines live in `lib/install.sh` + `lib/uninstall.sh`; the top-level
+> `install.sh`/`uninstall.sh` are thin shims.
+>
 > Any section below that describes `/plugin marketplace add`, plugin.json
 > entry points, or marketplace.json registration is **historical** and
 > retained only for context. Authoritative: **[INSTALLER.md](INSTALLER.md)**.

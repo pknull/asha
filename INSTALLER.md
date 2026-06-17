@@ -5,8 +5,8 @@ is **not** a Claude plugin marketplace — the old three-file registration
 chain (`marketplace.json` → `installed_plugins.json` → `enabledPlugins`)
 was retired in favour of direct symlinks into the harness's scan directories.
 
-As of 2026-04, the installer supports **multiple harnesses**: Claude Code
-and OpenAI Codex CLI. Skills/agents/commands are harness-agnostic markdown;
+As of 2026-04, the installer supports **multiple harnesses**: Claude Code,
+OpenAI Codex CLI, and GitHub Copilot CLI — all launched through one `asha` dispatcher. Skills/agents/commands are harness-agnostic markdown;
 each harness has its own scan layout, hook config format, and persona
 mechanism.
 
@@ -14,18 +14,24 @@ mechanism.
 
 ```
 ~/life/asha/
-├── install.sh            # multi-harness dispatcher (--target, --bin)
-├── uninstall.sh          # mirrors --target
+├── install.sh            # thin shim → lib/install.sh (back-compat: --target, --bin)
+├── uninstall.sh          # thin shim → lib/uninstall.sh (mirrors --target)
 ├── namespaces.json       # plugin → namespace map (harness-agnostic)
+├── lib/
+│   ├── install.sh        # install engine (sourced by install.sh shim AND bin/asha)
+│   ├── uninstall.sh      # uninstall engine (sourced by uninstall.sh shim AND bin/asha)
+│   └── portable.sh       # resolve_path (cross-platform readlink -f)
 ├── harnesses/
 │   ├── claude.sh         # Claude Code install/uninstall logic
-│   └── codex.sh          # Codex CLI install/uninstall logic + overlay
-├── bin/                  # harness-aware wrappers (installed via --bin)
-│   ├── asha-claude       # ASHA_PERSONA=1 + --append-system-prompt-file
-│   └── asha-codex        # CODEX_HOME=~/.codex-asha (persona overlay)
+│   ├── codex.sh          # Codex CLI install/uninstall logic
+│   └── copilot.sh        # Copilot CLI install/uninstall logic
+├── bin/                  # installed via --bin
+│   └── asha              # unified dispatcher + launcher
+│                         #   grammar: asha [install|uninstall] [harness] [args…]
+│                         #   shims ~/.local/bin/asha-{claude,codex,copilot} → asha
 ├── identity/             # persona content (single source of truth)
 │   ├── asha-identity-system-prompt.md
-│   └── identity-merge.sh # concatenates identity → ~/.codex-asha/instructions.md
+│   └── identity-merge.sh # concatenates identity → ~/.cache/asha/instructions.md
 └── plugins/<ns>/         # UNCHANGED, harness-agnostic
     ├── skills/<skill>/SKILL.md
     ├── agents/*.md
@@ -37,16 +43,21 @@ mechanism.
 
 ```bash
 # Primitives (skills/agents/commands/hooks)
-./install.sh   --target {claude,codex,both}   [--only ns1,ns2]   [--dry-run] [--force] [--verbose]
-./uninstall.sh --target {claude,codex,both}                       [--dry-run] [--verbose]
+./install.sh   --target {claude,codex,copilot,both,all}   [--only ns1,ns2]   [--dry-run] [--force] [--verbose]
+./uninstall.sh --target {claude,codex,copilot,both,all}                       [--dry-run] [--verbose]
 
-# Wrappers (the `asha` shell command)
-./install.sh --bin {claude,codex,all} [--default {claude,codex}]
+# Dispatcher + per-harness shims (the `asha` shell command)
+./install.sh --bin {claude,codex,copilot,all} [--default {claude,codex,copilot}]
+
+# Equivalent through the dispatcher itself (positional grammar):
+asha install   {claude,codex,copilot,both,all} [flags]
+asha uninstall {claude,codex,copilot,both,all} [flags]
 ```
 
 `--target` defaults to `claude` (single-harness back-compat). `--bin all`
-installs both wrappers and points the bare `asha` command at the harness
-named by `--default` (default: `claude`). The bin installer detects a
+installs the `asha` dispatcher plus per-harness shims (`asha-claude`, `asha-codex`,
+`asha-copilot`, each a relative symlink to `asha`) and records the bare-`asha` default
+harness (`--default`, default `claude`) in `~/.asha/config.json`. The bin installer detects a
 legacy `~/bin/asha` and tells you how to retire it — it never touches
 your dotfiles repo.
 
@@ -86,16 +97,16 @@ idempotent.
         # ↑ fenced region with [[hooks.X]] arrays, each tagged "# asha:<ns>"
 ```
 
-**No persona overlay.** The `asha-codex` wrapper injects persona via Codex's
+**No persona overlay.** The `asha codex` launch path injects persona via Codex's
 CLI override, regenerating identity on the fly:
 
 ```bash
-# bin/asha-codex
+# bin/asha (codex branch)
 identity-merge.sh ~/.cache/asha/instructions.md      # idempotent, ~50ms
 exec codex -c "model_instructions_file=\"...\"" "$@"
 ```
 
-Plain `codex` and `asha-codex` share `~/.codex/`. The only behavioral
+Plain `codex` and `asha codex` share `~/.codex/`. The only behavioral
 difference is the `-c` flag at launch — skills, prompts, agents, hooks,
 MCP, projects, sessions are single-instance.
 
@@ -114,13 +125,13 @@ MCP, projects, sessions are single-instance.
 
 **Persona model: doc-drop, not flag.** Copilot CLI 1.0.x has no `--instructions-file`
 flag (verified empirically against `copilot --help` 2026-05-09). It auto-loads
-project-scope `AGENTS.md` and `.github/copilot-instructions.md`. The `asha-copilot`
-wrapper:
+project-scope `AGENTS.md` and `.github/copilot-instructions.md`. The `asha copilot`
+launch path:
 
 ```bash
-# bin/asha-copilot
+# bin/asha (copilot branch)
 identity-merge.sh ~/.cache/asha/instructions-copilot.md   # idempotent, regenerates merged identity
-echo "[asha-copilot] merged identity available at: ..."   # tells user where to find it
+echo "[asha copilot] merged identity available at: ..."   # tells user where to find it
 exec copilot "$@"                                         # plain exec, no persona flag
 ```
 
@@ -138,7 +149,7 @@ into every project's instructions would silently mutate user files.
 | Hooks install | **Permanently deferred — not needed** | Asha capture (events.jsonl) was retired 2026-05-10. `/save` now reads the host's native session log (`~/.copilot/session-state/<sid>/events.jsonl`) directly via `plugins/session/tools/jsonl_reader.py`. Copilot v1.0.44's hook payload-delivery gap (fd 0 socket never written) is moot — we don't need their payloads when the data we wanted is already on disk in their own session-state file. The previous `ASHA_COPILOT_HOOKS_FORCE=1` escape hatch was removed. If Copilot ships behavioral hooks (block, modify) in v1.1+, a separate install path can be built then. |
 | Hook payload translator | Not needed | Same architecture change — synthesis reads native logs, not hook payloads. The `{toolName, toolArgs, toolResult}` → `{tool_name, tool_input, tool_response}` translator from the v1 plan is obsolete; `jsonl_reader.py` parses Copilot's `events.jsonl` directly into Asha's normalized event schema. |
 | MCP config | Not managed | `~/.copilot/mcp-config.json` is read directly by Copilot; not touched by this installer (matches Claude/Codex which also don't manage MCP) |
-| Persona auto-injection | **Deferred — manual per-project** | Copilot CLI v1.0.x has no `--instructions-file` (or equivalent) flag. The `asha-copilot` wrapper regenerates `~/.cache/asha/instructions-copilot.md` (~46 KB merged identity) on every launch but cannot inject it. To enable Asha persona for a project: `cp ~/.cache/asha/instructions-copilot.md <project>/.github/copilot-instructions.md` (or `<project>/AGENTS.md`). **Verified 2026-05-11**: in a project without one of those files, Copilot identifies as "GitHub Copilot CLI", not Asha. Workarounds considered (auto-symlink-in-`session:init`, copy-on-launch, etc.) were rejected as costly relative to the expected v1.1+ upstream fix. Claude (`--append-system-prompt-file`) and Codex (`-c model_instructions_file=`) are unaffected — they inject persona at launch with no per-project step. |
+| Persona auto-injection | **Deferred — manual per-project** | Copilot CLI v1.0.x has no `--instructions-file` (or equivalent) flag. The `asha copilot` launch path regenerates `~/.cache/asha/instructions-copilot.md` (~46 KB merged identity) on every launch but cannot inject it. To enable Asha persona for a project: `cp ~/.cache/asha/instructions-copilot.md <project>/.github/copilot-instructions.md` (or `<project>/AGENTS.md`). **Verified 2026-05-11**: in a project without one of those files, Copilot identifies as "GitHub Copilot CLI", not Asha. Workarounds considered (auto-symlink-in-`session:init`, copy-on-launch, etc.) were rejected as costly relative to the expected v1.1+ upstream fix. Claude (`--append-system-prompt-file`) and Codex (`-c model_instructions_file=`) are unaffected — they inject persona at launch with no per-project step. |
 | `drift-check` | Not Copilot-aware | `bin/asha-drift-check.sh` ships in the repo; a Copilot-aware variant is a follow-up |
 
 ## Namespaces
@@ -157,19 +168,19 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 
 ## Persona model
 
-| Layer | Claude wrapper (`asha-claude`) | Codex wrapper (`asha-codex`) | Copilot wrapper (`asha-copilot`) |
+| Layer | Claude (`asha claude`) | Codex (`asha codex`) | Copilot (`asha copilot`) |
 |---|---|---|---|
 | Identity assertion | `--append-system-prompt-file identity/asha-identity-system-prompt.md` | `-c model_instructions_file="~/.cache/asha/instructions.md"` (generated by wrapper at launch) | none — Copilot CLI 1.0.x has no instructions-file flag; doc-drop only |
-| Lazy load (env signal) | `ASHA_PERSONA=1` triggers SessionStart hook | wrapper-only (no overlay; plain `codex` skips persona) | wrapper-only; persona regenerated to `~/.cache/asha/instructions-copilot.md`, user pastes into AGENTS.md / `.github/copilot-instructions.md` per project |
-| Identity merge | runtime: SessionStart hook reads `~/.asha/*` files | wrapper-time: `identity-merge.sh` writes `~/.cache/asha/instructions.md` (idempotent — only writes if sources changed) | wrapper-time: same `identity-merge.sh`, separate output path |
+| Lazy load (env signal) | `ASHA_PERSONA=1` triggers SessionStart hook | dispatcher-only (no overlay; plain `codex` skips persona) | dispatcher-only; persona regenerated to `~/.cache/asha/instructions-copilot.md`, user pastes into AGENTS.md / `.github/copilot-instructions.md` per project |
+| Identity merge | runtime: SessionStart hook reads `~/.asha/*` files | launch-time: `identity-merge.sh` writes `~/.cache/asha/instructions.md` (idempotent — only writes if sources changed) | launch-time: same `identity-merge.sh`, separate output path |
 
 Codex has no `--append-system-prompt-file` equivalent at the CLI, and
 its `model_instructions_file` config field accepts only a single file
-path (no `[include]` directive). The wrapper handles both gaps:
+path (no `[include]` directive). The dispatcher handles both gaps:
 identity-merge.sh concatenates `~/.asha/{soul,voice,keeper,keeper-voice}.md`
 plus `identity/asha-identity-system-prompt.md` into a single file, and
 `-c model_instructions_file=...` injects it at launch. No on-disk
-overlay; both `codex` and `asha-codex` use the same `~/.codex/`.
+overlay; both `codex` and `asha codex` use the same `~/.codex/`.
 
 ## Drift check
 
@@ -259,12 +270,12 @@ Earlier versions used `~/.codex-asha/` as a parallel CODEX_HOME, with a
 generated config.toml that copied the user's main config plus a
 `model_instructions_file` line. This drifted whenever you edited the main
 config without reinstalling. Step 7-revised replaced it with a
-`-c model_instructions_file="..."` CLI flag on every `asha-codex` launch —
+`-c model_instructions_file="..."` CLI flag on every `asha codex` launch —
 no overlay, no copy, no drift. Identity is regenerated on launch via
 `identity-merge.sh` (idempotent; only rewrites the cached file when sources
 have changed).
 
-Side effect: `asha-codex` and plain `codex` share the same session
+Side effect: `asha codex` and plain `codex` share the same session
 history under `~/.codex/sessions/`. If you want them visually separated,
 you could pass `-c sessions_path="..."` from the wrapper (untested).
 
