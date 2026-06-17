@@ -3,7 +3,7 @@
 **Version**: 1.17.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
-Asha mounts skills, agents, commands, and hooks into each harness via direct symlinks, ships launch wrappers that inject a shared persona, and consolidates session capture across all three CLIs into one synthesis pipeline.
+Asha mounts skills, agents, commands, and hooks into each harness via direct symlinks, ships a single `asha` dispatcher that injects a shared persona (and auto-configures a harness on first use), and consolidates session capture across all three CLIs into one synthesis pipeline.
 
 ---
 
@@ -13,9 +13,9 @@ Plugins live in `plugins/<name>/`. The installer symlinks the right primitives i
 
 | Harness | Mount root | Persona injection |
 |---|---|---|
-| **Claude Code** | `~/.claude/*` (skills, agents, hooks, settings.json entries) | `asha-claude` wrapper uses `--append-system-prompt-file` at launch |
-| **OpenAI Codex** | `~/.codex/*` (skills as `.md`, agents, hooks) | `asha-codex` wrapper uses `-c model_instructions_file=<merged-identity>` at launch |
-| **GitHub Copilot CLI** | `~/.copilot/*` (skills, agents) | `asha-copilot` writes merged identity to `~/.cache/asha/instructions-copilot.md`; user symlinks into project's `.github/copilot-instructions.md` (Copilot v1.0.x has no equivalent flag — pending upstream fix) |
+| **Claude Code** | `~/.claude/*` (skills, agents, hooks, settings.json entries) | `asha claude` injects via `--append-system-prompt-file` at launch |
+| **OpenAI Codex** | `~/.codex/*` (skills as `.md`, agents, hooks) | `asha codex` injects via `-c model_instructions_file=<merged-identity>` at launch |
+| **GitHub Copilot CLI** | `~/.copilot/*` (skills, agents) | `asha copilot` writes merged identity to `~/.cache/asha/instructions-copilot.md`; user symlinks into project's `.github/copilot-instructions.md` (Copilot v1.0.x has no equivalent flag — pending upstream fix) |
 
 Install commands:
 
@@ -24,7 +24,7 @@ Install commands:
 ./install.sh --target codex                 # mount into ~/.codex/*
 ./install.sh --target copilot               # mount into ~/.copilot/*
 ./install.sh --target all                   # mount into all three
-./install.sh --bin all --default claude     # also install asha-* wrappers in ~/.local/bin
+./install.sh --bin all --default claude     # install the asha dispatcher + harness shims in ~/.local/bin
 ./uninstall.sh                              # remove asha-tagged symlinks/entries
 ./deprecate-marketplace.sh                  # one-shot cleanup of legacy registration state
 ```
@@ -33,10 +33,13 @@ After `./install.sh --bin all` you'll have:
 
 | Command | Effect |
 |---|---|
-| `asha-claude` | launch Claude Code with Asha persona injected |
-| `asha-codex` | launch Codex with Asha persona injected |
-| `asha-copilot` | launch Copilot; regenerates merged identity file for manual symlink |
-| `asha` | symlink to the default wrapper (set via `--default`) |
+| `asha` | launch the default harness (set via `--default`; else claude) |
+| `asha <harness>` | launch `claude`/`codex`/`copilot` — auto-configures that harness on first use |
+| `asha install <target>` | provision a harness (`claude`/`codex`/`copilot`/`both`/`all`) |
+| `asha uninstall <target>` | remove Asha from a harness |
+| `asha-claude` · `asha-codex` · `asha-copilot` | back-compat shims (each ≡ `asha <harness>`) |
+
+Grammar is positional — `asha [install|uninstall] [harness] [args…]`. A verb *after* the harness is passed through, so `asha claude install` runs `claude install` (not the Asha installer).
 
 See **[INSTALLER.md](INSTALLER.md)** for the full install model, per-harness limitations, and the bin/wrapper details.
 
@@ -461,10 +464,11 @@ ls ~/.copilot/skills/                     # copilot-mounted skills
 ### Launch
 
 ```bash
-asha-claude                # Claude Code with Asha persona
-asha-codex                 # Codex with Asha persona
-asha-copilot               # Copilot (persona requires per-project AGENTS.md symlink)
-asha                       # default wrapper (set via --default at install)
+asha                       # default harness (set via --default; else claude)
+asha codex                 # Codex with Asha persona (auto-configures on first run)
+asha claude                # Claude Code with Asha persona
+asha copilot               # Copilot (persona requires per-project AGENTS.md symlink)
+asha-codex                 # back-compat shim (== asha codex)
 ```
 
 ---

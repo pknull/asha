@@ -245,12 +245,12 @@ for ev, blocks in (c.get('hooks') or {}).items():
     done
     [[ $missing_cmd_skills -eq 0 ]] && pass "command-skills present and fresh (or collision-skipped)"
 
-    # ───── Cached identity check (regenerated on each asha-codex launch) ─────
+    # ───── Cached identity check (regenerated on each `asha codex` launch) ─────
     if [[ -f "$HOME/.cache/asha/instructions.md" ]]; then
       pass "cached identity exists at ~/.cache/asha/instructions.md"
     else
       # Not actually a failure — wrapper regenerates on launch — but worth logging
-      log_msg="cached identity not yet generated (run \`asha-codex --version\` to seed it)"
+      log_msg="cached identity not yet generated (run \`asha codex --version\` to seed it)"
       pass "$log_msg"
     fi
 
