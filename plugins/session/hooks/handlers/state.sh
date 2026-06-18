@@ -53,6 +53,7 @@ state_incr() {
     rm -f "$tmp" 2>/dev/null
   fi
   flock -u 9 2>/dev/null || true
+  exec 9>&- 2>/dev/null || true   # release the lock fd so it doesn't leak into the sourcing process
   echo "$new"
 }
 

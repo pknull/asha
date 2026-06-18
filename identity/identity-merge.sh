@@ -22,6 +22,9 @@
 set -euo pipefail
 
 # Resolve this script's dir, following symlinks. Portable (no GNU `readlink -f`).
+# asha-bootstrap-symlink-walk: resolve our own real path, portable (readlink -f is GNU-only).
+# Duplicated across 6 scripts — find all: `grep -rn asha-bootstrap-symlink-walk`. Cannot DRY into
+# lib/portable.sh:resolve_path() — this runs *before* portable.sh is locatable. Keep copies in sync.
 __asha_src="${BASH_SOURCE[0]}"
 while [ -h "$__asha_src" ]; do
   __asha_dir="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"

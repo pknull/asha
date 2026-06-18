@@ -17,9 +17,12 @@
 # [y/N] and run `asha install <harness>` first. Skip the prompt with --yes/-y
 # (before the harness) or ASHA_YES=1. A non-interactive launch of an
 # unconfigured harness errors instead of hanging.
-set -uo pipefail
+set -uo pipefail   # no -e: the dispatcher owns its exit codes; install/uninstall run in `set -euo` subshells
 
 # ---- resolve self (portable symlink walk) ----
+# asha-bootstrap-symlink-walk: resolve our own real path, portable (readlink -f is GNU-only).
+# Duplicated across 6 scripts — find all: `grep -rn asha-bootstrap-symlink-walk`. Cannot DRY into
+# lib/portable.sh:resolve_path() — this runs *before* portable.sh is locatable. Keep copies in sync.
 __asha_src="${BASH_SOURCE[0]}"
 while [ -h "$__asha_src" ]; do
   __asha_dir="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
