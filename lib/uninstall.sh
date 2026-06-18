@@ -11,6 +11,9 @@
 # Public entry point: asha_uninstall_main "$@".
 
 # Resolve repo root from THIS file's location (portable; no GNU readlink -f).
+# asha-bootstrap-symlink-walk: resolve our own real path, portable (readlink -f is GNU-only).
+# Duplicated across 6 scripts — find all: `grep -rn asha-bootstrap-symlink-walk`. Cannot DRY into
+# lib/portable.sh:resolve_path() — this runs *before* portable.sh is locatable. Keep copies in sync.
 __eng_src="${BASH_SOURCE[0]}"
 while [ -h "$__eng_src" ]; do
   __eng_dir="$(cd -P "$(dirname "$__eng_src")" >/dev/null 2>&1 && pwd)"

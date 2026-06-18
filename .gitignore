@@ -40,3 +40,4 @@ tmp/
 # Asha
 .asha/
 Memory/
+.claude/trace/
