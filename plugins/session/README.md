@@ -107,9 +107,11 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 | Hook | Purpose |
 |------|---------|
 | SessionStart | Load operation.md + learnings.md; conditionally load persona files |
-| PostToolUse | Capture session events to JSONL |
+| PreToolUse | Guardrails — `block-secrets` (deny secret-file access) + `policy-guard` (declarative deny/ask/`max_per_session` rules from `policies/rules.json` + `~/.asha/policies.json`, backed by session_state). **Claude-enforced**; Codex installs but does not fire them (known gap) |
+| PostToolUse | Intervention (ReasoningBank, vector-index refresh, violation check) — capture moved to `/save` jsonl_reader |
 | UserPromptSubmit | Track user interaction patterns |
-| SessionEnd | Synthesize session on clean exit |
+| Stop | Save-preflight cleanup |
+| SessionEnd | Synthesize session on clean exit; clear this session's session_state |
 
 ## Persona Plugins
 
