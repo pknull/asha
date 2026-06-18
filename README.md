@@ -1,6 +1,6 @@
 # asha
 
-**Version**: 1.17.0
+**Version**: 1.18.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
 Asha mounts skills, agents, commands, and hooks into each harness via direct symlinks, ships a single `asha` dispatcher that injects a shared persona (and auto-configures a harness on first use), and consolidates session capture across all three CLIs into one synthesis pipeline.
@@ -656,6 +656,13 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 ---
 
 ## Version History
+
+### v1.18.0 (2026-06-17)
+
+- **Dispatcher**: unified the three `asha-{claude,codex,copilot}` launchers into one positional `asha` dispatcher — `asha [install|uninstall] [harness] [args]`. Install/uninstall engines extracted to `lib/`; top-level `install.sh`/`uninstall.sh` are thin shims; `asha-<harness>` kept as back-compat shims.
+- **Policy engine**: declarative PreToolUse guardrails (`plugins/session/hooks/handlers/policy-guard.sh` + `policies/rules.json`, optional user layer `~/.asha/policies.json`) — `deny`/`ask`/`max_per_session`, fail-open. Seed rule `no-broad-home-scans`. **Enforced on Claude**; Codex installs the hooks but does not fire them for shell tool calls (known gap — affects `block-secrets` too). Copilot has no hook seam.
+- **session_state**: ephemeral per-session counters (`state.sh`, `~/.asha/session-state/`) that make policies stateful (rate limits); cleared at session end.
+- **Docs**: new "Harness support & behavior" and "State model: guardrails, session_state, and memory" sections.
 
 ### v1.17.0 (2026-03-09)
 
