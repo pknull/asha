@@ -42,7 +42,7 @@ This is the one harness where the guardrail layer is real.
 - The **documented nested** schema (`[[hooks.PreToolUse]]` + a nested `[[hooks.PreToolUse.hooks]]` handler), run with `--dangerously-bypass-hook-trust` and stdin closed → **still did not fire**; the command executed, sentinel log empty.
 - So the obvious "asha emits the wrong TOML schema" lead is **disproven on 0.139** — the documented shape didn't fire either.
 
-**What upstream docs/issues say:** Codex *does* have a hooks system — PreToolUse should fire for Bash (tool name `"Bash"`), deny is supported (JSON `permissionDecision:"deny"` or exit 2), and there's an interactive hook‑trust model. The contradiction (docs say it works; empirically it doesn't on 0.139) points to **version-specific breakage**, a **config-location** issue (hooks may need `~/.codex/hooks.json` rather than inline `config.toml` — *untested*), or a **trust/enable** step beyond the bypass flag.
+**What upstream docs/issues say:** Codex *does* have a hooks system — PreToolUse should fire for Bash (tool name `"Bash"`), deny is supported (JSON `permissionDecision:"deny"` or exit 2), and there's an interactive hook‑trust model. **Cause confirmed (2026-06-17).** Further tested the documented nested schema AND the `[features] hooks = true` enable flag (`-c features.hooks=true`), both with `--dangerously-bypass-hook-trust` and clean runs — still no fire. Asked directly, Codex confirmed: *shell interception is incomplete for the newer `unified_exec` path*. Codex's shell simply isn't on the hookable PreToolUse path in 0.139 — an **upstream gap, not a config error**; no asha-side config change fixes it.
 
 **Even if firing worked, coverage is incomplete upstream:** PreToolUse only fires for shell + edit; **not** `apply_patch`, MCP tools, web tools, reads, planning (openai/codex [#20204](https://github.com/openai/codex/issues/20204) open; [#16732](https://github.com/openai/codex/issues/16732), [#17794](https://github.com/openai/codex/issues/17794)). An agent could pivot to an unguarded tool.
 
@@ -50,7 +50,7 @@ This is the one harness where the guardrail layer is real.
 
 **Implication:** asha's pre-existing Codex PreToolUse hooks (notably `block-secrets`) are **also inert** — same mechanism.
 
-**Untested candidate (follow-up):** write hooks to `~/.codex/hooks.json` instead of inline `config.toml`; establish trust via interactive `/hooks`; confirm against the exact 0.139 contract.
+**Residual unknowns:** `~/.codex/hooks.json` (same schema) and interactive `/hooks` trust weren't tried — but since the gap is the shell *execution path* (`unified_exec`), not the config file or trust, neither is expected to help shell interception.
 
 ### GitHub Copilot CLI — guardrails unreliable upstream; hooks retired in asha
 asha retired Copilot hooks earlier (the then-current CLI fired hooks but never
@@ -70,7 +70,7 @@ Not live-tested here (no Copilot runs this session).
 | Item | Status |
 |---|---|
 | Claude guardrails | **Works** (enforced, verified) |
-| Codex guardrails | **Can't fix now** — documented hook format doesn't fire on 0.139; even upstream it's shell/edit‑only ([#20204](https://github.com/openai/codex/issues/20204)). One config-location candidate untested. |
+| Codex guardrails | **Can't fix (upstream)** — 0.139 doesn't fire PreToolUse for its shell (`unified_exec`) path; flat + nested schema + `[features] hooks=true` + trust-bypass all tested, none fire (confirmed by Codex itself). Shell/edit-only even where hooks do work ([#20204](https://github.com/openai/codex/issues/20204)). |
 | Copilot guardrails | **Won't pursue** — upstream concurrency fail‑open ([#2893](https://github.com/github/copilot-cli/issues/2893)) makes it unsafe; hooks retired. |
 
 **Bottom line:** real-time guardrail enforcement is **Claude-only**, and is expected to stay that way until the Codex/Copilot hook systems mature upstream. The non-enforcement layers (corpus, persona, memory/capture) remain fully cross-harness — so the gap is scoped precisely to live tool-call interception, not to asha's value on those harnesses overall.
@@ -86,6 +86,15 @@ Not live-tested here (no Copilot runs this session).
 - Real `~/.codex/config.toml` was backed up and restored for every diagnostic.
 - Claude: verified interactively by the user; synthetic stdin-JSON unit tests +
   install round-trips against the live deployed hook.
+
+## What the agents themselves recommend (asked directly, 2026-06-17)
+
+Asked each CLI how to make a blocking shell hook work:
+
+- **Codex** (via `codex exec`): supplied the correct config (nested `[[hooks.PreToolUse.hooks]]` + `[features] hooks = true` + `/hooks` interactive trust) — then **warned that shell interception is incomplete for the `unified_exec` path**, and, having read this repo's own notes, agreed PreToolUse for Bash doesn't fire. Net recommendation: do not rely on hooks as a shell enforcement boundary in 0.139.
+- **Copilot** (via `copilot -p`): says `preToolUse` hooks are **not a documented feature** of the CLI it knows; recommends **permission gates** (allowed-tools / approval mode) or **MCP-server tool-level validation** instead.
+
+**Takeaway:** both point *away* from content-based shell hooks toward coarser native mechanisms — permission/approval gating, or MCP tool validation. Those gate tool *categories* or *MCP tools*, not the native shell command by content, so they are **not a drop-in** for the Claude regex-deny guardrail; they'd be a separate, weaker enforcement model if ever pursued.
 
 ## Sources
 - Codex hooks: https://developers.openai.com/codex/hooks ; config: https://developers.openai.com/codex/config-reference
