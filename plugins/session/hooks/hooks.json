@@ -29,6 +29,16 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/block-secrets.sh"
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/policy-guard.sh"
+          }
+        ],
+        "description": "Declarative policy guardrails (deny/ask) from hooks/policies/rules.json + ~/.asha/policies.json"
       }
     ],
     "PostToolUse": [

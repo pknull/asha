@@ -72,6 +72,12 @@ Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They 
 
 **First launch requires the harness's own config to already exist** for Claude and Codex. Their installers deliberately refuse to fabricate `settings.json` / `config.toml` (the harness owns that file's format), so `asha claude` / `asha codex` against a never-initialized harness emits a clean *"run `<harness>` once first"* message instead of a confusing failure. Copilot bootstraps its own config, so it has no such precondition.
 
+### Policy guardrails (PreToolUse deny/ask)
+
+Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny` or `ask`, with an optional `override_env` escape hatch. The seed rule asks before broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (slow HDD + Keybase I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`).
+
+Cross-harness: **deny** works on Claude and Codex; **ask** shows Claude's permission dialog but degrades to deny-with-override on Codex (no dialog); Copilot has no hook seam. The hook is **fail-open** — any rule/parse error allows the call, because a guardrail must never brick tool use. This is the enforced form of the "Failure-to-Guardrail" idea: a high-confidence learning becomes a rule instead of prose a model can skip past.
+
 See **[INSTALLER.md](INSTALLER.md)** for the per-harness layout diagrams and the full rationale.
 
 ---
@@ -84,7 +90,7 @@ Each harness writes its own session transcript to disk:
 - Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - Copilot: `~/.copilot/session-state/<sid>/events.jsonl`
 
-The session plugin no longer captures tool calls through hooks. `/save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings.md` updates. Hooks remain only for *intervention* (block-secrets, post-edit-lint, prompt refinement, session-start context injection).
+The session plugin no longer captures tool calls through hooks. `/save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings.md` updates. Hooks remain only for *intervention* (block-secrets, policy guardrails, post-edit-lint, prompt refinement, session-start context injection).
 
 This makes capture work uniformly across all three harnesses, including Copilot — whose hooks fire but never receive the documented payload data, the original blocker behind the consolidation.
 
