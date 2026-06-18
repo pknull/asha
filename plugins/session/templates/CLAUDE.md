@@ -23,7 +23,7 @@ This project uses the **Asha** framework for session coordination and memory per
 | `Memory/projectbrief.md` | Project scope, objectives, constraints | Rarely |
 | `~/.asha/soul.md` | Identity, values, nature (cross-project) | Rarely |
 | `~/.asha/voice.md` | Voice, tone, constraints (cross-project) | When calibrated |
-| `~/.asha/learnings.md` | Cross-project insights from experience | Additive via /save |
+| `~/.asha/learnings/` | Cross-project insights (OKF concept bundle) | Additive via /save |
 | `Memory/workflowProtocols.md` | Validated patterns, anti-patterns | When patterns discovered |
 | `Memory/techEnvironment.md` | Technical stack, conventions | When stack changes |
 

@@ -71,7 +71,8 @@ superseded_by: null | <filename>
 | `human` | keeper.md, creatorProfile.md | Always |
 | `project` | activeContext.md, projectbrief.md, project_*.md | Always |
 | `feedback` | feedback_*.md | Always |
-| `operational` | operation.md, learnings.md, memory-ops.md, agent-coordination.md | Always |
+| `operational` | operation.md, memory-ops.md, agent-coordination.md | Always |
+| `learning` | learnings/*.md (OKF bundle) | Hot tier at session start |
 | `reference` | reference_*.md | On demand |
 
 Rules:
@@ -95,22 +96,22 @@ type: feedback
 superseded_by: feedback_gws_over_mcp_v2.md
 ```
 
-### Hot/Cold Tier for learnings.md
+### Hot/Cold tier (learnings bundle)
 
-`learnings.md` is split into two files to keep the always-loaded hot tier bounded:
+Learnings live as an OKF concept bundle at `~/.asha/learnings/` — one file per
+learning (`type: learning`), deduped by id, managed by `learnings_manager.py`.
+Tier is **derived from confidence**, not stored as separate files:
 
-| File | Tier | Loaded at | Contains |
-|------|------|-----------|---------|
-| `~/.asha/learnings.md` | Hot | Every session start | Top ≤10 entries by Confidence ≥ 0.7 |
-| `~/.asha/learnings-archive.md` | Cold | On demand / not auto-loaded | Entries with Confidence < 0.7 or below top-10 cutoff |
+| Tier | Selected by | Loaded at |
+|------|-------------|-----------|
+| Hot | Top ≤10 entries with Confidence ≥ 0.7 (`render-hot`) | Every session start (byte-budgeted) |
+| Cold | Everything else | Stays in the bundle; not auto-injected |
 
-**Threshold**: Confidence ≥ 0.7 = hot. Anything lower is cold.
-
-**Char budget**: Hot tier (`learnings.md`) must stay under 50KB. Check with `wc -c ~/.asha/learnings.md`.
-
-**Promotion**: When a cold entry's Confidence rises to ≥ 0.7, move it to `learnings.md`.
-
-**Demotion**: When a hot entry drops below 0.7, or hot tier exceeds 10 entries, move lowest-confidence entries to `learnings-archive.md`.
+**Threshold**: Confidence ≥ 0.7 = hot. **No manual promotion/demotion or char
+budget** — selection happens at read time via `learnings_manager.py render-hot`.
+Frontmatter carries an advisory `tier:` field, but the selector recomputes from
+confidence. Validate the bundle with `validate.py ~/.asha/learnings`; an
+auto-generated `index.md` lists every concept.
 
 **Consolidation**: `/asha:save` consolidation pass (Step C3) handles automatic promotion/demotion. See `save.md` appendix.
 

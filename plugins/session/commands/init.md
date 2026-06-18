@@ -18,7 +18,7 @@ Arguments: $ARGUMENTS
 ```
 ~/.asha/
 ├── operation.md            # Operational quality rules
-├── learnings.md            # Cross-project patterns
+├── learnings/              # Cross-project patterns (OKF concept bundle, one file per learning)
 └── config.json
 ```
 
@@ -97,24 +97,11 @@ OP_EOF
     echo "Created ~/.asha/operation.md"
 fi
 
-# learnings.md - Cross-project insights
-if [[ ! -f "$ASHA_HOME/learnings.md" ]]; then
-    cat > "$ASHA_HOME/learnings.md" << 'LEARNINGS_EOF'
-# Learnings
-
-Cross-project patterns with confidence tracking. Consulted at session start.
-
----
-
-## Tool Usage
-
-- (populated via /save reflections)
-
-## Patterns
-
-- (populated via /save reflections)
-LEARNINGS_EOF
-    echo "Created ~/.asha/learnings.md"
+# learnings/ - Cross-project insights (OKF concept bundle: one file per learning,
+# managed by learnings_manager.py; index.md is auto-generated on first write).
+if [[ ! -d "$ASHA_HOME/learnings" ]]; then
+    mkdir -p "$ASHA_HOME/learnings"
+    echo "Created ~/.asha/learnings/ (OKF bundle; populated via /save reflections)"
 fi
 
 # config.json
@@ -124,7 +111,7 @@ if [[ ! -f "$ASHA_HOME/config.json" ]]; then
   "version": "2.0",
   "description": "Session management configuration",
   "capture_calibration": true,
-  "learnings_file": "learnings.md",
+  "learnings_dir": "learnings",
   "operation_file": "operation.md"
 }
 CONFIG_EOF

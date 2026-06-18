@@ -43,10 +43,10 @@ All `claude` flags pass through. The wrapper:
 
 ### Without the wrapper
 
-Plain `claude` still gets operational quality (operation.md, learnings.md) via the session plugin. It just doesn't get the Asha identity, voice, or partnership context.
+Plain `claude` still gets operational quality (operation.md, learnings/) via the session plugin. It just doesn't get the Asha identity, voice, or partnership context.
 
 ```
-claude  →  operation.md + learnings.md (quality work, no persona)
+claude  →  operation.md + learnings hot tier (quality work, no persona)
 asha    →  all of the above + soul + voice + keeper (full Asha)
 ```
 

@@ -146,7 +146,6 @@ class Learning:
 
 ASHA_DIR = Path.home() / ".asha"
 LEARNINGS_DIR = ASHA_DIR / "learnings"          # OKF bundle (concept files)
-LEARNINGS_PATH = ASHA_DIR / "learnings.md"      # legacy flat file (migrator reads only)
 
 RESERVED_SLUGS = {"index", "log"}               # OKF reserved filenames
 HOT_MIN_CONFIDENCE = 0.7

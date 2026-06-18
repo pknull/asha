@@ -68,7 +68,6 @@ class SilenceMarkerSynthesisTests(unittest.TestCase):
         # Rewire the learnings bundle dir to tmp so writes don't escape the
         # sandbox if the silence guard is broken.
         self.lm.LEARNINGS_DIR = Path(self.tmp) / ".asha" / "learnings"
-        self.lm.LEARNINGS_PATH = Path(self.tmp) / ".asha" / "learnings.md"
         self.lm.LEARNINGS_DIR.parent.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
