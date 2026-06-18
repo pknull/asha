@@ -2,10 +2,16 @@
 """
 Learnings Manager - Structured pattern tracking with confidence scoring
 
-Manages ~/.asha/learnings.md with:
-- Confidence scores (0.3-0.9) that rise/fall over time
-- Trigger conditions for when to apply
-- Evidence logs tracking where patterns were observed
+Storage: an OKF-style bundle at ~/.asha/learnings/ — one concept file per
+learning (`<slug>.md`), each with YAML frontmatter (top-level `type: learning`)
+and a human-readable body. Recording a learning is an upsert keyed by id, so the
+same insight cannot accumulate duplicate copies. A derived `index.md` (OKF
+reserved root index) lists the bundle.
+
+This replaces the former single flat ~/.asha/learnings.md (now read only by the
+one-time migrator, migrate_learnings_to_okf.py). The public API
+(add/confirm/contradict/query/list/export) is unchanged so callers
+(pattern_analyzer) and their return-dict contracts are unaffected.
 
 Usage:
     python learnings_manager.py add --category "Tool Usage" --id "ollama-http" \
@@ -18,6 +24,9 @@ Usage:
     python learnings_manager.py query --category "Tool Usage"
     python learnings_manager.py list
     python learnings_manager.py export
+    python learnings_manager.py render-hot --max-bytes 3000   # session-start injection
+    python learnings_manager.py rebuild-index
+    python learnings_manager.py migrate-okf [--dry-run]       # one-time flat->dir migration
 """
 
 import os
@@ -30,6 +39,11 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 from dataclasses import dataclass, field, asdict
+
+try:
+    import yaml
+except ImportError:  # pragma: no cover - fallback path exercised only without PyYAML
+    yaml = None
 
 
 def _detect_project_root_for_silence() -> Optional[Path]:
@@ -102,6 +116,9 @@ class Learning:
     trigger: str
     action: str
     evidence: List[Evidence] = field(default_factory=list)
+    created: str = ""
+    updated: str = ""
+    extra_body: str = ""  # preserved non-canonical body sections (verbatim)
 
     def add_evidence(self, project: str, note: str, effect: str = "confirm"):
         """Add evidence and adjust confidence"""
@@ -124,152 +141,161 @@ class Learning:
 
 
 # =============================================================================
-# File I/O
+# Paths & constants
 # =============================================================================
 
-LEARNINGS_PATH = Path.home() / ".asha" / "learnings.md"
+ASHA_DIR = Path.home() / ".asha"
+LEARNINGS_DIR = ASHA_DIR / "learnings"          # OKF bundle (concept files)
+LEARNINGS_PATH = ASHA_DIR / "learnings.md"      # legacy flat file (migrator reads only)
 
-# Regex to parse structured learning entries
-LEARNING_PATTERN = re.compile(
-    r'### (?P<id>[\w-]+)\n'
-    r'- \*\*Confidence\*\*: (?P<confidence>[\d.]+)\n'
-    r'- \*\*Trigger\*\*: (?P<trigger>.+)\n'
-    r'- \*\*Action\*\*: (?P<action>.+)\n'
-    r'- \*\*Evidence\*\*:\n(?P<evidence>(?:  - .+\n)*)',
-    re.MULTILINE
-)
+RESERVED_SLUGS = {"index", "log"}               # OKF reserved filenames
+HOT_MIN_CONFIDENCE = 0.7
+HOT_MAX_ENTRIES = 10
+HOT_MAX_BYTES = 50_000
 
+# Evidence bullet: indent-tolerant so it matches BOTH the new body format
+# ("- date | project | note [effect]") and the legacy flat/canonical format
+# ("  - date | project | note [effect]"). MULTILINE so $ anchors per line.
 EVIDENCE_PATTERN = re.compile(
-    # MULTILINE is required: without it, $ matches only end-of-string and the
-    # non-greedy .+? swallows whole evidence blocks, so an entry with N
-    # evidence lines parses as a single Learning whose `note` field contains
-    # all but the last line concatenated. The earlier evidence lines silently
-    # vanish on the next write_learnings round-trip. Repro: any entry with
-    # 2+ evidence bullets, e.g. "Used 158x" + "Used 35x" became one match
-    # capturing only "Used 35x".
-    r'  - (?P<date>[\d-]+) \| (?P<project>[\w-]+) \| (?P<note>.+?)(?:\s*\[(?P<effect>\w+)\])?$',
+    r'^[ \t]*-[ \t]+(?P<date>\d[\d-]*) \| (?P<project>[\w-]+) \| '
+    r'(?P<note>.+?)(?:\s*\[(?P<effect>\w+)\])?[ \t]*$',
     re.MULTILINE
 )
 
-CATEGORY_PATTERN = re.compile(r'^## (.+)$', re.MULTILINE)
+# A '## Heading' line (used to find/preserve non-Evidence body sections).
+_SECTION_RE = re.compile(r'^## (.+?)[ \t]*$', re.MULTILINE)
 
-# Round-trip preservation cache. Populated by parse_learnings, consumed by
-# write_learnings. Keyed by category name; each value is the original raw
-# text of that category section (everything between '## Foo' and the next
-# '## ' or EOF). On write, structured entries inside that text are replaced
-# in-place via regex substitution; non-canonical content (intro prose,
-# malformed entries, trailing notes) survives verbatim. Without this, every
-# parse → write round-trip silently destroys anything that didn't match the
-# canonical schema. Tracked by Todoist 6gVq6vw4W5rHC5ww.
-_parsed_sections_cache: Dict[str, str] = {}
-_parsed_preamble_cache: str = ""
+# YAML frontmatter block at the very start of a file (BOM/CRLF tolerant).
+_FRONTMATTER_RE = re.compile(
+    r"^﻿?---[ \t]*\r?\n(?:(.*?)\r?\n)?---[ \t]*(?:\r?\n|$)", re.DOTALL
+)
 
 _DEFAULT_PREAMBLE = (
     "# Learnings\n\n"
     "Cross-project patterns with confidence tracking. "
     "Consulted at session start.\n\n"
-    "---\n"
+    "---"
 )
 
 
-def parse_learnings() -> Dict[str, List[Learning]]:
-    """Parse learnings.md into structured data.
+def _today() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
 
-    Side effect: populates _parsed_sections_cache and _parsed_preamble_cache
-    so that a subsequent write_learnings can preserve non-canonical content
-    (intro prose, malformed entries, trailing notes) in its original
-    position. Pure callers that only consume the dict are unaffected.
-    """
-    global _parsed_sections_cache, _parsed_preamble_cache
-    _parsed_sections_cache = {}
-    _parsed_preamble_cache = ""
 
-    if not LEARNINGS_PATH.exists():
-        return {}
+# =============================================================================
+# Frontmatter (YAML via PyYAML; JSON-scalar fallback when PyYAML is absent)
+# =============================================================================
 
-    content = LEARNINGS_PATH.read_text()
-    learnings: Dict[str, List[Learning]] = {}
+def _dump_frontmatter(data: Dict[str, Any]) -> str:
+    """Render an ordered dict as a '---'-delimited YAML frontmatter block."""
+    if yaml is not None:
+        body = yaml.safe_dump(
+            data, sort_keys=False, allow_unicode=True, default_flow_style=False
+        ).strip()
+    else:
+        # JSON scalars are valid YAML scalars; this safely quotes free text.
+        lines = []
+        for key, value in data.items():
+            if isinstance(value, str):
+                lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
+            else:
+                lines.append(f"{key}: {value}")
+        body = "\n".join(lines)
+    return f"---\n{body}\n---"
 
-    # Split by category
-    parts = CATEGORY_PATTERN.split(content)
 
-    # parts[0] is everything before the first ## heading — capture as preamble
-    if parts:
-        _parsed_preamble_cache = parts[0]
+def _load_frontmatter(text: str):
+    """Return (data_dict, body_str). Missing/invalid frontmatter -> ({}, text)."""
+    match = _FRONTMATTER_RE.match(text)
+    if not match:
+        return {}, text
+    fm_text = match.group(1) or ""
+    body = text[match.end():]
+    if yaml is not None:
+        try:
+            data = yaml.safe_load(fm_text)
+        except yaml.YAMLError:
+            data = {}
+    else:
+        data = {}
+        for line in fm_text.splitlines():
+            if ":" not in line:
+                continue
+            key, _, rest = line.partition(":")
+            rest = rest.strip()
+            if rest[:1] in ('"', "[", "{") or rest[:1].isdigit() or rest in ("true", "false", "null"):
+                try:
+                    rest = json.loads(rest)
+                except (ValueError, json.JSONDecodeError):
+                    pass
+            data[key.strip()] = rest
+    if not isinstance(data, dict):
+        data = {}
+    return data, body
 
-    # parts[0] is header, then alternating category name and content
-    for i in range(1, len(parts), 2):
-        if i + 1 >= len(parts):
-            break
-        category = parts[i]
-        section = parts[i + 1]
 
-        # Cache original section text for round-trip preservation.
-        # Last write wins if the same category appears twice — degenerate
-        # input, not worth complicating for.
-        _parsed_sections_cache[category] = section
+# =============================================================================
+# Slug / path helpers
+# =============================================================================
 
-        learnings[category] = []
+def _slugify(learning_id: str) -> str:
+    """Filesystem-safe slug for a learning id. id == slug == filename stem."""
+    slug = re.sub(r'[^a-z0-9]+', '-', str(learning_id).lower()).strip('-')
+    slug = re.sub(r'-{2,}', '-', slug)
+    if not slug:
+        slug = "learning"
+    if slug in RESERVED_SLUGS:
+        slug = f"{slug}-1"
+    return slug
 
-        # Try structured format first
-        for match in LEARNING_PATTERN.finditer(section):
-            evidence_list = []
-            for ev_match in EVIDENCE_PATTERN.finditer(match.group('evidence')):
-                evidence_list.append(Evidence(
-                    date=ev_match.group('date'),
-                    project=ev_match.group('project'),
-                    note=ev_match.group('note'),
-                    effect=ev_match.group('effect') or 'confirm'
-                ))
 
-            learnings[category].append(Learning(
-                id=match.group('id'),
-                category=category,
-                confidence=float(match.group('confidence')),
-                trigger=match.group('trigger'),
-                action=match.group('action'),
-                evidence=evidence_list
-            ))
+def _learning_path(learning_id: str) -> Path:
+    return LEARNINGS_DIR / f"{_slugify(learning_id)}.md"
 
-        # If no structured entries, parse legacy bullet format.
-        # Guard: if the section already has ### subheadings, the user is
-        # using structured format even if it doesn't match the canonical
-        # field order. Falling through to bullet parsing would fragment
-        # each "- **Field**: value" line into its own learning entry,
-        # destroying curated content. Skip legacy parsing in that case.
-        if not learnings[category] and not re.search(r'^### ', section, re.MULTILINE):
-            legacy_bullets = re.findall(r'^- (.+)$', section, re.MULTILINE)
-            for i, bullet in enumerate(legacy_bullets):
-                # Generate ID from first few words
-                words = re.sub(r'[^\w\s]', '', bullet).split()[:3]
-                learning_id = '-'.join(w.lower() for w in words)
 
-                # Split on " — " if present (action separator)
-                if ' — ' in bullet:
-                    trigger_part, action_part = bullet.split(' — ', 1)
-                else:
-                    trigger_part = bullet
-                    action_part = bullet
-
-                learnings[category].append(Learning(
-                    id=learning_id,
-                    category=category,
-                    confidence=0.6,  # Legacy entries get medium confidence
-                    trigger=trigger_part.strip('`'),
-                    action=action_part,
-                    evidence=[Evidence(
-                        date="2026-01-01",
-                        project="legacy",
-                        note="Migrated from unstructured format",
-                        effect="initial"
-                    )]
-                ))
-
-    return learnings
-
+# =============================================================================
+# Rendering
+# =============================================================================
 
 def _render_learning(learning: Learning) -> str:
-    """Render a Learning as its canonical markdown block (no trailing newline)."""
+    """Render a Learning as a full OKF concept file (frontmatter + body)."""
+    front = {
+        "type": "learning",
+        "id": learning.id,
+        "title": learning.id,
+        "description": learning.trigger or learning.action or learning.id,
+        "category": learning.category,
+        "confidence": learning.confidence,
+        "tier": "hot" if learning.confidence >= HOT_MIN_CONFIDENCE else "cold",
+        "trigger": learning.trigger,
+        "action": learning.action,
+        "created": learning.created or _today(),
+        "updated": learning.updated or _today(),
+    }
+    parts = [
+        _dump_frontmatter(front),
+        "",
+        f"# {learning.id}",
+        "",
+        f"**Trigger:** {learning.trigger}",
+        f"**Action:** {learning.action}",
+        "",
+        "## Evidence",
+    ]
+    for ev in learning.evidence[-5:]:
+        marker = f" [{ev.effect}]" if ev.effect != "confirm" else ""
+        parts.append(f"- {ev.date} | {ev.project} | {ev.note}{marker}")
+    body = "\n".join(parts)
+    if learning.extra_body.strip():
+        body = body.rstrip() + "\n\n" + learning.extra_body.strip() + "\n"
+    else:
+        body = body.rstrip() + "\n"
+    return body
+
+
+def _render_canonical_block(learning: Learning) -> str:
+    """Render the compact '### id' block used for session-start injection
+    (matches the historical flat-file hot-tier shape byte-for-byte)."""
     lines = [
         f"### {learning.id}",
         f"- **Confidence**: {learning.confidence}",
@@ -278,90 +304,220 @@ def _render_learning(learning: Learning) -> str:
         "- **Evidence**:",
     ]
     for ev in learning.evidence[-5:]:
-        effect_marker = f" [{ev.effect}]" if ev.effect != "confirm" else ""
-        lines.append(f"  - {ev.date} | {ev.project} | {ev.note}{effect_marker}")
+        marker = f" [{ev.effect}]" if ev.effect != "confirm" else ""
+        lines.append(f"  - {ev.date} | {ev.project} | {ev.note}{marker}")
     return "\n".join(lines)
 
 
-def _reconstruct_section(original: str, entries: List[Learning]) -> str:
-    """Re-render structured entries inside a category section, preserving
-    everything else verbatim.
+def _extract_extra_sections(body: str) -> str:
+    """Concatenate all '## ' body sections except Evidence, verbatim.
 
-    For each '### id'-shaped block matched by LEARNING_PATTERN, substitute
-    in the corresponding Learning's freshly rendered block. Anything that
-    doesn't match the pattern (intro prose, malformed entries with
-    different field orders, trailing notes) is left untouched. New
-    entries (id present in `entries` but not in the original text) are
-    appended at the end of the section.
+    Lets a hand-added '## Notes' / '## Related' survive a write round-trip —
+    the one piece of the old preservation ethos worth keeping.
     """
-    entries_by_id = {l.id: l for l in entries}
-    seen_ids: set = set()
-
-    def repl(match):
-        entry_id = match.group('id')
-        if entry_id in entries_by_id:
-            seen_ids.add(entry_id)
-            # Preserve the trailing newline that the regex captured (the
-            # evidence group ends with \n) so adjacent paragraphs stay
-            # separated.
-            rendered = _render_learning(entries_by_id[entry_id])
-            return rendered + "\n"
-        # Entry was deleted from the in-memory dict — drop the original
-        # block. Callers that wanted to remove an entry get what they asked
-        # for; preservation is for non-matching content, not deletions.
-        return ""
-
-    rewritten = LEARNING_PATTERN.sub(repl, original)
-
-    new_entries = [e for e in entries if e.id not in seen_ids]
-    if new_entries:
-        rendered_new = "\n\n".join(_render_learning(e) for e in new_entries)
-        rewritten = rewritten.rstrip() + "\n\n" + rendered_new + "\n"
-
-    return rewritten
-
-
-def write_learnings(learnings: Dict[str, List[Learning]]):
-    """Write learnings back to markdown format, preserving non-canonical
-    content captured by parse_learnings.
-
-    Output layout: `<preamble>\\n\\n## Cat1\\n\\n<body1>\\n\\n## Cat2\\n\\n<body2>\\n`.
-    Bodies are stripped of leading/trailing whitespace before being joined,
-    so successive round-trips are idempotent (no unbounded blank-line growth).
-    """
-    # Honor Work/markers/silence even when called directly (not via
-    # pattern_analyzer). Fails open if no project root is detectable so
-    # out-of-project CLI usage still works.
-    if _silence_marker_present():
-        return
-
-    # Preamble: prefer cached original (preserves user customization);
-    # fall back to canonical default for fresh files.
-    preamble_raw = _parsed_preamble_cache if _parsed_preamble_cache.strip() else _DEFAULT_PREAMBLE
-    sections = [preamble_raw.strip()]
-
-    for category, entries in sorted(learnings.items()):
-        if not entries:
+    extras = []
+    matches = list(_SECTION_RE.finditer(body))
+    for i, match in enumerate(matches):
+        heading = match.group(1).strip()
+        if heading.lower() == "evidence":
             continue
-
-        original_section = _parsed_sections_cache.get(category, "")
-        if original_section.strip():
-            # Existing category — reconstruct in place, preserve extras
-            body = _reconstruct_section(original_section, entries).strip()
-        else:
-            # New category (not in original file) — emit canonical layout,
-            # confidence-sorted
-            sorted_entries = sorted(entries, key=lambda x: x.confidence, reverse=True)
-            body = "\n\n".join(_render_learning(l) for l in sorted_entries)
-
-        sections.append(f"## {category}\n\n{body}")
-
-    LEARNINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    LEARNINGS_PATH.write_text("\n\n".join(sections) + "\n")
+        start = match.start()
+        end = matches[i + 1].start() if i + 1 < len(matches) else len(body)
+        extras.append(body[start:end].rstrip())
+    return "\n\n".join(extras)
 
 
 # =============================================================================
-# Operations
+# Per-file storage I/O
+# =============================================================================
+
+def _atomic_write_file(path: Path, text: str) -> None:
+    """Write text to path atomically (tmp + fsync + os.replace)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / f".{path.name}.tmp.{os.getpid()}"
+    try:
+        with open(tmp, "w", encoding="utf-8") as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+
+
+def _parse_file(path: Path) -> Learning:
+    """Parse one concept file into a Learning. Frontmatter is authoritative for
+    scalar fields; evidence is parsed from the body; unknown '##' sections are
+    preserved in extra_body."""
+    text = path.read_text(encoding="utf-8")
+    data, body = _load_frontmatter(text)
+
+    learning_id = str(data.get("id") or path.stem)
+    category = str(data.get("category") or "Uncategorized")
+    try:
+        confidence = round(float(data.get("confidence", 0.3)), 2)
+    except (TypeError, ValueError):
+        confidence = 0.3
+
+    evidence: List[Evidence] = []
+    for match in EVIDENCE_PATTERN.finditer(body):
+        evidence.append(Evidence(
+            date=match.group("date"),
+            project=match.group("project"),
+            note=match.group("note").strip(),
+            effect=match.group("effect") or "confirm",
+        ))
+
+    return Learning(
+        id=learning_id,
+        category=category,
+        confidence=confidence,
+        trigger=str(data.get("trigger") or ""),
+        action=str(data.get("action") or ""),
+        evidence=evidence,
+        created=str(data.get("created") or ""),
+        updated=str(data.get("updated") or ""),
+        extra_body=_extract_extra_sections(body),
+    )
+
+
+def _write_learning(learning: Learning) -> bool:
+    """Persist a single learning (silence-guarded). Returns False if skipped."""
+    if _silence_marker_present():
+        return False
+    if not learning.created:
+        learning.created = _today()
+    learning.updated = _today()
+    _atomic_write_file(_learning_path(learning.id), _render_learning(learning))
+    return True
+
+
+def _delete_learning(learning_id: str) -> bool:
+    """Delete a single learning file (silence-guarded). Returns False if skipped."""
+    if _silence_marker_present():
+        return False
+    _learning_path(learning_id).unlink(missing_ok=True)
+    return True
+
+
+def parse_learnings() -> Dict[str, List[Learning]]:
+    """Parse the bundle into {category: [Learning]}. Same shape as the legacy
+    flat parser, so query/list/export are unaffected."""
+    learnings: Dict[str, List[Learning]] = {}
+    if not LEARNINGS_DIR.is_dir():
+        return learnings
+    for path in sorted(LEARNINGS_DIR.glob("*.md")):
+        if path.name in ("index.md", "log.md"):
+            continue
+        try:
+            learning = _parse_file(path)
+        except Exception:
+            # Never let one malformed file crash synthesis/injection.
+            continue
+        learnings.setdefault(learning.category, []).append(learning)
+    return learnings
+
+
+def write_learnings(learnings: Dict[str, List[Learning]]) -> None:
+    """Compat shim: persist a {category: [Learning]} dict as concept files,
+    silence-guarded, then rebuild the index. Retained for whole-dict callers."""
+    if _silence_marker_present():
+        return
+    for entries in learnings.values():
+        for learning in entries:
+            _write_learning(learning)
+    _rebuild_index()
+
+
+def _rebuild_index() -> None:
+    """Regenerate index.md (OKF reserved root index; only okf_version frontmatter)."""
+    if _silence_marker_present():
+        return
+    learnings = parse_learnings()
+    flat = [(cat, l) for cat, entries in learnings.items() for l in entries]
+    # category asc, confidence desc, id asc (stable multi-key)
+    flat.sort(key=lambda t: t[1].id)
+    flat.sort(key=lambda t: t[1].confidence, reverse=True)
+    flat.sort(key=lambda t: t[0].lower())
+
+    lines = [
+        '---', 'okf_version: "0.1"', '---', '',
+        '# Learnings Index', '',
+        f'{len(flat)} concept(s). Generated by learnings_manager.py — do not edit.', '',
+        '| id | category | confidence | tier |',
+        '|----|----------|-----------|------|',
+    ]
+    for cat, learning in flat:
+        tier = "hot" if learning.confidence >= HOT_MIN_CONFIDENCE else "cold"
+        slug = _slugify(learning.id)
+        lines.append(f"| [{learning.id}]({slug}.md) | {cat} | {learning.confidence} | {tier} |")
+    _atomic_write_file(LEARNINGS_DIR / "index.md", "\n".join(lines) + "\n")
+
+
+# =============================================================================
+# Hot-tier selection / injection
+# =============================================================================
+
+def render_hot_tier(
+    max_entries: int = HOT_MAX_ENTRIES,
+    min_confidence: float = HOT_MIN_CONFIDENCE,
+    max_bytes: int = HOT_MAX_BYTES,
+) -> str:
+    """Render the hot tier for session-start injection.
+
+    Selection: confidence >= min_confidence, total-ordered by
+    (confidence desc, updated desc, id asc), capped at max_entries, then grouped
+    by category and truncated at an entry boundary under max_bytes. Output matches
+    the historical flat hot-file shape so the injected prompt text is unchanged.
+    """
+    learnings = parse_learnings()
+    flat = [l for entries in learnings.values() for l in entries
+            if l.confidence >= min_confidence]
+    # Stable multi-key sort (apply least-significant first).
+    flat.sort(key=lambda l: l.id)
+    flat.sort(key=lambda l: l.updated or "", reverse=True)
+    flat.sort(key=lambda l: l.confidence, reverse=True)
+    selected = flat[:max_entries]
+
+    preamble = _DEFAULT_PREAMBLE
+    if not selected:
+        return preamble + "\n"
+
+    # Order categories by their best confidence, then name (deterministic).
+    best_in_cat: Dict[str, float] = {}
+    for l in selected:
+        best_in_cat[l.category] = max(best_in_cat.get(l.category, 0.0), l.confidence)
+    cats = sorted(best_in_cat, key=lambda c: (-best_in_cat[c], c))
+
+    result = preamble
+    emitted = 0
+    truncated = False
+    for cat in cats:
+        cat_entries = sorted(
+            [l for l in selected if l.category == cat],
+            key=lambda l: (-l.confidence, l.id),
+        )
+        header_emitted = False
+        for learning in cat_entries:
+            chunk = ("" if header_emitted else f"\n\n## {cat}")
+            chunk += "\n\n" + _render_canonical_block(learning)
+            if emitted > 0 and len((result + chunk).encode("utf-8")) > max_bytes:
+                truncated = True
+                break
+            result += chunk
+            header_emitted = True
+            emitted += 1
+        if truncated:
+            break
+    return result + "\n"
+
+
+# =============================================================================
+# Operations (public API — signatures and return dicts are frozen)
 # =============================================================================
 
 def add_learning(
@@ -372,95 +528,75 @@ def add_learning(
     project: str,
     reason: str
 ) -> Dict[str, Any]:
-    """Add a new learning or update existing one"""
-    learnings = parse_learnings()
+    """Add a new learning or reinforce an existing one (upsert by id)."""
+    path = _learning_path(learning_id)
 
-    if category not in learnings:
-        learnings[category] = []
-
-    # Check if learning already exists
-    existing = next((l for l in learnings[category] if l.id == learning_id), None)
-
-    if existing:
+    if path.exists():
+        existing = _parse_file(path)
         existing.add_evidence(project, reason, "confirm")
-        write_learnings(learnings)
-        return {
-            "status": "updated",
-            "id": learning_id,
-            "confidence": existing.confidence
-        }
+        _write_learning(existing)
+        _rebuild_index()
+        return {"status": "updated", "id": existing.id, "confidence": existing.confidence}
 
-    # Create new learning
+    slug = _slugify(learning_id)
     learning = Learning(
-        id=learning_id,
+        id=slug,
         category=category,
         confidence=0.3,  # New learnings start low
         trigger=trigger,
         action=action,
         evidence=[Evidence(
-            date=datetime.now().strftime("%Y-%m-%d"),
+            date=_today(),
             project=project,
             note=reason,
             effect="initial"
-        )]
+        )],
+        created=_today(),
+        updated=_today(),
     )
-    learnings[category].append(learning)
-    write_learnings(learnings)
-
-    return {
-        "status": "created",
-        "id": learning_id,
-        "confidence": learning.confidence
-    }
+    _write_learning(learning)
+    _rebuild_index()
+    return {"status": "created", "id": slug, "confidence": learning.confidence}
 
 
 def confirm_learning(learning_id: str, project: str, reason: str = "Pattern confirmed") -> Dict[str, Any]:
     """Confirm a learning, increasing confidence"""
-    learnings = parse_learnings()
-
-    for _, entries in learnings.items():
-        for learning in entries:
-            if learning.id == learning_id:
-                learning.add_evidence(project, reason, "confirm")
-                write_learnings(learnings)
-                return {
-                    "status": "confirmed",
-                    "id": learning_id,
-                    "confidence": learning.confidence
-                }
-
-    return {"status": "not_found", "id": learning_id}
+    path = _learning_path(learning_id)
+    if not path.exists():
+        return {"status": "not_found", "id": learning_id}
+    learning = _parse_file(path)
+    learning.add_evidence(project, reason, "confirm")
+    _write_learning(learning)
+    _rebuild_index()
+    return {"status": "confirmed", "id": learning.id, "confidence": learning.confidence}
 
 
 def contradict_learning(learning_id: str, project: str, reason: str) -> Dict[str, Any]:
-    """Contradict a learning, decreasing confidence"""
-    learnings = parse_learnings()
+    """Contradict a learning, decreasing confidence (remove if it drops <0.2)"""
+    path = _learning_path(learning_id)
+    if not path.exists():
+        return {"status": "not_found", "id": learning_id}
+    learning = _parse_file(path)
+    old_confidence = learning.confidence
+    learning.add_evidence(project, reason, "contradict")
 
-    for _, entries in learnings.items():
-        for learning in entries:
-            if learning.id == learning_id:
-                old_confidence = learning.confidence
-                learning.add_evidence(project, reason, "contradict")
+    if learning.confidence < 0.2:
+        _delete_learning(learning.id)
+        _rebuild_index()
+        return {
+            "status": "removed",
+            "id": learning.id,
+            "reason": "Confidence dropped below threshold"
+        }
 
-                # Remove if confidence too low
-                if learning.confidence < 0.2:
-                    entries.remove(learning)
-                    write_learnings(learnings)
-                    return {
-                        "status": "removed",
-                        "id": learning_id,
-                        "reason": "Confidence dropped below threshold"
-                    }
-
-                write_learnings(learnings)
-                return {
-                    "status": "contradicted",
-                    "id": learning_id,
-                    "confidence": learning.confidence,
-                    "dropped_from": old_confidence
-                }
-
-    return {"status": "not_found", "id": learning_id}
+    _write_learning(learning)
+    _rebuild_index()
+    return {
+        "status": "contradicted",
+        "id": learning.id,
+        "confidence": learning.confidence,
+        "dropped_from": old_confidence
+    }
 
 
 def query_learnings(
@@ -583,8 +719,20 @@ def main():
     # Export command
     subparsers.add_parser("export", help="Export all learnings as JSON")
 
-    # Migrate command
-    subparsers.add_parser("migrate", help="Migrate legacy format to structured")
+    # Render-hot command (session-start injection)
+    render_parser = subparsers.add_parser("render-hot", help="Render the hot tier for injection")
+    render_parser.add_argument("--max-bytes", type=int, default=HOT_MAX_BYTES, help="Byte budget")
+    render_parser.add_argument("--max-entries", type=int, default=HOT_MAX_ENTRIES, help="Entry cap")
+
+    # Rebuild-index command
+    subparsers.add_parser("rebuild-index", help="Regenerate index.md")
+
+    # Migrate command (one-time flat -> directory)
+    migrate_okf_parser = subparsers.add_parser(
+        "migrate-okf", help="Migrate legacy flat learnings to the OKF bundle")
+    migrate_okf_parser.add_argument("--dry-run", action="store_true")
+    migrate_alias = subparsers.add_parser("migrate", help="Alias for migrate-okf")
+    migrate_alias.add_argument("--dry-run", action="store_true")
 
     args = parser.parse_args()
 
@@ -616,11 +764,19 @@ def main():
             result = list_categories()
         elif args.command == "export":
             result = export_learnings()
-        elif args.command == "migrate":
-            # Just parse and write - conversion happens automatically
-            learnings = parse_learnings()
-            write_learnings(learnings)
-            result = {"status": "migrated", "categories": len(learnings)}
+        elif args.command == "render-hot":
+            # Plain text to stdout (consumed by session-start.sh), not JSON.
+            sys.stdout.write(render_hot_tier(max_entries=args.max_entries, max_bytes=args.max_bytes))
+            return
+        elif args.command == "rebuild-index":
+            _rebuild_index()
+            result = {"status": "rebuilt", "dir": str(LEARNINGS_DIR)}
+        elif args.command in ("migrate-okf", "migrate"):
+            migrator = Path(__file__).parent / "migrate_learnings_to_okf.py"
+            cmd = [sys.executable, str(migrator)]
+            if getattr(args, "dry_run", False):
+                cmd.append("--dry-run")
+            sys.exit(subprocess.call(cmd))
         else:
             result = {"error": f"Unknown command: {args.command}"}
 

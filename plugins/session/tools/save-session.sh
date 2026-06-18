@@ -341,6 +341,18 @@ automatic_mode() {
         log "Pattern analyzer not available, skipping synthesis"
     fi
 
+    # Validate the learnings OKF bundle (WARN-ONLY — never blocks the save).
+    # Checks the three OKF hard rules over ~/.asha/learnings/. Opt into producer
+    # lints with ASHA_LEARNINGS_VALIDATE=strict.
+    LEARNINGS_DIR="$HOME/.asha/learnings"
+    VALIDATE="$PLUGIN_ROOT/tools/validate.py"
+    if [[ -d "$LEARNINGS_DIR" && -f "$VALIDATE" && -n "$PYTHON_CMD" ]]; then
+        VFLAG=""
+        [[ "${ASHA_LEARNINGS_VALIDATE:-warn}" == "strict" ]] && VFLAG="--strict"
+        "$PYTHON_CMD" "$VALIDATE" "$LEARNINGS_DIR" $VFLAG >&2 \
+            || log "learnings bundle validation reported issues (non-fatal; see above)"
+    fi
+
     # Rotate old events (keep last 30 days in active file)
     rotate_events 30
 

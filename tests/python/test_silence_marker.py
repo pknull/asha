@@ -65,10 +65,11 @@ class SilenceMarkerSynthesisTests(unittest.TestCase):
         self.pa = pattern_analyzer
         self.lm = learnings_manager
 
-        # Rewire LEARNINGS_PATH to tmp so writes don't escape the sandbox if
-        # the silence guard is broken.
+        # Rewire the learnings bundle dir to tmp so writes don't escape the
+        # sandbox if the silence guard is broken.
+        self.lm.LEARNINGS_DIR = Path(self.tmp) / ".asha" / "learnings"
         self.lm.LEARNINGS_PATH = Path(self.tmp) / ".asha" / "learnings.md"
-        self.lm.LEARNINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+        self.lm.LEARNINGS_DIR.parent.mkdir(parents=True, exist_ok=True)
 
     def tearDown(self):
         for key, prior in self._saved_env.items():
@@ -142,9 +143,12 @@ class SilenceMarkerSynthesisTests(unittest.TestCase):
         self.lm.write_learnings({"Test Category": [learning]})
 
         self.assertFalse(
-            self.lm.LEARNINGS_PATH.exists(),
-            "learnings.md must not be written during silence",
+            self.lm._learning_path("test-learning").exists(),
+            "concept file must not be written during silence",
         )
+        existing = (list(self.lm.LEARNINGS_DIR.glob("*.md"))
+                    if self.lm.LEARNINGS_DIR.exists() else [])
+        self.assertEqual(existing, [], "no concept files may be written during silence")
 
     def test_write_learnings_writes_normally_without_marker(self):
         """Regression guard: without marker, write_learnings persists."""
@@ -157,8 +161,9 @@ class SilenceMarkerSynthesisTests(unittest.TestCase):
         )
         self.lm.write_learnings({"Test Category": [learning]})
 
-        self.assertTrue(self.lm.LEARNINGS_PATH.exists())
-        content = self.lm.LEARNINGS_PATH.read_text()
+        path = self.lm._learning_path("test-learning")
+        self.assertTrue(path.exists())
+        content = path.read_text()
         self.assertIn("Test Category", content)
         self.assertIn("test-learning", content)
 
@@ -187,7 +192,7 @@ class SilenceMarkerSynthesisTests(unittest.TestCase):
             self.lm.write_learnings({"OOP Category": [learning]})
 
             self.assertTrue(
-                self.lm.LEARNINGS_PATH.exists(),
+                self.lm._learning_path("oop-learning").exists(),
                 "fail-open: out-of-project callers should still write",
             )
         finally:
