@@ -170,6 +170,7 @@ exec_copilot() {
 
 launch() {
   local h="$1"; shift
+  export ASHA_HARNESS="$h"   # let policy/intervention hooks branch by harness (e.g. ask vs deny)
   case "$h" in
     claude)
       # Management subcommands run their own TUIs / one-shot helpers and must

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "_comment": "Asha declarative PreToolUse policy rules. Evaluated by hooks/handlers/policy-guard.sh. User overrides/additions: ~/.asha/policies.json (merged by id, user wins). Schema per rule: {id, tool (anchored ERE on tool_name), command_regex|file_path_regex (ERE matched against the Bash command / file path), action: deny|ask, reason, override_env?}.",
+  "rules": [
+    {
+      "id": "no-broad-home-scans",
+      "tool": "Bash",
+      "command_regex": "\\b(bfs|fd|find|rg|grep[[:space:]]+-[a-zA-Z]*[rR])\\b[^|;]*[[:space:]]/home(/pknull)?($|[[:space:]/])",
+      "action": "ask",
+      "reason": "Broad scan over /home — /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to override.",
+      "override_env": "ASHA_ALLOW_BROAD_SCAN"
+    }
+  ]
+}
