@@ -71,6 +71,7 @@ All Memory files MUST include:
 
 ```yaml
 ---
+type: "context|brief|environment|reference|learning"   # OKF top-level concept type
 version: "X.Y"
 lastUpdated: "YYYY-MM-DD HH:MM UTC"
 lifecycle: "initiation|planning|execution|maintenance"
@@ -82,6 +83,7 @@ dependencies: ["file1.md", "file2.md"]
 ```
 
 **Field Requirements**:
+- **type**: OKF top-level concept type. Lets the bundle be checked/graphed by `validate.py`/`visualize.py`. Add it going forward; the existing rich fields ride along as custom keys (OKF preserves unknown keys). Not back-filled in bulk, and validation is warn-only — legacy files without it are not blocked.
 - **version**: Increment minor (X.Y+1) for content, major (X+1.0) for structure
 - **lastUpdated**: Update on every modification
 - **lifecycle**: Current project phase
@@ -89,6 +91,21 @@ dependencies: ["file1.md", "file2.md"]
 - **changeTrigger**: What triggers updates
 - **validatedBy**: Who last verified accuracy
 - **dependencies**: Related Memory files (optional)
+
+## Learnings & Ideas (OKF concept bundles)
+
+Cross-project **learnings** are NOT a single flat file. They live as an OKF concept
+bundle at `~/.asha/learnings/` — one file per learning (`<slug>.md`, frontmatter
+`type: learning`), managed exclusively by `learnings_manager.py`. Recording a
+learning is an upsert keyed by id (create-or-update), so the same insight cannot
+accumulate duplicate copies. Do not hand-edit these files during a session; use
+the manager (`add`/`confirm`/`contradict`). The hot tier injected at session start
+is rendered by `learnings_manager.py render-hot`; `index.md` is auto-generated.
+
+`Memory/ideas.md` and `Memory/scratchpad.md` remain free-form, model-maintained
+prose (no code touches them). When an idea matures into a durable, reusable item,
+prefer giving it its own one-concept file following the same convention rather than
+growing an ever-longer flat list.
 
 ## Update Triggers
 

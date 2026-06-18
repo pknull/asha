@@ -302,6 +302,26 @@ _detect_legacy_asha() {
   say "        git rm bin/asha && git commit -m 'retire bin/asha (replaced by asha installer)'"
 }
 
+# Detect a legacy flat ~/.asha/learnings.md with no OKF bundle yet and prompt the
+# user to run the one-time, non-destructive migration. Does NOT migrate
+# automatically (file conversion at install time is least-surprise-violating).
+_detect_legacy_learnings() {
+  local flat="$HOME/.asha/learnings.md"
+  local bundle="$HOME/.asha/learnings"
+  [[ -f "$flat" ]] || return 0
+  # Already migrated if the bundle dir holds any concept files.
+  if [[ -d "$bundle" ]] && compgen -G "$bundle/*.md" >/dev/null 2>&1; then
+    return 0
+  fi
+  local migrator="$PLUGINS_DIR/session/tools/migrate_learnings_to_okf.py"
+  say ""
+  say "NOTE: legacy flat learnings detected at $flat"
+  say "      This version stores learnings as an OKF concept bundle in ~/.asha/learnings/."
+  say "      Run the one-time migration (non-destructive — the flat file is kept):"
+  say "        python3 $migrator --dry-run   # preview"
+  say "        python3 $migrator             # apply"
+}
+
 # ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
@@ -343,6 +363,8 @@ asha_install_main() {
   done
 
   [[ -n "$BIN" ]] && install_bin "$BIN"
+
+  _detect_legacy_learnings
 
   say ""
   say "done."

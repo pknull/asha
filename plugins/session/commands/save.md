@@ -56,6 +56,19 @@ Then run the boundary guardrail to strip auto-fallback stub blocks the synthesiz
 
 Surface any non-zero counts in chat output so the user sees what was cleaned. If the guardrail itself errors (missing file, parse failure), report it and continue — the gate must not block save on a guardrail bug.
 
+Then validate the learnings OKF bundle. This is **warn-only** — it never blocks the save. It checks the three OKF hard rules (parseable frontmatter, non-empty `type`, reserved-file structure) over `~/.asha/learnings/`. Set `ASHA_LEARNINGS_VALIDATE=strict` to also surface producer-quality lints (missing title/description, broken links, orphans):
+
+```bash
+LEARNINGS_DIR="$HOME/.asha/learnings"
+if [[ -d "$LEARNINGS_DIR" ]]; then
+    VFLAG=""; [[ "${ASHA_LEARNINGS_VALIDATE:-warn}" == "strict" ]] && VFLAG="--strict"
+    "$ASHA_ROOT/plugins/session/tools/validate.py" "$LEARNINGS_DIR" $VFLAG \
+        || echo "warn: learnings bundle validation reported issues (non-fatal)" >&2
+fi
+```
+
+Surface any `ERROR` lines in chat (a malformed concept file), but do not block the commit on them.
+
 Then capture a baseline sample (best-effort, non-blocking — only runs if the Asha baseline tooling is present).
 
 **Step 5a — Determine archetype** from this session's activity. Apply this heuristic in order, pick the FIRST match:

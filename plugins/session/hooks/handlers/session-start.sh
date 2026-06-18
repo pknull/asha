@@ -85,7 +85,9 @@ ASHA_DIR="$HOME/.asha"
 
 # Operational files (always loaded)
 OPERATION_FILE="$ASHA_DIR/operation.md"
-LEARNINGS_FILE="$ASHA_DIR/learnings.md"
+LEARNINGS_FILE="$ASHA_DIR/learnings.md"          # legacy flat file (pre-migration fallback)
+LEARNINGS_DIR="$ASHA_DIR/learnings"              # OKF concept bundle (current)
+LEARNINGS_MANAGER="$PLUGIN_ROOT/tools/learnings_manager.py"
 
 # Persona files (only loaded when ASHA_PERSONA=1)
 SOUL_FILE="$ASHA_DIR/soul.md"
@@ -130,7 +132,14 @@ if [[ -f "$OPERATION_FILE" ]]; then
     OPERATION_CONTENT=$(truncate_content "$(cat "$OPERATION_FILE")" $OPERATION_MAX "operation.md")
 fi
 
-if [[ -f "$LEARNINGS_FILE" ]]; then
+# Learnings: render the hot tier from the OKF bundle (confidence-ranked, budgeted).
+# Falls back to the legacy flat file for projects not yet migrated to the bundle.
+if [[ -d "$LEARNINGS_DIR" && -f "$LEARNINGS_MANAGER" && -n "$PYTHON_CMD" ]]; then
+    RENDERED_HOT=$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-hot --max-bytes "$LEARNINGS_MAX" 2>/dev/null || true)
+    if [[ -n "$RENDERED_HOT" ]]; then
+        LEARNINGS_CONTENT=$(truncate_content "$RENDERED_HOT" $LEARNINGS_MAX "learnings hot tier")
+    fi
+elif [[ -f "$LEARNINGS_FILE" ]]; then
     LEARNINGS_CONTENT=$(truncate_content "$(cat "$LEARNINGS_FILE")" $LEARNINGS_MAX "learnings.md")
 fi
 
@@ -159,7 +168,7 @@ fi
 if [[ -n "$LEARNINGS_CONTENT" ]]; then
     cat <<EOF
 <system-reminder>
-Learnings loaded from ~/.asha/learnings.md:
+Learnings (hot tier) loaded from ~/.asha/learnings/:
 
 $LEARNINGS_CONTENT
 </system-reminder>
