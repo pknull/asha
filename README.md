@@ -74,7 +74,7 @@ Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They 
 
 ### Policy guardrails (PreToolUse deny/ask)
 
-Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny` or `ask`, with an optional `override_env` escape hatch. The seed rule asks before broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (slow HDD + Keybase I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`).
+Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny`, `ask`, or a `max_per_session` rate limit (counted in session_state — see [State model](#state-model-guardrails-session_state-and-memory)), with an optional `override_env` escape hatch. The seed rule asks before broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (slow HDD + Keybase I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`).
 
 Cross-harness: **deny** works on Claude and Codex; **ask** shows Claude's permission dialog but degrades to deny-with-override on Codex (no dialog); Copilot has no hook seam. The hook is **fail-open** — any rule/parse error allows the call, because a guardrail must never brick tool use. This is the enforced form of the "Failure-to-Guardrail" idea: a high-confidence learning becomes a rule instead of prose a model can skip past.
 
@@ -93,6 +93,24 @@ Each harness writes its own session transcript to disk:
 The session plugin no longer captures tool calls through hooks. `/save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings.md` updates. Hooks remain only for *intervention* (block-secrets, policy guardrails, post-edit-lint, prompt refinement, session-start context injection).
 
 This makes capture work uniformly across all three harnesses, including Copilot — whose hooks fire but never receive the documented payload data, the original blocker behind the consolidation.
+
+---
+
+## State model: guardrails, session_state, and memory
+
+Asha keeps three *distinct* kinds of state. They're easy to conflate but deliberately separate — the test that tells them apart: **session_state is meant to be thrown away at session end; Memory's whole purpose is to survive it.**
+
+| Layer | Lifespan | Holds | Written by | Read by |
+|---|---|---|---|---|
+| **Policy guardrails** | static (rules) | `deny`/`ask`/limit rules (`plugins/session/hooks/policies/rules.json`) | you (edit rules) | `policy-guard` hook, per tool call |
+| **session_state** | ephemeral (one session) | mechanical counters/flags (`~/.asha/session-state/<sid>.json`) | hooks, automatically | hooks, mid-session |
+| **Memory** | durable (cross-session) | narrative knowledge + learnings (`Memory/*.md`, `~/.asha/learnings.md`, auto-memory) | `/save` synthesis, deliberate saves | session start, on-demand |
+
+- **Guardrails** decide allow/deny/ask from the *current* tool call (a pattern match) — stateless on their own.
+- **session_state** gives guardrails *memory within a single run*: e.g. a rule's `max_per_session` rate limit, or "you've done X N times this session." Volatile by design — cleared at session end (and TTL-swept), because a counter from yesterday must not affect today. It is **not** Memory: different lifespan, content, writer, and cadence (written every tool call by hooks, never at `/save`). It is working RAM, not the notebook.
+- **Memory** is durable knowledge meant to *outlive* the session.
+
+They form a pipeline, not an overlap: guardrails read session_state for in-flight decisions; when an ephemeral signal turns out to be a *recurring* pattern across sessions, `/save` can graduate it into a durable **learning** (Memory) — the "Failure-to-Guardrail" loop. session_state sits *below* Memory, feeding it, never duplicating it.
 
 ---
 

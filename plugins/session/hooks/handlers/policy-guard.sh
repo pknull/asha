@@ -32,11 +32,15 @@ TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || t
 CMD="$(printf '%s' "$INPUT"  | jq -r '.tool_input.command   // empty' 2>/dev/null || true)"
 FILE="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)"
 HARNESS="${ASHA_HARNESS:-claude}"
+SID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
 
 # Locate rule sources relative to this script (hooks run from the source tree).
 SELF_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || exit 0
 REPO_RULES="$SELF_DIR/../policies/rules.json"
 USER_RULES="$HOME/.asha/policies.json"
+
+# Ephemeral per-session counters (for max_per_session). Fail-open if absent.
+[[ -f "$SELF_DIR/state.sh" ]] && source "$SELF_DIR/state.sh" 2>/dev/null || true
 
 # Merge repo + user rules (user overrides by id). Missing user file is normal.
 RULES=""
@@ -67,6 +71,7 @@ while [[ $i -lt $COUNT ]]; do
   r_action="$(printf '%s' "$rule" | jq -r '.action // "deny"' 2>/dev/null || echo deny)"
   r_reason="$(printf '%s' "$rule" | jq -r '.reason // "blocked by policy"' 2>/dev/null || echo "blocked by policy")"
   r_oenv="$(printf '%s' "$rule" | jq -r '.override_env // empty' 2>/dev/null || true)"
+  r_max="$(printf '%s' "$rule" | jq -r '.max_per_session // empty' 2>/dev/null || true)"
 
   [[ -n "$r_tool" ]] || continue
   printf '%s' "$TOOL_NAME" | grep -Eq "^($r_tool)\$" 2>/dev/null || continue
@@ -88,6 +93,16 @@ while [[ $i -lt $COUNT ]]; do
 
   ohint=""
   [[ -n "$r_oenv" ]] && ohint=" (override: ${r_oenv}=1)"
+
+  # Stateful rate limit (session_state): after max_per_session matches this
+  # session, hard-deny regardless of action. Fail-open if state is unavailable.
+  if [[ -n "$r_max" && "$r_max" =~ ^[0-9]+$ ]] && command -v state_incr >/dev/null 2>&1; then
+    n="$(state_incr "$SID" "count:${r_id}" 2>/dev/null || echo 0)"
+    if [[ "$n" =~ ^[0-9]+$ && "$n" -gt "$r_max" ]]; then
+      echo "BLOCKED by Asha policy [$r_id]: per-session limit reached ($n > ${r_max}). ${r_reason}${ohint}" >&2
+      exit 2
+    fi
+  fi
 
   if [[ "$r_action" == "ask" && "$HARNESS" != "codex" ]]; then
     # Claude / unknown harness: real permission prompt.

@@ -7,8 +7,9 @@
       "tool": "Bash",
       "command_regex": "\\b(bfs|fd|find|rg|grep[[:space:]]+-[a-zA-Z]*[rR])\\b[^|;]*[[:space:]]/home(/pknull)?($|[[:space:]/])",
       "action": "ask",
-      "reason": "Broad scan over /home — /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to override.",
-      "override_env": "ASHA_ALLOW_BROAD_SCAN"
+      "reason": "Broad scan over /home \u2014 /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to override.",
+      "override_env": "ASHA_ALLOW_BROAD_SCAN",
+      "max_per_session": 8
     }
   ]
 }
