@@ -62,7 +62,6 @@ _events_override = os.environ.get("ASHA_EVENTS_FILE")
 EVENTS_FILE = Path(_events_override) if _events_override else PROJECT_ROOT / "Memory" / "events" / "events.jsonl"
 
 ACTIVE_CONTEXT = PROJECT_ROOT / "Memory" / "activeContext.md"
-LEARNINGS_FILE = Path.home() / ".asha" / "learnings.md"
 VOICE_FILE = Path.home() / ".asha" / "voice.md"
 KEEPER_FILE = Path.home() / ".asha" / "keeper.md"
 PATTERNS_FILE = PROJECT_ROOT / "Memory" / "events" / "patterns.json"

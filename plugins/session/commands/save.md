@@ -205,34 +205,14 @@ Reason: Updated policy — gws CLI now preferred over MCP.
 [original content below]
 ```
 
-### Step C3 — Learnings promotion/demotion
+### Step C3 — Learnings tiering (now automatic)
 
-After updating learnings.md entries this session:
-
-1. Check each entry's `Confidence` value.
-2. If any entry has risen **above 0.7** and is in `learnings-archive.md`, move it to `learnings.md` (hot tier).
-3. If any entry has fallen **below 0.7** in `learnings.md` and the hot tier has >10 entries, move lowest-confidence entries to `learnings-archive.md`.
-4. Hot tier must not exceed 10 entries.
-
-**Promotion command (manual)**:
-
-```bash
-# Move entry from archive to hot tier:
-# 1. Edit learnings-archive.md, cut the entry block
-# 2. Paste into learnings.md under the appropriate ## section
-# 3. Verify total hot entries <= 10
-```
-
-### Step C4 — Char budget check
-
-After promotion/demotion, verify learnings.md stays under budget:
-
-```bash
-wc -c ~/.asha/learnings.md
-# Target: under 51,200 bytes (50KB)
-```
-
-If over budget, demote the lowest-confidence entries until under threshold.
+Tiering is derived from confidence at read time — no manual promotion/demotion or
+char-budget bookkeeping. `learnings_manager.py render-hot` selects the top ≤10
+entries with Confidence ≥ 0.7 for session-start injection (byte-budgeted); the
+rest remain in the bundle as cold concept files. Each learning is its own file in
+`~/.asha/learnings/`, deduped by id, so there is no monolith to compact. Just
+confirm the validate step above reported no errors.
 
 <!-- CONSOLIDATION-PASS:END -->
 

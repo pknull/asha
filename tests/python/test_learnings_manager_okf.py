@@ -56,7 +56,6 @@ class OKFLearningsTestBase(unittest.TestCase):
         # Path.home() resolution timing).
         self.lm.ASHA_DIR = self.asha
         self.lm.LEARNINGS_DIR = self.asha / "learnings"
-        self.lm.LEARNINGS_PATH = self.asha / "learnings.md"
         self.mig.LEGACY_HOT = self.asha / "learnings.md"
         self.mig.LEGACY_COLD = self.asha / "learnings-archive.md"
 
