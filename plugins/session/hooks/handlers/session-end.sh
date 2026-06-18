@@ -37,6 +37,15 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
 [[ -n "$TRANSCRIPT_PATH" ]] && export ASHA_TRANSCRIPT_PATH="$TRANSCRIPT_PATH"
 [[ -n "$SESSION_ID" ]] && export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
 
+# Clear this session's ephemeral policy state (session_state — not durable
+# Memory); sweep state files leaked by prior unclean exits.
+if [[ -f "$SCRIPT_DIR/state.sh" ]]; then
+  source "$SCRIPT_DIR/state.sh" 2>/dev/null && {
+    [[ -n "$SESSION_ID" ]] && state_clear "$SESSION_ID" 2>/dev/null || true
+    state_sweep 2>/dev/null || true
+  }
+fi
+
 # Clean up session markers (auto-removed at session-end)
 rm -f "$PROJECT_DIR/Work/markers/rp-active"
 rm -f "$PROJECT_DIR/Work/markers/silence"
