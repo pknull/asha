@@ -355,5 +355,68 @@ class ValidateSmokeTests(OKFLearningsTestBase):
         self.assertEqual(proc.returncode, 0, f"validate failed:\n{proc.stdout}\n{proc.stderr}")
 
 
+class LinkTests(OKFLearningsTestBase):
+    def setUp(self):
+        super().setUp()
+        for lid in ("alpha", "beta", "gamma"):
+            self.lm.add_learning("Cat", lid, f"trig {lid}", f"act {lid}", "p", "r")
+
+    def _related_of(self, lid):
+        return self.lm._parse_related(self.lm._parse_file(self.lm._learning_path(lid)))
+
+    def test_link_sets_related_and_is_idempotent(self):
+        r1 = self.lm.link_learnings("alpha", ["beta"], reason="pairs with")
+        self.assertEqual(r1["changed"], ["alpha"])
+        self.assertIn("beta", self._related_of("alpha"))
+        r2 = self.lm.link_learnings("alpha", ["beta"], reason="pairs with")
+        self.assertEqual(r2["changed"], [], "re-link must be idempotent")
+
+    def test_link_bidirectional_adds_reciprocal(self):
+        self.lm.link_learnings("alpha", ["beta"], reason="r", bidirectional=True)
+        self.assertIn("beta", self._related_of("alpha"))
+        self.assertIn("alpha", self._related_of("beta"))
+
+    def test_link_skips_dangling_target(self):
+        r = self.lm.link_learnings("alpha", ["ghost"], reason="r")
+        self.assertEqual(r["changed"], [])
+        self.assertNotIn("ghost", self._related_of("alpha"))
+
+    def test_link_skips_self(self):
+        r = self.lm.link_learnings("alpha", ["alpha"], reason="r")
+        self.assertEqual(r["changed"], [])
+        self.assertEqual(self._related_of("alpha"), {})
+
+    def test_prune_removes_dangling_after_delete(self):
+        self.lm.link_learnings("alpha", ["beta", "gamma"], reason="r")
+        self.assertEqual(set(self._related_of("alpha")), {"beta", "gamma"})
+        self.lm._learning_path("gamma").unlink()
+        res = self.lm.prune_dangling_links()
+        self.assertIn("alpha", res["files"])
+        self.assertEqual(set(self._related_of("alpha")), {"beta"})
+
+    def test_link_merges_and_preserves_reasons(self):
+        self.lm.link_learnings("alpha", ["beta"], reason="first reason")
+        self.lm.link_learnings("alpha", ["gamma"], reason="second reason")
+        rel = self._related_of("alpha")
+        self.assertEqual(rel.get("beta"), "first reason")
+        self.assertEqual(rel.get("gamma"), "second reason")
+
+    def test_related_survives_confirm(self):
+        self.lm.link_learnings("alpha", ["beta"], reason="r")
+        self.lm.confirm_learning("alpha", "p", "ok")
+        self.assertIn("beta", self._related_of("alpha"))
+
+    def test_link_candidates_window(self):
+        import re as _re
+        p = self.lm._learning_path("alpha")
+        p.write_text(_re.sub(r"updated: '[^']*'", "updated: '2000-01-01'", p.read_text()))
+        out = self.lm.link_candidates(days=7)
+        ids = {c["id"] for c in out["candidates"]}
+        self.assertNotIn("alpha", ids, "stale learning excluded from window")
+        self.assertIn("beta", ids, "recent learning included")
+        self.assertEqual(set(out.keys()), {"window_days", "since", "candidates", "bundle"})
+        self.assertEqual({b["id"] for b in out["bundle"]}, {"alpha", "beta", "gamma"})
+
+
 if __name__ == "__main__":
     unittest.main()
