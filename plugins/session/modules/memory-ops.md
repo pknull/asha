@@ -2,6 +2,10 @@
 
 **Applies when**: Saving sessions, updating Memory files, synthesizing context, or maintaining framework documentation.
 
+> For the full picture — the three memory scopes, how reads/writes flow, where the
+> OKF learnings bundle fits, and **how to judge whether memory is providing value** —
+> see [`docs/memory-architecture.md`](../../../docs/memory-architecture.md).
+
 ---
 
 ## Session Watching & Synthesis
