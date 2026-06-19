@@ -229,7 +229,11 @@ claude_install() {
     claude_install_agents   "$plugin_dir" "$ns"
     claude_install_commands "$plugin_dir" "$ns"
     claude_install_styles   "$plugin_dir" "$ns"
-    claude_install_hooks    "$plugin_dir" "$ns"
+    # Hook registration is NOT done per-plugin here anymore: lib/install.sh's
+    # register_hooks() is the single authority for settings.json .hooks (it
+    # collapses legacy untagged duplicates that this per-plugin tagged merge
+    # could not, and excludes the test canary). claude_install_hooks is kept
+    # defined for back-compat / standalone use but is no longer called.
   done < <(selected_plugins)
 }
 
