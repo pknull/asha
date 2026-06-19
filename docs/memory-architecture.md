@@ -111,6 +111,13 @@ plugin:
    (visualize). Scripts, not skills.
 3. **Convention** — documented in the existing `memory-maintenance` skill.
 
+The bundle is also **cross-linked**: each learning may carry a `## Related` section
+pointing to related concepts. Links are **auto-suggested at interactive `/save`**
+(the session's Claude proposes genuine *semantic* links — never mere category
+overlap — and applies them, non-blocking), and can be curated by hand via
+`learnings_manager.py link` / `prune-links`. `visualize.py` renders the resulting
+graph; links live in the body, so they add zero session-start injection cost.
+
 Everything else (the Memory Bank files, the `~/.asha/` singletons, events/logs)
 is *tagged* with a `type` but is **not** OKF-bundled — those are fixed state
 documents or telemetry, not growing concept collections, so the format buys
@@ -171,6 +178,7 @@ and synthesis are overhead with no cold-start to serve.
 | Hot-tier threshold (Confidence ≥ 0.7) + cap (≤10) | Bounds what's injected; everything else stays cold in the bundle |
 | `save_guardrail.py` | Prunes `sequence-*`/`prefer-*` noise at save time |
 | `validate.py` (warn-only; `ASHA_LEARNINGS_VALIDATE=strict`) | Surfaces structural drift without blocking saves |
+| `learnings_manager.py link` / auto-suggest at `/save` | Cross-links related concepts (`## Related`); builds the graph over time, non-blocking, zero inject cost |
 | What's captured | Synthesis reads `Memory/events/*.jsonl`; less noise in → better signal out |
 
 The guiding principle: **the hot tier is a budget, not an archive.** Keep what a
