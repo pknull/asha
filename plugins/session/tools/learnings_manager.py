@@ -674,6 +674,143 @@ def export_learnings() -> Dict[str, Any]:
 
 
 # =============================================================================
+# Cross-linking ("## Related" sections)
+# =============================================================================
+
+# Matches a Related bullet: "- [slug](slug.md) — reason" (reason optional).
+_RELATED_RE = re.compile(r'-\s*\[[^\]]+\]\(([^)]+?)(?:\.md)?\)(?:\s*[—-]\s*(.*))?\s*$')
+
+
+def _parse_related(learning: Learning) -> Dict[str, str]:
+    """Return {target_slug: reason} from the learning's '## Related' section."""
+    out: Dict[str, str] = {}
+    in_related = False
+    for line in learning.extra_body.splitlines():
+        stripped = line.strip()
+        if stripped.lower() == "## related":
+            in_related = True
+            continue
+        if in_related:
+            if stripped.startswith("## "):
+                break
+            m = _RELATED_RE.match(stripped)
+            if m:
+                out[m.group(1)] = (m.group(2) or "").strip()
+    return out
+
+
+def _strip_related(extra_body: str) -> str:
+    """Return extra_body with any existing '## Related' section removed."""
+    if not extra_body.strip():
+        return ""
+    parts = re.split(r'(?m)^(?=## )', extra_body)
+    kept = [p for p in parts if not p.strip().lower().startswith("## related")]
+    return "".join(kept).rstrip()
+
+
+def _render_related(links: Dict[str, str]) -> str:
+    lines = ["## Related"]
+    for slug in sorted(links):
+        reason = links[slug]
+        lines.append(f"- [{slug}]({slug}.md)" + (f" — {reason}" if reason else ""))
+    return "\n".join(lines)
+
+
+def _apply_related(learning: Learning, links: Dict[str, str]) -> bool:
+    """Set the learning's '## Related' section to `links` (slug->reason), preserving
+    any other body sections. Returns True if extra_body changed (idempotent)."""
+    base = _strip_related(learning.extra_body)
+    if links:
+        block = _render_related(links)
+        new_extra = (base + "\n\n" + block).strip() if base else block
+    else:
+        new_extra = base
+    if new_extra == learning.extra_body.strip():
+        return False
+    learning.extra_body = new_extra
+    return True
+
+
+def link_learnings(source_id: str, targets: List[str], reason: str = "",
+                   bidirectional: bool = False) -> Dict[str, Any]:
+    """Idempotently add '## Related' links from source_id to each target, merging
+    with existing links. Dangling targets and self-links are skipped; reciprocal
+    links are added when bidirectional. Silence-guarded via _write_learning."""
+    src_path = _learning_path(source_id)
+    if not src_path.exists():
+        return {"status": "not_found", "id": source_id}
+    src = _parse_file(src_path)
+    src_slug = _slugify(source_id)
+
+    links = _parse_related(src)
+    for tid in targets:
+        tslug = _slugify(tid)
+        if tslug == src_slug or not _learning_path(tid).exists():
+            continue
+        links[tslug] = reason or links.get(tslug, "")
+
+    changed: List[str] = []
+    if _apply_related(src, links) and _write_learning(src):
+        changed.append(src.id)
+
+    if bidirectional:
+        for tid in targets:
+            tslug = _slugify(tid)
+            if tslug == src_slug or not _learning_path(tid).exists():
+                continue
+            tl = _parse_file(_learning_path(tid))
+            tlinks = _parse_related(tl)
+            tlinks[src_slug] = reason or tlinks.get(src_slug, "")
+            if _apply_related(tl, tlinks) and _write_learning(tl):
+                changed.append(tl.id)
+
+    _rebuild_index()
+    return {"status": "linked", "id": source_id, "changed": sorted(set(changed))}
+
+
+def prune_dangling_links() -> Dict[str, Any]:
+    """Drop '## Related' entries whose target file no longer exists, bundle-wide."""
+    if not LEARNINGS_DIR.is_dir():
+        return {"status": "pruned", "files": []}
+    pruned: List[str] = []
+    for path in sorted(LEARNINGS_DIR.glob("*.md")):
+        if path.name in ("index.md", "log.md"):
+            continue
+        learning = _parse_file(path)
+        existing = _parse_related(learning)
+        if not existing:
+            continue
+        kept = {s: r for s, r in existing.items() if (LEARNINGS_DIR / f"{s}.md").exists()}
+        if kept != existing and _apply_related(learning, kept) and _write_learning(learning):
+            pruned.append(learning.id)
+    if pruned:
+        _rebuild_index()
+    return {"status": "pruned", "files": sorted(pruned)}
+
+
+def link_candidates(days: int = 7) -> Dict[str, Any]:
+    """Learnings updated within `days`, plus a compact bundle summary — the bounded
+    input for the /save link-suggestion step."""
+    from datetime import timedelta
+    cutoff = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    learnings = parse_learnings()
+    flat = [l for entries in learnings.values() for l in entries]
+    candidates = [
+        {"id": l.id, "category": l.category, "trigger": l.trigger,
+         "action": l.action, "confidence": l.confidence,
+         "related": sorted(_parse_related(l).keys())}
+        for l in flat if (l.updated or "") >= cutoff
+    ]
+    bundle = [{"id": l.id, "category": l.category, "trigger": l.trigger} for l in flat]
+    return {
+        "window_days": days,
+        "since": cutoff,
+        "candidates": sorted(candidates, key=lambda c: c["id"]),
+        "bundle": sorted(bundle, key=lambda c: c["id"]),
+    }
+
+
+# =============================================================================
 # CLI
 # =============================================================================
 
@@ -733,6 +870,18 @@ def main():
     migrate_alias = subparsers.add_parser("migrate", help="Alias for migrate-okf")
     migrate_alias.add_argument("--dry-run", action="store_true")
 
+    # Cross-linking commands
+    link_parser = subparsers.add_parser("link", help="Add/merge '## Related' cross-links")
+    link_parser.add_argument("--id", "-i", required=True, help="Source learning id")
+    link_parser.add_argument("--to", required=True, help="Comma-separated target ids")
+    link_parser.add_argument("--reason", "-r", default="", help="Short why for the link")
+    link_parser.add_argument("--bidirectional", "-b", action="store_true", help="Also add reciprocal links")
+
+    subparsers.add_parser("prune-links", help="Drop dangling '## Related' entries bundle-wide")
+
+    cand_parser = subparsers.add_parser("link-candidates", help="Recently-updated learnings + bundle summary (JSON)")
+    cand_parser.add_argument("--days", type=int, default=7, help="Rolling window in days")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -770,6 +919,13 @@ def main():
         elif args.command == "rebuild-index":
             _rebuild_index()
             result = {"status": "rebuilt", "dir": str(LEARNINGS_DIR)}
+        elif args.command == "link":
+            targets = [t.strip() for t in args.to.split(",") if t.strip()]
+            result = link_learnings(args.id, targets, args.reason, args.bidirectional)
+        elif args.command == "prune-links":
+            result = prune_dangling_links()
+        elif args.command == "link-candidates":
+            result = link_candidates(days=args.days)
         elif args.command in ("migrate-okf", "migrate"):
             migrator = Path(__file__).parent / "migrate_learnings_to_okf.py"
             cmd = [sys.executable, str(migrator)]

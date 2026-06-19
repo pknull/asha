@@ -69,6 +69,30 @@ fi
 
 Surface any `ERROR` lines in chat (a malformed concept file), but do not block the commit on them.
 
+Then **suggest cross-links** for recently-touched learnings. This is the model — you — proposing links; it runs only on interactive `/save` (the automatic session-end path has no model and skips it). Best-effort and **non-blocking**: skip silently if the bundle is absent or this was a read-only/throwaway session.
+
+1. Get the bounded candidate set + a summary of the whole bundle:
+
+   ```bash
+   "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link-candidates --days 7
+   ```
+
+2. For each candidate, decide whether it has a **genuine semantic relationship** to any other learning in the returned `bundle` list — e.g. "preflight → cutover", "both build PreToolUse guardrails", "filesystem caution before a risky op". **Do NOT link two learnings merely because they share a `category`** — category overlap is not a relationship. Most candidates get zero or one good link; skip a candidate entirely if nothing genuinely relates (forced links are worse than none).
+
+3. Apply each chosen link (idempotent, reciprocal, skips dangling targets):
+
+   ```bash
+   "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link --id <source> --to <target>[,<target2>] --reason "<short why>" --bidirectional
+   ```
+
+4. Drop any links orphaned by deletions:
+
+   ```bash
+   "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" prune-links
+   ```
+
+Report links added in chat. `## Related` sections live in the concept-file bodies, not the injected hot tier, so they add zero session-start cost.
+
 Then capture a baseline sample (best-effort, non-blocking — only runs if the Asha baseline tooling is present).
 
 **Step 5a — Determine archetype** from this session's activity. Apply this heuristic in order, pick the FIRST match:
