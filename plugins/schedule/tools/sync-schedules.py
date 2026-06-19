@@ -14,7 +14,6 @@ Safety:
 import argparse
 import hashlib
 import json
-import os
 import re
 import shlex
 import shutil
@@ -34,6 +33,13 @@ BACKUP_DIR = Path.home() / ".claude/backups"
 # they must be a conservative slug — no path separators, shell metacharacters,
 # or whitespace. Validated before any task is materialized.
 TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+
+# Named-month aliases for the cron month field (case-insensitive).
+_MONTH_NAMES = {
+    "jan": "01", "feb": "02", "mar": "03", "apr": "04",
+    "may": "05", "jun": "06", "jul": "07", "aug": "08",
+    "sep": "09", "oct": "10", "nov": "11", "dec": "12",
+}
 
 
 def valid_task_id(task_id: str) -> bool:
@@ -137,35 +143,58 @@ def detect_scheduler() -> str:
     return "none"
 
 
+# Named tokens accepted in the month (field 3) and day-of-week (field 4)
+# positions -- kept in lockstep with cron_to_oncalendar, which converts named
+# months to 01..12 and named weekdays to systemd's three-letter names. If a name
+# parses here but not there (or vice versa) a task is silently dropped, so the
+# two MUST agree.
+_MONTH_TOKENS = set(_MONTH_NAMES)  # jan..dec
+_DOW_TOKENS = {"sun", "mon", "tue", "wed", "thu", "fri", "sat"}
+
+
 def validate_cron_expression(expr: str) -> bool:
-    """Validate cron expression syntax (5 fields)."""
+    """Validate cron expression syntax (5 fields).
+
+    Fields are minute, hour, day-of-month, month, day-of-week. The month and
+    day-of-week fields additionally accept their named forms (jan..dec /
+    sun..sat, case-insensitive) so this gate does not reject expressions that
+    cron_to_oncalendar can in fact convert.
+    """
     parts = expr.split()
     if len(parts) != 5:
         return False
 
-    # Basic validation for each field
+    # Per-field set of accepted names (empty = digits only).
+    field_names = ({}, {}, {}, _MONTH_TOKENS, _DOW_TOKENS)
+
+    def token_ok(token: str, names) -> bool:
+        return token.isdigit() or token.lower() in names
+
     for i, part in enumerate(parts):
+        names = field_names[i]
         # Handle wildcards
         if part == "*":
             continue
-        # Handle step values
+        # Handle step values: BASE/N (N must be a positive integer)
         if "/" in part:
             base, step = part.split("/", 1)
             if not step.isdigit():
                 return False
             part = base
+            if part == "*":
+                continue
         # Handle ranges
         if "-" in part:
             try:
                 start, end = part.split("-", 1)
-                if not (start.isdigit() and end.isdigit()):
+                if not (token_ok(start, names) and token_ok(end, names)):
                     return False
             except ValueError:
                 return False
             continue
         # Handle lists
         for segment in part.split(","):
-            if segment != "*" and not segment.isdigit():
+            if segment != "*" and not token_ok(segment, names):
                 return False
 
     return True
@@ -224,6 +253,14 @@ def sync_to_cron(tasks: list, project_dir: Path, dry_run: bool = False) -> dict:
     # Filter to enabled tasks only
     enabled_tasks = [t for t in tasks if t.get("enabled", True)]
 
+    # Reconcile runner scripts unconditionally: an empty enabled set means prune
+    # ALL of this project's runners (emptying schedules.json must strand nothing,
+    # mirroring the systemd path). The CLAUDE-MANAGED crontab section was already
+    # stripped above, so when enabled_tasks is empty we simply never re-add it.
+    runner_dir = project_dir / ".claude" / "schedules.d"
+    if not dry_run:
+        prune_task_runners(runner_dir, {t["id"] for t in enabled_tasks})
+
     # Add new CLAUDE-MANAGED section
     if enabled_tasks:
         new_lines.append("")
@@ -236,13 +273,11 @@ def sync_to_cron(tasks: list, project_dir: Path, dry_run: bool = False) -> dict:
         # write_task_runner): the crontab line references only that controlled
         # path, never the task's command/tools, so there is no shell-injection
         # surface in the crontab itself.
-        runner_dir = project_dir / ".claude" / "schedules.d"
         timeout_bin = resolve_timeout_bin()
         if timeout_bin is None:
             print("Warning: no `timeout`/`gtimeout` on PATH; cron tasks will run "
                   "without a hard time limit (on macOS: brew install coreutils).",
                   file=sys.stderr)
-        prune_task_runners(runner_dir, {t["id"] for t in enabled_tasks})
 
         for task in enabled_tasks:
             runner = write_task_runner(task, project_dir, runner_dir,
@@ -287,15 +322,87 @@ def sync_to_cron(tasks: list, project_dir: Path, dry_run: bool = False) -> dict:
     }
 
 
+def _convert_calendar_member(member: str, *, names: dict | None = None,
+                             pad: bool = True, step_base: str = "0") -> str:
+    """Convert a single member of a cron numeric/date field to systemd syntax.
+
+    Handles the member forms that may appear inside a comma list:
+      *        -> *
+      a        -> 0a   (zero-padded to two digits when pad and numeric)
+      a-b      -> a..b (systemd numeric ranges use '..', never '-')
+      */n      -> <step_base>/n  (repetition base must be a number, not '*')
+      a-b/n    -> a..b/n
+    `step_base` is the value a bare '*/n' rebases on: '0' for the time fields
+    (hour/minute, whose floor is 0) and '1' for the date fields (month and
+    day-of-month, whose floor is 1 - systemd rejects '0/n' there with "Invalid
+    argument"). `names` (e.g. month aliases) maps lowercased tokens to their
+    numeric form; applied to plain values and range endpoints. Day-of-week is
+    handled separately (it keeps three-letter systemd names), so this is used
+    for minute, hour, day-of-month and month.
+    """
+    names = names or {}
+
+    def value(token: str) -> str:
+        low = token.lower()
+        if low in names:
+            return names[low]
+        if pad and token.isdigit():
+            return token.zfill(2)
+        return token
+
+    # Step: BASE/N  (BASE may itself be '*' or a range)
+    if "/" in member:
+        base, step = member.split("/", 1)
+        if base == "*":
+            base_out = step_base
+        else:
+            base_out = _convert_calendar_member(
+                base, names=names, pad=pad, step_base=step_base)
+        return f"{base_out}/{step}"
+    # Range: A-B  -> A..B
+    if "-" in member:
+        start, end = member.split("-", 1)
+        return f"{value(start)}..{value(end)}"
+    # Bare wildcard or single value
+    if member == "*":
+        return "*"
+    return value(member)
+
+
+def _convert_calendar_field(field: str, *, names: dict | None = None,
+                            pad: bool = True, step_base: str = "0") -> str:
+    """Convert a whole cron field (possibly a comma list of members)."""
+    if field == "*":
+        return "*"
+    return ",".join(
+        _convert_calendar_member(m, names=names, pad=pad, step_base=step_base)
+        for m in field.split(",")
+    )
+
+
 def cron_to_oncalendar(cron_expr: str) -> str:
-    """Convert cron expression to systemd OnCalendar format."""
+    """Convert a 5-field cron expression to a systemd OnCalendar expression.
+
+    All five cron fields are converted with a single robust member-converter:
+    step '*/N' becomes '0/N' (systemd's repetition base must be numeric), ranges
+    'A-B' become 'A..B' (systemd numeric fields reject '-'), range-steps
+    'A-B/N' become 'A..B/N', single time values are zero-padded, and named
+    months (jan..dec) become 01..12. Day-of-week keeps systemd's three-letter
+    names. The result is assembled as
+
+        <DOW> <YEAR>-<MONTH>-<DOM> <HH>:<MM>:00
+
+    (the DOW prefix is omitted when the cron dow field is '*'). The expression is
+    meant to be validated with `systemd-analyze calendar` before a unit is
+    written (see oncalendar_for_task), which raises rather than emit a bad spec.
+    """
     parts = cron_expr.split()
     if len(parts) != 5:
         return "*-*-* *:*:00"
 
     minute, hour, dom, month, dow = parts
 
-    # Handle common shorthand patterns
+    # Keep the @-shortcut keywords systemd understands for the exact patterns.
     if cron_expr == "0 * * * *":
         return "hourly"
     if cron_expr == "0 0 * * *":
@@ -305,37 +412,102 @@ def cron_to_oncalendar(cron_expr: str) -> str:
     if cron_expr == "0 0 1 * *":
         return "monthly"
 
-    # Map day of week
+    # Day of week -> systemd's three-letter names (its own name handling).
     dow_map = {"0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed",
                "4": "Thu", "5": "Fri", "6": "Sat", "7": "Sun"}
 
     result_dow = ""
     if dow != "*":
         if "-" in dow:
-            start, end = dow.split("-")
-            result_dow = f"{dow_map.get(start, start)}-{dow_map.get(end, end)} "
+            start, end = dow.split("-", 1)
+            result_dow = f"{dow_map.get(start, start)}..{dow_map.get(end, end)} "
         else:
-            result_dow = f"{dow_map.get(dow, dow)} "
+            members = ",".join(dow_map.get(d, d) for d in dow.split(","))
+            result_dow = f"{members} "
 
-    # Build date and time parts
-    result_date = f"*-{month if month != '*' else '*'}-{dom if dom != '*' else '*'}"
+    # Date fields: month accepts named aliases; values are not zero-padded but
+    # ranges/steps still need '..'/step rewriting. Date '*/N' rebases on 1 (the
+    # field floor) -- systemd rejects '0/N' in month/day-of-month.
+    out_month = _convert_calendar_field(month, names=_MONTH_NAMES, pad=False,
+                                        step_base="1")
+    out_dom = _convert_calendar_field(dom, pad=False, step_base="1")
+    result_date = f"*-{out_month}-{out_dom}"
 
-    # Handle minute/hour with zero-padding
-    h = hour if hour != '*' else '*'
-    m = minute if minute != '*' else '*'
-
-    # Handle step values in minute
-    if m.startswith("*/"):
-        m = f"*/{m[2:]}"
-    elif m.isdigit():
-        m = m.zfill(2)
-
-    if h.isdigit():
-        h = h.zfill(2)
-
-    result_time = f"{h}:{m}:00"
+    # Time fields: zero-pad single values to two digits.
+    out_min = _convert_calendar_field(minute, pad=True)
+    out_hour = _convert_calendar_field(hour, pad=True)
+    result_time = f"{out_hour}:{out_min}:00"
 
     return f"{result_dow}{result_date} {result_time}".strip()
+
+
+def validate_oncalendar(expr: str) -> bool:
+    """True if systemd accepts this OnCalendar expression.
+
+    Runs `systemd-analyze calendar`; returncode 0 means the spec parses. If
+    systemd-analyze is unavailable, fall back to True (best-effort) so the sync
+    still works on systems without it — sync_to_systemd's verify step provides a
+    second line of defense there.
+    """
+    try:
+        result = subprocess.run(
+            ["systemd-analyze", "calendar", expr],
+            capture_output=True, timeout=5,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def oncalendar_for_task(cron_expr: str) -> str:
+    """Build and validate an OnCalendar expression, or raise ValueError.
+
+    Raising (rather than writing a unit with a bad spec) is what keeps a broken
+    schedule out of systemd: the caller records the error for that task instead
+    of enabling a timer that systemd would reject.
+    """
+    expr = cron_to_oncalendar(cron_expr)
+    if not validate_oncalendar(expr):
+        raise ValueError(
+            f"cron {cron_expr!r} produced OnCalendar {expr!r} that "
+            "systemd-analyze rejected"
+        )
+    return expr
+
+
+def _wants_symlink(timer_name: str) -> Path:
+    """Path to the timers.target.wants symlink systemd creates on `enable`."""
+    return SYSTEMD_USER_DIR / "timers.target.wants" / timer_name
+
+
+def remove_systemd_unit(unit_name: str) -> None:
+    """Fully remove a claude-task unit pair: disable, delete both unit files,
+    and delete the timers.target.wants/<unit>.timer symlink.
+
+    `systemctl --user disable` is supposed to drop the wants-symlink, but it is a
+    no-op if the unit file is already gone or the daemon hasn't reloaded — that
+    is exactly how an orphan timer got stranded after schedules.json was emptied.
+    Deleting the symlink unconditionally closes that gap. Caller is responsible
+    for the daemon-reload afterwards.
+    """
+    service_file = SYSTEMD_USER_DIR / f"{unit_name}.service"
+    timer_file = SYSTEMD_USER_DIR / f"{unit_name}.timer"
+    timer_name = f"{unit_name}.timer"
+
+    # Best-effort stop + disable (ignore failures: unit may be unknown already)
+    subprocess.run(["systemctl", "--user", "stop", timer_name],
+                   capture_output=True)
+    subprocess.run(["systemctl", "--user", "disable", timer_name],
+                   capture_output=True)
+
+    # Delete the unit files and the enable symlink, whatever disable did
+    for p in (timer_file, service_file, _wants_symlink(timer_name)):
+        try:
+            p.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def sync_to_systemd(tasks: list, project_dir: Path, dry_run: bool = False) -> dict:
@@ -346,19 +518,27 @@ def sync_to_systemd(tasks: list, project_dir: Path, dry_run: bool = False) -> di
     created = []
     errors = []
 
-    # Remove existing claude-task-* units for this project
-    phash = project_hash(project_dir)
-    for f in SYSTEMD_USER_DIR.glob(f"claude-task-{phash}-*.service"):
-        if not dry_run:
-            timer_file = f.with_suffix(".timer")
-            if timer_file.exists():
-                subprocess.run(["systemctl", "--user", "disable", timer_file.name],
-                             capture_output=True)
-                timer_file.unlink()
-            f.unlink()
-
     # Filter to enabled tasks
     enabled_tasks = [t for t in tasks if t.get("enabled", True)]
+
+    # Reconcile: remove every previously-synced unit for this project that is no
+    # longer in the enabled set. Glob BOTH .service and .timer so an orphan timer
+    # whose .service was already removed is still caught, and run this even when
+    # enabled_tasks is empty (emptying schedules.json must strand nothing).
+    phash = project_hash(project_dir)
+    keep_units = {f"claude-task-{phash}-{t['id']}" for t in enabled_tasks}
+    stale_units = set()
+    for pattern in (f"claude-task-{phash}-*.service", f"claude-task-{phash}-*.timer"):
+        for f in SYSTEMD_USER_DIR.glob(pattern):
+            unit_name = f.stem  # filename minus its .service/.timer suffix
+            if unit_name not in keep_units:
+                stale_units.add(unit_name)
+    if stale_units and not dry_run:
+        for unit_name in stale_units:
+            remove_systemd_unit(unit_name)
+        # daemon-reload so systemd forgets the units we just deleted
+        subprocess.run(["systemctl", "--user", "daemon-reload"],
+                       capture_output=True)
 
     runner_dir = project_dir / ".claude" / "schedules.d"
     timeout_bin = resolve_timeout_bin()
@@ -387,8 +567,15 @@ ExecStart={shlex.quote(str(runner))}
 TimeoutStartSec={timeout}
 """
 
-        # Generate timer file
-        on_calendar = cron_to_oncalendar(task["schedule"])
+        # Build + validate the OnCalendar expression. A bad spec raises here, so
+        # we record an error for the task instead of writing a unit systemd will
+        # reject ("Timer unit lacks value setting. Refusing.").
+        try:
+            on_calendar = oncalendar_for_task(task["schedule"])
+        except ValueError as e:
+            errors.append({"task_id": task_id, "error": str(e)})
+            continue
+
         timer_content = f"""[Unit]
 Description=Timer for Claude Task: {desc}
 
@@ -417,9 +604,32 @@ WantedBy=timers.target
             service_file.write_text(service_content)
             timer_file.write_text(timer_content)
 
-            # Reload and enable
             subprocess.run(["systemctl", "--user", "daemon-reload"],
                          capture_output=True, check=True)
+
+            # Verify the written unit before enabling. `systemd-analyze verify`
+            # surfaces a bad setting on stderr even when it exits 0, so treat any
+            # stderr mentioning this unit (or a non-zero exit) as a failure and
+            # roll back rather than enable a broken timer.
+            verify = subprocess.run(
+                ["systemd-analyze", "--user", "verify", timer_file.name],
+                capture_output=True, text=True,
+            )
+            verify_msg = (verify.stderr or "").strip()
+            bad = verify.returncode != 0 or (
+                verify_msg and unit_name in verify_msg
+            )
+            if bad:
+                remove_systemd_unit(unit_name)
+                subprocess.run(["systemctl", "--user", "daemon-reload"],
+                               capture_output=True)
+                errors.append({
+                    "task_id": task_id,
+                    "error": f"systemd-analyze verify rejected unit: "
+                             f"{verify_msg or f'exit {verify.returncode}'}",
+                })
+                continue
+
             subprocess.run(["systemctl", "--user", "enable", timer_file.name],
                          capture_output=True, check=True)
             subprocess.run(["systemctl", "--user", "start", timer_file.name],
@@ -427,6 +637,11 @@ WantedBy=timers.target
 
             created.append(task_id)
         except Exception as e:
+            # Roll back any half-written unit so a failure never leaves a partial
+            # service/timer pair behind.
+            remove_systemd_unit(unit_name)
+            subprocess.run(["systemctl", "--user", "daemon-reload"],
+                           capture_output=True)
             errors.append({"task_id": task_id, "error": str(e)})
 
     return {
@@ -468,11 +683,8 @@ def main():
     schedules = load_schedules(project_dir)
     tasks = schedules.get("tasks", [])
 
-    if not tasks:
-        print(json.dumps({"success": True, "message": "No tasks defined", "task_count": 0}))
-        sys.exit(0)
-
-    # Validate tasks
+    # Validate tasks. Invalid entries are dropped (with a warning), not fatal:
+    # the surviving set may legitimately be empty.
     valid_tasks = []
     for task in tasks:
         task_id = task.get("id", "")
@@ -492,11 +704,13 @@ def main():
             continue
         valid_tasks.append(task)
 
-    if not valid_tasks:
-        print(json.dumps({"success": True, "message": "No valid tasks", "task_count": 0}))
-        sys.exit(0)
-
-    # Detect and sync to scheduler
+    # IMPORTANT: do NOT short-circuit when valid_tasks is empty. An empty set is
+    # the signal to reconcile DOWN to nothing -- emptying schedules.json (or
+    # invalidating every task) must still drive the scheduler's prune path so a
+    # previously-synced unit/crontab entry is removed, not stranded. The sync
+    # functions treat an empty enabled list as "remove everything for this
+    # project" (systemd: glob+remove stale units, daemon-reload; cron: drop the
+    # CLAUDE-MANAGED section).
     scheduler = "cron" if args.force_cron else detect_scheduler()
 
     if scheduler == "systemd":
@@ -508,6 +722,12 @@ def main():
             "success": False,
             "error": "No scheduler available. Install cron or enable systemd user session."
         }
+
+    if not valid_tasks and result.get("success"):
+        result.setdefault(
+            "message",
+            "No active tasks; reconciled scheduler down to zero for this project.",
+        )
 
     print(json.dumps(result, indent=2, default=str))
     sys.exit(0 if result.get("success") else 1)
