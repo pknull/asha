@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 1.12.0
-**Last Updated**: 2026-06-11 (superseded sections noted inline)
+**Version**: 1.13.0
+**Last Updated**: 2026-06-18 (superseded sections noted inline)
 **Repository**: pknull/asha
 
 ---
@@ -57,7 +57,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 | **Code** | v1.1.0 | Development | Code review, orchestration patterns, TDD workflows |
 | **Write** | v1.2.0 | Creative | Prose craft, worldbuilding, storytelling agents |
 | **Output Styles** | v1.0.2 | Formatting | Switchable response styles |
-| **Asha** | v1.11.1 | Core | Session coordination, cross-project identity (~/.asha/) |
+| **Asha** | v2.0.0 | Core | Session coordination, cross-project identity, OKF learnings bundle (~/.asha/) |
 | **Image** | v1.1.0 | Creative | Stable Diffusion prompts, ComfyUI workflows |
 | **Schedule** | v0.1.0 | Automation | Cron-style scheduled tasks |
 
@@ -953,6 +953,13 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v2.0.0 (2026-06-18) — Asha learnings: OKF bundle
+
+- **Breaking (on-disk format):** learnings moved from a single flat `~/.asha/learnings.md` to an OKF concept bundle (`~/.asha/learnings/`, one file per learning, `type: learning`, auto-generated `index.md`). One-way migration via `plugins/session/tools/migrate_learnings_to_okf.py`; older asha versions cannot read the bundle — pin the matching version per repo.
+- Upsert-by-id dedup; vendored OKF `validate.py`/`visualize.py`; warn-only validate-on-`/save`.
+- Auto-suggested `## Related` cross-links at interactive `/save` (semantic, non-blocking).
+- New `docs/memory-architecture.md` (scopes, lifecycle, "is it providing value?" guide).
 
 ### v1.9.0 (2026-01-29)
 

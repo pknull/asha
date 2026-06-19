@@ -1,6 +1,6 @@
 # asha
 
-**Version**: 1.18.0
+**Version**: 2.0.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
 Asha mounts skills, agents, commands, and hooks into each harness via direct symlinks, ships a single `asha` dispatcher that injects a shared persona (and auto-configures a harness on first use), and consolidates session capture across all three CLIs into one synthesis pipeline.
@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 | **Image** | `image` | v1.1.0 | Stable Diffusion prompts, ComfyUI workflows |
 | **Automation** | `scheduler` | v0.1.0 | Cron-style scheduled task execution |
 | **Formatting** | `output-styles` | v1.0.2 | Response styling and output formats |
-| **Core** | `asha` | v1.18.0 | Session coordination, memory persistence, learnings |
+| **Core** | `asha` | v2.0.0 | Session coordination, memory persistence, learnings |
 
 ### When to Use Each
 
@@ -417,10 +417,10 @@ Switchable output styles for Claude Code responses.
 
 **Plugin Name**: `asha`
 **Commands**: `/asha:init`, `/asha:save`, `/asha:prime`, `/asha:note`, `/asha:status`, `/asha:loop`, `/asha:spawn`, `/asha:agents`, `/asha:silence`, `/asha:restore`
-**Version**: 1.18.0
+**Version**: 2.0.0
 **Domain**: Core Scaffold
 
-Cognitive scaffold framework with cross-project identity, automatic learning, and session coordination. Foundation layer that other plugins build on.
+Cognitive scaffold framework with cross-project identity, automatic learning, and session coordination. Foundation layer that other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
 
 ```bash
 /asha:init                # Initialize (creates ~/.asha/ + project Memory/)
