@@ -9,7 +9,6 @@ set -euo pipefail
 # native session transcript directly. The hook's capture path was redundant.
 #
 # What this hook STILL does:
-#   - Track agent deployments in ReasoningBank (Task tool only)
 #   - Trigger vector DB incremental ingest for Memory/.claude .md edits
 #   - Run violation checker on Write/Edit/Bash
 # These are intervention/side-effect concerns that have no transcript-tail
@@ -58,25 +57,6 @@ INPUT=$(cat)
 # Extract tool information (used by intervention paths below).
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)
 TOOL_INPUT=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null || true)
-
-# ReasoningBank tracking for Task agent deployments (intervention — feeds
-# tool-selection learning, not session capture).
-case "$TOOL_NAME" in
-    "Task")
-        AGENT_TYPE=$(echo "$TOOL_INPUT" | jq -r '.subagent_type // empty' 2>/dev/null)
-        DESCRIPTION=$(echo "$TOOL_INPUT" | jq -r '.description // empty' 2>/dev/null)
-        if [[ -n "$AGENT_TYPE" && "$AGENT_TYPE" != "null" ]]; then
-            REASONING_BANK="$PLUGIN_ROOT/tools/reasoning_bank.py"
-            PYTHON_CMD=$(get_python_cmd)
-            if [[ -f "$REASONING_BANK" && -n "$PYTHON_CMD" ]]; then
-                ("$PYTHON_CMD" "$REASONING_BANK" tool \
-                    --name "$AGENT_TYPE" \
-                    --use-case "${DESCRIPTION:-unspecified}" \
-                    --success >/dev/null 2>&1) &
-            fi
-        fi
-        ;;
-esac
 
 # Vector DB refresh for indexed file changes (background, non-blocking)
 # Only trigger for files in Memory/, asha/, or .claude/ directories
