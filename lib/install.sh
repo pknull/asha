@@ -107,14 +107,21 @@ selected_plugins() {
     IFS=',' read -ra arr <<<"$ONLY"
     printf '%s\n' "${arr[@]}"
   else
-    # Portable plugin-dir enumeration (GNU `find -printf` is unavailable on
-    # BSD/macOS). Glob the immediate subdirectories and emit their basenames.
-    local d
-    for d in "$PLUGINS_DIR"/*/; do
-      [[ -d "$d" ]] || continue
-      basename "$d"
-    done | sort
+    all_plugin_dirs
   fi
+}
+
+# Enumerate ALL plugin dir basenames, ignoring the --only/$ONLY filter. Portable
+# (GNU `find -printf` is unavailable on BSD/macOS): glob immediate subdirectories
+# and emit their basenames. Used by register_hooks, which must reconcile the
+# COMPLETE asha hook set every run regardless of --only scoping (a scoped install
+# must never de-register another plugin's hooks).
+all_plugin_dirs() {
+  local d
+  for d in "$PLUGINS_DIR"/*/; do
+    [[ -d "$d" ]] || continue
+    basename "$d"
+  done | sort
 }
 
 usage() {
@@ -323,6 +330,274 @@ _detect_legacy_learnings() {
 }
 
 # ---------------------------------------------------------------------------
+# Hook registration — the installer OWNS settings.json .hooks for asha
+# ---------------------------------------------------------------------------
+#
+# register_hooks() is the SINGLE authority for asha hook entries in Claude's
+# settings.json. It exists to cure the duplicate/canary drift that the older
+# per-plugin tagged merge could not: that path only collapsed groups carrying
+# the *exact* same "source":"asha:<ns>" tag, so legacy UNTAGGED asha groups
+# (and stale duplicates from repeated surgical jq merges) accumulated forever.
+#
+# Asha-group identification (used to decide what to DROP before re-adding):
+#   A hook group counts as an asha group — and is removed — when EITHER
+#     (a) any hook's .command starts with "$ASHA_ROOT/plugins/"   (path-prefix), OR
+#     (b) any hook's .source matches "asha:*"                      (legacy tag).
+#   Either signal is sufficient, so UNTAGGED legacy groups whose command points
+#   into the repo are collapsed alongside properly-tagged ones. NON-asha groups
+#   (e.g. the user's own hooks under ~/.claude/hooks/: trace-pre.sh, trace-post.sh,
+#   console-log-check.sh, lint-file.sh, doc-file-blocker.sh, console-log-audit.sh)
+#   match neither test and are preserved byte-for-byte.
+#
+# The desired asha set is rebuilt from scratch each run: for every selected
+# plugin EXCEPT the test plugin (its canary stop.sh must never reach prod),
+# read plugins/<p>/hooks/hooks.json, substitute ${CLAUDE_PLUGIN_ROOT} with the
+# plugin's absolute path, and tag each hook "source":"asha:<ns>". Re-running on
+# an already-clean file is therefore a no-op (drop-then-readd is identity).
+#
+# Invocation:
+#   - Called from asha_install_main() for the claude target after symlinks.
+#   - Standalone: `source lib/install.sh; register_hooks` (e.g. to dry-run
+#     against a COPY). Target file is $CLAUDE_SETTINGS (default
+#     /home/pknull/.claude/settings.json) so a reviewer can point it elsewhere.
+#   - Honors DRY_RUN / VERBOSE if already set; defaults them when sourced bare.
+#
+# Plugins excluded from prod hook registration.
+_REGISTER_HOOKS_SKIP=(test)
+
+_register_hooks_is_skip() {
+  local p="$1" sp
+  for sp in "${_REGISTER_HOOKS_SKIP[@]}"; do [[ "$p" == "$sp" ]] && return 0; done
+  return 1
+}
+
+register_hooks() {
+  # Defaults so the function is safe to call standalone (bare source).
+  : "${DRY_RUN:=0}"; : "${VERBOSE:=0}"
+  local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+  local asha_root
+  asha_root="$(resolve_path "$MARKET_ROOT")"
+
+  # Only act if the file exists; absence is not an error (nothing to own yet).
+  [[ -f "$settings" ]] || { log "register_hooks: $settings absent; skipping"; return 0; }
+
+  # Build the DESIRED asha hook set: a single {event: [group,...]} object that
+  # concatenates every selected, non-test plugin's tagged groups.
+  local desired='{}'
+  local plugin_dir ns plugin_root abs_root hooks_json
+  while read -r plugin_dir; do
+    [[ -n "$plugin_dir" ]] || continue
+    [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || continue
+    _register_hooks_is_skip "$plugin_dir" && continue
+
+    plugin_root="$PLUGINS_DIR/$plugin_dir"
+    if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
+    elif [[ -f "$plugin_root/hooks.json"      ]]; then hooks_json="$plugin_root/hooks.json"
+    else continue
+    fi
+
+    local lifecycles_count
+    lifecycles_count="$(jq -r '.hooks // {} | length' "$hooks_json")"
+    [[ "$lifecycles_count" -gt 0 ]] || continue
+
+    abs_root="$(resolve_path "$plugin_root")"
+    ns="$(ns_for "$plugin_dir")"
+
+    # Per-plugin tagged groups: ${CLAUDE_PLUGIN_ROOT} -> abs path, +source tag.
+    local tagged
+    tagged="$(jq \
+      --arg root "$abs_root" \
+      --arg tag  "asha:$ns" '
+        .hooks
+        | to_entries
+        | map({
+            key: .key,
+            value: (
+              .value
+              | map(
+                  .hooks |= map(
+                    . + {
+                      command: (.command | gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $root)),
+                      source: $tag
+                    }
+                  )
+                )
+            )
+          })
+        | from_entries
+      ' "$hooks_json")"
+
+    # Fold this plugin's events into the accumulator (concat per event).
+    desired="$(jq -n \
+      --argjson acc "$desired" \
+      --argjson add "$tagged" '
+        $acc as $a | $add as $b
+        | reduce ($b | to_entries[]) as $e ($a;
+            .[$e.key] = (($a[$e.key] // []) + $e.value))
+      ')"
+  done < <(all_plugin_dirs)   # full asha set, independent of --only (Defect 1)
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    local nd
+    nd="$(jq -r '[ .[] | .[]? | .hooks[]? ] | length' <<<"$desired")"
+    say "  HOOKS  would re-own $nd asha hook entr$([[ "$nd" == "1" ]] && echo y || echo ies) in $settings"
+    return 0
+  fi
+
+  # Atomic, validated merge. For every event present in EITHER the existing file
+  # or the desired set: strip existing asha hook ENTRIES (path-prefix OR source
+  # tag) from each group — dropping a group only when ALL its hooks were asha,
+  # but keeping the group (with its surviving non-asha hooks) when it was mixed —
+  # then append the freshly-built asha groups. Non-asha hooks stay untouched;
+  # events that end up empty are removed.
+  local stamp bkp tmp
+  # Unique backup name: timestamp + nanoseconds + PID, then a numeric-suffix
+  # loop as a final guard so two runs in the same nanosecond never clobber an
+  # existing backup (Defect 3).
+  stamp="$(date +%Y%m%d-%H%M%S-%N)"
+  bkp="$settings.bak-$stamp.$$"
+  if [[ -e "$bkp" ]]; then
+    local _i=1
+    while [[ -e "$bkp.$_i" ]]; do _i=$((_i+1)); done
+    bkp="$bkp.$_i"
+  fi
+  cp -p "$settings" "$bkp"
+  say "backed up settings.json -> $bkp"
+
+  tmp="$settings.tmp.$$"
+  jq \
+    --arg prefix "$asha_root/plugins/" \
+    --argjson desired "$desired" '
+      def is_asha_hook:
+        ((.command // "") | startswith($prefix))
+        or ((.source // "") | test("^asha:"));
+      # Strip asha hook ENTRIES from a group, keeping co-located non-asha hooks.
+      # Emit the slimmed group only if it still carries any non-asha hook; a
+      # group whose hooks are ALL asha is dropped entirely (Defect 2).
+      def strip_asha_hooks:
+        (.hooks // []) as $hs
+        | ($hs | map(select(is_asha_hook | not))) as $kept
+        | if ($kept | length) > 0 then [ (.hooks = $kept) ] else [] end;
+      .hooks = (.hooks // {})
+      | ( (.hooks | keys) + ($desired | keys) | unique ) as $events
+      | reduce $events[] as $e (.;
+          .hooks[$e] = (
+            ((.hooks[$e] // []) | map(strip_asha_hooks) | add // [])
+            + ($desired[$e] // [])
+          )
+        )
+      | .hooks |= with_entries(select(.value | length > 0))
+    ' "$settings" > "$tmp" || { rm -f "$tmp"; die "register_hooks: jq merge failed" 4; }
+
+  jq empty "$tmp" >/dev/null 2>&1 || { rm -f "$tmp"; die "register_hooks: resulting settings.json invalid" 4; }
+  # Write THROUGH the file (truncate + cat) rather than `mv`, so a symlinked
+  # settings.json (dotfiles) keeps its link instead of being replaced by a
+  # regular file — matching _write_default_harness (Defect 4).
+  cat "$tmp" > "$settings"
+  rm -f "$tmp"
+
+  local n
+  n="$(jq -r '[ .hooks // {} | .[] | .[]? | .hooks[]? | select((.source // "") | test("^asha:")) ] | length' "$settings")"
+  say "  registered $n asha hook entr$([[ "$n" == "1" ]] && echo y || echo ies) in $settings"
+}
+
+# ---------------------------------------------------------------------------
+# Identity bootstrap — ~/.asha/ (folded in from the retired session setup.sh)
+# ---------------------------------------------------------------------------
+#
+# Creates the cross-project identity layer under ~/.asha/. Idempotent: each
+# file is guarded by [[ ! -f ]] so existing user data is never clobbered (the
+# directory itself, and each of communicationStyle.md / keeper.md / config.json,
+# is only created when absent). This is the install-time half of what the old
+# plugins/session/hooks/handlers/setup.sh did as a (never-firing) "Setup" hook;
+# the per-project Memory/venv init it also carried belongs to /session:init and
+# is intentionally NOT reproduced here.
+bootstrap_identity() {
+  local asha_home="$HOME/.asha"
+  local tmpl_dir="$PLUGINS_DIR/session/templates"
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    [[ -d "$asha_home" ]] || say "  IDENTITY  would create $asha_home"
+    [[ -f "$asha_home/communicationStyle.md" ]] || [[ ! -f "$tmpl_dir/communicationStyle.md" ]] || say "  IDENTITY  would create $asha_home/communicationStyle.md"
+    [[ -f "$asha_home/keeper.md" ]]   || say "  IDENTITY  would create $asha_home/keeper.md"
+    [[ -f "$asha_home/config.json" ]] || say "  IDENTITY  would create $asha_home/config.json"
+    return 0
+  fi
+
+  if [[ ! -d "$asha_home" ]]; then
+    mkdir -p "$asha_home"
+    say "Created ~/.asha/"
+  fi
+
+  # communicationStyle.md — copied from the session plugin template if present.
+  if [[ ! -f "$asha_home/communicationStyle.md" ]] && [[ -f "$tmpl_dir/communicationStyle.md" ]]; then
+    cp "$tmpl_dir/communicationStyle.md" "$asha_home/communicationStyle.md"
+    say "Created ~/.asha/communicationStyle.md"
+  fi
+
+  # keeper.md
+  if [[ ! -f "$asha_home/keeper.md" ]]; then
+    cat > "$asha_home/keeper.md" << 'KEEPER_EOF'
+# Keeper Profile
+
+Cross-project user profile. Additive only — signals accumulate with timestamps.
+
+---
+
+## Identity
+
+- **Expertise**: (discovered organically)
+- **Context**: (populated via /save)
+
+---
+
+## Voice Calibration
+
+Accumulated signals about communication preferences.
+
+| Date | Signal | Context | Source Project |
+|------|--------|---------|----------------|
+
+---
+
+## Working Style
+
+- (populated organically via /save)
+
+---
+
+## Notes
+
+Persistent observations across projects.
+
+---
+
+## Calibration Log
+
+Raw signals captured via `/save`. Synthesis updates sections above.
+
+```
+```
+KEEPER_EOF
+    say "Created ~/.asha/keeper.md"
+  fi
+
+  # ~/.asha/config.json
+  if [[ ! -f "$asha_home/config.json" ]]; then
+    cat > "$asha_home/config.json" << 'CONFIG_EOF'
+{
+  "version": "1.0",
+  "description": "Asha cross-project configuration",
+  "capture_calibration": true,
+  "keeper_profile": "keeper.md",
+  "identity_file": "communicationStyle.md"
+}
+CONFIG_EOF
+    say "Created ~/.asha/config.json"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -360,7 +635,14 @@ asha_install_main() {
     # shellcheck disable=SC1090
     source "$harness_script"
     "${t}_install"
+    # The installer OWNS Claude's settings.json .hooks: after the claude target
+    # has mounted its symlinks, rebuild the asha hook set centrally so legacy
+    # untagged duplicates are collapsed and the test canary is excluded.
+    [[ "$t" == "claude" ]] && register_hooks
   done
+
+  # Cross-project identity layer (~/.asha/). Idempotent; never clobbers user data.
+  bootstrap_identity
 
   [[ -n "$BIN" ]] && install_bin "$BIN"
 

@@ -4,9 +4,11 @@
 # Intended for manual runs or scheduled via systemd-user-timer / crontab.
 #
 # Usage:
-#   asha-drift-check.sh [--target {claude,codex,all}]
+#   asha-drift-check.sh [--target {claude,codex,all}] [--fix]
 #
 # Default target is 'all'. Per-target flags scope the checks.
+# --fix self-heals stale codex command-skills (regenerates SKILL.md from
+#   its source command MD); without --fix the script only audits.
 
 set -uo pipefail
 
@@ -25,12 +27,14 @@ ASHA="$(dirname "$(cd -P "$(dirname "$__src")" >/dev/null 2>&1 && pwd)")"
 unset __src __dir
 
 TARGET="all"
+FIX=0          # --fix: self-heal stale codex command-skills (audit-only otherwise)
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) shift; TARGET="${1:-}" ;;
     --target=*) TARGET="${1#--target=}" ;;
+    --fix) FIX=1 ;;
     -h|--help)
-      sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '2,/^[^#]/{/^#/!d; s/^# \{0,1\}//; p}' "$0"
       exit 0 ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
@@ -45,6 +49,28 @@ fail=0
 pass() { echo "PASS  $1"; }
 nope() { echo "FAIL  $1"; fail=$((fail+1)); }
 section() { echo ""; echo "── $1 ──"; }
+
+# --fix self-heal: regenerate a stale codex command-skill SKILL.md from its
+# source command MD. Reuses the exact generator the installer uses
+# (harnesses/codex.sh:_codex_emit_command_skill), which strips Claude-only
+# frontmatter keys and writes idempotently — so a regenerated file is identical
+# to what `./install.sh --target codex` would produce. The install engine and
+# codex harness are sourced lazily on first use (they define the helper plus the
+# say/log/resolve_path/ns_for/path globals it depends on). DRY_RUN/VERBOSE are
+# pinned to 0 so the generator actually writes and stays quiet.
+_FIX_CODEX_SOURCED=0
+fix_regen_command_skill() {
+  local cmd="$1" skill_md="$2"
+  if [[ $_FIX_CODEX_SOURCED -eq 0 ]]; then
+    DRY_RUN=0 VERBOSE=0
+    # shellcheck source=../lib/install.sh
+    source "$ASHA/lib/install.sh"
+    # shellcheck source=../harnesses/codex.sh
+    source "$ASHA/harnesses/codex.sh"
+    _FIX_CODEX_SOURCED=1
+  fi
+  _codex_emit_command_skill "$cmd" "$skill_md"
+}
 
 # ===========================================================================
 # Repo-wide checks (always run)
@@ -226,9 +252,15 @@ for ev, blocks in (c.get('hooks') or {}).items():
         cmd_mtime="$(stat -c %Y "$cmd" 2>/dev/null || echo 0)"
         skill_mtime="$(stat -c %Y "$skill_md" 2>/dev/null || echo 0)"
         if [[ "$cmd_mtime" -gt "$skill_mtime" ]]; then
-          [[ $missing_cmd_skills -eq 0 ]] && nope "command-skill stale (source newer); rerun ./install.sh --target codex:"
-          echo "  $skill_md  (source: $cmd)"
-          missing_cmd_skills=$((missing_cmd_skills+1))
+          if [[ $FIX -eq 1 ]]; then
+            # Self-heal: regenerate from source and report the repair (not a failure).
+            fix_regen_command_skill "$cmd" "$skill_md"
+            echo "FIXED  regenerated stale command-skill: $skill_md  (source: $cmd)"
+          else
+            [[ $missing_cmd_skills -eq 0 ]] && nope "command-skill stale (source newer); rerun ./install.sh --target codex (or pass --fix):"
+            echo "  $skill_md  (source: $cmd)"
+            missing_cmd_skills=$((missing_cmd_skills+1))
+          fi
         fi
         continue
       fi
