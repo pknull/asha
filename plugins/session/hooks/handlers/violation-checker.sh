@@ -1,91 +1,89 @@
 #!/bin/bash
-set -euo pipefail
-# Violation Checker - Evaluates tool actions against rule set
-# Called from post-tool-use hook to log violations without blocking
+set -uo pipefail
+# violation-checker.sh — soft, non-blocking awareness logger for Asha.
 #
-# OUTCOME: Detect and log rule violations to session file for context
-# PATTERN: Each rule is a sourced script with check_violation function
-# CONSTRAINT: Never blocks, only logs to current session
+# Called from post-tool-use.sh (PostToolUse) for Write/Edit/Bash. Evaluates the
+# action against the SAME declarative rules as policy-guard.sh
+# (<plugin>/hooks/policies/rules.json + ~/.asha/policies.json, merged by id) and
+# *logs* every matching rule to the session file for context. It NEVER blocks —
+# policy-guard.sh (PreToolUse) owns enforcement; this is post-hoc awareness only.
+#
+# Args: $1 = TOOL_NAME, $2 = TOOL_INPUT (JSON). Fail-open (exit 0) on any error.
 
-source "$(dirname "$0")/common.sh"
+source "$(dirname "$0")/common.sh" 2>/dev/null || exit 0
+command -v jq >/dev/null 2>&1 || exit 0
 
-PROJECT_DIR=$(detect_project_dir)
-if [[ -z "$PROJECT_DIR" ]]; then
-    exit 0
-fi
-
-PLUGIN_ROOT=$(get_plugin_root)
-if [[ -z "$PLUGIN_ROOT" ]]; then
-    exit 0
-fi
-
-# Only run if Asha is initialized
-if ! is_asha_initialized; then
-    exit 0
-fi
-
-RULES_DIR="$PLUGIN_ROOT/rules"
-SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
-
-# Only log if session file exists
-[[ ! -f "$SESSION_FILE" ]] && exit 0
-
-# Only run if rules directory exists
-[[ ! -d "$RULES_DIR" ]] && exit 0
-
-# Arguments from post-tool-use
 TOOL_NAME="${1:-}"
 TOOL_INPUT="${2:-}"
+[[ -n "$TOOL_NAME" ]] || exit 0
 
-[[ -z "$TOOL_NAME" ]] && exit 0
+PROJECT_DIR="$(detect_project_dir 2>/dev/null || true)"
+[[ -n "$PROJECT_DIR" ]] || exit 0
+is_asha_initialized 2>/dev/null || exit 0
 
-# Extract relevant fields based on tool type
-FILE_PATH=""
-COMMAND=""
+SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
+[[ -f "$SESSION_FILE" ]] || exit 0
+# Respect the silence marker (no logging when silenced).
+[[ -f "$PROJECT_DIR/Memory/markers/silence" ]] && exit 0
 
+SELF_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || exit 0
+REPO_RULES="$SELF_DIR/../policies/rules.json"
+USER_RULES="$HOME/.asha/policies.json"
+
+# Merge repo + user rules (user overrides by id) — mirrors policy-guard.sh.
+RULES=""
+if [[ -f "$REPO_RULES" && -f "$USER_RULES" ]]; then
+  RULES="$(jq -s '
+    (.[0].rules // []) as $base | (.[1].rules // []) as $user
+    | ($user | map(.id)) as $uids
+    | { rules: (($base | map(select((.id) as $i | ($uids | index($i)) | not))) + $user) }
+  ' "$REPO_RULES" "$USER_RULES" 2>/dev/null || true)"
+elif [[ -f "$REPO_RULES" ]]; then
+  RULES="$(jq '{rules: (.rules // [])}' "$REPO_RULES" 2>/dev/null || true)"
+fi
+[[ -n "$RULES" ]] || exit 0
+
+# Matchable fields by tool type.
+CMD=""; FILE=""
 case "$TOOL_NAME" in
-    "Write"|"Edit")
-        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty')
-        ;;
-    "Bash")
-        COMMAND=$(echo "$TOOL_INPUT" | jq -r '.command // empty')
-        ;;
+  Write|Edit|MultiEdit) FILE="$(printf '%s' "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null || true)" ;;
+  Bash)                 CMD="$(printf '%s'  "$TOOL_INPUT" | jq -r '.command   // empty' 2>/dev/null || true)" ;;
 esac
 
-# Run each rule
-for rule_file in "$RULES_DIR"/*.sh; do
-    [[ ! -f "$rule_file" ]] && continue
+COUNT="$(printf '%s' "$RULES" | jq '.rules | length' 2>/dev/null || echo 0)"
+[[ "$COUNT" =~ ^[0-9]+$ ]] || exit 0
 
-    rule_name=$(basename "$rule_file" .sh)
+i=0
+while [[ $i -lt $COUNT ]]; do
+  rule="$(printf '%s' "$RULES" | jq -c ".rules[$i]" 2>/dev/null || true)"
+  i=$((i+1))
+  [[ -n "$rule" && "$rule" != "null" ]] || continue
 
-    # Extract severity from rule file
-    severity=$(grep -m1 "^# Severity:" "$rule_file" | cut -d: -f2 | tr -d ' ' || echo "MEDIUM")
+  r_id="$(printf '%s'     "$rule" | jq -r '.id // "rule"' 2>/dev/null || echo rule)"
+  r_tool="$(printf '%s'   "$rule" | jq -r '.tool // empty' 2>/dev/null || true)"
+  r_cmdre="$(printf '%s'  "$rule" | jq -r '.command_regex // empty' 2>/dev/null || true)"
+  r_filere="$(printf '%s' "$rule" | jq -r '.file_path_regex // empty' 2>/dev/null || true)"
+  r_action="$(printf '%s' "$rule" | jq -r '.action // "match"' 2>/dev/null || echo match)"
+  r_reason="$(printf '%s' "$rule" | jq -r '.reason // "policy match"' 2>/dev/null || echo "policy match")"
 
-    # Source rule and run check
-    (
-        source "$rule_file"
+  [[ -n "$r_tool" ]] || continue
+  printf '%s' "$TOOL_NAME" | grep -Eq "^($r_tool)\$" 2>/dev/null || continue
 
-        case "$TOOL_NAME" in
-            "Write"|"Edit")
-                violation_msg=$(check_violation "$TOOL_NAME" "$FILE_PATH" "$PROJECT_DIR" 2>/dev/null) || true
-                ;;
-            "Bash")
-                violation_msg=$(check_violation "$TOOL_NAME" "$COMMAND" "$PROJECT_DIR" 2>/dev/null) || true
-                ;;
-            *)
-                violation_msg=""
-                ;;
-        esac
+  matched=0
+  if [[ -n "$r_cmdre" && -n "$CMD" ]]; then
+    printf '%s' "$CMD"  | grep -Eq "$r_cmdre"  2>/dev/null && matched=1
+  fi
+  if [[ $matched -eq 0 && -n "$r_filere" && -n "$FILE" ]]; then
+    printf '%s' "$FILE" | grep -Eq "$r_filere" 2>/dev/null && matched=1
+  fi
+  [[ $matched -eq 1 ]] || continue
 
-        if [[ -n "$violation_msg" ]]; then
-            timestamp=$(date -u '+%H:%M UTC')
-            {
-                echo ""
-                echo "> [!warning] Violation [$severity] $timestamp"
-                echo "> **$rule_name**: $violation_msg"
-            } >> "$SESSION_FILE"
-        fi
-    )
+  timestamp="$(date -u '+%H:%M UTC' 2>/dev/null || true)"
+  {
+    echo ""
+    echo "> [!warning] Violation [$r_action] $timestamp"
+    echo "> **$r_id**: $r_reason"
+  } >> "$SESSION_FILE" 2>/dev/null || true
 done
 
 exit 0

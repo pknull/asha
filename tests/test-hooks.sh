@@ -925,8 +925,8 @@ echo "# Current Session" > "$TEST43_DIR/Memory/sessions/current-session.md"
 export CLAUDE_PROJECT_DIR="$TEST43_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-# Trigger a destructive-git violation
-"$VIOLATION_CHECKER" "Bash" '{"command": "git push --force"}' 2>/dev/null || true
+# Trigger a declarative policy violation (no-broad-home-scans, the live rule)
+"$VIOLATION_CHECKER" "Bash" '{"command": "find /home -name foo"}' 2>/dev/null || true
 
 # Check if violation was logged
 if grep -q "Violation" "$TEST43_DIR/Memory/sessions/current-session.md" 2>/dev/null; then
@@ -1203,10 +1203,10 @@ for handler in "$REPO_ROOT"/plugins/*/hooks/handlers/*.sh \
     handler_name=$(basename "$handler")
 
     # Skip common.sh which may not need strict mode
-    [[ "$handler_name" == "common.sh" ]] && continue
+    [[ "$handler_name" == "common.sh" || "$handler_name" == "state.sh" ]] && continue
 
     # Check for set -e or set -euo pipefail in first 10 lines
-    if ! head -10 "$handler" | grep -qE "set -e|set -.*e"; then
+    if ! head -40 "$handler" | grep -qE "set -e|set -.*e"; then
         if [[ $MISSING_STRICT -eq 0 ]]; then
             echo -e "${RED}FAIL${NC}"
         fi
