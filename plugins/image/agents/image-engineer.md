@@ -1,5 +1,5 @@
 ---
-name: engineer
+name: image-engineer
 description: Specialist for Stable Diffusion prompt crafting and ComfyUI workflow design. Use proactively when user needs image generation prompts, workflow JSON construction, or iteration on generated outputs.
 tools: Read, Write, Bash, WebFetch, Grep, Glob
 model: sonnet

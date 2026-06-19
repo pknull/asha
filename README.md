@@ -595,11 +595,11 @@ Run the full test suite:
 |-------|-------|-------------|
 | Plugin Validation | 5 | JSON schema, namespace conflicts, file existence |
 | Version Consistency | 6 | Cross-file version synchronization |
-| Python Unit Tests | 99 | reasoning_bank, memory_index, local_react_save, **jsonl_reader (32)** |
+| Python Unit Tests | 78 | **jsonl_reader (32)**, learnings_manager_okf (25), pattern_analyzer merge/backup (15), silence_marker (6) |
 | Hook Handlers | 104 | Lifecycle hooks, rules, tools, repo hygiene |
 | Shell Linting | 1 | shellcheck (optional) |
 
-**Total: 214 tests** (215 with shellcheck)
+**Total: 193 tests** (194 with shellcheck)
 
 `jsonl_reader` tests pin the per-harness transcript-parser contract against committed fixtures (`tests/fixtures/{claude,codex,copilot}-*.jsonl`) so future host format changes fail loudly here rather than producing silently degraded synth output.
 

@@ -393,75 +393,6 @@ else
 fi
 
 # ============================================================================
-# Test 14: Violation rules have check_violation function
-# ============================================================================
-echo -n "Test 14: Violation rules have check_violation function... "
-RULES_DIR="$REPO_ROOT/plugins/session/rules"
-RULE_ERRORS=0
-
-if [[ -d "$RULES_DIR" ]]; then
-    for rule_file in "$RULES_DIR"/*.sh; do
-        [[ ! -f "$rule_file" ]] && continue
-        rule_name=$(basename "$rule_file")
-
-        # Check for check_violation function
-        if ! grep -q "check_violation()" "$rule_file"; then
-            if [[ $RULE_ERRORS -eq 0 ]]; then
-                echo -e "${RED}FAIL${NC}"
-            fi
-            echo "  $rule_name missing check_violation function"
-            RULE_ERRORS=$((RULE_ERRORS + 1))
-        fi
-
-        # Check for Severity comment
-        if ! grep -q "^# Severity:" "$rule_file"; then
-            if [[ $RULE_ERRORS -eq 0 ]]; then
-                echo -e "${RED}FAIL${NC}"
-            fi
-            echo "  $rule_name missing Severity declaration"
-            RULE_ERRORS=$((RULE_ERRORS + 1))
-        fi
-    done
-
-    if [[ $RULE_ERRORS -eq 0 ]]; then
-        RULE_COUNT=$(ls -1 "$RULES_DIR"/*.sh 2>/dev/null | wc -l)
-        echo -e "${GREEN}PASS${NC} ($RULE_COUNT rules validated)"
-        PASSED=$((PASSED + 1))
-    else
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC} (no rules directory)"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
-# Test 15: Destructive-git rule detects force push
-# ============================================================================
-echo -n "Test 15: Destructive-git rule detects force push... "
-RULE_FILE="$REPO_ROOT/plugins/session/rules/destructive-git.sh"
-
-if [[ -f "$RULE_FILE" ]]; then
-    # Source the rule and test
-    RESULT=$(bash -c "
-        source '$RULE_FILE'
-        check_violation 'Bash' 'git push -f origin main' '/tmp' 2>/dev/null && echo 'DETECTED' || echo 'MISSED'
-    ")
-
-    if [[ "$RESULT" == *"DETECTED"* ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Force push not detected"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC} (rule file not found)"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
 # Test 16: Python tools requirements.txt exists
 # ============================================================================
 echo -n "Test 16: Python requirements.txt exists... "
@@ -478,57 +409,6 @@ else
     echo -e "${RED}FAIL${NC}"
     echo "  requirements.txt not found"
     FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
-# Test 17: Memory-protection rule allows mutable files
-# ============================================================================
-echo -n "Test 17: Memory-protection allows mutable files... "
-RULE_FILE="$REPO_ROOT/plugins/session/rules/memory-protection.sh"
-
-if [[ -f "$RULE_FILE" ]]; then
-    # Test mutable file (should NOT trigger)
-    RESULT=$(bash -c "
-        source '$RULE_FILE'
-        check_violation 'Edit' '/tmp/project/Memory/sessions/test.md' '/tmp/project' 2>/dev/null && echo 'VIOLATION' || echo 'ALLOWED'
-    ")
-
-    if [[ "$RESULT" == "ALLOWED" ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Mutable file incorrectly flagged"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
-# Test 18: Memory-protection rule blocks immutable files
-# ============================================================================
-echo -n "Test 18: Memory-protection blocks immutable files... "
-
-if [[ -f "$RULE_FILE" ]]; then
-    # Test immutable file (should trigger)
-    RESULT=$(bash -c "
-        source '$RULE_FILE'
-        check_violation 'Edit' '/tmp/project/Memory/communicationStyle.md' '/tmp/project' 2>/dev/null && echo 'VIOLATION' || echo 'ALLOWED'
-    ")
-
-    if [[ "$RESULT" == *"VIOLATION"* ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Immutable file not protected"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
 fi
 
 # ============================================================================
@@ -603,57 +483,6 @@ if [[ $JSON_ERRORS -eq 0 ]]; then
 else
     echo -e "${RED}FAIL${NC}"
     FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
-# Test 21: Vault-structure rule detects unexpected locations
-# ============================================================================
-echo -n "Test 21: Vault-structure detects unexpected locations... "
-VAULT_RULE="$REPO_ROOT/plugins/session/rules/vault-structure.sh"
-
-if [[ -f "$VAULT_RULE" ]]; then
-    # Test unexpected location (should trigger)
-    RESULT=$(bash -c "
-        source '$VAULT_RULE'
-        check_violation 'Write' '/tmp/project/Vault/random-file.md' '/tmp/project' 2>/dev/null && echo 'VIOLATION' || echo 'ALLOWED'
-    ")
-
-    if [[ "$RESULT" == *"VIOLATION"* ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Unexpected vault location not detected"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
-# Test 22: Vault-structure allows expected directories
-# ============================================================================
-echo -n "Test 22: Vault-structure allows expected directories... "
-
-if [[ -f "$VAULT_RULE" ]]; then
-    # Test expected location (should not trigger)
-    RESULT=$(bash -c "
-        source '$VAULT_RULE'
-        check_violation 'Write' '/tmp/project/Vault/Characters/test.md' '/tmp/project' 2>/dev/null && echo 'VIOLATION' || echo 'ALLOWED'
-    ")
-
-    if [[ "$RESULT" == "ALLOWED" ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Expected vault location incorrectly flagged"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
 fi
 
 # ============================================================================
@@ -1011,74 +840,6 @@ else
 fi
 
 # ============================================================================
-# Test 38: File-header rule detects missing headers
-# ============================================================================
-echo -n "Test 38: File-header rule detects missing headers... "
-FILE_HEADER_RULE="$REPO_ROOT/plugins/session/rules/file-header.sh"
-
-if [[ -f "$FILE_HEADER_RULE" ]]; then
-    # Create test file without header
-    TEST38_DIR=$(mktemp -d)
-    mkdir -p "$TEST38_DIR/.claude"
-    echo "#!/bin/bash" > "$TEST38_DIR/.claude/test-script.sh"
-    echo "echo 'hello'" >> "$TEST38_DIR/.claude/test-script.sh"
-
-    RESULT=$(bash -c "
-        source '$FILE_HEADER_RULE'
-        check_violation 'Write' '$TEST38_DIR/.claude/test-script.sh' '$TEST38_DIR' 2>/dev/null && echo 'VIOLATION' || echo 'ALLOWED'
-    ")
-    rm -rf "$TEST38_DIR"
-
-    if [[ "$RESULT" == *"VIOLATION"* ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  File without header not flagged"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
-# Test 39: File-header rule allows proper headers
-# ============================================================================
-echo -n "Test 39: File-header rule allows proper headers... "
-
-if [[ -f "$FILE_HEADER_RULE" ]]; then
-    # Create test file with header
-    TEST39_DIR=$(mktemp -d)
-    mkdir -p "$TEST39_DIR/.claude"
-    cat > "$TEST39_DIR/.claude/test-script.sh" << 'SCRIPT'
-#!/bin/bash
-# OUTCOME: Test script for validation
-# PATTERN: Example pattern
-# CONSTRAINT: Example constraint
-echo 'hello'
-SCRIPT
-
-    RESULT=$(bash -c "
-        source '$FILE_HEADER_RULE'
-        check_violation 'Write' '$TEST39_DIR/.claude/test-script.sh' '$TEST39_DIR' 2>/dev/null && echo 'VIOLATION' || echo 'ALLOWED'
-    ")
-    rm -rf "$TEST39_DIR"
-
-    if [[ "$RESULT" == "ALLOWED" ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  File with proper header flagged incorrectly"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
 # Test 40: All scripts have proper shebang
 # ============================================================================
 echo -n "Test 40: All shell scripts have proper shebang... "
@@ -1086,8 +847,7 @@ MISSING_SHEBANG=0
 
 for script in "$REPO_ROOT"/plugins/*/hooks/handlers/*.sh \
               "$REPO_ROOT"/plugins/*/hooks-handlers/*.sh \
-              "$REPO_ROOT"/plugins/*/tools/*.sh \
-              "$REPO_ROOT"/plugins/*/rules/*.sh; do
+              "$REPO_ROOT"/plugins/*/tools/*.sh; do
     [[ ! -f "$script" ]] && continue
     script_name=$(basename "$script")
 
@@ -1601,34 +1361,6 @@ else
 fi
 
 # ============================================================================
-# Test 59: Rules have Severity declaration
-# ============================================================================
-echo -n "Test 59: Violation rules have Severity declaration... "
-RULES_DIR="$REPO_ROOT/plugins/session/rules"
-MISSING_SEVERITY=0
-
-for rule_file in "$RULES_DIR"/*.sh; do
-    [[ ! -f "$rule_file" ]] && continue
-    rule_name=$(basename "$rule_file")
-
-    if ! grep -q "^# Severity:" "$rule_file"; then
-        if [[ $MISSING_SEVERITY -eq 0 ]]; then
-            echo -e "${RED}FAIL${NC}"
-        fi
-        echo "  $rule_name missing Severity declaration"
-        MISSING_SEVERITY=$((MISSING_SEVERITY + 1))
-    fi
-done
-
-if [[ $MISSING_SEVERITY -eq 0 ]]; then
-    RULE_COUNT=$(ls "$RULES_DIR"/*.sh 2>/dev/null | wc -l)
-    echo -e "${GREEN}PASS${NC} ($RULE_COUNT rules)"
-    PASSED=$((PASSED + 1))
-else
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
 # Test 61: save-session.sh accepts valid modes
 # ============================================================================
 echo -n "Test 61: save-session.sh accepts valid modes... "
@@ -1741,7 +1473,6 @@ SYNTAX_ERRORS=0
 for script in "$REPO_ROOT"/plugins/*/hooks/handlers/*.sh \
               "$REPO_ROOT"/plugins/*/hooks-handlers/*.sh \
               "$REPO_ROOT"/plugins/*/tools/*.sh \
-              "$REPO_ROOT"/plugins/*/rules/*.sh \
               "$REPO_ROOT"/tests/*.sh; do
     [[ ! -f "$script" ]] && continue
     script_name=$(basename "$script")
@@ -2017,34 +1748,6 @@ if [[ -x "$RUN_TESTS" ]]; then
 else
     echo -e "${RED}FAIL${NC}"
     echo "  run-tests.sh missing or not executable"
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
-# Test 80: All rule files export check_violation
-# ============================================================================
-echo -n "Test 80: All rules export check_violation... "
-RULES_DIR="$REPO_ROOT/plugins/session/rules"
-MISSING_EXPORT=0
-
-for rule_file in "$RULES_DIR"/*.sh; do
-    [[ ! -f "$rule_file" ]] && continue
-    rule_name=$(basename "$rule_file")
-
-    # Check for export statement or function declaration
-    if ! grep -qE "^check_violation\(\)|export -f check_violation" "$rule_file"; then
-        if [[ $MISSING_EXPORT -eq 0 ]]; then
-            echo -e "${RED}FAIL${NC}"
-        fi
-        echo "  $rule_name missing check_violation"
-        MISSING_EXPORT=$((MISSING_EXPORT + 1))
-    fi
-done
-
-if [[ $MISSING_EXPORT -eq 0 ]]; then
-    echo -e "${GREEN}PASS${NC}"
-    PASSED=$((PASSED + 1))
-else
     FAILED=$((FAILED + 1))
 fi
 
@@ -2442,81 +2145,6 @@ else
     echo -e "${RED}FAIL${NC}"
     echo "  panel.md not found"
     FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
-# Test 96: Destructive-git rule detects hard reset
-# ============================================================================
-echo -n "Test 96: Destructive-git rule detects hard reset... "
-RULE_FILE="$REPO_ROOT/plugins/session/rules/destructive-git.sh"
-
-if [[ -f "$RULE_FILE" ]]; then
-    RESULT=$(bash -c "
-        source '$RULE_FILE'
-        check_violation 'Bash' 'git reset --hard HEAD~3' '/tmp' 2>/dev/null && echo 'DETECTED' || echo 'MISSED'
-    ")
-
-    if [[ "$RESULT" == *"DETECTED"* ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Hard reset not detected"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
-# Test 97: Destructive-git rule detects branch deletion
-# ============================================================================
-echo -n "Test 97: Destructive-git rule detects branch deletion... "
-RULE_FILE="$REPO_ROOT/plugins/session/rules/destructive-git.sh"
-
-if [[ -f "$RULE_FILE" ]]; then
-    RESULT=$(bash -c "
-        source '$RULE_FILE'
-        check_violation 'Bash' 'git branch -D main' '/tmp' 2>/dev/null && echo 'DETECTED' || echo 'MISSED'
-    ")
-
-    if [[ "$RESULT" == *"DETECTED"* ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Branch deletion not detected"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
-# Test 98: Destructive-git rule ignores safe operations
-# ============================================================================
-echo -n "Test 98: Destructive-git rule ignores safe operations... "
-RULE_FILE="$REPO_ROOT/plugins/session/rules/destructive-git.sh"
-
-if [[ -f "$RULE_FILE" ]]; then
-    RESULT=$(bash -c "
-        source '$RULE_FILE'
-        check_violation 'Bash' 'git push origin feature-branch' '/tmp' 2>/dev/null && echo 'DETECTED' || echo 'SAFE'
-    ")
-
-    if [[ "$RESULT" == *"SAFE"* ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Safe operation incorrectly flagged"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
 fi
 
 # ============================================================================
