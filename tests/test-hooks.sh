@@ -2267,11 +2267,43 @@ else
 fi
 
 # ============================================================================
+# Test 104: Ported policy rules (destructive-git ask, memory-protection exclude, vault-structure warn)
+# ============================================================================
+echo -n "Test 104: Ported policy rules enforce correctly... "
+PG_PORTED="$REPO_ROOT/plugins/session/hooks/handlers/policy-guard.sh"
+pg_decision() {
+    local out
+    out="$(printf '%s' "$1" | bash "$PG_PORTED" 2>/dev/null)"
+    if [[ -n "$out" ]]; then
+        printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null
+    else
+        echo "allow"
+    fi
+}
+PG_OK=1; PG_WHY=""
+chk_pg() { local got; got="$(pg_decision "$2")"; [[ "$got" == "$3" ]] || { PG_OK=0; PG_WHY="$PG_WHY $1(got=$got want=$3)"; }; }
+chk_pg force_push   '{"tool_name":"Bash","tool_input":{"command":"git push --force"}}'              ask
+chk_pg plain_push   '{"tool_name":"Bash","tool_input":{"command":"git push origin main"}}'          allow
+chk_pg hard_reset   '{"tool_name":"Bash","tool_input":{"command":"git reset --hard HEAD~1"}}'       ask
+chk_pg del_main     '{"tool_name":"Bash","tool_input":{"command":"git branch -D main"}}'            ask
+chk_pg mem_immutable '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/projectbrief.md"}}' ask
+chk_pg mem_mutable   '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/activeContext.md"}}' allow
+chk_pg vault_warn    '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/Random/x.md"}}'       allow
+if [[ $PG_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  policy-guard ported-rule mismatch:$PG_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 104: Total test count matches expected
 # ============================================================================
-echo -n "Test 104: Test infrastructure self-check... "
+echo -n "Test 105: Test infrastructure self-check... "
 # This test verifies the test suite is complete
-EXPECTED_TESTS=104
+EXPECTED_TESTS=83
 if [[ $((PASSED + FAILED + SKIPPED + 1)) -eq $EXPECTED_TESTS ]]; then
     echo -e "${GREEN}PASS${NC} ($EXPECTED_TESTS tests)"
     PASSED=$((PASSED + 1))

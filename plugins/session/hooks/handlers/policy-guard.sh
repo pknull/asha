@@ -16,7 +16,8 @@
 # matched tool call — strictly worse than the gap it closes.
 #
 # Harness is read from ASHA_HARNESS (set by the asha dispatcher); absent => claude.
-# Rule schema: {id, tool, command_regex|file_path_regex, action: deny|ask, reason, override_env?}
+# Rule schema: {id, tool, command_regex|file_path_regex, exclude_regex?, action: deny|ask|warn, reason, override_env?}
+# action=warn => awareness-only (violation-checker logs it; this guard does not block).
 
 set -uo pipefail   # deliberately NOT -e: we own every exit code; never die mid-eval
 
@@ -72,6 +73,7 @@ while [[ $i -lt $COUNT ]]; do
   r_reason="$(printf '%s' "$rule" | jq -r '.reason // "blocked by policy"' 2>/dev/null || echo "blocked by policy")"
   r_oenv="$(printf '%s' "$rule" | jq -r '.override_env // empty' 2>/dev/null || true)"
   r_max="$(printf '%s' "$rule" | jq -r '.max_per_session // empty' 2>/dev/null || true)"
+  r_exclude="$(printf '%s' "$rule" | jq -r '.exclude_regex // empty' 2>/dev/null || true)"
 
   [[ -n "$r_tool" ]] || continue
   printf '%s' "$TOOL_NAME" | grep -Eq "^($r_tool)\$" 2>/dev/null || continue
@@ -82,6 +84,12 @@ while [[ $i -lt $COUNT ]]; do
   fi
   if [[ $matched -eq 0 && -n "$r_filere" && -n "$FILE" ]]; then
     printf '%s' "$FILE" | grep -Eq "$r_filere" 2>/dev/null && matched=1
+  fi
+  # exclude_regex: suppress a matched rule when the command/file ALSO matches the
+  # exclusion (lets a rule mean "Memory/ but NOT the mutable subset").
+  if [[ $matched -eq 1 && -n "$r_exclude" ]]; then
+    if [[ -n "$CMD" ]]  && printf '%s' "$CMD"  | grep -Eq "$r_exclude" 2>/dev/null; then matched=0; fi
+    if [[ $matched -eq 1 && -n "$FILE" ]] && printf '%s' "$FILE" | grep -Eq "$r_exclude" 2>/dev/null; then matched=0; fi
   fi
   [[ $matched -eq 1 ]] || continue
 
@@ -104,17 +112,30 @@ while [[ $i -lt $COUNT ]]; do
     fi
   fi
 
-  if [[ "$r_action" == "ask" && "$HARNESS" != "codex" ]]; then
-    # Claude / unknown harness: real permission prompt.
-    reason_json="$(printf '%s' "$r_reason" | jq -Rs . 2>/dev/null || true)"
-    [[ -n "$reason_json" ]] || exit 0   # fail-open if we can't encode
-    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' "$reason_json"
-    exit 0
-  fi
-
-  # Hard deny, or ask degraded on Codex (no dialog).
-  echo "BLOCKED by Asha policy [$r_id]: ${r_reason}${ohint}" >&2
-  exit 2
+  case "$r_action" in
+    warn|log)
+      # Awareness-only: violation-checker.sh logs this match post-hoc; the
+      # PreToolUse guard neither blocks nor prompts. Keep scanning later rules.
+      continue
+      ;;
+    ask)
+      if [[ "$HARNESS" != "codex" ]]; then
+        # Claude / unknown harness: real permission prompt.
+        reason_json="$(printf '%s' "$r_reason" | jq -Rs . 2>/dev/null || true)"
+        [[ -n "$reason_json" ]] || exit 0   # fail-open if we can't encode
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' "$reason_json"
+        exit 0
+      fi
+      # Codex has no permission dialog: degrade ask -> deny.
+      echo "BLOCKED by Asha policy [$r_id]: ${r_reason}${ohint}" >&2
+      exit 2
+      ;;
+    *)
+      # deny (and the deny-by-default fail-safe for an unset action).
+      echo "BLOCKED by Asha policy [$r_id]: ${r_reason}${ohint}" >&2
+      exit 2
+      ;;
+  esac
 done
 
 exit 0

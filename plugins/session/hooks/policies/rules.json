@@ -1,14 +1,39 @@
 {
   "version": 1,
-  "_comment": "Asha declarative PreToolUse policy rules. Evaluated by hooks/handlers/policy-guard.sh. User overrides/additions: ~/.asha/policies.json (merged by id, user wins). Schema per rule: {id, tool (anchored ERE on tool_name), command_regex|file_path_regex (ERE matched against the Bash command / file path), action: deny|ask, reason, override_env?}. NOTE: this is a soft string-pattern DETERRENT, not containment \u2014 command_regex matches short -r/-R only (long flags like --recursive and indirection like 'cd /home && find .' slip through), and an agent can evade deliberately. Pair with the harness's own permission/sandbox controls for hard limits.",
+  "_comment": "Asha declarative PreToolUse policy rules. Evaluated by hooks/handlers/policy-guard.sh. User overrides/additions: ~/.asha/policies.json (merged by id, user wins). Schema per rule: {id, tool (anchored ERE on tool_name), command_regex|file_path_regex (ERE matched against the Bash command / file path), action: deny|ask|warn (warn = log-only via violation-checker, never blocks), command_regex|file_path_regex, exclude_regex? (ERE; suppresses a matched rule when the command/path ALSO matches it — e.g. 'Memory/ but NOT the mutable subset'), reason, override_env?}. NOTE: this is a soft string-pattern DETERRENT, not containment — command_regex matches short -r/-R only (long flags like --recursive and indirection like 'cd /home && find .' slip through), and an agent can evade deliberately. Pair with the harness's own permission/sandbox controls for hard limits.",
   "rules": [
     {
       "id": "no-broad-home-scans",
       "tool": "Bash",
       "command_regex": "\\b(bfs|fd|find|rg|grep[[:space:]]+-[a-zA-Z]*[rR])\\b[^|;]*[[:space:]]/home(/pknull)?($|[[:space:]/])",
       "action": "ask",
-      "reason": "Broad scan over /home \u2014 /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to override.",
+      "reason": "Broad scan over /home — /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to override.",
       "override_env": "ASHA_ALLOW_BROAD_SCAN"
+    },
+    {
+      "id": "destructive-git",
+      "tool": "Bash",
+      "command_regex": "git[[:space:]]+(push[[:space:]][^|;]*(--force|-f([[:space:]]|$))|reset[[:space:]]+--hard|branch[[:space:]]+-[dD][[:space:]]+(main|master)([[:space:]]|$))",
+      "action": "ask",
+      "reason": "Destructive git operation (force-push / hard-reset / protected-branch delete) — irreversible or affects shared state. Confirm, or set ASHA_ALLOW_DESTRUCTIVE_GIT=1 to skip the prompt.",
+      "override_env": "ASHA_ALLOW_DESTRUCTIVE_GIT"
+    },
+    {
+      "id": "memory-protection",
+      "tool": "Write|Edit",
+      "file_path_regex": "/Memory/",
+      "exclude_regex": "/sessions/|/vector_db/|activeContext\\.md|techEnvironment\\.md|workflowProtocols\\.md",
+      "action": "ask",
+      "reason": "Edit to an immutable Memory/ file (identity/config). Mutable files (sessions/, activeContext, techEnvironment, workflowProtocols, vector_db) are exempt. Confirm, or set ASHA_ALLOW_MEMORY_EDIT=1.",
+      "override_env": "ASHA_ALLOW_MEMORY_EDIT"
+    },
+    {
+      "id": "vault-structure",
+      "tool": "Write",
+      "file_path_regex": "/Vault/",
+      "exclude_regex": "/Vault/(World|Books|Sessions|Characters|Templates|Resources)/",
+      "action": "warn",
+      "reason": "File written under Vault/ outside the expected top-level structure (World/Books/Sessions/Characters/Templates/Resources)."
     }
   ]
 }
