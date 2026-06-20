@@ -65,6 +65,7 @@ while [[ $i -lt $COUNT ]]; do
   r_filere="$(printf '%s' "$rule" | jq -r '.file_path_regex // empty' 2>/dev/null || true)"
   r_action="$(printf '%s' "$rule" | jq -r '.action // "match"' 2>/dev/null || echo match)"
   r_reason="$(printf '%s' "$rule" | jq -r '.reason // "policy match"' 2>/dev/null || echo "policy match")"
+  r_exclude="$(printf '%s' "$rule" | jq -r '.exclude_regex // empty' 2>/dev/null || true)"
 
   [[ -n "$r_tool" ]] || continue
   printf '%s' "$TOOL_NAME" | grep -Eq "^($r_tool)\$" 2>/dev/null || continue
@@ -75,6 +76,10 @@ while [[ $i -lt $COUNT ]]; do
   fi
   if [[ $matched -eq 0 && -n "$r_filere" && -n "$FILE" ]]; then
     printf '%s' "$FILE" | grep -Eq "$r_filere" 2>/dev/null && matched=1
+  fi
+  if [[ $matched -eq 1 && -n "$r_exclude" ]]; then
+    if [[ -n "$CMD" ]]  && printf '%s' "$CMD"  | grep -Eq "$r_exclude" 2>/dev/null; then matched=0; fi
+    if [[ $matched -eq 1 && -n "$FILE" ]] && printf '%s' "$FILE" | grep -Eq "$r_exclude" 2>/dev/null; then matched=0; fi
   fi
   [[ $matched -eq 1 ]] || continue
 
