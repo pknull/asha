@@ -40,6 +40,8 @@ const maxRounds = a.maxIterations || 3
 const mode = a.mode || P.defaultRunMode || 'gate' // 'solo' = one agent draft + self-audit (cheap); 'gate' = independent Critic+Continuity loop (scrutiny)
 const reviewerModel = a.reviewerModel || P.reviewerModel || 'sonnet' // gate reviewers grade an explicit checklist — cheaper than the drafter
 const draftModel = a.draftModel || P.draftModel || null // null = inherit the session model for drafting
+const directorRubric = P.directorRubric || null // OPTIONAL: when bound, a 3rd parallel reviewer scores pacing/dwell (the anti-rush Director); absent = not run (zero cost)
+const hasDirector = !!directorRubric
 const draftOpts = (label, phase) => {
   const o = { label, phase, schema: PROSE_SCHEMA }
   if (draftModel) o.model = draftModel
@@ -77,7 +79,7 @@ Follow the PROSE directives in your rubric EXACTLY; render in the voice spec's r
 BRIEF:
 ${brief}
 
-SELF-AUDIT (do this silently, then return only the corrected prose): check your draft against every CRITIC auto-fail and CONTINUITY category named in your rubric AND the shared craft-core — POV / psychic-awareness, canon speech & voice-budgets, telegraphing, verbal tics, exposition-dump, failure-to-advance, invented mechanics, setting / locked-beat breaks, softened stakes, flatness, AND the universal craft auto-fails (both_true_resolution, narrated_contradiction, editorializing_close) — and rewrite to eliminate each.
+SELF-AUDIT (do this silently, then return only the corrected prose): check your draft against every CRITIC auto-fail and CONTINUITY category named in your rubric, AND every universal auto-fail defined in the shared craft-core — its tension/resolution rules, its pacing / anti-rush family (telegraphed destination, arrived-not-approached, rushed increment, dwell deficit), and its shared craft rules — plus POV / psychic-awareness, canon speech & voice-budgets, telegraphing, verbal tics, exposition-dump, failure-to-advance, invented mechanics, setting / locked-beat breaks, softened stakes, flatness — and rewrite to eliminate each.
 
 Return: \`beat\` = ONLY the finished, self-corrected prose (no preamble/headers/notes; do NOT write to any file); \`selfCaught\` = a short list of issues you caught and fixed (one short phrase each, e.g. "pov: cut 'he decides'"), or [] if none.`
 }
@@ -125,7 +127,7 @@ const PROSE_SCHEMA = {
 }
 
 function criticPrompt(draft) {
-  return `You are the CRITIC agent for ${P.label}. Read the shared craft-core (${CORE}), your rubric (${P.rubric}), and voice spec (${P.voiceSpec}). Score the DRAFT below against BOTH the CRITIC section of your rubric AND every auto-fail in the shared craft-core (voice/register, mechanical/telegraphic phrasing, exposition density, the universal auto-fails — both_true_resolution, narrated_contradiction, editorializing_close — and any profile-specific auto-fails). Be adversarial — assume flaws exist; if your first pass finds nothing, look again. PASS only per your rubric's stated thresholds. Quote the offending text verbatim and give a concrete fix in each violation. If it passes, return pass=true with empty violations and empty revision_directive; if it fails, write revision_directive as one concrete paragraph the Prose agent can act on.
+  return `You are the CRITIC agent for ${P.label}. Read the shared craft-core (${CORE}), your rubric (${P.rubric}), and voice spec (${P.voiceSpec}). Score the DRAFT below against BOTH the CRITIC section of your rubric AND every auto-fail defined in the shared craft-core (voice/register, mechanical/telegraphic phrasing, exposition density, the tension/resolution rules, the pacing / anti-rush family, the shared craft rules, and any profile-specific auto-fails). Be adversarial — assume flaws exist; if your first pass finds nothing, look again. PASS only per your rubric's stated thresholds. Quote the offending text verbatim and give a concrete fix in each violation. If it passes, return pass=true with empty violations and empty revision_directive; if it fails, write revision_directive as one concrete paragraph the Prose agent can act on.
 
 DRAFT:
 """
@@ -135,6 +137,15 @@ ${draft}
 
 function continuityPrompt(draft) {
   return `You are the CONTINUITY agent for ${P.label}. Read your continuity authority (${P.continuityAuthority}), your rubric (${P.rubric}), the bible/character canon (${P.bible}), and the scene context (${ctxFile} — including any LOCKED beat in its comment-block). Score the DRAFT below against the CONTINUITY categories DEFINED IN YOUR PROFILE RUBRIC ONLY. PASS only if there are zero violations. Quote the offending text verbatim and give a concrete fix. If it passes, return pass=true with empty violations and empty revision_directive; if it fails, write revision_directive as one concrete paragraph the Prose agent can act on.
+
+DRAFT:
+"""
+${draft}
+"""`
+}
+
+function directorPrompt(draft) {
+  return `You are the DIRECTOR agent for ${P.label} — the dedicated PACING reviewer. Read your director rubric (${directorRubric}) and the scene context (${ctxFile} — for the beat's place in the arc and the weight of comparable beats). Judge the DRAFT below for PACING / RUSHING ONLY, against the categories in your director rubric. Do NOT judge voice, continuity, or canon — those are other agents' jobs. Be adversarial about speed: if the beat "lands the idea" cleanly or feels efficient, suspect rushing. PASS only if it dwells appropriately and WITHHOLDS its payoff — the destination must not be reached or telegraphed inside this beat. If it fails, write revision_directive as one concrete paragraph that pushes SLOWER and EARLIER: name the payoff to withhold, the increment to render instead, and where to cut the beat short.
 
 DRAFT:
 """
@@ -164,45 +175,56 @@ if (!draft) {
 // ---- iterate: score in parallel, redraft on failure, cap at maxRounds ----
 let crit = null
 let cont = null
+let dir = null
 let round = 0
 const caughtLog = []
 
 for (round = 1; round <= maxRounds; round++) {
-  const [c, k] = await parallel([
+  const reviewers = [
     () => agent(criticPrompt(draft), { label: `critic:${profileKey}:r${round}`, phase: 'Review', schema: VERDICT_SCHEMA, model: reviewerModel }),
     () => agent(continuityPrompt(draft), { label: `continuity:${profileKey}:r${round}`, phase: 'Review', schema: VERDICT_SCHEMA, model: reviewerModel }),
-  ])
+  ]
+  if (hasDirector) {
+    reviewers.push(() => agent(directorPrompt(draft), { label: `director:${profileKey}:r${round}`, phase: 'Review', schema: VERDICT_SCHEMA, model: reviewerModel }))
+  }
+  const [c, k, d] = await parallel(reviewers)
   crit = c
   cont = k
+  dir = d || null
 
   const critPass = !!(c && c.pass)
   const contPass = !!(k && k.pass)
+  const dirPass = hasDirector ? !!(d && d.pass) : true
   const critViol = (c && c.violations) || []
   const contViol = (k && k.violations) || []
-  log(`[${profileKey}] Round ${round}: critic ${critPass ? 'PASS' : 'FAIL'} (${critViol.length} viol), continuity ${contPass ? 'PASS' : 'FAIL'} (${contViol.length} viol)`)
+  const dirViol = (d && d.violations) || []
+  log(`[${profileKey}] Round ${round}: critic ${critPass ? 'PASS' : 'FAIL'} (${critViol.length} viol), continuity ${contPass ? 'PASS' : 'FAIL'} (${contViol.length} viol)${hasDirector ? `, director ${dirPass ? 'PASS' : 'FAIL'} (${dirViol.length} viol)` : ''}`)
 
-  if (critPass && contPass) break
+  if (critPass && contPass && dirPass) break
 
   critViol.forEach((v) => caughtLog.push(`critic:${v.category}`))
   contViol.forEach((v) => caughtLog.push(`continuity:${v.category}`))
+  dirViol.forEach((v) => caughtLog.push(`director:${v.category}`))
 
   if (round < maxRounds) {
     const directive = [
       !critPass && c ? `CRITIC fixes required:\n${c.revision_directive || critViol.map((v) => `- ${v.category}: ${v.fix}`).join('\n')}` : '',
       !contPass && k ? `CONTINUITY fixes required:\n${k.revision_directive || contViol.map((v) => `- ${v.category}: ${v.fix}`).join('\n')}` : '',
+      !dirPass && d ? `DIRECTOR (pacing) fixes required:\n${d.revision_directive || dirViol.map((v) => `- ${v.category}: ${v.fix}`).join('\n')}` : '',
     ].filter(Boolean).join('\n\n')
     const revObj = await agent(prosePrompt(directive), draftOpts(`prose:revise:${profileKey}:r${round}`, 'Revise'))
     draft = revObj && revObj.beat
     if (!draft) {
-      return { beat: null, profile: profileKey, converged: false, rounds: round, unresolved: ['prose agent returned nothing on revision'], critic: crit, continuity: cont }
+      return { beat: null, profile: profileKey, converged: false, rounds: round, unresolved: ['prose agent returned nothing on revision'], critic: crit, continuity: cont, director: dir }
     }
   }
 }
 
-const converged = !!(crit && crit.pass && cont && cont.pass)
+const converged = !!(crit && crit.pass && cont && cont.pass && (!hasDirector || (dir && dir.pass)))
 const finalUnresolved = []
 ;((crit && crit.violations) || []).forEach((v) => finalUnresolved.push(`critic:${v.category}`))
 ;((cont && cont.violations) || []).forEach((v) => finalUnresolved.push(`continuity:${v.category}`))
+;((dir && dir.violations) || []).forEach((v) => finalUnresolved.push(`director:${v.category}`))
 const uniq = (arr) => arr.filter((x, i) => arr.indexOf(x) === i)
 
 return {
@@ -212,8 +234,10 @@ return {
   rounds: round > maxRounds ? maxRounds : round,
   finalCriticPass: !!(crit && crit.pass),
   finalContinuityPass: !!(cont && cont.pass),
+  finalDirectorPass: hasDirector ? !!(dir && dir.pass) : undefined,
   caughtAndFixed: uniq(caughtLog),
   unresolved: converged ? [] : uniq(finalUnresolved),
   critic: crit,
   continuity: cont,
+  director: hasDirector ? dir : undefined,
 }

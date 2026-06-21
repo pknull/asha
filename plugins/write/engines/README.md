@@ -13,8 +13,10 @@ via `args.profileConfig` (a resolved *mode manifest*).
 ```
 draft (Prose agent)
   ├─ mode:"solo"  → one agent drafts + self-audits against the profile, returns. (cheap default)
-  └─ mode:"gate"  → Prose ─▶ (Critic ‖ Continuity) score in parallel ─▶ revise ─▶ re-score
+  └─ mode:"gate"  → Prose ─▶ (Critic ‖ Continuity ‖ Director?) score in parallel ─▶ revise ─▶ re-score
                     cap at maxIterations (default 3). (scrutiny tier)
+                    Director runs only when profileConfig.directorRubric is set — a pacing /
+                    anti-rush reviewer; absent = not run (zero cost). All reviewers must PASS to converge.
 ```
 
 Output stays in the caller's chat. The engine **never writes to a manuscript or canon file**.
@@ -40,7 +42,10 @@ Output stays in the caller's chat. The engine **never writes to a manuscript or 
   unit,                 // what one draft produces ("GM-voice RP scene beat", "prose passage")
   rubric,               // ABS path: profile-specific craft rubric (auto-fails + scoring)
   voiceSpec,            // ABS path: voice authority
-  craftCore,            // ABS path: SHARED craft-core (universal auto-fails) — same across modes
+  craftCore,            // ABS path: SHARED craft-core (universal auto-fails + pacing/anti-rush) — same across modes
+                        //   conventionally ${asha}/craft/craft-core-universal.md (ships with this plugin)
+  directorRubric,       // OPTIONAL ABS path: enables the Director (pacing/anti-rush) reviewer in gate mode
+                        //   conventionally ${asha}/craft/director-rubric.md (ships with this plugin)
   continuityAuthority,  // ABS path: continuity/state authority
   bible,                // ABS path(s): character/world canon (string; multiple joined ' + ')
   context,              // ABS path: starting scene/state file
@@ -68,13 +73,14 @@ All paths must be **absolute** (the engine has no filesystem access and does no 
    | `mode`, `label`, `unit`, `defaultRunMode` | same |
    | `slots.craftRubric` | `rubric` |
    | `slots.voiceSpec` | `voiceSpec` |
-   | `slots.craftCore` | `craftCore` |
+   | `slots.craftCore` | `craftCore` (conventionally `${asha}/craft/craft-core-universal.md`) |
+   | `slots.directorRubric` | `directorRubric` (OPTIONAL; conventionally `${asha}/craft/director-rubric.md`) |
    | `slots.continuityAuthority` | `continuityAuthority` |
    | `slots.bible` (string or list) | `bible` (list → `'"a" + "b"'`) |
    | `slots.context` | `context` |
    | `models.reviewer` | `reviewerModel` |
    | `models.draft` | `draftModel` |
-   | (every `${mem}`/`${vault}` token) | substituted from `roots` to an absolute path |
+   | (every `${mem}`/`${vault}`/`${asha}` token) | substituted from `roots` to an absolute path |
 
    `extensions.*` (the live-interactive layer) is **not** consumed by this engine.
 4. **Invoke**:
@@ -83,10 +89,27 @@ All paths must be **absolute** (the engine has no filesystem access and does no 
               args: { profileConfig: <resolved>, beatBrief: '…', mode: 'gate' } })
    ```
 
+## Shared craft layer (ships with this plugin)
+
+`plugins/write/craft/` holds the **generic, portable** craft files, fed to every profile:
+
+- `craft-core-universal.md` — universal CRITIC auto-fails (tension/resolution + the **pacing / anti-rush
+  family**: `telegraphed_destination`, `arrived_not_approached`, `rushed_increment`, `dwell_deficit`),
+  shared craft rules, and the generative directives (incl. *pacing-intent-first / approach-don't-arrive*).
+  Fed to every profile's Prose/solo drafter (via `SOURCES`) and to the Critic + solo self-audit. **Not** fed
+  to Continuity. A profile rubric adds domain-specific detection **on top**.
+- `director-rubric.md` — the optional **Director**'s pacing scoring (enabled per-manifest via
+  `slots.directorRubric`).
+
+Projects inherit the whole layer by adding an `asha:` root to the manifest's `roots`
+(`asha: <ASHA_ROOT>/plugins/write`) and pointing `slots.craftCore` / `slots.directorRubric` at
+`${asha}/craft/...`. A new project gets the universal craft + Director for free; it supplies only its
+own profile rubric, voice, and bible.
+
 ## Return value
 
 `solo`: `{ beat, profile, mode:"solo", selfCaught[] }`
-`gate`: `{ beat, profile, converged, rounds, finalCriticPass, finalContinuityPass, caughtAndFixed[], unresolved[], critic, continuity }`
+`gate`: `{ beat, profile, converged, rounds, finalCriticPass, finalContinuityPass, finalDirectorPass?, caughtAndFixed[], unresolved[], critic, continuity, director? }` — `finalDirectorPass`/`director` present only when the Director ran (`directorRubric` set).
 On no-output: `{ beat:null, …, error|unresolved }`.
 
 ## Notes
