@@ -416,5 +416,107 @@ class CalibrationDedupTests(unittest.TestCase):
         self.assertIn("AI-tell phrasings in prose", result)
 
 
+class WWAProvenanceStampTests(unittest.TestCase):
+    """The lead 'What Was Accomplished' carries a '<!-- wwa-session: <id> -->'
+    provenance stamp ONLY when this session produced a real WWA, and the stamp
+    never leaks onto a carried-forward prior WWA (issue #2: bg /save handoff gap).
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="asha_pa_wwa_")
+        self.project = Path(self.tmp) / "project"
+        (self.project / "Memory" / "events").mkdir(parents=True)
+        self._saved_env = {
+            "CLAUDE_PROJECT_DIR": os.environ.get("CLAUDE_PROJECT_DIR"),
+            "HOME": os.environ.get("HOME"),
+        }
+        os.environ["CLAUDE_PROJECT_DIR"] = str(self.project)
+        os.environ["HOME"] = str(self.tmp)
+        for mod in ("pattern_analyzer",):
+            sys.modules.pop(mod, None)
+        import pattern_analyzer  # type: ignore[reportMissingImports]  # noqa: E402
+        self.pa = pattern_analyzer
+        # generate_active_context calls synthesize_learnings -> save_patterns
+        # (disk). Stub it out so these tests stay pure and assert only on the
+        # WWA stamp.
+        self.pa.synthesize_learnings = lambda events, patterns: ["stubbed"]
+
+    def tearDown(self):
+        for key, prior in self._saved_env.items():
+            if prior is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = prior
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _lead_wwa_body(self, text):
+        """Body between the first '## What Was Accomplished' and the next '##'."""
+        import re
+        m = re.search(r"^##\s+What Was Accomplished\b.*$", text, re.MULTILINE)
+        self.assertIsNotNone(m, "no WWA header found")
+        start = m.end()
+        nxt = re.search(r"^##\s", text[start:], re.MULTILINE)
+        return text[start:start + nxt.start()] if nxt else text[start:]
+
+    def test_stamp_emitted_when_real_accomplishments(self):
+        events = [
+            {"subtype": "file_modified", "payload": {"file_path": "a.py"}},
+            {"subtype": "file_created", "payload": {"file_path": "b.py"}},
+        ]
+        out = self.pa.generate_active_context(events, {"patterns": {}}, "sess-CURRENT")
+        body = self._lead_wwa_body(out)
+        self.assertIn("<!-- wwa-session: sess-CURRENT -->", body)
+        # Stamp is the FIRST non-blank line of the section (above the bullets).
+        non_blank = [ln for ln in body.splitlines() if ln.strip()]
+        self.assertTrue(non_blank[0].strip().startswith("<!-- wwa-session: sess-CURRENT"))
+        self.assertTrue(any(ln.startswith("- ") for ln in non_blank[1:]))
+
+    def test_no_stamp_for_stub_accomplishments(self):
+        # No file/agent/command events -> stub WWA -> no stamp (carries no claim).
+        events = [{"subtype": "error", "payload": {"error": "boom"}}]
+        out = self.pa.generate_active_context(events, {"patterns": {}}, "sess-CURRENT")
+        self.assertNotIn("wwa-session", out)
+        self.assertIn("No significant changes recorded", out)
+
+    def test_no_stamp_when_session_id_absent(self):
+        events = [{"subtype": "file_modified", "payload": {"file_path": "a.py"}}]
+        out = self.pa.generate_active_context(events, {"patterns": {}}, None)
+        self.assertNotIn("wwa-session", out)
+
+    def test_real_stamp_survives_first_synth_merge(self):
+        # Auto produces a stamped real WWA; existing has NO WWA variant -> auto
+        # goes through and the stamp lands on disk.
+        auto = self.pa.generate_active_context(
+            [{"subtype": "file_modified", "payload": {"file_path": "a.py"}}],
+            {"patterns": {}}, "sess-CURRENT")
+        existing = (
+            "---\nversion: \"2.0\"\n---\n\n# Active Context\n\n"
+            "## Next Steps\n\n- [ ] something\n\n"
+        )
+        merged = self.pa._merge_preserving_curated(auto, existing)
+        self.assertIn("<!-- wwa-session: sess-CURRENT -->", merged)
+
+    def test_stamp_not_leaked_to_prior_wwa_on_stub_merge(self):
+        # The bug case: current session is a stub (no real WWA, unstamped); a
+        # prior dated WWA exists. The merge keeps the prior WWA as lead and the
+        # current session's id must NOT appear anywhere.
+        auto = self.pa.generate_active_context(
+            [{"subtype": "error", "payload": {"error": "boom"}}],
+            {"patterns": {}}, "sess-CURRENT")
+        self.assertNotIn("wwa-session", auto)  # precondition: stub is unstamped
+        existing = (
+            "---\nversion: \"2.0\"\n---\n\n# Active Context\n\n"
+            "## What Was Accomplished (2026-06-20 — prior session work)\n\n"
+            "<!-- wwa-session: sess-PRIOR -->\n\n"
+            "- Real prior-session narrative.\n\n"
+            "## Next Steps\n\n- [ ] prior pickup\n\n"
+        )
+        merged = self.pa._merge_preserving_curated(auto, existing)
+        # Prior WWA preserved as the lead; its own stamp kept; current id absent.
+        self.assertIn("## What Was Accomplished (2026-06-20 — prior session work)", merged)
+        self.assertIn("sess-PRIOR", merged)
+        self.assertNotIn("sess-CURRENT", merged)
+
+
 if __name__ == "__main__":
     unittest.main()

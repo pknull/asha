@@ -20,6 +20,10 @@ Gates (each logged to Memory/events/save-preflight.jsonl):
                       scoped to the save's diff so historical cruft is ignored).
   3 ac_fresh          activeContext.md was updated this save (WARN) and Next Steps
     + ac_handoff      is not the generic stub (WARN).
+    + ac_wwa_         the LEAD "What Was Accomplished" section is stamped for THIS
+      provenance      session (HARD when the session had real activity but the
+                      lead WWA belongs to a foreign/prior session — the bg
+                      0-Edit/Write handoff gap; a truly empty session passes).
   4 push_durability   git push has a destination, else HEAD is queued for retry
                       with backoff — never silent (PASS). Delegates to push_retry.
 """
@@ -177,6 +181,89 @@ def gate_active_context(project_dir: Path, save_start: Optional[datetime]) -> li
 
 
 # --------------------------------------------------------------------------- #
+# Gate 3b — WWA provenance (lead handoff belongs to THIS session)
+# --------------------------------------------------------------------------- #
+# Matches the stamp pattern_analyzer writes under the lead WWA header. Keep in
+# sync with pattern_analyzer.WWA_SESSION_MARKER.
+_WWA_HEADER_RE = re.compile(r"^##\s+What Was Accomplished\b.*$", re.MULTILINE)
+_WWA_SESSION_RE = re.compile(r"<!--\s*wwa-session:\s*(\S+?)\s*-->")
+
+
+def _lead_wwa_section(text: str) -> Optional[str]:
+    """Body of the FIRST '## What Was Accomplished*' section (the lead handoff a
+    cold-start session reads first), or None if there is no such section."""
+    m = _WWA_HEADER_RE.search(text)
+    if not m:
+        return None
+    start = m.end()
+    nxt = re.search(r"^##\s", text[start:], re.MULTILINE)
+    return text[start:start + nxt.start()] if nxt else text[start:]
+
+
+def _session_event_count(project_dir: Path, current_sid: Optional[str]) -> int:
+    """Count events.jsonl entries stamped with current_sid — i.e. whether THIS
+    session actually did work (even if all of it went through Bash/RCON and
+    produced no Edit/Write events for the synthesizer to narrate)."""
+    if not current_sid:
+        return 0
+    events_file = Path(os.environ.get("ASHA_EVENTS_FILE") or (project_dir / "Memory" / "events" / "events.jsonl"))
+    if not events_file.exists():
+        return 0
+    n = 0
+    for line in events_file.read_text().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            ev = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if ev.get("session_id") == current_sid:
+            n += 1
+    return n
+
+
+def gate_wwa_provenance(project_dir: Path, current_sid: Optional[str]) -> GateResult:
+    """The lead 'What Was Accomplished' must belong to the current session.
+
+    Closes the bg /save handoff gap: a read-only / RCON / Bash-edit session that
+    emits no Edit/Write events generates no WWA, so the curated merge leaves the
+    PREVIOUS session's WWA as the lead — and ac_fresh (mtime-only) never notices.
+    A cold-start then reads a handoff describing the wrong session.
+
+    HARD-fails only when the session had real activity but the lead WWA is not
+    stamped for it. A truly empty session (nothing to hand off) passes, and an
+    unknown session id degrades to a warning rather than a block.
+    """
+    ac = project_dir / "Memory" / "activeContext.md"
+    if not ac.exists():
+        # ac_fresh already hard-fails on a missing file; don't double-report.
+        return GateResult("ac_wwa_provenance", "pass", False, "activeContext.md missing (see ac_fresh)")
+    lead = _lead_wwa_section(ac.read_text())
+    if lead is None:
+        return GateResult("ac_wwa_provenance", "pass", False,
+                          "no 'What Was Accomplished' section present to verify")
+    m = _WWA_SESSION_RE.search(lead)
+    stamped = m.group(1) if m else None
+    if current_sid and stamped == current_sid:
+        return GateResult("ac_wwa_provenance", "pass", True,
+                          f"lead WWA stamped current session {current_sid}")
+    if not current_sid:
+        return GateResult("ac_wwa_provenance", "warn", False,
+                          "current session id unknown; cannot verify lead WWA provenance")
+    activity = _session_event_count(project_dir, current_sid)
+    if activity == 0:
+        return GateResult("ac_wwa_provenance", "pass", False,
+                          f"lead WWA not stamped for {current_sid}, but this session has no events "
+                          f"(nothing to hand off)")
+    where = f"belongs to session {stamped}" if stamped else "carries no session stamp"
+    return GateResult("ac_wwa_provenance", "fail", True,
+                      f"lead 'What Was Accomplished' {where}, not current session {current_sid} "
+                      f"({activity} events this session) — the bg handoff gap: prepend a concrete "
+                      f"current-session WWA stamped '<!-- wwa-session: {current_sid} -->' before committing")
+
+
+# --------------------------------------------------------------------------- #
 # Gate 4 — push durability (queue + backoff, never silent)
 # --------------------------------------------------------------------------- #
 def gate_push(project_dir: Path, dry_run: bool = False) -> GateResult:
@@ -219,6 +306,7 @@ def run_gates(project_dir: Path, current_sid: Optional[str], save_start: Optiona
     results.append(gate_session_integrity(project_dir, current_sid))
     results.append(gate_clobber(project_dir))
     results += gate_active_context(project_dir, save_start)
+    results.append(gate_wwa_provenance(project_dir, current_sid))
     if not skip_push:
         results.append(gate_push(project_dir, dry_run=dry_run))
     return results

@@ -120,13 +120,13 @@ fi
 
 **Failures are non-fatal.** If the script is missing (other projects, or baseline dir not set up), skip silently. If it exits non-zero, log a one-line warning and continue — baseline accumulation is best-effort, not a gate on save.
 
-Then run the pre-flight verification gate (engine-backed — the enforced version of the manual Verification Gate below). It self-heals `Memory/`, confirms synthesis ran on THIS session's transcript (not a concurrent session's), and blocks a clobbered or foreign-sourced `activeContext.md` from being committed:
+Then run the pre-flight verification gate (engine-backed — the enforced version of the manual Verification Gate below). It self-heals `Memory/`, confirms synthesis ran on THIS session's transcript (not a concurrent session's), blocks a clobbered or foreign-sourced `activeContext.md`, and — via `ac_wwa_provenance` — hard-fails when the session did real work but the lead "What Was Accomplished" still belongs to a foreign/prior session (the bg 0-Edit/Write handoff gap). Run Verification-Gate Check 1 BEFORE this so the lead WWA is already current and stamped:
 
 ```bash
 "$ASHA_ROOT/plugins/session/tools/save_preflight.py" --mode guard --skip-push --project-dir "$PROJECT_DIR"
 ```
 
-If it exits non-zero (a HARD gate failed), STOP — fix the flagged issue (re-run synthesis with the correct transcript, regenerate the affected activeContext section) before committing. Do not commit over a hard failure. The same gates re-run post-commit via the Stop hook as a final net.
+If it exits non-zero (a HARD gate failed), STOP — fix the flagged issue (re-run synthesis with the correct transcript, regenerate the affected activeContext section, or prepend the current-session WWA the `ac_wwa_provenance` message names) before committing. Do not commit over a hard failure. The same gates re-run post-commit via the Stop hook as a final net.
 
 Then commit Memory changes. Dropping the `save-pending` marker first arms the Stop hook to run the post-commit verification gate for this turn:
 
@@ -148,9 +148,20 @@ Push unless `--no-push` specified. This uses the durable push path: if a remote/
 
 After synthesis writes activeContext.md and BEFORE staging it, verify the file is a usable handoff. Cold-start sessions depend on it. If any of these checks fail, stop and surface the issue to the user — do not paper over it with a commit.
 
-**Check 1 — "What Was Accomplished" is concrete, not auto-generic.**
+**Check 1 — "What Was Accomplished" is concrete, current, and provenance-stamped.**
 
-The synthesizer will write a generic block like `Created N file(s): ...` / `Modified N file(s): ...` when it has nothing better. That block is useless to a future session. If you see it as the LEAD section in activeContext, replace it with a concrete narrative of what actually happened this session (file paths, tool names, decisions, blockers).
+The synthesizer will write a generic block like `Created N file(s): ...` / `Modified N file(s): ...` when it has nothing better. That block is useless to a future session. The LEAD `## What Was Accomplished*` section MUST describe **this** session (file paths, tool names, decisions, blockers) — by the convention, prepend a dated heading `## What Was Accomplished (YYYY-MM-DD — topic)`.
+
+When you write or replace that lead section, stamp it with this session's id as the first body line so the `ac_wwa_provenance` gate can confirm it is current:
+
+```
+## What Was Accomplished (2026-06-22 — <topic>)
+<!-- wwa-session: $CLAUDE_CODE_SESSION_ID -->
+
+<concrete narrative…>
+```
+
+This matters most for **read-only / RCON / Bash-edit sessions that emit no Edit/Write events**: the synthesizer produces no WWA and the curated merge leaves the *previous* session's WWA as the lead. If you skip this, `ac_wwa_provenance` HARD-fails the save (active session + stale lead) until you prepend the stamped current WWA. (A session that genuinely did nothing has no events and is not blocked.) Use the literal session id from `$CLAUDE_CODE_SESSION_ID`; the synthesizer auto-stamps the lead only on a first-synth where its own WWA survives the merge.
 
 ```bash
 # Quick grep — if this matches and it's near the top, you have the auto-fallback

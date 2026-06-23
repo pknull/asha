@@ -199,6 +199,19 @@ USER_OWNED_SECTIONS = frozenset({
     "Next Steps",
 })
 
+# Fallback bullet synthesize_accomplishments emits when a session produced no
+# file/agent/command signal. Centralised so the stamp logic and the stub-merge
+# can both reason about "this WWA carries no real claim".
+_NO_ACCOMPLISHMENTS = "No significant changes recorded"
+
+# Provenance marker stamped as the first body line under the lead
+# "What Was Accomplished" header so save_preflight.gate_wwa_provenance can
+# confirm the lead WWA belongs to the session that generated it. Only a WWA
+# with real content is stamped — a stub carries no claim, stays unstamped, and
+# is dropped by the curated merge as before. Keep this literal in sync with
+# save_preflight._WWA_SESSION_RE.
+WWA_SESSION_MARKER = "wwa-session"
+
 
 def _split_sections(content: str) -> Tuple[str, List[Tuple[str, str]]]:
     """Split markdown into (preamble, [(heading, body), ...]).
@@ -659,7 +672,7 @@ def synthesize_accomplishments(events: List[Dict]) -> List[str]:
     if commands:
         accomplishments.append(f"Commands used: {', '.join(set(commands))}")
 
-    return accomplishments if accomplishments else ["No significant changes recorded"]
+    return accomplishments if accomplishments else [_NO_ACCOMPLISHMENTS]
 
 
 def synthesize_learnings(events: List[Dict], existing_patterns: Dict) -> List[str]:
@@ -749,7 +762,8 @@ def synthesize_next_steps(events: List[Dict]) -> List[str]:
     return next_steps if next_steps else ["Review and plan next session"]
 
 
-def generate_active_context(events: List[Dict], existing_patterns: Dict) -> str:
+def generate_active_context(events: List[Dict], existing_patterns: Dict,
+                            session_id: Optional[str] = None) -> str:
     """Generate activeContext.md content using Four Questions"""
     lines = []
 
@@ -765,9 +779,17 @@ def generate_active_context(events: List[Dict], existing_patterns: Dict) -> str:
     lines.append("")
 
     # What was accomplished?
+    accomplishments = synthesize_accomplishments(events)
     lines.append("## What Was Accomplished")
     lines.append("")
-    for item in synthesize_accomplishments(events):
+    # Stamp provenance ONLY when this session produced a real WWA. A stub
+    # ("No significant changes recorded") carries no claim, so it stays
+    # unstamped and the curated merge drops it (see _is_pure_stub_body). The
+    # save_preflight gate then hard-fails an active session whose lead WWA is
+    # not stamped for it — forcing a concrete, current handoff to be written.
+    if session_id and accomplishments != [_NO_ACCOMPLISHMENTS]:
+        lines.append(f"<!-- {WWA_SESSION_MARKER}: {session_id} -->")
+    for item in accomplishments:
         lines.append(f"- {item}")
     lines.append("")
 
@@ -1130,7 +1152,7 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     # gets updated to merged content and the next run "doesn't see"
     # manual sections to protect. Backup still fires only on detected
     # manual edits, as a defensive recovery point.
-    active_context = generate_active_context(events, existing_patterns)
+    active_context = generate_active_context(events, existing_patterns, session_id)
 
     if ACTIVE_CONTEXT.exists():
         existing_content = ACTIVE_CONTEXT.read_text()
