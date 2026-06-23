@@ -116,6 +116,34 @@ else
 fi
 echo ""
 
+# Test Suite 6: JavaScript Engine Tests (if node available)
+echo -e "${BLUE}--- Test Suite 6: JavaScript Engine Tests ---${NC}"
+if command -v node &>/dev/null; then
+    if compgen -G "$SCRIPT_DIR/js/*.test.mjs" >/dev/null; then
+        JS_ERRORS=0
+        for jstest in "$SCRIPT_DIR"/js/*.test.mjs; do
+            if ! node "$jstest"; then
+                echo -e "${RED}  ✗ $(basename "$jstest")${NC}"
+                JS_ERRORS=$((JS_ERRORS + 1))
+            fi
+        done
+        if [[ $JS_ERRORS -eq 0 ]]; then
+            echo -e "${GREEN}✓ JavaScript engine tests passed${NC}"
+            TOTAL_PASSED=$((TOTAL_PASSED + 1))
+        else
+            echo -e "${RED}✗ JavaScript engine tests failed ($JS_ERRORS file(s))${NC}"
+            TOTAL_FAILED=$((TOTAL_FAILED + 1))
+        fi
+    else
+        echo -e "${YELLOW}⚠ no tests/js/*.test.mjs found, skipping${NC}"
+        TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+    fi
+else
+    echo -e "${YELLOW}⚠ node not found, skipping JS engine tests${NC}"
+    TOTAL_SKIPPED=$((TOTAL_SKIPPED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"
