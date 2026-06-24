@@ -603,12 +603,14 @@ copilot_uninstall() {
     log "[copilot] no hooks.json at $COPILOT_HOOKS_FILE"
   fi
 
-  # Cached identity (regenerated on next asha-copilot launch; safe to remove)
-  if [[ -f "$HOME/.cache/asha/instructions-copilot.md" ]]; then
+  # Cached identity + per-launch instructions dir (both regenerated on next
+  # asha-copilot launch; safe to remove)
+  if [[ -f "$HOME/.cache/asha/instructions-copilot.md" || -d "$HOME/.cache/asha/copilot-instr" ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
-      say "[copilot] would remove ~/.cache/asha/instructions-copilot.md"
+      say "[copilot] would remove ~/.cache/asha/instructions-copilot.md + copilot-instr/"
     else
       rm -f "$HOME/.cache/asha/instructions-copilot.md"
+      rm -rf "$HOME/.cache/asha/copilot-instr"
       rmdir "$HOME/.cache/asha" 2>/dev/null
       log "[copilot] removed cached identity"
     fi

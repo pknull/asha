@@ -144,30 +144,22 @@ exec_copilot() {
     exec "$cmd" "$@"
   fi
 
-  # Copilot CLI v1.0.x has no --instructions-file flag; persona must be wired
-  # via a project-scope AGENTS.md / .github/copilot-instructions.md.
-  local proj_instr="$PWD/.github/copilot-instructions.md"
-  local proj_agents="$PWD/AGENTS.md"
-  if [[ -L "$proj_instr" ]] && [[ "$(resolve_path "$proj_instr")" == "$(resolve_path "$instr")" ]]; then
-    info "[asha copilot] persona: wired via .github/copilot-instructions.md -> cache"
-  elif [[ -e "$proj_instr" ]] || [[ -e "$proj_agents" ]]; then
-    info "[asha copilot] persona: project has its own instructions file"
-    info "[asha copilot]   if it should pick up updated Asha identity, regenerate from:"
-    info "[asha copilot]   $instr"
-  else
-    info "[asha copilot] persona: NOT wired in this project"
-    info ""
-    info "asha launches Copilot WITH Asha persona, but Copilot CLI v1.0.x has no"
-    info "--instructions-file flag. Wire it once for this project:"
-    info ""
-    info "  mkdir -p .github"
-    info "  ln -s $instr .github/copilot-instructions.md"
-    info "  echo '.github/copilot-instructions.md' >> .gitignore"
-    info ""
-    info "Then re-run: asha copilot"
-    info "For plain Copilot (no persona), run 'copilot' directly."
-    exit 1
-  fi
+  # Persona injection — per-launch scoped, mirroring claude's
+  # --append-system-prompt-file and codex's model_instructions_file. Copilot CLI
+  # (>=1.0.x) auto-loads instructions from any dir named in
+  # COPILOT_CUSTOM_INSTRUCTIONS_DIRS, scanning <dir>/.github/instructions/**/*.instructions.md.
+  # Wiring it through the launch env (not a committed project file) keeps plain
+  # `copilot` persona-free (the escape hatch) and never touches the repo.
+  # Empirical (CLI 1.0.63): a bare AGENTS.md in a custom dir is NOT scanned —
+  # only the .github/instructions/*.instructions.md form is — so wrap the merged
+  # identity in that layout with an applyTo:"**" header. Regenerated every launch.
+  local instr_dir instr_file
+  instr_dir="${ASHA_COPILOT_INSTR_DIR:-$HOME/.cache/asha/copilot-instr}"
+  instr_file="$instr_dir/.github/instructions/asha.instructions.md"
+  mkdir -p "$(dirname "$instr_file")"
+  { printf -- '---\napplyTo: "**"\n---\n'; cat "$instr"; } > "$instr_file"
+  export COPILOT_CUSTOM_INSTRUCTIONS_DIRS="$instr_dir${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:+,$COPILOT_CUSTOM_INSTRUCTIONS_DIRS}"
+  info "[asha copilot] persona: wired via COPILOT_CUSTOM_INSTRUCTIONS_DIRS (user-level, this launch only)"
   exec "$cmd" "$@"
 }
 
