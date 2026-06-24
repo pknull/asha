@@ -158,6 +158,24 @@ exec_copilot() {
   instr_file="$instr_dir/.github/instructions/asha.instructions.md"
   mkdir -p "$(dirname "$instr_file")"
   { printf -- '---\napplyTo: "**"\n---\n'; cat "$instr"; } > "$instr_file"
+
+  # Operational layer (operation.md + learnings hot tier) — file-based, so it
+  # rides the same custom-instructions dir as a second *.instructions.md. On
+  # Claude this content loads via the SessionStart hook; Copilot has no usable
+  # hook, so inject it here for behavioral parity. Regenerated every launch;
+  # absent/empty → no file written (and any stale copy is cleared).
+  local op_merge op_file op_tmp
+  op_merge="$IDENTITY_DIR/operational-merge.sh"
+  op_file="$instr_dir/.github/instructions/asha-operational.instructions.md"
+  op_tmp="$(mktemp)"
+  if [[ -x "$op_merge" ]] && "$op_merge" "$op_tmp" 2>/dev/null; then
+    { printf -- '---\napplyTo: "**"\n---\n'; cat "$op_tmp"; } > "$op_file"
+    info "[asha copilot] operational layer: operation.md + learnings hot tier wired"
+  else
+    rm -f "$op_file"
+  fi
+  rm -f "$op_tmp"
+
   export COPILOT_CUSTOM_INSTRUCTIONS_DIRS="$instr_dir${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:+,$COPILOT_CUSTOM_INSTRUCTIONS_DIRS}"
   info "[asha copilot] persona: wired via COPILOT_CUSTOM_INSTRUCTIONS_DIRS (user-level, this launch only)"
   exec "$cmd" "$@"

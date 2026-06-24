@@ -26,15 +26,20 @@ persona re‑tested 2026‑06‑24) plus upstream docs and issue trackers.
 
 | Capability | Claude Code | OpenAI Codex 0.139 | GitHub Copilot CLI 1.0.63 |
 |---|---|---|---|
-| Corpus mount (skills/agents/commands) | ✅ | ✅ | ✅ |
+| Corpus mount (skills/agents) | ✅ | ✅ | ✅ |
+| Slash commands | ✅ native | ⚠️ converted to skills | ⚠️ converted to skills |
+| Output styles (`/style`) | ✅ | ✖ skipped | ✖ skipped |
 | Persona injection | ✅ (`--append-system-prompt-file`) | ✅ (`-c model_instructions_file`) | ✅ (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch) |
+| Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✖ identity merge only (not wired) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
-| SessionStart context injection (hook) | ✅ | ❓ uncertain (hook firing, see below) | ⚠️ hooks now GA; asha uses transcript capture |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✖ do not fire** | **⚠️ GA; not re-tested on 1.0.63 (see below)** |
 
-Only the guardrail row is Claude-only. Everything asha needs that is file-based —
-corpus, persona (all three; Copilot persona fixed 2026‑06‑24), memory capture —
-works on all three CLIs.
+Only the guardrail row is Claude-only. The file-based layers — corpus, persona
+(all three; Copilot persona fixed 2026‑06‑24), and the operational layer
+(operation.md + learnings; Copilot wired 2026‑06‑24 via the same instructions
+dir) — work on all three CLIs. Note: slash commands are remapped to skills on
+Codex/Copilot (no native command primitive), and the `output-styles` plugin is
+Claude-only.
 
 ## Per-harness findings
 
@@ -81,6 +86,17 @@ note: a bare `AGENTS.md` inside a custom dir is **not** scanned — only the
 *is* loaded, additively). asha's earlier hook-retirement was for a payload-delivery
 gap in a pre-GA CLI; capture now reads the native `events.jsonl`, so that's moot.
 
+**Operational layer — WORKS (wired + verified live 2026‑06‑24).** The same
+custom-instructions dir carries a second file,
+`asha-operational.instructions.md`, generated each launch by
+`identity/operational-merge.sh` — `~/.asha/operation.md` (cap 4 KB, fallback
+CORE.md) + the learnings hot tier (`learnings_manager.py render-hot`, same
+budgets as `session-start.sh`). This is the file-based equivalent of Claude's
+SessionStart hook, so Copilot gets the operational guidelines + learnings without
+needing a working hook. Verified: launched via the wrapper, Copilot quoted a
+`Surgical Edits` line from `operation.md` verbatim. (Codex still lacks this — its
+`model_instructions_file` carries only the identity merge.)
+
 **PreToolUse guardrails — verdict NOT re-verified on 1.0.63.** The "won't pursue"
 call below dates to the issue tracker (2026‑06‑17), not a live test on the current
 CLI. As of 2026‑06‑24 Copilot hooks are **GA and documented**: eight events
@@ -104,9 +120,10 @@ Treat "won't pursue" as not-yet-confirmed, not a current finding.**
 | Claude guardrails | **Works** (enforced, verified) |
 | Codex guardrails | **Can't fix (upstream)** — 0.139 doesn't fire PreToolUse for its shell (`unified_exec`) path; flat + nested schema + `[features] hooks=true` + trust-bypass all tested, none fire (confirmed by Codex itself). Shell/edit-only even where hooks do work ([#20204](https://github.com/openai/codex/issues/20204)). |
 | Copilot persona | **Works** (fixed + verified 2026‑06‑24, CLI 1.0.63) — `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch. |
+| Copilot operational layer | **Works** (wired + verified 2026‑06‑24) — `operation.md` + learnings hot tier via a second instructions file. |
 | Copilot guardrails | **Stale — needs re-test on 1.0.63.** Hooks are now GA with documented `preToolUse` deny; the prior "unsafe" call rests on the un-re-verified concurrency fail‑open ([#2893](https://github.com/github/copilot-cli/issues/2893)). Not re-tested this round. |
 
-**Bottom line:** the file-based layers — corpus, persona (all three; Copilot persona fixed 2026‑06‑24), memory/capture — are fully cross-harness. **Real-time guardrail enforcement is Claude-only as of the last live test**: Codex can't (upstream `unified_exec` gap) and Copilot's verdict is stale pending a 1.0.63 re-test. The gap is scoped precisely to live tool-call interception, not to asha's value on those harnesses overall.
+**Bottom line:** the file-based layers — corpus, persona (all three), and the operational layer (operation.md + learnings; Copilot wired 2026‑06‑24, Codex still pending), plus memory/capture — are cross-harness. **Real-time guardrail enforcement is Claude-only as of the last live test**: Codex can't (upstream `unified_exec` gap) and Copilot's verdict is stale pending a 1.0.63 re-test. The remaining gap is scoped precisely to live tool-call interception, not to asha's value on those harnesses overall.
 
 ## Test methodology (2026‑06‑17)
 
