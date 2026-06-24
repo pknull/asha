@@ -574,12 +574,13 @@ codex_uninstall() {
     fi
   fi
 
-  # Cached identity (regenerated on next asha-codex launch; safe to remove)
-  if [[ -f "$HOME/.cache/asha/instructions.md" ]]; then
+  # Cached identity + combined identity-plus-operational file (both regenerated
+  # on the next asha-codex launch; safe to remove)
+  if [[ -f "$HOME/.cache/asha/instructions.md" || -f "$HOME/.cache/asha/instructions-codex.md" ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
-      say "[codex] would remove ~/.cache/asha/instructions.md"
+      say "[codex] would remove ~/.cache/asha/instructions.md + instructions-codex.md"
     else
-      rm -f "$HOME/.cache/asha/instructions.md"
+      rm -f "$HOME/.cache/asha/instructions.md" "$HOME/.cache/asha/instructions-codex.md"
       rmdir "$HOME/.cache/asha" 2>/dev/null
       log "[codex] removed cached identity"
     fi

@@ -202,8 +202,25 @@ launch() {
       fi
       ;;
     codex)
-      local instr="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
-      if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$instr"; then
+      local base instr op_merge op_tmp
+      base="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
+      instr="$base"
+      if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
+        # Operational layer (operation.md + learnings) — codex takes a single
+        # model_instructions_file and its SessionStart hook does NOT reliably
+        # inject (verified: codex exec doesn't deliver it; same unreliable hook
+        # path as PreToolUse/unified_exec). So fold operational into the same
+        # file as the identity — the channel we know works. Combined file is
+        # regenerated each launch; canonical instructions.md stays identity-only.
+        op_merge="$IDENTITY_DIR/operational-merge.sh"
+        if [[ -x "$op_merge" ]]; then
+          op_tmp="$(mktemp)"
+          if "$op_merge" "$op_tmp" 2>/dev/null; then
+            instr="$HOME/.cache/asha/instructions-codex.md"
+            { cat "$base"; printf '\n\n'; cat "$op_tmp"; } > "$instr"
+          fi
+          rm -f "$op_tmp"
+        fi
         exec codex -c "model_instructions_file=\"$instr\"" "$@"
       fi
       info "warn: identity merge failed; launching plain codex"
