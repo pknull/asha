@@ -33,7 +33,7 @@ persona re‑tested 2026‑06‑24) plus upstream docs and issue trackers.
 | Persona injection | ✅ (`--append-system-prompt-file`) | ✅ (`-c model_instructions_file`) | ✅ (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch) |
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
-| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✖ do not fire (re-confirmed 0.142)** | **✅ fires + denies (1.0.63, single-call; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
+| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✖ do not fire (re-confirmed 0.142)** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
 
 Guardrails now enforce on **Claude and Copilot** (Copilot single-call deny
 verified live on 1.0.63, 2026‑06‑24); only **Codex** can't (its shell runs
@@ -117,36 +117,39 @@ needing a working hook. Verified: launched via the wrapper, Copilot quoted a
 folded into its `model_instructions_file`, since its SessionStart hook doesn't
 reliably inject; verified live on Codex 0.142.0.)
 
-**PreToolUse guardrails — WORK (verified live on 1.0.63, 2026‑06‑24).** The old
-"won't pursue / unsafe" verdict was stale. A sentinel `preToolUse` hook at
-`~/.copilot/hooks/hooks.json` **fired and denied** a shell command — Copilot
-printed *"Denied by preToolUse hook: asha-guardtest sentinel"* and refused to run
-it. So content-based deny genuinely enforces on Copilot now. Empirical schema
-notes (matter for any future asha wiring — the docs are slightly off):
+**PreToolUse guardrails — WIRED + enforced (built + verified live on 1.0.63, 2026‑06‑24).**
+The old "won't pursue / unsafe" verdict was stale; asha now installs its
+guardrails on Copilot. `copilot_install_hooks()` writes a **dedicated**
+`~/.copilot/hooks/asha-guardrails.json` (flat Copilot schema, `{version:1}`) — it
+never touches a user's own `hooks.json` (Copilot loads every `*.json` there) —
+pointing at a new bridge, `plugins/session/hooks/handlers/copilot-policy-adapter.sh`.
+The adapter exists because Copilot's hook contract differs from Claude's on three
+axes (the docs are slightly off on all three):
 
-- **Config schema is NOT the Claude shape.** Copilot wants
+- **Config schema is flat:**
   `{"version":1,"hooks":{"preToolUse":[{"type":"command","bash":"<cmd>","matcher":"bash|edit"}]}}`
-  — a **flat** entry with a `bash` field (not a nested `hooks:[{"command":…}]`
-  array). asha's current copilot hook *emitter* still writes the Claude-style
-  nested shape, so it would need a rewrite before install.
-- **Decision is via stdout JSON:** `{"permissionDecision":"deny|allow|ask","permissionDecisionReason":"…"}`
-  (not exit codes). asha's `policy-guard.sh`/`block-secrets.sh` emit Claude's
-  decision shape, so they'd need an output adapter.
-- **Payload arrives on stdin** (contradicting the older "payload never delivered"
-  finding and the current docs that say arg/env): the hook received
-  `{"sessionId","timestamp","cwd","toolName":"bash","toolArgs":{…command…}}` on
-  stdin.
+  — a `bash` field, not Claude's nested `hooks:[{"command":…}]`.
+- **Decision is via stdout JSON** `{"permissionDecision":"deny|allow|ask","permissionDecisionReason":"…"}`, not exit codes.
+- **Payload arrives on stdin** as `{sessionId,timestamp,cwd,toolName,toolArgs}` (toolArgs may be a JSON-encoded *string*; tool names are `bash`/`create`/`edit`/`view`).
 
-**Still untested: the concurrency fail‑open**
-([#2893](https://github.com/github/copilot-cli/issues/2893)) — `preToolUse`
-reportedly bypassed under *parallel* tool calls / timeouts. My test was a single
-serial call, so this remains the open safety caveat. [#2540](https://github.com/github/copilot-cli/issues/2540)
-(plugin-defined hooks don't fire) doesn't apply to user-scope `~/.copilot/hooks/`.
+The adapter translates that to/from the Claude shape and runs the **existing**
+`policy-guard.sh` + `block-secrets.sh` unchanged (no policy logic duplicated),
+mapping the first deny/ask back to Copilot. Verified live: a denied command →
+*"Denied by preToolUse hook: BLOCKED by Asha policy […]"*; the broad-`/home`-scan
+`ask` rule fires (it degrades ask→deny in headless since Copilot can't prompt;
+prompts interactively); `block-secrets` denies an `id_rsa` create via the `path`
+field. Override envs (`ASHA_ALLOW_BROAD_SCAN=1`, …) pass through. Unit + integration
+coverage in `tests/test-hooks.sh` (Test 105).
 
-**Classification: WORKS for single-call deny (verified). Asha could wire its
-guardrails on Copilot — but it needs (a) the correct flat schema, (b) a
-`permissionDecision`-JSON output adapter, and (c) a decision on the unmitigated
-concurrency fail‑open. That's a separate feature, not yet built.**
+**Caveat (unchanged): the concurrency fail‑open**
+([#2893](https://github.com/github/copilot-cli/issues/2893)) — `preToolUse` is
+reportedly bypassed under *parallel* tool calls / timeouts. The adapter fails
+*open* by design, so this is a **soft deterrent, not containment** (same posture
+as the Claude string-pattern guard). [#2540](https://github.com/github/copilot-cli/issues/2540)
+(plugin-defined hooks don't fire) doesn't apply — this is user-scope `~/.copilot/hooks/`.
+
+**Classification: WIRED + enforced (verified). To disable: `asha uninstall copilot`
+removes the file, or set the rules' override envs.**
 
 ## Verdict — can / can't / won't fix
 
@@ -156,9 +159,9 @@ concurrency fail‑open. That's a separate feature, not yet built.**
 | Codex guardrails | **Can't fix (upstream)** — re-confirmed on 0.142 (2026‑06‑24): match-all hook + trust-bypass, shell still ran, hook never fired. Shell goes through `unified_exec`, off the hookable path; shell/edit-only even where hooks do work ([#20204](https://github.com/openai/codex/issues/20204)). |
 | Copilot persona | **Works** (fixed + verified 2026‑06‑24, CLI 1.0.63) — `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch. |
 | Copilot operational layer | **Works** (wired + verified 2026‑06‑24) — `operation.md` + learnings hot tier via a second instructions file. |
-| Copilot guardrails | **Work at the CLI level (verified 2026‑06‑24)** — a `~/.copilot/hooks/` `preToolUse` sentinel fired and denied a shell command on 1.0.63. **Not yet wired in asha:** needs the flat Copilot schema + a `permissionDecision`-JSON output adapter + a call on the untested concurrency fail‑open ([#2893](https://github.com/github/copilot-cli/issues/2893)). |
+| Copilot guardrails | **Wired + enforced (built + verified 2026‑06‑24)** — `asha install copilot` writes `~/.copilot/hooks/asha-guardrails.json` → `copilot-policy-adapter.sh` → the existing policy-guard + block-secrets. Live deny + ask + block-secrets confirmed on 1.0.63. Soft deterrent (concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested; adapter fails open). |
 
-**Bottom line:** the file-based layers — corpus, persona (all three), the operational layer (operation.md + learnings; Copilot + Codex both wired 2026‑06‑24), and memory/capture — are cross-harness. **Real-time guardrail enforcement now works on Claude AND Copilot** (Copilot single-call deny verified on 1.0.63; asha install of it is a separate, not-yet-built feature). **Codex remains the lone holdout** — its shell bypasses the hook (`unified_exec`, re-confirmed on 0.142). The only enforcement gap left is Codex shell, plus the untested Copilot concurrency case.
+**Bottom line:** the file-based layers — corpus, persona (all three), the operational layer (operation.md + learnings; Copilot + Codex both wired 2026‑06‑24), and memory/capture — are cross-harness. **Real-time guardrail enforcement now works on Claude AND Copilot** — asha installs the Copilot guardrails via an adapter over the existing policy engine (verified live on 1.0.63). **Codex is the lone holdout** — its shell bypasses the hook (`unified_exec`, re-confirmed on 0.142). The only enforcement gap left is Codex shell, plus the untested Copilot parallel-call concurrency case (a soft-deterrent limit, not a containment guarantee, on every harness).
 
 ## Test methodology
 
