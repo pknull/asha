@@ -441,6 +441,12 @@ mkdir -p "$PROJECT_DIR/Memory/sessions"
 mkdir -p "$PROJECT_DIR/Memory/markers"
 ```
 
+### Documentation: single source of truth for harness verdicts
+
+Cross-harness capability and enforcement **verdicts** — what works on Claude vs Codex vs Copilot (persona, operational layer, PreToolUse guardrails, output styles) — live in **one** place: [`docs/harness-enforcement.md`](docs/harness-enforcement.md). Every other doc (README, INSTALLER, plugin READMEs) describes **mechanism** (how a thing is installed/injected) and **links** to that doc for current status — it must not restate the verdict.
+
+This is the `feedback_no_duplication` rule applied to prose: the same status fact lived in five docs and drifted three times in a single session. When a capability changes, edit `harness-enforcement.md` and add a README Version History line — do not hand-propagate the claim across satellite docs.
+
 ---
 
 ## Memory System Integration
