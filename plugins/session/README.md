@@ -107,7 +107,7 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 | Hook | Purpose |
 |------|---------|
 | SessionStart | Load operation.md + learnings hot tier; conditionally load persona files |
-| PreToolUse | Guardrails — `block-secrets` (deny secret-file access) + `policy-guard` (declarative deny/ask/`max_per_session` rules from `policies/rules.json` + `~/.asha/policies.json`, backed by session_state). **Claude-enforced**; Codex installs but does not fire them (known gap) |
+| PreToolUse | Guardrails — `block-secrets` (deny secret-file access) + `policy-guard` (declarative deny/ask/`max_per_session` rules from `policies/rules.json` + `~/.asha/policies.json`, backed by session_state). **Enforced on Claude and Copilot** (Copilot via `copilot-policy-adapter.sh` → dedicated `~/.copilot/hooks/asha-guardrails.json`, 2026-06-24); Codex installs but does not fire them for shell (`unified_exec`, upstream gap) |
 | PostToolUse | Intervention (ReasoningBank, vector-index refresh, violation check) — capture moved to `/save` jsonl_reader |
 | UserPromptSubmit | Track user interaction patterns |
 | Stop | Save-preflight cleanup |
