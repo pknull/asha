@@ -2299,11 +2299,40 @@ else
 fi
 
 # ============================================================================
-# Test 104: Total test count matches expected
+# Test 105: Copilot policy adapter (Copilot payload -> Asha decision)
 # ============================================================================
-echo -n "Test 105: Test infrastructure self-check... "
+echo -n "Test 105: Copilot hook adapter translates + enforces... "
+CP_ADAPTER="$REPO_ROOT/plugins/session/hooks/handlers/copilot-policy-adapter.sh"
+cp_decision() {
+    printf '%s' "$1" | bash "$CP_ADAPTER" 2>/dev/null | jq -r '.permissionDecision // "allow"' 2>/dev/null
+}
+CP_OK=1; CP_WHY=""
+chk_cp() { local got; got="$(cp_decision "$2")"; [[ "$got" == "$3" ]] || { CP_OK=0; CP_WHY="$CP_WHY $1(got=$got want=$3)"; }; }
+# broad /home scan, toolArgs as an object -> ask (no-broad-home-scans)
+chk_cp scan_obj   '{"toolName":"bash","toolArgs":{"command":"find /home/pknull -name x"}}'      ask
+# toolArgs as a JSON-encoded STRING, benign -> allow (exercises the string path)
+chk_cp benign_str '{"toolName":"bash","toolArgs":"{\"command\":\"echo hi\"}"}'                   allow
+# force-push -> ask (destructive-git)
+chk_cp force_push '{"toolName":"bash","toolArgs":{"command":"git push --force"}}'                ask
+# create a secrets file via the `path` field -> deny (block-secrets)
+chk_cp secret     '{"toolName":"create","toolArgs":{"path":"/p/.ssh/id_rsa","file_text":"x"}}'  deny
+# read a normal file -> allow
+chk_cp view_ok    '{"toolName":"view","toolArgs":{"path":"/tmp/readme.txt"}}'                    allow
+if [[ -x "$CP_ADAPTER" && "$CP_OK" -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  copilot-adapter mismatch:$CP_WHY (adapter exec=$([[ -x "$CP_ADAPTER" ]] && echo yes || echo no))"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 106: Total test count matches expected
+# ============================================================================
+echo -n "Test 106: Test infrastructure self-check... "
 # This test verifies the test suite is complete
-EXPECTED_TESTS=83
+EXPECTED_TESTS=84
 if [[ $((PASSED + FAILED + SKIPPED + 1)) -eq $EXPECTED_TESTS ]]; then
     echo -e "${GREEN}PASS${NC} ($EXPECTED_TESTS tests)"
     PASSED=$((PASSED + 1))
