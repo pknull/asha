@@ -119,26 +119,30 @@ MCP, projects, sessions are single-instance.
 │   └── <ns>-<command>/SKILL.md      # generated from commands/*.md (frontmatter stripped)
 ├── agents/                          # symlinks
 │   └── <plugin>-<agent>.md          # → plugins/<plugin>/agents/<agent>.md
-├── hooks/hooks.json                 # NOT WRITTEN by default — see "Known limitations"
+├── hooks/asha-guardrails.json       # PreToolUse guardrails → copilot-policy-adapter.sh (dedicated; user's hooks.json untouched)
 └── mcp-config.json                  # NOT managed by Asha (Copilot reads it directly)
 ```
 
-**Persona model: doc-drop, not flag.** Copilot CLI 1.0.x has no `--instructions-file`
-flag (verified empirically against `copilot --help` 2026-05-09). It auto-loads
-project-scope `AGENTS.md` and `.github/copilot-instructions.md`. The `asha copilot`
-launch path:
+**Persona model: auto-loaded user-level instructions (no flag).** Copilot CLI
+1.0.x has no `--instructions-file` flag, but it auto-loads instructions from any
+dir named in `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` (scanning
+`<dir>/.github/instructions/**/*.instructions.md`). The `asha copilot` launch path
+(per-launch and scoped, so plain `copilot` stays persona-free — parity with
+Claude's `--append-system-prompt-file` and Codex's `model_instructions_file`):
 
 ```bash
 # bin/asha (copilot branch)
-identity-merge.sh ~/.cache/asha/instructions-copilot.md   # idempotent, regenerates merged identity
-echo "[asha copilot] merged identity available at: ..."   # tells user where to find it
-exec copilot "$@"                                         # plain exec, no persona flag
+identity-merge.sh ~/.cache/asha/instructions-copilot.md   # merged persona (soul/voice/keeper/identity)
+#  → wrapped as ~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md   (applyTo:"**")
+operational-merge.sh → asha-operational.instructions.md   # operation.md + learnings hot tier (same dir)
+export COPILOT_CUSTOM_INSTRUCTIONS_DIRS=~/.cache/asha/copilot-instr   # Copilot auto-loads both files
+exec copilot "$@"
 ```
 
-To load Asha persona for a project: run `copilot init` once to generate
-`.github/copilot-instructions.md`, then concatenate the merged identity into it
-(or append to project `AGENTS.md`). This is a deliberate scope limit — auto-injection
-into every project's instructions would silently mutate user files.
+**Verified 2026-06-24 (CLI 1.0.63):** Copilot self-identifies as Asha and quotes
+`operation.md` verbatim. This supersedes the earlier "doc-drop / manual
+per-project" model, which wrongly assumed an injection *flag* was the only path
+and missed the user-level instructions dir (no repo files are touched).
 
 ### Known limitations (Copilot harness, v1)
 
@@ -146,7 +150,8 @@ into every project's instructions would silently mutate user files.
 |---|---|---|
 | Skills install | Working | `~/.copilot/skills/` confirmed scan path; verified by plant-and-probe 2026-05-09 |
 | Custom agents | Working | `~/.copilot/agents/` confirmed; both `.md` and `.agent.md` extensions work; using bare `.md` |
-| Hooks install | **Permanently deferred — not needed** | Asha capture (events.jsonl) was retired 2026-05-10. `/save` now reads the host's native session log (`~/.copilot/session-state/<sid>/events.jsonl`) directly via `plugins/session/tools/jsonl_reader.py`. Copilot v1.0.44's hook payload-delivery gap (fd 0 socket never written) is moot — we don't need their payloads when the data we wanted is already on disk in their own session-state file. The previous `ASHA_COPILOT_HOOKS_FORCE=1` escape hatch was removed. If Copilot ships behavioral hooks (block, modify) in v1.1+, a separate install path can be built then. |
+| Capture hooks | **Not needed** | Asha capture (events.jsonl) was retired 2026-05-10. `/save` reads the host's native session log (`~/.copilot/session-state/<sid>/events.jsonl`) directly via `plugins/session/tools/jsonl_reader.py`, so no capture hooks. The `ASHA_COPILOT_HOOKS_FORCE=1` escape hatch was removed. |
+| PreToolUse guardrails | **Installed + enforced (built 2026-06-24)** | Copilot 1.0.63's `preToolUse` hook fires + denies (verified). `copilot_install_hooks()` writes a dedicated `~/.copilot/hooks/asha-guardrails.json` (never touches a user's own `hooks.json` — Copilot loads every `*.json` there) pointing at `plugins/session/hooks/handlers/copilot-policy-adapter.sh`, which bridges Copilot's contract (flat schema, stdout `permissionDecision`, stdin `toolName`/`toolArgs`) to the shared `policy-guard.sh` + `block-secrets.sh`. Soft deterrent — bypassed under parallel tool calls (copilot-cli#2893), fails open. Other lifecycle hooks (PostToolUse lint, Stop preflight) are **not** wired on Copilot yet. |
 | Hook payload translator | Not needed | Same architecture change — synthesis reads native logs, not hook payloads. The `{toolName, toolArgs, toolResult}` → `{tool_name, tool_input, tool_response}` translator from the v1 plan is obsolete; `jsonl_reader.py` parses Copilot's `events.jsonl` directly into Asha's normalized event schema. |
 | MCP config | Not managed | `~/.copilot/mcp-config.json` is read directly by Copilot; not touched by this installer (matches Claude/Codex which also don't manage MCP) |
 | Persona auto-injection | **Automatic — per-launch** | Copilot CLI has no `--instructions-file` flag, but auto-loads user-level instructions. The `asha copilot` launch path regenerates `~/.cache/asha/instructions-copilot.md` (~47 KB merged identity), wraps it as `~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md` (`applyTo: "**"`), and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` so Copilot loads it — scoped to the launch, so plain `copilot` stays persona-free (parity with Claude/Codex). **Verified 2026-06-24 (CLI 1.0.63)**: launched via `asha copilot`, Copilot self-identifies as Asha. (The earlier 2026-05-11 "deferred / manual per-project" note was wrong — it assumed an injection *flag* was the only path and missed the user-level instructions dir.) |
