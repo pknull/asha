@@ -32,6 +32,9 @@ COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"
 COPILOT_SKILLS_DIR="$COPILOT_HOME/skills"
 COPILOT_AGENTS_DIR="$COPILOT_HOME/agents"
 COPILOT_HOOKS_FILE="$COPILOT_HOME/hooks/hooks.json"
+# Asha's own guardrail hooks live in a DEDICATED file so we never touch a user's
+# hooks.json (Copilot loads every ~/.copilot/hooks/*.json).
+COPILOT_GUARDRAILS_FILE="$COPILOT_HOME/hooks/asha-guardrails.json"
 # Referenced for forward-compat; this implementation does NOT manage MCP.
 COPILOT_MCP_FILE="$COPILOT_HOME/mcp-config.json"
 
@@ -401,78 +404,47 @@ _copilot_strip_asha_entries() {
 # blocker (v1.0.44 hooks fire but don't pipe payload data) is moot — we
 # don't need their payloads when the data is already on disk in events.jsonl.
 #
-# This function is now a permanent no-op for capture purposes. The
-# ASHA_COPILOT_HOOKS_FORCE escape hatch was removed (it only existed to
-# work around the payload-delivery gap; under the new architecture there
-# is nothing to force).
+# Capture no longer needs hooks (events.jsonl is read at /save). But the
+# PreToolUse GUARDRAILS (policy-guard + block-secrets) DO work on Copilot 1.0.63
+# (verified 2026-06-24: a preToolUse hook fires and can deny a tool call).
 #
-# Behavioral hooks (block-secrets, suggest-compact, etc.) — if/when Copilot
-# v1.1+ ships usable payload data — would need a separate install path.
-# For now: explicit no-op with provenance.
+# Copilot's hook contract differs from Claude's — flat schema with a `bash`
+# field + top-level `{version:1}`, decision via stdout `permissionDecision` JSON,
+# tool names like bash/create/edit. So we install a DEDICATED guardrails file
+# pointing at copilot-policy-adapter.sh, which bridges Copilot ⇄ the Claude-shaped
+# handlers (see that script's header). Soft deterrent only: Copilot bypasses
+# preToolUse under parallel tool calls (github/copilot-cli#2893).
+#
+# The legacy _copilot_emit_hooks_for_plugin / _copilot_strip_asha_entries helpers
+# above are now unused (they emitted the wrong, Claude-style schema) and may be
+# pruned in a later pass.
 copilot_install_hooks() {
-  echo "[copilot] hooks: not installed (capture moved to /save jsonl_reader)" >&2
-  return 0
+  local adapter abs_adapter content
+  adapter="$PLUGINS_DIR/session/hooks/handlers/copilot-policy-adapter.sh"
+  if [[ ! -x "$adapter" ]]; then
+    log "[copilot] guardrail adapter missing/not executable ($adapter); skipping guardrail hooks"
+    return 0
+  fi
+  abs_adapter="$(resolve_path "$adapter")"
 
-  # Dead code below kept temporarily for one release cycle in case rollback
-  # is needed; subsequent PR removes entirely.
-  local cleaned
-  cleaned="$(_copilot_strip_asha_entries)" || die "failed to strip existing asha hook entries" 4
+  content="$(jq -nc --arg cmd "$abs_adapter" \
+    '{version:1, hooks:{preToolUse:[{type:"command", bash:$cmd, timeoutSec:15}]}}')" \
+    || { log "[copilot] failed to build guardrails json; skipping"; return 0; }
 
-  local merged="$cleaned"
-  local plugin_dir ns plugin_root abs_root hooks_json count=0
-
-  while read -r plugin_dir; do
-    [[ -n "$plugin_dir" ]] || continue
-    [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || continue
-    _copilot_is_skip_plugin "$plugin_dir" && continue
-
-    plugin_root="$PLUGINS_DIR/$plugin_dir"
-    abs_root="$(resolve_path "$plugin_root")"
-    if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
-    elif [[ -f "$plugin_root/hooks.json"      ]]; then hooks_json="$plugin_root/hooks.json"
-    else continue
-    fi
-
-    local lifecycles_count
-    lifecycles_count="$(jq -r '.hooks // {} | length' "$hooks_json")"
-    [[ "$lifecycles_count" -gt 0 ]] || continue
-
-    ns="$(ns_for "$plugin_dir")"
-
-    local plugin_emit
-    plugin_emit="$(_copilot_emit_hooks_for_plugin "$abs_root" "$hooks_json" "$ns")"
-    [[ -z "$plugin_emit" || "$plugin_emit" == "{}" ]] && continue
-
-    # Merge: for each event in plugin_emit, append its groups to the merged base.
-    merged="$(printf '%s' "$merged" | jq --argjson add "$plugin_emit" '
-      .hooks = (.hooks // {})
-      | reduce ($add | to_entries[]) as $e (
-          .;
-          .hooks[$e.key] = ((.hooks[$e.key] // []) + $e.value)
-        )
-    ')"
-    count=$((count+1))
-  done < <(selected_plugins)
-
-  # Compare against current on-disk content; skip write if identical.
-  if [[ -f "$COPILOT_HOOKS_FILE" ]]; then
-    local current; current="$(cat "$COPILOT_HOOKS_FILE")"
-    # Normalize both via jq for stable diff.
-    local cur_norm new_norm
-    cur_norm="$(printf '%s' "$current" | jq -S . 2>/dev/null || echo '')"
-    new_norm="$(printf '%s' "$merged" | jq -S .)"
-    if [[ "$cur_norm" == "$new_norm" ]]; then
-      log "[copilot] hooks.json unchanged"
-      return 0
-    fi
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "[copilot] would write $COPILOT_GUARDRAILS_FILE (PreToolUse guardrails -> adapter)"
+    return 0
   fi
 
-  _copilot_backup_hooks_once
-  _copilot_atomic_write_hooks "$merged"
-
-  local n
-  n="$(printf '%s' "$merged" | jq '[.hooks // {} | .[] | .[]? | .hooks[]? | select((.source // "") | startswith("asha:"))] | length')"
-  log "[copilot] registered $n hook entr$([[ $n -eq 1 ]] && echo y || echo ies)"
+  ensure_dir "$(dirname "$COPILOT_GUARDRAILS_FILE")"
+  if [[ -f "$COPILOT_GUARDRAILS_FILE" ]] \
+     && [[ "$(jq -S . "$COPILOT_GUARDRAILS_FILE" 2>/dev/null)" == "$(printf '%s' "$content" | jq -S .)" ]]; then
+    log "[copilot] guardrails unchanged"
+    return 0
+  fi
+  local tmp="$COPILOT_GUARDRAILS_FILE.tmp.$$"
+  printf '%s\n' "$content" > "$tmp" && mv "$tmp" "$COPILOT_GUARDRAILS_FILE"
+  say "[copilot] installed PreToolUse guardrails -> $COPILOT_GUARDRAILS_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -580,7 +552,17 @@ copilot_uninstall() {
     total=$((total + n))
   fi
 
-  # Strip Asha-tagged hooks from hooks.json.
+  # Asha's dedicated guardrails file (the current install path).
+  if [[ -f "$COPILOT_GUARDRAILS_FILE" ]]; then
+    if [[ $DRY_RUN -eq 1 ]]; then
+      say "[copilot] would remove $COPILOT_GUARDRAILS_FILE"
+    else
+      rm -f "$COPILOT_GUARDRAILS_FILE"
+      say "[copilot] removed PreToolUse guardrails ($COPILOT_GUARDRAILS_FILE)"
+    fi
+  fi
+
+  # Strip Asha-tagged hooks from hooks.json (legacy path; harmless if absent).
   if [[ -f "$COPILOT_HOOKS_FILE" ]]; then
     local before after removed
     before="$(jq -r '[.hooks // {} | .[] | .[]? | .hooks[]? | select((.source // "") | startswith("asha:"))] | length' "$COPILOT_HOOKS_FILE" 2>/dev/null || echo 0)"
