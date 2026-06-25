@@ -47,19 +47,11 @@ See **[INSTALLER.md](INSTALLER.md)** for the full install model, per-harness lim
 
 ## Harness support & behavior
 
-Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and the same primitive is mounted differently in each — the table is the *what*, the notes are the *why*.
+Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and each mounts the same primitive differently.
 
-| Capability | Claude Code | OpenAI Codex | GitHub Copilot |
-|---|---|---|---|
-| Skills | symlink (live) | symlink (live) | symlink (live) |
-| Agents | symlink, nested `agents/<ns>/` | symlink, flat `agents/<ns>-<agent>.md` | symlink, flat |
-| Commands | symlink `commands/<ns>/` (live) | **generated** `SKILL.md` (re-install to refresh) | **generated** `SKILL.md` |
-| Output styles | ✅ `/style` + 8 styles | ✗ skipped (no equivalent) | ✗ skipped |
-| Persona injection | `--append-system-prompt-file` | `-c model_instructions_file=` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` |
-| Operational layer (operation.md + learnings) | SessionStart hook | folded into `model_instructions_file` | second `*.instructions.md` |
-| Hooks | `settings.json` (JSON), tagged `"source":"asha:<ns>"` | `config.toml` fenced `# asha:` region | dedicated `hooks/asha-guardrails.json` |
-| **PreToolUse guardrails** | ✅ enforced | ✗ installed-but-inert (shell bypasses hook) | ✅ enforced (via adapter) |
-| First-run config | needs `~/.claude/settings.json` | needs `~/.codex/config.toml` | self-bootstraps |
+> **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
+
+At a glance: skills, agents, persona, the operational layer, and `/save` capture work on **all three**; slash commands are remapped to skills on Codex/Copilot (no native command primitive); `/style` is **Claude-only**; PreToolUse guardrails enforce on **Claude and Copilot**, not Codex (its shell bypasses the hook).
 
 ### Why the behaviors differ
 
@@ -79,7 +71,9 @@ Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They 
 
 Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny`, `ask`, or a `max_per_session` rate limit (counted in session_state — see [State model](#state-model-guardrails-session_state-and-memory)), with an optional `override_env` escape hatch. The seed rule asks before broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (slow HDD + Keybase I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`).
 
-Cross-harness: enforcement works on **Claude and Copilot** (verified 2026-06-24). Claude reads the hook from `settings.json`. Copilot's hook contract differs — flat schema, decision via stdout `permissionDecision` JSON, payload on stdin with `toolName`/`toolArgs` — so `plugins/session/hooks/handlers/copilot-policy-adapter.sh` bridges Copilot ⇄ the same `policy-guard.sh` + `block-secrets.sh` (no policy logic duplicated) and is installed via the dedicated `asha-guardrails.json`. **Codex is the one holdout:** the hook is installed into its `config.toml`, but Codex does **not** fire PreToolUse for shell tool calls — its shell runs through `unified_exec`, off the hookable path (re-confirmed on 0.142, 2026-06-24, with a match-all hook + `--dangerously-bypass-hook-trust`). That's an **upstream gap**, not a config error; the Codex deny-degradation logic is in place for when it's fixed. See **[docs/harness-enforcement.md](docs/harness-enforcement.md)** for the full per-harness matrix and live-test findings. The hook is **fail-open** — any rule/parse error allows the call, because a guardrail must never brick tool use. It is a **soft deterrent, not a sandbox**: it matches the command string by regex (an agent can evade it deliberately — `cd /home && find .`, long flags, indirection), and on Copilot it can be bypassed under parallel tool calls (copilot-cli#2893). Pair it with the harness's own permission/sandbox controls for hard containment. This is the enforced form of the "Failure-to-Guardrail" idea: a high-confidence learning becomes a rule instead of prose a model can skip past.
+**Cross-harness enforcement status, the Copilot adapter mechanics, and the live-test caveats are in [docs/harness-enforcement.md](docs/harness-enforcement.md) (the single source of truth).** In short: enforced on Claude and Copilot (Copilot via `copilot-policy-adapter.sh` bridging to the same `policy-guard.sh`/`block-secrets.sh`), not on Codex.
+
+The engine is **fail-open** by design — any rule/parse error allows the call, because a guardrail must never brick tool use. And it is a **soft deterrent, not a sandbox**: it regex-matches the command string, so an agent can evade it deliberately (`cd /home && find .`, long flags, indirection), and on Copilot it can be bypassed under parallel tool calls. Pair it with the harness's own permission/sandbox controls for hard containment. This is the enforced form of the "Failure-to-Guardrail" idea: a high-confidence learning becomes a rule instead of prose a model can skip past.
 
 See **[INSTALLER.md](INSTALLER.md)** for the per-harness layout diagrams and the full rationale.
 
