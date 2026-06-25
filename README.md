@@ -671,7 +671,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 ### v1.18.0 (2026-06-17)
 
 - **Dispatcher**: unified the three `asha-{claude,codex,copilot}` launchers into one positional `asha` dispatcher — `asha [install|uninstall] [harness] [args]`. Install/uninstall engines extracted to `lib/`; top-level `install.sh`/`uninstall.sh` are thin shims; `asha-<harness>` kept as back-compat shims.
-- **Policy engine**: declarative PreToolUse guardrails (`plugins/session/hooks/handlers/policy-guard.sh` + `policies/rules.json`, optional user layer `~/.asha/policies.json`) — `deny`/`ask`/`max_per_session`, fail-open. Seed rule `no-broad-home-scans`. **Enforced on Claude**; Codex installs the hooks but does not fire them for shell tool calls (known gap — affects `block-secrets` too). Copilot has no hook seam.
+- **Policy engine**: declarative PreToolUse guardrails (`plugins/session/hooks/handlers/policy-guard.sh` + `policies/rules.json`, optional user layer `~/.asha/policies.json`) — `deny`/`ask`/`max_per_session`, fail-open. Seed rule `no-broad-home-scans`. **Enforced on Claude**; Codex installs the hooks but does not fire them for shell tool calls (known gap — affects `block-secrets` too). Copilot has no hook seam. *(Corrected in v1.19.0 — the Codex gap is upstream `unified_exec`; Copilot guardrails are now wired + enforced.)*
 - **session_state**: ephemeral per-session counters (`state.sh`, `~/.asha/session-state/`) that make policies stateful (rate limits); cleared at session end.
 - **Docs**: new "Harness support & behavior" and "State model: guardrails, session_state, and memory" sections.
 
