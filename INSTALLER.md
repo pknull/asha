@@ -87,14 +87,17 @@ idempotent.
 ├── skills/<name>/                   → plugins/<ns>/skills/<dir>/   (whole-dir symlink)
 │                                       — name from SKILL.md `name:` field, falls back
 │                                         to <ns>-<dir> when frontmatter has no name
-├── skills/<name>/SKILL.md           → plugins/<ns>/commands/<cmd>.md   (single-file
-│                                       symlink; the dir is a real dir, the SKILL.md
-│                                       inside is the symlink to the source command MD)
+├── skills/<name>/SKILL.md           → generated Codex-clean skill from
+│                                       plugins/<ns>/commands/<cmd>.md
+│                                       (Claude-only frontmatter stripped)
 ├── agents/<ns>-<agent>.md           → plugins/<ns>/agents/<agent>.md   (best-effort;
 │                                       Codex 0.125 multi-agent YAML schema unverified)
+├── rules/asha.rules                  → native Codex execution-policy prompts
+│                                       for coarse command approval fallback
 └── config.toml
     └── # ===== asha:start ===== ... # ===== asha:end =====
-        # ↑ fenced region with [[hooks.X]] arrays, each tagged "# asha:<ns>"
+        # ↑ fenced region with nested [[hooks.X.hooks]] handlers,
+        #   each tagged "# asha:<ns>"
 ```
 
 **No persona overlay.** The `asha codex` launch path injects persona via Codex's
@@ -200,7 +203,7 @@ Checks (paraphrased):
 
 - **Repo:** installer scripts present, no `CLAUDE_PLUGIN_ROOT` placeholders in markdown
 - **Claude:** no legacy enabledPlugins / installed_plugins.json / marketplaces; no dangling symlinks; tagged hook command paths exist
-- **Codex:** no dangling symlinks; `config.toml` parses as TOML; tagged hook paths exist; overlay `instructions.md` fresher than its sources; overlay `config.toml` fresher than `~/.codex/config.toml`; inherit symlinks intact
+- **Codex:** no dangling symlinks; `config.toml` parses as TOML; tagged hook paths exist; native `rules/asha.rules` installed; overlay `instructions.md` fresher than its sources; inherit symlinks intact
 
 Optionally schedule it via a systemd user timer or cron; append output to a
 log of your choice (e.g. `drift-check.log`).
@@ -238,7 +241,8 @@ file surface was removed entirely in 0.125.
 
 Workaround: each command MD is installed as a single-file Codex skill.
 The directory `~/.codex/skills/<name>/` is a real dir; the `SKILL.md`
-inside is a symlink to the source command MD. Codex invokes via
+inside is generated from the source command MD with Claude-only frontmatter
+(`argument-hint`, `allowed-tools`) stripped. Codex invokes via
 `$<name>` (the namespacing collapsed from `/<ns>:<cmd>` is preserved in
 the skill name).
 
@@ -248,11 +252,25 @@ filenames) and required for Codex skills.
 
 ### Codex hook events are a subset
 
-Codex 0.125 supports SessionStart, PreToolUse, PostToolUse, Stop,
-UserPromptSubmit, PermissionRequest. Claude additionally has SessionEnd,
-Setup, etc. Hooks bound to unsupported events are dropped during install
-with a warning. The `output-styles` plugin's hooks are skipped entirely
-(emit Claude-specific `hookSpecificOutput.additionalContext` JSON).
+Codex supports SessionStart, PreToolUse, PermissionRequest, PostToolUse,
+PreCompact, PostCompact, UserPromptSubmit, Stop, SubagentStart, and
+SubagentStop. Claude additionally has SessionEnd, Setup, etc. Hooks bound to
+unsupported events are dropped during install with a warning. Asha emits the
+current nested TOML shape (`[[hooks.Event]]` groups containing
+`[[hooks.Event.hooks]]` handlers). The `output-styles` plugin's hooks are
+skipped entirely (emit Claude-specific `hookSpecificOutput.additionalContext`
+JSON).
+
+### Codex native rules are installed as a coarse fallback
+
+Because current Codex shell execution can bypass PreToolUse, Asha also writes a
+dedicated `~/.codex/rules/asha.rules` file. This uses Codex's native
+`prefix_rule()` execution-policy system for approval prompts on a narrow subset
+of high-risk commands (`find /home`, `bfs /home`, `git reset --hard`,
+force-push, protected-branch delete). This is **not** equivalent to Asha's full
+regex policy engine: Codex rules are prefix-based and apply at permission /
+sandbox boundaries, not every tool call. They are a native Codex safety net,
+not a replacement for hook guardrails.
 
 ### Codex multi-agent YAML schema is unverified
 

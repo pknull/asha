@@ -51,7 +51,7 @@ Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They 
 
 > **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
 
-At a glance: skills, agents, persona, the operational layer, and `/save` capture work on **all three**; slash commands are remapped to skills on Codex/Copilot (no native command primitive); `/style` is **Claude-only**; PreToolUse guardrails enforce on **Claude and Copilot**, not Codex (its shell bypasses the hook).
+At a glance: skills, agents, persona, the operational layer, and `/save` capture work on **all three**; slash commands are remapped to skills on Codex/Copilot (no native command primitive); `/style` is **Claude-only**; PreToolUse guardrails enforce on **Claude and Copilot**, not Codex (its shell bypasses the hook). Codex also gets native execution-policy rules as a coarse approval fallback for a few high-risk commands.
 
 ### Why the behaviors differ
 
@@ -63,7 +63,7 @@ At a glance: skills, agents, persona, the operational layer, and `/save` capture
 
 **The operational layer reaches all three.** `~/.asha/operation.md` + the learnings hot tier load via Claude's SessionStart hook; Codex and Copilot have no usable session-start hook, so the same content is delivered file-based — folded into Codex's `model_instructions_file`, and written as a second `asha-operational.instructions.md` in Copilot's instructions dir (both via `identity/operational-merge.sh`, same budgets as the hook). So persona *and* operational guidance are at parity across the three.
 
-**Hooks: JSON for Claude, TOML for Codex, a dedicated JSON file for Copilot.** Claude reads `settings.json` (entries tagged `"source":"asha:<ns>"` for clean removal); Codex reads `config.toml` (a fenced `# asha:start … # asha:end` region) and doesn't support the `SessionEnd`/`Setup` events, which are dropped with a warning. For **Copilot**, capture is no longer hook-based (`/save` reads the native transcript — see Capture pipeline below), but the **PreToolUse guardrails now are**: `copilot_install_hooks()` writes a dedicated `~/.copilot/hooks/asha-guardrails.json` (Copilot loads every `*.json` there, so this never touches a user's own `hooks.json`) pointing at `copilot-policy-adapter.sh`. See the guardrails section below for the enforcement matrix.
+**Hooks: JSON for Claude, TOML for Codex, a dedicated JSON file for Copilot.** Claude reads `settings.json` (entries tagged `"source":"asha:<ns>"` for clean removal); Codex reads `config.toml` (a fenced `# asha:start … # asha:end` region using the current nested `[[hooks.Event.hooks]]` TOML shape) and doesn't support the `SessionEnd`/`Setup` events, which are dropped with a warning. For **Copilot**, capture is no longer hook-based (`/save` reads the native transcript — see Capture pipeline below), but the **PreToolUse guardrails now are**: `copilot_install_hooks()` writes a dedicated `~/.copilot/hooks/asha-guardrails.json` (Copilot loads every `*.json` there, so this never touches a user's own `hooks.json`) pointing at `copilot-policy-adapter.sh`. See the guardrails section below for the enforcement matrix.
 
 **First launch requires the harness's own config to already exist** for Claude and Codex. Their installers deliberately refuse to fabricate `settings.json` / `config.toml` (the harness owns that file's format), so `asha claude` / `asha codex` against a never-initialized harness emits a clean *"run `<harness>` once first"* message instead of a confusing failure. Copilot bootstraps its own config, so it has no such precondition.
 
@@ -71,7 +71,7 @@ At a glance: skills, agents, persona, the operational layer, and `/save` capture
 
 Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny`, `ask`, or a `max_per_session` rate limit (counted in session_state — see [State model](#state-model-guardrails-session_state-and-memory)), with an optional `override_env` escape hatch. The seed rule asks before broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (slow HDD + Keybase I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`).
 
-**Cross-harness enforcement status, the Copilot adapter mechanics, and the live-test caveats are in [docs/harness-enforcement.md](docs/harness-enforcement.md) (the single source of truth).** In short: enforced on Claude and Copilot (Copilot via `copilot-policy-adapter.sh` bridging to the same `policy-guard.sh`/`block-secrets.sh`), not on Codex.
+**Cross-harness enforcement status, the Copilot adapter mechanics, and the live-test caveats are in [docs/harness-enforcement.md](docs/harness-enforcement.md) (the single source of truth).** In short: enforced on Claude and Copilot (Copilot via `copilot-policy-adapter.sh` bridging to the same `policy-guard.sh`/`block-secrets.sh`), not on Codex. Codex gets `~/.codex/rules/asha.rules` as a native, prefix-based approval fallback for a narrow command subset; it is coarser than Asha's regex policy engine.
 
 The engine is **fail-open** by design — any rule/parse error allows the call, because a guardrail must never brick tool use. And it is a **soft deterrent, not a sandbox**: it regex-matches the command string, so an agent can evade it deliberately (`cd /home && find .`, long flags, indirection), and on Copilot it can be bypassed under parallel tool calls. Pair it with the harness's own permission/sandbox controls for hard containment. This is the enforced form of the "Failure-to-Guardrail" idea: a high-confidence learning becomes a rule instead of prose a model can skip past.
 
@@ -653,6 +653,12 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 ---
 
 ## Version History
+
+### Unreleased — Codex compatibility refresh
+
+- **Codex hook TOML now emits the documented nested schema** (`[[hooks.Event]]` matcher groups with nested `[[hooks.Event.hooks]]` command handlers) instead of the older flat shape.
+- **Codex native execution-policy rules** — `asha install codex` writes `~/.codex/rules/asha.rules` with `prefix_rule()` prompts for narrow high-risk commands (`find /home`, `bfs /home`, destructive git). This is a coarse native fallback while PreToolUse remains unreliable for Codex shell.
+- **Codex hook event list refreshed** — includes PreCompact/PostCompact/SubagentStart/SubagentStop, and unsupported Claude-only events still warn/drop.
 
 ### v1.19.0 (2026-06-24) — Cross-harness parity: persona, operational layer, Copilot guardrails
 

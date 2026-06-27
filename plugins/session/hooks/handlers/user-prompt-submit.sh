@@ -15,35 +15,36 @@ set -euo pipefail
 
 # Source common utilities
 source "$(dirname "$0")/common.sh"
+source "$(dirname "$0")/harness-response.sh"
 
 PROJECT_DIR=$(detect_project_dir)
 if [[ -z "$PROJECT_DIR" ]]; then
     # Cannot detect project directory - exit silently (no error spam to user)
-    echo "{}"
+    user_prompt_submit_noop
     exit 0
 fi
 
 PLUGIN_ROOT=$(get_plugin_root)
 if [[ -z "$PLUGIN_ROOT" ]]; then
-    echo "{}"
+    user_prompt_submit_noop
     exit 0
 fi
 
 # Only run if Asha is initialized
 if ! is_asha_initialized; then
-    echo "{}"
+    user_prompt_submit_noop
     exit 0
 fi
 
 # Skip everything if silence mode active (master override)
 if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
-    echo "{}"
+    user_prompt_submit_noop
     exit 0
 fi
 
 # Skip everything during RP sessions
 if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
-    echo "{}"
+    user_prompt_submit_noop
     exit 0
 fi
 
@@ -154,12 +155,15 @@ except Exception as e:
                     # corrections are now derivable by diffing transcript
                     # prompts against the marker file at /save time.)
 
-                    # Inject correction as system-reminder (via stdout)
-                    cat <<EOF
-<system-reminder>
-User's prompt has been corrected. Interpret as: "$REFINED"
-</system-reminder>
-EOF
+                    # Inject correction as system-reminder (via stdout).
+                    # Codex accepts raw prompt fragments for UserPromptSubmit,
+                    # but rejects Claude's {prompt: ...} response shape as
+                    # invalid JSON. Emit the fragment and stop before the
+                    # final Claude-only response below.
+                    user_prompt_submit_correction "$REFINED"
+                    if user_prompt_submit_stops_after_correction; then
+                        exit 0
+                    fi
                 fi
                 # If < 10%, marker stays cleared (removed at start of hook)
             fi
@@ -169,6 +173,4 @@ EOF
     fi
 fi
 
-# Return prompt (potentially refined) as JSON
-# Claude Code expects JSON response with "prompt" field
-jq -n --arg prompt "$PROMPT" '{prompt: $prompt}'
+user_prompt_submit_final_prompt "$PROMPT"

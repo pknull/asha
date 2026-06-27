@@ -1202,8 +1202,8 @@ for handler in "$REPO_ROOT"/plugins/*/hooks/handlers/*.sh \
     [[ ! -f "$handler" ]] && continue
     handler_name=$(basename "$handler")
 
-    # Skip common.sh which may not need strict mode
-    [[ "$handler_name" == "common.sh" || "$handler_name" == "state.sh" ]] && continue
+    # Skip sourced libraries which must not alter the caller's shell options.
+    [[ "$handler_name" == "common.sh" || "$handler_name" == "state.sh" || "$handler_name" == "harness-response.sh" ]] && continue
 
     # Check for set -e or set -euo pipefail in first 10 lines
     if ! head -40 "$handler" | grep -qE "set -e|set -.*e"; then
@@ -2203,6 +2203,63 @@ else
 fi
 
 # ============================================================================
+# Test 100b: UserPromptSubmit Codex no-op returns Codex-safe JSON
+# ============================================================================
+echo -n "Test 100b: UserPromptSubmit codex no-op output... "
+TEST100B_DIR=$(mktemp -d)
+mkdir -p "$TEST100B_DIR/Memory/sessions"
+mkdir -p "$TEST100B_DIR/Work/markers"
+mkdir -p "$TEST100B_DIR/.asha"
+echo '{"initialized": true}' > "$TEST100B_DIR/.asha/config.json"
+export CLAUDE_PROJECT_DIR="$TEST100B_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+OUTPUT=$(echo '{"prompt": "test prompt that codex should ignore safely"}' | ASHA_HARNESS=codex "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
+rm -rf "$TEST100B_DIR"
+
+if [[ "$OUTPUT" == "{}" ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  Unexpected Codex output: $OUTPUT"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 100c: harness-response.sh centralizes per-harness contracts
+# ============================================================================
+echo -n "Test 100c: harness-response helper contracts... "
+HR="$REPO_ROOT/plugins/session/hooks/handlers/harness-response.sh"
+HR_OK=1
+HR_WHY=""
+
+claude_prompt="$(ASHA_HARNESS=claude bash -c 'source "$1"; user_prompt_submit_final_prompt "hello"' _ "$HR" 2>/dev/null || true)"
+codex_prompt="$(ASHA_HARNESS=codex bash -c 'source "$1"; user_prompt_submit_final_prompt "hello"' _ "$HR" 2>/dev/null || true)"
+claude_ask="$(ASHA_HARNESS=claude bash -c 'source "$1"; pretooluse_policy_ask test-policy "Needs review" " (override: X=1)"' _ "$HR" 2>/dev/null || true)"
+codex_err="$(mktemp)"
+set +e
+ASHA_HARNESS=codex bash -c 'source "$1"; pretooluse_policy_ask test-policy "Needs review" " (override: X=1)"' _ "$HR" >/dev/null 2>"$codex_err"
+codex_rc=$?
+set -e
+codex_msg="$(cat "$codex_err" 2>/dev/null || true)"
+rm -f "$codex_err"
+
+[[ "$(printf '%s' "$claude_prompt" | jq -r '.prompt // empty' 2>/dev/null)" == "hello" ]] || { HR_OK=0; HR_WHY="$HR_WHY claude-prompt"; }
+[[ "$codex_prompt" == "{}" ]] || { HR_OK=0; HR_WHY="$HR_WHY codex-prompt"; }
+[[ "$(printf '%s' "$claude_ask" | jq -r '.hookSpecificOutput.permissionDecision // empty' 2>/dev/null)" == "ask" ]] || { HR_OK=0; HR_WHY="$HR_WHY claude-ask"; }
+[[ "$codex_rc" -eq 2 && "$codex_msg" == "BLOCKED by Asha policy [test-policy]: Needs review (override: X=1)" ]] || { HR_OK=0; HR_WHY="$HR_WHY codex-deny(rc=$codex_rc msg=$codex_msg)"; }
+
+if [[ $HR_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  harness-response mismatch:$HR_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 101: run-python.sh passes arguments correctly
 # ============================================================================
 echo -n "Test 101: run-python.sh passes arguments... "
@@ -2273,7 +2330,7 @@ echo -n "Test 104: Ported policy rules enforce correctly... "
 PG_PORTED="$REPO_ROOT/plugins/session/hooks/handlers/policy-guard.sh"
 pg_decision() {
     local out
-    out="$(printf '%s' "$1" | bash "$PG_PORTED" 2>/dev/null)"
+    out="$(printf '%s' "$1" | env -u ASHA_HARNESS bash "$PG_PORTED" 2>/dev/null)"
     if [[ -n "$out" ]]; then
         printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null
     else
@@ -2289,6 +2346,9 @@ chk_pg del_main     '{"tool_name":"Bash","tool_input":{"command":"git branch -D 
 chk_pg mem_immutable '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/projectbrief.md"}}' ask
 chk_pg mem_mutable   '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/activeContext.md"}}' allow
 chk_pg vault_warn    '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/Random/x.md"}}'       allow
+chk_pg broad_home    '{"tool_name":"Bash","tool_input":{"command":"find /home -name x"}}'             ask
+chk_pg broad_user    '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull -name x"}}'      ask
+chk_pg scoped_home   '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull/life -name x"}}' allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
@@ -2328,11 +2388,56 @@ else
 fi
 
 # ============================================================================
-# Test 106: Total test count matches expected
+# Test 106: Codex installer emits current hook schema + native rules
 # ============================================================================
-echo -n "Test 106: Test infrastructure self-check... "
+echo -n "Test 106: Codex installer emits nested hooks + native rules... "
+CODEX_TMP="$(mktemp -d)"
+CODEX_OK=1
+CODEX_WHY=""
+printf '[features]\nhooks = true\n' > "$CODEX_TMP/config.toml"
+if ! CODEX_HOME="$CODEX_TMP" "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP/install.err"; then
+    CODEX_OK=0
+    CODEX_WHY=" install-failed:$(cat "$CODEX_TMP/install.err")"
+elif ! python3 - "$CODEX_TMP/config.toml" "$CODEX_TMP/rules/asha.rules" <<'PY' >/dev/null 2>"$CODEX_TMP/check.err"
+import pathlib, sys, tomllib
+config = pathlib.Path(sys.argv[1])
+rules = pathlib.Path(sys.argv[2])
+text = config.read_text()
+tomllib.loads(text)
+assert '[[hooks.PreToolUse]]' in text
+assert '[[hooks.PreToolUse.hooks]]' in text
+assert 'type = "command"' in text
+rule_text = rules.read_text()
+assert 'prefix_rule(' in rule_text
+assert 'pattern = ["git", "reset", "--hard"]' in rule_text
+assert 'pattern = ["find", "/home"]' in rule_text
+PY
+then
+    CODEX_OK=0
+    CODEX_WHY=" schema-check-failed:$(cat "$CODEX_TMP/check.err")"
+elif command -v codex >/dev/null 2>&1; then
+    DECISION="$(codex execpolicy check --rules "$CODEX_TMP/rules/asha.rules" -- git reset --hard 2>/dev/null | jq -r '.decision // empty' 2>/dev/null || true)"
+    if [[ "$DECISION" != "prompt" ]]; then
+        CODEX_OK=0
+        CODEX_WHY=" execpolicy(got=${DECISION:-empty} want=prompt)"
+    fi
+fi
+rm -rf "$CODEX_TMP"
+if [[ $CODEX_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  codex installer mismatch:$CODEX_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 107: Total test count matches expected
+# ============================================================================
+echo -n "Test 107: Test infrastructure self-check... "
 # This test verifies the test suite is complete
-EXPECTED_TESTS=84
+EXPECTED_TESTS=87
 if [[ $((PASSED + FAILED + SKIPPED + 1)) -eq $EXPECTED_TESTS ]]; then
     echo -e "${GREEN}PASS${NC} ($EXPECTED_TESTS tests)"
     PASSED=$((PASSED + 1))
