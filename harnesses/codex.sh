@@ -14,6 +14,9 @@
 #   config.toml                  → existing user config + appended fenced
 #                                  region of [[hooks.X]] arrays tagged
 #                                  "# asha:<ns>"
+#   rules/asha.rules             → native Codex execution-policy prompts for
+#                                  coarse shell approvals where hooks cannot
+#                                  be relied upon as the enforcement boundary
 #
 # No persona overlay. asha-codex injects persona via `codex -c
 # model_instructions_file=...` so plain codex and asha-codex share ~/.codex/.
@@ -25,13 +28,16 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 CODEX_CONFIG_FILE="$CODEX_HOME/config.toml"
 CODEX_SKILLS_DIR="$CODEX_HOME/skills"
 CODEX_AGENTS_DIR="$CODEX_HOME/agents"
+CODEX_RULES_DIR="$CODEX_HOME/rules"
+CODEX_RULES_FILE="$CODEX_RULES_DIR/asha.rules"
 
 # Legacy paths from pre-Step-7 installs that we clean up if found.
 CODEX_LEGACY_PROMPTS_DIR="$CODEX_HOME/prompts"
 CODEX_LEGACY_OVERLAY_HOME="$HOME/.codex-asha"
 
-# Events Codex 0.125+ supports.
-_CODEX_EVENTS=(SessionStart PreToolUse PostToolUse Stop UserPromptSubmit PermissionRequest)
+# Events Codex supports in current hook docs. Unsupported Claude events are
+# warned and dropped during translation.
+_CODEX_EVENTS=(SessionStart PreToolUse PermissionRequest PostToolUse PreCompact PostCompact UserPromptSubmit Stop SubagentStart SubagentStop)
 _CODEX_SKIP_PLUGINS=(output-styles)
 
 CODEX_HOOK_FENCE_START="# ===== asha:start (managed by asha installer; do not edit) ====="
@@ -260,6 +266,113 @@ codex_install_agents() {
 }
 
 # ---------------------------------------------------------------------------
+# Native Codex execution-policy rules
+# ---------------------------------------------------------------------------
+
+codex_install_rules() {
+  local content
+  content="$(cat <<'EOF'
+# Managed by asha installer; do not edit.
+#
+# These native Codex rules are a coarse fallback for command approvals. Asha's
+# richer policy engine remains hook-based, but current Codex shell execution can
+# bypass PreToolUse. Rules operate at approval/sandbox boundaries and use prefix
+# matching only, so they are deliberately narrower than policy-guard.sh.
+
+prefix_rule(
+    pattern = ["find", "/home"],
+    decision = "prompt",
+    justification = "Broad scan over /home can cause severe disk pressure; scope to a subdirectory first.",
+    match = ["find /home -name x"],
+)
+
+prefix_rule(
+    pattern = ["find", "/home/pknull"],
+    decision = "prompt",
+    justification = "Broad scan over /home/pknull can cause severe disk pressure; scope to a subdirectory first.",
+    match = ["find /home/pknull -name x"],
+)
+
+prefix_rule(
+    pattern = ["bfs", "/home"],
+    decision = "prompt",
+    justification = "Broad scan over /home can cause severe disk pressure; scope to a subdirectory first.",
+    match = ["bfs /home -name x"],
+)
+
+prefix_rule(
+    pattern = ["bfs", "/home/pknull"],
+    decision = "prompt",
+    justification = "Broad scan over /home/pknull can cause severe disk pressure; scope to a subdirectory first.",
+    match = ["bfs /home/pknull -name x"],
+)
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "prompt",
+    justification = "Destructive git reset; confirm before discarding local work.",
+    match = ["git reset --hard", "git reset --hard HEAD~1"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", "--force"],
+    decision = "prompt",
+    justification = "Force-push affects shared state; confirm before proceeding.",
+    match = ["git push --force", "git push --force origin main"],
+)
+
+prefix_rule(
+    pattern = ["git", "push", "-f"],
+    decision = "prompt",
+    justification = "Force-push affects shared state; confirm before proceeding.",
+    match = ["git push -f", "git push -f origin main"],
+)
+
+prefix_rule(
+    pattern = ["git", "branch", "-D", "main"],
+    decision = "prompt",
+    justification = "Protected-branch delete; confirm before proceeding.",
+    match = ["git branch -D main"],
+)
+
+prefix_rule(
+    pattern = ["git", "branch", "-D", "master"],
+    decision = "prompt",
+    justification = "Protected-branch delete; confirm before proceeding.",
+    match = ["git branch -D master"],
+)
+
+prefix_rule(
+    pattern = ["git", "branch", "-d", "main"],
+    decision = "prompt",
+    justification = "Protected-branch delete; confirm before proceeding.",
+    match = ["git branch -d main"],
+)
+
+prefix_rule(
+    pattern = ["git", "branch", "-d", "master"],
+    decision = "prompt",
+    justification = "Protected-branch delete; confirm before proceeding.",
+    match = ["git branch -d master"],
+)
+EOF
+)"
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "  WRITE [codex-rules]  $CODEX_RULES_FILE"
+    return 0
+  fi
+
+  ensure_dir "$CODEX_RULES_DIR"
+  if [[ -f "$CODEX_RULES_FILE" ]] && [[ "$(cat "$CODEX_RULES_FILE")" == "$content" ]]; then
+    log "[codex] native rules unchanged: $CODEX_RULES_FILE"
+    return 0
+  fi
+  printf '%s\n' "$content" > "$CODEX_RULES_FILE"
+  log "[codex] installed native execution-policy rules: $CODEX_RULES_FILE"
+}
+
+# ---------------------------------------------------------------------------
 # Hooks (TOML emission, fenced, atomic)
 # ---------------------------------------------------------------------------
 
@@ -278,7 +391,11 @@ _codex_emit_hooks_for_plugin() {
   PYTHONIOENCODING=utf-8 python3 - "$abs_root" "$hooks_json" "$ns" <<'PYEOF'
 import json, sys, re
 abs_root, hooks_json, ns = sys.argv[1], sys.argv[2], sys.argv[3]
-CODEX_EVENTS = {"SessionStart","PreToolUse","PostToolUse","Stop","UserPromptSubmit","PermissionRequest"}
+CODEX_EVENTS = {
+    "SessionStart", "PreToolUse", "PermissionRequest", "PostToolUse",
+    "PreCompact", "PostCompact", "UserPromptSubmit", "Stop",
+    "SubagentStart", "SubagentStop",
+}
 
 def toml_str(s):
     s = s.replace("\\","\\\\").replace('"','\\"')
@@ -304,8 +421,11 @@ for event, groups in events.items():
             if h.get("type") != "command": continue
             cmd = resolve_command(h.get("command",""))
             if not cmd: continue
+            # Current Codex TOML schema uses a matcher group containing one or
+            # more nested hook handlers.
             out.append(f"[[hooks.{event}]]")
             if matcher: out.append(f"matcher = {toml_str(matcher)}")
+            out.append(f"[[hooks.{event}.hooks]]")
             out.append('type = "command"')
             out.append(f"command = {toml_str(cmd)}")
             timeout = h.get("timeout")
@@ -461,6 +581,10 @@ codex_install() {
   done < <(selected_plugins)
 
   say ""
+  say "== [codex] native rules =="
+  codex_install_rules
+
+  say ""
   say "== [codex] hooks =="
   codex_install_hooks
 }
@@ -556,6 +680,17 @@ codex_uninstall() {
     fi
   else
     log "[codex] no asha hook fence in config.toml"
+  fi
+
+  # Dedicated native Codex execution-policy rules file.
+  if [[ -f "$CODEX_RULES_FILE" ]]; then
+    if [[ $DRY_RUN -eq 1 ]]; then
+      say "[codex] would remove native rules file $CODEX_RULES_FILE"
+    else
+      rm -f "$CODEX_RULES_FILE"
+      rmdir "$CODEX_RULES_DIR" 2>/dev/null || true
+      say "[codex] removed native rules file $CODEX_RULES_FILE"
+    fi
   fi
 
   # Legacy overlay cleanup (if user is uninstalling after upgrading)

@@ -288,12 +288,21 @@ from_transcript_mode() {
     case "$HARNESS" in
         claude)  SID="${CLAUDE_CODE_SESSION_ID:-session_$(date -u '+%Y%m%d_%H%M%S')}" ;;
         copilot) SID="session_$(date -u '+%Y%m%d_%H%M%S')_copilot" ;;
-        codex)   SID="session_$(date -u '+%Y%m%d_%H%M%S')_codex" ;;
+        codex)   SID="${CODEX_THREAD_ID:-session_$(date -u '+%Y%m%d_%H%M%S')_codex}" ;;
     esac
 
     SIDE_FILE="$PROJECT_DIR/Memory/events/events-from-transcript.jsonl"
     regenerate_events_from_transcript "$HARNESS" "$SIDE_FILE" "$SID" \
         || error "Could not regenerate events from transcript"
+
+    # Keep the canonical events file aligned with the transcript-derived file.
+    # save_preflight.py and Stop-hook enforcement validate Memory/events/events.jsonl
+    # unless ASHA_EVENTS_FILE is explicitly set; leaving stale hook-era events here
+    # causes a foreign-session hard fail even when synthesis used the correct
+    # transcript side file.
+    CANONICAL_FILE="$PROJECT_DIR/Memory/events/events.jsonl"
+    cp "$SIDE_FILE" "$CANONICAL_FILE"
+    log "regenerate-events: updated canonical events file $CANONICAL_FILE"
 
     # Run pattern_analyzer pointing at the side file via env override.
     PATTERN_ANALYZER="$PLUGIN_ROOT/tools/pattern_analyzer.py"

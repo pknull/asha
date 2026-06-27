@@ -34,6 +34,7 @@ persona re‑tested 2026‑06‑24) plus upstream docs and issue trackers.
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✖ do not fire (re-confirmed 0.142)** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
+| Native command approval rules | n/a | ⚠️ coarse `~/.codex/rules/asha.rules` fallback (prefix-based, permission/sandbox boundary only) | n/a |
 
 Guardrails now enforce on **Claude and Copilot** (Copilot single-call deny
 verified live on 1.0.63, 2026‑06‑24); only **Codex** can't (its shell runs
@@ -42,7 +43,9 @@ file-based layers — corpus, persona (all three; Copilot persona fixed
 2026‑06‑24), and the operational layer (operation.md + learnings; Copilot +
 Codex both wired 2026‑06‑24 — file-based, no working hook required) — work on all
 three CLIs. Note: slash commands are remapped to skills on Codex/Copilot (no
-native command primitive), and the `output-styles` plugin is Claude-only.
+native command primitive), and the `output-styles` plugin is Claude-only. Codex
+also gets native execution-policy `prefix_rule()` prompts for a narrow subset of
+high-risk shell commands; these are not equivalent to Asha's regex guardrails.
 
 ## Per-harness findings
 
@@ -70,6 +73,17 @@ shell command (`/usr/bin/zsh -lc 'echo …'` ran, output returned) **with the
 sentinel marker still empty** — PreToolUse did not fire before the shell tool. So
 the `unified_exec` gap from 0.139 persists in 0.142; the original finding below
 stands unchanged.
+
+**Compatibility refresh (2026‑06‑26):** Asha now emits the current documented
+nested hook TOML shape (`[[hooks.Event]]` matcher group plus
+`[[hooks.Event.hooks]]` command handler) instead of the earlier flat form. This
+does not change the 0.142 shell verdict above, but it removes avoidable schema
+drift for hook events that do fire. Asha also writes a dedicated
+`~/.codex/rules/asha.rules` file using Codex's native `prefix_rule()` execution
+policy for coarse prompts on `find /home`, `bfs /home`, `git reset --hard`,
+force-push, and protected-branch deletes. Limitation: Codex rules are prefix
+rules, not regex policy, and apply at approval/sandbox boundaries rather than as
+a content-aware PreToolUse replacement.
 
 **What we observed (live, this machine):**
 
@@ -156,12 +170,12 @@ removes the file, or set the rules' override envs.**
 | Item | Status |
 |---|---|
 | Claude guardrails | **Works** (enforced, verified) |
-| Codex guardrails | **Can't fix (upstream)** — re-confirmed on 0.142 (2026‑06‑24): match-all hook + trust-bypass, shell still ran, hook never fired. Shell goes through `unified_exec`, off the hookable path; shell/edit-only even where hooks do work ([#20204](https://github.com/openai/codex/issues/20204)). |
+| Codex guardrails | **Can't fully fix (upstream)** — re-confirmed on 0.142 (2026‑06‑24): match-all hook + trust-bypass, shell still ran, hook never fired. Shell goes through `unified_exec`, off the hookable path; shell/edit-only even where hooks do work ([#20204](https://github.com/openai/codex/issues/20204)). Asha now emits documented nested hook TOML and installs native `rules/asha.rules` as a coarse approval fallback, but not full policy parity. |
 | Copilot persona | **Works** (fixed + verified 2026‑06‑24, CLI 1.0.63) — `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch. |
 | Copilot operational layer | **Works** (wired + verified 2026‑06‑24) — `operation.md` + learnings hot tier via a second instructions file. |
 | Copilot guardrails | **Wired + enforced (built + verified 2026‑06‑24)** — `asha install copilot` writes `~/.copilot/hooks/asha-guardrails.json` → `copilot-policy-adapter.sh` → the existing policy-guard + block-secrets. Live deny + ask + block-secrets confirmed on 1.0.63. Soft deterrent (concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested; adapter fails open). |
 
-**Bottom line:** the file-based layers — corpus, persona (all three), the operational layer (operation.md + learnings; Copilot + Codex both wired 2026‑06‑24), and memory/capture — are cross-harness. **Real-time guardrail enforcement now works on Claude AND Copilot** — asha installs the Copilot guardrails via an adapter over the existing policy engine (verified live on 1.0.63). **Codex is the lone holdout** — its shell bypasses the hook (`unified_exec`, re-confirmed on 0.142). The only enforcement gap left is Codex shell, plus the untested Copilot parallel-call concurrency case (a soft-deterrent limit, not a containment guarantee, on every harness).
+**Bottom line:** the file-based layers — corpus, persona (all three), the operational layer (operation.md + learnings; Copilot + Codex both wired 2026‑06‑24), and memory/capture — are cross-harness. **Real-time guardrail enforcement now works on Claude AND Copilot** — asha installs the Copilot guardrails via an adapter over the existing policy engine (verified live on 1.0.63). **Codex is the lone holdout for full guardrail parity** — its shell bypasses the hook (`unified_exec`, re-confirmed on 0.142). The installer now uses Codex's native rules file for coarse approval prompts, but the remaining enforcement gap is still Codex content-aware shell policy, plus the untested Copilot parallel-call concurrency case (a soft-deterrent limit, not a containment guarantee, on every harness).
 
 ## Test methodology
 
@@ -203,7 +217,8 @@ its `preToolUse` content-based deny **does** work (verified above), so Copilot i
 *not* limited to coarse permission/MCP gating. Codex's recommendation stands: its
 shell isn't on the hookable path, so content-based shell deny is genuinely
 unavailable there; permission/approval gating or MCP tool validation remain the
-only (coarser, non-drop-in) options for Codex.
+only (coarser, non-drop-in) options for Codex. Asha's `rules/asha.rules` is the
+implemented version of that coarse Codex-native fallback.
 
 ## Sources
 

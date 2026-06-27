@@ -21,6 +21,10 @@
 
 set -uo pipefail   # deliberately NOT -e: we own every exit code; never die mid-eval
 
+# Shared harness-specific output contracts. Fail-open if unavailable.
+SELF_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || exit 0
+[[ -f "$SELF_DIR/harness-response.sh" ]] && source "$SELF_DIR/harness-response.sh" 2>/dev/null || exit 0
+
 # Fail-open if jq is unavailable.
 command -v jq >/dev/null 2>&1 || exit 0
 
@@ -32,11 +36,9 @@ TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || t
 
 CMD="$(printf '%s' "$INPUT"  | jq -r '.tool_input.command   // empty' 2>/dev/null || true)"
 FILE="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)"
-HARNESS="${ASHA_HARNESS:-claude}"
 SID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
 
 # Locate rule sources relative to this script (hooks run from the source tree).
-SELF_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || exit 0
 REPO_RULES="$SELF_DIR/../policies/rules.json"
 USER_RULES="$HOME/.asha/policies.json"
 
@@ -107,8 +109,8 @@ while [[ $i -lt $COUNT ]]; do
   if [[ -n "$r_max" && "$r_max" =~ ^[0-9]+$ ]] && command -v state_incr >/dev/null 2>&1; then
     n="$(state_incr "$SID" "count:${r_id}" 2>/dev/null || echo 0)"
     if [[ "$n" =~ ^[0-9]+$ && "$n" -gt "$r_max" ]]; then
-      echo "BLOCKED by Asha policy [$r_id]: per-session limit reached ($n > ${r_max}). ${r_reason}${ohint}" >&2
-      exit 2
+      pretooluse_policy_deny "$r_id" "per-session limit reached ($n > ${r_max}). ${r_reason}" "$ohint"
+      exit $?
     fi
   fi
 
@@ -119,21 +121,13 @@ while [[ $i -lt $COUNT ]]; do
       continue
       ;;
     ask)
-      if [[ "$HARNESS" != "codex" ]]; then
-        # Claude / unknown harness: real permission prompt.
-        reason_json="$(printf '%s' "$r_reason" | jq -Rs . 2>/dev/null || true)"
-        [[ -n "$reason_json" ]] || exit 0   # fail-open if we can't encode
-        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' "$reason_json"
-        exit 0
-      fi
-      # Codex has no permission dialog: degrade ask -> deny.
-      echo "BLOCKED by Asha policy [$r_id]: ${r_reason}${ohint}" >&2
-      exit 2
+      pretooluse_policy_ask "$r_id" "$r_reason" "$ohint"
+      exit $?
       ;;
     *)
       # deny (and the deny-by-default fail-safe for an unset action).
-      echo "BLOCKED by Asha policy [$r_id]: ${r_reason}${ohint}" >&2
-      exit 2
+      pretooluse_policy_deny "$r_id" "$r_reason" "$ohint"
+      exit $?
       ;;
   esac
 done
