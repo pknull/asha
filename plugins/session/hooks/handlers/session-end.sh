@@ -56,9 +56,26 @@ REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null || true)
 
 # Only archive on clean logout/exit/idle (not on /clear which continues session)
 if [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" || "$REASON" == "idle" ]]; then
-    # Use save script in automatic mode
+    # Use save script in automatic mode.
+    #
+    # DETACHED, not inline: the old `exec save-session.sh --automatic` ran the
+    # full synthesis synchronously in the hook. On exit the harness cancels an
+    # in-flight SessionEnd hook to quit promptly, so the synthesis was killed
+    # mid-pipeline — after it rewrote activeContext.md, before it committed —
+    # surfacing as "Hook cancelled" and a dirty working tree. setsid runs it in
+    # a new session/process group that outlives teardown; detached-save.sh adds
+    # an flock (against a relaunched session's save) and a disk log. The
+    # exported env (ASHA_TRANSCRIPT_PATH/CLAUDE_CODE_SESSION_ID) is inherited.
     SAVE_SCRIPT="$PLUGIN_ROOT/tools/save-session.sh"
-    if [[ -x "$SAVE_SCRIPT" ]]; then
+    DETACHED="$PLUGIN_ROOT/tools/detached-save.sh"
+    LOG_FILE="$PROJECT_DIR/Work/logs/session-end-save.log"
+    LOCK_FILE="$PROJECT_DIR/Work/markers/.save.lock"
+    if [[ -x "$SAVE_SCRIPT" && -x "$DETACHED" ]] && command -v setsid >/dev/null 2>&1; then
+        setsid "$DETACHED" "$SAVE_SCRIPT" "$LOG_FILE" "$LOCK_FILE" </dev/null >/dev/null 2>&1 &
+        echo "{}"
+    elif [[ -x "$SAVE_SCRIPT" ]]; then
+        # Fallback (no setsid / wrapper missing): preserve old inline behavior
+        # rather than skip the save entirely.
         exec "$SAVE_SCRIPT" --automatic
     else
         echo "{}"
