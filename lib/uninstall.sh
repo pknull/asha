@@ -163,8 +163,11 @@ asha_uninstall_main() {
     # NOT sit in an if/&&/|| condition: bash ignores `set -e` inside a
     # condition context even when re-set explicitly, which would silently
     # mask failures instead of isolating them. Hence the set +e/-e toggle.
+    # The count handoff is cosmetic and must never fail the harness: without
+    # `|| true`, an unwritable TMPDIR would abort the subshell AFTER a fully
+    # successful uninstall and report a false failure (review pass 2).
     set +e
-    ( set -e; "${t}_uninstall"; echo "${!var:-0}" > "$total_file" )
+    ( set -e; "${t}_uninstall"; echo "${!var:-0}" > "$total_file" 2>/dev/null || true )
     local rc=$?
     [[ $had_e -eq 1 ]] && set -e
     if [[ $rc -ne 0 ]]; then

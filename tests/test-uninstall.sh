@@ -228,6 +228,20 @@ else
 fi
 assert_eq "asha hooks removed despite matcher-only group" "0" "$(asha_hooks_left)"
 
+# ---------------------------------------------------------------------------
+# Test 8: unwritable TMPDIR must not fail a successful uninstall — the count
+# handoff is cosmetic, the exit status is load-bearing
+# ---------------------------------------------------------------------------
+echo "--- test 8: broken TMPDIR does not fake a failure ---"
+build_sandbox
+if env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" TMPDIR=/nonexistent \
+     bash "$REPO_ROOT/uninstall.sh" --target all >/dev/null 2>&1; then
+  ok "uninstall with unwritable TMPDIR exits 0"
+else
+  fail "uninstall with unwritable TMPDIR exits 0 (got $?)"
+fi
+assert_eq "symlinks swept despite broken TMPDIR" "0" "$(repo_links)"
+
 echo ""
 echo "test-uninstall: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
