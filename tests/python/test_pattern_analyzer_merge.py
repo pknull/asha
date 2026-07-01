@@ -342,6 +342,54 @@ class CalibrationDedupTests(unittest.TestCase):
         self.assertEqual(len(filtered), 1)
         self.assertEqual(filtered[0]["text"], "fresh new signal")
 
+    # -------------------------------------------------------------------------
+    # Roleplay calibration guard: in-character lines must never become signals
+    # (see keeper.md Calibration Log scrub notes 2026-06-25, 2026-07-01)
+    # -------------------------------------------------------------------------
+
+    def _decision(self, sid, detail, ts="2026-07-01T00:00:00Z", project="/tmp/aas"):
+        return {
+            "session_id": sid,
+            "type": "context",
+            "subtype": "decision",
+            "timestamp": ts,
+            "payload": {"detail": detail, "source": "user_input"},
+            "metadata": {"project_dir": project},
+        }
+
+    def test_rp_session_signals_excluded(self):
+        """A session that invoked /rp is excluded whole — both parenthetical
+        actions AND plain in-character 'I want/need' dialogue are dropped."""
+        rp = "rp-sess"
+        events = [
+            self._decision(rp, "# Roleplay Session Command\n\nInitiates an "
+                               "interactive roleplay session by deploying the "
+                               "multi-agent `roleplay-gm` orchestrator"),
+            self._decision(rp, "(I need release, I'm so full, my legs are hurting)"),
+            self._decision(rp, "No, I've no interest in you. I want it undone, now."),
+        ]
+        sig = self.pa.extract_calibration_signals(events)
+        self.assertEqual(sig["keeper"], [], "RP lines must not become keeper signals")
+        self.assertEqual(sig["voice"], [])
+
+    def test_parenthetical_action_excluded_without_session_marker(self):
+        """Even absent the /rp marker in-batch, a bare parenthetical stage
+        action is recognised as RP in-character content and excluded."""
+        events = [self._decision("x", "(I want to leave now, I pull her close)")]
+        sig = self.pa.extract_calibration_signals(events)
+        self.assertEqual(sig["keeper"], [])
+
+    def test_genuine_directive_still_captured(self):
+        """The guard must not over-filter: a real preference in a non-RP
+        session is still captured."""
+        events = [self._decision("work", "I prefer the gws CLI over the MCP.",
+                                 project="/tmp/life-nonexistent")]
+        sig = self.pa.extract_calibration_signals(events)
+        self.assertTrue(
+            any("gws CLI" in s["text"] for s in sig["keeper"]),
+            "genuine preference should still be captured",
+        )
+
     def test_append_to_keeper_skips_duplicates(self):
         """Live keeper.md write path: a signal whose text is already
         present must not be re-emitted with a fresh timestamp."""

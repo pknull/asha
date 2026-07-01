@@ -593,9 +593,57 @@ def extract_error_patterns(events: List[Dict]) -> List[Dict]:
     return patterns
 
 
+# --- Roleplay calibration guard ---------------------------------------------
+# Roleplay/creative sessions (esp. the AAS vault) fill decision events with
+# in-character first-person lines ("I need...", "(I reach up...") that trip
+# KEEPER_PATTERNS / VOICE_PATTERNS but say nothing about how the Keeper actually
+# works. Keep RP-sourced text out of keeper.md / voice.md entirely — see the
+# keeper.md Calibration Log scrub notes (2026-06-25, 2026-07-01), which were the
+# recurring manual cleanup this replaces.
+_RP_SESSION_MARKERS = (
+    "Roleplay Session Command",   # /rp skill header, expanded into a decision event
+    "RP Session End",             # /rp-end skill header
+    "roleplay-gm",                # the RP orchestrator agent
+)
+_RP_ACTION_RE = re.compile(r"\(\s*[Ii][’']?\s*[a-z]")  # parenthetical stage action: "(I reach", "(I'm"
+
+
+def _rp_session_ids(events: List[Dict]) -> set:
+    """session_ids that invoked an RP command anywhere in this batch of events."""
+    ids = set()
+    for e in events:
+        detail = (e.get("payload") or {}).get("detail", "") or ""
+        if any(m in detail for m in _RP_SESSION_MARKERS):
+            sid = e.get("session_id")
+            if sid:
+                ids.add(sid)
+    return ids
+
+
+def _rp_marker_present(project_dir: str) -> bool:
+    """True if an rp-active marker is live for the event's project (mid-RP save)."""
+    try:
+        return bool(project_dir) and (Path(project_dir) / "Work" / "markers" / "rp-active").exists()
+    except Exception:
+        return False
+
+
+def _is_rp_text(text: str) -> bool:
+    """True if the message is roleplay in-character content (a stage action)."""
+    t = (text or "").strip()
+    return bool(t) and (t.startswith("(") or bool(_RP_ACTION_RE.search(t)))
+
+
 def extract_calibration_signals(events: List[Dict]) -> Dict[str, List[Dict]]:
-    """Extract voice and keeper calibration signals from decision events"""
+    """Extract voice and keeper calibration signals from decision events.
+
+    Roleplay-sourced events are excluded so in-character dialogue never lands in
+    keeper.md / voice.md: an event is skipped if its session invoked an RP
+    command, if its text is an in-character stage action, or if an rp-active
+    marker is live for its project (a mid-roleplay save).
+    """
     signals = {"voice": [], "keeper": []}
+    rp_sids = _rp_session_ids(events)
 
     decisions = [
         e for e in events
@@ -604,6 +652,13 @@ def extract_calibration_signals(events: List[Dict]) -> Dict[str, List[Dict]]:
 
     for event in decisions:
         text = event["payload"].get("detail", "")
+        # Skip roleplay-sourced content — never a genuine work/voice signal.
+        if (
+            event.get("session_id") in rp_sids
+            or _is_rp_text(text)
+            or _rp_marker_present((event.get("metadata") or {}).get("project_dir", ""))
+        ):
+            continue
         timestamp = event.get("timestamp", "")
 
         # Check voice patterns
