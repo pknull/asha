@@ -14,7 +14,9 @@
 # never touched.
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Physical paths (cd -P): the engine canonicalizes MARKET_ROOT via readlink,
+# so fixture paths built from a logical (symlinked) pwd would never match.
+SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 PASS=0
@@ -101,8 +103,9 @@ run_uninstall() { # extra args forwarded
 }
 
 repo_links() { # count symlinks in sandbox still resolving into the repo
+  # tr strips BSD/macOS wc's left-padding so string-equality asserts hold.
   find "$SANDBOX/.claude" "$SANDBOX/.codex" "$SANDBOX/.copilot" "$SANDBOX/.local" \
-    -type l -lname "$REPO_ROOT*" 2>/dev/null | wc -l
+    -type l -lname "$REPO_ROOT*" 2>/dev/null | wc -l | tr -d '[:space:]'
 }
 
 asha_hooks_left() { # path-prefix OR tag, same predicate as the fix
@@ -173,6 +176,57 @@ if run_uninstall >/dev/null 2>&1; then
 else
   fail "second uninstall exits 0 (got $?)"
 fi
+
+# ---------------------------------------------------------------------------
+# Test 5: missing settings.json is benign — symlinks still swept, no failure
+# (codex/copilot-only machines; die() here used to strand everything after
+# claude under --target all)
+# ---------------------------------------------------------------------------
+echo "--- test 5: missing settings.json sweeps symlinks, exits 0 ---"
+build_sandbox
+rm -f "$SANDBOX/.claude/settings.json"
+if run_uninstall >/dev/null 2>&1; then
+  ok "uninstall without settings.json exits 0"
+else
+  fail "uninstall without settings.json exits 0 (got $?)"
+fi
+assert_eq "symlinks swept without settings.json" "0" "$(repo_links)"
+
+# ---------------------------------------------------------------------------
+# Test 6: corrupt settings.json fails the claude harness LOUDLY but does not
+# strand codex/copilot — per-harness isolation, non-zero overall exit
+# ---------------------------------------------------------------------------
+echo "--- test 6: corrupt settings.json fails claude, still sweeps codex+copilot ---"
+build_sandbox
+echo '{ this is not json' > "$SANDBOX/.claude/settings.json"
+rc=0
+out="$(run_uninstall 2>&1)" || rc=$?
+if [[ $rc -ne 0 ]]; then
+  ok "corrupt settings.json yields non-zero exit ($rc)"
+else
+  fail "corrupt settings.json yields non-zero exit (got 0 — failure masked)"
+fi
+grep -q "uninstall incomplete for: claude" <<<"$out" \
+  && ok "failure attributed to claude harness in summary" \
+  || fail "failure attributed to claude harness in summary"
+codex_copilot_left="$(find "$SANDBOX/.codex" "$SANDBOX/.copilot" -type l -lname "$REPO_ROOT*" 2>/dev/null | wc -l | tr -d '[:space:]')"
+assert_eq "codex+copilot swept despite claude failure" "0" "$codex_copilot_left"
+
+# ---------------------------------------------------------------------------
+# Test 7: matcher-only hook group (no `hooks` key) does not error the strip
+# filter; asha hooks still removed
+# ---------------------------------------------------------------------------
+echo "--- test 7: matcher-only hook group tolerated ---"
+build_sandbox
+jq --arg repo "$REPO_ROOT" '.hooks.PreToolUse = [ { matcher: "Edit" } ]' \
+  "$SANDBOX/.claude/settings.json" > "$SANDBOX/.claude/settings.json.new"
+mv "$SANDBOX/.claude/settings.json.new" "$SANDBOX/.claude/settings.json"
+if run_uninstall >/dev/null 2>&1; then
+  ok "uninstall with matcher-only group exits 0"
+else
+  fail "uninstall with matcher-only group exits 0 (got $?)"
+fi
+assert_eq "asha hooks removed despite matcher-only group" "0" "$(asha_hooks_left)"
 
 echo ""
 echo "test-uninstall: $PASS passed, $FAIL failed"

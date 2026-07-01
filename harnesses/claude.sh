@@ -246,7 +246,19 @@ claude_install() {
 # empty namespace dirs, strips settings.json hook entries tagged asha:* (and
 # legacy marketplace:* for migration cleanup).
 claude_uninstall() {
-  [[ -f "$CLAUDE_SETTINGS_FILE" ]] || die "$CLAUDE_SETTINGS_FILE not found"
+  # Missing settings.json is a benign state (claude harness never installed,
+  # or already cleaned): still sweep the symlink mounts below, skip only the
+  # hook strip. die()-ing here stranded codex/copilot under --target all
+  # (issue #4 review). A PRESENT-but-corrupt settings.json is a real failure:
+  # fail this harness loudly rather than silently skipping the hook strip.
+  local have_settings=0
+  if [[ -f "$CLAUDE_SETTINGS_FILE" ]]; then
+    jq empty "$CLAUDE_SETTINGS_FILE" >/dev/null 2>&1 \
+      || die "$CLAUDE_SETTINGS_FILE is not valid JSON — fix it, then re-run" 4
+    have_settings=1
+  else
+    say "[claude] $CLAUDE_SETTINGS_FILE not found; sweeping symlinks only"
+  fi
   say "[claude] target = $CLAUDE_HOME"
 
   local total=0 n
@@ -282,39 +294,41 @@ claude_uninstall() {
   # the non-standard "source" key when it re-serializes settings.json, so the
   # tag alone is NOT durable — live hooks are usually untagged. Match by
   # command path-prefix FIRST (mirrors register_hooks() in lib/install.sh),
-  # keeping the asha:*/marketplace:* tag as fallback (issue #4).
-  : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
-  local prefix="$ABS_MARKET_ROOT/plugins/"
-  local tag_regex='^(asha|marketplace):'
-  local count_expr='[.hooks // {} | .[] | .[]? | .hooks[]?
-    | select(((.command // "") | startswith($prefix)) or ((.source // "") | test($re)))] | length'
-  local before after removed
-  before="$(jq -r --arg prefix "$prefix" --arg re "$tag_regex" "$count_expr" "$CLAUDE_SETTINGS_FILE")"
-  if [[ "$before" -gt 0 ]]; then
-    if [[ $DRY_RUN -eq 1 ]]; then
-      say "[claude] would remove $before asha hook entr$([[ $before -eq 1 ]] && echo y || echo ies) from settings.json"
+  # keeping the asha:*/marketplace:* tag as fallback (issue #4). strip_group
+  # guards a missing .hooks key with (.hooks // []) exactly as register_hooks'
+  # strip_asha_hooks does — a matcher-only group must not error the filter.
+  if [[ $have_settings -eq 1 ]]; then
+    : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
+    local prefix="$ABS_MARKET_ROOT/plugins/"
+    local tag_regex='^(asha|marketplace):'
+    local count_expr='[.hooks // {} | .[] | .[]? | .hooks[]?
+      | select(((.command // "") | startswith($prefix)) or ((.source // "") | test($re)))] | length'
+    local before after removed
+    before="$(jq -r --arg prefix "$prefix" --arg re "$tag_regex" "$count_expr" "$CLAUDE_SETTINGS_FILE")"
+    if [[ "$before" -gt 0 ]]; then
+      if [[ $DRY_RUN -eq 1 ]]; then
+        say "[claude] would remove $before asha hook entr$([[ $before -eq 1 ]] && echo y || echo ies) from settings.json"
+      else
+        claude_backup_settings_once
+        claude_settings_update '
+          def is_asha_hook:
+            ((.command // "") | startswith($prefix))
+            or ((.source // "") | test($re));
+          def strip_group:
+            ((.hooks // []) | map(select(is_asha_hook | not))) as $kept
+            | if ($kept | length) > 0 then [ (.hooks = $kept) ] else [] end;
+          if .hooks then
+            .hooks |= with_entries(.value |= (map(strip_group) | add // []))
+            | .hooks |= with_entries(select(.value | length > 0))
+          else . end
+        ' --arg prefix "$prefix" --arg re "$tag_regex"
+        after="$(jq -r --arg prefix "$prefix" --arg re "$tag_regex" "$count_expr" "$CLAUDE_SETTINGS_FILE")"
+        removed=$((before - after))
+        say "[claude] removed $removed asha hook entr$([[ $removed -eq 1 ]] && echo y || echo ies) from settings.json"
+      fi
     else
-      claude_backup_settings_once
-      claude_settings_update '
-        def is_asha_hook:
-          ((.command // "") | startswith($prefix))
-          or ((.source // "") | test($re));
-        if .hooks then
-          .hooks |= with_entries(
-            .value |= (
-              map(.hooks |= map(select(is_asha_hook | not)))
-              | map(select(.hooks | length > 0))
-            )
-          )
-          | .hooks |= with_entries(select(.value | length > 0))
-        else . end
-      ' --arg prefix "$prefix" --arg re "$tag_regex"
-      after="$(jq -r --arg prefix "$prefix" --arg re "$tag_regex" "$count_expr" "$CLAUDE_SETTINGS_FILE")"
-      removed=$((before - after))
-      say "[claude] removed $removed asha hook entr$([[ $removed -eq 1 ]] && echo y || echo ies) from settings.json"
+      log "[claude] no asha hooks in settings.json"
     fi
-  else
-    log "[claude] no asha hooks in settings.json"
   fi
 
   CLAUDE_UNINSTALL_TOTAL=$total

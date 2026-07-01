@@ -144,6 +144,9 @@ asha_uninstall_main() {
 
   local t total=0
   local -a failed=()
+  # Remember the caller's errexit state so we can toggle around each harness.
+  local had_e=0
+  case "$-" in *e*) had_e=1 ;; esac
   for t in "${targets[@]}"; do
     local harness_script="$HARNESSES_DIR/$t.sh"
     [[ -f "$harness_script" ]] || die "harness script missing: $harness_script"
@@ -151,16 +154,27 @@ asha_uninstall_main() {
     source "$harness_script"
     # Each harness exports <T>_UNINSTALL_TOTAL.
     local var="${t^^}_UNINSTALL_TOTAL"
+    local total_file="${TMPDIR:-/tmp}/.asha-uninstall-total.$$"
     # Failure isolation: one harness failing must never silently strand the
     # ones after it (issue #4: codex died mid-uninstall under set -e and
-    # copilot was never swept). The `if !` guard also suppresses errexit
-    # inside the harness function, making per-harness cleanup best-effort;
-    # hard prerequisites still die() loudly, which aborts everything.
-    if ! "${t}_uninstall"; then
+    # copilot was never swept). Each harness runs in its own subshell with
+    # errexit ON, so ANY failure — including die()'s exit and unguarded
+    # command failures — aborts only that harness, loudly. The subshell must
+    # NOT sit in an if/&&/|| condition: bash ignores `set -e` inside a
+    # condition context even when re-set explicitly, which would silently
+    # mask failures instead of isolating them. Hence the set +e/-e toggle.
+    set +e
+    ( set -e; "${t}_uninstall"; echo "${!var:-0}" > "$total_file" )
+    local rc=$?
+    [[ $had_e -eq 1 ]] && set -e
+    if [[ $rc -ne 0 ]]; then
       failed+=("$t")
-      info "WARN: [$t] uninstall failed; continuing with remaining targets"
+      info "WARN: [$t] uninstall failed (exit $rc); continuing with remaining targets"
     fi
-    total=$((total + ${!var:-0}))
+    local n_harness
+    n_harness="$(cat "$total_file" 2>/dev/null || true)"
+    rm -f "$total_file"
+    total=$((total + ${n_harness:-0}))
   done
 
   # Clean asha bin entries from ~/.local/bin/. The dispatcher `asha` resolves
