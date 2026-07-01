@@ -143,6 +143,7 @@ asha_uninstall_main() {
   esac
 
   local t total=0
+  local -a failed=()
   for t in "${targets[@]}"; do
     local harness_script="$HARNESSES_DIR/$t.sh"
     [[ -f "$harness_script" ]] || die "harness script missing: $harness_script"
@@ -150,7 +151,15 @@ asha_uninstall_main() {
     source "$harness_script"
     # Each harness exports <T>_UNINSTALL_TOTAL.
     local var="${t^^}_UNINSTALL_TOTAL"
-    "${t}_uninstall"
+    # Failure isolation: one harness failing must never silently strand the
+    # ones after it (issue #4: codex died mid-uninstall under set -e and
+    # copilot was never swept). The `if !` guard also suppresses errexit
+    # inside the harness function, making per-harness cleanup best-effort;
+    # hard prerequisites still die() loudly, which aborts everything.
+    if ! "${t}_uninstall"; then
+      failed+=("$t")
+      info "WARN: [$t] uninstall failed; continuing with remaining targets"
+    fi
     total=$((total + ${!var:-0}))
   done
 
@@ -167,4 +176,8 @@ asha_uninstall_main() {
 
   say ""
   say "done. total symlinks removed: $total"
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    say "WARNING: uninstall incomplete for: ${failed[*]} — re-run after fixing the errors above"
+    return 1
+  fi
 }
