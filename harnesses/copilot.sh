@@ -593,7 +593,9 @@ copilot_uninstall() {
     else
       rm -f "$HOME/.cache/asha/instructions-copilot.md"
       rm -rf "$HOME/.cache/asha/copilot-instr"
-      rmdir "$HOME/.cache/asha" 2>/dev/null
+      # `|| true` is load-bearing: unguarded rmdir of a non-empty dir dies
+      # under `set -e` with stderr silenced — see issue #4 (codex twin).
+      rmdir "$HOME/.cache/asha" 2>/dev/null || true
       log "[copilot] removed cached identity"
     fi
   fi

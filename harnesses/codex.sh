@@ -540,8 +540,9 @@ _codex_migrate_legacy() {
     done < <(find "$CODEX_LEGACY_PROMPTS_DIR" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null)
     if [[ $n -gt 0 ]]; then
       say "[codex] migrated: removed $n legacy prompt symlink(s) from $CODEX_LEGACY_PROMPTS_DIR"
-      # rmdir if now empty (and a real dir, not a symlink)
-      [[ $DRY_RUN -eq 0 && ! -L "$CODEX_LEGACY_PROMPTS_DIR" && -z "$(ls -A "$CODEX_LEGACY_PROMPTS_DIR")" ]] && rmdir "$CODEX_LEGACY_PROMPTS_DIR"
+      # rmdir if now empty (and a real dir, not a symlink). `|| true`: a failed
+      # rmdir at the tail of an && list aborts the run under `set -e` (issue #4).
+      [[ $DRY_RUN -eq 0 && ! -L "$CODEX_LEGACY_PROMPTS_DIR" && -z "$(ls -A "$CODEX_LEGACY_PROMPTS_DIR")" ]] && rmdir "$CODEX_LEGACY_PROMPTS_DIR" || true
     fi
   fi
 }
@@ -662,7 +663,8 @@ codex_uninstall() {
     n="$(remove_symlinks_under "$CODEX_LEGACY_PROMPTS_DIR" 1)"
     [[ "$n" -gt 0 ]] && say "[codex] removed $n legacy prompt symlink(s) from $CODEX_LEGACY_PROMPTS_DIR"
     total=$((total + n))
-    [[ $DRY_RUN -eq 0 && ! -L "$CODEX_LEGACY_PROMPTS_DIR" && -z "$(ls -A "$CODEX_LEGACY_PROMPTS_DIR")" ]] && rmdir "$CODEX_LEGACY_PROMPTS_DIR"
+    # `|| true`: a failed rmdir at the tail of an && list aborts under set -e.
+    [[ $DRY_RUN -eq 0 && ! -L "$CODEX_LEGACY_PROMPTS_DIR" && -z "$(ls -A "$CODEX_LEGACY_PROMPTS_DIR")" ]] && rmdir "$CODEX_LEGACY_PROMPTS_DIR" || true
   fi
 
   # Excise hook fence from config.toml
@@ -716,7 +718,12 @@ codex_uninstall() {
       say "[codex] would remove ~/.cache/asha/instructions.md + instructions-codex.md"
     else
       rm -f "$HOME/.cache/asha/instructions.md" "$HOME/.cache/asha/instructions-codex.md"
-      rmdir "$HOME/.cache/asha" 2>/dev/null
+      # `|| true` is load-bearing: the cache dir usually still holds OTHER
+      # harnesses' files (codex runs before copilot in `--target all`), so this
+      # rmdir fails — and with stderr silenced, an unguarded failure under the
+      # shim's `set -e` killed the whole uninstall here, stranding every
+      # harness after codex (issue #4, 2026-07-01 relocation).
+      rmdir "$HOME/.cache/asha" 2>/dev/null || true
       log "[codex] removed cached identity"
     fi
   fi
