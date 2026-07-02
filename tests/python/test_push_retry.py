@@ -94,8 +94,9 @@ class QueueCollapseTests(unittest.TestCase):
         push_retry.ensure(self.repo, self.repo)
         entries = push_retry._read_queue(self.qfile)
         self.assertEqual(len(entries), 1, "legacy backlog must collapse to one entry")
-        self.assertEqual(entries[0]["first_seen"], legacy[-1]["first_seen"],
-                         "first_seen carries from the prior tail entry")
+        self.assertEqual(entries[0]["first_seen"], legacy[0]["first_seen"],
+                         "first_seen carries from the OLDEST legacy entry — "
+                         "status().oldest must report the true backlog age")
 
 
 class LocalOnlyTests(unittest.TestCase):
@@ -126,6 +127,30 @@ class LocalOnlyTests(unittest.TestCase):
         _git(self.repo, "config", "asha.localOnly", "false")
         result = push_retry.ensure(self.repo, self.repo)
         self.assertEqual(result["status"], "queued")
+
+    def test_invalid_boolean_fails_open_loudly(self):
+        # `git config --bool` exits 128 on garbage; must queue (fail open)
+        # but warn on stderr so the typo is discoverable.
+        _git(self.repo, "config", "asha.localOnly", "ture")
+        import contextlib
+        import io
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            result = push_retry.ensure(self.repo, self.repo)
+        self.assertEqual(result["status"], "queued", "invalid value must fail open")
+        self.assertIn("invalid boolean", err.getvalue())
+
+    def test_gate_push_passes_on_local_only(self):
+        # Consumer contract: save_preflight's push gate must treat the
+        # opt-out as the correct durable state, not an unexpected result
+        # (review finding: the Stop hook hard-failed every save otherwise).
+        import save_preflight
+        gate = save_preflight.gate_push(self.repo, dry_run=False)
+        self.assertEqual(gate.status, "pass",
+                         f"skipped_local_only must pass the push gate: {gate.detail}")
+        gate_dry = save_preflight.gate_push(self.repo, dry_run=True)
+        self.assertEqual(gate_dry.status, "pass")
+        self.assertIn("local-only", gate_dry.detail)
 
 
 class ClearTests(unittest.TestCase):

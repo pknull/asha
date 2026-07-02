@@ -111,9 +111,20 @@ def _try_push(repo: Path) -> tuple[bool, str]:
 
 def _local_only(repo: Path) -> bool:
     """True when the repo is marked deliberately remoteless
-    (``git config asha.localOnly true``)."""
+    (``git config asha.localOnly true``).
+
+    Fails OPEN (queueing resumes) but never silently: a key that exists with
+    an invalid boolean value (``ture``, ``enabled``) makes git exit 128 with
+    the stderr discarded — warn so the typo is discoverable (review finding).
+    """
     rc, val, _ = _git(repo, "config", "--bool", "--get", "asha.localOnly")
-    return rc == 0 and val == "true"
+    if rc == 0:
+        return val == "true"
+    raw_rc, raw_val, _ = _git(repo, "config", "--get", "asha.localOnly")
+    if raw_rc == 0:
+        print(f"warn: asha.localOnly has invalid boolean value '{raw_val}' — "
+              f"treating as false (fix with: git config asha.localOnly true)", file=sys.stderr)
+    return False
 
 
 def _enqueue(qfile: Path, head: str, branch: Optional[str], reason: str, error: str = "") -> dict:
@@ -127,14 +138,18 @@ def _enqueue(qfile: Path, head: str, branch: Optional[str], reason: str, error: 
     """
     entries = _read_queue(qfile)
     now = _now()
+    # attempts continue from the most recent entry; first_seen comes from the
+    # OLDEST (legacy queues appended oldest-first) — 'oldest' in status() must
+    # report the true backlog age, not the newest entry's (review finding).
     prior = entries[-1] if entries else None
+    oldest = entries[0] if entries else None
     attempts = int(prior.get("attempts", 0)) + 1 if prior else 1
     record = {
         "head": head,
         "branch": branch,
         "reason": reason,
         "attempts": attempts,
-        "first_seen": prior["first_seen"] if prior and prior.get("first_seen") else _iso(now),
+        "first_seen": oldest["first_seen"] if oldest and oldest.get("first_seen") else _iso(now),
         "last_attempt": _iso(now),
         "next_retry_after": _iso(now + timedelta(seconds=_backoff_seconds(attempts))),
         "error": error,
