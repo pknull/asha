@@ -11,6 +11,17 @@ Commands:
            exponential backoff. Succeeds unless the queue file can't be written.
   drain    Push queued commits when a destination exists; clear on success.
   status   Print the queue (count, oldest entry, reasons).
+  clear    Empty the queue (manual cleanup; reports how many were dropped).
+
+The queue holds AT MOST ONE entry: a successful ``git push`` sends every local
+commit at once, so only the latest HEAD ever needs to be remembered. When HEAD
+moves, the entry is replaced in place — ``first_seen`` and ``attempts`` carry
+over so backoff pacing and age reporting stay honest (issue #5: one entry per
+save accumulated forever on remoteless repos).
+
+Deliberately local repos opt out of queueing entirely:
+  git config asha.localOnly true
+makes ``ensure`` return ``skipped_local_only`` instead of enqueueing.
 
 The queue lives at ``<project>/Memory/events/push-queue.jsonl`` (gitignored, and
 never staged — /save only ``git add Memory/`` of tracked files). Each line:
@@ -98,30 +109,37 @@ def _try_push(repo: Path) -> tuple[bool, str]:
     return (rc == 0, err)
 
 
+def _local_only(repo: Path) -> bool:
+    """True when the repo is marked deliberately remoteless
+    (``git config asha.localOnly true``)."""
+    rc, val, _ = _git(repo, "config", "--bool", "--get", "asha.localOnly")
+    return rc == 0 and val == "true"
+
+
 def _enqueue(qfile: Path, head: str, branch: Optional[str], reason: str, error: str = "") -> dict:
+    """Record the latest HEAD as the queue's SINGLE entry.
+
+    A push drains all local commits at once, so multiple entries are always
+    redundant. If the entry's head is unchanged this is a retry (attempts
+    increments); if HEAD moved, the entry is replaced but ``first_seen`` and
+    ``attempts`` carry over — the underlying push problem is the same one, so
+    backoff must not reset. Legacy multi-entry queues collapse on first write.
+    """
     entries = _read_queue(qfile)
     now = _now()
-    existing = next((e for e in entries if e.get("head") == head), None)
-    if existing:
-        existing["attempts"] = int(existing.get("attempts", 0)) + 1
-        existing["last_attempt"] = _iso(now)
-        existing["reason"] = reason
-        existing["error"] = error
-        existing["next_retry_after"] = _iso(now + timedelta(seconds=_backoff_seconds(existing["attempts"])))
-        record = existing
-    else:
-        record = {
-            "head": head,
-            "branch": branch,
-            "reason": reason,
-            "attempts": 1,
-            "first_seen": _iso(now),
-            "last_attempt": _iso(now),
-            "next_retry_after": _iso(now + timedelta(seconds=_backoff_seconds(1))),
-            "error": error,
-        }
-        entries.append(record)
-    _write_queue(qfile, entries)
+    prior = entries[-1] if entries else None
+    attempts = int(prior.get("attempts", 0)) + 1 if prior else 1
+    record = {
+        "head": head,
+        "branch": branch,
+        "reason": reason,
+        "attempts": attempts,
+        "first_seen": prior["first_seen"] if prior and prior.get("first_seen") else _iso(now),
+        "last_attempt": _iso(now),
+        "next_retry_after": _iso(now + timedelta(seconds=_backoff_seconds(attempts))),
+        "error": error,
+    }
+    _write_queue(qfile, [record])
     return record
 
 
@@ -140,6 +158,9 @@ def ensure(repo: Path, project_dir: Path) -> dict:
         rec = _enqueue(qfile, head, branch, "push_failed", err)
         return {"status": "queued", "reason": "push_failed", "head": head,
                 "error": err, "next_retry_after": rec["next_retry_after"]}
+    if _local_only(repo):
+        return {"status": "skipped_local_only", "head": head,
+                "queued_total": len(_read_queue(qfile))}
     reason = "no_remote" if not remote else "no_upstream"
     rec = _enqueue(qfile, head, branch, reason)
     return {"status": "queued", "reason": reason, "head": head,
@@ -168,8 +189,18 @@ def status(project_dir: Path) -> dict:
         "queued_total": len(pending),
         "oldest": pending[0]["first_seen"] if pending else None,
         "reasons": sorted({e.get("reason", "?") for e in pending}),
+        "local_only": _local_only(project_dir),
         "entries": pending,
     }
+
+
+def clear(project_dir: Path) -> dict:
+    """Manual cleanup: empty the queue, report what was dropped."""
+    qfile = _queue_path(project_dir)
+    pending = _read_queue(qfile)
+    if pending:
+        _write_queue(qfile, [])
+    return {"status": "cleared", "dropped": len(pending)}
 
 
 def _project_dir(arg: Optional[str]) -> Path:
@@ -181,7 +212,7 @@ def _project_dir(arg: Optional[str]) -> Path:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Durable push queue for session-save")
-    ap.add_argument("command", choices=["ensure", "drain", "status"])
+    ap.add_argument("command", choices=["ensure", "drain", "status", "clear"])
     ap.add_argument("--project-dir", "-p", help="Repo whose pushes are managed (default $CLAUDE_PROJECT_DIR/cwd)")
     args = ap.parse_args()
     project_dir = _project_dir(args.project_dir)
@@ -190,6 +221,8 @@ def main() -> int:
         result = ensure(repo, project_dir)
     elif args.command == "drain":
         result = drain(repo, project_dir)
+    elif args.command == "clear":
+        result = clear(project_dir)
     else:
         result = status(project_dir)
     print(json.dumps(result, indent=2))
