@@ -97,9 +97,13 @@ on the distribution mirror:
 | Skill fires under plain `copilot` | **VERIFIED** | `test:ping` sentinel returned with the personal skill copy hidden |
 | `enabledPlugins` object-map form | **VERIFIED** | install writes `{"asha-test@asha": true}` |
 | No `@version` pin syntax | **VERIFIED** | parses as marketplace name |
-| `.agent.md` FUNCTIONS as agent when plugin-delivered | UNVERIFIED | install reports skills only; rejection ruled out, function not |
-| Relative refs (`../../tools/x.py`) resolve at runtime | UNVERIFIED | canary has no tool refs; probe with asha-code |
-| `owner/repo:path` + declarative repo-scope auto-install | UNVERIFIED | needs a real remote; probe on the mirror before rollout |
+| `.agent.md` FUNCTIONS as agent when plugin-delivered | **VERIFIED** (1.0.68) | plugin agents register NAMESPACED — `copilot --agent asha-test:test-echo` fired the sentinel (bare `test-echo` reaches a personal-mount copy, not the plugin) |
+| Relative refs (`../../tools/x.py`) resolve at runtime | **VERIFIED** (1.0.68) | with the personal skill parked, the model resolved the plugin SKILL.md's `../../tools/verify.py` to `~/.copilot/installed-plugins/asha/asha-code/tools/verify.py` and ran it (PASS) |
+| Declarative repo-scope `enabledPlugins` auto-install | **NOT OBSERVED headless** (1.0.68) | scratch repo with `.github/copilot/settings.json` enabledPlugins + user-scope marketplace: `copilot -p` did not load the plugin's skill. Interactive behavior and GHE-remote form still to probe before relying on it — imperative `copilot plugin install` is the proven path |
+| `owner/repo:path` install from a real remote | UNVERIFIED | needs the distribution mirror; probe at publish time |
 
-Re-probe the UNVERIFIED rows on the actual distribution remote before team
+Note for consumers: plugin agents are invoked as `<plugin>:<agent>`
+(e.g. `copilot --agent asha-code:reviewer`); plugin skills need no prefix.
+
+Re-probe the open rows on the actual distribution remote before team
 rollout, and re-check copilot-cli#2540 before ever packaging hooks.
