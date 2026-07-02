@@ -96,12 +96,20 @@ echo "--- test 6: marketplace + snippet match the built set ---"
 mk_names="$(jq -r '.plugins[].name' "$OUT/marketplace.json" | sort | tr '\n' ' ')"
 dir_names="$(ls "$OUT/plugins" | sort | tr '\n' ' ')"
 assert_eq "marketplace entries == built plugin dirs" "$dir_names" "$mk_names"
-while read -r path; do
-  [[ -d "$OUT/$path" ]] || fail "marketplace path missing on disk: $path"
-done < <(jq -r '.plugins[].path' "$OUT/marketplace.json")
-ok "all marketplace paths exist on disk"
-sn="$(jq -r '.enabledPlugins | sort | join(" ")' "$OUT/settings-snippet.json")"
-assert_eq "settings snippet lists the built set" "$(echo "$dir_names" | xargs)" "$sn"
+jq -e '.owner.name and (.plugins | all(.source and (.source|startswith("./"))))' \
+  "$OUT/marketplace.json" >/dev/null \
+  && ok "marketplace has owner + relative plugin sources (verified 1.0.65 schema)" \
+  || fail "marketplace has owner + relative plugin sources (verified 1.0.65 schema)"
+while read -r src; do
+  [[ -d "$OUT/${src#./}" ]] || fail "marketplace source missing on disk: $src"
+done < <(jq -r '.plugins[].source' "$OUT/marketplace.json")
+ok "all marketplace sources exist on disk"
+sn="$(jq -r '.enabledPlugins | keys | sort | join(" ")' "$OUT/settings-snippet.json")"
+expected_keys="$(ls "$OUT/plugins" | sort | sed 's/$/@asha/' | tr '\n' ' ' | xargs)"
+assert_eq "settings snippet maps plugin@marketplace keys to true" "$expected_keys" "$sn"
+jq -e '.enabledPlugins | all(. == true)' "$OUT/settings-snippet.json" >/dev/null \
+  && ok "settings snippet values are true (object-map form)" \
+  || fail "settings snippet values are true (object-map form)"
 
 # ---------------------------------------------------------------------------
 echo "--- test 7: rebuild over --force is byte-identical ---"
