@@ -277,6 +277,9 @@ def gate_push(project_dir: Path, dry_run: bool = False) -> GateResult:
         if has_dest:
             return GateResult("push_durability", "pass", True,
                               f"destination {remote} present; {queued} queued (dry-run, no push)")
+        if push_retry._local_only(project_dir):
+            return GateResult("push_durability", "pass", True,
+                              "local-only repo (asha.localOnly); push intentionally skipped (dry-run)")
         reason = "no_remote" if not remote else "no_upstream"
         return GateResult("push_durability", "pass", True,
                           f"no live push ({reason}); would queue HEAD; {queued} already queued (dry-run)")
@@ -291,6 +294,11 @@ def gate_push(project_dir: Path, dry_run: bool = False) -> GateResult:
         return GateResult("push_durability", "pass", True,
                           f"no live push ({result.get('reason')}); HEAD queued, next retry {result.get('next_retry_after')} "
                           f"(total queued: {result.get('queued_total', '?')})")
+    if st == "skipped_local_only":
+        # Deliberately remoteless repo (git config asha.localOnly true) —
+        # not queueing is the CORRECT durable state, not a failure (issue #5).
+        return GateResult("push_durability", "pass", True,
+                          "local-only repo (asha.localOnly); push intentionally skipped")
     if st == "error" and result.get("reason") == "no_head":
         return GateResult("push_durability", "warn", False, "repo has no commits yet; nothing to push")
     return GateResult("push_durability", "fail", True, f"unexpected push result: {result}")
