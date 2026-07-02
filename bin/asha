@@ -245,6 +245,8 @@ Usage:
                                    (--only ns,.. --out DIR --version X.Y.Z --dry-run --force)
   asha doctor [target] [--fix]     audit install health (claude|codex|copilot|all)
                                    (Claude Code's native doctor: asha claude doctor)
+  asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
+                                   (--dry-run | --check for CI | --force)
   asha-<harness> [args...]         shim form (launch that harness)
 
 Harnesses: claude | codex | copilot
@@ -285,6 +287,15 @@ if [[ "${1:-}" == "doctor" ]]; then
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/doctor.sh"
   asha_doctor_main "$@"
+  exit $?
+fi
+
+# Repo scaffolding (explicit branch — the hyphen rules out asha_${verb}_main).
+if [[ "${1:-}" == "init-repo" ]]; then
+  shift
+  # shellcheck disable=SC1090
+  source "$ASHA_ROOT/lib/init-repo.sh"
+  asha_init_repo_main "$@"
   exit $?
 fi
 
