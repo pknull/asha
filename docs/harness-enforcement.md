@@ -171,8 +171,7 @@ symlink and command-skill freshness checks. The wrapper-only persona split is
 intentional and reported as INFO, never a failure: `asha copilot` loads the
 persona per-launch; plain `copilot` stays vanilla — while skills, agents,
 guardrails, and /save capture are wrapper-independent. Native plugin
-distribution (verified live on CLI 1.0.65: marketplace add → plugin install →
-skill fires under plain `copilot`) is mechanism, not enforcement — see
+distribution is mechanism, not enforcement — its verification table lives in
 [distribution-copilot.md](distribution-copilot.md).
 
 ## Verdict — can / can't / won't fix

@@ -107,6 +107,43 @@ jq -e '.enabledPlugins["asha-code@asha"] == true' "$SETTINGS" >/dev/null \
   && ok "--force preserved team enabledPlugins values" \
   || fail "--force preserved team enabledPlugins values"
 
+# ---------------------------------------------------------------------------
+echo "--- test 7: review-finding regressions ---"
+# non-git --force must NOT overwrite an existing file (no git = no undo)
+NG="$WORK/non-git"; mkdir -p "$NG"
+echo "hand-written" > "$NG/AGENTS.md"
+bash "$REPO_ROOT/bin/asha" init-repo --dir "$NG" --force >/dev/null 2>&1
+grep -q "hand-written" "$NG/AGENTS.md" \
+  && ok "non-git --force preserves existing files (creates missing only)" \
+  || fail "non-git --force preserves existing files"
+[[ -f "$NG/.github/copilot/settings.json" ]] \
+  && ok "non-git --force still creates missing files" \
+  || fail "non-git --force still creates missing files"
+# invalid settings.json: dry-run and live agree (SKIP, never a planned WRITE)
+echo '{ not json' > "$SETTINGS"
+out_dry="$(ir --dry-run 2>&1)"
+out_live="$(ir 2>&1)"
+if ! grep -q "WRITE.*settings.json" <<<"$out_dry" && grep -q "invalid JSON" <<<"$out_live"; then
+  ok "invalid settings.json: dry-run plan matches live behavior (SKIP)"
+else
+  fail "invalid settings.json: dry-run plan matches live behavior"
+fi
+echo '{"enabledPlugins": {}}' > "$SETTINGS"
+# null-valued enabledPlugins: --check OK and scaffold must not rewrite it
+printf '{\n    "enabledPlugins": null,\n    "teamKey": "keep"\n}\n' > "$SETTINGS"
+ir --check >/dev/null 2>&1 && ir >/dev/null 2>&1
+grep -q '"teamKey": "keep"' "$SETTINGS" && grep -q '    "enabledPlugins": null' "$SETTINGS" \
+  && ok "scaffold never rewrites a file --check calls conforming" \
+  || fail "scaffold never rewrites a file --check calls conforming"
+# write failures must exit non-zero, not report WROTE (set -e wrapper)
+RO="$WORK/readonly"; mkdir -p "$RO" && git -C "$WORK" init -q "$RO" && chmod 555 "$RO"
+if bash "$REPO_ROOT/bin/asha" init-repo --dir "$RO" >/dev/null 2>&1; then
+  fail "failed writes exit non-zero"
+else
+  ok "failed writes exit non-zero"
+fi
+chmod 755 "$RO"
+
 echo ""
 echo "test-init-repo: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

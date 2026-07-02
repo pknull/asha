@@ -148,6 +148,49 @@ else
   ok "non-empty --out refused without --force"
 fi
 
+# ---------------------------------------------------------------------------
+echo "--- test 10: review-finding regressions ---"
+# a refused build (--only test has no Version line, no --version) must leave
+# the existing dist INTACT even with --force (validation precedes the wipe)
+build --force >/dev/null 2>&1 || fail "test-10 baseline rebuild exits 0"
+rc=0; build --force --only test >/dev/null 2>&1 || rc=$?
+if [[ $rc -eq 2 && -f "$OUT/marketplace.json" && -d "$OUT/plugins/asha-code" ]]; then
+  ok "refused build leaves prior dist intact (exit 2, no wipe)"
+else
+  fail "refused build leaves prior dist intact (rc=$rc)"
+fi
+# duplicate --only refused
+rc=0; build --force --only code,code >/dev/null 2>&1 || rc=$?
+[[ $rc -eq 2 ]] && ok "duplicate --only refused (exit 2)" || fail "duplicate --only refused (got $rc)"
+# missing flag value dies loudly with exit 2, not silently
+rc=0; out="$(build --force --out 2>&1)" || rc=$?
+if [[ $rc -eq 2 && "$out" == *"--out requires a value"* ]]; then
+  ok "missing flag value dies loudly (exit 2)"
+else
+  fail "missing flag value dies loudly (rc=$rc, out=$out)"
+fi
+# --only validation exit code propagates as 2 (not rewritten to 1)
+rc=0; build --force --only nonexistent >/dev/null 2>&1 || rc=$?
+[[ $rc -eq 2 ]] && ok "--only validation exits 2" || fail "--only validation exits 2 (got $rc)"
+# --force preserves foreign plugins in a shared dist tree
+mkdir -p "$OUT/plugins/acme-internal" && echo x > "$OUT/plugins/acme-internal/plugin.json"
+build --force >/dev/null 2>&1 || fail "rebuild with foreign plugin exits 0"
+[[ -f "$OUT/plugins/acme-internal/plugin.json" ]] \
+  && ok "--force preserves foreign plugins/ entries" \
+  || fail "--force preserves foreign plugins/ entries"
+rm -rf "$OUT/plugins/acme-internal"
+# agent relative md links are NOT bumped (depth unchanged for agents)
+probe_agent="$(mktemp -d)/a.md"
+printf -- '---\nname: probe\ndescription: d\n---\nsee [x](../modules/x.md)\n' > "$probe_agent"
+( DRY_RUN=0 VERBOSE=0
+  source "$REPO_ROOT/lib/build.sh"
+  _copilot_emit_agent_md "$probe_agent" "${probe_agent%.md}.agent.md"
+  _build_rewrite_paths "${probe_agent%.md}.agent.md" code "../"
+) >/dev/null 2>&1
+grep -q '](\.\./modules/x.md)' "${probe_agent%.md}.agent.md" \
+  && ok "agent relative links keep their depth" \
+  || fail "agent relative links keep their depth"
+
 echo ""
 echo "test-build-copilot: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

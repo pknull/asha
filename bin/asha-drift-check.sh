@@ -113,12 +113,17 @@ check_command_skills() { # skills_dir label fix_fn
       continue
     }
 
+    # Collision skip FIRST: a whole-dir symlink means a plugin skill claimed
+    # this name and the installer deliberately never generates a command-skill.
+    # This must gate ALL arms — through the symlink a SKILL.md exists, and the
+    # mtime arm would compare unrelated files, with --fix then clobbering the
+    # repo's plugin-skill source THROUGH the symlink (review finding).
+    if [[ -L "$skills_dir/$name" ]]; then
+      continue
+    fi
+
     skill_md="$skills_dir/$name/SKILL.md"
     if [[ ! -e "$skill_md" ]]; then
-      # OK if blocked by plugin-skill collision (whole-dir symlink claims the name)
-      if [[ -L "$skills_dir/$name" ]]; then
-        continue
-      fi
       [[ $missing_cmd_skills -eq 0 ]] && nope "command-skill SKILL.md missing for command ($label):"
       echo "  $cmd → expected at $skill_md"
       missing_cmd_skills=$((missing_cmd_skills+1))

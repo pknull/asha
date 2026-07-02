@@ -286,7 +286,10 @@ if [[ "${1:-}" == "doctor" ]]; then
   shift
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/doctor.sh"
-  asha_doctor_main "$@"
+  # Same errexit subshell as install/uninstall/build — the engines document
+  # this wrapper as their contract; without it a failed write inside the verb
+  # would print success and exit 0 (review finding on init-repo).
+  ( set -euo pipefail; asha_doctor_main "$@" )
   exit $?
 fi
 
@@ -295,7 +298,7 @@ if [[ "${1:-}" == "init-repo" ]]; then
   shift
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/init-repo.sh"
-  asha_init_repo_main "$@"
+  ( set -euo pipefail; asha_init_repo_main "$@" )
   exit $?
 fi
 
