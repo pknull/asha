@@ -88,6 +88,17 @@ else
 fi
 echo ""
 
+# Test Suite 4a: Copilot Plugin Build Tests (issue #3)
+echo -e "${BLUE}--- Test Suite 4a: Copilot Plugin Build Tests ---${NC}"
+if "$SCRIPT_DIR/test-build-copilot.sh"; then
+    echo -e "${GREEN}✓ Copilot plugin build tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Copilot plugin build tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Test Suite 4b: Uninstall Regression Tests (issue #4)
 echo -e "${BLUE}--- Test Suite 4b: Uninstall Regression Tests ---${NC}"
 if "$SCRIPT_DIR/test-uninstall.sh"; then

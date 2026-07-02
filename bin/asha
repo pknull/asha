@@ -241,6 +241,8 @@ Usage:
   asha [HARNESS] [args...]         launch a harness (default: configured default, else claude)
   asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|both|all)
   asha uninstall <target> [...]    remove Asha from a harness
+  asha build copilot [...]         package plugins for Copilot-native distribution
+                                   (--only ns,.. --out DIR --version X.Y.Z --dry-run --force)
   asha-<harness> [args...]         shim form (launch that harness)
 
 Harnesses: claude | codex | copilot
@@ -274,7 +276,7 @@ case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;
 esac
 
-if [[ "${1:-}" == "install" || "${1:-}" == "uninstall" ]]; then
+if [[ "${1:-}" == "install" || "${1:-}" == "uninstall" || "${1:-}" == "build" ]]; then
   verb="$1"; shift
   target_arg=""
   if is_target "${1:-}"; then target_arg="$1"; shift; fi
