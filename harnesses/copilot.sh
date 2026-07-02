@@ -40,7 +40,11 @@ COPILOT_MCP_FILE="$COPILOT_HOME/mcp-config.json"
 
 # Events Copilot is assumed to support (camelCase). UNVERIFIED — see header.
 _COPILOT_EVENTS=(sessionStart sessionEnd userPromptSubmitted preToolUse postToolUse errorOccurred)
-_COPILOT_SKIP_PLUGINS=(output-styles)
+
+# Shared converters (skip-plugin policy, frontmatter parsing, command-skill and
+# agent emitters) — also sourced by lib/build.sh for plugin packaging.
+# shellcheck source=harnesses/copilot-common.sh
+source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/copilot-common.sh"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -49,12 +53,6 @@ _COPILOT_SKIP_PLUGINS=(output-styles)
 _copilot_is_event() {
   local e="$1" ev
   for ev in "${_COPILOT_EVENTS[@]}"; do [[ "$e" == "$ev" ]] && return 0; done
-  return 1
-}
-
-_copilot_is_skip_plugin() {
-  local p="$1" sp
-  for sp in "${_COPILOT_SKIP_PLUGINS[@]}"; do [[ "$p" == "$sp" ]] && return 0; done
   return 1
 }
 
@@ -107,24 +105,7 @@ _copilot_backup_hooks_once() {
   _copilot_backup_done=1
 }
 
-# Extract the `name:` value from a YAML frontmatter file. Echoes the name
-# (or empty string if not present). Looks at the first frontmatter block only.
-_copilot_skill_name_from_md() {
-  local md="$1"
-  python3 - "$md" <<'PYEOF'
-import re, sys
-text = open(sys.argv[1]).read()
-if not text.startswith("---\n"):
-    sys.exit(0)
-end = text.find("\n---\n", 4)
-if end == -1:
-    sys.exit(0)
-fm = text[4:end]
-m = re.search(r"^name\s*:\s*(\S+)", fm, re.MULTILINE)
-if m:
-    print(m.group(1).strip())
-PYEOF
-}
+# _copilot_skill_name_from_md moved to copilot-common.sh (shared with build).
 
 # ---------------------------------------------------------------------------
 # Per-primitive installers
@@ -193,74 +174,7 @@ copilot_install_command_skills() {
   done
 }
 
-# Generate a Copilot-clean SKILL.md from a Claude command MD. Strips the keys
-# Copilot's parser is assumed to reject (argument-hint, allowed-tools) plus any
-# other keys identified as non-portable. Idempotent (only writes on diff).
-_copilot_emit_command_skill() {
-  local src="$1" dest="$2"
-
-  # Use python so we can do correct YAML-style frontmatter manipulation.
-  local content
-  content="$(python3 - "$src" <<'PYEOF'
-import re, sys
-
-KEYS_TO_DROP = {"argument-hint", "allowed-tools"}
-
-src = sys.argv[1]
-text = open(src).read()
-if not text.startswith("---\n"):
-    sys.stderr.write(f"WARN: no frontmatter, emitting body only: {src}\n")
-    sys.stdout.write(text)
-    sys.exit(0)
-
-end = text.find("\n---\n", 4)
-if end == -1:
-    sys.stderr.write(f"WARN: no closing ---, emitting body only: {src}\n")
-    sys.stdout.write(text)
-    sys.exit(0)
-
-fm = text[4:end]
-body = text[end+5:]
-
-# Drop blocks. We treat any line starting with `<key>:` as a top-level key,
-# and skip until the next top-level key or end. Indented continuation lines
-# belong to the previous key.
-out_lines = []
-skip_until_next_key = False
-for line in fm.split("\n"):
-    # Top-level key match: starts at column 0, has a colon
-    m = re.match(r"^([A-Za-z_][A-Za-z0-9_-]*)\s*:", line)
-    if m:
-        key = m.group(1)
-        skip_until_next_key = key in KEYS_TO_DROP
-        if not skip_until_next_key:
-            out_lines.append(line)
-    else:
-        # Continuation (indented) — keep iff the most recent top-level key was kept
-        if not skip_until_next_key:
-            out_lines.append(line)
-
-new_fm = "\n".join(out_lines)
-sys.stdout.write(f"---\n{new_fm}\n---\n{body}")
-PYEOF
-)"
-
-  # Idempotent write
-  if [[ -f "$dest" ]]; then
-    local current; current="$(cat "$dest")"
-    if [[ "$current" == "$content" ]]; then
-      log "[copilot] command-skill unchanged: $dest"
-      return 0
-    fi
-  fi
-
-  if [[ $DRY_RUN -eq 1 ]]; then
-    say "  EMIT [copilot-command-skill]  $src -> $dest"
-  else
-    printf '%s' "$content" > "$dest"
-    log "emitted [copilot-command-skill]: $dest (from $src)"
-  fi
-}
+# _copilot_emit_command_skill moved to copilot-common.sh (shared with build).
 
 # Install agent MD files. Best-effort symlinking — Copilot either picks them up
 # or ignores them. Multi-agent YAML schema is unverified.
