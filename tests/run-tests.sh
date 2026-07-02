@@ -99,6 +99,17 @@ else
 fi
 echo ""
 
+# Test Suite 4c: Doctor / Drift-Check Tests (issue #3)
+echo -e "${BLUE}--- Test Suite 4c: Doctor / Drift-Check Tests ---${NC}"
+if "$SCRIPT_DIR/test-doctor.sh"; then
+    echo -e "${GREEN}✓ Doctor tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Doctor tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Test Suite 4b: Uninstall Regression Tests (issue #4)
 echo -e "${BLUE}--- Test Suite 4b: Uninstall Regression Tests ---${NC}"
 if "$SCRIPT_DIR/test-uninstall.sh"; then

@@ -243,6 +243,8 @@ Usage:
   asha uninstall <target> [...]    remove Asha from a harness
   asha build copilot [...]         package plugins for Copilot-native distribution
                                    (--only ns,.. --out DIR --version X.Y.Z --dry-run --force)
+  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|all)
+                                   (Claude Code's native doctor: asha claude doctor)
   asha-<harness> [args...]         shim form (launch that harness)
 
 Harnesses: claude | codex | copilot
@@ -275,6 +277,16 @@ ASHA_FLAG_YES=0
 case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;
 esac
+
+# asha's own install-health audit. Verb-first — `asha claude doctor` still
+# reaches Claude Code's native doctor via launch forwarding.
+if [[ "${1:-}" == "doctor" ]]; then
+  shift
+  # shellcheck disable=SC1090
+  source "$ASHA_ROOT/lib/doctor.sh"
+  asha_doctor_main "$@"
+  exit $?
+fi
 
 if [[ "${1:-}" == "install" || "${1:-}" == "uninstall" || "${1:-}" == "build" ]]; then
   verb="$1"; shift
