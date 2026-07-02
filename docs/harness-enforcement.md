@@ -165,6 +165,16 @@ as the Claude string-pattern guard). [#2540](https://github.com/github/copilot-c
 **Classification: WIRED + enforced (verified). To disable: `asha uninstall copilot`
 removes the file, or set the rules' override envs.**
 
+**Audit (2026‑07‑01):** `asha doctor copilot` verifies the guardrails file
+byte-matches the installer-expected JSON (and `--fix` rewrites it), alongside
+symlink and command-skill freshness checks. The wrapper-only persona split is
+intentional and reported as INFO, never a failure: `asha copilot` loads the
+persona per-launch; plain `copilot` stays vanilla — while skills, agents,
+guardrails, and /save capture are wrapper-independent. Native plugin
+distribution (verified live on CLI 1.0.65: marketplace add → plugin install →
+skill fires under plain `copilot`) is mechanism, not enforcement — see
+[distribution-copilot.md](distribution-copilot.md).
+
 ## Verdict — can / can't / won't fix
 
 | Item | Status |

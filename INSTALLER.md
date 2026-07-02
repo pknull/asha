@@ -158,7 +158,8 @@ and missed the user-level instructions dir (no repo files are touched).
 | Hook payload translator | Not needed | Same architecture change — synthesis reads native logs, not hook payloads. The `{toolName, toolArgs, toolResult}` → `{tool_name, tool_input, tool_response}` translator from the v1 plan is obsolete; `jsonl_reader.py` parses Copilot's `events.jsonl` directly into Asha's normalized event schema. |
 | MCP config | Not managed | `~/.copilot/mcp-config.json` is read directly by Copilot; not touched by this installer (matches Claude/Codex which also don't manage MCP) |
 | Persona auto-injection | **Automatic — per-launch** | Copilot CLI has no `--instructions-file` flag, but auto-loads user-level instructions. The `asha copilot` launch path regenerates `~/.cache/asha/instructions-copilot.md` (~47 KB merged identity), wraps it as `~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md` (`applyTo: "**"`), and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` so Copilot loads it — scoped to the launch, so plain `copilot` stays persona-free (parity with Claude/Codex). Status/verification: [docs/harness-enforcement.md](docs/harness-enforcement.md). |
-| `drift-check` | Not Copilot-aware | `bin/asha-drift-check.sh` ships in the repo; a Copilot-aware variant is a follow-up |
+| `drift-check` | **Copilot-aware** | `asha doctor [copilot]` (front door for `bin/asha-drift-check.sh`) audits symlinks, command-skill freshness, and guardrails content; `--fix` self-heals. |
+| Team distribution | **Additive path** | `asha build copilot` packages namespaces as native Copilot plugins (marketplace + `enabledPlugins` pinning); see [docs/distribution-copilot.md](docs/distribution-copilot.md). Repo onboarding: `asha init-repo`. |
 
 ## Namespaces
 
@@ -190,14 +191,18 @@ plus `identity/asha-identity-system-prompt.md` into a single file, and
 `-c model_instructions_file=...` injects it at launch. No on-disk
 overlay; both `codex` and `asha codex` use the same `~/.codex/`.
 
-## Drift check
+## Drift check / doctor
 
-`bin/asha-drift-check.sh` audits both harnesses. Exits 0 if clean,
-1 on drift.
+`asha doctor` is the front door; `bin/asha-drift-check.sh` remains at its
+path for cron/systemd users. Exits 0 if clean, 1 on drift, 2 on usage error.
 
 ```bash
-asha-drift-check.sh --target {claude,codex,all}    # default: all
+asha doctor [claude|codex|copilot|all] [--fix]     # default: all
+asha-drift-check.sh --target {claude,codex,copilot,all}   # same engine
 ```
+
+(`asha claude doctor` still reaches Claude Code's own native doctor —
+launch forwarding is unchanged.)
 
 Checks (paraphrased):
 

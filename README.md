@@ -510,7 +510,7 @@ ls ~/.local/bin/asha*                     # wrappers (if --bin was used)
 ls ~/.claude/skills/                      # claude-mounted skills
 ls ~/.codex/skills/                       # codex-mounted skills
 ls ~/.copilot/skills/                     # copilot-mounted skills
-./bin/asha-drift-check.sh                 # check symlink integrity
+asha doctor                               # install-health audit (drift-check front door)
 ```
 
 ### Launch
@@ -519,7 +519,7 @@ ls ~/.copilot/skills/                     # copilot-mounted skills
 asha                       # default harness (set via --default; else claude)
 asha codex                 # Codex with Asha persona (auto-configures on first run)
 asha claude                # Claude Code with Asha persona
-asha copilot               # Copilot (persona requires per-project AGENTS.md symlink)
+asha copilot               # Copilot with Asha persona (auto-injected per-launch)
 asha-codex                 # back-compat shim (== asha codex)
 ```
 
@@ -653,6 +653,25 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 ---
 
 ## Version History
+
+### Unreleased — Copilot-native distribution + doctor + init-repo (issue #3)
+
+- **`asha build copilot`** — packages namespaces as native Copilot CLI plugins
+  (`dist/copilot/`: per-plugin `plugin.json`, converted command-skills,
+  `.agent.md` agents, marketplace index + `enabledPlugins` snippet). Verified
+  live: local marketplace add → plugin install → skill fires under plain
+  `copilot` (CLI 1.0.65). Hooks never packaged (copilot-cli#2540 + schema
+  mismatch). Mechanism: [docs/distribution-copilot.md](docs/distribution-copilot.md).
+- **`asha doctor`** — front door for `bin/asha-drift-check.sh`, now with a
+  copilot target (symlinks, command-skill freshness, guardrails content,
+  `--fix` self-heal), bin/identity sections, and a claude hook audit that
+  matches by path-prefix (tag-stripped hooks are no longer invisible).
+- **`asha init-repo`** — scaffolds `AGENTS.md`, team instruction stubs, and
+  `.github/copilot/settings.json` into a target repo; `--check` CI mode with
+  managed-marker DRIFT/LOCAL semantics; composes with native `copilot init`.
+- **Persona remains wrapper-only by design** (issue #3 proposal 4 declined):
+  `asha copilot` is Asha; plain `copilot` is vanilla — parity with `asha
+  claude` vs `claude`.
 
 ### Unreleased — Codex compatibility refresh
 
