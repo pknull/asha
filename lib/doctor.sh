@@ -32,7 +32,11 @@ asha_doctor_main() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       claude|codex|copilot|all) target="$1" ;;
-      --target) shift; target="${1:-}" ;;
+      # Value validated BEFORE the shift: with the flag as last arg, the
+      # loop-bottom shift would fail under bin/asha's set -e wrap and die
+      # silently with rc=1 — doctor's "findings" code (review pass 2).
+      --target) [[ -n "${2:-}" ]] || { echo "ERROR: --target requires a value" >&2; return 2; }
+                target="$2"; shift ;;
       --target=*) target="${1#--target=}" ;;
       --fix) fix=1 ;;
       -h|--help)

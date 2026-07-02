@@ -77,9 +77,11 @@ _ir_scaffold() { # rel src dest class
     if [[ "$class" == "strict" ]]; then
       # Never clobber. Predicates mirror _ir_check exactly (invalid JSON
       # first, then has() — a file --check calls conforming must never be
-      # rewritten by a scaffold run; review finding).
-      if ! jq empty "$dest" 2>/dev/null; then
-        echo "  SKIP   $rel (exists but invalid JSON — fix by hand)" >&2
+      # rewritten by a scaffold run; review finding). Non-object JSON ([],
+      # "x") is handled like invalid: has()/assignment would error on it and
+      # the dry-run plan must match the live outcome (review pass 2).
+      if ! jq -e 'type == "object"' "$dest" >/dev/null 2>&1; then
+        echo "  SKIP   $rel (exists but not a JSON object — fix by hand)" >&2
       elif jq -e 'has("enabledPlugins")' "$dest" >/dev/null 2>&1; then
         echo "  SKIP   $rel (exists)"
       elif [[ $IR_DRY -eq 1 ]]; then
@@ -135,8 +137,8 @@ _ir_check() { # rel src dest class ; increments IR_FAILS
         echo "  LOCAL    $rel (marker removed — team-owned)"
       fi ;;
     strict)
-      if ! jq empty "$dest" 2>/dev/null; then
-        echo "  DRIFT    $rel (invalid JSON)"
+      if ! jq -e 'type == "object"' "$dest" >/dev/null 2>&1; then
+        echo "  DRIFT    $rel (not a JSON object)"
         IR_FAILS=$((IR_FAILS+1))
       elif ! jq -e 'has("enabledPlugins")' "$dest" >/dev/null 2>&1; then
         echo "  DRIFT    $rel (missing enabledPlugins key)"
@@ -152,9 +154,14 @@ asha_init_repo_main() {
   IR_DRY=0; IR_FORCE=0; IR_FAILS=0; IR_GIT=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --dir) shift; dir="${1:-}" ;;
+      # Value validated BEFORE the shift — a trailing value-flag would make
+      # the loop-bottom shift fail under bin/asha's set -e wrap and die
+      # silently (review pass 2; same class the build parser guards against).
+      --dir) [[ -n "${2:-}" ]] || { echo "ERROR: --dir requires a value" >&2; return 2; }
+             dir="$2"; shift ;;
       --dir=*) dir="${1#--dir=}" ;;
-      --template) shift; template="${1:-}" ;;
+      --template) [[ -n "${2:-}" ]] || { echo "ERROR: --template requires a value" >&2; return 2; }
+                  template="$2"; shift ;;
       --template=*) template="${1#--template=}" ;;
       --dry-run) IR_DRY=1 ;;
       --check) mode="check" ;;
