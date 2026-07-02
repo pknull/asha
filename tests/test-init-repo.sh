@@ -77,7 +77,7 @@ out="$(ir --check 2>&1)"; rc=$?
 
 echo '{ not json' > "$SETTINGS"
 out="$(ir --check 2>&1)"; rc=$?
-[[ $rc -eq 1 ]] && grep -q "DRIFT.*invalid JSON" <<<"$out" \
+[[ $rc -eq 1 ]] && grep -q "DRIFT.*not a JSON object" <<<"$out" \
   && ok "corrupt settings.json -> DRIFT, exit 1" || fail "corrupt settings.json -> DRIFT, exit 1 (rc=$rc)"
 echo '{"enabledPlugins": {"asha-code@asha": true}}' > "$SETTINGS"
 ir --check >/dev/null 2>&1 \
@@ -123,7 +123,7 @@ grep -q "hand-written" "$NG/AGENTS.md" \
 echo '{ not json' > "$SETTINGS"
 out_dry="$(ir --dry-run 2>&1)"
 out_live="$(ir 2>&1)"
-if ! grep -q "WRITE.*settings.json" <<<"$out_dry" && grep -q "invalid JSON" <<<"$out_live"; then
+if ! grep -q "WRITE.*settings.json" <<<"$out_dry" && grep -q "not a JSON object" <<<"$out_live"; then
   ok "invalid settings.json: dry-run plan matches live behavior (SKIP)"
 else
   fail "invalid settings.json: dry-run plan matches live behavior"
@@ -143,6 +143,37 @@ else
   ok "failed writes exit non-zero"
 fi
 chmod 755 "$RO"
+
+# ---------------------------------------------------------------------------
+echo "--- test 8: review-pass-2 regressions ---"
+# trailing value-flag dies loudly with exit 2, not silently under set -e
+rc=0; out="$(bash "$REPO_ROOT/bin/asha" init-repo --dir 2>&1)" || rc=$?
+if [[ $rc -eq 2 && "$out" == *"--dir requires a value"* ]]; then
+  ok "trailing --dir dies loudly (exit 2)"
+else
+  fail "trailing --dir dies loudly (rc=$rc, out=$out)"
+fi
+rc=0; out="$(bash "$REPO_ROOT/bin/asha" doctor --target 2>&1)" || rc=$?
+if [[ $rc -eq 2 && "$out" == *"--target requires a value"* ]]; then
+  ok "trailing doctor --target dies loudly (exit 2)"
+else
+  fail "trailing doctor --target dies loudly (rc=$rc, out=$out)"
+fi
+# non-object settings.json: dry-run matches live (SKIP), scaffold completes
+echo '[]' > "$SETTINGS"
+rm -f "$T/AGENTS.md"
+out_dry="$(ir --dry-run 2>&1)"
+rc=0; out_live="$(ir 2>&1)" || rc=$?
+if ! grep -q "WRITE.*settings.json" <<<"$out_dry" \
+   && grep -q "not a JSON object" <<<"$out_live" \
+   && [[ $rc -eq 0 && -f "$T/AGENTS.md" ]]; then
+  ok "non-object settings.json: SKIP in both modes, scaffold completes"
+else
+  fail "non-object settings.json: SKIP in both modes, scaffold completes (rc=$rc)"
+fi
+rc=0; ir --check >/dev/null 2>&1 || rc=$?
+[[ $rc -eq 1 ]] && ok "--check flags non-object settings.json" || fail "--check flags non-object settings.json (rc=$rc)"
+echo '{"enabledPlugins": {}}' > "$SETTINGS"
 
 echo ""
 echo "test-init-repo: $PASS passed, $FAIL failed"

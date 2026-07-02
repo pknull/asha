@@ -191,6 +191,20 @@ grep -q '](\.\./modules/x.md)' "${probe_agent%.md}.agent.md" \
   && ok "agent relative links keep their depth" \
   || fail "agent relative links keep their depth"
 
+# ---------------------------------------------------------------------------
+echo "--- test 11: non-git source tree gets no false dirty marker ---"
+EXPORT="$WORK/export"
+mkdir -p "$EXPORT"
+cp -a "$REPO_ROOT"/. "$EXPORT"/ 2>/dev/null
+rm -rf "$EXPORT/.git" "$EXPORT/dist"
+if bash "$EXPORT/bin/asha" build copilot --out "$WORK/export-dist" >/dev/null 2>&1 \
+   && ! grep -q "uncommitted changes" "$WORK/export-dist/README.md" \
+   && grep -q "Source commit\*\*: unknown" "$WORK/export-dist/README.md"; then
+  ok "tarball-export build: no false '(+ uncommitted changes)' provenance"
+else
+  fail "tarball-export build: no false '(+ uncommitted changes)' provenance"
+fi
+
 echo ""
 echo "test-build-copilot: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

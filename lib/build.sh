@@ -336,7 +336,12 @@ _build_emit_dist_readme() { # built-lines file
   # of the same tree must be byte-identical — a minute-resolution wall clock
   # made that a coin flip across minute boundaries (review finding).
   date="$(TZ=UTC git -C "$MARKET_ROOT" log -1 --date=format-local:'%Y-%m-%d %H:%M UTC' --format=%cd 2>/dev/null || date -u +'%Y-%m-%d %H:%M UTC')"
-  git -C "$MARKET_ROOT" diff-index --quiet HEAD -- 2>/dev/null || date="$date (+ uncommitted changes)"
+  # Dirty marker only when there IS a resolvable HEAD to be dirty against —
+  # a non-git source tree (tarball export) must not claim "(+ uncommitted
+  # changes)" in published provenance (review pass 2).
+  if git -C "$MARKET_ROOT" rev-parse --verify HEAD >/dev/null 2>&1; then
+    git -C "$MARKET_ROOT" diff-index --quiet HEAD -- 2>/dev/null || date="$date (+ uncommitted changes)"
+  fi
   {
     echo "# asha — Copilot plugin distribution"
     echo
