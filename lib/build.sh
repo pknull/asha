@@ -18,16 +18,28 @@
 # NEVER packaged: hooks/ (Claude-schema mismatch + plugin hooks don't fire —
 # github/copilot-cli#2540), .claude-plugin/ (Claude-era manifest).
 #
-# UNVERIFIED ASSUMPTIONS (plant-and-probe before publishing — see
-# docs/distribution-copilot.md):
-#   1. plugin.json required/accepted fields (designed minimum: name/version/description)
-#   2. marketplace.json entry schema (name/path/version/description assumed)
-#   3. .agent.md frontmatter tolerance (KEEP-list {name,description} in copilot-common.sh)
-#   4. plugin skill loader tolerance of custom `triggers:` frontmatter
-#   5. file:// git URL + `owner/repo:path` subdirectory install syntax
-#   6. version/ref pinning syntax on install sources
-#   7. relative-path resolvability (../../tools/x.py) from generated SKILL.md
-#   8. unknown extra dirs (modules/ etc.) ignored, not rejected
+# PLANT-AND-PROBE RESULTS (Copilot CLI 1.0.65, 2026-07-01 — local marketplace
+# add + plugin install + live skill fire, sentinel confirmed under plain
+# `copilot` with the personal skill copy hidden):
+#   VERIFIED  plugin.json minimal fields {name,version,description} accepted
+#   VERIFIED  marketplace.json needs top-level `owner` + plugins[].`source`
+#             (CLI validator error named the fields; Claude-format compatible)
+#   VERIFIED  `copilot plugin marketplace add <local dir>` works (file:// is
+#             rejected — directory path or owner/repo only)
+#   VERIFIED  install copies the whole plugin tree to
+#             ~/.copilot/installed-plugins/<marketplace>/<plugin>/ — extra
+#             dirs (styles/, agents/, modules/) tolerated, not rejected
+#   VERIFIED  `triggers:` frontmatter tolerated by the plugin skill loader
+#   VERIFIED  enabledPlugins is an object map {"name@marketplace": true}
+#   VERIFIED  no `plugin@marketplace@version` pin syntax — pinning = tag or
+#             branch discipline on the distribution repo
+# STILL UNVERIFIED (probe on the real distribution remote before team rollout):
+#   1. .agent.md files FUNCTION as agents when plugin-delivered (install
+#      reported "1 skill", agent uncounted; rejection ruled out, function not)
+#   2. runtime resolvability of relative refs (../../tools/x.py) from
+#      generated SKILL.md bodies (canary has no tool refs)
+#   3. `owner/repo:path` subdirectory install + declarative repo-scope
+#      .github/copilot/settings.json auto-install (needs a real remote)
 #
 # Does NOT `set -e` at source scope (callers own shell options; bin/asha wraps
 # invocations in a `set -euo pipefail` subshell).
@@ -295,19 +307,28 @@ _build_copy_content() { # ns dest_root
 # --- dist-level emissions -----------------------------------------------------
 
 _build_emit_marketplace_json() { # built list "ns version desc" lines on stdin
-  jq -Rn --arg owner "asha" '
+  # Schema verified empirically against Copilot CLI 1.0.65's validator
+  # (2026-07-01): top-level `owner` is required and plugin entries use
+  # `source` (relative path), matching the Claude marketplace.json format.
+  jq -Rn '
     {name: "asha",
+     owner: {name: "asha"},
      plugins: [inputs | select(length > 0) | split("\t")
                | {name: ("asha-" + .[0]),
-                  path: ("plugins/asha-" + .[0]),
+                  source: ("./plugins/asha-" + .[0]),
                   version: .[1],
                   description: .[2]}]}' \
     | _build_write "$OUT/marketplace.json"
 }
 
 _build_emit_settings_snippet() {
+  # enabledPlugins is an OBJECT map keyed "plugin@marketplace" (verified
+  # empirically 2026-07-01: installing writes {"asha-test@asha": true} into
+  # ~/.copilot/settings.json), not an array.
   jq -Rn '
-    {enabledPlugins: [inputs | select(length > 0) | split("\t") | ("asha-" + .[0])]}' \
+    {enabledPlugins: ([inputs | select(length > 0) | split("\t")
+                       | {key: ("asha-" + .[0] + "@asha"), value: true}]
+                      | from_entries)}' \
     | _build_write "$OUT/settings-snippet.json"
 }
 
