@@ -52,8 +52,9 @@ Modes:
   --dry-run   print the WRITE/SKIP plan, change nothing
   --check     CI mode: verify conformance (OK/MISSING/DRIFT/LOCAL), exit 1 on
               MISSING or DRIFT; a marker-removed file is LOCAL (team-owned, ok)
-  --force     overwrite stub/marker files from templates (git is the backup);
-              settings.json values are never touched
+  --force     overwrite stub/marker files from templates (requires a git
+              worktree — git is the backup; in a non-git target --force only
+              creates missing files); settings.json values are never touched
 
 Out of scope by design: persona/identity, secrets, hooks (user-scope), and
 .github/copilot-instructions.md (run native `copilot init` for that).
@@ -73,24 +74,31 @@ _ir_class() {
 _ir_scaffold() { # rel src dest class
   local rel="$1" src="$2" dest="$3" class="$4"
   if [[ -f "$dest" ]]; then
-    if [[ $IR_FORCE -eq 1 && "$class" != "strict" ]]; then
-      if [[ $IR_DRY -eq 1 ]]; then echo "  WRITE (force)  $rel"; else
-        cp "$src" "$dest"; echo "  WROTE (force)  $rel"
-      fi
-    elif [[ "$class" == "strict" ]]; then
-      # never clobber; re-add a missing enabledPlugins key only
-      if jq -e '.enabledPlugins' "$dest" >/dev/null 2>&1; then
+    if [[ "$class" == "strict" ]]; then
+      # Never clobber. Predicates mirror _ir_check exactly (invalid JSON
+      # first, then has() — a file --check calls conforming must never be
+      # rewritten by a scaffold run; review finding).
+      if ! jq empty "$dest" 2>/dev/null; then
+        echo "  SKIP   $rel (exists but invalid JSON — fix by hand)" >&2
+      elif jq -e 'has("enabledPlugins")' "$dest" >/dev/null 2>&1; then
         echo "  SKIP   $rel (exists)"
       elif [[ $IR_DRY -eq 1 ]]; then
         echo "  WRITE  $rel (re-add enabledPlugins key)"
       else
         local tmp="$dest.tmp.$$"
-        if jq '.enabledPlugins = (.enabledPlugins // {})' "$dest" > "$tmp" 2>/dev/null; then
-          mv "$tmp" "$dest"; echo "  WROTE  $rel (re-added enabledPlugins key)"
-        else
-          rm -f "$tmp"; echo "  SKIP   $rel (exists but invalid JSON — fix by hand)" >&2
-        fi
+        jq '.enabledPlugins = (.enabledPlugins // {})' "$dest" > "$tmp" \
+          && mv "$tmp" "$dest" && echo "  WROTE  $rel (re-added enabledPlugins key)" \
+          || { rm -f "$tmp"; echo "ERROR: could not update $rel" >&2; return 1; }
       fi
+    elif [[ $IR_FORCE -eq 1 && $IR_GIT -eq 1 ]]; then
+      # --force overwrite requires a git worktree — git is the undo. In a
+      # non-git target --force only bypasses the guard to CREATE missing
+      # files; overwriting an unversioned file would be unrecoverable.
+      if [[ $IR_DRY -eq 1 ]]; then echo "  WRITE (force)  $rel"; else
+        cp "$src" "$dest"; echo "  WROTE (force)  $rel"
+      fi
+    elif [[ $IR_FORCE -eq 1 ]]; then
+      echo "  SKIP   $rel (exists; --force overwrite requires a git worktree)"
     else
       echo "  SKIP   $rel (exists)"
     fi
@@ -141,7 +149,7 @@ _ir_check() { # rel src dest class ; increments IR_FAILS
 
 asha_init_repo_main() {
   local dir="$PWD" template="default" mode="scaffold"
-  IR_DRY=0; IR_FORCE=0; IR_FAILS=0
+  IR_DRY=0; IR_FORCE=0; IR_FAILS=0; IR_GIT=1
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --dir) shift; dir="${1:-}" ;;
@@ -162,13 +170,16 @@ asha_init_repo_main() {
   [[ -d "$tdir" ]] || { echo "ERROR: unknown template '$template' (no $tdir)" >&2; return 2; }
   [[ -d "$dir" ]] || { echo "ERROR: target dir not found: $dir" >&2; return 2; }
 
-  # This is a repo-scaffolding tool: refuse non-git targets unless --force
-  # (git is the undo mechanism for --force overwrites).
+  # This is a repo-scaffolding tool: refuse non-git targets unless --force.
+  # In a non-git target --force creates MISSING files only — it never
+  # overwrites (no git = no undo; see _ir_scaffold).
+  IR_GIT=1
   if ! git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    IR_GIT=0
     if [[ $IR_FORCE -eq 1 ]]; then
-      echo "WARN: $dir is not a git worktree (continuing under --force)" >&2
+      echo "WARN: $dir is not a git worktree (creating missing files only; no overwrites)" >&2
     else
-      echo "ERROR: $dir is not a git worktree (use --force to scaffold anyway)" >&2
+      echo "ERROR: $dir is not a git worktree (use --force to scaffold missing files anyway)" >&2
       return 2
     fi
   fi

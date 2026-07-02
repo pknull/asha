@@ -92,10 +92,14 @@ sys.stdout.write(f"---\n{new_fm}\n---\n{body}")
 PYEOF
 )"
 
-  # Idempotent write
+  # Idempotent write. On the unchanged path the dest mtime is STILL bumped —
+  # the drift check compares mtimes, and a content-identical dest with an old
+  # mtime would be flagged stale forever (mirrors the codex twin,
+  # harnesses/codex.sh — omitting this made `asha doctor copilot` flap).
   if [[ -f "$dest" ]]; then
     local current; current="$(cat "$dest")"
     if [[ "$current" == "$content" ]]; then
+      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
       log "[copilot] command-skill unchanged: $dest"
       return 0
     fi
@@ -162,6 +166,9 @@ PYEOF
   if [[ -f "$dest" ]]; then
     local current; current="$(cat "$dest")"
     if [[ "$current" == "$content" ]]; then
+      # mtime bump on the unchanged path — same rationale as the command-skill
+      # emitter above (mtime-based freshness audits must not flag this).
+      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
       log "[copilot] agent unchanged: $dest"
       return 0
     fi

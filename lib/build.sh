@@ -18,28 +18,10 @@
 # NEVER packaged: hooks/ (Claude-schema mismatch + plugin hooks don't fire —
 # github/copilot-cli#2540), .claude-plugin/ (Claude-era manifest).
 #
-# PLANT-AND-PROBE RESULTS (Copilot CLI 1.0.65, 2026-07-01 — local marketplace
-# add + plugin install + live skill fire, sentinel confirmed under plain
-# `copilot` with the personal skill copy hidden):
-#   VERIFIED  plugin.json minimal fields {name,version,description} accepted
-#   VERIFIED  marketplace.json needs top-level `owner` + plugins[].`source`
-#             (CLI validator error named the fields; Claude-format compatible)
-#   VERIFIED  `copilot plugin marketplace add <local dir>` works (file:// is
-#             rejected — directory path or owner/repo only)
-#   VERIFIED  install copies the whole plugin tree to
-#             ~/.copilot/installed-plugins/<marketplace>/<plugin>/ — extra
-#             dirs (styles/, agents/, modules/) tolerated, not rejected
-#   VERIFIED  `triggers:` frontmatter tolerated by the plugin skill loader
-#   VERIFIED  enabledPlugins is an object map {"name@marketplace": true}
-#   VERIFIED  no `plugin@marketplace@version` pin syntax — pinning = tag or
-#             branch discipline on the distribution repo
-# STILL UNVERIFIED (probe on the real distribution remote before team rollout):
-#   1. .agent.md files FUNCTION as agents when plugin-delivered (install
-#      reported "1 skill", agent uncounted; rejection ruled out, function not)
-#   2. runtime resolvability of relative refs (../../tools/x.py) from
-#      generated SKILL.md bodies (canary has no tool refs)
-#   3. `owner/repo:path` subdirectory install + declarative repo-scope
-#      .github/copilot/settings.json auto-install (needs a real remote)
+# Copilot schema facts (marketplace owner+source, enabledPlugins object map,
+# plugin.json minimal fields, ...) were established by live plant-and-probe.
+# SINGLE SOURCE for the verification table: docs/distribution-copilot.md —
+# update it there, not here (feedback_no_duplication).
 #
 # Does NOT `set -e` at source scope (callers own shell options; bin/asha wraps
 # invocations in a `set -euo pipefail` subshell).
@@ -69,7 +51,7 @@ PLUGINS_DIR="$MARKET_ROOT/plugins"
 # Shared helpers (engine convention — mirrors lib/uninstall.sh)
 # ---------------------------------------------------------------------------
 
-die()  { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+die()  { echo "ERROR: ${1:-}" >&2; exit "${2:-1}"; }
 log()  { [[ ${VERBOSE:-0} -eq 1 ]] && echo "  $*" >&2; return 0; }
 info() { echo "$*" >&2; }
 say()  { echo "$*"; }
@@ -110,16 +92,19 @@ EOF
 build_parse_args() {
   TARGET=""; ONLY=""; OUT="$MARKET_ROOT/dist/copilot"
   VERSION_OVERRIDE=""; DRY_RUN=0; FORCE=0; VERBOSE=0
+  # Value-taking flags validate BEFORE consuming: `--out` as the last arg
+  # would otherwise make the loop-bottom shift fail with $#=0 and die
+  # silently under the dispatcher's set -e (review finding).
   while [[ $# -gt 0 ]]; do
     case "$1" in
       copilot) TARGET="copilot" ;;
-      --target) shift; TARGET="${1:-}" ;;
+      --target) [[ -n "${2:-}" ]] || die "--target requires a value" 2; TARGET="$2"; shift ;;
       --target=*) TARGET="${1#--target=}" ;;
-      --only) shift; ONLY="${1:-}" ;;
+      --only) [[ -n "${2:-}" ]] || die "--only requires a value" 2; ONLY="$2"; shift ;;
       --only=*) ONLY="${1#--only=}" ;;
-      --out) shift; OUT="${1:-}" ;;
+      --out) [[ -n "${2:-}" ]] || die "--out requires a value" 2; OUT="$2"; shift ;;
       --out=*) OUT="${1#--out=}" ;;
-      --version) shift; VERSION_OVERRIDE="${1:-}" ;;
+      --version) [[ -n "${2:-}" ]] || die "--version requires a value" 2; VERSION_OVERRIDE="$2"; shift ;;
       --version=*) VERSION_OVERRIDE="${1#--version=}" ;;
       --dry-run) DRY_RUN=1 ;;
       --force) FORCE=1 ;;
@@ -133,20 +118,28 @@ build_parse_args() {
     || die "asha build supports only 'copilot' (codex/claude consume the source tree directly)" 2
 }
 
-# Echo the namespaces to build, one per line. Validates --only entries.
+# Echo the namespaces to build, one per line. Validates --only entries:
+# unknown dirs, Claude-only plugins, duplicates (which would nest cp -R
+# copies and double marketplace entries), and empty selections all die.
 build_selected_plugins() {
-  local ns
+  local ns s
   if [[ -z "$ONLY" ]]; then
     printf '%s\n' "${BUILD_DEFAULT_PLUGINS[@]}"
     return 0
   fi
+  local -a seen=()
   for ns in ${ONLY//,/ }; do
     [[ -d "$PLUGINS_DIR/$ns" ]] || die "--only: not a plugin dir: $ns" 2
     if _copilot_is_skip_plugin "$ns"; then
       die "--only: '$ns' is Claude-only and cannot be packaged for Copilot" 2
     fi
+    for s in "${seen[@]-}"; do
+      [[ "$s" == "$ns" ]] && die "--only: duplicate namespace '$ns'" 2
+    done
+    seen+=("$ns")
     printf '%s\n' "$ns"
   done
+  [[ ${#seen[@]} -gt 0 ]] || die "--only: no namespaces selected" 2
 }
 
 # --- per-plugin metadata ----------------------------------------------------
@@ -220,16 +213,19 @@ _build_copy_skills() { # ns dest_root
 _build_rewrite_paths() { # file ns rel_prefix
   local file="$1" ns="$2" rel="$3"
   [[ -f "$file" ]] || return 0
+  # Relative md links gain one level ONLY for command-skills (rel ../../):
+  # generated skills sit one dir deeper than source commands/, but agents
+  # keep their depth. Run this FIRST so the $ASHA_ROOT rewrite below cannot
+  # be re-bumped by it (review findings: agent links broken; compounding).
+  if [[ "$rel" == "../../" ]] && grep -q '](\.\./' "$file"; then
+    sed -i.bak 's#](\.\./#](../../#g' "$file" && rm -f "$file.bak"
+    info "  REWROTE relative md links (+1 level) in ${file##*/skills/}"
+  fi
   local before_own='\$ASHA_ROOT/plugins/'"$ns"'/'
   if grep -qE "$before_own" "$file"; then
     # Replace the path only — surrounding quotes must stay balanced.
     sed -i.bak "s#\\\$ASHA_ROOT/plugins/$ns/#$rel#g" "$file" && rm -f "$file.bak"
     info "  REWROTE own-ns \$ASHA_ROOT refs -> $rel in ${file##*/skills/}"
-  fi
-  # Relative markdown links written relative to commands/ gain one level.
-  if grep -q '](\.\./' "$file"; then
-    sed -i.bak 's#](\.\./#](../../#g' "$file" && rm -f "$file.bak"
-    info "  REWROTE relative md links (+1 level) in ${file##*/skills/}"
   fi
   local residue
   residue="$(grep -n '\$ASHA_ROOT' "$file" || true)"
@@ -336,7 +332,11 @@ _build_emit_dist_readme() { # built-lines file
   local built_file="$1"
   local sha date
   sha="$(git -C "$MARKET_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
-  date="$(date -u +'%Y-%m-%d %H:%M UTC')"
+  # Deterministic Built line (source commit date, not wall clock): rebuilds
+  # of the same tree must be byte-identical — a minute-resolution wall clock
+  # made that a coin flip across minute boundaries (review finding).
+  date="$(TZ=UTC git -C "$MARKET_ROOT" log -1 --date=format-local:'%Y-%m-%d %H:%M UTC' --format=%cd 2>/dev/null || date -u +'%Y-%m-%d %H:%M UTC')"
+  git -C "$MARKET_ROOT" diff-index --quiet HEAD -- 2>/dev/null || date="$date (+ uncommitted changes)"
   {
     echo "# asha — Copilot plugin distribution"
     echo
@@ -375,20 +375,30 @@ build_copilot() {
   say "   out = $OUT"
   [[ $DRY_RUN -eq 1 ]] && say "   (dry-run)"
 
-  # Materialize the selection BEFORE anything destructive: build_selected_plugins
-  # die()s on bad --only values, and (a) a die inside a process substitution
-  # would kill only the feeder subshell — the build would "succeed" empty
-  # (issue-#4 class); (b) validation must precede the --force cleanup below,
-  # or a typo'd --only would empty the dist before being refused.
+  # Materialize the selection AND all per-plugin metadata BEFORE anything
+  # destructive: die()s inside process substitutions would kill only the
+  # feeder subshell (issue-#4 class), and validation — including per-plugin
+  # version parsing, which can fail — must fully precede the --force cleanup,
+  # or a refused build would leave the previous dist wiped/partial (review
+  # finding: destructive-before-validate, second occurrence).
   local selected
-  selected="$(build_selected_plugins)" || return 1
+  selected="$(build_selected_plugins)" || return $?
 
-  # Out-dir hygiene: refuse non-empty without --force; --force replaces only
-  # the subtrees this build owns — never a blind rm -rf of --out.
+  local manifest="" ns version desc
+  while read -r ns; do
+    [[ -n "$ns" ]] || continue
+    version="$(_build_plugin_version "$ns")" || return $?
+    desc="$(_build_plugin_description "$ns")"
+    manifest+="$ns"$'\t'"$version"$'\t'"$desc"$'\n'
+  done <<< "$selected"
+
+  # Out-dir hygiene: refuse non-empty without --force. --force removes ONLY
+  # what this build owns: plugins/asha-* and the three generated metadata
+  # files — a foreign plugins/<other>/ in a shared dist repo survives.
   if [[ -d "$OUT" && -n "$(ls -A "$OUT" 2>/dev/null)" ]]; then
     if [[ $FORCE -eq 1 ]]; then
       if [[ $DRY_RUN -eq 0 ]]; then
-        rm -rf "$OUT/plugins" "$OUT/marketplace.json" "$OUT/settings-snippet.json" "$OUT/README.md"
+        rm -rf "$OUT"/plugins/asha-* "$OUT/marketplace.json" "$OUT/settings-snippet.json" "$OUT/README.md"
       fi
     else
       die "output dir not empty: $OUT (use --force to replace the build-owned subtrees)" 2
@@ -396,13 +406,10 @@ build_copilot() {
   fi
 
   local built_file="${TMPDIR:-/tmp}/.asha-build-manifest.$$"
-  : > "$built_file"
+  printf '%s' "$manifest" > "$built_file"
 
-  local ns version desc
-  while read -r ns; do
+  while IFS=$'\t' read -r ns version desc; do
     [[ -n "$ns" ]] || continue
-    version="$(_build_plugin_version "$ns")"
-    desc="$(_build_plugin_description "$ns")"
     say ""
     say "== [build] plugins/asha-$ns  (v$version) =="
     local dest="$OUT/plugins/asha-$ns"
@@ -412,8 +419,7 @@ build_copilot() {
     _build_emit_command_skills  "$ns" "$dest"
     _build_emit_agents          "$ns" "$dest"
     _build_copy_content         "$ns" "$dest"
-    printf '%s\t%s\t%s\n' "$ns" "$version" "$desc" >> "$built_file"
-  done <<< "$selected"
+  done <<< "$manifest"
 
   say ""
   say "== [build] dist metadata =="
