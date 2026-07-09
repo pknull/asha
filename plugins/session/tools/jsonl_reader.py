@@ -80,6 +80,203 @@ class Event:
     raw: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class SessionIdentity:
+    """Resolved save-run identity.
+
+    The save pipeline must treat this triple as immutable: parser harness,
+    session id, and the exact transcript path must agree before synthesis.
+    """
+    harness: str
+    session_id: str
+    transcript_path: Path
+
+
+class IdentityError(RuntimeError):
+    """Raised when a save run's harness/session/transcript identity is unsafe."""
+
+
+HARNESS_CHOICES = {"claude", "codex", "copilot"}
+_CODEX_ROLLOUT_RE = re.compile(
+    r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
+    r"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$",
+    re.IGNORECASE,
+)
+
+
+def _read_first_json(path: Path) -> Optional[dict]:
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                data = json.loads(raw)
+                return data if isinstance(data, dict) else None
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def sniff_harness(path: Path) -> Optional[str]:
+    """Infer transcript harness from the first JSON object shape."""
+    data = _read_first_json(path)
+    if not data:
+        return None
+    typ = str(data.get("type", ""))
+    payload = data.get("payload") or {}
+    if typ == "session_meta" and isinstance(payload, dict) and "id" in payload:
+        return "codex"
+    if typ.startswith("session.") or typ in {"user.message", "assistant.turn_start"}:
+        return "copilot"
+    if "sessionId" in data:
+        return "claude"
+    return None
+
+
+def transcript_session_id(path: Path, harness: str) -> Optional[str]:
+    """Extract the native session id embedded in a transcript, if available."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                raw = raw.strip()
+                if not raw:
+                    continue
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(data, dict):
+                    continue
+                if harness == "codex":
+                    payload = data.get("payload") or {}
+                    if data.get("type") == "session_meta" and isinstance(payload, dict):
+                        sid = payload.get("id")
+                        if sid:
+                            return str(sid)
+                elif harness == "claude":
+                    sid = data.get("sessionId")
+                    if sid:
+                        return str(sid)
+                elif harness == "copilot":
+                    data_obj = data.get("data") or {}
+                    if isinstance(data_obj, dict):
+                        sid = data_obj.get("sessionId")
+                        if sid:
+                            return str(sid)
+    except OSError:
+        return None
+    if harness == "codex":
+        m = _CODEX_ROLLOUT_RE.match(path.name)
+        if m:
+            return m.group(1)
+    if harness == "claude" and path.suffix == ".jsonl":
+        return path.stem
+    if harness == "copilot" and path.name == "events.jsonl":
+        return path.parent.name
+    return None
+
+
+def _native_session_id(harness: str) -> Optional[str]:
+    if harness == "claude":
+        return os.environ.get("CLAUDE_CODE_SESSION_ID")
+    if harness == "codex":
+        return os.environ.get("CODEX_THREAD_ID")
+    if harness == "copilot":
+        return os.environ.get("COPILOT_SESSION_ID")
+    return None
+
+
+def detect_harness_from_env() -> Optional[str]:
+    """Detect active harness without guessing across nested harnesses.
+
+    ASHA_HARNESS is authoritative. Without it, exactly one native harness marker
+    may be present; multiple markers means a nested tool call and must be
+    resolved explicitly by the caller.
+    """
+    explicit = os.environ.get("ASHA_HARNESS")
+    if explicit:
+        if explicit not in HARNESS_CHOICES:
+            raise IdentityError(f"invalid ASHA_HARNESS={explicit!r}")
+        return explicit
+
+    markers: list[str] = []
+    if os.environ.get("CLAUDECODE") or os.environ.get("CLAUDE_CODE_SESSION_ID"):
+        markers.append("claude")
+    if os.environ.get("CODEX_THREAD_ID") or os.environ.get("CODEX_MANAGED_BY_NPM"):
+        markers.append("codex")
+    if os.environ.get("COPILOT_CLI") or os.environ.get("COPILOT_SESSION_ID"):
+        markers.append("copilot")
+    unique = sorted(set(markers))
+    if len(unique) > 1:
+        raise IdentityError(
+            "ambiguous harness markers present without ASHA_HARNESS: " + ", ".join(unique)
+        )
+    return unique[0] if unique else None
+
+
+def resolve_identity(
+    project_dir: Optional[Path] = None,
+    *,
+    harness: Optional[str] = None,
+    session_id: Optional[str] = None,
+    transcript: Optional[Path | str] = None,
+    require_transcript: bool = True,
+) -> SessionIdentity:
+    """Resolve and validate (harness, session_id, transcript_path).
+
+    Ordering is intentionally harness-scoped: resolve the harness first, then
+    read only that harness's native session variable. This prevents nested
+    Codex↔Claude calls from stealing the outer session id.
+    """
+    transcript_path: Optional[Path] = None
+    if transcript:
+        transcript_path = Path(os.path.expanduser(str(transcript)))
+    elif os.environ.get("ASHA_TRANSCRIPT_PATH"):
+        transcript_path = Path(os.path.expanduser(os.environ["ASHA_TRANSCRIPT_PATH"]))
+
+    resolved_harness = harness or os.environ.get("ASHA_HARNESS")
+    if resolved_harness and resolved_harness not in HARNESS_CHOICES:
+        raise IdentityError(f"invalid harness={resolved_harness!r}")
+    if not resolved_harness:
+        if transcript_path and transcript_path.exists():
+            resolved_harness = sniff_harness(transcript_path)
+        if not resolved_harness:
+            resolved_harness = detect_harness_from_env()
+    if not resolved_harness:
+        raise IdentityError("cannot resolve save harness; set ASHA_HARNESS")
+
+    if transcript_path is None:
+        transcript_path = locate_session_log(resolved_harness, project_dir)
+    if transcript_path is None or not transcript_path.exists():
+        if require_transcript:
+            raise IdentityError(f"no transcript found for harness={resolved_harness}")
+        raise IdentityError(f"no transcript found for harness={resolved_harness}")
+
+    sniffed = sniff_harness(transcript_path)
+    if sniffed and sniffed != resolved_harness:
+        raise IdentityError(
+            f"transcript harness mismatch: declared {resolved_harness}, file looks like {sniffed}: {transcript_path}"
+        )
+
+    resolved_sid = (
+        session_id
+        or os.environ.get("ASHA_SESSION_ID")
+        or _native_session_id(resolved_harness)
+        or transcript_session_id(transcript_path, resolved_harness)
+    )
+    if not resolved_sid:
+        raise IdentityError(f"cannot resolve session id for harness={resolved_harness}")
+
+    embedded_sid = transcript_session_id(transcript_path, resolved_harness)
+    if embedded_sid and embedded_sid != resolved_sid:
+        raise IdentityError(
+            f"session id mismatch: resolved {resolved_sid}, transcript contains {embedded_sid}: {transcript_path}"
+        )
+
+    return SessionIdentity(resolved_harness, resolved_sid, transcript_path)
+
+
 # ---------------------------------------------------------------------------
 # locate_session_log
 # ---------------------------------------------------------------------------
@@ -102,10 +299,9 @@ def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Opti
                 or several logs share the slug dir, returns None to avoid pulling
                 a concurrent session's transcript. Set $ASHA_ALLOW_MTIME_FALLBACK=1
                 to restore the old newest-by-mtime behavior.
-      codex   : newest rollout-*.jsonl under ~/.codex/sessions/ by mtime.
-                (Codex rollouts don't carry cwd in the filename; the
-                session_meta line inside has it. We pick newest and let
-                callers gate on the contents.)
+      codex   : $CODEX_THREAD_ID -> rollout-*<id>.jsonl, newest match first.
+                Fallback: newest rollout whose session_meta cwd matches project.
+                Blind newest-by-mtime fallback only when ASHA_ALLOW_MTIME_FALLBACK=1.
       copilot : scan ~/.copilot/session-state/*/inuse.<pid>.lock matching
                 the parent process chain. Fallback: newest session whose
                 workspace.yaml.cwd == project_dir.
@@ -170,7 +366,11 @@ def _locate_codex(project_dir: Path) -> Optional[Path]:
     # the session_meta line, then to newest rollout.
     thread_id = os.environ.get("CODEX_THREAD_ID")
     if thread_id:
-        matches = list(base.rglob(f"rollout-*-{thread_id}.jsonl"))
+        matches = sorted(
+            base.rglob(f"rollout-*-{thread_id}.jsonl"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
         if matches:
             return matches[0]
 
@@ -185,7 +385,9 @@ def _locate_codex(project_dir: Path) -> Optional[Path]:
                 return path
         except (OSError, json.JSONDecodeError):
             continue
-    return rollouts[0] if rollouts else None
+    if os.environ.get("ASHA_ALLOW_MTIME_FALLBACK") == "1" and rollouts:
+        return rollouts[0]
+    return None
 
 
 def _locate_copilot(project_dir: Path) -> Optional[Path]:
@@ -803,18 +1005,25 @@ def _main(argv: list[str]) -> int:
     import argparse  # local import — keeps module-level imports tight
 
     p = argparse.ArgumentParser(description="Read native session transcript and emit Asha events.")
-    p.add_argument("--harness", required=True, choices=("claude", "codex", "copilot"))
+    p.add_argument("--harness", required=True, choices=tuple(sorted(HARNESS_CHOICES)))
     p.add_argument("--path", help="Override transcript path (else auto-locate).")
     p.add_argument("--project-dir", default=None)
-    p.add_argument("--session-id", default="cli")
+    p.add_argument("--session-id", default=None)
     p.add_argument("--raw", action="store_true", help="Emit normalized Events instead of synth dicts.")
     args = p.parse_args(argv)
 
     project_dir = Path(args.project_dir).resolve() if args.project_dir else Path.cwd().resolve()
-    path = Path(args.path) if args.path else locate_session_log(args.harness, project_dir)
-    if not path or not path.exists():
-        print(f"no transcript found for harness={args.harness}", file=sys.stderr)
+    try:
+        identity = resolve_identity(
+            project_dir,
+            harness=args.harness,
+            session_id=args.session_id,
+            transcript=Path(args.path) if args.path else None,
+        )
+    except IdentityError as exc:
+        print(str(exc), file=sys.stderr)
         return 1
+    path = identity.transcript_path
 
     print(f"# transcript: {path}", file=sys.stderr)
     if args.raw:
@@ -825,7 +1034,7 @@ def _main(argv: list[str]) -> int:
             }))
     else:
         events = list(stream_events(path, args.harness))
-        synth = to_synth_events(events, project_dir, args.session_id)
+        synth = to_synth_events(events, project_dir, identity.session_id)
         for s in synth:
             print(json.dumps(s))
     return 0

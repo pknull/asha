@@ -110,7 +110,7 @@ def gate_session_integrity(project_dir: Path, current_sid: Optional[str]) -> Gat
     if n == 0:
         return GateResult("session_integrity", "pass", True, "events.jsonl empty; synthesis no-ops (no bleed possible)")
     if not current_sid:
-        return GateResult("session_integrity", "warn", False, f"current session id unknown; cannot verify {n} events")
+        return GateResult("session_integrity", "fail", True, f"current session id unknown; cannot verify {n} events")
     if current_sid not in sids:
         foreign = sorted(str(s) for s in sids if s)
         return GateResult("session_integrity", "fail", True,
@@ -348,19 +348,33 @@ def _hard_failures(results: list[GateResult]) -> list[GateResult]:
 
 def _reason(failures: list[GateResult]) -> str:
     parts = "; ".join(f"[{r.gate}] {r.detail}" for r in failures)
-    return (f"{parts}. Remediation: ensure ASHA_TRANSCRIPT_PATH points at THIS session's "
-            f"transcript, re-run synthesis, regenerate the affected activeContext section, then finish.")
+    return (f"{parts}. Remediation: resolve ASHA_HARNESS + ASHA_SESSION_ID + "
+            f"ASHA_TRANSCRIPT_PATH for THIS session, re-run synthesis, regenerate the "
+            f"affected activeContext section, then finish.")
 
 
-def _resolve_sid(args, transcript: Optional[Path]) -> Optional[str]:
-    return (args.session_id or os.environ.get("CLAUDE_CODE_SESSION_ID")
-            or (transcript.stem if transcript else None))
+def _resolve_identity(args, project_dir: Path):
+    try:
+        import jsonl_reader  # type: ignore
+    except ImportError:
+        return None, "jsonl_reader unavailable"
+    try:
+        ident = jsonl_reader.resolve_identity(
+            project_dir,
+            harness=args.harness,
+            session_id=args.session_id,
+            transcript=args.transcript,
+        )
+        return ident, None
+    except Exception as exc:  # noqa: BLE001
+        return None, str(exc)
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Pre-flight verification gate for /session:save")
     ap.add_argument("--mode", choices=["enforce", "guard", "report"], default="report")
     ap.add_argument("--project-dir", "-p", help="Project root (default $CLAUDE_PROJECT_DIR/cwd)")
+    ap.add_argument("--harness", choices=["claude", "codex", "copilot"], help="Authoritative harness for this session")
     ap.add_argument("--transcript", "-t", help="Authoritative transcript path for this session")
     ap.add_argument("--session-id", "-s", help="Current session id")
     ap.add_argument("--save-start", help="ISO ts the save began (freshness check)")
@@ -369,12 +383,8 @@ def main() -> int:
 
     env_pd = os.environ.get("CLAUDE_PROJECT_DIR")
     project_dir = Path(args.project_dir or env_pd or os.getcwd()).resolve()
-    transcript = None
-    tpath = args.transcript or os.environ.get("ASHA_TRANSCRIPT_PATH")
-    if tpath:
-        p = Path(os.path.expanduser(tpath))
-        transcript = p if p.exists() else None
-    current_sid = _resolve_sid(args, transcript)
+    ident, identity_error = _resolve_identity(args, project_dir)
+    current_sid = ident.session_id if ident else None
     save_start = None
     if args.save_start:
         try:
@@ -382,8 +392,11 @@ def main() -> int:
         except ValueError:
             save_start = None
 
-    results = run_gates(project_dir, current_sid, save_start,
-                        skip_push=args.skip_push, dry_run=(args.mode == "report"))
+    results = []
+    if identity_error and args.mode in {"guard", "enforce"}:
+        results.append(GateResult("session_identity", "fail", True, identity_error))
+    results += run_gates(project_dir, current_sid, save_start,
+                         skip_push=args.skip_push, dry_run=(args.mode == "report"))
     _log(project_dir, args.mode, current_sid, results)
     failures = _hard_failures(results)
     table = _table(results)

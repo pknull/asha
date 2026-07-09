@@ -32,7 +32,7 @@ ENGINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../tools" && pwd)/save_preflight
 HOOK_LOG="$PROJECT_DIR/Memory/events/save-preflight-hook.log"
 mkdir -p "$(dirname "$HOOK_LOG")" 2>/dev/null || true
 
-RESULT=$(ASHA_TRANSCRIPT_PATH="$TRANSCRIPT" CLAUDE_CODE_SESSION_ID="$SID" \
+RESULT=$(ASHA_TRANSCRIPT_PATH="$TRANSCRIPT" ASHA_SESSION_ID="$SID" CLAUDE_CODE_SESSION_ID="$SID" \
     python3 "$ENGINE" --mode enforce \
         --project-dir "$PROJECT_DIR" \
         --transcript "$TRANSCRIPT" \

@@ -14,6 +14,7 @@ Coverage:
 """
 
 import io
+import os
 import sys
 import unittest
 from contextlib import redirect_stderr
@@ -324,6 +325,69 @@ class ToSynthEventsTests(unittest.TestCase):
         agents = [s for s in synth if s["subtype"] == "agent_deployed"]
         self.assertEqual(len(agents), 1)
         self.assertEqual(agents[0]["payload"]["agent_type"], "reviewer")
+
+
+class IdentityResolutionTests(unittest.TestCase):
+    def setUp(self):
+        self.saved_env = {k: os.environ.get(k) for k in (
+            "ASHA_HARNESS", "ASHA_SESSION_ID", "ASHA_TRANSCRIPT_PATH",
+            "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
+            "CODEX_MANAGED_BY_NPM", "COPILOT_CLI", "COPILOT_SESSION_ID",
+        )}
+        for k in self.saved_env:
+            os.environ.pop(k, None)
+
+    def tearDown(self):
+        for k, v in self.saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+    def test_codex_identity_is_harness_scoped_when_claude_vars_also_exist(self):
+        os.environ["ASHA_HARNESS"] = "codex"
+        os.environ["CODEX_THREAD_ID"] = "test-codex-001"
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "wrong-claude"
+        ident = jsonl_reader.resolve_identity(
+            Path("/home/test/project"),
+            transcript=FIXTURES_DIR / "codex-rollout-sample.jsonl",
+        )
+        self.assertEqual(ident.harness, "codex")
+        self.assertEqual(ident.session_id, "test-codex-001")
+
+    def test_claude_identity_is_harness_scoped_when_codex_vars_also_exist(self):
+        os.environ["ASHA_HARNESS"] = "claude"
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "test-claude-001"
+        os.environ["CODEX_THREAD_ID"] = "wrong-codex"
+        ident = jsonl_reader.resolve_identity(
+            Path("/home/test/project"),
+            transcript=FIXTURES_DIR / "claude-session-sample.jsonl",
+        )
+        self.assertEqual(ident.harness, "claude")
+        self.assertEqual(ident.session_id, "test-claude-001")
+
+    def test_codex_session_id_comes_from_payload_not_rollout_stem(self):
+        ident = jsonl_reader.resolve_identity(
+            Path("/home/test/project"),
+            harness="codex",
+            transcript=FIXTURES_DIR / "codex-rollout-sample.jsonl",
+        )
+        self.assertEqual(ident.session_id, "test-codex-001")
+        self.assertNotIn("rollout", ident.session_id)
+
+    def test_explicit_transcript_harness_mismatch_fails(self):
+        with self.assertRaises(jsonl_reader.IdentityError):
+            jsonl_reader.resolve_identity(
+                Path("/home/test/project"),
+                harness="claude",
+                transcript=FIXTURES_DIR / "codex-rollout-sample.jsonl",
+            )
+
+    def test_ambiguous_native_markers_without_asha_harness_fail(self):
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "test-claude-001"
+        os.environ["CODEX_THREAD_ID"] = "test-codex-001"
+        with self.assertRaises(jsonl_reader.IdentityError):
+            jsonl_reader.resolve_identity(Path("/home/test/project"))
 
 
 class LocateSessionLogTests(unittest.TestCase):

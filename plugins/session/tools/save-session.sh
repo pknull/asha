@@ -102,7 +102,9 @@ get_python_cmd() {
 #
 # Returns: claude | copilot | codex | unknown
 detect_harness() {
-    if [[ -n "${CLAUDECODE:-}" ]]; then
+    if [[ -n "${ASHA_HARNESS:-}" ]]; then
+        echo "$ASHA_HARNESS"
+    elif [[ -n "${CLAUDECODE:-}" ]]; then
         echo "claude"
     elif [[ -n "${COPILOT_CLI:-}" ]]; then
         echo "copilot"
@@ -137,10 +139,15 @@ regenerate_events_from_transcript() {
 
     mkdir -p "$(dirname "$output_path")"
 
-    if "$PYTHON_CMD" "$READER" \
+    local sid_args=()
+    if [[ -n "$session_id" ]]; then
+        sid_args=(--session-id "$session_id")
+    fi
+
+    if ASHA_HARNESS="$harness" "$PYTHON_CMD" "$READER" \
         --harness "$harness" \
         --project-dir "$PROJECT_DIR" \
-        --session-id "$session_id" \
+        "${sid_args[@]}" \
         > "$output_path" 2>/tmp/jsonl_reader.err
     then
         local count
@@ -198,7 +205,7 @@ synthesize_from_events() {
 
     if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
         # Use pattern_analyzer for consistent Four Questions output format
-        RESULT=$("$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days "$days" 2>/dev/null || echo '{"status":"error"}')
+        RESULT=$(ASHA_SAVE_STRICT=1 "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days "$days" || echo '{"status":"error"}')
         # Read the generated activeContext.md
         if [[ -f "$ACTIVE_CONTEXT" ]]; then
             cat "$ACTIVE_CONTEXT"
@@ -286,9 +293,9 @@ from_transcript_mode() {
 
     # Derive a session_id from the harness's session ID env var if available.
     case "$HARNESS" in
-        claude)  SID="${CLAUDE_CODE_SESSION_ID:-session_$(date -u '+%Y%m%d_%H%M%S')}" ;;
-        copilot) SID="session_$(date -u '+%Y%m%d_%H%M%S')_copilot" ;;
-        codex)   SID="${CODEX_THREAD_ID:-session_$(date -u '+%Y%m%d_%H%M%S')_codex}" ;;
+        claude)  SID="${ASHA_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}" ;;
+        copilot) SID="${ASHA_SESSION_ID:-${COPILOT_SESSION_ID:-}}" ;;
+        codex)   SID="${ASHA_SESSION_ID:-${CODEX_THREAD_ID:-}}" ;;
     esac
 
     SIDE_FILE="$PROJECT_DIR/Memory/events/events-from-transcript.jsonl"
@@ -313,7 +320,7 @@ from_transcript_mode() {
     fi
 
     log "Running synthesis against transcript-derived events..."
-    ASHA_EVENTS_FILE="$SIDE_FILE" \
+    ASHA_EVENTS_FILE="$SIDE_FILE" ASHA_SAVE_STRICT=1 ASHA_SESSION_ID="$SID" ASHA_HARNESS="$HARNESS" \
         "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days 7 \
         > /tmp/synth-from-transcript.json 2>&1 \
         || log "synthesis returned non-zero (see /tmp/synth-from-transcript.json)"
@@ -340,7 +347,7 @@ automatic_mode() {
 
     if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
         log "Running pattern analysis and synthesis..."
-        RESULT=$("$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days 7 2>/dev/null || echo '{"status":"error"}')
+        RESULT=$(ASHA_SAVE_STRICT=1 "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days 7 || echo '{"status":"error"}')
 
         # Log results
         EVENTS_COUNT=$(echo "$RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('events_processed',0))" 2>/dev/null || echo "0")
