@@ -35,7 +35,8 @@ INPUT=$(cat)
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
 [[ -n "$TRANSCRIPT_PATH" ]] && export ASHA_TRANSCRIPT_PATH="$TRANSCRIPT_PATH"
-[[ -n "$SESSION_ID" ]] && export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
+[[ -n "$SESSION_ID" ]] && export ASHA_SESSION_ID="$SESSION_ID" && export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
+export ASHA_HARNESS="${ASHA_HARNESS:-claude}"
 
 # Clear this session's ephemeral policy state (session_state — not durable
 # Memory); sweep state files leaked by prior unclean exits.

@@ -419,54 +419,56 @@ def load_events(session_id: Optional[str] = None, days: int = 7) -> List[Dict]:
     return sorted(events, key=lambda e: e.get("timestamp", ""))
 
 
-def _rebuild_events_from_transcript(project_dir: Path) -> int:
-    """Regenerate EVENTS_FILE from the host's native Claude transcript.
+def _strict_save_mode() -> bool:
+    return os.environ.get("ASHA_SAVE_STRICT") == "1"
 
-    The post-tool-use hook stopped writing events.jsonl directly (capture was
-    moved to /save-time transcript reads). Without this rebuild, /save reads a
-    stale file and produces auto-fallback activeContext — see the matching
-    learning entry. Returns the number of synth events written, or 0 if no
-    transcript is detectable or the explicit ASHA_EVENTS_FILE override is set
-    (caller is responsible for its own event source in that case).
-    """
-    if os.environ.get("ASHA_EVENTS_FILE"):
-        return 0
+
+def _current_identity(project_dir: Path, session_id: Optional[str] = None):
     try:
-        # pattern_analyzer.py and jsonl_reader.py live in the same tools/ dir;
-        # Python adds the script's directory to sys.path[0] on shebang launch.
         import jsonl_reader  # type: ignore
-    except ImportError:
-        return 0
+    except ImportError as exc:
+        if _strict_save_mode() or session_id:
+            raise RuntimeError(f"jsonl_reader unavailable: {exc}") from exc
+        return None
     try:
-        transcript = jsonl_reader.locate_session_log("claude", project_dir)
-    except Exception:
-        return 0
-    if not transcript or not transcript.exists():
-        # No authoritative transcript for this session (id unknown + ambiguous
-        # slug dir, or explicit path missing). Skip the rebuild rather than pull
-        # a concurrent session's log; run_synthesis then no-ops on stale events.
-        print("warn: no current-session transcript located; skipping event "
-              "rebuild (set ASHA_TRANSCRIPT_PATH or CLAUDE_CODE_SESSION_ID)",
-              file=sys.stderr)
-        return 0
-    # Stamp events with the real session id. A claude transcript is named
-    # <session_id>.jsonl, so its stem is authoritative even when the env var is
-    # unset, letting downstream load_events(session_id=...) isolate this session.
-    sid = os.environ.get("CLAUDE_CODE_SESSION_ID") or transcript.stem
+        return jsonl_reader.resolve_identity(project_dir, session_id=session_id)
+    except Exception as exc:  # noqa: BLE001 - convert identity failure to save result
+        has_identity_signal = any(os.environ.get(k) for k in (
+            "ASHA_HARNESS", "ASHA_SESSION_ID", "ASHA_TRANSCRIPT_PATH",
+            "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "COPILOT_SESSION_ID",
+        ))
+        if _strict_save_mode() or session_id or has_identity_signal:
+            raise RuntimeError(str(exc)) from exc
+        return None
+
+
+def _rebuild_events_from_transcript(project_dir: Path, session_id: Optional[str] = None):
+    """Regenerate EVENTS_FILE from the active harness transcript.
+
+    Returns (event_count, session_id). If ASHA_EVENTS_FILE is set, the caller is
+    responsible for that file; identity is still resolved so synthesis can filter
+    by the current session instead of laundering stale event contents.
+    """
+    identity = _current_identity(project_dir, session_id=session_id)
+    if identity is None:
+        return 0, session_id
+    if os.environ.get("ASHA_EVENTS_FILE"):
+        return 0, identity.session_id
+
+    import jsonl_reader  # type: ignore
     try:
-        events = list(jsonl_reader.stream_events(transcript, "claude"))
-        synth = jsonl_reader.to_synth_events(events, project_dir, sid)
-    except Exception as exc:
-        print(f"warn: transcript rebuild failed: {exc}", file=sys.stderr)
-        return 0
-    if not synth:
-        return 0
+        events = list(jsonl_reader.stream_events(identity.transcript_path, identity.harness))
+        synth = jsonl_reader.to_synth_events(events, project_dir, identity.session_id)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"transcript rebuild failed: {exc}") from exc
+
     EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    # Truncate even when the parse yields zero synth events. Leaving the stale
+    # file intact is the bleed vector this guard exists to close.
     with open(EVENTS_FILE, "w") as f:
         for ev in synth:
             f.write(json.dumps(ev) + "\n")
-    return len(synth)
-
+    return len(synth), identity.session_id
 
 def get_last_session_id() -> Optional[str]:
     """Get the most recent session ID from events"""
@@ -1175,15 +1177,23 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
         "eval": None
     }
 
-    # Refresh events from host transcript before loading. The post-tool-use
-    # hook no longer writes events.jsonl, so a no-op here means /save reads
-    # whatever stale data is on disk. Safe no-op when ASHA_EVENTS_FILE is set
-    # or no transcript is locatable.
-    rebuilt = _rebuild_events_from_transcript(PROJECT_ROOT)
+    # Refresh events from the active harness transcript before loading. Identity
+    # failure on a save path is fatal to synthesis; falling back to stale shared
+    # events is how foreign-session handoffs are produced.
+    try:
+        rebuilt, resolved_sid = _rebuild_events_from_transcript(PROJECT_ROOT, session_id=session_id)
+    except RuntimeError as exc:
+        results["status"] = "identity_error"
+        results["error"] = str(exc)
+        return results
+    if resolved_sid and not session_id:
+        session_id = resolved_sid
+        results["session_id"] = session_id
     if rebuilt:
         results["events_rebuilt_from_transcript"] = rebuilt
 
-    # Load events
+    # Load events. When identity is known, filter to it; never infer a current
+    # save session from event contents.
     events = load_events(session_id=session_id, days=days)
     results["events_processed"] = len(events)
 
@@ -1191,8 +1201,13 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
         results["status"] = "no_events"
         return results
 
-    # Get session ID from events if not specified
+    # Legacy/manual fallback only: event contents are not authoritative on a
+    # strict save path. Saves must pass a resolved session id.
     if not session_id and events:
+        if _strict_save_mode():
+            results["status"] = "identity_error"
+            results["error"] = "strict save has events but no resolved session id"
+            return results
         session_id = events[-1].get("session_id", "unknown")
         results["session_id"] = session_id
 

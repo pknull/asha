@@ -62,6 +62,12 @@ class WWAProvenanceGateTests(unittest.TestCase):
         return self.sp.gate_wwa_provenance(self.project, sid)
 
     # -- cases ------------------------------------------------------------- #
+    def test_unknown_session_id_hard_fails_session_integrity(self):
+        self._write_events("sess-CUR", 2)
+        r = self.sp.gate_session_integrity(self.project, None)
+        self.assertEqual(r.status, "fail")
+        self.assertTrue(r.hard)
+
     def test_stamped_current_passes(self):
         self._write_ac("What Was Accomplished (2026-06-22 — work)", stamp="sess-CUR")
         self._write_events("sess-CUR", 5)
