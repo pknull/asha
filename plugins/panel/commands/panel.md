@@ -132,7 +132,7 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 **Creative Writing Panel** (Callum Chapter 9 evaluation):
 
 - `prose-analysis` → **"The Editor"** (craft assessment)
-- `intimacy-designer` → **"The Architect of Dread"** (genre mechanics)
+- `intimacy-arbiter` → **"The Architect of Dread"** (genre mechanics)
 - `narrative-architect` → **"The Structuralist"** (story coherence)
 - `character-developer` → **"The Psychologist"** (character authenticity)
 

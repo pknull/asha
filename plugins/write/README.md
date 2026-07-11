@@ -18,19 +18,13 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 |-------|------|
 | **outline-architect** | Story structure, beat sheets, chapter outlines |
 | **prose-writer** | Draft generation with voice anchoring |
-| **fiction-writer** | Primary creative coordinator for full pipeline |
-| **consistency-checker** | Continuity tracking (characters, timelines, lore) |
+| **continuity-reviewer** | Dual-mode continuity: per-turn RP gate (live_roleplay) + manuscript review and pre-writing gate (novel_draft: timeline, spatial, knowledge, objects, character traits, worldbuilding rules) |
 | **developmental-editor** | Structural analysis (arcs, pacing, theme) |
 | **line-editor** | Sentence craft, rhythm, polish |
-| **prose-analysis** | Multi-mode prose review (voice, continuity, coherence) |
-| **intimacy-designer** | Adult content specialist (scene frameworks, boundary arbitration) |
-| **manuscript-editor** | Structural editing and revision coordination |
-| **novel-character-reviewer** | Character consistency validation against project bible |
-| **novel-continuity-reviewer** | Timeline, spatial logic, knowledge boundary validation |
+| **prose-analysis** | Multi-mode prose review (voice + quantified style lint, character consistency, continuity, coherence, docs) |
+| **intimacy-arbiter** | Adult-content arbitration (boundary rulings, heat-level consistency; review-only) |
 | **novel-state-updater** | State extraction after sections pass validation |
-| **novel-style-linter** | Voice compliance, variance metrics, POV/tense checking |
-| **book-analyzer** | Extract quantified style rules from exemplar texts |
-| **bible-merger** | Consolidate multiple style analyses into unified voice.md |
+| **voice-analyst** | Voice bible pipeline: analyze exemplar texts + merge analyses into unified voice.md |
 | **perplexity-improver** | Rewrite flat prose using VS-Tail sampling |
 
 ### Commands
@@ -49,7 +43,6 @@ Creative writing workflows for fiction development: prose craft, worldbuilding, 
 | **novel-state** | Directory structure documentation for manuscript state tracking (bible/state/timeline pattern) |
 | **languagetool** | Grammar and style checking via local LanguageTool server |
 | **book-export** | Professional PDF/ePub export with styling profiles |
-| **book-maker** | Python-based markdown converter with custom fonts |
 | **style-analyzer** | Quantified prose analysis for voice.md generation (sentence metrics, dialogue, vocabulary, forbidden patterns) |
 
 ### Modules
@@ -74,12 +67,12 @@ The `chapter-creation` recipe (v1.1) includes a perplexity gate:
 
 ```
 @chapter-requested
-  → consistency-checker (continuity clear?)
+  → continuity-reviewer (continuity clear?)
   → outline-architect (structure)
   → [CHECKPOINT: approve outline]
   → prose-writer (Draft 1)
   → perplexity-gate (flat prose check)     ← NEW
-    → if FAIL: diversity-rewriter (VS-Tail)
+    → if FAIL: perplexity-improver (VS-Tail)
     → re-check (max 3 iterations)
   → developmental-editor (structural review)
   → [CHECKPOINT: approve structure]
@@ -136,7 +129,7 @@ Work/novel/
 ### Agent Dispatch Order
 
 1. **outline-architect** - Structure before prose
-2. **consistency-checker** - Verify continuity
+2. **continuity-reviewer** - Verify continuity (pre-writing gate)
 3. **prose-writer** - Generate drafts
 4. **perplexity-gate** - Check for flat prose
 5. **developmental-editor** - Structural review
@@ -178,7 +171,7 @@ If using the asha plugin for Memory Bank:
 - Location details in `Vault/World/` or `Work/novel/bible/world/`
 - Timeline tracking in `Vault/Docs/` or `Work/novel/timeline/`
 
-The consistency-checker queries these locations.
+The continuity-reviewer queries these locations.
 
 ## Version History
 

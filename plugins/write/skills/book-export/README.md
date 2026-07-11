@@ -11,6 +11,7 @@ Use the book-export skill to export [file] as [profile]
 ```
 
 **Examples**:
+
 ```
 Use the book-export skill to export Callum_Ch01.md as manuscript-draft
 Use the book-export skill to create beta-reader-pdf from Example_Novel.md
@@ -37,11 +38,13 @@ Use the book-export skill to generate publication-ebook for manuscript.md
 ## Requirements
 
 **PDF Export**:
+
 - LaTeX distribution (TeX Live, MiKTeX)
 - Lora font installed (or alternative serif font)
 - XeLaTeX engine (`xelatex --version`)
 
 **ePub Export**:
+
 - Pandoc MCP (already available)
 - Optional: EPUBCheck for validation
 - Optional: Lora font files for embedding
@@ -50,6 +53,8 @@ Use the book-export skill to generate publication-ebook for manuscript.md
 
 - `SKILL.md` - Complete documentation with all profiles, parameters, standards
 - `README.md` - This quick reference
+- `scripts/book_maker.py` - pypandoc converter with custom font embedding (PDF+ePub in one run; absorbed from the retired book-maker skill)
+- `scripts/latex_styles.tex`, `scripts/epub_styles.css`, `scripts/fonts/` - Styling and embeddable fonts for the script
 
 ## See Also
 

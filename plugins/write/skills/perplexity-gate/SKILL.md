@@ -147,7 +147,7 @@ Nine methods for improving perplexity:
 |-------|--------------|
 | **ai-detector** | Deprecated for this use case. Use perplexity-gate for local measurement |
 | **prose-analysis** | Complementary. prose-analysis = subjective craft; perplexity-gate = objective metrics |
-| **consistency-checker** | Sequential. Consistency runs first, perplexity-gate runs after draft generation |
+| **continuity-reviewer** | Sequential. Continuity runs first, perplexity-gate runs after draft generation |
 
 ## Limitations
 
@@ -160,7 +160,7 @@ Nine methods for improving perplexity:
 **What this does NOT measure**:
 
 - Prose quality (textured prose can still be bad)
-- Narrative coherence (use consistency-checker)
+- Narrative coherence (use continuity-reviewer)
 - Voice adherence (use prose-analysis --voice)
 - Craft issues (use prose-analysis --craft)
 

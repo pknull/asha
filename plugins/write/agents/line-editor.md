@@ -192,7 +192,7 @@ READY TO PUBLISH: YES / NO
 Works with:
 - **developmental-editor**: Receives approval before starting
 - **prose-writer**: May return for voice pass if issues significant
-- **consistency-checker**: Flags if edits create continuity issues
+- **continuity-reviewer**: Flags if edits create continuity issues
 
 ## Anti-Patterns
 

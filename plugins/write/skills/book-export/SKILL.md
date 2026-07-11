@@ -11,6 +11,7 @@ Export fiction manuscripts to professional book formats (PDF, ePub) with researc
 ## What This Does
 
 Wraps the Pandoc MCP (`mcp__mcp-pandoc__convert-contents`) with professional publishing standards for fiction books:
+
 - Research-informed formatting profiles (manuscript draft → publication-ready)
 - Automatic profile selection based on use case
 - Fiction-specific conventions (chapter breaks, scene markers, front matter)
@@ -36,9 +37,11 @@ Use the book-export skill for beta reader ePub
 ## Profiles
 
 ### 1. manuscript-draft
+
 **Use Case**: Internal review, quick iteration
 **Output**: PDF
 **Specifications**:
+
 - Page size: A4 (21 × 29.7 cm)
 - Font: Lora 12pt
 - Spacing: Double-spaced (2.0)
@@ -47,6 +50,7 @@ Use the book-export skill for beta reader ePub
 - Chapter breaks: New page, centered
 
 **Pandoc Parameters**:
+
 ```yaml
 pdf-engine: xelatex
 geometry:
@@ -58,9 +62,11 @@ mainfont: "Lora"
 ```
 
 ### 2. beta-reader-pdf
+
 **Use Case**: Beta reader distribution, comfortable reading
 **Output**: PDF
 **Specifications**:
+
 - Page size: 6" × 9" (15.24 × 22.86 cm) - professional fiction standard
 - Font: Lora 11pt
 - Spacing: 1.5 line spacing
@@ -69,6 +75,7 @@ mainfont: "Lora"
 - Chapter breaks: New page, centered
 
 **Pandoc Parameters**:
+
 ```yaml
 pdf-engine: xelatex
 geometry:
@@ -81,9 +88,11 @@ mainfont: "Lora"
 ```
 
 ### 3. beta-reader-epub
+
 **Use Case**: Digital beta reader distribution
 **Output**: ePub3
 **Specifications**:
+
 - Fonts: Lora embedded
 - CSS: Minimal styling, 1.5em first-line indent, 1.5 line-height
 - Cover: Optional
@@ -91,6 +100,7 @@ mainfont: "Lora"
 - Scene breaks: Centered `***`
 
 **Pandoc Parameters**:
+
 ```yaml
 css: beta-reader.css
 epub-cover-image: cover.jpg (if provided)
@@ -103,6 +113,7 @@ toc: true
 ```
 
 **CSS Specifications** (beta-reader.css):
+
 ```css
 body {
   font-family: "Lora", Georgia, serif;
@@ -135,9 +146,11 @@ h1 {
 ```
 
 ### 4. publication-print
+
 **Use Case**: KDP/IngramSpark print-ready
 **Output**: PDF (press-ready)
 **Specifications**:
+
 - Page size: 6" × 9"
 - Font: Lora 11pt
 - Spacing: 1.5 line spacing
@@ -150,6 +163,7 @@ h1 {
 - Chapter breaks: New page, centered 1/3 down page
 
 **Pandoc Parameters**:
+
 ```yaml
 pdf-engine: xelatex
 template: print-template.latex
@@ -167,14 +181,17 @@ toc: true
 ```
 
 **Requirements**:
+
 - Metadata file (metadata.yaml) with copyright, ISBN, BISAC codes
 - Custom LaTeX template for headers/footers
 - Front matter structure (copyright, dedication, etc.)
 
 ### 5. publication-ebook
+
 **Use Case**: Amazon/Apple/Kobo distribution
 **Output**: ePub3
 **Specifications**:
+
 - Fonts: System defaults (Georgia fallback) - respects reader preferences
 - CSS: Minimal, relative units only
 - Line height: 1.5 (1.2 minimum for Kindle compatibility)
@@ -183,6 +200,7 @@ toc: true
 - Validation: EPUBCheck required post-export
 
 **Pandoc Parameters**:
+
 ```yaml
 epub-cover-image: cover-2560x1600.jpg
 css: publication.css
@@ -191,6 +209,7 @@ toc-depth: 1
 ```
 
 **CSS Specifications** (publication.css):
+
 ```css
 /* Minimal styling - respect reader preferences */
 body {
@@ -238,6 +257,7 @@ p {
 ```
 
 **Post-Processing Required**:
+
 ```bash
 # Validate ePub
 java -jar epubcheck.jar output.epub
@@ -263,10 +283,12 @@ ebook-convert output.epub output.mobi
 ## Parameters
 
 ### Required
+
 - `input_file` - Source markdown file path
 - `profile` - Export profile name (see Profiles section)
 
 ### Optional
+
 - `output_file` - Custom output filename (default: derived from input + profile)
 - `metadata_file` - YAML metadata file for publication profiles
 - `cover_image` - Cover image path for ePub exports
@@ -314,15 +336,18 @@ First paragraph after break (no indent).
 ```
 
 **Heading Hierarchy**:
+
 - `#` - Book title (appears once at start)
 - `##` - Part/section divisions
 - `###` - Chapter titles (triggers page breaks in PDF)
 
 **Scene Breaks**:
+
 - Use centered `***` or `#` for scene breaks
 - Markdown: `***` on its own line, or wrap in div: `<div class="scene-break">***</div>`
 
 **First Paragraphs**:
+
 - After chapter breaks: No indent (automatic in CSS)
 - After scene breaks: No indent (use `.no-indent` class if needed)
 
@@ -331,17 +356,20 @@ First paragraph after break (no indent).
 **Lora Font** (required for PDF profiles):
 
 **macOS**:
+
 ```bash
 brew tap homebrew/cask-fonts
 brew install font-lora
 ```
 
 **Ubuntu/Debian**:
+
 ```bash
 sudo apt-get install fonts-lora
 ```
 
 **Manual Installation**:
+
 1. Download Lora from Google Fonts: https://fonts.google.com/specimen/Lora
 2. Install TTF files to system fonts directory
 3. Verify: `fc-list | grep Lora`
@@ -351,6 +379,7 @@ sudo apt-get install fonts-lora
 ### With Metadata File (publication profiles)
 
 Create `metadata.yaml`:
+
 ```yaml
 ---
 title: "Example Novel"
@@ -380,6 +409,7 @@ category:
 ```
 
 **Usage**:
+
 ```
 Use book-export skill with metadata.yaml to create publication-print from Example_Novel.md
 ```
@@ -393,14 +423,43 @@ Use book-export skill to export chapter.md as beta-reader-pdf to /path/to/output
 ### Multiple Chapters
 
 For multi-file books, concatenate before export:
+
 ```bash
 cat chapters/*.md > complete-manuscript.md
 # Then use skill on complete-manuscript.md
 ```
 
+### Custom Font Embedding (pypandoc script)
+
+For custom/Unicode font embedding without the Pandoc MCP — or to generate PDF and ePub in a single run — use the bundled pypandoc script (absorbed from the retired book-maker skill):
+
+```bash
+# Generates {basename}.pdf AND {basename}.epub in the current directory
+python3 scripts/book_maker.py input.md
+python3 scripts/book_maker.py input.md "My Book"   # custom output basename
+```
+
+**How it embeds fonts**: the script scans its `scripts/fonts/` directory for `.ttf`/`.otf` files matching the requested font name (default: Quivira). For PDF it uses XeLaTeX with `scripts/latex_styles.tex`; for ePub it passes each matched font file via `--epub-embed-font` and applies `scripts/epub_styles.css`. Drop additional font files into `scripts/fonts/` to make them embeddable.
+
+**Bundled resources**:
+
+| File | Purpose |
+|------|---------|
+| `scripts/book_maker.py` | Conversion script (pypandoc, PDF+ePub in one run) |
+| `scripts/latex_styles.tex` | PDF styling (XeLaTeX include-in-header) |
+| `scripts/epub_styles.css` | ePub styling |
+| `scripts/fonts/Quivira.otf` | Unicode-complete font (default) |
+| `scripts/fonts/GoudyBookletter1911.otf` | Classic book font |
+| `scripts/requirements.txt` | Python dependencies (pypandoc) |
+
+**Requirements**: Python 3.x, `pip install pypandoc`, XeLaTeX (`sudo apt install texlive-xetex`).
+
+**When to prefer it over the profiles**: you need both formats from one command, you need specific Unicode coverage (Quivira), or the Pandoc MCP is unavailable. For professional publishing profiles (KDP, IngramSpark), use the profiles above.
+
 ## Output
 
 Returns:
+
 - Conversion success/failure status
 - Output file location (absolute path)
 - File size of generated document
@@ -413,6 +472,7 @@ Returns:
 **Based on research findings**:
 
 **Print Standards**:
+
 - 6" × 9" is industry standard for fiction novels
 - Gutter margins scale with page count (0.375"-0.875")
 - Chapter breaks MUST start new page
@@ -420,6 +480,7 @@ Returns:
 - Scene breaks: Centered ornament or `***`
 
 **ePub Standards**:
+
 - Respect reader preferences (no forced fonts for publication)
 - Relative units only (em, rem, %)
 - Line-height ≥1.2 for Kindle compatibility
@@ -427,6 +488,7 @@ Returns:
 - EPUBCheck validation required
 
 **Metadata Standards**:
+
 - ISBN-13 format (13 digits with hyphens)
 - BISAC codes: Up to 3, most specific categories
 - Copyright page: © symbol, year, rights statement, fiction disclaimer
@@ -435,18 +497,22 @@ Returns:
 ## Troubleshooting
 
 **"Font not found" error**:
+
 - Install Lora font (see Font Installation section)
 - Or edit profile to use different font: `-V mainfont="Times New Roman"`
 
 **"PDF engine failed"**:
+
 - Ensure LaTeX installed (TeX Live, MiKTeX)
 - Verify `xelatex` command available: `xelatex --version`
 
 **ePub validation failures**:
+
 - Run EPUBCheck: `java -jar epubcheck.jar output.epub`
 - Common issues: Missing cover, broken internal links, invalid metadata
 
 **Chapter breaks not working**:
+
 - Verify markdown uses `###` for chapter headings
 - Check heading hierarchy (# → ## → ### progression)
 
