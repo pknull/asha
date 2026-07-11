@@ -12,6 +12,11 @@ set -euo pipefail
 #     and inject a <system-reminder> when the correction is ≥10% diff. This is
 #     intervention (modifies the model's input) and has no transcript-tail
 #     equivalent.
+#   - While Work/markers/rp-active exists (and Work/markers/rp-hook-off does
+#     not), inject the per-turn RP routing directive so the main loop spawns
+#     the isolated roleplay-gm orchestrator instead of voicing NPCs from its
+#     accumulated context. LanguageTool refinement stays skipped during RP —
+#     the Keeper's in-character prose must not be rewritten.
 
 # Source common utilities
 source "$(dirname "$0")/common.sh"
@@ -42,9 +47,31 @@ if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
     exit 0
 fi
 
-# Skip everything during RP sessions
+# During RP sessions: skip capture and LanguageTool refinement, but re-assert
+# the RP routing directive every turn — the one-shot /rp setup scrolls out of
+# the model's attention; this injection cannot. Kill-switch: touch
+# Work/markers/rp-hook-off to suppress the directive without editing code.
 if [[ -f "$PROJECT_DIR/Work/markers/rp-active" ]]; then
-    user_prompt_submit_noop
+    if [[ -f "$PROJECT_DIR/Work/markers/rp-hook-off" ]]; then
+        user_prompt_submit_noop
+        exit 0
+    fi
+
+    INPUT=$(cat)
+    PROMPT=$(echo "$INPUT" | jq -r '.prompt // empty' 2>/dev/null || true)
+
+    # Malformed or empty stdin: no-op rather than risk clobbering the turn
+    # with an empty {prompt: ""} passthrough.
+    if [[ -z "$PROMPT" || "$PROMPT" == "null" ]]; then
+        user_prompt_submit_noop
+        exit 0
+    fi
+
+    user_prompt_submit_rp_routing
+    if user_prompt_submit_stops_after_injection; then
+        exit 0
+    fi
+    user_prompt_submit_final_prompt "$PROMPT"
     exit 0
 fi
 
@@ -161,7 +188,7 @@ except Exception as e:
                     # invalid JSON. Emit the fragment and stop before the
                     # final Claude-only response below.
                     user_prompt_submit_correction "$REFINED"
-                    if user_prompt_submit_stops_after_correction; then
+                    if user_prompt_submit_stops_after_injection; then
                         exit 0
                     fi
                 fi
