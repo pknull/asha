@@ -112,7 +112,7 @@ Just runs Socratic Q&A workflow for requirements crystallization. No decompositi
 - Analyzes topic to determine needed expertise
 - Scores available agent library (0-10) for capability match
 - Recruits 2-5 specialist agents with session-specific names
-- Deploys `agent-fabricator` if capability gaps detected
+- Deploys `fabricator` if capability gaps detected
 - **Question**: "Who has CAPABILITY?"
 
 **The Challenger** (Opposition & Quality Gate)
@@ -153,6 +153,15 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 - **Agent role** describes what it does (e.g., `prose-analysis`)
 - **Session name** describes who it becomes for this panel (e.g., "The Editor")
 - Names should be evocative, contextual, and domain-appropriate
+
+## Role Execution Model (Harness-Aware)
+
+Panel roles ship as real agents (`plugins/panel/agents/`) and execute in one of two modes:
+
+- **Spawned** (preferred when the harness supports subagents, e.g. Claude Code's Agent tool): deploy `thinker`, `questioner`, `examiner`, `codifier`, `recruiter`, or `fabricator` as subagents for their phases. Recruited specialists likewise spawn from the agent library.
+- **Inline** (fallback on harnesses without subagent spawning, or when a spawn fails): the session performs the role directly, following the same agent file's protocol and the character docs in `plugins/panel/docs/characters/`. Phase outputs and persistence obligations are identical in both modes.
+
+State which mode each role ran in within the phase files (one word: spawned/inline).
 
 ## Full Pipeline Protocol (Default)
 
@@ -224,7 +233,7 @@ Standard panel protocol with decomposition context injected.
   - 1-3: Poor match, inefficient
   - 0: No coverage, gap identified
 - Assign specialists with session-specific names (e.g., `prose-analysis` → "The Editor")
-- Deploy `agent-fabricator` if gaps detected (no agent scores >4)
+- Deploy `fabricator` if gaps detected (no agent scores >4)
 - Set decision rule (consensus default, unanimous for security)
 - Infer primary goals from topic context
 - **Write phase file**: `phase-00-recruitment.md`
@@ -557,7 +566,7 @@ The `--context` flag pre-loads reference material before panel deliberation:
 - Names should reflect domain context and analytical role
 
 **Gap Detection & Agent Creation**:
-If no agent scores >4 for required capability → Analyst deploys `agent-fabricator` to create new specialized agent during Phase -1.
+If no agent scores >4 for required capability → Analyst deploys `fabricator` to create new specialized agent during Phase -1.
 
 ## Character Files
 
