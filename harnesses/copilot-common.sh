@@ -89,7 +89,12 @@ for line in fm.split("\n"):
             out_lines.append(line)
 
 new_fm = "\n".join(out_lines)
-sys.stdout.write(f"---\n{new_fm}\n---\n{body}")
+preamble = """## Copilot harness adapter
+
+This file was rendered from an Asha command source. Treat slash-command and Claude `Task` references below as workflow intent, not literal Copilot tool names. When the workflow asks for agents, use Copilot agents when available; otherwise execute the same phases inline and preserve the output contract.
+
+"""
+sys.stdout.write(f"---\n{new_fm}\n---\n{preamble}{body}")
 PYEOF
 )"
 

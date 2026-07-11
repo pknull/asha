@@ -1913,7 +1913,7 @@ touch "$TEST91_DIR/Work/markers/rp-active"
 export CLAUDE_PROJECT_DIR="$TEST91_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
+OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
 
 # LanguageTool must remain skipped in RP: the correction marker is only
 # touched on the refinement path, so its absence proves the skip held.
@@ -2318,13 +2318,17 @@ CODEX_TMP="$(mktemp -d)"
 CODEX_OK=1
 CODEX_WHY=""
 printf '[features]\nhooks = true\n' > "$CODEX_TMP/config.toml"
-if ! CODEX_HOME="$CODEX_TMP" "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP/install.err"; then
+mkdir -p "$CODEX_TMP/asha"
+printf '{}\n' > "$CODEX_TMP/asha/config.json"
+if ! CODEX_HOME="$CODEX_TMP" ASHA_CONFIG="$CODEX_TMP/asha/config.json" "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP/install.err"; then
     CODEX_OK=0
     CODEX_WHY=" install-failed:$(cat "$CODEX_TMP/install.err")"
-elif ! python3 - "$CODEX_TMP/config.toml" "$CODEX_TMP/rules/asha.rules" <<'PY' >/dev/null 2>"$CODEX_TMP/check.err"
+elif ! python3 - "$CODEX_TMP/config.toml" "$CODEX_TMP/rules/asha.rules" "$CODEX_TMP/agents/session-loop-operator.toml" "$CODEX_TMP/skills/session-save/SKILL.md" <<'PY' >/dev/null 2>"$CODEX_TMP/check.err"
 import pathlib, sys, tomllib
 config = pathlib.Path(sys.argv[1])
 rules = pathlib.Path(sys.argv[2])
+agent = pathlib.Path(sys.argv[3])
+skill = pathlib.Path(sys.argv[4])
 text = config.read_text()
 tomllib.loads(text)
 assert '[[hooks.PreToolUse]]' in text
@@ -2334,6 +2338,11 @@ rule_text = rules.read_text()
 assert 'prefix_rule(' in rule_text
 assert 'pattern = ["git", "reset", "--hard"]' in rule_text
 assert 'pattern = ["find", "/home"]' in rule_text
+agent_data = tomllib.loads(agent.read_text())
+assert agent_data["name"] == "loop-operator"
+assert "developer_instructions" in agent_data
+skill_text = skill.read_text()
+assert "## Codex harness adapter" in skill_text
 PY
 then
     CODEX_OK=0

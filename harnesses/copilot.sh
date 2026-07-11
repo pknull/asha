@@ -14,7 +14,7 @@
 #   3. PermissionRequest events have no Copilot analog (currently dropped + warned)
 #   4. Hook stdin/stdout JSON contract field names (e.g. tool_name vs toolName)
 #   5. Veto semantics — exit-code-2 vs {decision:"block"} return payload
-#   6. Agent files: using bare .md extension; conventional Copilot is .agent.md
+#   6. Agent files: generated .agent.md files with Copilot-clean frontmatter
 #   7. ${CLAUDE_PLUGIN_ROOT} substitution semantics (assumed identical to Claude)
 #
 # When verification happens, the seam to update is _copilot_translate_event,
@@ -176,11 +176,9 @@ copilot_install_command_skills() {
 
 # _copilot_emit_command_skill moved to copilot-common.sh (shared with build).
 
-# Install agent MD files. Best-effort symlinking — Copilot either picks them up
-# or ignores them. Multi-agent YAML schema is unverified.
-#
-# TODO: Copilot agent files conventionally use `.agent.md` extension; deferred
-# until verified — currently using bare `.md`.
+# Generate Copilot-native `.agent.md` files from Asha agent Markdown. Keep the
+# conversion path aligned with `asha build copilot`, so local installs and
+# packaged plugins expose the same agent shape.
 copilot_install_agents() {
   local plugin_dir="$1" ns="$2"
   _copilot_is_skip_plugin "$plugin_dir" && return 0
@@ -196,8 +194,23 @@ copilot_install_agents() {
   ensure_dir "$COPILOT_AGENTS_DIR"
   for agent in "$src_dir"/*.md; do
     [[ -f "$agent" ]] || continue
-    local agent_name; agent_name="$(basename "$agent")"
-    mklink "$agent" "$COPILOT_AGENTS_DIR/${ns}-${agent_name}" "copilot-agent"
+    local base declared_name dest legacy existing
+    base="$(basename "$agent" .md)"
+    declared_name="$(_copilot_skill_name_from_md "$agent")"
+    [[ -n "$declared_name" ]] || declared_name="$base"
+    dest="$COPILOT_AGENTS_DIR/${ns}-${declared_name}.agent.md"
+
+    # Clean legacy bare-markdown symlink for this source if present.
+    legacy="$COPILOT_AGENTS_DIR/${ns}-${base}.md"
+    if [[ -L "$legacy" ]]; then
+      existing="$(resolve_path "$legacy" 2>/dev/null || true)"
+      if [[ "$existing" == "$(resolve_path "$agent")" ]]; then
+        [[ $DRY_RUN -eq 1 ]] || rm -f "$legacy"
+        log "[copilot] removed legacy markdown agent symlink: $legacy"
+      fi
+    fi
+
+    _copilot_emit_agent_md "$agent" "$dest"
   done
 }
 
@@ -464,6 +477,29 @@ copilot_uninstall() {
     n="$(remove_symlinks_under "$COPILOT_AGENTS_DIR" 1)"
     [[ "$n" -gt 0 ]] && say "[copilot] removed $n agent symlink(s) from $COPILOT_AGENTS_DIR"
     total=$((total + n))
+
+    local removed_generated_agents=0
+    while IFS= read -r agent; do
+      [[ -f "$agent" ]] || continue
+      local plugin_dir ns declared_name base dest
+      plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
+      ns="$(ns_for "$plugin_dir")"
+      base="$(basename "$agent" .md)"
+      declared_name="$(_copilot_skill_name_from_md "$agent")"
+      [[ -n "$declared_name" ]] || declared_name="$base"
+      dest="$COPILOT_AGENTS_DIR/${ns}-${declared_name}.agent.md"
+      if [[ -f "$dest" && ! -L "$dest" ]]; then
+        if [[ $DRY_RUN -eq 1 ]]; then
+          info "  RM (generated agent)  $dest"
+        else
+          rm -f "$dest"
+          log "removed generated Copilot agent: $dest"
+        fi
+        removed_generated_agents=$((removed_generated_agents+1))
+      fi
+    done < <(find "$PLUGINS_DIR" -mindepth 3 -maxdepth 3 -path '*/agents/*.md' -type f 2>/dev/null)
+    [[ $removed_generated_agents -gt 0 ]] && say "[copilot] removed $removed_generated_agents generated agent file(s)"
+    total=$((total + removed_generated_agents))
   fi
 
   # Asha's dedicated guardrails file (the current install path).
