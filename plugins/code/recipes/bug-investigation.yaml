@@ -32,7 +32,7 @@ agents:
     output: "@fix-implemented"
     checkpoint: false
 
-  - name: code-reviewer
+  - name: reviewer
     role: Verify fix doesn't introduce new issues
     model: sonnet
     trigger: "@fix-implemented"
@@ -69,7 +69,7 @@ flow:
 
     - from: "@fix-implemented"
       to: "@review-passed"
-      agent: code-reviewer
+      agent: reviewer
 
     - from: "@review-passed"
       to: "@ready-to-merge"
@@ -88,7 +88,7 @@ flow:
 failure:
   max_retries: 3
   on_blocked: escalate_to_user
-  record_to_reasoning_bank: true
+  record_learnings: true  # outcomes recorded to ~/.asha/learnings (OKF bundle)
 
 checkpoints:
   root-cause-confirmation:

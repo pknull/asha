@@ -54,7 +54,7 @@ flow:
 failure:
   max_retries: 3
   on_blocked: escalate_to_user | skip | abort
-  record_to_reasoning_bank: true
+  record_learnings: true  # outcomes recorded to ~/.asha/learnings (OKF bundle)
 ```
 
 ### Transition Types

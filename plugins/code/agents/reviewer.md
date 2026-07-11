@@ -132,6 +132,8 @@ If your first pass finds nothing, you probably missed something:
 
 Works with:
 
-- `security-auditor` for deep security analysis
-- `build-error-resolver` for fixing issues found
+- a second `reviewer` pass (security focus) for deep security analysis
+- `general-purpose` for fixing issues found
 - `refactor-cleaner` for addressing code quality concerns
+
+On harnesses without subagent spawning, execute these follow-up phases inline.

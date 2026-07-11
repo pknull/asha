@@ -80,7 +80,9 @@ Summary: 2/3 checks passed
 
 ## Configuration
 
-Create `.claude/verify.yaml` to customize (optional):
+Verification config comes from `verify.yaml` at the project root. When absent, checks fall back to the conventions documented in `Memory/techEnvironment.md` (languages, toolchains, thresholds).
+
+Create `verify.yaml` to customize (optional):
 
 ```yaml
 level: standard

@@ -15,7 +15,7 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 /orchestrate bugfix "Fix race condition in cache"
 /orchestrate refactor "Extract payment module"
 /orchestrate security "Audit API endpoints"
-/orchestrate custom "architect,[tdd,code-reviewer],security-auditor" "Redesign caching"
+/orchestrate custom "general-purpose,[tdd,reviewer],reviewer" "Redesign caching"  # final reviewer: security focus
 
 # Tier override (skip Phase 0 inference):
 /orchestrate --tier=high feature "Refactor namespace registry"
@@ -26,10 +26,10 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 
 | Type | Phases | Notes |
 |------|--------|-------|
-| `feature` | `architect` → `tdd` → `[code-reviewer, security-auditor]` | Design, test, parallel review |
-| `bugfix` | `debugger` → `tdd` → `code-reviewer` | Investigate, test fix, review |
-| `refactor` | `architect` → `refactor-cleaner` → `[code-reviewer, security-auditor]` | Plan, clean, parallel review |
-| `security` | `[security-auditor, code-reviewer]` → `architect` | Parallel audit, then remediation plan |
+| `feature` | `general-purpose` (design charge) → `tdd` → `[reviewer, reviewer (security focus)]` | Design, test, parallel review |
+| `bugfix` | `debugger` → `tdd` → `reviewer` | Investigate, test fix, review |
+| `refactor` | `general-purpose` (design charge) → `refactor-cleaner` → `[reviewer, reviewer (security focus)]` | Plan, clean, parallel review |
+| `security` | `[reviewer (security focus), reviewer]` → `general-purpose` (remediation-plan charge) | Parallel audit, then remediation plan |
 | `custom` | User-specified | Use brackets for parallel groups |
 
 ## Phase Notation
@@ -40,14 +40,14 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 Example custom workflow:
 
 ```
-/orchestrate custom "architect,[backend-dev,frontend-dev],[code-reviewer,security-auditor]" "Build dashboard"
+/orchestrate custom "general-purpose,[backend-dev,frontend-dev],[reviewer,reviewer]" "Build dashboard"
 ```
 
 This runs:
 
-1. `architect` (sequential)
+1. `general-purpose` (sequential, design charge)
 2. `backend-dev` + `frontend-dev` (parallel)
-3. `code-reviewer` + `security-auditor` (parallel)
+3. `reviewer` + `reviewer` (parallel — charge one with security focus)
 
 ## Phase 0: Routing (always runs first)
 
@@ -62,7 +62,7 @@ Before any agent work, classify the task by complexity and select the implementa
 3. Apply tier rules:
    - **Trivial** → Haiku
    - **Low / Medium** → Sonnet
-   - **High** → Opus plan-review (architect agent) prepended, then Sonnet implementation
+   - **High** → Opus plan-review (`general-purpose`, design charge) prepended, then Sonnet implementation
 4. Honor `--tier=X` user override; skip inference and note `(user override)` in declaration
 
 ### Tier escalation triggers (any one promotes to High)
@@ -84,9 +84,11 @@ Model:  {Haiku|Sonnet|Opus+Sonnet}
 Reason: {one-line justification — cite path matches, scope, or override}
 ```
 
-For **High** tier: prepend `architect` (Opus) to the workflow as a plan-review phase. The architect produces a design handoff; Sonnet implements against it.
+For **High** tier: prepend `general-purpose` (Opus, design charge) to the workflow as a plan-review phase. The design phase produces a design handoff; Sonnet implements against it.
 
 ## Execution Protocol
+
+> **Harness note**: On Claude, phases MAY spawn subagents in parallel via the Agent tool. On harnesses without subagent spawning, execute each phase sequentially inline (same prompts, same charges). Output contracts are identical either way.
 
 ### Sequential Phase
 
@@ -109,13 +111,13 @@ For agents in brackets `[a, b, c]`:
 ```
 // CORRECT - parallel execution
 <message>
-  <Task agent="code-reviewer" .../>
-  <Task agent="security-auditor" .../>
+  <Task agent="reviewer" .../>            // code-quality charge
+  <Task agent="reviewer" .../>            // security-focus charge
 </message>
 
 // WRONG - sequential execution
-<message><Task agent="code-reviewer" .../></message>
-<message><Task agent="security-auditor" .../></message>
+<message><Task agent="reviewer" .../></message>
+<message><Task agent="reviewer" .../></message>
 ```
 
 ## Subagent Return Contract (REQUIRED)
@@ -162,8 +164,8 @@ Between phases, write the handoff to a **file** in the orchestration scratch dir
 
 **Richer phases write named artifacts** (per the contract), also in the scratch dir:
 
-- `architect` / design phases -> `plan-summary.md` (Goal, Approach, Interfaces, Open decisions, Out of scope).
-- `code-reviewer` / `security-auditor` -> `review-findings.md` (Verdict `SHIP|NEEDS WORK|BLOCKED`, Critical issues w/ file:line, Concerns, Nits, False-positive log). Parallel reviewers each write their own (`review-findings-code.md`, `review-findings-security.md`); orchestrator merges.
+- Design phases (`general-purpose`, design charge) -> `plan-summary.md` (Goal, Approach, Interfaces, Open decisions, Out of scope).
+- `reviewer` (code-quality and security-focus runs) -> `review-findings.md` (Verdict `SHIP|NEEDS WORK|BLOCKED`, Critical issues w/ file:line, Concerns, Nits, False-positive log). Parallel reviewers each write their own (`review-findings-code.md`, `review-findings-security.md`); orchestrator merges.
 
 ### Implementer self-review (REQUIRED before review phase)
 
@@ -187,12 +189,12 @@ This declaration is the calibration signal — the review phase compares it agai
 For parallel phase outputs, merge into single handoff:
 
 ```markdown
-## HANDOFF: [code-reviewer + security-auditor] → next
+## HANDOFF: [reviewer (code) + reviewer (security)] → next
 
-### code-reviewer Findings
+### reviewer (code) Findings
 [Summary]
 
-### security-auditor Findings
+### reviewer (security) Findings
 [Summary]
 
 ### Combined Recommendations
@@ -206,13 +208,13 @@ ORCHESTRATION REPORT
 ====================
 Workflow: feature
 Task: Add user authentication
-Phases: architect → tdd → [code-reviewer, security-auditor]
+Phases: general-purpose (design) → tdd → [reviewer, reviewer (security)]
 
 PHASE RESULTS
-1. architect: [summary]
+1. general-purpose (design): [summary]
 2. tdd: [summary]
-3. code-reviewer: [summary] (parallel)
-   security-auditor: [summary] (parallel)
+3. reviewer (code): [summary] (parallel)
+   reviewer (security): [summary] (parallel)
 
 FILES CHANGED
 [List]
@@ -221,8 +223,8 @@ TEST RESULTS
 [Pass/fail, coverage]
 
 ISSUES FOUND
-- [code-reviewer] Issue 1
-- [security-auditor] Issue 2
+- [reviewer/code] Issue 1
+- [reviewer/security] Issue 2
 
 RECOMMENDATION
 [SHIP | NEEDS WORK | BLOCKED]
@@ -260,20 +262,17 @@ Sustained false-positive rate (claimed=ready AND review=fail) above ~25% means t
 
 | Agent | Purpose |
 |-------|---------|
-| `architect` | Design, planning, structure |
+| `general-purpose` | Design/planning (design charge), language-specific implementation, build fixes |
+| `thinker` | Requirements breakdown, approach planning |
 | `tdd` | Test-driven development |
-| `code-reviewer` | Code quality review |
-| `security-auditor` | Security analysis |
+| `reviewer` | Code quality review; security analysis when charged with security focus |
 | `debugger` | Bug investigation |
-| `refactor-cleaner` | Code cleanup |
-| `typescript-pro` | TypeScript specialist |
-| `python-pro` | Python specialist |
-| `build-error-resolver` | Build/type error fixes |
+| `refactor-cleaner` | Code cleanup and refactoring |
 
 ## Tips
 
-1. **Start with `architect`** for complex features — design before building
-2. **End with parallel review** — `[code-reviewer, security-auditor]` catches more issues
+1. **Start with a design phase** (`general-purpose`, design charge) for complex features — design before building
+2. **End with parallel review** — `[reviewer, reviewer (security focus)]` catches more issues
 3. **Use `tdd` early** — tests define the contract before implementation
 4. **Keep handoffs concise** — focus on what next phase needs, not full output
 5. **Custom for flexibility** — mix agents as needed for your specific task

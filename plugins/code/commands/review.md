@@ -22,6 +22,7 @@ Review local code changes with parallel specialized reviewers and validation.
 ### Step 1: Gather Changes
 
 Based on input:
+
 - **No args**: `git diff --cached` (staged changes only)
 - **Path provided**: Read the specified file(s)
 - **--all flag**: `git diff` (all uncommitted changes)
@@ -33,6 +34,7 @@ If no changes found, report and exit.
 Launch 4 Task agents **in parallel** (single message, multiple tool calls), each with a specialized focus:
 
 #### Security Reviewer
+
 ```
 Review this code for security issues:
 - Injection vulnerabilities (SQL, command, XSS)
@@ -48,6 +50,7 @@ List findings with file:line references. If none found, state "No security issue
 ```
 
 #### Logic Reviewer
+
 ```
 Review this code for logic errors:
 - Incorrect algorithms or calculations
@@ -63,6 +66,7 @@ List findings with file:line references. If none found, state "No logic issues i
 ```
 
 #### Edge Case Reviewer
+
 ```
 Review this code for edge case handling:
 - Null/undefined/empty inputs
@@ -78,6 +82,7 @@ List findings with file:line references. If none found, state "No edge case issu
 ```
 
 #### Style Reviewer
+
 ```
 Review this code for style and maintainability:
 - Unclear naming or confusing logic
@@ -97,6 +102,7 @@ List findings with file:line references. If none found, state "No style issues i
 After all reviewers complete, validate each finding:
 
 For each issue found, verify:
+
 1. **Existence**: Does the referenced code actually exist at that location?
 2. **Accuracy**: Does the finding correctly describe the issue?
 3. **Applicability**: Is this actually a problem in context, or a false positive?
@@ -132,6 +138,7 @@ Output format:
 ## Notes
 
 - Uses Task tool with subagent_type appropriate for code review
+- **Harness note**: On Claude, the four reviewers MAY run as parallel subagents via the Agent tool. On harnesses without subagent spawning, execute each review pass sequentially inline (same prompts). Output contracts are identical either way.
 - Parallel execution minimizes wait time
 - Validation pass reduces noise from false positives
 - For very large diffs (>1000 lines), recommend splitting the review

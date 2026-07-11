@@ -18,14 +18,14 @@ agents:
     output: "@refactor-plan-ready"
     checkpoint: true  # Approve deletion list before executing
 
-  - name: refactoring-specialist
+  - name: refactor-cleaner
     role: Execute refactoring transformations
     model: sonnet
     trigger: "@refactor-approved"
     output: "@refactor-complete"
     checkpoint: false
 
-  - name: code-reviewer
+  - name: reviewer
     role: Verify behavior preserved
     model: sonnet
     trigger: "@refactor-complete"
@@ -33,8 +33,8 @@ agents:
     checkpoint: false
     gate: code-review
 
-  - name: security-auditor
-    role: Check no security regressions
+  - name: reviewer
+    role: Check no security regressions (security focus)
     model: haiku
     trigger: "@review-passed"
     output: "@security-passed"
@@ -62,15 +62,16 @@ flow:
 
     - from: "@refactor-approved"
       to: "@refactor-complete"
-      agent: refactoring-specialist
+      agent: refactor-cleaner
 
     - from: "@refactor-complete"
       to: "@review-passed"
-      agent: code-reviewer
+      agent: reviewer
 
     - from: "@review-passed"
       to: "@security-passed"
-      agent: security-auditor
+      agent: reviewer
+      note: "security focus"
       condition: "touches security code"
 
     - from: "@review-passed"
@@ -89,12 +90,12 @@ flow:
     # Failure loop
     - from: "@changes-requested"
       to: "@refactor-complete"
-      agent: refactoring-specialist
+      agent: refactor-cleaner
 
 failure:
   max_retries: 3
   on_blocked: escalate_to_user
-  record_to_reasoning_bank: true
+  record_learnings: true  # outcomes recorded to ~/.asha/learnings (OKF bundle)
 
 checkpoints:
   deletion-approval:
