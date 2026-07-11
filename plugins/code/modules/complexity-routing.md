@@ -49,9 +49,11 @@ PHASE 0 — ROUTING
    Tier: {Trivial|Low|Medium|High}
    Model: {Haiku|Sonnet|Opus+Sonnet}
    Reason: {one-line justification}
-5. If High: insert `architect` (Opus) as first phase before implementation
+5. If High: insert `general-purpose` (Opus, design charge) as first phase before implementation
 6. If user provides --tier=X, use that tier and note "(user override)" in reason
 ```
+
+On harnesses without subagent spawning, execute the plan-review phase inline (same design charge); the tier declaration and handoff format are unchanged.
 
 ## Override syntax
 

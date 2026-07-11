@@ -11,12 +11,14 @@ Quality gates are **mandatory checkpoints** that block progression until passed.
 | Phase | Gate | Agent/Check | Blocking | Bypass |
 |-------|------|-------------|----------|--------|
 | Pre-Design | Prior Art | codebase-historian | Yes | "No prior art needed" |
-| Pre-Implementation | Design Approval | User or architect | Yes | Never |
-| Pre-Commit | Code Review | code-reviewer | Yes | Trivial changes (<10 lines) |
-| Pre-Commit | Security Scan | security-auditor | Yes (if auth/crypto/input) | Never for security-sensitive |
+| Pre-Implementation | Design Approval | User or general-purpose (design charge) | Yes | Never |
+| Pre-Commit | Code Review | reviewer | Yes | Trivial changes (<10 lines) |
+| Pre-Commit | Security Scan | reviewer (security focus) | Yes (if auth/crypto/input) | Never for security-sensitive |
 | Pre-Push | Build Passes | `build` command | Yes | Never |
 | Pre-Push | Tests Pass | `test` command | Yes | Never |
-| Pre-Merge (>500 lines) | Full Review | code-reviewer --thorough | Yes | Split into smaller PRs |
+| Pre-Merge (>500 lines) | Full Review | reviewer --thorough | Yes | Split into smaller PRs |
+
+Agent-named gates run as subagents on Claude; on harnesses without subagent spawning, execute the gate's phase inline with the same charge.
 
 ### Gate Protocol
 
@@ -64,6 +66,7 @@ Before generating plans or implementations, **step back and clarify intent**.
 ### Socratic Protocol
 
 **Phase 1: Understanding**
+
 ```
 Before planning, I want to understand the goal:
 
@@ -76,6 +79,7 @@ Before planning, I want to understand the goal:
 Wait for response. Do not assume answers.
 
 **Phase 2: Constraints**
+
 ```
 Understanding constraints:
 
@@ -88,6 +92,7 @@ Understanding constraints:
 **Phase 3: Chunked Presentation**
 
 When presenting designs:
+
 - Show in digestible chunks (3-5 points max per section)
 - Get sign-off on each chunk before proceeding
 - Do not present monolithic plans
@@ -120,6 +125,7 @@ Automatically adjust planning depth based on project complexity and risk.
 ### Planning Depth by Score
 
 **Quick Flow (Score 5-7)**:
+
 ```
 1. Clarify (1-2 questions max)
 2. Implement
@@ -130,6 +136,7 @@ Skip: formal design docs, architecture review, extensive test planning.
 Example: Bug fix, config change, documentation update.
 
 **Standard Flow (Score 8-11)**:
+
 ```
 1. Clarify (Socratic Phase 1)
 2. Design (1 chunk, informal)
@@ -142,6 +149,7 @@ Example: Bug fix, config change, documentation update.
 Example: New feature, refactoring, API changes.
 
 **Full Flow (Score 12-15)**:
+
 ```
 1. Clarify (Full Socratic protocol)
 2. Research (codebase-historian)
@@ -216,6 +224,7 @@ Verdict: APPROVED | CHANGES REQUESTED
 ### Why Two Stages?
 
 Single-pass reviews conflate "wrong feature" with "poorly written feature." Two stages ensure:
+
 1. We built the right thing (Stage 1)
 2. We built it right (Stage 2)
 

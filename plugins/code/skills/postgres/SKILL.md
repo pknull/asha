@@ -1,35 +1,25 @@
 ---
-name: database-reviewer
-description: PostgreSQL specialist for query optimization, schema design, RLS policies, and database security. Proactively reviews database code for performance and correctness.
-tools: Read, Write, Edit, Bash, Grep, Glob
-model: sonnet
+name: postgres
+description: "PostgreSQL review and design guidance: query optimization, EXPLAIN analysis, schema design, RLS policies, migration safety, database security. Use when writing or reviewing Postgres queries, schemas, RLS, or migrations."
 ---
 
-# Database Reviewer
+# PostgreSQL Review & Design Guidance
 
-## Purpose
+Reference guidance for PostgreSQL (including Supabase) work: query performance, schema design, Row Level Security, migration safety, and anti-patterns.
 
-PostgreSQL and Supabase specialist. Reviews database code for query performance, schema design, Row Level Security, and anti-patterns. Activates proactively when database-related code changes.
-
-## Deployment Criteria
-
-**Deploy when:**
+## When to Apply
 
 - SQL migrations or schema changes
-- Query optimization needed
+- Query optimization
 - RLS policy implementation
 - Database performance issues
 - Supabase project setup or modification
+- Files matching `*.sql`, `migrations/*`, `supabase/*`
+- ORM model changes (Prisma, Drizzle, TypeORM, SQLAlchemy)
 
-**Do NOT deploy when:**
+Not needed for application logic without database interaction, frontend-only changes, or documentation updates.
 
-- Application logic without database interaction
-- Frontend-only changes
-- Documentation updates
-
-## Core Capabilities
-
-### Query Performance
+## Query Performance
 
 - Identify missing indexes on WHERE/JOIN columns
 - Analyze execution plans (`EXPLAIN ANALYZE`)
@@ -37,7 +27,7 @@ PostgreSQL and Supabase specialist. Reviews database code for query performance,
 - Optimize composite index column ordering
 - Flag expensive operations (full table scans, implicit casts)
 
-### Schema Design
+## Schema Design
 
 | Recommendation | Rationale |
 |----------------|-----------|
@@ -53,7 +43,7 @@ PostgreSQL and Supabase specialist. Reviews database code for query performance,
 - NOT NULL where applicable
 - CHECK constraints for domain validation
 
-### Security & RLS
+## Security & RLS
 
 **Row Level Security protocol:**
 
@@ -63,7 +53,7 @@ PostgreSQL and Supabase specialist. Reviews database code for query performance,
 4. Restrict public schema permissions
 5. Audit service_role usage
 
-### Performance Optimization
+## Performance Optimization
 
 - Partial indexes for soft deletes (`WHERE deleted_at IS NULL`)
 - Covering indexes to eliminate table lookups
@@ -71,7 +61,7 @@ PostgreSQL and Supabase specialist. Reviews database code for query performance,
 - Batch inserts over individual statements
 - Short transaction windows (avoid long-held locks)
 
-## Workflow
+## Review Workflow
 
 ### Phase 1: Gather Context
 
@@ -129,16 +119,3 @@ For each query:
 | OFFSET pagination | O(n) performance | Cursor/keyset pagination |
 | Missing `WHERE` on UPDATE/DELETE | Catastrophic data loss risk | Always filter |
 | Unindexed foreign keys | Slow JOINs | Add indexes |
-
-## Integration
-
-**Coordinates with:**
-
-- `security-auditor`: For injection and access control issues
-- `code-reviewer`: For ORM usage patterns
-- `architect`: For schema design decisions
-
-**Trigger conditions:**
-
-- Files matching `*.sql`, `migrations/*`, `supabase/*`
-- ORM model changes (Prisma, Drizzle, TypeORM, SQLAlchemy)

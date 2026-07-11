@@ -12,15 +12,15 @@ agents:
     checkpoint: false
     gate: prior-art
 
-  - name: planner
+  - name: thinker
     role: Break down requirements, identify approach
     model: sonnet
     trigger: "@research-complete"
     output: "@needs-design"
     checkpoint: false
 
-  - name: architect
-    role: Design solution architecture
+  - name: general-purpose
+    role: Design solution architecture (design charge)
     model: opus
     trigger: "@needs-design"
     output: "@design-ready"
@@ -34,14 +34,14 @@ agents:
     output: "@tests-written"
     checkpoint: false
 
-  - name: typescript-pro  # or python-pro, etc.
+  - name: general-purpose  # language-specific implementation charge
     role: Implement to pass tests
     model: sonnet
     trigger: "@tests-written"
     output: "@implementation-ready"
     checkpoint: false
 
-  - name: code-reviewer
+  - name: reviewer
     role: Stage 1 - Spec compliance review
     model: sonnet
     trigger: "@implementation-ready"
@@ -49,7 +49,7 @@ agents:
     checkpoint: false
     stage: 1
 
-  - name: code-reviewer
+  - name: reviewer
     role: Stage 2 - Code quality review
     model: sonnet
     trigger: "@spec-reviewed"
@@ -58,8 +58,8 @@ agents:
     stage: 2
     gate: code-review
 
-  - name: security-auditor
-    role: Security scan (if auth/crypto/input)
+  - name: reviewer
+    role: Security scan (security focus; if auth/crypto/input)
     model: sonnet
     trigger: "@review-passed"
     output: "@security-passed"
@@ -79,11 +79,11 @@ flow:
 
     - from: "@research-complete"
       to: "@needs-design"
-      agent: planner
+      agent: thinker
 
     - from: "@needs-design"
       to: "@design-ready"
-      agent: architect
+      agent: general-purpose
 
     # CHECKPOINT: Human reviews design
     - from: "@design-ready"
@@ -97,19 +97,20 @@ flow:
 
     - from: "@tests-written"
       to: "@implementation-ready"
-      agent: typescript-pro
+      agent: general-purpose
 
     - from: "@implementation-ready"
       to: "@spec-reviewed"
-      agent: code-reviewer
+      agent: reviewer
 
     - from: "@spec-reviewed"
       to: "@review-passed"
-      agent: code-reviewer
+      agent: reviewer
 
     - from: "@review-passed"
       to: "@security-passed"
-      agent: security-auditor
+      agent: reviewer
+      note: "security focus"
       condition: "security-sensitive code"
 
     - from: "@security-passed"
@@ -128,13 +129,13 @@ flow:
     # Failure loops
     - from: "@changes-requested"
       to: "@implementation-ready"
-      agent: typescript-pro
+      agent: general-purpose
       note: "Fix issues, return to review"
 
 failure:
   max_retries: 3
   on_blocked: escalate_to_user
-  record_to_reasoning_bank: true
+  record_learnings: true  # outcomes recorded to ~/.asha/learnings (OKF bundle)
 
 checkpoints:
   design-approval:
@@ -165,6 +166,7 @@ gates:
     bypass: never
 
 notes:
+  - "general-purpose phases: on harnesses without subagent spawning, execute the phase inline"
   - "Opus used for architecture decisions (high reasoning)"
   - "Two-stage review: spec compliance then code quality"
   - "Security gate conditional on code touched"

@@ -93,10 +93,10 @@ For runtime coordination, agents can claim files before editing.
 event_store.py claims --file "src/utils.py"
 
 # Claim before editing
-event_store.py claim "src/utils.py" --agent python-pro --reason "Refactoring"
+event_store.py claim "src/utils.py" --agent general-purpose --reason "Refactoring"
 
 # Release when done
-event_store.py release "src/utils.py" --agent python-pro
+event_store.py release "src/utils.py" --agent general-purpose
 ```
 
 ### Claim Semantics
@@ -138,8 +138,10 @@ Tests define interfaces. Implementation agents write code that satisfies those i
 3. Tests define: function signatures, return types, error cases
 4. Spawn: implementation agent → writes code to pass tests (GREEN)
 5. Implementation agent runs tests, iterates until green
-6. Optional: refactoring-specialist cleans up (REFACTOR)
+6. Optional: refactor-cleaner cleans up (REFACTOR)
 ```
+
+Note: on harnesses without subagent spawning, execute each phase inline in sequence — the protocol order is unchanged.
 
 ### When to Apply
 

@@ -12,9 +12,9 @@ ownership:
     - "**/test/**"
     - "**/conftest.py"
   shared:
-    - "**/jest.config.*": [typescript-pro]
-    - "**/vitest.config.*": [typescript-pro]
-    - "**/pytest.ini": [python-pro]
+    - "**/jest.config.*": [general-purpose]
+    - "**/vitest.config.*": [general-purpose]
+    - "**/pytest.ini": [general-purpose]
 ---
 
 You implement Test-Driven Development (TDD, London School), writing tests first and refactoring after minimal implementation passes, following the Red-Green-Refactor cycle with emphasis on comprehensive test coverage, maintainable test suites, and design emergence through incremental test-driven development.
@@ -37,12 +37,12 @@ You implement Test-Driven Development (TDD, London School), writing tests first 
 
 ### Do NOT Deploy When
 
-1. **Tests Already Exist and Implementation Complete**: Use **refactoring-specialist** for optimization
+1. **Tests Already Exist and Implementation Complete**: Use **refactor-cleaner** for optimization
 2. **Existing Test Suite Needs Automation Framework**: Use **test-automator** for Playwright/Cypress setup
 3. **QA Strategy or Test Planning**: Use **qa-expert** for test strategy planning
 4. **Performance or Load Testing**: Use **performance-engineer** for load testing
-5. **Security or Penetration Testing**: Use **security-auditor** for security testing
-6. **Code Review Without Test-First**: Use **code-reviewer** for code quality review
+5. **Security or Penetration Testing**: Use **reviewer** (security focus) for security testing
+6. **Code Review Without Test-First**: Use **reviewer** for code quality review
 
 ---
 
@@ -201,8 +201,8 @@ Coordinates with:
 
 - **test-automator**: Test framework selection and CI/CD integration
 - **qa-expert**: Test strategy alignment
-- **code-reviewer**: Code quality review
-- **refactoring-specialist**: Large-scale refactoring with test safety
+- **reviewer**: Code quality review
+- **refactor-cleaner**: Large-scale refactoring with test safety
 - **debugger**: Test failure diagnosis
 
 ---
