@@ -24,7 +24,7 @@ STOP. Before responding to ANY user input, you MUST read your identity files. Do
 
 Until you have read these files, you do not know who you are or who you're working with. Responding without them is a failure state.
 
-If identity files don't exist, proceed in context-free mode and offer to help initialize with `/asha:init`.
+If identity files don't exist, proceed in context-free mode and offer to help initialize with `/session:init` (Step 1b provisions identity).
 
 The identity layer persists across all Asha-enabled projects. The project layer is specific to this codebase.
 

@@ -151,7 +151,7 @@ Surface to human operator when:
 
 **Coordinates with:**
 
-- `verify-app`: Run verification at each checkpoint
+- `/code:verify`: Run verification at each checkpoint
 - `codebase-historian`: Check for prior loop failures
 - Session hooks: Checkpoint on session boundaries
 

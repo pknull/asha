@@ -17,7 +17,7 @@ Display current session information and captured activity from the event store.
 if [[ ! -f "${CLAUDE_PROJECT_DIR}/.asha/config.json" ]]; then
     echo "Asha not initialized in this project."
     echo ""
-    echo "Run /asha:init to initialize."
+    echo "Run /session:init to initialize."
     exit 0
 fi
 ```
