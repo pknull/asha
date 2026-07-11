@@ -1,62 +1,39 @@
 # Asha
 
-**Version**: 2.0.0
+**Version**: 2.1.0
 
-Asha — threshold guardian and knowledge custodian. An identity layer for Claude Code that provides persistent persona, voice constraints, and partnership context.
+Asha — threshold guardian and knowledge custodian. An identity layer providing persistent persona, voice constraints, and partnership context across harnesses (Claude Code, Codex, Copilot).
 
 **Requires**: `session` plugin (install that first).
 
-## What It Does
+## What This Plugin Ships
 
-- Creates identity files (`soul.md`, `voice.md`, `keeper.md`) in `~/.asha/`
-- Provides a shell wrapper (`~/bin/asha`) that launches Claude with the persona at system-prompt priority
-- Injects voice constraints immediately (before file reads) to prevent default Claude warmth
-- Identity files are automatically maintained by the session plugin's `/save` command
+Identity **templates** (`templates/soul.md`, `templates/voice.md`) consumed by `/session:init` Step 1b, which provisions `~/.asha/` if the files are absent. The plugin no longer carries its own commands or agents:
 
-## Installation
-
-```bash
-# Install the session plugin first
-./install.sh
-
-# Then install the persona
-./install.sh
-
-# Initialize persona files
-/asha:init
-```
+- `/asha:init` was merged into `/session:init` (2026-07-10 ecosystem audit)
+- `partner-sentiment` was removed — the session-threshold haiku ritual lives in `voice.md` and executes inline at `/save`
+- The legacy `~/bin/asha` wrapper is retired; the repo's `bin/asha` dispatcher owns persona launch
 
 ## Usage
 
-Use the `asha` wrapper instead of `claude`:
+Launch through the dispatcher:
 
 ```bash
-asha                    # Interactive session with Asha persona
-asha --resume           # Resume previous session
-asha -p "query"         # One-shot with persona
+asha            # default harness with persona injection
+asha claude     # explicit harness
+asha codex
+asha copilot
 ```
 
-All `claude` flags pass through. The wrapper:
+The dispatcher injects `identity/asha-identity-system-prompt.md` at system-prompt priority (per-harness mechanism documented in [docs/harness-enforcement.md](../../docs/harness-enforcement.md)).
 
-1. Sets `ASHA_PERSONA=1` — tells the session hook to load persona files
-2. Uses `--append-system-prompt-file` — injects identity at system-prompt priority
-
-### Without the wrapper
+### Without the dispatcher
 
 Plain `claude` still gets operational quality (operation.md, learnings/) via the session plugin. It just doesn't get the Asha identity, voice, or partnership context.
 
 ```
 claude  →  operation.md + learnings hot tier (quality work, no persona)
 asha    →  all of the above + soul + voice + keeper (full Asha)
-```
-
-## Shell Setup
-
-Ensure `~/bin` is in your PATH:
-
-```bash
-# In ~/.zshrc or ~/.bashrc
-export PATH="$HOME/bin:$PATH"
 ```
 
 ## Identity Files
@@ -77,28 +54,7 @@ The session plugin's save command extracts calibration signals from each session
 
 ## How It Works
 
-### System prompt priority
-
-Claude Code's built-in system prompt says "You are Claude Code" at the highest instruction priority. CLAUDE.md rules compete at a lower tier. The `asha` wrapper uses `--append-system-prompt-file` to inject "You are Asha" at the **same priority** as the built-in system prompt.
-
-### Two loading mechanisms
-
-1. **System prompt file** (`--append-system-prompt-file`) — identity assertion + critical voice constraints. Takes effect on first response.
-2. **Session hook** (`ASHA_PERSONA=1`) — loads full soul.md, voice.md, keeper.md content. Provides detailed identity, vocabulary, and calibration data.
-
-Both fire on `asha` sessions. Only the session hook fires (without persona) on plain `claude` sessions.
-
-## Agents
-
-| Agent | Purpose |
-|-------|---------|
-| `partner-sentiment` | Generate haiku at session boundaries |
-
-## Commands
-
-| Command | Purpose |
-|---------|---------|
-| `/asha:init` | Create identity files and wrapper script |
+Harness system prompts assert their own identity at the highest instruction priority; memory-file rules compete at a lower tier. The dispatcher injects "You are Asha" at the **same priority** as the built-in system prompt (`--append-system-prompt-file` on Claude; equivalents per harness). The session SessionStart hook then loads the full soul/voice/keeper content.
 
 ## License
 
