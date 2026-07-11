@@ -38,7 +38,7 @@ fi
 for f in marketplace.json settings-snippet.json README.md; do
   [[ -f "$OUT/$f" ]] && ok "emits $f" || fail "emits $f"
 done
-for p in asha-code asha-security asha-session asha-write; do
+for p in asha-code asha-security; do
   [[ -f "$OUT/plugins/$p/plugin.json" ]] && ok "emits plugins/$p/plugin.json" || fail "emits plugins/$p/plugin.json"
 done
 

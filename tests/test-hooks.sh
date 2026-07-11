@@ -1675,26 +1675,25 @@ fi
 # ============================================================================
 # Test 83: All asha commands have description frontmatter
 # ============================================================================
-echo -n "Test 83: Asha commands have description... "
-ASHA_CMDS="$REPO_ROOT/plugins/asha/commands"
+echo -n "Test 83: Plugin commands have description... "
 MISSING_DESC=0
+CMD_COUNT=0
 
-for cmd_file in "$ASHA_CMDS"/*.md; do
+for cmd_file in "$REPO_ROOT"/plugins/*/commands/*.md; do
     [[ ! -f "$cmd_file" ]] && continue
-    cmd_name=$(basename "$cmd_file")
+    CMD_COUNT=$((CMD_COUNT + 1))
 
     # Check for description in frontmatter
     if ! head -10 "$cmd_file" | grep -q "description:"; then
         if [[ $MISSING_DESC -eq 0 ]]; then
             echo -e "${RED}FAIL${NC}"
         fi
-        echo "  $cmd_name missing description"
+        echo "  ${cmd_file#"$REPO_ROOT"/plugins/} missing description"
         MISSING_DESC=$((MISSING_DESC + 1))
     fi
 done
 
 if [[ $MISSING_DESC -eq 0 ]]; then
-    CMD_COUNT=$(ls "$ASHA_CMDS"/*.md 2>/dev/null | wc -l)
     echo -e "${GREEN}PASS${NC} ($CMD_COUNT commands)"
     PASSED=$((PASSED + 1))
 else
