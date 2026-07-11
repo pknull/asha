@@ -13,7 +13,7 @@ This project uses the **Asha** framework for session coordination and memory per
 | Command | Purpose |
 |---------|---------|
 | `/asha:save` | Save session context to Memory Bank, archive session |
-| `/asha:init` | Initialize Asha in new projects |
+| `/session:init` | Initialize session management + identity in new projects |
 
 ## Memory Files
 

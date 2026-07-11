@@ -12,7 +12,9 @@ allowed-tools:
   - Task
 ---
 
-# /asha:loop
+# /session:loop
+
+Harness note: on Claude Code, iterations may also use the native /loop skill or background agents where convenient; on harnesses without subagent spawning, run iterations inline. Checkpoint and guardrail contracts below are identical in every mode.
 
 Manage autonomous agent loops with checkpoint tracking and safety guardrails.
 

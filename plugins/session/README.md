@@ -28,16 +28,11 @@ Then initialize in your project:
 
 | Command | Purpose |
 |---------|---------|
-| `/session:init` | Initialize session management in current project |
+| `/session:init` | Initialize session management + identity in current project |
 | `/session:save` | Save session context to Memory Bank |
-| `/session:note` | Add timestamped note to scratchpad |
 | `/session:status` | Show current session status |
-| `/session:prime` | Interactive codebase exploration |
 | `/session:silence` | Toggle silence mode (disable logging) |
 | `/session:restore` | Re-enable logging after silence |
-| `/session:spawn` | Spawn agent in tmux orchestrator |
-| `/session:agents` | List running agents |
-| `/session:stop-agents` | Stop agents in orchestrator |
 | `/session:loop` | Autonomous agent loop with guardrails |
 
 ## Loading Architecture
@@ -98,9 +93,9 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 
 | Agent | Purpose |
 |-------|---------|
-| `verify-app` | Run tests, type checks, lints after changes |
-| `task-manager` | Todoist integration for task retrieval |
 | `loop-operator` | Autonomous loop with safety guardrails |
+
+(Verification is `/code:verify`; Todoist access is the `admin-todoist` skill.)
 
 ## Hooks
 

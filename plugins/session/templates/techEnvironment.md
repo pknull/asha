@@ -20,7 +20,7 @@ Tools are provided by the Asha plugin. Tool paths are injected via SessionStart 
 |---------|---------|
 | `/asha:save` | Save session context, archive, refresh index, commit |
 | `/asha:index` | Index files for semantic search |
-| `/asha:init` | Initialize Asha in a new project |
+| `/session:init` | Initialize session management + identity |
 | `/asha:cleanup` | Remove legacy asha/ installation files |
 
 ### Tool Invocation
@@ -49,11 +49,11 @@ Tools are executed via the plugin's Python environment. Example patterns provide
 
 ## Verification
 
-Commands run by `verify-app` agent:
+Commands run by `/code:verify`:
 
 | Command | Purpose |
 |---------|---------|
 | `[test command]` | Run test suite |
 | `[lint command]` | Check code style |
 
-<!-- If no commands defined, verify-app will detect and propose based on project type -->
+<!-- If no commands defined, /code:verify will detect and propose based on project type -->

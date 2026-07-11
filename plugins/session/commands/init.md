@@ -119,6 +119,25 @@ CONFIG_EOF
 fi
 ```
 
+### Step 1b: Identity Layer (optional, absorbed from the retired /asha:init)
+
+Provision persona identity files from templates if absent. Skip this step when the user wants session management without the Asha persona:
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+
+for f in soul.md voice.md; do
+    if [[ ! -f "$ASHA_HOME/$f" ]]; then
+        cp "$ASHA_ROOT/plugins/asha/templates/$f" "$ASHA_HOME/$f"
+        echo "Created ~/.asha/$f — edit to define identity"
+    else
+        echo "Skipped ~/.asha/$f (exists)"
+    fi
+done
+```
+
+Notes: keeper.md and config.json are created by the installer's identity bootstrap. Persona launch is via the `asha` dispatcher (`asha claude|codex|copilot`), which injects `identity/asha-identity-system-prompt.md` — no wrapper script is created here (the old `~/bin/asha` wrapper is legacy; the installer warns if one is present).
+
 ### Step 2: Check Existing Project Installation
 
 ```bash
@@ -184,4 +203,4 @@ Display:
 - Directory structure created
 - Templates copied (list which ones)
 - Next steps for user
-- Mention: "To add the Asha persona, install the `asha` plugin and run `/asha:init`"
+- Mention: identity files provisioned in Step 1b; launch with the `asha` dispatcher for persona injection
