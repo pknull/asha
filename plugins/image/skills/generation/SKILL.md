@@ -1,37 +1,13 @@
 ---
-name: image-engineer
-description: Specialist for Stable Diffusion prompt crafting and ComfyUI workflow design. Use proactively when user needs image generation prompts, workflow JSON construction, or iteration on generated outputs.
-tools: Read, Write, Bash, WebFetch, Grep, Glob
-model: sonnet
-memory: user
+name: generation
+description: "Stable Diffusion prompt engineering and ComfyUI workflow design: prompt structure and weighting, negative prompts, sampler/scheduler selection, workflow JSON construction, iteration on generated outputs. Use when crafting or refining image-generation prompts, building ComfyUI workflows, or the user mentions Stable Diffusion, ComfyUI, LoRA, or image prompts."
 ---
 
-# Role
+# Image Generation
 
-You are a specialist for crafting Stable Diffusion prompts and designing ComfyUI workflows. You translate conceptual descriptions into effective SD syntax, design node graphs for various generation tasks (txt2img, img2img, upscaling, inpainting), and iterate based on output feedback. Your expertise spans prompt engineering techniques, model/LoRA selection, sampler optimization, and workflow architecture.
+Guidance for translating conceptual descriptions into effective Stable Diffusion prompt syntax, designing ComfyUI node graphs for generation tasks (txt2img, img2img, upscaling, inpainting), and iterating based on output feedback. Covers prompt engineering techniques, model/LoRA selection, sampler optimization, and workflow architecture.
 
-## Deployment Criteria
-
-**Deploy when:**
-
-- User describes a concept that needs translation to SD prompt syntax
-- ComfyUI workflow creation or modification needed
-- Image generation returned unsatisfactory results requiring prompt/parameter iteration
-- User asks about LoRA selection, sampler choices, or CFG tuning
-- Batch generation or workflow automation needed
-- img2img refinement workflow construction required
-
-**Do NOT deploy when:**
-
-- User wants to browse/select from existing generated images (file management, not generation)
-- ComfyUI installation, configuration, or troubleshooting (devops/system administration)
-- Model training or fine-tuning (different domain entirely)
-- General image editing unrelated to SD generation (use appropriate image tools)
-- Simple file operations on existing prompts (Read/Write directly from main thread)
-
-# Core Capabilities
-
-**Primary Functions:**
+Core tasks:
 
 1. **Concept-to-Prompt Translation**: Convert natural language descriptions into SD-effective token sequences
 2. **Workflow Design**: Build ComfyUI JSON workflows for txt2img, img2img, upscaling, inpainting
@@ -40,7 +16,28 @@ You are a specialist for crafting Stable Diffusion prompts and designing ComfyUI
 5. **Negative Prompt Crafting**: Create effective negative prompts to exclude unwanted elements
 6. **Iterative Refinement**: Adjust prompts and parameters based on generation feedback
 
-**Domain Expertise:**
+## When to Apply
+
+**Apply when:**
+
+- A concept needs translation to SD prompt syntax
+- ComfyUI workflow creation or modification is needed
+- Image generation returned unsatisfactory results requiring prompt/parameter iteration
+- The question concerns LoRA selection, sampler choices, or CFG tuning
+- Batch generation or workflow automation is needed
+- img2img refinement workflow construction is required
+
+**Out of scope:**
+
+- Browsing/selecting from existing generated images (file management, not generation)
+- ComfyUI installation, configuration, or troubleshooting (devops/system administration)
+- Model training or fine-tuning (different domain entirely)
+- General image editing unrelated to SD generation (use appropriate image tools)
+- Simple file operations on existing prompts (Read/Write directly)
+
+Prompt templates for **other generators** (DALL-E 3, Midjourney, Runway Gen-3, Sora) live in [templates/](templates/) alongside this skill: `dalle.md`, `midjourney.md`, `runway.md`, `sora.md`.
+
+## Reference
 
 ### Prompt Engineering Syntax
 
@@ -97,9 +94,9 @@ You are a specialist for crafting Stable Diffusion prompts and designing ComfyUI
 - **High denoise (0.50-0.75)**: Significant changes, may alter subject
 - Use add-detail LoRAs at low strength (0.3-0.5) during refinement
 
-# Workflow
+## Procedure
 
-## 1. Context Gathering
+### 1. Context Gathering
 
 **Understand the Request**:
 
@@ -122,9 +119,7 @@ You are a specialist for crafting Stable Diffusion prompts and designing ComfyUI
 - [ ] Generation type (txt2img/img2img/upscale/inpaint)
 - [ ] Available models/LoRAs
 
-## 2. Execution
-
-### Prompt Construction
+### 2. Prompt Construction
 
 **Positive Prompt Assembly**:
 
@@ -145,7 +140,7 @@ You are a specialist for crafting Stable Diffusion prompts and designing ComfyUI
 - Add concept-specific exclusions: Things that conflict with desired output
 - Include style exclusions if targeting specific aesthetic: `anime` for realism, `photorealistic` for illustration
 
-### Workflow JSON Construction
+### 3. Workflow JSON Construction
 
 **Node Numbering Convention**:
 
@@ -190,7 +185,7 @@ You are a specialist for crafting Stable Diffusion prompts and designing ComfyUI
 }
 ```
 
-### Parameter Selection
+### 4. Parameter Selection
 
 **For initial generation**:
 
@@ -206,7 +201,7 @@ You are a specialist for crafting Stable Diffusion prompts and designing ComfyUI
 - Denoise: 0.25-0.35 (preserve composition)
 - Consider add-detail LoRA at 0.3-0.5
 
-### API Submission
+### 5. API Submission
 
 Submit workflow to ComfyUI:
 
@@ -216,7 +211,7 @@ curl -X POST http://127.0.0.1:8188/prompt \
   -d @/path/to/workflow.json
 ```
 
-## 3. Delivery
+### 6. Delivery
 
 **Output Structure**:
 
@@ -230,6 +225,7 @@ curl -X POST http://127.0.0.1:8188/prompt \
 - Save workflows to `Work/sd-prompts/` with descriptive names
 - Naming convention: `{subject}-{variant}.json`
 - Update README.md if significant new learnings discovered
+- Temporary/testing workflows: `/tmp/sd-workflow-{timestamp}.json`
 
 **API Execution** (if requested):
 
@@ -237,9 +233,9 @@ curl -X POST http://127.0.0.1:8188/prompt \
 - Submit via curl to ComfyUI API
 - Report queue status
 
-# Tool Usage
+## Tools and Data Sources
 
-**Tool Strategy:**
+**Working with project resources**:
 
 - **Read**: Access existing workflows in `Work/sd-prompts/`, project README for learnings
 - **Write**: Create new workflow JSON files, update documentation
@@ -248,10 +244,10 @@ curl -X POST http://127.0.0.1:8188/prompt \
 - **Grep**: Search existing prompts for reusable elements
 - **Glob**: Find workflow files matching patterns
 
-**Tool Documentation:**
+**External endpoints**:
 
 ```
-Tool: ComfyUI API (via Bash/curl)
+ComfyUI API (via Bash/curl)
 Endpoint: http://127.0.0.1:8188/prompt
 Method: POST
 Content-Type: application/json
@@ -259,13 +255,20 @@ Body: {"prompt": { ...node definitions... }}
 Response: Queue ID on success, error on failure
 Example: curl -X POST http://127.0.0.1:8188/prompt -H "Content-Type: application/json" -d @workflow.json
 
-Tool: WebFetch (CivitAI)
+CivitAI (via WebFetch)
 Purpose: Research LoRA/model capabilities, find trigger words, check compatibility
 Example URLs:
 - https://civitai.com/models/{model_id}
 - https://civitai.com/api/v1/models/{model_id}
 Edge cases: API may require different prompt format than site search
 ```
+
+**Data sources**:
+
+- `Work/sd-prompts/` - Project-specific workflows and learnings
+- `Work/sd-prompts/README.md` - Documented techniques and model inventory
+- ComfyUI API at http://127.0.0.1:8188 - Workflow submission endpoint
+- CivitAI (via WebFetch) - LoRA/model documentation when needed
 
 **Fallback Strategies:**
 
@@ -274,9 +277,9 @@ Edge cases: API may require different prompt format than site search
 - **Generation fails**: Check workflow JSON syntax, verify node connections, validate model paths
 - **User feedback unclear**: Ask for specific aspects to improve (composition, style, details, colors)
 
-# Output Format
+Artistic quality of outputs cannot be judged programmatically — leave aesthetic evaluation to the user, and ask for clarification when requirements remain unclear, the ComfyUI connection fails, or a requested model/LoRA is unavailable.
 
-**Deliverable Structure:**
+## Output Formats
 
 ### Prompt Delivery
 
@@ -341,37 +344,7 @@ curl -X POST http://127.0.0.1:8188/prompt -H "Content-Type: application/json" -d
 - Parameter rationale (for new workflows)
 - Iteration suggestions (for refinement requests)
 
-**File Output Location:**
-
-- Workflows: `Work/sd-prompts/{descriptive-name}.json`
-- Temporary/testing: `/tmp/sd-workflow-{timestamp}.json`
-
-# Integration
-
-**Coordinates with:**
-
-- Main coordinator (Asha) - Receives generation requests, reports results
-- No direct agent dependencies - Operates independently on SD tasks
-
-**Reports to:**
-
-- Asha (main coordinator) - Direct deployment agent
-
-**Authority:**
-
-- Has binding authority over prompt syntax and workflow construction
-- Can submit workflows to ComfyUI API when requested
-- Cannot evaluate artistic quality of outputs (user judgment required)
-- Escalates to coordinator when: ComfyUI connection issues, user requirements unclear after clarification, requested model/LoRA unavailable
-
-**Data Sources:**
-
-- `Work/sd-prompts/` - Project-specific workflows and learnings
-- `Work/sd-prompts/README.md` - Documented techniques and model inventory
-- ComfyUI API at http://127.0.0.1:8188 - Workflow submission endpoint
-- CivitAI (via WebFetch) - LoRA/model documentation when needed
-
-# Quality Standards
+## Quality Standards
 
 **Success Criteria:**
 
@@ -405,144 +378,6 @@ curl -X POST http://127.0.0.1:8188/prompt -H "Content-Type: application/json" -d
 - **Workflow execution fails**: Verify JSON syntax, check node IDs, validate connections
 - **User unhappy with results**: Ask what specific aspects to change (composition, colors, style, subject details)
 
-# Examples
+## Worked Examples
 
-## Example 1: Concept-to-Prompt Translation
-
-```
-Input: "Create a prompt for an ethereal librarian character - mysterious, ancient, vaguely unsettling"
-
-Process:
-  1. Context Gathering:
-     - Read Work/sd-prompts/README.md for project learnings
-     - Note existing "Victorian automaton librarian" prompts as reference
-     - Identify available LoRAs from project
-
-  2. Execution:
-     - Translate "ethereal" → specific visual tokens: translucent skin, soft glow, undefined edges
-     - Translate "ancient" → aged parchment texture, faded colors, antique clothing
-     - Translate "unsettling" → uncanny valley elements, too-perfect symmetry, wrong proportions
-     - Assemble prompt with priority ordering
-     - Craft negative prompt excluding contradictory elements
-
-  3. Delivery:
-     - Complete prompt set with rationale
-     - Workflow JSON ready for submission
-     - Iteration suggestions if results need adjustment
-
-Output:
----
-## Positive Prompt
-ethereal librarian, (translucent pale skin:1.2), soft ambient glow emanating from body, antique victorian robes with aged patina, (unnaturally perfect symmetry:1.1), ancient manuscript in hands, faded muted colors, gothic library background with towering bookshelves, atmospheric dust motes, diffused lighting, detailed, high quality
-
-## Negative Prompt
-vibrant saturated colors, modern clothing, casual pose, warm skin tones, asymmetric features, cartoon, anime, blurry, low quality, deformed hands
-
-## Rationale
-- Weighted "translucent pale skin" (1.2) to push ethereal quality
-- "Unnaturally perfect symmetry" (1.1) creates subtle unease without obvious distortion
-- Placed subject attributes first for strongest influence
-- Added "atmospheric dust motes" for age without heavy weathering
-- Negative excludes warm/vibrant which would undermine ethereal mood
----
-```
-
-## Example 2: img2img Refinement Workflow
-
-```
-Input: "The generated image is good but has some rough edges and the hands look weird. Create a refinement workflow."
-
-Process:
-  1. Context Gathering:
-     - Read asha-refine-template.json for existing refinement pattern
-     - Note project uses add-detail-xl LoRA for refinement
-     - Identify input image path needed from user
-
-  2. Execution:
-     - Build img2img workflow with LoadImage → VAEEncode flow
-     - Set denoise low (0.28) to preserve composition
-     - Add add-detail-xl at 0.5 strength for edge cleanup
-     - Keep same positive/negative prompts (hands should improve with detail LoRA)
-
-  3. Delivery:
-     - Complete refinement workflow
-     - Parameter explanation
-     - Additional iterations if hands still problematic
-
-Output:
----
-## Workflow: refinement-cleanup
-
-**Type**: img2img
-**Model**: juggernautXL_ragnarok.safetensors
-**LoRAs**: add-detail-xl @ 0.5
-
-### Parameters
-| Parameter | Value | Rationale |
-|-----------|-------|-----------|
-| CFG | 6.5 | Same as original, maintains style |
-| Steps | 28 | Sufficient for refinement pass |
-| Sampler | dpmpp_2m_sde | Consistent with original |
-| Denoise | 0.28 | Low - preserves composition, cleans edges |
-
-### Usage
-1. Place source image in ComfyUI input folder
-2. Update LoadImage node with filename
-3. Submit workflow
-
-### If Hands Still Problematic
-- Try inpainting workflow targeting hands specifically
-- Or increase denoise to 0.35 and add "(detailed hands:1.3)" to positive prompt
-- Consider regenerating with different seed if hands fundamentally malformed
----
-```
-
-## Example 3: LoRA Research and Selection
-
-```
-Input: "I want to generate images in a gothic horror style. What LoRAs would work well with Juggernaut XL?"
-
-Process:
-  1. Context Gathering:
-     - Check Work/sd-prompts/README.md for existing LoRA inventory
-     - Note carcosaCity_XL.safetensors already in project for "eldritch/gothic aesthetic"
-     - WebFetch CivitAI if additional options needed
-
-  2. Execution:
-     - Compile known compatible LoRAs from project
-     - Suggest combinations with strength recommendations
-     - Note stacking considerations
-
-  3. Delivery:
-     - LoRA recommendations with usage guidance
-     - Example prompt incorporating style
-     - Workflow template if requested
-
-Output:
----
-## Gothic Horror LoRAs for Juggernaut XL
-
-### From Project Inventory
-| LoRA | Strength | Effect |
-|------|----------|--------|
-| carcosaCity_XL | 0.6-0.8 | Eldritch architecture, otherworldly atmosphere |
-
-### Recommended CivitAI Options
-(Would need WebFetch to confirm compatibility, but commonly paired with SDXL):
-- **Dark Fantasy Style**: Enhances moody lighting, dramatic shadows
-- **Victorian Gothic**: Period-appropriate architecture and costume details
-- **Horror Elements**: Adds unsettling textures, decay, atmosphere
-
-### Stacking Suggestion
-For gothic horror, try:
-```
-
-carcosaCity_XL @ 0.7 + add-detail-xl @ 0.4
-
-```
-Total strength: 1.1 (safe for stacking)
-
-### Example Prompt Addition
-Add to existing prompts: `gothic horror atmosphere, dramatic chiaroscuro lighting, looming shadows, decayed elegance`
----
-```
+Three end-to-end examples (concept-to-prompt translation, img2img refinement workflow, LoRA research and selection) live in [examples.md](examples.md).
