@@ -1,6 +1,7 @@
 # Harness enforcement — capabilities & known failures
 
-asha augments the native agent CLIs (Claude Code, OpenAI Codex, GitHub Copilot)
+asha augments the native agent CLIs (Claude Code, OpenAI Codex, GitHub Copilot,
+and OpenCode)
 at *their own seams*. Its features split cleanly by the seam they need:
 
 - **File-based / post-hoc** (read a config/instructions file; post-process an
@@ -8,7 +9,8 @@ at *their own seams*. Its features split cleanly by the seam they need:
 - **Real-time interception** (a hook the CLI calls *before a tool runs* and
   *honors the decision*) → only works where the harness exposes a working hook.
 
-Memory, persona, and the corpus are the first kind and work everywhere. The
+Memory, persona, and the corpus are the first kind and work everywhere, albeit
+OpenCode persistence is manual-save only. The
 **policy guardrails** (PreToolUse deny/ask) are the second kind — and that's
 where the harnesses diverge. This document records documented capability
 separately from empirical verification. Codex documentation was refreshed
@@ -43,11 +45,11 @@ hook system, not an absent one, but its coverage is incomplete. Official docs
 state that simple Bash, `apply_patch`, and MCP calls can be intercepted whilst
 some richer `unified_exec` shell calls and non-shell/non-MCP tools cannot. The
 Asha 0.142 shell probe landed in the uncovered case and did not fire. The
-file-based layers — corpus, persona (all three; Copilot persona fixed
+file-based layers — corpus, persona (all four; Copilot persona fixed
 2026‑06‑24), and the operational layer (operation.md + learnings; Copilot +
 Codex both wired 2026‑06‑24 — file-based, no working hook required) — work on all
-three CLIs. Note: Asha's user-defined command workflows are remapped to skills
-on Codex/Copilot. Codex does have built-in slash commands, but no documented
+four CLIs. Note: Asha's user-defined command workflows are remapped to skills
+on Codex/Copilot and native commands on OpenCode. Codex does have built-in slash commands, but no documented
 custom command-file surface. The `output-styles` plugin was retired in the
 2026‑07‑10 ecosystem audit (Claude's native `/output-style` covers it). Codex
 also gets native execution-policy `prefix_rule()` prompts for a narrow subset of
@@ -182,6 +184,26 @@ guardrails, and /save capture are wrapper-independent. Native plugin
 distribution is mechanism, not enforcement — its verification table lives in
 [distribution-copilot.md](distribution-copilot.md).
 
+### OpenCode 1.0.78 — native corpus and hooks, manual-save memory
+
+OpenCode exposes native user skills, slash commands, Markdown agents, config
+instructions, and JavaScript/TypeScript plugins. The installed 1.0.78 CLI was
+plant-tested against the rendered Asha tree. Its accepted user-config layout is
+`skills/`, `command/`, `agent/`, and `plugin/`; the latter three are singular.
+
+`asha install opencode` mounts skills, renders commands and subagents, and emits
+an `asha-guardrails.js` plugin using `tool.execute.before`. The plugin calls the
+shared policy and secret handlers through `opencode-policy-adapter.sh`. A deny
+throws before execution. Asha's `ask` action degrades to deny because no
+portable permission-prompt response has been verified for that hook. This is a
+fail-open policy layer, not containment.
+
+`asha opencode` appends the merged identity and operational context through
+`OPENCODE_CONFIG_CONTENT.instructions`, preserving the user's normal config and
+custom config directory. Manual save parses OpenCode's directory storage under
+`~/.local/share/opencode/storage/{session,message,part}`. Automatic SessionEnd
+persistence is not implemented.
+
 ## Verdict — can / can't / won't fix
 
 | Item | Status |
@@ -191,6 +213,9 @@ distribution is mechanism, not enforcement — its verification table lives in
 | Copilot persona | **Works** (fixed + verified 2026‑06‑24, CLI 1.0.63) — `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch. |
 | Copilot operational layer | **Works** (wired + verified 2026‑06‑24) — `operation.md` + learnings hot tier via a second instructions file. |
 | Copilot guardrails | **Wired + enforced (built + verified 2026‑06‑24)** — `asha install copilot` writes `~/.copilot/hooks/asha-guardrails.json` → `copilot-policy-adapter.sh` → the existing policy-guard + block-secrets. Live deny + ask + block-secrets confirmed on 1.0.63. Soft deterrent (concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested; adapter fails open). |
+| OpenCode corpus/persona | **Works** — native skills, commands, agents, and wrapper-scoped instructions; loader verified on 1.0.78. |
+| OpenCode guardrails | **Wired, synthetic verification only** — native `tool.execute.before` plugin bridges to shared policy; deny is implemented, ask degrades to deny. |
+| OpenCode memory | **Partial** — manual save parses native storage; no automatic SessionEnd persistence. |
 
 **Bottom line:** the file-based layers — corpus, persona, operational context,
 and memory/capture — are cross-harness. Claude and Copilot policy behavior has

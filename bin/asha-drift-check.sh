@@ -5,7 +5,7 @@
 # `asha doctor` is the front door for this script (lib/doctor.sh).
 #
 # Usage:
-#   asha-drift-check.sh [--target {claude,codex,copilot,all}] [--fix]
+#   asha-drift-check.sh [--target {claude,codex,copilot,opencode,all}] [--fix]
 #
 # Default target is 'all'. Per-target flags scope the checks.
 # --fix self-heals stale codex/copilot command-skills (regenerates SKILL.md
@@ -13,10 +13,6 @@
 
 set -uo pipefail
 
-CLAUDE="$HOME/.claude"
-CODEX="$HOME/.codex"
-COPILOT="$HOME/.copilot"
-CODEX_OVERLAY="$HOME/.codex-asha"
 # Resolve the repo root from this script's own location (repo bin/), following
 # symlinks (may be invoked via ~/.local/bin). Portable — no GNU `readlink -f`.
 __src="${BASH_SOURCE[0]}"
@@ -27,6 +23,15 @@ while [ -h "$__src" ]; do
 done
 ASHA="$(dirname "$(cd -P "$(dirname "$__src")" >/dev/null 2>&1 && pwd)")"
 unset __src __dir
+# shellcheck source=../harnesses/registry.sh
+source "$ASHA/harnesses/registry.sh"
+# shellcheck source=../harnesses/generated-artifacts.sh
+source "$ASHA/harnesses/generated-artifacts.sh"
+CLAUDE="$(asha_harness_home claude)"
+CODEX="$(asha_harness_home codex)"
+COPILOT="$(asha_harness_home copilot)"
+OPENCODE="$(asha_harness_home opencode)"
+CODEX_OVERLAY="${CODEX_HOME:-$HOME/.codex}-asha"
 
 TARGET="all"
 FIX=0          # --fix: self-heal stale codex command-skills (audit-only otherwise)
@@ -42,10 +47,8 @@ while [[ $# -gt 0 ]]; do
   esac
   shift
 done
-case "$TARGET" in
-  claude|codex|copilot|all) ;;
-  *) echo "invalid --target '$TARGET'" >&2; exit 2 ;;
-esac
+{ asha_harness_exists "$TARGET" || [[ "$TARGET" == all ]]; } \
+  || { echo "invalid --target '$TARGET'" >&2; exit 2; }
 
 fail=0
 pass() { echo "PASS  $1"; }
@@ -64,7 +67,7 @@ section() { echo ""; echo "── $1 ──"; }
 # pinned to 0 so the generator actually writes and stays quiet.
 _FIX_CODEX_SOURCED=0
 fix_regen_command_skill() {
-  local cmd="$1" skill_md="$2"
+  local cmd="$1" skill_md="$2" mode="${3:-fix}"
   if [[ $_FIX_CODEX_SOURCED -eq 0 ]]; then
     DRY_RUN=0 VERBOSE=0
     # shellcheck source=../lib/install.sh
@@ -73,12 +76,19 @@ fix_regen_command_skill() {
     source "$ASHA/harnesses/codex.sh"
     _FIX_CODEX_SOURCED=1
   fi
-  _codex_emit_command_skill "$cmd" "$skill_md"
+  if [[ "$mode" == render ]]; then
+    ASHA_ARTIFACT_HARNESS="" _codex_emit_command_skill "$cmd" "$skill_md"
+  else
+    FORCE=1
+    asha_artifact_begin codex
+    _codex_emit_command_skill "$cmd" "$skill_md"
+    asha_artifact_finalize codex 0
+  fi
 }
 
 _FIX_CODEX_AGENT_SOURCED=0
 fix_regen_codex_agent() {
-  local agent="$1" dest="$2"
+  local agent="$1" dest="$2" mode="${3:-fix}"
   if [[ $_FIX_CODEX_AGENT_SOURCED -eq 0 ]]; then
     DRY_RUN=0 VERBOSE=0
     # shellcheck source=../lib/install.sh
@@ -87,14 +97,21 @@ fix_regen_codex_agent() {
     source "$ASHA/harnesses/codex.sh"
     _FIX_CODEX_AGENT_SOURCED=1
   fi
-  _codex_emit_agent_toml "$agent" "$dest"
+  if [[ "$mode" == render ]]; then
+    ASHA_ARTIFACT_HARNESS="" _codex_emit_agent_toml "$agent" "$dest"
+  else
+    FORCE=1
+    asha_artifact_begin codex
+    _codex_emit_agent_toml "$agent" "$dest"
+    asha_artifact_finalize codex 0
+  fi
 }
 
 # Copilot twin: same lazy-source pattern, but only the shared converter module
 # is needed (harnesses/copilot-common.sh defines _copilot_emit_command_skill).
 _FIX_COPILOT_SOURCED=0
 fix_regen_copilot_command_skill() {
-  local cmd="$1" skill_md="$2"
+  local cmd="$1" skill_md="$2" mode="${3:-fix}"
   if [[ $_FIX_COPILOT_SOURCED -eq 0 ]]; then
     DRY_RUN=0 VERBOSE=0
     # shellcheck source=../lib/install.sh
@@ -103,12 +120,19 @@ fix_regen_copilot_command_skill() {
     source "$ASHA/harnesses/copilot-common.sh"
     _FIX_COPILOT_SOURCED=1
   fi
-  _copilot_emit_command_skill "$cmd" "$skill_md"
+  if [[ "$mode" == render ]]; then
+    ASHA_ARTIFACT_HARNESS="" _copilot_emit_command_skill "$cmd" "$skill_md"
+  else
+    FORCE=1
+    asha_artifact_begin copilot
+    _copilot_emit_command_skill "$cmd" "$skill_md"
+    asha_artifact_finalize copilot 0
+  fi
 }
 
 _FIX_COPILOT_AGENT_SOURCED=0
 fix_regen_copilot_agent() {
-  local agent="$1" dest="$2"
+  local agent="$1" dest="$2" mode="${3:-fix}"
   if [[ $_FIX_COPILOT_AGENT_SOURCED -eq 0 ]]; then
     DRY_RUN=0 VERBOSE=0
     # shellcheck source=../lib/install.sh
@@ -117,12 +141,19 @@ fix_regen_copilot_agent() {
     source "$ASHA/harnesses/copilot-common.sh"
     _FIX_COPILOT_AGENT_SOURCED=1
   fi
-  _copilot_emit_agent_md "$agent" "$dest"
+  if [[ "$mode" == render ]]; then
+    ASHA_ARTIFACT_HARNESS="" _copilot_emit_agent_md "$agent" "$dest"
+  else
+    FORCE=1
+    asha_artifact_begin copilot
+    _copilot_emit_agent_md "$agent" "$dest"
+    asha_artifact_finalize copilot 0
+  fi
 }
 
 check_generated_agents() { # agents_dir label ext fix_fn
   local agents_dir="$1" label="$2" ext="$3" fix_fn="$4"
-  local issues=0 agent plugin_dir ns base name dest agent_mtime dest_mtime
+  local issues=0 agent plugin_dir ns base name dest expected
   for agent in "$ASHA"/plugins/*/agents/*.md; do
     [[ -f "$agent" ]] || continue
     plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
@@ -144,18 +175,19 @@ check_generated_agents() { # agents_dir label ext fix_fn
       continue
     fi
     if [[ -f "$dest" && ! -L "$dest" ]]; then
-      agent_mtime="$(stat -c %Y "$agent" 2>/dev/null || echo 0)"
-      dest_mtime="$(stat -c %Y "$dest" 2>/dev/null || echo 0)"
-      if [[ "$agent_mtime" -gt "$dest_mtime" ]]; then
+      expected="$(mktemp)"
+      "$fix_fn" "$agent" "$expected" render
+      if ! cmp -s "$expected" "$dest"; then
         if [[ $FIX -eq 1 ]]; then
           "$fix_fn" "$agent" "$dest"
-          echo "FIXED  regenerated stale agent: $dest  (source: $agent)"
+          echo "FIXED  regenerated drifted agent: $dest  (source: $agent)"
         else
-          [[ $issues -eq 0 ]] && nope "generated agent files missing or stale ($label):"
+          [[ $issues -eq 0 ]] && nope "generated agent files missing or content-drifted ($label):"
           echo "  $dest  (source: $agent)"
           issues=$((issues+1))
         fi
       fi
+      rm -f "$expected"
     fi
   done
   [[ $issues -eq 0 ]] && pass "generated agents present and fresh ($label)"
@@ -170,7 +202,7 @@ check_generated_agents() { # agents_dir label ext fix_fn
 # an accepted skip.
 check_command_skills() { # skills_dir label fix_fn
   local skills_dir="$1" label="$2" fix_fn="$3"
-  local missing_cmd_skills=0 cmd name skill_md cmd_mtime skill_mtime target
+  local missing_cmd_skills=0 cmd name skill_md target expected
   for cmd in "$ASHA"/plugins/*/commands/*.md; do
     [[ -f "$cmd" ]] || continue
     case "$cmd" in *output-styles*) continue ;; esac
@@ -194,26 +226,32 @@ check_command_skills() { # skills_dir label fix_fn
 
     skill_md="$skills_dir/$name/SKILL.md"
     if [[ ! -e "$skill_md" ]]; then
-      [[ $missing_cmd_skills -eq 0 ]] && nope "command-skill SKILL.md missing for command ($label):"
-      echo "  $cmd → expected at $skill_md"
-      missing_cmd_skills=$((missing_cmd_skills+1))
+      if [[ $FIX -eq 1 ]]; then
+        "$fix_fn" "$cmd" "$skill_md"
+        echo "FIXED  regenerated missing command-skill: $skill_md  (source: $cmd)"
+      else
+        [[ $missing_cmd_skills -eq 0 ]] && nope "command-skill SKILL.md missing for command ($label):"
+        echo "  $cmd → expected at $skill_md"
+        missing_cmd_skills=$((missing_cmd_skills+1))
+      fi
       continue
     fi
 
-    # Generated command-skill (real file): check freshness via mtime
+    # Generated command-skill (real file): compare deterministic bytes.
     if [[ -f "$skill_md" && ! -L "$skill_md" ]]; then
-      cmd_mtime="$(stat -c %Y "$cmd" 2>/dev/null || echo 0)"
-      skill_mtime="$(stat -c %Y "$skill_md" 2>/dev/null || echo 0)"
-      if [[ "$cmd_mtime" -gt "$skill_mtime" ]]; then
+      expected="$(mktemp)"
+      "$fix_fn" "$cmd" "$expected" render
+      if ! cmp -s "$expected" "$skill_md"; then
         if [[ $FIX -eq 1 ]]; then
           "$fix_fn" "$cmd" "$skill_md"
-          echo "FIXED  regenerated stale command-skill: $skill_md  (source: $cmd)"
+          echo "FIXED  regenerated drifted command-skill: $skill_md  (source: $cmd)"
         else
-          [[ $missing_cmd_skills -eq 0 ]] && nope "command-skill stale (source newer); rerun ./install.sh --target $label (or pass --fix):"
+          [[ $missing_cmd_skills -eq 0 ]] && nope "command-skill content drifted; rerun ./install.sh --target $label (or pass --fix):"
           echo "  $skill_md  (source: $cmd)"
           missing_cmd_skills=$((missing_cmd_skills+1))
         fi
       fi
+      rm -f "$expected"
       continue
     fi
 
@@ -272,6 +310,26 @@ for f in install.sh uninstall.sh namespaces.json INSTALLER.md harnesses/claude.s
   fi
 done
 [[ $gone -eq 0 ]] && pass "installer scripts present"
+
+if python3 - "$ASHA/harnesses/capabilities.json" "$ASHA/harnesses/capabilities.schema.json" <<'PY' >/dev/null 2>&1
+import json, re, sys
+caps, schema = (json.load(open(p, encoding="utf-8")) for p in sys.argv[1:])
+assert caps["schema_version"] == schema["properties"]["schema_version"]["const"] == 3
+assert re.match(r"^\d{4}-\d{2}-\d{2}$", caps["reviewed"])
+assert caps["harnesses"]
+allowed = {"native", "rendered", "partial", "unsupported"}
+for name, harness in caps["harnesses"].items():
+    assert set(harness) == {"executable", "home_env", "capabilities"}
+    assert harness["home_env"].endswith("_HOME") and harness["capabilities"]
+    for feature, item in harness["capabilities"].items():
+        assert set(item) == {"support", "surface", "verifier", "limitations"}
+        assert item["support"] in allowed and isinstance(item["limitations"], list)
+PY
+then
+  pass "capability contract validates"
+else
+  nope "harnesses/capabilities.json violates normalized schema"
+fi
 
 # No residual ${CLAUDE_PLUGIN_ROOT} in plugin command/skill/agent markdown
 # (symlinked verbatim, so a placeholder there would reach the model unported).
@@ -382,6 +440,16 @@ for ev, blocks in (c.get('hooks') or {}).items():
     # ───── Native custom-agent coverage check ─────
     check_generated_agents "$CODEX/agents" codex ".toml" fix_regen_codex_agent
 
+    manifest_out="$(asha_artifact_doctor codex 2>&1)"; manifest_rc=$?
+    if [[ $manifest_rc -eq 0 ]]; then
+      pass "generated-artifact ownership manifest clean (codex)"
+    elif [[ $manifest_rc -eq 2 ]]; then
+      nope "generated-artifact ownership manifest missing (codex; reinstall required)"
+    else
+      nope "generated-artifact ownership drift (codex):"
+      printf '%s\n' "$manifest_out" | sed 's/^/  /'
+    fi
+
     # ───── Cached identity check (regenerated on each `asha codex` launch) ─────
     if [[ -f "$HOME/.cache/asha/instructions.md" ]]; then
       pass "cached identity exists at ~/.cache/asha/instructions.md"
@@ -416,6 +484,16 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
 
     # Generated `.agent.md` coverage + freshness
     check_generated_agents "$COPILOT/agents" copilot ".agent.md" fix_regen_copilot_agent
+
+    manifest_out="$(asha_artifact_doctor copilot 2>&1)"; manifest_rc=$?
+    if [[ $manifest_rc -eq 0 ]]; then
+      pass "generated-artifact ownership manifest clean (copilot)"
+    elif [[ $manifest_rc -eq 2 ]]; then
+      nope "generated-artifact ownership manifest missing (copilot; reinstall required)"
+    else
+      nope "generated-artifact ownership drift (copilot):"
+      printf '%s\n' "$manifest_out" | sed 's/^/  /'
+    fi
 
     # ───── PreToolUse guardrails file matches what the installer emits ─────
     guardrails="$COPILOT/hooks/asha-guardrails.json"
@@ -456,6 +534,38 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
 fi
 
 # ===========================================================================
+# OpenCode harness checks
+# ===========================================================================
+
+if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
+  section "opencode harness"
+  opencode_manifest="$(asha_artifact_manifest_path opencode)"
+  opencode_link="$(find "$OPENCODE/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null || true)"
+  if [[ ! -f "$opencode_manifest" && -z "$opencode_link" ]]; then
+    pass "opencode not configured by Asha (skipping opencode checks)"
+  else
+    check_dangling "$OPENCODE" opencode skills:1
+    manifest_out="$(asha_artifact_doctor opencode 2>&1)"; manifest_rc=$?
+    if [[ $manifest_rc -eq 0 ]]; then
+      pass "generated-artifact ownership manifest clean (opencode)"
+    elif [[ $manifest_rc -eq 2 ]]; then
+      nope "generated-artifact ownership manifest missing (opencode; reinstall required)"
+    else
+      nope "generated-artifact ownership drift (opencode):"
+      printf '%s\n' "$manifest_out" | sed 's/^/  /'
+    fi
+    adapter="$ASHA/plugins/session/hooks/handlers/opencode-policy-adapter.sh"
+    [[ -x "$adapter" ]] \
+      && pass "OpenCode policy adapter is executable" \
+      || nope "OpenCode policy adapter missing or not executable: $adapter"
+    [[ -f "$OPENCODE/plugin/asha-guardrails.js" ]] \
+      && pass "OpenCode tool.execute.before guardrail plugin installed" \
+      || nope "OpenCode guardrail plugin missing: $OPENCODE/plugin/asha-guardrails.js"
+    info_line "persona loads via 'asha opencode' wrapper only; plain 'opencode' is persona-free"
+  fi
+fi
+
+# ===========================================================================
 # Bin + identity checks (always run)
 # ===========================================================================
 
@@ -470,9 +580,9 @@ if [[ -L "$user_bin" ]]; then
     "$ASHA"/*) pass "~/.local/bin/asha resolves into this checkout" ;;
     *) nope "~/.local/bin/asha resolves elsewhere: $t (foreign checkout? rerun ./install.sh --bin all)" ;;
   esac
-  for shim in asha-claude asha-codex asha-copilot; do
+  while IFS= read -r shim; do
     [[ -e "$HOME/.local/bin/$shim" ]] || warn "shim missing: ~/.local/bin/$shim (optional; ./install.sh --bin all)"
-  done
+  done < <(asha_harness_shims)
 elif [[ -e "$user_bin" ]]; then
   warn "~/.local/bin/asha exists but is not a symlink (legacy standalone wrapper?)"
 else

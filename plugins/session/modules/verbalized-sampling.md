@@ -125,4 +125,6 @@ Statistical fingerprints from the underlying model (perplexity distributions, to
 - **What VS helps**: Breaking stereotypical content, reducing modal outputs, adding surprising elements
 - **What VS cannot fix**: Underlying probability distributions, sentence-level perplexity uniformity, burstiness patterns
 
-For AI probability metrics, use `ai-detector` agent (GPTZero MCP). This module is for **diversity recovery**, not detection evasion.
+If AI-probability metrics are required, use a separately configured external
+detector and treat its result as weak evidence. Asha ships no detector agent.
+This module is for **diversity recovery**, not detection evasion.

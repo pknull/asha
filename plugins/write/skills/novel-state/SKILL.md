@@ -110,7 +110,7 @@ Story constraints that cannot be violated without human approval.
 
 ### state/[chapter]/metrics.json
 
-Per-chapter metrics from perplexity gate and other quality checks.
+Per-chapter drafting and review metadata. Store descriptive measurements and human or agent review outcomes, not unsupported authorship scores.
 
 ```json
 {
@@ -122,28 +122,21 @@ Per-chapter metrics from perplexity gate and other quality checks.
       "version": 1,
       "timestamp": "2026-03-09T10:00:00Z",
       "word_count": 2450,
-      "perplexity_gate": {
-        "verdict": "FAIL",
-        "metrics": {
-          "mean_perplexity": 24.3,
-          "low_ppl_ratio": 0.32,
-          "consecutive_low_max": 5
-        }
+      "review": {
+        "status": "changes-requested",
+        "reviewers": ["developmental-editor"],
+        "findings": 4
       }
     },
     {
       "version": 2,
       "timestamp": "2026-03-09T14:30:00Z",
       "word_count": 2380,
-      "perplexity_gate": {
-        "verdict": "PASS",
-        "metrics": {
-          "mean_perplexity": 31.8,
-          "low_ppl_ratio": 0.18,
-          "consecutive_low_max": 2
-        }
-      },
-      "rewrite_method": "VS-Tail"
+      "review": {
+        "status": "approved",
+        "reviewers": ["developmental-editor", "line-editor"],
+        "findings": 0
+      }
     }
   ],
   "status": "approved",
@@ -196,13 +189,13 @@ Structured timeline for consistency checking.
 
 2. Generate Draft 1 → save to `state/ch01/draft-1.md`
 
-3. Run perplexity gate → record results in `metrics.json`
+3. Run the project-selected editorial reviews → record outcomes in `metrics.json`
 
-4. If FAIL: Apply VS-Tail rewrite → save as `draft-2.md`
+4. If changes are requested: revise → save as `draft-2.md`
 
-5. If PASS: Proceed to structural edit
+5. After approval: proceed to finalization
 
-6. After approval: Copy to `final.md`
+6. Copy the approved draft to `final.md`
 
 7. Update symlink:
 
@@ -319,7 +312,8 @@ EOF
 
 | Skill | Relationship |
 |-------|--------------|
-| **perplexity-gate** | Writes to `metrics.json` |
+| **developmental-editor** | Supplies structural review outcomes for `metrics.json` |
+| **line-editor** | Supplies sentence-level review outcomes for `metrics.json` |
 | **continuity-reviewer** | Reads `bible/` and `timeline/` |
 | **book-export** | Reads `story/manuscript.md` |
 
@@ -332,6 +326,5 @@ EOF
 
 ## Related
 
-- `write/skills/perplexity-gate/` — Quality gate populating metrics
 - `write/agents/continuity-reviewer.md` — Validates against bible
 - `write/recipes/chapter-creation.yaml` — Chapter workflow using state

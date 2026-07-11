@@ -18,7 +18,7 @@ Catch issues early by running coordinated reviews after completing each section/
 The skill looks for review configuration in this order:
 
 1. **Project config**: `Vault/Books/[Project]/work/review-config.md`
-2. **Fallback default**: `.claude/defaults/review-config-default.md`
+2. **Fallback**: the default configuration documented below
 
 ### Config Format
 
@@ -31,7 +31,7 @@ agents:
     voice_guide: "Vault/Books/Example_Novel/work/prose_voice.md"
     documentation: "Vault/Books/Example_Novel/work/Example_Novel_Complete_Documentation.md"
 full_review_adds:
-  - agent: ai-detector
+  - agent: developmental-editor
 report_path: "Work/reports/example-novel/"
 ---
 ```
@@ -68,7 +68,7 @@ Facts-only review (continuity + docs):
 /review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --continuity --docs
 ```
 
-Full review (adds ai-detector if configured):
+Full review (adds project-configured specialist reviews):
 ```
 /review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --full
 ```
@@ -132,6 +132,6 @@ See `Vault/Books/Example_Novel/work/review-config.md` for a complete example.
 
 ## Notes
 
-- `--full` adds any agents listed in `full_review_adds` (typically ai-detector)
+- `--full` adds any installed agents listed in `full_review_adds`; unresolved names are reported and skipped
 - Reports accumulate in configured path for trend analysis
 - Run after every 2-3 sections during active drafting

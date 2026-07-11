@@ -7,21 +7,20 @@ allowed-tools: ["Bash"]
 
 # Silence Mode Toggle
 
-Controls the silence marker (`Work/markers/silence`) that disables all Memory logging and session capture.
+Controls the silence marker (`Work/markers/silence`) that disables transcript synthesis and Memory persistence.
 
 Additional context: $ARGUMENTS
 
 ## Behavior
 
 **When silence mode is ENABLED**:
-- Session watching disabled (no operations logged to current-session.md)
-- All Memory Bank hooks skip execution
-- Marker file automatically removed at session-end
+- Explicit and automatic synthesis are skipped
+- Clean session exit does not launch automatic save
+- Marker persists across sessions until explicitly disabled
 
 **When silence mode is DISABLED**:
-- Normal session capture resumes
-- Operations logged to Memory/sessions/current-session.md
-- Memory Bank hooks execute normally
+- Manual transcript synthesis resumes on every supported harness
+- Claude clean-exit automatic save resumes
 
 ## Usage
 
@@ -72,6 +71,6 @@ Execute appropriate bash commands above based on the argument.
 
 ## Notes
 
-- Silence marker persists until explicitly disabled (`/silence off`)
+- Silence marker persists until explicitly disabled (`/session:silence off`)
 - Use for experimental sessions, debugging, or when Memory logging unwanted
 - Related marker: `Work/markers/rp-active` (RP mode, disables session watching only, auto-removed at session-end)

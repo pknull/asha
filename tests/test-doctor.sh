@@ -53,11 +53,12 @@ grep -q "persona loads via 'asha copilot' wrapper only" <<<"$out" \
 echo "--- test 2: broken copilot install fails, --fix heals what it owns ---"
 # 2a. dangling asha-rooted symlink
 ln -s "$REPO_ROOT/plugins/does-not-exist" "$SANDBOX/.copilot/skills/dangler"
-# 2b. stale+wrong generated command-skill (content differs, mtime old)
+# 2b. content-drifted generated command-skill. Keep a current timestamp to
+# prove doctor compares deterministic bytes rather than mtimes.
 stale_md="$SANDBOX/.copilot/skills/session-save/SKILL.md"
 if [[ -f "$stale_md" ]]; then
   echo "corrupted" > "$stale_md"
-  touch -t 200001010000 "$stale_md"
+  touch "$stale_md"
 else
   fail "fixture: expected generated command-skill at $stale_md"
 fi
@@ -71,13 +72,13 @@ else
 fi
 out="$(run --target copilot 2>&1 || true)"
 grep -q "dangling asha symlinks" <<<"$out" && ok "dangling symlink detected" || fail "dangling symlink detected"
-grep -q "command-skill stale" <<<"$out" && ok "stale command-skill detected" || fail "stale command-skill detected"
+grep -q "command-skill content drifted" <<<"$out" && ok "content-drifted command-skill detected" || fail "content-drifted command-skill detected"
 grep -q "guardrails file content drifted" <<<"$out" && ok "guardrails drift detected" || fail "guardrails drift detected"
 
 out="$(run --target copilot --fix 2>&1 || true)"
-grep -q "FIXED  regenerated stale command-skill" <<<"$out" \
-  && ok "--fix regenerates the stale command-skill" \
-  || fail "--fix regenerates the stale command-skill"
+grep -q "FIXED  regenerated drifted command-skill" <<<"$out" \
+  && ok "--fix regenerates the content-drifted command-skill" \
+  || fail "--fix regenerates the content-drifted command-skill"
 grep -q "FIXED  rewrote guardrails file" <<<"$out" \
   && ok "--fix rewrites drifted guardrails" \
   || fail "--fix rewrites drifted guardrails"

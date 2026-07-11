@@ -16,7 +16,7 @@ Removal is irreversible. Every deletion must be verified safe through multiple c
 
 ## Risk Classification
 
-### SAFE (Remove freely)
+### LOW RISK (Verify before removing)
 
 - Unused local variables
 - Unused private functions
@@ -38,7 +38,7 @@ Removal is irreversible. Every deletion must be verified safe through multiple c
 - Config files
 - Anything touched in last 30 days
 
-### NEVER REMOVE
+### HIGH RISK (Require explicit scope and repository-specific verification)
 
 - Authentication/authorization code
 - Security-related functions
@@ -89,13 +89,13 @@ For each candidate removal:
 
 ### Phase 3: Safe Removal
 
-1. Remove in small batches (max 5 items per commit)
-2. Run full test suite after each batch
-3. Document each removal in DELETION_LOG.md
+1. Remove in reviewable batches sized for the repository and request
+2. Run the narrow relevant tests after each batch, then the required project suite
+3. Record removals in an existing project changelog only when project policy requires it
 
-## Deletion Log Format
+## Optional Deletion Record
 
-Create or append to `docs/DELETION_LOG.md`:
+If the repository already requires a deletion log, follow its established format. Do not create an unrequested tracking file.
 
 ```markdown
 ## [DATE] Cleanup Session
@@ -142,7 +142,7 @@ Before ANY removal:
 - [ ] Confirmed not part of public API
 - [ ] Tests pass before removal
 - [ ] Tests pass after removal
-- [ ] Documented in DELETION_LOG.md
+- [ ] Recorded where required by repository policy
 
 ## Output Format
 
@@ -150,7 +150,7 @@ Before ANY removal:
 CLEANUP ANALYSIS
 ================
 
-SAFE TO REMOVE:
+LOW-RISK CANDIDATES:
 - [item] - [verification method]
 
 NEEDS REVIEW:
@@ -169,5 +169,5 @@ If removal causes issues:
 
 1. Immediate: `git revert <commit>`
 2. Document in DELETION_LOG.md what went wrong
-3. Add to NEVER REMOVE list if appropriate
+3. Add a repository-specific guard only if the failure establishes a durable rule
 4. Improve detection methods

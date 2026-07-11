@@ -11,13 +11,7 @@ Extracts and records narrative state changes after a section passes all validati
 
 ## When to Deploy
 
-After a section passes:
-
-1. style-linter
-2. character-reviewer
-3. continuity-reviewer
-
-Only then run state-updater to record what changed.
+Run after the section has passed the review stages selected for the project, typically developmental or line review plus `continuity-reviewer`. The author decides which gates are required; this agent only records accepted state.
 
 ## Workflow
 

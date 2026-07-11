@@ -1,109 +1,56 @@
 {
-  "version": 2,
+  "$schema": "./capabilities.schema.json",
+  "schema_version": 3,
   "reviewed": "2026-07-11",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
-      "commands": {
-        "status": "native",
-        "surface": "~/.claude/commands/<namespace>/<command>.md"
-      },
-      "skills": {
-        "status": "native",
-        "surface": "~/.claude/skills/<name>/SKILL.md"
-      },
-      "agents": {
-        "status": "native_markdown",
-        "surface": "~/.claude/agents/<namespace>/<agent>.md"
-      },
-      "hooks": {
-        "status": "enforced",
-        "surface": "~/.claude/settings.json"
-      },
-      "guardrails": {
-        "status": "content_aware_hooks"
-      },
-      "persona": {
-        "status": "append_system_prompt_file"
+      "executable": "claude",
+      "home_env": "CLAUDE_HOME",
+      "capabilities": {
+        "commands": {"support": "native", "surface": "commands/<namespace>/<command>.md", "verifier": "doctor:symlinks", "limitations": []},
+        "skills": {"support": "native", "surface": "skills/<namespace>-<skill>", "verifier": "doctor:symlinks", "limitations": []},
+        "agents": {"support": "native", "surface": "agents/<namespace>/<agent>.md", "verifier": "doctor:symlinks", "limitations": []},
+        "hooks": {"support": "native", "surface": "settings.json", "verifier": "doctor:hook-paths", "limitations": []},
+        "persona": {"support": "native", "surface": "--append-system-prompt-file", "verifier": "launch-wrapper", "limitations": ["SessionStart supplies additional runtime context"]}
       }
     },
     "codex": {
-      "instructions": {
-        "status": "native_hierarchical",
-        "surface": "AGENTS.md and AGENTS.override.md"
-      },
-      "commands": {
-        "status": "rendered_as_skills",
-        "surface": "~/.codex/skills/<command-name>/SKILL.md",
-        "note": "Codex has built-in slash commands but no documented user-defined slash-command file surface."
-      },
-      "skills": {
-        "status": "native_compatible",
-        "surface": "~/.codex/skills/<skill-name>/SKILL.md",
-        "documented_authoring_surface": "$HOME/.agents/skills/<skill-name>/SKILL.md",
-        "note": "The Asha install path is verified by this Codex environment; current public documentation names $HOME/.agents/skills as the canonical user authoring location."
-      },
-      "agents": {
-        "status": "native_toml",
-        "surface": "~/.codex/agents/<namespace>-<agent>.toml"
-      },
-      "hooks": {
-        "status": "native_partial_guardrail",
-        "surface": "~/.codex/config.toml",
-        "documented_coverage": [
-          "simple Bash calls",
-          "apply_patch",
-          "MCP tool calls"
-        ],
-        "documented_gaps": [
-          "some unified_exec shell calls",
-          "WebSearch and other non-shell non-MCP tools"
-        ],
-        "note": "Non-managed hooks require trust. Matching hooks run concurrently. Hooks are not a complete enforcement boundary."
-      },
-      "guardrails": {
-        "status": "partial_hooks_plus_native_rules",
-        "surface": "~/.codex/config.toml and ~/.codex/rules/asha.rules",
-        "note": "Rules are prefix-based and govern commands requesting execution outside the sandbox."
-      },
-      "persona": {
-        "status": "model_instructions_file",
-        "note": "Wrapper-scoped replacement instruction file; repository AGENTS.md remains the durable project guidance surface."
-      },
-      "plugins": {
-        "status": "native_available_not_used_by_direct_installer",
-        "surface": ".codex-plugin/plugin.json",
-        "supports": [
-          "skills",
-          "hooks",
-          "MCP servers",
-          "apps/connectors",
-          "assets"
-        ]
+      "executable": "codex",
+      "home_env": "CODEX_HOME",
+      "capabilities": {
+        "commands": {"support": "rendered", "surface": "skills/<command>/SKILL.md", "verifier": "doctor:content", "limitations": ["No documented user-defined slash-command file surface"]},
+        "skills": {"support": "native", "surface": "skills/<skill>/SKILL.md", "verifier": "doctor:symlinks", "limitations": ["Public documentation names $HOME/.agents/skills as the canonical authoring location; this compatibility path is locally verified"]},
+        "agents": {"support": "rendered", "surface": "agents/<namespace>-<agent>.toml", "verifier": "doctor:content", "limitations": ["Claude-only tool names are mapped by instruction"]},
+        "hooks": {"support": "partial", "surface": "config.toml", "verifier": "doctor:toml-hooks", "limitations": ["Some unified_exec shell calls are not intercepted", "Non-shell non-MCP tools are not universally intercepted", "Hooks are not a complete enforcement boundary"]},
+        "guardrails": {"support": "partial", "surface": "config.toml and rules/asha.rules", "verifier": "doctor:rules", "limitations": ["Rules are prefix-based and apply at approval/sandbox boundaries"]},
+        "persona": {"support": "native", "surface": "model_instructions_file", "verifier": "launch-wrapper", "limitations": []},
+        "plugins": {"support": "unsupported", "surface": ".codex-plugin/plugin.json", "verifier": "none", "limitations": ["Native Codex plugin distribution exists but Asha's direct installer does not emit it"]}
       }
     },
     "copilot": {
-      "commands": {
-        "status": "rendered_as_skills",
-        "surface": "~/.copilot/skills/<command-name>/SKILL.md"
-      },
-      "skills": {
-        "status": "native",
-        "surface": "~/.copilot/skills/<skill-name>/SKILL.md"
-      },
-      "agents": {
-        "status": "native_agent_md",
-        "surface": "~/.copilot/agents/<namespace>-<agent>.agent.md"
-      },
-      "hooks": {
-        "status": "adapter_enforced_with_concurrency_caveat",
-        "surface": "~/.copilot/hooks/asha-guardrails.json"
-      },
-      "guardrails": {
-        "status": "content_aware_adapter_soft_deterrent"
-      },
-      "persona": {
-        "status": "custom_instructions_dir"
+      "executable": "copilot",
+      "home_env": "COPILOT_HOME",
+      "capabilities": {
+        "commands": {"support": "rendered", "surface": "skills/<command>/SKILL.md", "verifier": "doctor:content", "limitations": []},
+        "skills": {"support": "native", "surface": "skills/<skill>/SKILL.md", "verifier": "doctor:symlinks", "limitations": []},
+        "agents": {"support": "rendered", "surface": "agents/<namespace>-<agent>.agent.md", "verifier": "doctor:content", "limitations": ["Claude-only frontmatter is removed"]},
+        "hooks": {"support": "partial", "surface": "hooks/asha-guardrails.json", "verifier": "doctor:guardrails", "limitations": ["Parallel tool calls can bypass PreToolUse"]},
+        "guardrails": {"support": "partial", "surface": "hooks/asha-guardrails.json", "verifier": "doctor:guardrails", "limitations": ["Soft deterrent, not containment"]},
+        "persona": {"support": "native", "surface": "COPILOT_CUSTOM_INSTRUCTIONS_DIRS", "verifier": "launch-wrapper", "limitations": []}
+      }
+    },
+    "opencode": {
+      "executable": "opencode",
+      "home_env": "ASHA_OPENCODE_HOME",
+      "capabilities": {
+        "commands": {"support": "native", "surface": "command/<command>.md", "verifier": "doctor:content", "limitations": ["Rendered frontmatter omits Claude-only fields"]},
+        "skills": {"support": "native", "surface": "skills/<skill>/SKILL.md", "verifier": "doctor:symlinks", "limitations": []},
+        "agents": {"support": "rendered", "surface": "agent/<namespace>-<agent>.md", "verifier": "doctor:content", "limitations": ["Claude-only tool names are mapped by instruction"]},
+        "hooks": {"support": "native", "surface": "plugin/asha-guardrails.js", "verifier": "doctor:content", "limitations": ["Asha ask policies degrade to deny because tool.execute.before exposes no portable permission-prompt response"]},
+        "guardrails": {"support": "partial", "surface": "plugin/asha-guardrails.js", "verifier": "doctor:content", "limitations": ["Plugin failures are fail-open", "Not a sandbox boundary"]},
+        "persona": {"support": "native", "surface": "OPENCODE_CONFIG_CONTENT instructions", "verifier": "launch-wrapper", "limitations": ["Wrapper-scoped; plain opencode remains persona-free"]},
+        "memory": {"support": "partial", "surface": "~/.local/share/opencode/storage", "verifier": "python-tests", "limitations": ["Manual save only; OpenCode has no Asha SessionEnd persistence hook"]}
       }
     }
   }

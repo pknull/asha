@@ -14,11 +14,14 @@ Coverage:
 """
 
 import io
+import json
 import os
+import tempfile
 import sys
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 TOOLS_DIR = REPO_ROOT / "plugins" / "session" / "tools"
@@ -192,6 +195,103 @@ class CopilotParserTests(unittest.TestCase):
         # report_intent is Copilot internal narration with no synth value.
         for s in synth:
             self.assertNotEqual(s["metadata"]["tool_name"], "report_intent")
+
+
+class OpenCodeStorageTests(unittest.TestCase):
+    """Parse a bounded OpenCode directory-storage fixture."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="asha_opencode_")
+        self.home = Path(self.tmp.name)
+        self.storage = self.home / ".local/share/opencode/storage"
+        self.project = self.home / "project"
+        self.project.mkdir(parents=True)
+        self.sid = "ses_fixture"
+        project_id = "project_fixture"
+        session_dir = self.storage / "session" / project_id
+        session_dir.mkdir(parents=True)
+        self.session_path = session_dir / f"{self.sid}.json"
+        self.session_path.write_text(json.dumps({
+            "id": self.sid,
+            "projectID": project_id,
+            "directory": str(self.project),
+            "time": {"created": 1000, "updated": 4000},
+            "title": "Fixture",
+        }))
+
+        messages = [
+            ("msg_user", "user", 1000),
+            ("msg_assistant", "assistant", 2000),
+        ]
+        for mid, role, created in messages:
+            message_dir = self.storage / "message" / self.sid
+            message_dir.mkdir(parents=True, exist_ok=True)
+            (message_dir / f"{mid}.json").write_text(json.dumps({
+                "id": mid, "sessionID": self.sid, "role": role,
+                "time": {"created": created},
+            }))
+            (self.storage / "part" / mid).mkdir(parents=True)
+
+        (self.storage / "part/msg_user/prt_text.json").write_text(json.dumps({
+            "id": "prt_text", "sessionID": self.sid, "messageID": "msg_user",
+            "type": "text", "text": "Update the configuration",
+        }))
+        (self.storage / "part/msg_assistant/prt_tool.json").write_text(json.dumps({
+            "id": "prt_tool", "sessionID": self.sid, "messageID": "msg_assistant",
+            "type": "tool", "tool": "edit",
+            "state": {"status": "completed", "input": {
+                "filePath": str(self.project / "config.toml"),
+                "oldString": "a", "newString": "b",
+            }, "time": {"start": 2500}},
+        }))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_locates_newest_matching_project_session(self):
+        with mock.patch.dict(
+            os.environ,
+            {"HOME": str(self.home), "XDG_DATA_HOME": str(self.home / ".local/share")},
+            clear=False,
+        ):
+            path = jsonl_reader.locate_session_log("opencode", self.project)
+        self.assertEqual(path, self.session_path)
+
+    def test_location_honors_xdg_data_home(self):
+        custom = self.home / "custom-data"
+        target = custom / "opencode/storage"
+        target.parent.mkdir(parents=True)
+        import shutil
+        shutil.copytree(self.storage, target)
+        expected = target / "session/project_fixture" / f"{self.sid}.json"
+        with mock.patch.dict(
+            os.environ,
+            {"HOME": str(self.home / "unused-home"), "XDG_DATA_HOME": str(custom)},
+            clear=False,
+        ):
+            path = jsonl_reader.locate_session_log("opencode", self.project)
+        self.assertEqual(path, expected)
+
+    def test_resolves_session_identity_from_metadata(self):
+        identity = jsonl_reader.resolve_identity(
+            self.project, harness="opencode", transcript=self.session_path
+        )
+        self.assertEqual(identity.session_id, self.sid)
+        self.assertEqual(identity.harness, "opencode")
+
+    def test_joins_message_and_part_records(self):
+        events = list(jsonl_reader.stream_events(self.session_path, "opencode"))
+        prompts = [event for event in events if event.kind == "prompt"]
+        tools = [event for event in events if event.kind == "tool_use"]
+        self.assertEqual([event.text for event in prompts], ["Update the configuration"])
+        self.assertEqual([event.tool for event in tools], ["edit"])
+
+        synth = jsonl_reader.to_synth_events(
+            events, project_dir=self.project, session_id=self.sid
+        )
+        modified = [event for event in synth if event["subtype"] == "file_modified"]
+        self.assertEqual(len(modified), 1)
+        self.assertEqual(modified[0]["payload"]["file_path"], "config.toml")
 
 
 class SchemaDriftTests(unittest.TestCase):

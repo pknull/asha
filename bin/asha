@@ -35,9 +35,8 @@ export ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 
 IDENTITY_DIR="$ASHA_ROOT/identity"
 MERGE_SCRIPT="$IDENTITY_DIR/identity-merge.sh"
-HARNESSES="claude codex copilot"
 
-die()  { echo "asha: $*" >&2; exit "${2:-1}"; }
+die()  { echo "asha: ${1:-error}" >&2; exit "${2:-1}"; }
 info() { echo "$*" >&2; }
 
 # ---- shared env: secrets + portable helpers ----
@@ -45,21 +44,20 @@ info() { echo "$*" >&2; }
 [[ -r "$SCRIPT_DIR/asha-env-bootstrap.sh" ]] && source "$SCRIPT_DIR/asha-env-bootstrap.sh"
 # shellcheck source=../lib/portable.sh
 source "$ASHA_ROOT/lib/portable.sh"
+# shellcheck source=../harnesses/registry.sh
+source "$ASHA_ROOT/harnesses/registry.sh"
+HARNESSES="$(asha_harnesses | tr '\n' ' ')"
 
-is_harness() { case " $HARNESSES " in *" ${1:-} "*) return 0 ;; *) return 1 ;; esac; }
-is_target()  { case "${1:-}" in claude|codex|copilot|both|all) return 0 ;; *) return 1 ;; esac; }
+is_harness() { asha_harness_exists "${1:-}"; }
+is_target()  { asha_target_exists "${1:-}"; }
 
 # Has the harness itself been initialized (its native config exists)? The
 # claude/codex harness installers deliberately refuse to fabricate the harness's
 # own config file (settings.json / config.toml) and require it to pre-exist;
 # copilot bootstraps its own. Used to give a clean message before auto-config.
 harness_initialized() {
-  case "$1" in
-    claude)  [[ -f "$HOME/.claude/settings.json" ]] ;;
-    codex)   [[ -f "$HOME/.codex/config.toml" ]] ;;
-    copilot) return 0 ;;
-    *)       return 0 ;;
-  esac
+  asha_harness_requires_native_config "$1" || return 0
+  [[ -f "$(asha_harness_native_config "$1")" ]]
 }
 
 default_harness() {
@@ -80,10 +78,21 @@ harness_configured() {
   local h
   h="$1"
   local home
-  home="$HOME/.$h"
+  home="$(asha_harness_home "$h")"
   local sub dir entry tgt foreign
   foreign=0
-  for sub in skills agents commands output-styles; do
+  local manifest="${ASHA_HOME:-$HOME/.asha}/install-manifests/$h.json"
+  if [[ -s "$manifest" ]]; then
+    if jq -e --arg root "$ASHA_ROOT/" \
+        '(.artifacts | length) > 0 and (.artifacts | all((.source // "") | startswith($root)))' \
+        "$manifest" >/dev/null 2>&1; then
+      return 0
+    fi
+    foreign=1
+  fi
+  local scan_dirs="skills agents commands output-styles"
+  [[ "$h" == opencode ]] && scan_dirs="skills agent command plugin"
+  for sub in $scan_dirs; do
     dir="$home/$sub"
     [[ -d "$dir" ]] || continue
     for entry in "$dir"/*; do
@@ -132,7 +141,7 @@ maybe_configure() {
 exec_copilot() {
   local instr cmd
   instr="${ASHA_COPILOT_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-copilot.md}"
-  cmd="${ASHA_COPILOT_CMD:-copilot}"
+  cmd="$(asha_harness_executable copilot)"
   export ASHA_PERSONA=1
 
   if [[ ! -x "$MERGE_SCRIPT" ]]; then
@@ -183,6 +192,8 @@ exec_copilot() {
 
 launch() {
   local h="$1"; shift
+  local executable
+  executable="$(asha_harness_executable "$h")" || die "unknown harness: $h"
   export ASHA_HARNESS="$h"   # let policy/intervention hooks branch by harness (e.g. ask vs deny)
   case "$h" in
     claude)
@@ -190,15 +201,15 @@ launch() {
       # not get --append-system-prompt-file (it forces them out of TTY mode).
       case "${1:-}" in
         agents|auth|auto-mode|doctor|install|mcp|plugin|plugins|project|setup-token|ultrareview|update|upgrade)
-          exec claude "$@" ;;
+          exec "$executable" "$@" ;;
       esac
       local id="$IDENTITY_DIR/asha-identity-system-prompt.md"
       export ASHA_PERSONA=1
       if [[ -f "$id" ]]; then
-        exec claude --append-system-prompt-file "$id" "$@"
+        exec "$executable" --append-system-prompt-file "$id" "$@"
       else
         info "warn: identity file not found at $id; persona will load via hook only"
-        exec claude "$@"
+        exec "$executable" "$@"
       fi
       ;;
     codex)
@@ -221,13 +232,40 @@ launch() {
           fi
           rm -f "$op_tmp"
         fi
-        exec codex -c "model_instructions_file=\"$instr\"" "$@"
+        exec "$executable" -c "model_instructions_file=\"$instr\"" "$@"
       fi
       info "warn: identity merge failed; launching plain codex"
-      exec codex "$@"
+      exec "$executable" "$@"
       ;;
     copilot)
       exec_copilot "$@"
+      ;;
+    opencode)
+      local base instr op_merge op_tmp cfg
+      base="${ASHA_OPENCODE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-opencode.md}"
+      instr="$base"
+      export ASHA_PERSONA=1
+      if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
+        op_merge="$IDENTITY_DIR/operational-merge.sh"
+        if [[ -x "$op_merge" ]]; then
+          op_tmp="$(mktemp)"
+          if "$op_merge" "$op_tmp" 2>/dev/null; then
+            instr="$HOME/.cache/asha/instructions-opencode-combined.md"
+            { cat "$base"; printf '\n\n'; cat "$op_tmp"; } >"$instr"
+          fi
+          rm -f "$op_tmp"
+        fi
+        # OpenCode merges OPENCODE_CONFIG_CONTENT with normal global, project,
+        # and OPENCODE_CONFIG_DIR configuration. Append our launch-scoped
+        # instruction file without hiding a user's custom config directory.
+        cfg="$(jq -cn --argjson base "${OPENCODE_CONFIG_CONTENT:-{}}" --arg f "$instr" \
+          '$base * {instructions: (($base.instructions // []) + [$f] | unique)}')" \
+          || die "OPENCODE_CONFIG_CONTENT is not valid JSON"
+        export OPENCODE_CONFIG_CONTENT="$cfg"
+        exec "$executable" "$@"
+      fi
+      info "warn: identity merge failed; launching plain opencode"
+      exec "$executable" "$@"
       ;;
     *) die "unknown harness: $h" ;;
   esac
@@ -239,17 +277,17 @@ asha — cross-agent dispatcher
 
 Usage:
   asha [HARNESS] [args...]         launch a harness (default: configured default, else claude)
-  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|both|all)
+  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|opencode|both|all)
   asha uninstall <target> [...]    remove Asha from a harness
   asha build copilot [...]         package plugins for Copilot-native distribution
                                    (--only ns,.. --out DIR --version X.Y.Z --dry-run --force)
-  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|all)
+  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|opencode|all)
                                    (Claude Code's native doctor: asha claude doctor)
   asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
                                    (--dry-run | --check for CI | --force)
   asha-<harness> [args...]         shim form (launch that harness)
 
-Harnesses: claude | codex | copilot
+Harnesses: claude | codex | copilot | opencode
 Flags:
   --yes, -y        skip the first-run configure prompt (or set ASHA_YES=1)
 
@@ -267,9 +305,7 @@ EOF
 
 cmd="$(basename "$0")"
 case "$cmd" in
-  asha-claude|asha-codex|asha-copilot)
-    launch "${cmd#asha-}" "$@"
-    ;;
+  asha-*) shim_harness="${cmd#asha-}"; is_harness "$shim_harness" && launch "$shim_harness" "$@" ;;
 esac
 
 # Dispatcher form (invoked as `asha`).

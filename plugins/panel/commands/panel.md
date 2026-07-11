@@ -125,7 +125,7 @@ Just runs Socratic Q&A workflow for requirements crystallization. No decompositi
 
 ## Dynamic Panelists (Recruited Per Topic)
 
-The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-specific names** based on topic context.
+The Analyst assigns agents from the current harness's installed agent catalogue, with the source corpus under `plugins/*/agents/*.md` as the portable fallback. Agents receive evocative session-specific names based on topic context.
 
 **Examples by Topic Type**:
 
@@ -133,20 +133,19 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 
 - `prose-analysis` → **"The Editor"** (craft assessment)
 - `intimacy-arbiter` → **"The Architect of Dread"** (genre mechanics)
-- `narrative-architect` → **"The Structuralist"** (story coherence)
-- `character-developer` → **"The Psychologist"** (character authenticity)
+- `developmental-editor` → **"The Structuralist"** (story coherence)
+- `continuity-reviewer` → **"The Continuity Keeper"** (character and world-state consistency)
 
 **Technical Architecture Panel** (GraphQL vs REST):
 
-- `research-assistant` → **"The Evidence Gatherer"** (source validation)
+- `codebase-historian` → **"The Evidence Gatherer"** (repository evidence)
 - `reviewer` → **"The Systems Designer"** (architecture patterns)
-- `ml-engineer` → **"The Model Capability Analyst"** (performance analysis)
+- `postgres` skill → **"The Data Architect"** (database-specific analysis when relevant)
 
 **Culinary Innovation Panel** (How do we pimp fish):
 
-- `research-assistant` → **"The Culinary Historian"** (technique research)
-- `trend-analyst` → **"The Flavor Prophet"** (emerging patterns)
-- `creative-director` → **"The Presentation Architect"** (plating design)
+- Use grounded web research through an available search skill for technique history and current evidence.
+- Recruit installed specialists only when their documented capability fits; otherwise run the research phase inline or record a capability gap.
 
 **Session-Specific Naming Convention**:
 
@@ -225,7 +224,7 @@ Standard panel protocol with decomposition context injected.
   - Add entry to `Work/panels/index.json`
 - Analyze topic domain (technical, creative, research-heavy, security-critical)
 - Determine required expertise areas (2-5 domains typical)
-- Search agent library systematically (`.claude/agents/*.md`)
+- Search the current harness's installed agent catalogue; fall back to `plugins/*/agents/*.md` in the Asha source corpus
 - Score agents 0-10 for topic capability match:
   - 10: Perfect specialist match
   - 7-9: Strong capabilities alignment
@@ -259,7 +258,7 @@ Standard panel protocol with decomposition context injected.
 - Compare proposals against existing assets to avoid duplication:
   - Memory files (workflowProtocols.md, activeContext.md)
   - Commands (/panel, /save, /notes, /validate-vault)
-  - Agents (research-assistant, narrator, etc.)
+  - Installed agents and skills relevant to the topic
 - Output "Existing Infrastructure Comparison"
 - Redirect to enhancement if duplicative
 
@@ -562,7 +561,7 @@ The `--context` flag pre-loads reference material before panel deliberation:
 
 - Same agent becomes different "character" depending on context
 - `prose-analysis` → "The Editor" (creative), "The Code Reviewer" (technical), "The Stylist" (marketing)
-- `research-assistant` → "The Archivist" (historical), "The Evidence Gatherer" (legal), "The Data Scout" (analytics)
+- `codebase-historian` → "The Archivist" (repository history) or "The Evidence Gatherer" (prior-art analysis)
 - Names should reflect domain context and analytical role
 
 **Gap Detection & Agent Creation**:
@@ -577,7 +576,7 @@ Core roles have documented profiles in `plugins/panel/docs/characters/`:
 - **The Analyst.md** - Workforce Intelligence
 - **The Challenger.md** - Opposition & Quality Gate
 
-Recruited specialists are documented in `.claude/agents/*.md` (agent count varies by host project).
+Recruited specialists come from the current harness's agent catalogue. In the source repository, portable definitions live under `plugins/*/agents/*.md`.
 
 ## Persistence Architecture
 
@@ -654,7 +653,7 @@ Work/
     "core": ["The Moderator", "Analyst", "Challenger", "The Thinker"],
     "specialists": [
       {"agent": "reviewer", "session_name": "The Systems Designer", "score": 9},
-      {"agent": "research-assistant", "session_name": "The Evidence Gatherer", "score": 8}
+      {"agent": "codebase-historian", "session_name": "The Evidence Gatherer", "score": 8}
     ]
   },
   "goals": ["Determine optimal API strategy", "Consider team expertise"],

@@ -15,7 +15,7 @@ flowchart TB
     subgraph LIFECYCLE["Session lifecycle"]
         START([SessionStart hook])
         WORK([work happens])
-        SAVE([/session:save or session-end])
+        SAVE([manual save on all harnesses; clean SessionEnd on Claude])
     end
 
     subgraph ASHA["~/.asha/ — cross-project, user-global, travels with you"]
@@ -41,7 +41,7 @@ flowchart TB
     START -->|render-hot ≥0.7| LRN
     START -->|if persona| PERS
     START -.->|harness injects| AM
-    WORK -->|capture events| EV
+    WORK -->|native transcript, regenerated at save| EV
     SAVE -->|synthesize from events| AC
     SAVE -->|upsert + prune noise + validate| LRN
     LRN -->|visualize.py / validate.py| TOOL["viz.html · graph.mmd · index.md"]
@@ -84,12 +84,20 @@ the Claude Code harness manages on its own; Asha neither writes nor depends on i
 - **SessionStart reads.** The hook injects `operation.md` + the learnings hot tier
   (`render-hot`, top ≤10 entries with Confidence ≥ 0.7, byte-budgeted), plus the
   persona files when `ASHA_PERSONA=1`.
-- **The session captures.** Tool use and prompts are logged to
-  `Memory/events/*.jsonl` — raw material, not yet refined.
-- **`/save` (or clean session-end) writes.** `pattern_analyzer.py` synthesizes
+- **The harness records.** Each harness owns its native transcript. At save time,
+  Asha regenerates `Memory/events/*.jsonl` from that transcript. Copilot capture
+  is partial for existing-file edits until a stable native schema is verified.
+- **Manual `/save` writes on every harness.** `pattern_analyzer.py` synthesizes
   `activeContext.md` from the event log; `learnings_manager.py` upserts new
   learnings into the bundle; `save_guardrail.py` prunes noise; `validate.py` checks
   the bundle (warn-only); `Memory/` is committed.
+- **Automatic clean-exit save is Claude-only.** Codex, Copilot, and OpenCode have
+  no Asha SessionEnd lifecycle path and require manual save. A silence marker
+  suppresses both explicit synthesis and Claude automatic save, and persists
+  until explicitly disabled.
+- **Global calibration is interactive policy.** Automatic save never writes
+  `~/.asha/keeper.md` or `~/.asha/voice.md`. Explicit save can do so only when
+  `capture_calibration` is true in `~/.asha/config.json`.
 
 So the event log is the input, and `activeContext` + `learnings/` are the refined
 outputs a future cold-start session actually reads.

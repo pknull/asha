@@ -28,7 +28,7 @@
 # And these helpers (defined in the dispatcher):
 #   die, log, say, ensure_dir, mklink, ns_for, selected_plugins, info
 
-COPILOT_HOME="${COPILOT_HOME:-$HOME/.copilot}"
+COPILOT_HOME="$(asha_harness_home copilot)"
 COPILOT_SKILLS_DIR="$COPILOT_HOME/skills"
 COPILOT_AGENTS_DIR="$COPILOT_HOME/agents"
 COPILOT_HOOKS_FILE="$COPILOT_HOME/hooks/hooks.json"
@@ -390,6 +390,7 @@ copilot_install() {
   # No longer bootstrap COPILOT_HOOKS_FILE — would orphan the file.
 
   say "[copilot] target = $COPILOT_HOME"
+  asha_artifact_begin copilot
 
   local plugin_dir ns
   while read -r plugin_dir; do
@@ -411,6 +412,7 @@ copilot_install() {
   say ""
   say "== [copilot] hooks =="
   copilot_install_hooks
+  asha_artifact_finalize copilot "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)"
 }
 
 # ---------------------------------------------------------------------------
@@ -422,9 +424,21 @@ copilot_uninstall() {
   command -v python3 >/dev/null 2>&1 || die "python3 required for Copilot uninstall (frontmatter parsing)" 3
   [[ -d "$COPILOT_HOME" ]] || { say "[copilot] $COPILOT_HOME does not exist; nothing to remove"; COPILOT_UNINSTALL_TOTAL=0; return 0; }
 
+  local ownership_manifest
+  ownership_manifest="$(asha_artifact_manifest_path copilot)"
+  if [[ ! -f "$ownership_manifest" ]] && {
+       grep -rlq '## Copilot harness adapter' "$COPILOT_SKILLS_DIR" 2>/dev/null \
+       || find "$COPILOT_AGENTS_DIR" -maxdepth 1 -type f -name '*.agent.md' -print -quit 2>/dev/null | grep -q .;
+     }; then
+    die "pre-manifest Copilot artifacts detected; run 'asha install copilot --force' once, then retry uninstall" 2
+  fi
+
   say "[copilot] target = $COPILOT_HOME"
 
   local total=0 n
+  n="$(asha_artifact_uninstall copilot)"
+  [[ "$n" -gt 0 ]] && say "[copilot] removed $n owned generated artifact(s)"
+  total=$((total + n))
 
   # Skills cleanup — same three categories as codex:
   #   1. Whole-dir symlinks (plugin skills)
@@ -434,29 +448,6 @@ copilot_uninstall() {
     n="$(remove_symlinks_under "$COPILOT_SKILLS_DIR" 2)"
     [[ "$n" -gt 0 ]] && say "[copilot] removed $n skill symlink(s) from $COPILOT_SKILLS_DIR"
     total=$((total + n))
-
-    # Generated command-skills (real files): identify by walking plugin command MDs,
-    # reading their declared name, and checking if a non-symlink SKILL.md exists.
-    local removed_generated=0
-    while IFS= read -r cmd; do
-      [[ -f "$cmd" ]] || continue
-      case "$cmd" in *output-styles*) continue ;; esac
-      local declared_name
-      declared_name="$(_copilot_skill_name_from_md "$cmd")"
-      [[ -z "$declared_name" ]] && continue
-      local skill_md="$COPILOT_SKILLS_DIR/$declared_name/SKILL.md"
-      if [[ -f "$skill_md" && ! -L "$skill_md" ]]; then
-        if [[ $DRY_RUN -eq 1 ]]; then
-          info "  RM (generated)  $skill_md"
-        else
-          rm -f "$skill_md"
-          log "removed generated command-skill: $skill_md"
-        fi
-        removed_generated=$((removed_generated+1))
-      fi
-    done < <(find "$PLUGINS_DIR" -mindepth 3 -maxdepth 3 -path '*/commands/*.md' -type f 2>/dev/null)
-    [[ $removed_generated -gt 0 ]] && say "[copilot] removed $removed_generated generated command-skill(s)"
-    total=$((total + removed_generated))
 
     # Prune now-empty skill dirs that we created (only real dirs, not .system).
     while IFS= read -r d; do
@@ -478,28 +469,6 @@ copilot_uninstall() {
     [[ "$n" -gt 0 ]] && say "[copilot] removed $n agent symlink(s) from $COPILOT_AGENTS_DIR"
     total=$((total + n))
 
-    local removed_generated_agents=0
-    while IFS= read -r agent; do
-      [[ -f "$agent" ]] || continue
-      local plugin_dir ns declared_name base dest
-      plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
-      ns="$(ns_for "$plugin_dir")"
-      base="$(basename "$agent" .md)"
-      declared_name="$(_copilot_skill_name_from_md "$agent")"
-      [[ -n "$declared_name" ]] || declared_name="$base"
-      dest="$COPILOT_AGENTS_DIR/${ns}-${declared_name}.agent.md"
-      if [[ -f "$dest" && ! -L "$dest" ]]; then
-        if [[ $DRY_RUN -eq 1 ]]; then
-          info "  RM (generated agent)  $dest"
-        else
-          rm -f "$dest"
-          log "removed generated Copilot agent: $dest"
-        fi
-        removed_generated_agents=$((removed_generated_agents+1))
-      fi
-    done < <(find "$PLUGINS_DIR" -mindepth 3 -maxdepth 3 -path '*/agents/*.md' -type f 2>/dev/null)
-    [[ $removed_generated_agents -gt 0 ]] && say "[copilot] removed $removed_generated_agents generated agent file(s)"
-    total=$((total + removed_generated_agents))
   fi
 
   # Asha's dedicated guardrails file (the current install path).

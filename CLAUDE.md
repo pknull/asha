@@ -35,7 +35,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 ## Project Overview
 
-**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot) providing tools for multi-perspective analysis, code review, creative writing, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md).
+**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot, OpenCode) providing tools for multi-perspective analysis, code review, creative writing, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md).
 
 ### Current Plugins
 
@@ -45,7 +45,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.2.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
-| **Write** | v1.5.0 | Creative | Prose craft, continuity, perplexity detection — 10 agents, 5 skills |
+| **Write** | v1.5.0 | Creative | Prose craft, continuity, and style analysis — 9 agents, 4 skills |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
 | **Admin** | v0.1.0 | Integrations | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
 | **Security** | v1.0.0 | Security | Web-app security review checklist skill |
@@ -102,10 +102,10 @@ asha/
 │   │   └── tools/                    # save pipeline, jsonl_reader, learnings, event_store …
 │   ├── test/                         # installer canary (ping command/skill/agent, stop hook)
 │   └── write/                        # creative writing
-│       ├── agents/                   # 10 agents
-│       ├── commands/                 # init-novel, perplexity, review-section
+│       ├── agents/                   # 9 agents
+│       ├── commands/                 # init-novel, review-section
 │       ├── skills/                   # book-export, languagetool, novel-state,
-│       │                             #   perplexity-gate, style-analyzer
+│       │                             #   style-analyzer
 │       ├── recipes/                  # 3 writing workflows
 │       ├── engines/                  # rp-draft-loop.js
 │       ├── craft/                    # craft-core-universal, director-rubric
@@ -381,12 +381,12 @@ fi
 
 # Defensive directory creation
 mkdir -p "$PROJECT_DIR/Memory/sessions"
-mkdir -p "$PROJECT_DIR/Memory/markers"
+mkdir -p "$PROJECT_DIR/Work/markers"
 ```
 
 ### Documentation: single source of truth for harness verdicts
 
-Cross-harness capability and enforcement **verdicts** — what works on Claude vs Codex vs Copilot (persona, operational layer, PreToolUse guardrails, output styles) — live in **one** place: [`docs/harness-enforcement.md`](docs/harness-enforcement.md). Every other doc (README, INSTALLER, plugin READMEs) describes **mechanism** (how a thing is installed/injected) and **links** to that doc for current status — it must not restate the verdict.
+Cross-harness capability and enforcement **verdicts** — what works on Claude, Codex, Copilot, and OpenCode — live in **one** place: [`docs/harness-enforcement.md`](docs/harness-enforcement.md). Every other doc describes mechanism and links to that document for current status.
 
 This is the `feedback_no_duplication` rule applied to prose: the same status fact lived in five docs and drifted three times in a single session. When a capability changes, edit `harness-enforcement.md` and add a README Version History line — do not hand-propagate the claim across satellite docs.
 
@@ -434,9 +434,9 @@ dependencies: ["file1.md", "file2.md"]  # Optional
 
 | Marker | Effect | Created By | Removed By |
 |--------|--------|-----------|-----------|
-| `Memory/markers/silence` | Disable ALL Memory logging | `/silence on` | `/silence off` or session-end |
-| `Memory/markers/rp-active` | Disable session watching | Manual | session-end hook |
-| `Memory/markers/prompt-refine` | Enable LanguageTool API | Manual | Manual |
+| `Work/markers/silence` | Disable all Memory persistence | `/session:silence on` | `/session:silence off` |
+| `Work/markers/rp-active` | Enable RP routing and suppress ordinary watching | Manual | session-end hook |
+| `Work/markers/prompt-refine` | Enable LanguageTool API | Manual | Manual |
 
 ### Hook Behavior with Markers
 
@@ -444,13 +444,13 @@ dependencies: ["file1.md", "file2.md"]  # Optional
 
 ```bash
 # Exit silently if silence marker exists
-if [ -f "$PROJECT_DIR/Memory/markers/silence" ]; then
+if [ -f "$PROJECT_DIR/Work/markers/silence" ]; then
     echo "{}" >&2
     exit 0
 fi
 
 # Exit silently if RP mode active (session watching only)
-if [ -f "$PROJECT_DIR/Memory/markers/rp-active" ]; then
+if [ -f "$PROJECT_DIR/Work/markers/rp-active" ]; then
     echo "{}" >&2
     exit 0
 fi
@@ -756,7 +756,7 @@ git push -u origin <branch-name>
 1. **Check marker files**
 
    ```bash
-   ls -la Memory/markers/
+   ls -la Work/markers/
    # Remove silence/rp-active if present
    ```
 

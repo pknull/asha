@@ -9,13 +9,17 @@ allowed-tools: ["Bash", "Read", "Edit"]
 
 Trigger synthesis now. Use when you want to checkpoint mid-session or ensure state is captured before exiting.
 
-**Note:** Session-end hook runs synthesis automatically on clean exit. This command is for explicit mid-session saves or when you want to add a custom commit message.
+**Lifecycle:** Manual transcript synthesis works on Claude, Codex, Copilot, and
+OpenCode. Claude also runs it automatically on clean exit. Other harnesses
+currently require this explicit command because Asha has no SessionEnd hook there.
 
 ## What It Does
 
 1. **Runs pattern analyzer** — synthesizes activeContext.md from events
 2. **Extracts patterns** — updates learnings.md with discovered patterns
-3. **Captures calibration** — voice.md and keeper.md signals if detected
+3. **Captures calibration when enabled** — explicit saves may write voice.md and
+   keeper.md only when `~/.asha/config.json` sets `capture_calibration: true`;
+   automatic saves never write either file
 4. **Archives events** — rotates old events to archive
 5. **Captures baseline sample** — if Asha baseline tooling is present, records a metrics sample for the session (best-effort, non-blocking)
 6. **Git commit + push** — commits Memory/ changes
@@ -30,9 +34,21 @@ Trigger synthesis now. Use when you want to checkpoint mid-session or ensure sta
 
 ## Execution
 
+First enforce silence before any queue drain, synthesis, archive, commit, or
+push. Silence means no persistence, including previously queued pushes:
+
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
+    echo "Memory persistence skipped: Work/markers/silence is active"
+    exit 0
+fi
+```
+
 First, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
 
 ```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/push_retry.py" drain --project-dir "$PROJECT_DIR"
@@ -43,7 +59,7 @@ Run the synthesis pipeline:
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/pattern_analyzer.py" synthesize --days 7
+"$ASHA_ROOT/plugins/session/tools/pattern_analyzer.py" synthesize --days 7 --capture-calibration
 ```
 
 Then archive and rotate events:
@@ -117,7 +133,7 @@ Then capture a baseline sample (best-effort, non-blocking — only runs if the A
 |---|---|
 | `panel-orchestration` | `/panel` invoked this session OR ≥2 distinct subagents spawned |
 | `daily-brief` | `/daily-brief` invoked this session |
-| `research-synthesis` | ≥3 `WebSearch`/`WebFetch` calls OR `research-assistant` agent spawned |
+| `research-synthesis` | ≥3 web research calls OR the `gemini` grounded-search skill invoked |
 | `email-triage` | Any `gws` CLI calls OR `mcp__gemini`/email-related MCP tools used |
 | `code-implementation` | ≥10 `Edit`/`Write`/`MultiEdit` on non-`Memory/` paths |
 | `unclassified` | None of the above (fallback) |

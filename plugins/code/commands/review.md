@@ -29,7 +29,9 @@ Based on input:
 
 If no changes found, report and exit.
 
-### Step 2: Parallel Review
+### Step 2: Review Passes
+
+Use `plugins/code/agents/reviewer.md` as the canonical severity, evidence, validation, and verdict contract. Apply these four lenses in parallel when the harness supports subagents, otherwise run them sequentially.
 
 Launch 4 Task agents **in parallel** (single message, multiple tool calls), each with a specialized focus:
 

@@ -1154,7 +1154,24 @@ def append_to_keeper(signals: List[Dict]):
 # Main Synthesis
 # =============================================================================
 
-def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bool = False) -> Dict:
+def _calibration_capture_enabled(requested: bool) -> bool:
+    """Require explicit invocation plus the global calibration policy."""
+    if not requested:
+        return False
+    config_path = Path(os.environ.get("ASHA_CONFIG", str(Path.home() / ".asha" / "config.json")))
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return config.get("capture_calibration") is True
+
+
+def run_synthesis(
+    session_id: Optional[str] = None,
+    days: int = 7,
+    skip_eval: bool = False,
+    capture_calibration: bool = False,
+) -> Dict:
     """Run full synthesis pipeline"""
     # Silence marker honored across the whole synthesis. Same semantics as
     # the hook handlers: if the user has /silence on, an explicit /save must
@@ -1246,16 +1263,18 @@ def run_synthesis(session_id: Optional[str] = None, days: int = 7, skip_eval: bo
     add_learnings_via_manager(learning_candidates)
     results["learnings_added"] = len(learning_candidates)
 
-    # Extract and save calibration signals
-    calibration = extract_calibration_signals(events)
+    # Global persona calibration is never an automatic synthesis side effect.
+    # It requires an explicit interactive request and the user's global policy.
+    if _calibration_capture_enabled(capture_calibration):
+        calibration = extract_calibration_signals(events)
 
-    if calibration["voice"]:
-        append_to_voice(calibration["voice"])
-        results["calibration_signals"]["voice"] = len(calibration["voice"])
+        if calibration["voice"]:
+            append_to_voice(calibration["voice"])
+            results["calibration_signals"]["voice"] = len(calibration["voice"])
 
-    if calibration["keeper"]:
-        append_to_keeper(calibration["keeper"])
-        results["calibration_signals"]["keeper"] = len(calibration["keeper"])
+        if calibration["keeper"]:
+            append_to_keeper(calibration["keeper"])
+            results["calibration_signals"]["keeper"] = len(calibration["keeper"])
 
     # Session evaluation
     if not skip_eval:
@@ -1565,6 +1584,11 @@ def main():
     synth_parser = subparsers.add_parser("synthesize", help="Run full synthesis pipeline")
     synth_parser.add_argument("--session-id", "-s", help="Specific session to synthesize")
     synth_parser.add_argument("--days", "-d", type=int, default=7, help="Days of history (default: 7)")
+    synth_parser.add_argument(
+        "--capture-calibration",
+        action="store_true",
+        help="Write keeper/voice signals when global capture_calibration is true",
+    )
 
     # Patterns command
     patterns_parser = subparsers.add_parser("patterns", help="Show extracted patterns")
@@ -1603,7 +1627,11 @@ def main():
 
     try:
         if args.command == "synthesize":
-            result = run_synthesis(session_id=args.session_id, days=args.days)
+            result = run_synthesis(
+                session_id=args.session_id,
+                days=args.days,
+                capture_calibration=args.capture_calibration,
+            )
             print(json.dumps(result, indent=2))
 
         elif args.command == "patterns":

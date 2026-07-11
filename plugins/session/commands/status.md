@@ -7,14 +7,15 @@ allowed-tools: ["Bash", "Read"]
 
 # Session Status
 
-Display current session information and captured activity from the event store.
+Display Memory policy and the most recently synthesized transcript activity.
 
 ## Protocol
 
 ### Step 1: Check for Asha Initialization
 
 ```bash
-if [[ ! -f "${CLAUDE_PROJECT_DIR}/.asha/config.json" ]]; then
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+if [[ ! -f "$PROJECT_DIR/.asha/config.json" ]]; then
     echo "Asha not initialized in this project."
     echo ""
     echo "Run /session:init to initialize."
@@ -25,8 +26,8 @@ fi
 ### Step 2: Get Session ID and Metadata
 
 ```bash
-SESSION_MARKER="${CLAUDE_PROJECT_DIR}/Work/markers/session-id"
-EVENTS_FILE="${CLAUDE_PROJECT_DIR}/Memory/events/events.jsonl"
+SESSION_MARKER="$PROJECT_DIR/Work/markers/session-id"
+EVENTS_FILE="$PROJECT_DIR/Memory/events/events.jsonl"
 
 if [[ -f "$SESSION_MARKER" ]]; then
     SESSION_ID=$(cat "$SESSION_MARKER")
@@ -43,8 +44,8 @@ ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 
 PLUGIN_ROOT="$ASHA_ROOT/plugins/session"
 PYTHON_CMD="python3"
 
-if [[ -x "${CLAUDE_PROJECT_DIR}/.asha/.venv/bin/python3" ]]; then
-    PYTHON_CMD="${CLAUDE_PROJECT_DIR}/.asha/.venv/bin/python3"
+if [[ -x "$PROJECT_DIR/.asha/.venv/bin/python3" ]]; then
+    PYTHON_CMD="$PROJECT_DIR/.asha/.venv/bin/python3"
 fi
 
 EVENT_STORE="$PLUGIN_ROOT/tools/event_store.py"
@@ -73,7 +74,7 @@ fi
 ### Step 5: Check Markers
 
 ```bash
-MARKER_DIR="${CLAUDE_PROJECT_DIR}/Work/markers"
+MARKER_DIR="$PROJECT_DIR/Work/markers"
 
 SILENCE_STATUS="off"
 [[ -f "$MARKER_DIR/silence" ]] && SILENCE_STATUS="ON"
@@ -115,6 +116,7 @@ Output the status:
 
 ## Tips
 
-- Run before `/session:save` to preview what will be synthesized
-- If event counts are 0, hooks may not be capturing (check plugin installation)
-- Use `/session:save` when ready to synthesize and archive
+- Event counts describe the last transcript regeneration, not live hook capture
+- Run `/session:save` to regenerate events and synthesize Memory on any harness
+- Claude can also synthesize automatically at clean exit; other harnesses cannot
+- Copilot existing-file edit capture remains partial pending a stable native schema

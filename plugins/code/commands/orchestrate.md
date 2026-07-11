@@ -15,7 +15,7 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 /orchestrate bugfix "Fix race condition in cache"
 /orchestrate refactor "Extract payment module"
 /orchestrate security "Audit API endpoints"
-/orchestrate custom "general-purpose,[tdd,reviewer],reviewer" "Redesign caching"  # final reviewer: security focus
+/orchestrate custom "codebase-historian,[tdd,reviewer],reviewer" "Redesign caching"  # final reviewer: security focus
 
 # Tier override (skip Phase 0 inference):
 /orchestrate --tier=high feature "Refactor namespace registry"
@@ -26,10 +26,10 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 
 | Type | Phases | Notes |
 |------|--------|-------|
-| `feature` | `general-purpose` (design charge) → `tdd` → `[reviewer, reviewer (security focus)]` | Design, test, parallel review |
+| `feature` | `codebase-historian` (design-evidence charge) → `tdd` → `[reviewer, reviewer (security focus)]` | Design, test, parallel review |
 | `bugfix` | `debugger` → `tdd` → `reviewer` | Investigate, test fix, review |
-| `refactor` | `general-purpose` (design charge) → `refactor-cleaner` → `[reviewer, reviewer (security focus)]` | Plan, clean, parallel review |
-| `security` | `[reviewer (security focus), reviewer]` → `general-purpose` (remediation-plan charge) | Parallel audit, then remediation plan |
+| `refactor` | `codebase-historian` (design-evidence charge) → `refactor-cleaner` → `[reviewer, reviewer (security focus)]` | Plan, clean, parallel review |
+| `security` | `[reviewer (security focus), reviewer]` → `tdd` (remediation charge) | Parallel audit, then remediation plan |
 | `custom` | User-specified | Use brackets for parallel groups |
 
 ## Phase Notation
@@ -40,13 +40,13 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 Example custom workflow:
 
 ```
-/orchestrate custom "general-purpose,[backend-dev,frontend-dev],[reviewer,reviewer]" "Build dashboard"
+/orchestrate custom "codebase-historian,tdd,[reviewer,reviewer]" "Build dashboard"
 ```
 
 This runs:
 
-1. `general-purpose` (sequential, design charge)
-2. `backend-dev` + `frontend-dev` (parallel)
+1. `codebase-historian` (sequential, design-evidence charge)
+2. `tdd` (implementation charge)
 3. `reviewer` + `reviewer` (parallel — charge one with security focus)
 
 ## Phase 0: Routing (always runs first)
@@ -62,7 +62,7 @@ Before any agent work, classify the task by complexity and select the implementa
 3. Apply tier rules:
    - **Trivial** → Haiku
    - **Low / Medium** → Sonnet
-   - **High** → Opus plan-review (`general-purpose`, design charge) prepended, then Sonnet implementation
+   - **High** → design-evidence review (`codebase-historian`) prepended before implementation
 4. Honor `--tier=X` user override; skip inference and note `(user override)` in declaration
 
 ### Tier escalation triggers (any one promotes to High)
@@ -84,7 +84,7 @@ Model:  {Haiku|Sonnet|Opus+Sonnet}
 Reason: {one-line justification — cite path matches, scope, or override}
 ```
 
-For **High** tier: prepend `general-purpose` (Opus, design charge) to the workflow as a plan-review phase. The design phase produces a design handoff; Sonnet implements against it.
+For **High** tier: prepend `codebase-historian` with a design-evidence charge. It identifies repository constraints and prior art; the implementer produces the actual plan and code.
 
 ## Execution Protocol
 
@@ -164,7 +164,7 @@ Between phases, write the handoff to a **file** in the orchestration scratch dir
 
 **Richer phases write named artifacts** (per the contract), also in the scratch dir:
 
-- Design phases (`general-purpose`, design charge) -> `plan-summary.md` (Goal, Approach, Interfaces, Open decisions, Out of scope).
+- Design-evidence phases (`codebase-historian`) -> `plan-summary.md` (Goal, Approach, Interfaces, Open decisions, Out of scope).
 - `reviewer` (code-quality and security-focus runs) -> `review-findings.md` (Verdict `SHIP|NEEDS WORK|BLOCKED`, Critical issues w/ file:line, Concerns, Nits, False-positive log). Parallel reviewers each write their own (`review-findings-code.md`, `review-findings-security.md`); orchestrator merges.
 
 ### Implementer self-review (REQUIRED before review phase)
@@ -208,10 +208,10 @@ ORCHESTRATION REPORT
 ====================
 Workflow: feature
 Task: Add user authentication
-Phases: general-purpose (design) → tdd → [reviewer, reviewer (security)]
+Phases: codebase-historian (design evidence) → tdd → [reviewer, reviewer (security)]
 
 PHASE RESULTS
-1. general-purpose (design): [summary]
+1. codebase-historian (design evidence): [summary]
 2. tdd: [summary]
 3. reviewer (code): [summary] (parallel)
    reviewer (security): [summary] (parallel)
@@ -262,7 +262,7 @@ Sustained false-positive rate (claimed=ready AND review=fail) above ~25% means t
 
 | Agent | Purpose |
 |-------|---------|
-| `general-purpose` | Design/planning (design charge), language-specific implementation, build fixes |
+| `codebase-historian` | Repository prior art and design constraints |
 | `thinker` | Requirements breakdown, approach planning |
 | `tdd` | Test-driven development |
 | `reviewer` | Code quality review; security analysis when charged with security focus |
@@ -271,7 +271,7 @@ Sustained false-positive rate (claimed=ready AND review=fail) above ~25% means t
 
 ## Tips
 
-1. **Start with a design phase** (`general-purpose`, design charge) for complex features — design before building
+1. **Start with design evidence** (`codebase-historian`) for complex features, then require the implementer to state the plan before editing
 2. **End with parallel review** — `[reviewer, reviewer (security focus)]` catches more issues
 3. **Use `tdd` early** — tests define the contract before implementation
 4. **Keep handoffs concise** — focus on what next phase needs, not full output
