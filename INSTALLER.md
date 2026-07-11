@@ -1,14 +1,12 @@
 # Symlink-Mount Installer
 
-Flat, no-registry install model for the asha repo's primitives. This repo
-is **not** a Claude plugin marketplace — the old three-file registration
-chain (`marketplace.json` → `installed_plugins.json` → `enabledPlugins`)
-was retired in favour of direct symlinks into the harness's scan directories.
+Flat direct-mount install model for the asha repo's primitives. This repo
+does not currently package its local install path as a Codex plugin; it uses
+symlinks plus generated harness-native artifacts. Codex itself supports native
+plugins and marketplaces, which remain a separate future distribution path.
 
 As of 2026-04, the installer supports **multiple harnesses**: Claude Code,
-OpenAI Codex CLI, and GitHub Copilot CLI — all launched through one `asha` dispatcher. Skills/agents/commands are harness-agnostic markdown;
-each harness has its own scan layout, hook config format, and persona
-mechanism.
+OpenAI Codex CLI, and GitHub Copilot CLI — all launched through one `asha` dispatcher. Source skills/agents/commands are Markdown, then each harness receives the form it actually accepts: symlinked Markdown, generated skills, TOML custom agents, or `.agent.md` agents. Each harness has its own scan layout, hook config format, and persona mechanism.
 
 ## Architecture
 
@@ -90,8 +88,8 @@ idempotent.
 ├── skills/<name>/SKILL.md           → generated Codex-clean skill from
 │                                       plugins/<ns>/commands/<cmd>.md
 │                                       (Claude-only frontmatter stripped)
-├── agents/<ns>-<agent>.md           → plugins/<ns>/agents/<agent>.md   (best-effort;
-│                                       Codex 0.125 multi-agent YAML schema unverified)
+├── agents/<ns>-<agent>.toml         # generated Codex custom-agent TOML
+│                                       from plugins/<ns>/agents/<agent>.md
 ├── rules/asha.rules                  → native Codex execution-policy prompts
 │                                       for coarse command approval fallback
 └── config.toml
@@ -110,8 +108,8 @@ exec codex -c "model_instructions_file=\"...\"" "$@"
 ```
 
 Plain `codex` and `asha codex` share `~/.codex/`. The only behavioral
-difference is the `-c` flag at launch — skills, prompts, agents, hooks,
-MCP, projects, sessions are single-instance.
+difference is the `-c` flag at launch; skills, custom agents, hooks, rules,
+MCP configuration, projects, and sessions are single-instance.
 
 ### GitHub Copilot CLI (`--target copilot`)
 
@@ -120,8 +118,8 @@ MCP, projects, sessions are single-instance.
 ├── skills/                          # symlinks (real skills) + dirs (command-skills)
 │   ├── <plugin>-<skill>/            # → plugins/<plugin>/skills/<skill>/
 │   └── <ns>-<command>/SKILL.md      # generated from commands/*.md (frontmatter stripped)
-├── agents/                          # symlinks
-│   └── <plugin>-<agent>.md          # → plugins/<plugin>/agents/<agent>.md
+├── agents/                          # generated Copilot agent files
+│   └── <plugin>-<agent>.agent.md    # from plugins/<plugin>/agents/<agent>.md
 ├── hooks/asha-guardrails.json       # PreToolUse guardrails → copilot-policy-adapter.sh (dedicated; user's hooks.json untouched)
 └── mcp-config.json                  # NOT managed by Asha (Copilot reads it directly)
 ```
@@ -234,21 +232,24 @@ test-ping             # Codex prompt — same expectation
 
 ## Known limitations
 
-### Codex 0.125 removed the user prompts surface
+### Codex custom workflows use skills, not prompt files
 
 Asha originally installed slash commands as `~/.codex/prompts/<ns>-<cmd>.md`.
-Direct binary probe of Codex 0.125 (`@openai/codex-linux-x64`) shows the
-binary has zero references to `~/.codex/prompts/`, `$CODEX_HOME/prompts`,
-or any prompts-as-files discovery path — only MCP server-protocol method
-strings (`prompts/list`, `prompts/get`) which are unrelated. The user
-file surface was removed entirely in 0.125.
+That historical prompt-file surface is not part of the current documented
+Codex customization model. Codex has built-in slash commands, but current
+documentation identifies skills as the authoring format for reusable user
+workflows.
 
-Workaround: each command MD is installed as a single-file Codex skill.
+Implementation: each command MD is installed as a single-file Codex skill.
 The directory `~/.codex/skills/<name>/` is a real dir; the `SKILL.md`
 inside is generated from the source command MD with Claude-only frontmatter
 (`argument-hint`, `allowed-tools`) stripped. Codex invokes via
 `$<name>` (the namespacing collapsed from `/<ns>:<cmd>` is preserved in
-the skill name).
+the skill name). Current public Codex documentation names
+`$HOME/.agents/skills/` as the canonical user authoring location and supports
+symlinked skill folders. The `~/.codex/skills/` path remains verified in the
+installed CLI but should be treated as a compatibility path, not the current
+documented standard.
 
 Source command MDs gain a single `name: <ns>-<cmd>` line in their YAML
 frontmatter, which is benign for Claude (which derives names from
@@ -274,14 +275,24 @@ regex policy engine: Codex rules are prefix-based and apply at permission /
 sandbox boundaries, not every tool call. They are a native Codex safety net,
 not a replacement for hook guardrails.
 
-### Codex multi-agent YAML schema is unverified
+### Codex agents render to native TOML
 
-The 4 specifically-translated agents from the plan (reviewer, architect,
-tdd, partner-sentiment) plus all other agent markdown are symlinked into
-`~/.codex/agents/<ns>-<agent>.md`. Codex 0.125 may or may not discover
-them as multi-agent definitions — the schema is poorly documented at
-this version. If translation is needed, the YAML format can be retrofitted
-without changing the install layout.
+Asha source agents remain Markdown, but the Codex installer renders them into
+standalone custom-agent TOML files under `~/.codex/agents/`. Each generated
+file has the Codex-required `name`, `description`, and
+`developer_instructions` keys. The filename is namespaced
+(`<ns>-<agent>.toml`) to avoid filesystem collisions; the agent's declared
+`name` stays unchanged so workflow prose can still ask for agents like
+`reviewer` or `thinker`.
+
+### Codex plugins are native, but not this install path
+
+Codex can package skills, hooks, MCP servers, app/connector mappings, and assets
+behind `.codex-plugin/plugin.json`, with marketplace installation and per-plugin
+enablement. Asha's Codex target does not yet generate that package. It installs
+the same components directly because this repository is the local source of
+truth. Plugin packaging is a distribution option, not a missing Codex
+capability.
 
 ### Output styles plugin — retired
 

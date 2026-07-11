@@ -5,7 +5,9 @@ triggers:
   - solve / compute / evaluate a math expression
   - convert X to Y (units, currency)
   - factual/scientific lookup (physical constants, chemistry, astronomy, geography)
-  - "what is the derivative/integral of ...", "plot ...", "how far is ..."
+  - what is the derivative/integral of ...
+  - plot ...
+  - how far is ...
   - When a Wolfram|Alpha MCP would otherwise be reached for
 ---
 

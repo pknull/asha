@@ -29,6 +29,7 @@ source "$MARKET_ROOT/lib/portable.sh"
 ABS_MARKET_ROOT="$(resolve_path "$MARKET_ROOT")"
 HARNESSES_DIR="$MARKET_ROOT/harnesses"
 PLUGINS_DIR="$MARKET_ROOT/plugins"
+NAMESPACES_FILE="$MARKET_ROOT/namespaces.json"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -38,6 +39,14 @@ die()  { echo "ERROR: $*" >&2; exit "${2:-1}"; }
 log()  { [[ ${VERBOSE:-0} -eq 1 ]] && echo "  $*" >&2; return 0; }
 info() { echo "$*" >&2; }
 say()  { echo "$*"; }
+
+ns_for() {
+  local plugin_dir="$1"
+  local ns
+  ns="$(jq -r --arg k "$plugin_dir" '.[$k] // empty' "$NAMESPACES_FILE" 2>/dev/null || true)"
+  [[ -n "$ns" ]] || ns="$plugin_dir"
+  echo "$ns"
+}
 
 # Remove symlinks under $1 whose realpath starts with $ABS_MARKET_ROOT, plus
 # our own broken bin shims. Echoes count to stdout (everything else to stderr).

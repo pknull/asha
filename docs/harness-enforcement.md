@@ -10,9 +10,9 @@ at *their own seams*. Its features split cleanly by the seam they need:
 
 Memory, persona, and the corpus are the first kind and work everywhere. The
 **policy guardrails** (PreToolUse deny/ask) are the second kind — and that's
-where the harnesses diverge. This document records what enforces where, what
-fails, and what is / isn't fixable, based on live testing (2026‑06‑17, Copilot
-persona re‑tested 2026‑06‑24) plus upstream docs and issue trackers.
+where the harnesses diverge. This document records documented capability
+separately from empirical verification. Codex documentation was refreshed
+2026‑07‑11; older live probes remain identified by their tested CLI version.
 
 > **Correction (2026‑06‑24).** An earlier revision marked Copilot persona
 > injection "manual per-project" and left the impression Copilot was the most
@@ -25,25 +25,30 @@ persona re‑tested 2026‑06‑24) plus upstream docs and issue trackers.
 
 ## Capability matrix
 
-| Capability | Claude Code | OpenAI Codex 0.142 | GitHub Copilot CLI 1.0.63 |
+| Capability | Claude Code | OpenAI Codex (installed 0.144.1; docs current 2026‑07‑11; live hook probe 0.142) | GitHub Copilot CLI 1.0.63 |
 |---|---|---|---|
-| Corpus mount (skills/agents) | ✅ | ✅ | ✅ |
-| Slash commands | ✅ native | ⚠️ converted to skills | ⚠️ converted to skills |
+| Corpus mount (skills/agents) | ✅ native Markdown | ✅ skills + generated TOML custom agents | ✅ skills + generated `.agent.md` |
+| Reusable command workflows | ✅ native user commands | ✅ Asha renders as skills; Codex slash commands themselves are built-in | ⚠️ converted to skills |
 | Output styles | ✅ retired from asha (2026‑07‑10 audit) — Claude's native `/output-style` covers switching; the test canary style still mounts | ✖ n/a | ✖ n/a |
 | Persona injection | ✅ (`--append-system-prompt-file`) | ✅ (`-c model_instructions_file`) | ✅ (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch) |
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
-| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✖ do not fire (re-confirmed 0.142)** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
-| Native command approval rules | n/a | ⚠️ coarse `~/.codex/rules/asha.rules` fallback (prefix-based, permission/sandbox boundary only) | n/a |
+| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
+| Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
+| Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
 
-Guardrails now enforce on **Claude and Copilot** (Copilot single-call deny
-verified live on 1.0.63, 2026‑06‑24); only **Codex** can't (its shell runs
-through `unified_exec`, off the hookable path — re-confirmed on 0.142). The
+Guardrails enforce across the tested Claude and Copilot paths (Copilot
+single-call deny verified live on 1.0.63, 2026‑06‑24). Codex has a real native
+hook system, not an absent one, but its coverage is incomplete. Official docs
+state that simple Bash, `apply_patch`, and MCP calls can be intercepted whilst
+some richer `unified_exec` shell calls and non-shell/non-MCP tools cannot. The
+Asha 0.142 shell probe landed in the uncovered case and did not fire. The
 file-based layers — corpus, persona (all three; Copilot persona fixed
 2026‑06‑24), and the operational layer (operation.md + learnings; Copilot +
 Codex both wired 2026‑06‑24 — file-based, no working hook required) — work on all
-three CLIs. Note: slash commands are remapped to skills on Codex/Copilot (no
-native command primitive), and the `output-styles` plugin was retired in the
+three CLIs. Note: Asha's user-defined command workflows are remapped to skills
+on Codex/Copilot. Codex does have built-in slash commands, but no documented
+custom command-file surface. The `output-styles` plugin was retired in the
 2026‑07‑10 ecosystem audit (Claude's native `/output-style` covers it). Codex
 also gets native execution-policy `prefix_rule()` prompts for a narrow subset of
 high-risk shell commands; these are not equivalent to Asha's regex guardrails.
@@ -57,51 +62,53 @@ Guardrails enforce. Verified 2026‑06‑17: in a real interactive session a bro
 behaved correctly; synthetic tests cover deny/ask/override/rate-limit/fail-open.
 This is the one harness where the guardrail layer is real.
 
-### OpenAI Codex (0.139.0 + 0.142.0) — guardrails do NOT fire (empirical)
+### OpenAI Codex — native capability is broader than the old 0.142 probe
 
-**What works (re-verified on Codex 0.142.0, 2026‑06‑24):** persona injection
-(`model_instructions_file`) and the operational layer (operation.md + learnings,
-folded into the same file) both load — Codex quoted an `operation.md`-only line
-verbatim. The SessionStart hook still does not reliably inject (its content
-reaches Codex only because we fold it into `model_instructions_file`, not via the
-hook).
+**Current documented surfaces (reviewed 2026-07-11):**
 
-**Guardrails — RE-CONFIRMED dead on 0.142.0 (2026‑06‑24).** Built a scratch
-`CODEX_HOME` with a **match-all** `[[hooks.PreToolUse]]` sentinel (writes a marker,
-denies, exit 2) and ran `codex exec --dangerously-bypass-hook-trust`. Codex
-acknowledged the hooks (it printed the bypass-trust warning) and then executed the
-shell command (`/usr/bin/zsh -lc 'echo …'` ran, output returned) **with the
-sentinel marker still empty** — PreToolUse did not fire before the shell tool. So
-the `unified_exec` gap from 0.139 persists in 0.142; the original finding below
-stands unchanged.
+- `AGENTS.md` / `AGENTS.override.md` provide hierarchical global and repository
+  instructions. Codex reads one file per directory from the project root to the
+  working directory, with nearer files taking precedence.
+- Skills are the reusable workflow format. Current public documentation names
+  `.agents/skills/` at repository or user scope and explicitly supports
+  symlinked skill directories. Asha currently installs into `~/.codex/skills/`,
+  a compatibility path verified by the active Codex environment but no longer
+  the canonical path shown in public authoring documentation.
+- Custom agents are standalone TOML files in `~/.codex/agents/` or
+  `.codex/agents/`. `name`, `description`, and `developer_instructions` are
+  required; model, reasoning, sandbox, MCP, and skill settings are optional.
+  Asha's generated agent files match this schema.
+- Native plugins can bundle skills, hooks, MCP servers, app/connector mappings,
+  and assets through `.codex-plugin/plugin.json`. Asha's current local installer
+  does not use that package surface; it mounts the components directly.
+- Hooks are enabled by default and can come from `hooks.json`, inline
+  `config.toml`, or an enabled plugin. Non-managed hooks require trust. Asha's
+  nested `[[hooks.Event]]` / `[[hooks.Event.hooks]]` TOML is documented syntax.
+- Rules are an experimental execution policy for commands that request to run
+  outside the sandbox. `prefix_rule()` supports `allow`, `prompt`, and
+  `forbidden`; it is not a general tool-policy engine.
 
-**Compatibility refresh (2026‑06‑26):** Asha now emits the current documented
-nested hook TOML shape (`[[hooks.Event]]` matcher group plus
-`[[hooks.Event.hooks]]` command handler) instead of the earlier flat form. This
-does not change the 0.142 shell verdict above, but it removes avoidable schema
-drift for hook events that do fire. Asha also writes a dedicated
-`~/.codex/rules/asha.rules` file using Codex's native `prefix_rule()` execution
-policy for coarse prompts on `find /home`, `bfs /home`, `git reset --hard`,
-force-push, and protected-branch deletes. Limitation: Codex rules are prefix
-rules, not regex policy, and apply at approval/sandbox boundaries rather than as
-a content-aware PreToolUse replacement.
+**PreToolUse coverage:** Current official documentation says `PreToolUse` can
+intercept supported simple Bash calls, `apply_patch`, and MCP tools. It can deny,
+add context, or rewrite supported inputs. The same documentation says richer
+`unified_exec` shell interception remains incomplete and that WebSearch and
+other non-shell/non-MCP tools are not covered. Multiple matching hooks start
+concurrently. Hence Codex hooks are meaningful, but not a complete enforcement
+boundary.
 
-**What we observed (live, this machine):**
+**Asha empirical result, scoped to its version:** On Codex 0.142.0
+(2026-06-24), a match-all Bash sentinel using the documented nested schema and
+hook-trust bypass did not run before the tested shell command. That result is
+consistent with the documented `unified_exec` gap. It does **not** establish
+that all Codex hooks or all PreToolUse targets are inert, and the earlier text
+claiming that `apply_patch` and MCP were unsupported was incorrect.
 
-- A broad `/home` scan ran **unblocked** under interactive `asha codex` (user‑confirmed) and under `codex exec` across multiple completed runs.
-- asha's **flat** `config.toml` hook block (`[[hooks.PreToolUse]]` with `matcher`/`type`/`command` inline) → **did not fire**.
-- The **documented nested** schema (`[[hooks.PreToolUse]]` + a nested `[[hooks.PreToolUse.hooks]]` handler), run with `--dangerously-bypass-hook-trust` and stdin closed → **still did not fire**; the command executed, sentinel log empty.
-- So the obvious "asha emits the wrong TOML schema" lead is **disproven on 0.139** — the documented shape didn't fire either.
-
-**What upstream docs/issues say:** Codex *does* have a hooks system — PreToolUse should fire for Bash (tool name `"Bash"`), deny is supported (JSON `permissionDecision:"deny"` or exit 2), and there's an interactive hook‑trust model. **Cause confirmed (2026-06-17).** Further tested the documented nested schema AND the `[features] hooks = true` enable flag (`-c features.hooks=true`), both with `--dangerously-bypass-hook-trust` and clean runs — still no fire. Asked directly, Codex confirmed: *shell interception is incomplete for the newer `unified_exec` path*. Codex's shell simply isn't on the hookable PreToolUse path in 0.139 — an **upstream gap, not a config error**; no asha-side config change fixes it.
-
-**Even if firing worked, coverage is incomplete upstream:** PreToolUse only fires for shell + edit; **not** `apply_patch`, MCP tools, web tools, reads, planning (openai/codex [#20204](https://github.com/openai/codex/issues/20204) open; [#16732](https://github.com/openai/codex/issues/16732), [#17794](https://github.com/openai/codex/issues/17794)). An agent could pivot to an unguarded tool.
-
-**Classification: BROKEN now; fix uncertain & non-trivial; partial at best even if fixed.** Not pursued now.
-
-**Implication:** asha's pre-existing Codex PreToolUse hooks (notably `block-secrets`) are **also inert** — same mechanism.
-
-**Residual unknowns:** `~/.codex/hooks.json` (same schema) and interactive `/hooks` trust weren't tried — but since the gap is the shell *execution path* (`unified_exec`), not the config file or trust, neither is expected to help shell interception.
+**Asha implementation:** Persona plus required operational context are supplied
+through the wrapper's `model_instructions_file`. Asha also installs native hook
+configuration and `rules/asha.rules`. The hooks may protect supported tool paths;
+the rules add coarse approval policy for selected shell prefixes. Neither layer
+should be described as full containment. A fresh live hook matrix should be run
+before claiming behavior for Codex versions newer than the recorded 0.142 probe.
 
 ### GitHub Copilot CLI 1.0.63 — persona, operational, AND guardrails all work
 
@@ -180,12 +187,17 @@ distribution is mechanism, not enforcement — its verification table lives in
 | Item | Status |
 |---|---|
 | Claude guardrails | **Works** (enforced, verified) |
-| Codex guardrails | **Can't fully fix (upstream)** — re-confirmed on 0.142 (2026‑06‑24): match-all hook + trust-bypass, shell still ran, hook never fired. Shell goes through `unified_exec`, off the hookable path; shell/edit-only even where hooks do work ([#20204](https://github.com/openai/codex/issues/20204)). Asha now emits documented nested hook TOML and installs native `rules/asha.rules` as a coarse approval fallback, but not full policy parity. |
+| Codex guardrails | **Native but incomplete** — current docs cover simple Bash, `apply_patch`, and MCP calls, and explicitly exclude complete `unified_exec` interception plus other tool classes. Asha's 0.142 shell probe hit the gap and did not fire. Nested hook TOML plus `rules/asha.rules` are correctly installed, but neither is full containment. |
 | Copilot persona | **Works** (fixed + verified 2026‑06‑24, CLI 1.0.63) — `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch. |
 | Copilot operational layer | **Works** (wired + verified 2026‑06‑24) — `operation.md` + learnings hot tier via a second instructions file. |
 | Copilot guardrails | **Wired + enforced (built + verified 2026‑06‑24)** — `asha install copilot` writes `~/.copilot/hooks/asha-guardrails.json` → `copilot-policy-adapter.sh` → the existing policy-guard + block-secrets. Live deny + ask + block-secrets confirmed on 1.0.63. Soft deterrent (concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested; adapter fails open). |
 
-**Bottom line:** the file-based layers — corpus, persona (all three), the operational layer (operation.md + learnings; Copilot + Codex both wired 2026‑06‑24), and memory/capture — are cross-harness. **Real-time guardrail enforcement now works on Claude AND Copilot** — asha installs the Copilot guardrails via an adapter over the existing policy engine (verified live on 1.0.63). **Codex is the lone holdout for full guardrail parity** — its shell bypasses the hook (`unified_exec`, re-confirmed on 0.142). The installer now uses Codex's native rules file for coarse approval prompts, but the remaining enforcement gap is still Codex content-aware shell policy, plus the untested Copilot parallel-call concurrency case (a soft-deterrent limit, not a containment guarantee, on every harness).
+**Bottom line:** the file-based layers — corpus, persona, operational context,
+and memory/capture — are cross-harness. Claude and Copilot policy behavior has
+been verified across the documented tests. Codex has meaningful native hooks
+and rules, but only partial interception; the 0.142 shell probe remains evidence
+for the documented `unified_exec` gap, not evidence that the entire hook system
+is inert. None of these string-policy layers should be treated as a sandbox.
 
 ## Test methodology
 
@@ -219,7 +231,7 @@ distribution is mechanism, not enforcement — its verification table lives in
 
 Asked each CLI how to make a blocking shell hook work:
 
-- **Codex** (via `codex exec`): supplied the correct config (nested `[[hooks.PreToolUse.hooks]]` + `[features] hooks = true` + `/hooks` interactive trust) — then **warned that shell interception is incomplete for the `unified_exec` path**, and, having read this repo's own notes, agreed PreToolUse for Bash doesn't fire. Net recommendation: do not rely on hooks as a shell enforcement boundary in 0.139.
+- **Codex 0.139** (via `codex exec`): supplied the correct config (nested `[[hooks.PreToolUse.hooks]]` + `[features] hooks = true` + `/hooks` interactive trust), then warned that shell interception was incomplete for the `unified_exec` path and agreed the tested Bash call did not fire. Current official documentation now states this limitation directly whilst also documenting working interception for supported simple Bash, `apply_patch`, and MCP calls.
 - **Copilot** (via `copilot -p`, 2026‑06‑17): said `preToolUse` hooks were **not a documented feature** — **now outdated.** GitHub documents Copilot hooks (incl. `preToolUse` approve/deny) for the 1.0.x GA line; re-ask on a current CLI before quoting this.
 
 **Takeaway (updated 2026‑06‑24):** the Copilot recommendation is now superseded —
@@ -233,6 +245,8 @@ implemented version of that coarse Codex-native fallback.
 ## Sources
 
 - Codex hooks: https://developers.openai.com/codex/hooks ; config: https://developers.openai.com/codex/config-reference
+- Codex skills: https://developers.openai.com/codex/skills ; custom agents: https://developers.openai.com/codex/multi-agent
+- Codex AGENTS.md: https://learn.chatgpt.com/docs/agent-configuration/agents-md ; plugins: https://developers.openai.com/codex/plugins ; rules: https://developers.openai.com/codex/rules
 - Codex coverage gaps: openai/codex #20204, #16732, #17794
 - Copilot hooks: https://docs.github.com/en/copilot/reference/hooks-configuration ; concepts: https://docs.github.com/en/copilot/concepts/agents/about-hooks
 - Copilot custom instructions (user-level `$HOME/.copilot/copilot-instructions.md`, `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`): https://docs.github.com/en/copilot/how-tos/copilot-cli/customize-copilot/add-custom-instructions

@@ -75,6 +75,41 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# Test 2b: Every SKILL.md has parseable YAML frontmatter with name + description.
+echo -n "Test 2b: Skill files have valid name + description frontmatter... "
+SKILL_ERRORS=()
+while IFS= read -r skill_file; do
+    [[ -f "$skill_file" ]] || continue
+    if ! python3 - "$skill_file" <<'PY' 2>/tmp/asha-validate-skill.err; then
+import sys, yaml
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+if not text.startswith("---\n"):
+    raise SystemExit("missing opening frontmatter")
+end = text.find("\n---\n", 4)
+if end == -1:
+    raise SystemExit("missing closing frontmatter")
+data = yaml.safe_load(text[4:end]) or {}
+if not isinstance(data, dict):
+    raise SystemExit("frontmatter is not a mapping")
+for key in ("name", "description"):
+    if not data.get(key):
+        raise SystemExit(f"missing {key}")
+PY
+        SKILL_ERRORS+=("$skill_file ($(cat /tmp/asha-validate-skill.err))")
+    fi
+done < <(find "$REPO_ROOT/plugins" -path '*/skills/*/SKILL.md' -type f | sort)
+rm -f /tmp/asha-validate-skill.err
+if [[ ${#SKILL_ERRORS[@]} -eq 0 ]]; then
+    SKILL_COUNT=$(find "$REPO_ROOT/plugins" -path '*/skills/*/SKILL.md' -type f | wc -l)
+    echo -e "${GREEN}PASS${NC} ($SKILL_COUNT skills)"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    for m in "${SKILL_ERRORS[@]}"; do echo "  $m"; done
+    FAILED=$((FAILED + 1))
+fi
+
 # Test 3: Every plugin has README.md and LICENSE.
 echo -n "Test 3: Every plugin has README.md and LICENSE... "
 MISSING_DOCS=()

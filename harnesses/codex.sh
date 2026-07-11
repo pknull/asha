@@ -8,9 +8,10 @@
 # Install layout under ~/.codex/:
 #   skills/<skill-name>/         → symlink to plugins/<ns>/skills/<skill>/
 #                                  (skill-name = SKILL.md's `name:` field)
-#   skills/<cmd-name>/SKILL.md   → symlink to plugins/<ns>/commands/<cmd>.md
-#                                  (cmd-name = command MD's `name:` field)
-#   agents/<ns>-<agent>.md       → symlink to plugins/<ns>/agents/<agent>.md
+#   skills/<cmd-name>/SKILL.md   → generated Codex-clean skill from
+#                                  plugins/<ns>/commands/<cmd>.md
+#   agents/<ns>-<agent>.toml     → generated Codex custom-agent TOML from
+#                                  plugins/<ns>/agents/<agent>.md
 #   config.toml                  → existing user config + appended fenced
 #                                  region of [[hooks.X]] arrays tagged
 #                                  "# asha:<ns>"
@@ -220,7 +221,12 @@ for line in fm.split("\n"):
             out_lines.append(line)
 
 new_fm = "\n".join(out_lines)
-sys.stdout.write(f"---\n{new_fm}\n---\n{body}")
+preamble = """## Codex harness adapter
+
+This file was rendered from an Asha command source. Treat slash-command and Claude `Task` references below as workflow intent, not literal Codex tool names. When the workflow asks for agents, use Codex subagents/custom agents when available; otherwise execute the same phases inline and preserve the output contract.
+
+"""
+sys.stdout.write(f"---\n{new_fm}\n---\n{preamble}{body}")
 PYEOF
 )"
 
@@ -244,8 +250,11 @@ PYEOF
   fi
 }
 
-# Install agent MD files. Codex 0.125 multi-agent YAML schema is unverified;
-# this is best-effort symlinking — Codex either picks them up or ignores them.
+# Generate Codex custom-agent TOML files from Asha agent Markdown. This is the
+# native Codex surface: standalone TOML with name, description, and
+# developer_instructions. The generated filename is namespaced to avoid file
+# collisions, while the agent's declared name remains the source frontmatter
+# name so existing workflow prose can still ask for `reviewer`, `thinker`, etc.
 codex_install_agents() {
   local plugin_dir="$1" ns="$2"
   _codex_is_skip_plugin "$plugin_dir" && return 0
@@ -261,9 +270,91 @@ codex_install_agents() {
   ensure_dir "$CODEX_AGENTS_DIR"
   for agent in "$src_dir"/*.md; do
     [[ -f "$agent" ]] || continue
-    local agent_name; agent_name="$(basename "$agent")"
-    mklink "$agent" "$CODEX_AGENTS_DIR/${ns}-${agent_name}" "codex-agent"
+    local base declared_name dest legacy existing
+    base="$(basename "$agent" .md)"
+    declared_name="$(_codex_skill_name_from_md "$agent")"
+    [[ -n "$declared_name" ]] || declared_name="$base"
+    dest="$CODEX_AGENTS_DIR/${ns}-${declared_name}.toml"
+
+    # Clean the legacy markdown-agent symlink for this source if present.
+    legacy="$CODEX_AGENTS_DIR/${ns}-${base}.md"
+    if [[ -L "$legacy" ]]; then
+      existing="$(resolve_path "$legacy" 2>/dev/null || true)"
+      if [[ "$existing" == "$(resolve_path "$agent")" ]]; then
+        [[ $DRY_RUN -eq 1 ]] || rm -f "$legacy"
+        log "[codex] removed legacy markdown agent symlink: $legacy"
+      fi
+    fi
+
+    _codex_emit_agent_toml "$agent" "$dest"
   done
+}
+
+_codex_emit_agent_toml() {
+  local src="$1" dest="$2"
+  local content
+  content="$(python3 - "$src" <<'PYEOF'
+import json, re, sys
+
+src = sys.argv[1]
+text = open(src, encoding="utf-8").read()
+name = ""
+description = ""
+body = text
+
+if text.startswith("---\n"):
+    end = text.find("\n---\n", 4)
+    if end != -1:
+        fm = text[4:end]
+        body = text[end+5:]
+
+        def field(key):
+            m = re.search(rf"^{re.escape(key)}\s*:\s*(.+)$", fm, re.MULTILINE)
+            if not m:
+                return ""
+            value = m.group(1).strip()
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+            return value
+
+        name = field("name")
+        description = field("description")
+
+if not name:
+    name = re.sub(r"\.md$", "", src.rsplit("/", 1)[-1])
+if not description:
+    description = f"Asha agent rendered from {src}"
+
+instructions = (
+    "You are an Asha custom agent rendered for OpenAI Codex. "
+    "Follow the source agent instructions below. If they mention Claude-only "
+    "tool names, map them to the closest available Codex tool or report the "
+    "missing capability explicitly.\n\n"
+    + body.strip()
+    + "\n"
+)
+
+print(f"name = {json.dumps(name)}")
+print(f"description = {json.dumps(description)}")
+print("developer_instructions = " + json.dumps(instructions))
+PYEOF
+)"
+
+  if [[ -f "$dest" ]]; then
+    local current; current="$(cat "$dest")"
+    if [[ "$current" == "$content" ]]; then
+      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
+      log "[codex] agent unchanged: $dest"
+      return 0
+    fi
+  fi
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "  EMIT [codex-agent-toml]  $src -> $dest"
+  else
+    printf '%s\n' "$content" > "$dest"
+    log "emitted [codex-agent-toml]: $dest (from $src)"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -657,6 +748,29 @@ codex_uninstall() {
     n="$(remove_symlinks_under "$CODEX_AGENTS_DIR" 1)"
     [[ "$n" -gt 0 ]] && say "[codex] removed $n agent symlink(s) from $CODEX_AGENTS_DIR"
     total=$((total + n))
+
+    local removed_generated_agents=0
+    while IFS= read -r agent; do
+      [[ -f "$agent" ]] || continue
+      local plugin_dir ns declared_name base dest
+      plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
+      ns="$(ns_for "$plugin_dir")"
+      base="$(basename "$agent" .md)"
+      declared_name="$(_codex_skill_name_from_md "$agent")"
+      [[ -n "$declared_name" ]] || declared_name="$base"
+      dest="$CODEX_AGENTS_DIR/${ns}-${declared_name}.toml"
+      if [[ -f "$dest" && ! -L "$dest" ]]; then
+        if [[ $DRY_RUN -eq 1 ]]; then
+          info "  RM (generated agent)  $dest"
+        else
+          rm -f "$dest"
+          log "removed generated Codex agent: $dest"
+        fi
+        removed_generated_agents=$((removed_generated_agents+1))
+      fi
+    done < <(find "$PLUGINS_DIR" -mindepth 3 -maxdepth 3 -path '*/agents/*.md' -type f 2>/dev/null)
+    [[ $removed_generated_agents -gt 0 ]] && say "[codex] removed $removed_generated_agents generated agent file(s)"
+    total=$((total + removed_generated_agents))
   fi
 
   # Legacy: any remaining prompts dir entries from pre-Step-7 installs

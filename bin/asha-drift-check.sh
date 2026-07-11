@@ -76,6 +76,20 @@ fix_regen_command_skill() {
   _codex_emit_command_skill "$cmd" "$skill_md"
 }
 
+_FIX_CODEX_AGENT_SOURCED=0
+fix_regen_codex_agent() {
+  local agent="$1" dest="$2"
+  if [[ $_FIX_CODEX_AGENT_SOURCED -eq 0 ]]; then
+    DRY_RUN=0 VERBOSE=0
+    # shellcheck source=../lib/install.sh
+    source "$ASHA/lib/install.sh"
+    # shellcheck source=../harnesses/codex.sh
+    source "$ASHA/harnesses/codex.sh"
+    _FIX_CODEX_AGENT_SOURCED=1
+  fi
+  _codex_emit_agent_toml "$agent" "$dest"
+}
+
 # Copilot twin: same lazy-source pattern, but only the shared converter module
 # is needed (harnesses/copilot-common.sh defines _copilot_emit_command_skill).
 _FIX_COPILOT_SOURCED=0
@@ -90,6 +104,62 @@ fix_regen_copilot_command_skill() {
     _FIX_COPILOT_SOURCED=1
   fi
   _copilot_emit_command_skill "$cmd" "$skill_md"
+}
+
+_FIX_COPILOT_AGENT_SOURCED=0
+fix_regen_copilot_agent() {
+  local agent="$1" dest="$2"
+  if [[ $_FIX_COPILOT_AGENT_SOURCED -eq 0 ]]; then
+    DRY_RUN=0 VERBOSE=0
+    # shellcheck source=../lib/install.sh
+    source "$ASHA/lib/install.sh"
+    # shellcheck source=../harnesses/copilot-common.sh
+    source "$ASHA/harnesses/copilot-common.sh"
+    _FIX_COPILOT_AGENT_SOURCED=1
+  fi
+  _copilot_emit_agent_md "$agent" "$dest"
+}
+
+check_generated_agents() { # agents_dir label ext fix_fn
+  local agents_dir="$1" label="$2" ext="$3" fix_fn="$4"
+  local issues=0 agent plugin_dir ns base name dest agent_mtime dest_mtime
+  for agent in "$ASHA"/plugins/*/agents/*.md; do
+    [[ -f "$agent" ]] || continue
+    plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
+    ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
+    base="$(basename "$agent" .md)"
+    name="$(awk '/^---$/{if (++c==2) exit} c==1 && /^name:/ {print $2; exit}' "$agent")"
+    [[ -n "$name" ]] || name="$base"
+    dest="$agents_dir/${ns}-${name}${ext}"
+    if [[ ! -e "$dest" ]]; then
+      if [[ $FIX -eq 1 ]]; then
+        mkdir -p "$(dirname "$dest")"
+        "$fix_fn" "$agent" "$dest"
+        echo "FIXED  regenerated missing agent: $dest  (source: $agent)"
+      else
+        [[ $issues -eq 0 ]] && nope "generated agent files missing or stale ($label):"
+        echo "  $agent → expected at $dest"
+        issues=$((issues+1))
+      fi
+      continue
+    fi
+    if [[ -f "$dest" && ! -L "$dest" ]]; then
+      agent_mtime="$(stat -c %Y "$agent" 2>/dev/null || echo 0)"
+      dest_mtime="$(stat -c %Y "$dest" 2>/dev/null || echo 0)"
+      if [[ "$agent_mtime" -gt "$dest_mtime" ]]; then
+        if [[ $FIX -eq 1 ]]; then
+          "$fix_fn" "$agent" "$dest"
+          echo "FIXED  regenerated stale agent: $dest  (source: $agent)"
+        else
+          [[ $issues -eq 0 ]] && nope "generated agent files missing or stale ($label):"
+          echo "  $dest  (source: $agent)"
+          issues=$((issues+1))
+        fi
+      fi
+    fi
+  done
+  [[ $issues -eq 0 ]] && pass "generated agents present and fresh ($label)"
+  return 0
 }
 
 # ── Shared command-skill coverage check (codex + copilot) ──
@@ -309,6 +379,9 @@ for ev, blocks in (c.get('hooks') or {}).items():
     # ───── Command-skill coverage check (shared with copilot) ─────
     check_command_skills "$CODEX/skills" codex fix_regen_command_skill
 
+    # ───── Native custom-agent coverage check ─────
+    check_generated_agents "$CODEX/agents" codex ".toml" fix_regen_codex_agent
+
     # ───── Cached identity check (regenerated on each `asha codex` launch) ─────
     if [[ -f "$HOME/.cache/asha/instructions.md" ]]; then
       pass "cached identity exists at ~/.cache/asha/instructions.md"
@@ -340,6 +413,9 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
 
     # Command-skill coverage + freshness (generated SKILL.md files)
     check_command_skills "$COPILOT/skills" copilot fix_regen_copilot_command_skill
+
+    # Generated `.agent.md` coverage + freshness
+    check_generated_agents "$COPILOT/agents" copilot ".agent.md" fix_regen_copilot_agent
 
     # ───── PreToolUse guardrails file matches what the installer emits ─────
     guardrails="$COPILOT/hooks/asha-guardrails.json"
