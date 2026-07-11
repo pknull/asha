@@ -117,6 +117,13 @@ if [[ ! -f "$ASHA_HOME/config.json" ]]; then
 CONFIG_EOF
     echo "Created ~/.asha/config.json"
 fi
+
+# Preserve the repo-root pointer commands rely on (installer writes it; re-init must not lose it)
+if [[ -n "${ASHA_ROOT:-}" ]] && command -v jq >/dev/null 2>&1; then
+    tmp=$(mktemp)
+    jq --arg r "$ASHA_ROOT" '.asha_root = $r' "$ASHA_HOME/config.json" > "$tmp" && cat "$tmp" > "$ASHA_HOME/config.json"
+    rm -f "$tmp"
+fi
 ```
 
 ### Step 1b: Identity Layer (optional, absorbed from the retired /asha:init)
@@ -125,6 +132,8 @@ Provision persona identity files from templates if absent. Skip this step when t
 
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
+ASHA_HOME="$HOME/.asha"
 
 for f in soul.md voice.md; do
     if [[ ! -f "$ASHA_HOME/$f" ]]; then
@@ -163,6 +172,7 @@ mkdir -p "${CLAUDE_PROJECT_DIR}/.asha"
 
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 for template in activeContext.md projectbrief.md workflowProtocols.md techEnvironment.md scratchpad.md; do
     if [[ ! -f "${CLAUDE_PROJECT_DIR}/Memory/$template" ]]; then
         cp "$ASHA_ROOT/plugins/session/templates/$template" "${CLAUDE_PROJECT_DIR}/Memory/$template"
@@ -176,6 +186,8 @@ done
 ### Step 5: Create CLAUDE.md (if doesn't exist)
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 if [[ ! -f "${CLAUDE_PROJECT_DIR}/CLAUDE.md" ]]; then
     cp "$ASHA_ROOT/plugins/session/templates/CLAUDE.md" "${CLAUDE_PROJECT_DIR}/CLAUDE.md"
     echo "Created CLAUDE.md"

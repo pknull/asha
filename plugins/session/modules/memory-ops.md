@@ -18,7 +18,7 @@
 - Marker overrides disable capture (see `techEnvironment.md` for marker paths)
 - Captures: agent deployments, file modifications, decisions, errors
 
-### Session Synthesis (manual via `/asha:save` command)
+### Session Synthesis (manual via `/session:save` command)
 
 - Four Questions Protocol guides Memory updates
 - `activeContext.md` updated with session summary
@@ -32,7 +32,7 @@
 Session continuity acknowledgment via haiku:
 
 - **Session open**: Generate haiku after Memory access (Phase 2 completion)
-- **Session close**: Generate closing haiku during `/asha:save` synthesis
+- **Session close**: Generate closing haiku during `/session:save` synthesis
 
 ---
 
@@ -51,7 +51,7 @@ Session continuity acknowledgment via haiku:
 
 ## Memory File Maintenance
 
-**Management**: Via session capture hooks and `/asha:save` command
+**Management**: Via session capture hooks and `/session:save` command
 
 **Frontmatter Schema** (required for all Memory/*.md):
 
@@ -88,7 +88,7 @@ Rules:
 - Set to `null` when active.
 - Set to `<filename>` when a newer file makes this one obsolete.
 - **Never delete superseded files** — they are the audit trail.
-- The consolidation pass in `/asha:save` populates this field; humans may also set it manually.
+- The consolidation pass in `/session:save` populates this field; humans may also set it manually.
 
 ```yaml
 # Active file
@@ -117,7 +117,7 @@ Frontmatter carries an advisory `tier:` field, but the selector recomputes from
 confidence. Validate the bundle with `validate.py ~/.asha/learnings`; an
 auto-generated `index.md` lists every concept.
 
-**Consolidation**: `/asha:save` consolidation pass (Step C3) handles automatic promotion/demotion. See `save.md` appendix.
+**Consolidation**: `/session:save` consolidation pass (Step C3) handles automatic promotion/demotion. See `save.md` appendix.
 
 ### Periodic Trimming
 

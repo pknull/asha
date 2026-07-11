@@ -1,5 +1,5 @@
 {
-  "_description": "Maps plugin directory name to slash-command / primitive namespace. Used by install.sh. Most entries are 1:1 with dir name; panel->panel-system and schedule->scheduler preserve legacy command names.",
+  "_description": "Maps plugin directory name to slash-command / primitive namespace. Used by install.sh. Most entries are 1:1 with dir name; panel->panel-system preserves the legacy command name.",
   "admin": "admin",
   "asha": "asha",
   "code": "code",

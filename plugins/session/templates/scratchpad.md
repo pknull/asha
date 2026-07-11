@@ -10,7 +10,7 @@ Timestamped notes captured during sessions. Review periodically and migrate impo
 
 ## Management Tips
 
-- Review during `/asha:save` to migrate important items
+- Review during `/session:save` to migrate important items
 - Prune completed/obsolete notes periodically
 - Move recurring patterns to `workflowProtocols.md`
 - Move project decisions to `activeContext.md`

@@ -311,7 +311,7 @@ _write_asha_root() {
     fi
     rm -f "$tmp"
   else
-    printf '{\n  "asha_root": "%s"\n}\n' "$MARKET_ROOT" >"$cfg"
+    jq -n --arg r "$MARKET_ROOT" '{asha_root: $r}' >"$cfg"
     say "  asha_root -> $MARKET_ROOT ($cfg, created)"
   fi
 }

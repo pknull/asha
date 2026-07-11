@@ -1,6 +1,6 @@
 #!/bin/bash
 # save-session.sh - Portable session save logic for Asha Memory Bank (plugin version)
-# Can be called manually, via /asha:save command, or automatically via session-end hook
+# Can be called manually, via /session:save command, or automatically via session-end hook
 # Now uses event_store.py for structured event management
 
 set -euo pipefail
@@ -425,11 +425,11 @@ synthesize_mode() {
 }
 
 # ==============================================================================
-# INTERACTIVE MODE (called by /asha:save command or manually)
+# INTERACTIVE MODE (called by /session:save command or manually)
 # ==============================================================================
 
 interactive_mode() {
-    log "Running in INTERACTIVE mode (/asha:save command)"
+    log "Running in INTERACTIVE mode (/session:save command)"
 
     # Step 1: Show event summary
     echo ""

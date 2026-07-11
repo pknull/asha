@@ -70,7 +70,7 @@ The panel system enables automatic expert analysis by:
 - Analyzes topic to determine needed expertise
 - Scores available agent library (0-10) for capability match
 - Recruits 2-5 specialist agents with session-specific names
-- Deploys `agent-fabricator` if capability gaps detected
+- Deploys `fabricator` if capability gaps detected
 - **Question**: "Who has CAPABILITY?"
 
 **The Challenger** (Opposition & Quality Gate)
@@ -120,7 +120,7 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 - Analyze topic domain and determine required expertise (2-5 domains typical)
 - Score available agent library (0-10) for capability match
 - Assign specialists with session-specific names
-- Deploy agent-fabricator if gaps detected
+- Deploy fabricator if gaps detected
 - Set decision rule (consensus default, unanimous for security)
 
 **Phase 0: Goal Clarification** (The Moderator)
@@ -181,7 +181,7 @@ This plugin assumes your Claude Code project uses:
    - `Memory/activeContext.md` for session continuity
    - Decision logging integration
 
-3. **agent-fabricator** (recommended):
+3. **fabricator** (recommended):
    - Deployed when capability gaps detected (no agent scores >4)
    - If unavailable, panels limited to existing agent library
 
@@ -293,7 +293,7 @@ Reports saved to: `Work/meetings/YYYY-MM-DD--panel--<slug>.md`
 1. **The Analyst analyzes topic** (Phase -1) - Determines if research-heavy, implementation-focused, creative, technical, etc.
 2. **Scores available agent library** - 0-10 match for topic expertise needs
 3. **Assigns specialists with session names** - 2-5 agents typical, given evocative contextual names
-4. **Deploys agent-fabricator** - If gaps detected (no agent scores >4)
+4. **Deploys fabricator** - If gaps detected (no agent scores >4)
 
 **Examples**:
 
@@ -321,10 +321,10 @@ Same agent, different contextual identity based on topic domain.
 **Issue**: The Analyst cannot find agents in `.claude/agents/`
 **Solution**: Verify agent library exists in host project (`.claude/agents/*.md`)
 
-### agent-fabricator not available
+### fabricator missing from install
 
 **Issue**: Capability gaps cannot be filled with new agents
-**Solution**: Panel proceeds with existing agents only. Recommendation: Install agent-fabricator in host project.
+**Solution**: Panel proceeds with existing agents only. Recommendation: reinstall asha (`./install.sh --only panel`) — the fabricator ships with the panel plugin.
 
 ---
 

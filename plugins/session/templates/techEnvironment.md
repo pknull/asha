@@ -18,10 +18,8 @@ Tools are provided by the Asha plugin. Tool paths are injected via SessionStart 
 
 | Command | Purpose |
 |---------|---------|
-| `/asha:save` | Save session context, archive, refresh index, commit |
-| `/asha:index` | Index files for semantic search |
+| `/session:save` | Save session context, archive, commit |
 | `/session:init` | Initialize session management + identity |
-| `/asha:cleanup` | Remove legacy asha/ installation files |
 
 ### Tool Invocation
 

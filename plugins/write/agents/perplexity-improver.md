@@ -157,7 +157,7 @@ PPL 29: No cars. No pedestrians. Just sodium light on wet pavement.
 |-----------|--------------|
 | perplexity-gate | Triggers this agent on FAIL |
 | prose-writer | Original draft source |
-| novel-style-linter | Post-rewrite validation |
+| prose-analysis | Post-rewrite validation |
 | voice.md | Constraint source |
 
 ## Iteration Limits

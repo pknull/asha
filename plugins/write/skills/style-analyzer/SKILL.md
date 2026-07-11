@@ -41,12 +41,12 @@ python "$ASHA_ROOT/plugins/write/skills/style-analyzer/scripts/analyze_style.py"
 
 ### Agent Integration
 
-The book-analyzer agent uses this script for metric extraction:
+The voice-analyst agent uses this script for metric extraction:
 
 ```
 @task: Analyze Ishiguro's Never Let Me Go
 → style-analyzer produces metrics
-→ book-analyzer interprets for voice.md
+→ voice-analyst interprets for voice.md
 ```
 
 ## Metrics Extracted
@@ -135,9 +135,9 @@ Machine-readable output for integration with other tools:
 
 | Component | Relationship |
 |-----------|--------------|
-| book-analyzer agent | Uses this script for metric extraction |
-| bible-merger agent | Consumes analysis outputs |
-| novel-style-linter | Validates against derived thresholds |
+| voice-analyst agent | Uses this script for metric extraction (analyze phase) |
+| voice-analyst agent (merge phase) | Consumes analysis outputs |
+| prose-analysis | Validates against derived thresholds |
 | perplexity-gate | Complements with AI flatness detection |
 
 ## AI Signal Words

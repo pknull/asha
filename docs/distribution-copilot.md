@@ -12,13 +12,13 @@ Enforcement/capability verdicts live in
 
 ```bash
 asha build copilot                          # default basekit -> dist/copilot/
-asha build copilot --only code,devops      # curated subset
+asha build copilot --only code,security      # curated subset
 asha build copilot --only test --version 0.0.1   # probe canary
 ```
 
-Default basekit: `code devops security prompt`. Personal namespaces
-(`admin asha image panel schedule session test write`) require explicit
-`--only`; `output-styles` is refused (Claude-only). Versions parse from each
+Default basekit: `code security`. Personal namespaces
+(`admin asha image panel session test write`) require explicit
+`--only`. Versions parse from each
 `plugins/<ns>/README.md` `**Version**:` line; `--version` overrides all.
 
 Output (`dist/copilot/`, gitignored):
@@ -64,7 +64,7 @@ default branch as "current release" — see Pinning.
 # One-time, per user — register the marketplace and install plugins:
 copilot plugin marketplace add <ghe-org>/<asha-copilot-dist>
 copilot plugin install asha-code@asha
-copilot plugin install asha-devops@asha
+copilot plugin install asha-security@asha
 
 # Or per repo, declaratively: merge settings-snippet.json into the repo's
 # .github/copilot/settings.json (scaffolded by `asha init-repo`).

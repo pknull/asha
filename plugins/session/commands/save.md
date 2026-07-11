@@ -30,33 +30,35 @@ Trigger synthesis now. Use when you want to checkpoint mid-session or ensure sta
 
 ## Execution
 
-Resolve the asha repo root first (works without the `asha` wrapper — falls back to the path the installer recorded):
-
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-```
-
 First, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/push_retry.py" drain --project-dir "$PROJECT_DIR"
 ```
 
 Run the synthesis pipeline:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/pattern_analyzer.py" synthesize --days 7
 ```
 
 Then archive and rotate events:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/save-session.sh" --archive-only
 ```
 
 Then run the boundary guardrail to strip auto-fallback stub blocks the synthesizer re-appends and dedup re-emitted calibration signals against the existing keeper log. This treats `pattern_analyzer.py`'s output as untrusted input — durable fix at the boundary, no upstream chase required.
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/save_guardrail.py" all "$PROJECT_DIR"
 ```
 
@@ -65,6 +67,8 @@ Surface any non-zero counts in chat output so the user sees what was cleaned. If
 Then validate the learnings OKF bundle. This is **warn-only** — it never blocks the save. It checks the three OKF hard rules (parseable frontmatter, non-empty `type`, reserved-file structure) over `~/.asha/learnings/`. Set `ASHA_LEARNINGS_VALIDATE=strict` to also surface producer-quality lints (missing title/description, broken links, orphans):
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 LEARNINGS_DIR="$HOME/.asha/learnings"
 if [[ -d "$LEARNINGS_DIR" ]]; then
     VFLAG=""; [[ "${ASHA_LEARNINGS_VALIDATE:-warn}" == "strict" ]] && VFLAG="--strict"
@@ -80,22 +84,28 @@ Then **suggest cross-links** for recently-touched learnings. This is the model �
 1. Get the bounded candidate set + a summary of the whole bundle:
 
    ```bash
-   "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link-candidates --days 7
-   ```
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
+"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link-candidates --days 7
+```
 
 2. For each candidate, decide whether it has a **genuine semantic relationship** to any other learning in the returned `bundle` list — e.g. "preflight → cutover", "both build PreToolUse guardrails", "filesystem caution before a risky op". **Do NOT link two learnings merely because they share a `category`** — category overlap is not a relationship. Most candidates get zero or one good link; skip a candidate entirely if nothing genuinely relates (forced links are worse than none).
 
 3. Apply each chosen link (idempotent, reciprocal, skips dangling targets):
 
    ```bash
-   "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link --id <source> --to <target>[,<target2>] --reason "<short why>" --bidirectional
-   ```
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
+"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link --id <source> --to <target>[,<target2>] --reason "<short why>" --bidirectional
+```
 
 4. Drop any links orphaned by deletions:
 
    ```bash
-   "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" prune-links
-   ```
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
+"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" prune-links
+```
 
 Report links added in chat. `## Related` sections live in the concept-file bodies, not the injected hot tier, so they add zero session-start cost.
 
@@ -129,6 +139,8 @@ fi
 Then run the pre-flight verification gate (engine-backed — the enforced version of the manual Verification Gate below). It self-heals `Memory/`, confirms synthesis ran on THIS session's transcript (not a concurrent session's), blocks a clobbered or foreign-sourced `activeContext.md`, and — via `ac_wwa_provenance` — hard-fails when the session did real work but the lead "What Was Accomplished" still belongs to a foreign/prior session (the bg 0-Edit/Write handoff gap). Run Verification-Gate Check 1 BEFORE this so the lead WWA is already current and stamped:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/save_preflight.py" --mode guard --skip-push --project-dir "$PROJECT_DIR"
 ```
 
@@ -147,6 +159,8 @@ git commit -m "Session save: ${ARGUMENTS:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
 Push unless `--no-push` specified. This uses the durable push path: if a remote/upstream exists the commit is pushed; otherwise HEAD is recorded to the backoff retry queue (inspect with `push_retry.py status`) instead of failing silently:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/push_retry.py" ensure --project-dir "$PROJECT_DIR"
 ```
 
