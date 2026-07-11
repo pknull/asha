@@ -2005,9 +2005,13 @@ else
 fi
 
 # ============================================================================
-# Test 91: UserPromptSubmit respects rp-active marker
+# Test 91: UserPromptSubmit injects RP routing directive during RP
 # ============================================================================
-echo -n "Test 91: UserPromptSubmit respects rp-active marker... "
+# Contract change (increment A of the living-world plan): rp-active no longer
+# means "skip everything" — LanguageTool refinement stays skipped, but the
+# hook now re-asserts the per-turn RP routing directive (spawn roleplay-gm,
+# inline SCENE_STATE) and passes the prompt through unchanged.
+echo -n "Test 91: UserPromptSubmit injects RP routing during rp-active... "
 TEST91_DIR=$(mktemp -d)
 mkdir -p "$TEST91_DIR/Memory/sessions"
 mkdir -p "$TEST91_DIR/Work/markers"
@@ -2018,16 +2022,102 @@ touch "$TEST91_DIR/Work/markers/rp-active"
 export CLAUDE_PROJECT_DIR="$TEST91_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-# Send a prompt - should be ignored due to rp-active marker
 OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
+
+# LanguageTool must remain skipped in RP: the correction marker is only
+# touched on the refinement path, so its absence proves the skip held.
+CORRECTION_MARKER_ABSENT=1
+[[ -f "$TEST91_DIR/Work/markers/last-correction" ]] && CORRECTION_MARKER_ABSENT=0
 rm -rf "$TEST91_DIR"
+
+if [[ "$OUTPUT" == *"<system-reminder>"* && "$OUTPUT" == *"roleplay-gm"* \
+      && "$OUTPUT" == *'"prompt": "test prompt during RP"'* \
+      && $CORRECTION_MARKER_ABSENT -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$OUTPUT" != *"roleplay-gm"* ]] && echo "  Routing directive missing from output"
+    [[ "$OUTPUT" != *'"prompt": "test prompt during RP"'* ]] && echo "  Prompt passthrough missing or altered"
+    [[ $CORRECTION_MARKER_ABSENT -eq 0 ]] && echo "  LanguageTool refinement ran during RP (must stay skipped)"
+    echo "  Got: ${OUTPUT:0:200}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 91b: UserPromptSubmit rp-hook-off kill-switch suppresses injection
+# ============================================================================
+echo -n "Test 91b: rp-hook-off marker suppresses RP routing directive... "
+TEST91B_DIR=$(mktemp -d)
+mkdir -p "$TEST91B_DIR/Work/markers"
+mkdir -p "$TEST91B_DIR/.asha"
+echo '{"initialized": true}' > "$TEST91B_DIR/.asha/config.json"
+touch "$TEST91B_DIR/Work/markers/rp-active"
+touch "$TEST91B_DIR/Work/markers/rp-hook-off"
+export CLAUDE_PROJECT_DIR="$TEST91B_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
+rm -rf "$TEST91B_DIR"
 
 if [[ "$OUTPUT" == "{}" ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  rp-active marker not respected"
+    echo "  Expected {} with kill-switch present, got: ${OUTPUT:0:200}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 91c: RP routing on Codex stops after the raw fragment
+# ============================================================================
+# Codex rejects the Claude-only {prompt: ...} passthrough as invalid JSON;
+# the raw <system-reminder> fragment must be the handler's final output.
+echo -n "Test 91c: RP routing codex output omits {prompt} passthrough... "
+TEST91C_DIR=$(mktemp -d)
+mkdir -p "$TEST91C_DIR/Work/markers"
+mkdir -p "$TEST91C_DIR/.asha"
+echo '{"initialized": true}' > "$TEST91C_DIR/.asha/config.json"
+touch "$TEST91C_DIR/Work/markers/rp-active"
+export CLAUDE_PROJECT_DIR="$TEST91C_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | ASHA_HARNESS=codex "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
+rm -rf "$TEST91C_DIR"
+
+if [[ "$OUTPUT" == *"roleplay-gm"* && "$OUTPUT" != *'"prompt"'* ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$OUTPUT" != *"roleplay-gm"* ]] && echo "  Routing directive missing"
+    [[ "$OUTPUT" == *'"prompt"'* ]] && echo "  Codex output contains {prompt} shape it rejects"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 91d: RP routing no-ops on malformed stdin
+# ============================================================================
+echo -n "Test 91d: RP routing no-ops on malformed stdin... "
+TEST91D_DIR=$(mktemp -d)
+mkdir -p "$TEST91D_DIR/Work/markers"
+mkdir -p "$TEST91D_DIR/.asha"
+echo '{"initialized": true}' > "$TEST91D_DIR/.asha/config.json"
+touch "$TEST91D_DIR/Work/markers/rp-active"
+export CLAUDE_PROJECT_DIR="$TEST91D_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+EXIT_CODE=0
+OUTPUT=$(echo 'not valid json at all' | "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null) || EXIT_CODE=$?
+rm -rf "$TEST91D_DIR"
+
+if [[ "$OUTPUT" == "{}" && $EXIT_CODE -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  Expected {} and exit 0, got exit $EXIT_CODE: ${OUTPUT:0:200}..."
     FAILED=$((FAILED + 1))
 fi
 
