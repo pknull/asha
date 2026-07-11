@@ -288,6 +288,34 @@ _write_default_harness() {
   fi
 }
 
+# Persist .asha_root into ~/.asha/config.json so commands and hooks can resolve
+# the repo without the `asha` wrapper's exported ASHA_ROOT (bare `claude`/`codex`/
+# `copilot` launches). Same write-through-symlink discipline as _write_default_harness.
+_write_asha_root() {
+  local cfg="${ASHA_CONFIG:-$HOME/.asha/config.json}"
+
+  if [[ ${DRY_RUN:-0} -eq 1 ]]; then
+    say "  CONFIG  asha_root=$MARKET_ROOT -> $cfg"
+    return 0
+  fi
+
+  ensure_dir "$(dirname "$cfg")"
+  if [[ -f "$cfg" ]]; then
+    local tmp
+    tmp="$(mktemp)"
+    if jq --arg r "$MARKET_ROOT" '.asha_root = $r' "$cfg" >"$tmp" 2>/dev/null; then
+      cat "$tmp" >"$cfg"      # truncate+write through symlink; preserves the link
+      say "  asha_root -> $MARKET_ROOT ($cfg)"
+    else
+      info "warn: could not update $cfg (invalid JSON?); leaving as-is"
+    fi
+    rm -f "$tmp"
+  else
+    printf '{\n  "asha_root": "%s"\n}\n' "$MARKET_ROOT" >"$cfg"
+    say "  asha_root -> $MARKET_ROOT ($cfg, created)"
+  fi
+}
+
 # Detect a legacy ~/bin/asha (typically dotfile-tracked) and inform the user.
 # Does NOT touch dotfiles repos. Skips if it already points into our repo.
 _detect_legacy_asha() {
@@ -643,6 +671,9 @@ asha_install_main() {
 
   # Cross-project identity layer (~/.asha/). Idempotent; never clobbers user data.
   bootstrap_identity
+
+  # Record the repo root for wrapper-less launches (commands fall back to it).
+  _write_asha_root
 
   [[ -n "$BIN" ]] && install_bin "$BIN"
 

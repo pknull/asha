@@ -38,6 +38,7 @@ fi
 ### Step 3: Query Event Store for Session Activity
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 PLUGIN_ROOT="$ASHA_ROOT/plugins/session"
 PYTHON_CMD="python3"
 
