@@ -6,12 +6,12 @@ triggers:
   - add a todo / remind me to / track this
   - Querying tasks by date or content
   - Completing or updating tasks
-  - When local todoist-ai MCP is down or task-manager agent only exposes read tools
+  - Any Todoist read/write need (the MCP daemon and task-manager agent are retired; this skill is the sole path)
 ---
 
 # Todoist via REST API
 
-Direct REST API access for Todoist task create/find/update/complete. Replaces the retired `todoist-ai` MCP daemon (retired 2026-05-06 along with `gemini-google-search` and `bookstack`). The `task-manager` agent depends on that MCP and will fabricate data without it — do **not** use it; call this skill instead.
+Direct REST API access for Todoist task create/find/update/complete. Replaces the retired `todoist-ai` MCP daemon (retired 2026-05-06 along with `gemini-google-search` and `bookstack`) and the `task-manager` agent that depended on it (removed in the 2026-07-10 ecosystem audit). This skill is the sole Todoist path.
 
 ## Setup
 

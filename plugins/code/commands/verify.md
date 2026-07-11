@@ -42,12 +42,15 @@ Run the verification engine:
 
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 python3 "$ASHA_ROOT/plugins/code/tools/verify.py" $ARGUMENTS
 ```
 
 If arguments are empty, default to standard level:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 python3 "$ASHA_ROOT/plugins/code/tools/verify.py" --level standard --verbose
 ```
 

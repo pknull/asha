@@ -170,7 +170,6 @@ exceptions preserve legacy plugin names:
 | Directory | Namespace |
 |---|---|
 | `plugins/panel/` | `panel-system` |
-| `plugins/schedule/` | `scheduler` |
 
 So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 (Codex) resolve even though the source dirs are shorter.
@@ -262,9 +261,7 @@ PreCompact, PostCompact, UserPromptSubmit, Stop, SubagentStart, and
 SubagentStop. Claude additionally has SessionEnd, Setup, etc. Hooks bound to
 unsupported events are dropped during install with a warning. Asha emits the
 current nested TOML shape (`[[hooks.Event]]` groups containing
-`[[hooks.Event.hooks]]` handlers). The `output-styles` plugin's hooks are
-skipped entirely (emit Claude-specific `hookSpecificOutput.additionalContext`
-JSON).
+`[[hooks.Event.hooks]]` handlers).
 
 ### Codex native rules are installed as a coarse fallback
 
@@ -286,11 +283,11 @@ them as multi-agent definitions — the schema is poorly documented at
 this version. If translation is needed, the YAML format can be retrofitted
 without changing the install layout.
 
-### Output styles plugin is Claude-only
+### Output styles plugin — retired
 
-The `/style` command and 8 output-style files don't port to Codex (no
-equivalent feature). The `output-styles` plugin is in the codex install's
-skip list.
+The `output-styles` plugin was retired in the 2026-07-10 ecosystem audit
+(Claude's native `/output-style` covers switching). The codex/copilot
+skip-list machinery remains for any future Claude-only plugin.
 
 ### Persona overlay was eliminated in Step 7-revised
 
@@ -325,10 +322,9 @@ subdirectories there (`~/.claude/agents/<ns>/`). Either add
 dotfiles symlink and let `~/.claude/agents` be a real directory with
 per-file symlinks into dotfiles for the user's curated list.
 
-### Output styles are plugin-local in Claude
+### Output styles are mounted, not scanned
 
-The `/output-styles:style` command reads from its *own plugin's* `styles/`
-directory only. Cross-plugin output styles via the symlink-mount model
-are visible in `~/.claude/output-styles/` but no scanner sees them.
-Either teach `/style` to scan `~/.claude/output-styles/`, or move all
-styles into the `output-styles` plugin's `styles/` dir.
+Style files (e.g. the test plugin's canary) mount into
+`~/.claude/output-styles/` and are selectable via Claude's native
+`/output-style`. The custom `/style` switcher was retired with the
+output-styles plugin (2026-07-10 audit).

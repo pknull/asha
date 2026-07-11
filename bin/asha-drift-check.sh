@@ -415,7 +415,7 @@ else
   nope "repo identity file missing: identity/asha-identity-system-prompt.md"
 fi
 for f in soul.md voice.md keeper.md config.json; do
-  [[ -f "$HOME/.asha/$f" ]] || warn "~/.asha/$f absent (optional; asha:init or /save can seed it)"
+  [[ -f "$HOME/.asha/$f" ]] || warn "~/.asha/$f absent (optional; session:init or /save can seed it)"
 done
 
 # ===========================================================================

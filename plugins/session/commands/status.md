@@ -39,6 +39,7 @@ fi
 
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 PLUGIN_ROOT="$ASHA_ROOT/plugins/session"
 PYTHON_CMD="python3"
 
@@ -114,6 +115,6 @@ Output the status:
 
 ## Tips
 
-- Run before `/asha:save` to preview what will be synthesized
+- Run before `/session:save` to preview what will be synthesized
 - If event counts are 0, hooks may not be capturing (check plugin installation)
-- Use `/asha:save` when ready to synthesize and archive
+- Use `/session:save` when ready to synthesize and archive

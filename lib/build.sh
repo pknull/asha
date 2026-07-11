@@ -227,6 +227,13 @@ _build_rewrite_paths() { # file ns rel_prefix
     sed -i.bak "s#\\\$ASHA_ROOT/plugins/$ns/#$rel#g" "$file" && rm -f "$file.bak"
     info "  REWROTE own-ns \$ASHA_ROOT refs -> $rel in ${file##*/skills/}"
   fi
+  # Drop the symlink-mount resolver/guard pair: packaged paths are already
+  # relative, so runtime ASHA_ROOT resolution is meaningless in the dist.
+  if grep -qF 'asha_root // empty' "$file"; then
+    grep -vF 'asha_root // empty' "$file" | grep -vF 'asha_root unresolved' > "$file.tmp" \
+      && mv "$file.tmp" "$file"
+    info "  STRIPPED ASHA_ROOT resolver/guard lines in ${file##*/skills/}"
+  fi
   local residue
   residue="$(grep -n '\$ASHA_ROOT' "$file" || true)"
   [[ -n "$residue" ]] && info "WARN: [$ns] unresolvable \$ASHA_ROOT reference(s) survive in $file:"$'\n'"$residue"

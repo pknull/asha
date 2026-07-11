@@ -12,7 +12,7 @@ This project uses the **Asha** framework for session coordination and memory per
 
 | Command | Purpose |
 |---------|---------|
-| `/asha:save` | Save session context to Memory Bank, archive session |
+| `/session:save` | Save session context to Memory Bank, archive session |
 | `/session:init` | Initialize session management + identity in new projects |
 
 ## Memory Files
@@ -31,7 +31,7 @@ This project uses the **Asha** framework for session coordination and memory per
 
 1. **Start:** Read `Memory/activeContext.md` for context
 2. **Work:** Operations logged automatically via hooks
-3. **End:** Run `/asha:save` to synthesize and persist learnings
+3. **End:** Run `/session:save` to synthesize and persist learnings
 
 ## Code Style
 

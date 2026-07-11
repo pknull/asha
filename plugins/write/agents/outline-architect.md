@@ -156,6 +156,6 @@ When outline is complete:
 ## Integration
 
 Works with:
-- **consistency-checker**: Verify outline doesn't contradict established lore
+- **continuity-reviewer**: Verify outline doesn't contradict established lore
 - **prose-writer**: Receives completed outlines for expansion
 - **developmental-editor**: Reviews structure after draft exists

@@ -21,7 +21,7 @@
 # No persona overlay. asha-codex injects persona via `codex -c
 # model_instructions_file=...` so plain codex and asha-codex share ~/.codex/.
 #
-# Plugins skipped entirely (Claude-only): output-styles
+# Plugins skipped entirely (Claude-only): none currently
 # Hook events Codex doesn't support: SessionEnd, Setup (warned & dropped)
 
 CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"

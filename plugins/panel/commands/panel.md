@@ -139,7 +139,7 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 **Technical Architecture Panel** (GraphQL vs REST):
 
 - `research-assistant` → **"The Evidence Gatherer"** (source validation)
-- `architect` → **"The Systems Designer"** (architecture patterns)
+- `reviewer` → **"The Systems Designer"** (architecture patterns)
 - `ml-engineer` → **"The Model Capability Analyst"** (performance analysis)
 
 **Culinary Innovation Panel** (How do we pimp fish):
@@ -653,7 +653,7 @@ Work/
   "panel": {
     "core": ["The Moderator", "Analyst", "Challenger", "The Thinker"],
     "specialists": [
-      {"agent": "architect", "session_name": "The Systems Designer", "score": 9},
+      {"agent": "reviewer", "session_name": "The Systems Designer", "score": 9},
       {"agent": "research-assistant", "session_name": "The Evidence Gatherer", "score": 8}
     ]
   },

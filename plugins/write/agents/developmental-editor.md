@@ -198,6 +198,6 @@ Do NOT proceed to line editing until structure is sound. Polishing prose in scen
 
 Works with:
 - **outline-architect**: May request new structure
-- **consistency-checker**: Receives continuity context
+- **continuity-reviewer**: Receives continuity context
 - **prose-writer**: Clears for Draft 3 voice pass
 - **line-editor**: Hands off only when structure approved
