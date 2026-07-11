@@ -21,6 +21,7 @@ Create the standardized directory structure for novel writing with state trackin
 Run the initialization script:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 python3 "$ASHA_ROOT/plugins/write/skills/novel-state/scripts/init_novel_state.py" [project-path]
 ```
 

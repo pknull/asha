@@ -143,6 +143,7 @@ mkdir -p "${CLAUDE_PROJECT_DIR}/.asha"
 ### Step 4: Copy Project Templates (if Memory files don't exist)
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 for template in activeContext.md projectbrief.md workflowProtocols.md techEnvironment.md scratchpad.md; do
     if [[ ! -f "${CLAUDE_PROJECT_DIR}/Memory/$template" ]]; then
         cp "$ASHA_ROOT/plugins/session/templates/$template" "${CLAUDE_PROJECT_DIR}/Memory/$template"

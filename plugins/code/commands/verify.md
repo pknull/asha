@@ -41,6 +41,7 @@ Run unified code verification across your project. Automatically detects project
 Run the verification engine:
 
 ```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 python3 "$ASHA_ROOT/plugins/code/tools/verify.py" $ARGUMENTS
 ```
 

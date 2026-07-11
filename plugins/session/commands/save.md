@@ -30,6 +30,12 @@ Trigger synthesis now. Use when you want to checkpoint mid-session or ensure sta
 
 ## Execution
 
+Resolve the asha repo root first (works without the `asha` wrapper — falls back to the path the installer recorded):
+
+```bash
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+```
+
 First, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
 
 ```bash
