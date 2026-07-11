@@ -215,46 +215,6 @@ rm -rf "$TEST6_DIR"
 rm -rf "$TEST6_DIR"
 
 # ============================================================================
-# Test 7: Output-styles SessionStart without config
-# ============================================================================
-echo -n "Test 7: Output-styles hook returns {} without config... "
-rm -f "$HOME/.claude/active-output-style" 2>/dev/null || true
-
-OUTPUT=$("$REPO_ROOT/plugins/output-styles/hooks-handlers/session-start.sh" 2>/dev/null || true)
-
-if [[ "$OUTPUT" == "{}" ]]; then
-    echo -e "${GREEN}PASS${NC}"
-    PASSED=$((PASSED + 1))
-else
-    echo -e "${RED}FAIL${NC}"
-    echo "  Expected: {}"
-    echo "  Got: $OUTPUT"
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
-# Test 8: Output-styles SessionStart with valid config
-# ============================================================================
-echo -n "Test 8: Output-styles hook injects style when configured... "
-mkdir -p "$HOME/.claude"
-echo "ultra-concise" > "$HOME/.claude/active-output-style"
-
-OUTPUT=$("$REPO_ROOT/plugins/output-styles/hooks-handlers/session-start.sh" 2>/dev/null || true)
-
-# Clean up
-rm -f "$HOME/.claude/active-output-style"
-
-if [[ "$OUTPUT" == *"hookSpecificOutput"* && "$OUTPUT" == *"additionalContext"* ]]; then
-    echo -e "${GREEN}PASS${NC}"
-    PASSED=$((PASSED + 1))
-else
-    echo -e "${RED}FAIL${NC}"
-    echo "  Expected output with hookSpecificOutput and additionalContext"
-    echo "  Got: ${OUTPUT:0:100}..."
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
 # Test 9: Common.sh utility functions
 # ============================================================================
 echo -n "Test 9: common.sh detect_project_dir works... "
@@ -296,37 +256,6 @@ else
     echo -e "${RED}FAIL${NC}"
     echo "  Expected: yes"
     echo "  Got: $RESULT"
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
-# Test 11: All output styles have valid frontmatter
-# ============================================================================
-echo -n "Test 11: Output styles have valid frontmatter... "
-STYLE_ERRORS=0
-for style_file in "$REPO_ROOT"/plugins/output-styles/styles/*.md; do
-    style_name=$(basename "$style_file" .md)
-
-    # Check for YAML frontmatter (starts with ---)
-    if ! head -1 "$style_file" | grep -q "^---$"; then
-        echo -e "${RED}FAIL${NC}"
-        echo "  Style $style_name missing frontmatter"
-        STYLE_ERRORS=$((STYLE_ERRORS + 1))
-        continue
-    fi
-
-    # Check for name field in frontmatter
-    if ! grep -q "^name:" "$style_file"; then
-        echo -e "${RED}FAIL${NC}"
-        echo "  Style $style_name missing 'name' in frontmatter"
-        STYLE_ERRORS=$((STYLE_ERRORS + 1))
-    fi
-done
-
-if [[ $STYLE_ERRORS -eq 0 ]]; then
-    echo -e "${GREEN}PASS${NC} (8 styles validated)"
-    PASSED=$((PASSED + 1))
-else
     FAILED=$((FAILED + 1))
 fi
 
@@ -1023,43 +952,6 @@ else
     # Count as pass but with warning (not blocking)
     echo "  (Non-blocking warning)"
     PASSED=$((PASSED + 1))
-fi
-
-# ============================================================================
-# Test 48: Output styles directory has expected styles
-# ============================================================================
-echo -n "Test 48: Output styles directory has expected styles... "
-STYLES_DIR="$REPO_ROOT/plugins/output-styles/styles"
-EXPECTED_STYLES=(
-    "ultra-concise.md"
-    "bullet-points.md"
-    "markdown-focused.md"
-    "table-based.md"
-)
-MISSING_STYLES=0
-
-if [[ -d "$STYLES_DIR" ]]; then
-    for style in "${EXPECTED_STYLES[@]}"; do
-        if [[ ! -f "$STYLES_DIR/$style" ]]; then
-            if [[ $MISSING_STYLES -eq 0 ]]; then
-                echo -e "${RED}FAIL${NC}"
-            fi
-            echo "  Missing style: $style"
-            MISSING_STYLES=$((MISSING_STYLES + 1))
-        fi
-    done
-
-    if [[ $MISSING_STYLES -eq 0 ]]; then
-        STYLE_COUNT=$(ls "$STYLES_DIR"/*.md 2>/dev/null | wc -l)
-        echo -e "${GREEN}PASS${NC} ($STYLE_COUNT styles)"
-        PASSED=$((PASSED + 1))
-    else
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${RED}FAIL${NC}"
-    echo "  Styles directory missing"
-    FAILED=$((FAILED + 1))
 fi
 
 # ============================================================================
@@ -2122,35 +2014,6 @@ else
 fi
 
 # ============================================================================
-# Test 92: Output-styles SessionStart returns valid JSON for no style
-# ============================================================================
-echo -n "Test 92: Output-styles SessionStart (no style)... "
-# Remove any existing style config to test default behavior
-STYLE_CONFIG="$HOME/.claude/active-output-style"
-STYLE_BACKUP=""
-if [[ -f "$STYLE_CONFIG" ]]; then
-    STYLE_BACKUP=$(cat "$STYLE_CONFIG")
-    rm "$STYLE_CONFIG"
-fi
-
-export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/output-styles"
-OUTPUT=$("$REPO_ROOT/plugins/output-styles/hooks-handlers/session-start.sh" 2>/dev/null || true)
-
-# Restore style config if it existed
-if [[ -n "$STYLE_BACKUP" ]]; then
-    echo "$STYLE_BACKUP" > "$STYLE_CONFIG"
-fi
-
-if [[ "$OUTPUT" == "{}" ]]; then
-    echo -e "${GREEN}PASS${NC}"
-    PASSED=$((PASSED + 1))
-else
-    echo -e "${RED}FAIL${NC}"
-    echo "  Expected {}, got: $OUTPUT"
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
 # Test 93: All commands have description frontmatter
 # ============================================================================
 echo -n "Test 93: All commands have description frontmatter... "
@@ -2174,35 +2037,6 @@ done
 if [[ $MISSING_DESC -eq 0 ]]; then
     CMD_COUNT=$(find "$REPO_ROOT"/plugins -path "*/commands/*.md" | wc -l)
     echo -e "${GREEN}PASS${NC} ($CMD_COUNT commands)"
-    PASSED=$((PASSED + 1))
-else
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
-# Test 94: Output-styles has valid style files
-# ============================================================================
-echo -n "Test 94: Output-styles has valid style files... "
-STYLES_DIR="$REPO_ROOT/plugins/output-styles/styles"
-INVALID_STYLES=0
-
-for style_file in "$STYLES_DIR"/*.md; do
-    [[ ! -f "$style_file" ]] && continue
-    style_name=$(basename "$style_file" .md)
-
-    # Check style has frontmatter with name
-    if ! head -10 "$style_file" | grep -q "^---"; then
-        if [[ $INVALID_STYLES -eq 0 ]]; then
-            echo -e "${RED}FAIL${NC}"
-        fi
-        echo "  $style_name.md missing frontmatter"
-        INVALID_STYLES=$((INVALID_STYLES + 1))
-    fi
-done
-
-if [[ $INVALID_STYLES -eq 0 ]]; then
-    STYLE_COUNT=$(ls "$STYLES_DIR"/*.md 2>/dev/null | wc -l)
-    echo -e "${GREEN}PASS${NC} ($STYLE_COUNT styles)"
     PASSED=$((PASSED + 1))
 else
     FAILED=$((FAILED + 1))

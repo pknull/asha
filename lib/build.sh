@@ -64,9 +64,9 @@ ensure_dir() {
 source "$MARKET_ROOT/harnesses/copilot-common.sh"
 
 # Namespaces built by default: the team basekit. Everything else is personal
-# (soft-skip; explicit --only opts in). output-styles is hard-skipped
-# (Claude-only) via _copilot_is_skip_plugin.
-BUILD_DEFAULT_PLUGINS=(code devops security prompt)
+# (soft-skip; explicit --only opts in). Claude-only plugins would be
+# hard-skipped via _copilot_is_skip_plugin (none currently shipped).
+BUILD_DEFAULT_PLUGINS=(code security)
 
 usage() {
   cat <<'EOF'
@@ -77,9 +77,9 @@ Usage:
                      [--dry-run] [--force] [--verbose]
 
 Options:
-  --only ns1,ns2    Namespaces to build (default: code,devops,security,prompt).
-                    Personal namespaces (admin asha image panel schedule
-                    session test write) require explicit --only.
+  --only ns1,ns2    Namespaces to build (default: code,security).
+                    Personal namespaces (admin asha image panel session
+                    test write) require explicit --only.
   --out DIR         Output directory (default: <repo>/dist/copilot).
   --version X.Y.Z   Override per-plugin versions (default: parsed from each
                     plugins/<ns>/README.md '**Version**:' line).

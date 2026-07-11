@@ -90,7 +90,7 @@ The Analyst assigns agents from `.claude/agents/*.md` with **evocative session-s
 **Creative Writing Panel** (Callum Chapter 9 evaluation):
 
 - `prose-analysis` → **"The Editor"** (craft assessment)
-- `intimacy-designer` → **"The Architect of Dread"** (genre mechanics)
+- `intimacy-arbiter` → **"The Architect of Dread"** (genre mechanics)
 - `narrative-architect` → **"The Structuralist"** (story coherence)
 - `character-developer` → **"The Psychologist"** (character authenticity)
 
@@ -297,7 +297,7 @@ Reports saved to: `Work/meetings/YYYY-MM-DD--panel--<slug>.md`
 
 **Examples**:
 
-- Creative panel: `prose-analysis` becomes "The Editor", `intimacy-designer` becomes "The Architect of Dread"
+- Creative panel: `prose-analysis` becomes "The Editor", `intimacy-arbiter` becomes "The Architect of Dread"
 - Technical panel: `architect` becomes "The Systems Designer", `ml-engineer` becomes "The Model Capability Analyst"
 - Culinary panel: `research-assistant` becomes "The Culinary Historian", `trend-analyst` becomes "The Flavor Prophet"
 

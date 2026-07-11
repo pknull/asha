@@ -38,7 +38,7 @@ fi
 for f in marketplace.json settings-snippet.json README.md; do
   [[ -f "$OUT/$f" ]] && ok "emits $f" || fail "emits $f"
 done
-for p in asha-code asha-devops asha-security asha-prompt; do
+for p in asha-code asha-security asha-session asha-write; do
   [[ -f "$OUT/plugins/$p/plugin.json" ]] && ok "emits plugins/$p/plugin.json" || fail "emits plugins/$p/plugin.json"
 done
 
@@ -123,11 +123,6 @@ fi
 
 # ---------------------------------------------------------------------------
 echo "--- test 8: selection guards ---"
-if build --force --only output-styles >/dev/null 2>&1; then
-  fail "--only output-styles is refused (Claude-only)"
-else
-  ok "--only output-styles is refused (Claude-only)"
-fi
 if build --force --only test --version 0.0.1 >/dev/null 2>&1 \
    && [[ -f "$OUT/plugins/asha-test/plugin.json" ]]; then
   ok "--only test builds the canary namespace"
