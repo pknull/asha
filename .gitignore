@@ -41,3 +41,6 @@ tmp/
 .asha/
 Memory/
 .claude/trace/
+
+# Panel/session artifacts (private)
+Work/

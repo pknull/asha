@@ -26,7 +26,6 @@ Install commands:
 ./install.sh --target all                   # mount into all three
 ./install.sh --bin all --default claude     # install the asha dispatcher + harness shims in ~/.local/bin
 ./uninstall.sh                              # remove asha-tagged symlinks/entries
-./deprecate-marketplace.sh                  # one-shot cleanup of legacy registration state
 ```
 
 After `./install.sh --bin all` you'll have:
@@ -51,13 +50,13 @@ Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They 
 
 > **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
 
-At a glance: skills, agents, persona, the operational layer, and `/save` capture work on **all three**; slash commands are remapped to skills on Codex/Copilot (no native command primitive); `/style` is **Claude-only**; PreToolUse guardrails enforce on **Claude and Copilot**, not Codex (its shell bypasses the hook). Codex also gets native execution-policy rules as a coarse approval fallback for a few high-risk commands.
+At a glance: skills, agents, persona, the operational layer, and `/save` capture work on **all three**; slash commands are remapped to skills on Codex/Copilot (no native command primitive); PreToolUse guardrails enforce on **Claude and Copilot**, not Codex (its shell bypasses the hook). Codex also gets native execution-policy rules as a coarse approval fallback for a few high-risk commands.
 
 ### Why the behaviors differ
 
 **Commands are *generated* for Codex/Copilot but *symlinked* for Claude.** A symlink is byte-identical to its source, so it only works when the artifact is already in the target harness's format. Claude commands carry Claude-only frontmatter (`argument-hint`, `allowed-tools`), and Codex/Copilot model everything as *skills* (no command primitive) whose parser rejects those keys. So a Claude command must be **translated** into a clean `SKILL.md` — keys stripped, `name`/`description` kept — which is a written copy, not a link. Skills and agents are already in a portable shape, so they're linked and edit live. Trade-off: editing a command source doesn't auto-propagate to Codex/Copilot — re-run `asha install <harness>`. (The generator bumps the dest mtime even when content is unchanged, so `drift-check`'s mtime comparison doesn't false-flag current command-skills.)
 
-**Output styles are Claude-only.** `/style` and the 8 style files have no Codex/Copilot equivalent, so the `output-styles` plugin is in those harnesses' skip list — which is why a Claude install carries ~9 more symlinks than the others for the same corpus.
+**Output styles are retired.** The former `output-styles` plugin (`/style` + 8 style files) was Claude-only by design and was retired in the 2026-07-10 ecosystem audit — Claude's native output-style switching covers the need, and Codex/Copilot never had an equivalent seam.
 
 **Persona is injected three different ways** because each CLI exposes a different seam. Claude has `--append-system-prompt-file` (system-prompt priority). Codex has no such flag but accepts `-c model_instructions_file=` — a *single* merged file, so `identity-merge.sh` concatenates `~/.asha/{soul,voice,keeper,…}.md` plus the identity assertion at launch. Copilot has no injection *flag*, but its CLI auto-loads user-level instructions, so `asha copilot` regenerates the merged identity and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` pointing at a cache dir whose `.github/instructions/asha.instructions.md` carries it — per-launch, like the other two, so plain `copilot` stays persona-free.
 
@@ -87,7 +86,7 @@ Each harness writes its own session transcript to disk:
 - Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - Copilot: `~/.copilot/session-state/<sid>/events.jsonl`
 
-The session plugin no longer captures tool calls through hooks. `/save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings.md` updates. Hooks remain only for *intervention* (block-secrets, policy guardrails, post-edit-lint, prompt refinement, session-start context injection).
+The session plugin no longer captures tool calls through hooks. `/save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings/` updates. Hooks remain only for *intervention* (block-secrets, policy guardrails, post-edit-lint, prompt refinement, session-start context injection).
 
 This makes capture work uniformly across all three harnesses, including Copilot — whose hooks fire but never receive the documented payload data, the original blocker behind the consolidation.
 
@@ -101,7 +100,7 @@ Asha keeps three *distinct* kinds of state. They're easy to conflate but deliber
 |---|---|---|---|---|
 | **Policy guardrails** | static (rules) | `deny`/`ask`/limit rules (`plugins/session/hooks/policies/rules.json`) | you (edit rules) | `policy-guard` hook, per tool call |
 | **session_state** | ephemeral (one session) | mechanical counters/flags (`~/.asha/session-state/<sid>.json`) | hooks, automatically | hooks, mid-session |
-| **Memory** | durable (cross-session) | narrative knowledge + learnings (`Memory/*.md`, `~/.asha/learnings.md`, auto-memory) | `/save` synthesis, deliberate saves | session start, on-demand |
+| **Memory** | durable (cross-session) | narrative knowledge + learnings (`Memory/*.md`, `~/.asha/learnings/`, auto-memory) | `/save` synthesis, deliberate saves | session start, on-demand |
 
 - **Guardrails** decide allow/deny/ask from the *current* tool call (a pattern match) — stateless on their own.
 - **session_state** gives guardrails *memory within a single run*: e.g. a rule's `max_per_session` rate limit, or "you've done X N times this session." Volatile by design — cleared at session end (and TTL-swept), because a counter from yesterday must not affect today. It is **not** Memory: different lifespan, content, writer, and cadence (written every tool call by hooks, never at `/save`). It is working RAM, not the notebook.
@@ -115,13 +114,15 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making |
-| **Development** | `code` | v1.11.0 | Code review, orchestration patterns, TDD, 15 agents |
-| **Creative** | `write` | v1.5.0 | Fiction writing, prose craft, perplexity detection, 16 agents |
-| **Image** | `image` | v1.1.0 | Stable Diffusion prompts, ComfyUI workflows |
-| **Automation** | `scheduler` | v0.1.0 | Cron-style scheduled task execution |
-| **Formatting** | `output-styles` | v1.0.2 | Response styling and output formats |
-| **Core** | `asha` | v2.0.0 | Session coordination, memory persistence, learnings |
+| **Core** | `session` | v1.0.0 | Session memory, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
+| **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
+| **Development** | `code` | v1.2.0 | Code review, orchestration patterns, TDD — 5 agents |
+| **Creative** | `write` | v1.5.0 | Fiction writing, prose craft, perplexity detection — 10 agents |
+| **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
+| **Integrations** | `admin` | v0.1.0 | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
+| **Security** | `security` | v1.0.0 | Web-app security review checklist skill |
+| **Tooling** | `test` | — | Installer canary (`/test:ping` command/skill/agent) |
 
 ### When to Use Each
 
@@ -149,17 +150,11 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 - ComfyUI workflow design
 - LoRA/model selection guidance
 
-**scheduler** — When you need automated recurring tasks
+**session (+ asha identity)** — Always (foundation)
 
-- Daily code reviews
-- Scheduled reports
-- Automated maintenance
-
-**asha** — Always (foundation)
-
-- Session memory across conversations
-- Cross-project identity via `~/.asha/`
-- Confidence-tracked learnings that persist
+- Session memory across conversations (`/session:save`)
+- Cross-project identity via `~/.asha/` (asha templates, `/session:init`)
+- Confidence-tracked learnings that persist (`~/.asha/learnings/`)
 
 ---
 
@@ -204,43 +199,35 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 ### Code
 
 **Plugin Name**: `code`
-**Commands**: `/code:review`, `/code:verify`, `/code:checkpoint`, `/code:orchestrate`
-**Version**: 1.11.0
+**Commands**: `/code:review`, `/code:verify`, `/code:orchestrate`
+**Version**: 1.2.0
 **Domain**: Development
 
-Development workflows with orchestration patterns, code review, TDD, and 15 specialized agents.
+Development workflows with orchestration patterns, code review, TDD, and 5 specialized agents.
 
 ```bash
 /code:review              # Review staged changes
 /code:review <path>       # Review specific file(s)
 /code:review --all        # Review all uncommitted changes
 /code:verify              # Run types, lint, tests, security
-/code:checkpoint "name"   # Create named progress checkpoint
+/code:orchestrate         # Multi-agent workflow (sequential + parallel phases)
 ```
 
-**Agents** (15):
+**Agents** (5):
 
 | Agent | Role |
 |-------|------|
-| **architect** | System architecture and modular design |
-| **build-error-resolver** | Build and TypeScript error resolution |
-| **code-reviewer** | Code quality and security review |
-| **codebase-historian** | Prior art discovery, pattern archaeology |
-| **database-reviewer** | PostgreSQL optimization, RLS policies |
+| **codebase-historian** | Prior art discovery — queries git history, Memory Bank, and the `~/.asha/learnings/` bundle before design work |
 | **debugger** | Complex issue diagnosis, root cause analysis |
-| **doc-updater** | Documentation sync from code structure |
-| **e2e-runner** | Playwright E2E testing |
-| **go-build-resolver** | Go compilation error specialist |
-| **go-reviewer** | Idiomatic Go review |
-| **javascript-pro** | Modern ES2023+ development |
-| **python-pro** | Python 3.11+ type-safe development |
-| **refactor-cleaner** | Dead code removal, cleanup |
+| **refactor-cleaner** | Dead code removal, duplicate consolidation, cleanup |
+| **reviewer** | Code quality and security review (engine of `/code:review`) |
 | **tdd** | Test-driven development (London School) |
-| **typescript-pro** | Advanced TypeScript development |
 
-**Skills**: Django patterns, Spring Boot patterns, Go patterns, Python patterns, API design
+**Skills**: `postgres` (query optimization, EXPLAIN analysis, schema design, RLS policies, migration safety — converted from the retired database-reviewer agent)
 
-**Recipes** (multi-agent workflows):
+**Hooks**: `post-edit-lint` (auto-format/lint after edits)
+
+**Recipes** (multi-agent workflows, with learnings recording):
 
 | Recipe | Use Case |
 |--------|----------|
@@ -248,6 +235,8 @@ Development workflows with orchestration patterns, code review, TDD, and 15 spec
 | `bug-investigation.yaml` | Bug diagnosis and fix |
 | `refactor-safe.yaml` | Code cleanup with safety |
 | `security-audit.yaml` | Security hardening |
+
+**Also ships**: orchestration/complexity-routing/parallel-agents modules and harness instruction templates (`templates/copilot.md`, `cursor.md`, `devin.md`).
 
 **[Full Documentation →](plugins/code/README.md)**
 
@@ -260,7 +249,7 @@ Development workflows with orchestration patterns, code review, TDD, and 15 spec
 **Version**: 1.5.0
 **Domain**: Creative Writing
 
-Creative writing workflows with prose craft, perplexity detection, style analysis, and 16 specialized agents.
+Creative writing workflows with prose craft, perplexity detection, style analysis, and 10 specialized agents (consolidated from 17 in the 2026-07-10 audit).
 
 ```bash
 /write:perplexity chapter.md     # Check prose for AI flatness
@@ -268,25 +257,19 @@ Creative writing workflows with prose craft, perplexity detection, style analysi
 /write:review-section            # Run periodic review suite
 ```
 
-**Agents** (16):
+**Agents** (10):
 
 | Agent | Role |
 |-------|------|
 | **outline-architect** | Story structure, beat sheets, chapter outlines |
 | **prose-writer** | Draft generation with voice anchoring |
-| **fiction-writer** | Primary creative coordinator for full pipeline |
-| **consistency-checker** | Continuity tracking (characters, timelines, lore) |
+| **continuity-reviewer** | Dual-mode continuity: per-turn RP gate + manuscript review/pre-writing gate (absorbed consistency-checker) |
 | **developmental-editor** | Arc analysis, pacing, structural review |
 | **line-editor** | Sentence craft, word choice, polish |
-| **prose-analysis** | Multi-mode prose review (voice, continuity, coherence) |
-| **intimacy-designer** | Adult content specialist (scene frameworks, boundaries) |
-| **manuscript-editor** | Structural editing and revision coordination |
-| **novel-character-reviewer** | Character consistency validation |
-| **novel-continuity-reviewer** | Timeline, spatial logic, knowledge boundaries |
-| **novel-state-updater** | State extraction after validation |
-| **novel-style-linter** | Voice compliance, variance metrics |
-| **book-analyzer** | Extract quantified style rules from exemplar texts |
-| **bible-merger** | Consolidate multiple analyses into unified voice.md |
+| **prose-analysis** | Multi-mode prose review: voice + quantified style lint, character consistency, continuity, coherence (absorbed novel-style-linter + novel-character-reviewer) |
+| **intimacy-arbiter** | Adult-content arbitration — boundary rulings, heat-level consistency; review-only (slimmed from intimacy-designer) |
+| **novel-state-updater** | State extraction after sections pass validation |
+| **voice-analyst** | Voice bible pipeline: analyze exemplar texts + merge into unified voice.md (merged bible-merger + book-analyzer) |
 | **perplexity-improver** | Rewrite flat prose using VS-Tail sampling |
 
 **Skills**:
@@ -297,8 +280,7 @@ Creative writing workflows with prose craft, perplexity detection, style analysi
 | **style-analyzer** | Quantified prose analysis (sentence metrics, dialogue, vocabulary) |
 | **novel-state** | Directory structure for manuscript state tracking |
 | **languagetool** | Grammar and style checking via local server |
-| **book-export** | Professional PDF/ePub export with styling profiles |
-| **book-maker** | Python-based markdown converter |
+| **book-export** | Professional PDF/ePub export with styling profiles (absorbed book-maker's pandoc/font-embedding pipeline) |
 
 **Recipes** (multi-agent workflows):
 
@@ -315,21 +297,18 @@ Creative writing workflows with prose craft, perplexity detection, style analysi
 ### Image
 
 **Plugin Name**: `image`
-**Version**: 1.1.0
+**Version**: 2.0.0
 **Domain**: AI Image Generation
 
-Stable Diffusion prompt engineering and ComfyUI workflow design.
+Stable Diffusion prompt engineering and ComfyUI workflow design. No agents — a single on-demand skill (converted from the retired image-engineer agent in the 2026-07-10 audit).
 
-```bash
-/plugin install image@asha
-```
-
-**Agent**: `comfyui-prompt-engineer`
+**Skill**: `generation` (installs as `image-generation`)
 
 - Image generation prompts from concept descriptions
 - ComfyUI workflow JSON construction
 - LoRA/model selection guidance
 - Prompt iteration based on output feedback
+- Prompt templates for other generators (DALL-E, Midjourney, Runway, Sora)
 
 **Usage**:
 
@@ -342,93 +321,42 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 ---
 
-### Scheduler
+### Session
 
-**Plugin Name**: `scheduler`
-**Command**: `/schedule`
-**Version**: 0.1.0
-**Domain**: Automation
+**Plugin Name**: `session`
+**Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
+**Version**: 1.0.0
+**Domain**: Core
 
-Cron-style scheduled task execution with natural language time expressions.
-
-```bash
-/schedule "Every weekday at 9am" "Review code changes since yesterday"
-/schedule list                    # Show all tasks
-/schedule show <id>               # Task details
-/schedule remove <id>             # Delete task
-/schedule logs <id>               # View execution output
-```
-
-**Time Expressions**:
-
-| Expression | Cron Equivalent |
-|------------|-----------------|
-| "Every day at 9am" | `0 9 * * *` |
-| "Every weekday at 9am" | `0 9 * * 1-5` |
-| "Every Monday at 2pm" | `0 14 * * 1` |
-| "Every hour" | `0 * * * *` |
-| "Every 15 minutes" | `*/15 * * * *` |
-
-**Security**:
-
-- Default read-only mode (Read, Grep, Glob only)
-- Max 10 tasks per project
-- Dangerous command patterns blocked
-- Audit logging for all operations
-
-**[Full Documentation →](plugins/schedule/README.md)**
-
----
-
-### Output Styles
-
-**Plugin Name**: `output-styles`
-**Command**: `/style`
-**Version**: 1.0.2
-**Domain**: Formatting
-
-Switchable output styles for Claude Code responses.
+Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
 
 ```bash
-/style                    # List available styles
-/style <name>             # Switch to a style
-/style off                # Disable styling
+/session:init             # Initialize identity (~/.asha/) + project Memory/
+/session:save             # Synthesize session + extract learnings
+/session:status           # Show session status
+/session:loop             # Start, resume, or manage autonomous agent loops
+/session:silence          # Disable Memory logging
+/session:restore          # Re-enable Memory logging
 ```
 
-**Available Styles**:
+*(The former `/asha:init` identity phase, `session:spawn`/`agents`/`stop-agents`, `session:note`, `session:prime`, `task-manager`, and `verify-app` were merged or removed in the 2026-07-10 audit — verify lives on as `/code:verify`.)*
 
-| Style | Description |
-|-------|-------------|
-| ultra-concise | Minimal words, direct actions |
-| bullet-points | Hierarchical bullet points |
-| genui | Generative UI with HTML output |
-| html-structured | Clean semantic HTML |
-| markdown-focused | Full markdown features |
-| table-based | Table-based organization |
-| tts-summary | Audio TTS announcements |
-| yaml-structured | YAML structured output |
+**Agent**: `loop-operator` — autonomous workflow management with safety guardrails (checkpoints, failure detection, intervention).
 
----
+**Skills**: `memory-maintenance` (Memory file structure guidance), `skill-creator` (portable SKILL.md authoring).
 
-### Asha
+**Hooks**: intervention + context injection (session-start, block-secrets, policy-guard, save-preflight, prompt refinement); capture is transcript-based via `/save` (see [Capture pipeline](#capture-pipeline-read-native-session-transcripts-on-save)).
 
-**Plugin Name**: `asha`
-**Commands**: `/asha:init`, `/asha:save`, `/asha:prime`, `/asha:note`, `/asha:status`, `/asha:loop`, `/asha:spawn`, `/asha:agents`, `/asha:silence`, `/asha:restore`
-**Version**: 2.0.0
-**Domain**: Core Scaffold
+**Core Modules** (general techniques):
 
-Cognitive scaffold framework with cross-project identity, automatic learning, and session coordination. Foundation layer that other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
-
-```bash
-/asha:init                # Initialize (creates ~/.asha/ + project Memory/)
-/asha:save                # Synthesize session + extract learnings
-/asha:prime               # Interactive codebase exploration
-/asha:note "text"         # Add timestamped note
-/asha:status              # Show session status
-/asha:loop                # Start autonomous agent loop
-/asha:spawn <agent>       # Spawn agent in tmux
-/asha:silence             # Disable Memory logging
-```
+| Module | Purpose |
+|--------|---------|
+| `CORE.md` | Bootstrap protocol, identity, memory architecture |
+| `cognitive.md` | ACE cycle, parallel execution, tool efficiency |
+| `research.md` | Authority verification, citation standards |
+| `memory-ops.md` | Session synthesis, Memory Bank maintenance |
+| `high-stakes.md` | Safety protocols for destructive operations |
+| `verbalized-sampling.md` | Mode collapse recovery, diversity generation |
 
 **Two-Layer Architecture**:
 
@@ -444,8 +372,8 @@ Cognitive scaffold framework with cross-project identity, automatic learning, an
 | `soul.md` | Who Asha is (identity, values, nature) |
 | `voice.md` | How Asha expresses (tone, patterns) |
 | `keeper.md` | Who you are (preferences, calibration signals) |
-| `learnings.md` | Patterns with confidence tracking (0.3-0.9) |
-| `config.json` | Cross-project settings |
+| `learnings/` | OKF bundle — patterns with confidence tracking (0.3-0.9) |
+| `config.json` | Cross-project settings, incl. `asha_root` (lets commands resolve `ASHA_ROOT` under bare launches) |
 
 **Project Layer** (`Memory/` — git-committed):
 
@@ -456,25 +384,19 @@ Cognitive scaffold framework with cross-project identity, automatic learning, an
 | `techEnvironment.md` | Tools and platform config |
 | `workflowProtocols.md` | Project-specific patterns |
 
-**Agents** (4):
+**[Full Documentation →](plugins/session/README.md)**
 
-| Agent | Role |
-|-------|------|
-| **partner-sentiment** | Haiku generation for session continuity |
-| **task-manager** | Todoist integration for task retrieval |
-| **verify-app** | Post-change verification (tests, types, lint) |
-| **loop-operator** | Autonomous workflow with safety guardrails |
+---
 
-**Core Modules** (general techniques):
+### Asha
 
-| Module | Purpose |
-|--------|---------|
-| `CORE.md` | Bootstrap protocol, identity, memory architecture |
-| `cognitive.md` | ACE cycle, parallel execution, tool efficiency |
-| `research.md` | Authority verification, citation standards |
-| `memory-ops.md` | Session synthesis, Memory Bank maintenance |
-| `high-stakes.md` | Safety protocols for destructive operations |
-| `verbalized-sampling.md` | Mode collapse recovery, diversity generation |
+**Plugin Name**: `asha`
+**Version**: 2.1.0
+**Domain**: Identity
+
+Templates-only plugin: ships the identity templates (`templates/soul.md`, `templates/voice.md`) that `/session:init` uses to provision `~/.asha/` when absent. It no longer carries commands or agents — `/asha:init` merged into `/session:init`, and `partner-sentiment` was removed (the session-threshold haiku ritual lives in `voice.md` and executes inline at `/save`). Persona launch is owned by the repo's `bin/asha` dispatcher.
+
+**[Full Documentation →](plugins/asha/README.md)**
 
 ---
 
@@ -529,48 +451,27 @@ asha-codex                 # back-compat shim (== asha codex)
 
 ```
 asha/
-├── .claude-plugin/
-│   └── marketplace.json          # Marketplace metadata
+├── bin/                          # asha dispatcher, drift-check, env bootstrap
+├── harnesses/                    # per-harness launch shims (claude/codex/copilot)
+├── identity/                     # persona system prompt + identity/operational merge scripts
+├── lib/                          # install/uninstall/doctor/build/init-repo engines
+├── namespaces.json               # plugin dir → command namespace map (panel → panel-system)
 ├── plugins/
-│   ├── panel/                    # Research & analysis
-│   │   ├── .claude-plugin/
-│   │   ├── commands/
-│   │   ├── agents/
-│   │   └── docs/characters/
-│   ├── code/                     # Development workflows
-│   │   ├── .claude-plugin/
-│   │   ├── commands/
-│   │   ├── agents/ (15)
-│   │   ├── skills/
-│   │   └── recipes/
-│   ├── write/                    # Creative writing
-│   │   ├── .claude-plugin/
-│   │   ├── commands/
-│   │   ├── agents/ (16)
-│   │   ├── skills/
-│   │   └── recipes/
-│   ├── image/                    # AI image generation
-│   │   ├── .claude-plugin/
-│   │   └── agents/
-│   ├── schedule/                 # Task scheduling
-│   │   ├── .claude-plugin/
-│   │   ├── commands/
-│   │   ├── agents/
-│   │   ├── hooks/
-│   │   └── tools/
-│   ├── output-styles/            # Response formatting
-│   │   ├── .claude-plugin/
-│   │   ├── commands/
-│   │   ├── hooks/
-│   │   └── styles/
-│   └── asha/                     # Core scaffold
-│       ├── .claude-plugin/
-│       ├── commands/
-│       ├── hooks/
-│       ├── modules/
-│       ├── skills/
-│       ├── templates/
-│       └── tools/
+│   ├── admin/                    # skills/ (bookstack, gemini, todoist, wolfram)
+│   ├── asha/                     # templates/ (soul.md, voice.md) — identity only
+│   ├── code/                     # agents/ (5), commands/ (3), skills/ (postgres),
+│   │                             #   hooks/, recipes/ (4), modules/, templates/, tools/
+│   ├── image/                    # skills/ (generation)
+│   ├── panel/                    # agents/ (6), commands/ (panel.md), docs/characters/, templates/
+│   ├── security/                 # skills/ (security-review)
+│   ├── session/                  # commands/ (6), agents/ (loop-operator), skills/ (2),
+│   │                             #   hooks/, modules/, templates/, tools/
+│   ├── test/                     # installer canary (ping command/skill/agent, stop hook)
+│   └── write/                    # agents/ (10), commands/ (3), skills/ (5),
+│                                 #   recipes/ (3), engines/, craft/, modules/
+├── docs/                         # harness-enforcement.md, memory-architecture.md, …
+├── tests/                        # validation suites + python unit tests
+├── install.sh / uninstall.sh     # thin shims over lib/
 ├── README.md
 ├── CLAUDE.md
 └── LICENSE
@@ -617,7 +518,7 @@ To propose new plugins or improvements:
 
 1. Fork this repository
 2. Create plugin in new subdirectory following structure
-3. Update `.claude-plugin/marketplace.json`
+3. Add the directory → namespace mapping to `namespaces.json`
 4. Run `./tests/run-tests.sh` to verify all tests pass
 5. Submit pull request with documentation
 
@@ -625,15 +526,7 @@ To propose new plugins or improvements:
 
 ## License
 
-Individual plugins licensed separately. See each plugin's LICENSE file.
-
-- **Panel System**: MIT License
-- **Code**: MIT License
-- **Write**: MIT License
-- **Image**: MIT License
-- **Scheduler**: MIT License
-- **Output Styles**: MIT License
-- **Asha**: MIT License
+Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, image, panel, security, session, test, write).
 
 ---
 
@@ -647,12 +540,22 @@ Individual plugins licensed separately. See each plugin's LICENSE file.
 - Code workflows: `plugins/code/README.md`
 - Writing workflows: `plugins/write/README.md`
 - Image generation: `plugins/image/README.md`
-- Scheduling: `plugins/schedule/README.md`
+- Session & memory: `plugins/session/README.md`
 - Development guide: `CLAUDE.md`
 
 ---
 
 ## Version History
+
+### Unreleased — Ecosystem audit prune (2026-07-10)
+
+- **13 → 9 plugin namespaces** — schedule (scheduler), devops, prompt, and output-styles retired.
+- **Agents 46 → ~23** — 15 removed, 7 consolidated/converted (write 17→10; code 15→5; database-reviewer → code `postgres` skill; image-engineer → image `generation` skill; book-maker absorbed into book-export).
+- **Commands 23 → 14, skills 24 → 15** — `/asha:init` merged into `/session:init`; session spawn/agents/stop-agents/note/prime, code:checkpoint, partner-sentiment removed; verify-app folded into `/code:verify`.
+- **Portable-first policy adopted** — a Claude-native equivalent is never sufficient grounds to remove a cross-harness component (reopened and kept: code:review, orchestrate stack, session:loop, code:verify, skill-creator, security-review).
+- **Panel agents delegable** — all 6 gained frontmatter; vendored `fabricator` replaces the external agent-fabricator dependency.
+- **ASHA_ROOT config fallback** — installer writes `asha_root` to `~/.asha/config.json`; commands/hooks resolve it under bare (non-dispatcher) launches.
+- Full rulings: `Work/panels/2026-07-10--ecosystem-audit/`.
 
 ### Unreleased — Copilot-native distribution + doctor + init-repo (issue #3)
 

@@ -1,26 +1,14 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 1.13.0
-**Last Updated**: 2026-06-18 (superseded sections noted inline)
+**Version**: 2.1.0
+**Last Updated**: 2026-07-10
 **Repository**: pknull/asha
 
 ---
 
-> ### ⚠ Install model has changed
+> ### ⚠ Install model
 >
-> This repo no longer ships as a Claude plugin marketplace. The three-file
-> registration chain (`marketplace.json` → `installed_plugins.json` →
-> `enabledPlugins`) is deprecated. Primitives are now installed via direct
-> symlinks into `~/.claude/*` by **`./install.sh`**.
->
-> Launch through the unified **`asha`** dispatcher — `asha <harness>` (claude|codex|copilot),
-> auto-configuring on first use. `asha-claude`/`asha-codex`/`asha-copilot` remain as
-> back-compat shims. Engines live in `lib/install.sh` + `lib/uninstall.sh`; the top-level
-> `install.sh`/`uninstall.sh` are thin shims.
->
-> Any section below that describes `/plugin marketplace add`, plugin.json
-> entry points, or marketplace.json registration is **historical** and
-> retained only for context. Authoritative: **[INSTALLER.md](INSTALLER.md)**.
+> This repo is **not** a Claude plugin marketplace (that flow — `marketplace.json`/`plugin.json` registration — was retired). Primitives install via direct symlinks by **`./install.sh`**; engines live in `lib/`, and the top-level `install.sh`/`uninstall.sh` are thin shims. Launch through the unified **`asha`** dispatcher — `asha <harness>` (claude|codex|copilot), auto-configuring on first use; `asha-claude`/`asha-codex`/`asha-copilot` remain back-compat shims. Authoritative: **[INSTALLER.md](INSTALLER.md)**.
 
 ---
 
@@ -47,26 +35,28 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 ## Project Overview
 
-**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot) providing tools for multi-perspective analysis, code review, output styling, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md). Marketplace-flow sections below are historical (see the banner at top).
+**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot) providing tools for multi-perspective analysis, code review, creative writing, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md).
 
 ### Current Plugins
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption |
-| **Code** | v1.1.0 | Development | Code review, orchestration patterns, TDD workflows |
-| **Write** | v1.2.0 | Creative | Prose craft, worldbuilding, storytelling agents |
-| **Output Styles** | v1.0.2 | Formatting | Switchable response styles |
-| **Asha** | v2.0.0 | Core | Session coordination, cross-project identity, OKF learnings bundle (~/.asha/) |
-| **Image** | v1.1.0 | Creative | Stable Diffusion prompts, ComfyUI workflows |
-| **Schedule** | v0.1.0 | Automation | Cron-style scheduled tasks |
+| **Session** | v1.0.0 | Core | Memory persistence, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
+| **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
+| **Code** | v1.2.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
+| **Write** | v1.5.0 | Creative | Prose craft, continuity, perplexity detection — 10 agents, 5 skills |
+| **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
+| **Admin** | v0.1.0 | Integrations | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
+| **Security** | v1.0.0 | Security | Web-app security review checklist skill |
+| **Test** | — | Tooling | Installer canary (`/test:ping` command/skill/agent) |
 
 ### Technology Stack
 
 - **Primary Format**: Markdown (commands, agents, documentation)
-- **Scripting**: Bash (hooks, automation)
+- **Scripting**: Bash (hooks, automation), Python (session tools)
 - **Configuration**: JSON, YAML frontmatter
-- **Platform**: Claude Code CLI
+- **Platforms**: Claude Code, OpenAI Codex, GitHub Copilot CLI
 - **Version Control**: Git
 
 ---
@@ -75,56 +65,56 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 ```
 asha/
-├── .claude-plugin/
-│   └── marketplace.json              # Marketplace registry and plugin list
+├── bin/                              # asha dispatcher, drift-check, env bootstrap
+├── harnesses/                        # per-harness launch shims (claude.sh, codex.sh, copilot.sh)
+├── identity/                         # persona system prompt + identity/operational merge scripts
+├── lib/                              # install/uninstall/doctor/build/init-repo engines
+├── namespaces.json                   # plugin dir → command namespace map (panel → panel-system)
 ├── plugins/
-│   ├── panel/                         # Research & analysis
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   ├── commands/
-│   │   │   └── panel.md              # /panel command
-│   │   ├── agents/
-│   │   │   └── recruiter.md
-│   │   └── docs/characters/          # Character profiles (3)
-│   ├── code/                          # Development workflows
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   ├── commands/
-│   │   │   └── review.md             # /code:review command
-│   │   ├── agents/
-│   │   │   └── codebase-historian.md
-│   │   ├── modules/
-│   │   │   ├── code.md
-│   │   │   └── orchestration.md
-│   │   └── recipes/                  # Multi-agent workflows
-│   ├── write/                         # Creative writing
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   ├── agents/                   # 5 writing agents
-│   │   ├── modules/
-│   │   │   └── writing.md
-│   │   └── recipes/                  # Writing workflows
-│   ├── output-styles/                 # Response formatting
-│   │   ├── .claude-plugin/
-│   │   │   └── plugin.json
-│   │   ├── commands/
-│   │   │   └── style.md              # /style command
-│   │   ├── hooks/
-│   │   └── styles/                   # 8 style definitions
-│   └── asha/                          # Core scaffold
-│       ├── .claude-plugin/
-│       │   └── plugin.json
-│       ├── commands/                 # /asha:* commands
-│       ├── hooks/
-│       ├── modules/                  # Core techniques
-│       │   ├── CORE.md
-│       │   ├── cognitive.md
-│       │   ├── research.md
-│       │   ├── memory-ops.md
-│       │   ├── high-stakes.md
-│       │   └── verbalized-sampling.md
-│       ├── templates/                # Memory Bank templates
-│       └── tools/                    # Python tools
+│   ├── admin/                        # skills/ (bookstack, gemini, todoist, wolfram)
+│   ├── asha/                         # templates/ (soul.md, voice.md) — identity only
+│   ├── code/                         # development workflows
+│   │   ├── agents/                   # 5 agents (codebase-historian, debugger,
+│   │   │                             #   refactor-cleaner, reviewer, tdd)
+│   │   ├── commands/                 # review.md, verify.md, orchestrate.md
+│   │   ├── skills/postgres/
+│   │   ├── hooks/                    # post-edit-lint
+│   │   ├── recipes/                  # 4 multi-agent workflows
+│   │   ├── modules/                  # code, orchestration, complexity-routing, parallel-agents
+│   │   ├── templates/                # harness instruction templates (copilot/cursor/devin)
+│   │   └── tools/                    # verify.py
+│   ├── image/                        # skills/generation/ (installs as image-generation)
+│   ├── panel/                        # research & analysis
+│   │   ├── agents/                   # 6 agents (thinker, questioner, examiner,
+│   │   │                             #   codifier, recruiter, fabricator)
+│   │   ├── commands/panel.md         # /panel command
+│   │   ├── docs/characters/          # character profiles
+│   │   └── templates/                # seed.yaml
+│   ├── security/                     # skills/security-review/
+│   ├── session/                      # core scaffold
+│   │   ├── commands/                 # init, save, status, silence, restore, loop
+│   │   ├── agents/loop-operator.md
+│   │   ├── skills/                   # memory-maintenance, skill-creator
+│   │   ├── hooks/                    # hooks.json, handlers/, policies/rules.json
+│   │   ├── modules/                  # CORE, cognitive, research, memory-ops,
+│   │   │                             #   high-stakes, verbalized-sampling
+│   │   ├── templates/                # Memory Bank + loop templates
+│   │   └── tools/                    # save pipeline, jsonl_reader, learnings, event_store …
+│   ├── test/                         # installer canary (ping command/skill/agent, stop hook)
+│   └── write/                        # creative writing
+│       ├── agents/                   # 10 agents
+│       ├── commands/                 # init-novel, perplexity, review-section
+│       ├── skills/                   # book-export, languagetool, novel-state,
+│       │                             #   perplexity-gate, style-analyzer
+│       ├── recipes/                  # 3 writing workflows
+│       ├── engines/                  # rp-draft-loop.js
+│       ├── craft/                    # craft-core-universal, director-rubric
+│       └── modules/writing.md
+├── docs/                             # harness-enforcement.md, memory-architecture.md, …
+├── tests/                            # validation suites + python unit tests
+├── templates/                        # init-repo scaffolding
+├── install.sh / uninstall.sh         # thin shims over lib/
+├── INSTALLER.md
 ├── .gitignore
 ├── LICENSE (MIT)
 ├── README.md
@@ -135,11 +125,15 @@ asha/
 
 | Path | Purpose |
 |------|---------|
-| `.claude-plugin/marketplace.json` | Defines available plugins and sources |
-| `plugins/[name]/.claude-plugin/plugin.json` | Plugin metadata and entry points |
+| `namespaces.json` | Maps plugin directory → slash-command namespace (used by the installer) |
+| `lib/install.sh` / `lib/uninstall.sh` | Install/uninstall engines (top-level scripts are thin shims) |
+| `harnesses/*.sh` | Per-harness launch wrappers (persona injection) |
+| `identity/` | Merged-identity system prompt + merge scripts |
 | `plugins/[name]/commands/*.md` | User-facing slash commands |
 | `plugins/[name]/agents/*.md` | Agent definitions for deployment |
+| `plugins/[name]/skills/*/SKILL.md` | On-demand skills |
 | `plugins/[name]/hooks/hooks.json` | Lifecycle hook configuration |
+| `docs/harness-enforcement.md` | Single source of truth for cross-harness capability verdicts |
 
 ---
 
@@ -171,9 +165,9 @@ asha/
 
 ### Plugin Integration Strategies
 
-- **Command-Based**: Explicit user invocation (`/panel`, `/code:review`, `/style`, `/asha:save`)
-- **Hook-Based**: Automatic capture (PostToolUse, UserPromptSubmit, SessionEnd)
-- **Skill-Based**: Autonomous guidance (memory-maintenance)
+- **Command-Based**: Explicit user invocation (`/panel`, `/code:review`, `/session:save`)
+- **Hook-Based**: Intervention and context injection (SessionStart, PreToolUse guardrails, PostToolUse lint, UserPromptSubmit, SessionEnd)
+- **Skill-Based**: Autonomous guidance (memory-maintenance, postgres, image-generation)
 - **Marker-Based**: Control flow via marker files (silence, rp-active)
 
 ---
@@ -186,8 +180,6 @@ Every plugin follows this structure:
 
 ```
 [plugin-name]/
-├── .claude-plugin/
-│   └── plugin.json           # Required: Plugin metadata
 ├── commands/                 # Optional: User-facing commands
 │   └── [command].md
 ├── agents/                   # Optional: Agent definitions
@@ -198,59 +190,15 @@ Every plugin follows this structure:
 ├── hooks/                    # Optional: Lifecycle hooks
 │   ├── hooks.json
 │   └── [hook-script]
-├── scripts/                  # Optional: Utility scripts
-│   └── [script].sh
+├── tools/                    # Optional: Utility scripts
+│   └── [script]
 ├── docs/                     # Optional: Documentation
 │   └── [doc].md
-├── README.md                 # Required: Plugin overview
+├── README.md                 # Required: Plugin overview (carries the **Version** header)
 └── LICENSE                   # Required: License file
 ```
 
-### Plugin Metadata Format
-
-**File**: `.claude-plugin/plugin.json`
-
-```json
-{
-  "name": "plugin-name",
-  "version": "X.Y.Z",
-  "description": "Brief description",
-  "author": {
-    "name": "Author Name",
-    "email": "email@example.com"
-  },
-  "license": "MIT",
-  "keywords": ["tag1", "tag2"],
-  "commands": "./commands",
-  "agents": ["./agents/agent.md"],
-  "skills": "./skills",
-  "hooks": "./hooks/hooks.json"
-}
-```
-
-### Marketplace Registration
-
-**File**: `.claude-plugin/marketplace.json`
-
-```json
-{
-  "name": "asha",
-  "owner": {"name": "pknull", "email": "noreply@example.com"},
-  "metadata": {
-    "description": "...",
-    "version": "1.3.0",
-    "homepage": "https://github.com/pknull/asha"
-  },
-  "plugins": [
-    {
-      "name": "plugin-name",
-      "description": "...",
-      "source": "./plugins/plugin-name",
-      "strict": false
-    }
-  ]
-}
-```
+There is no per-plugin metadata file: the installer discovers `commands/`, `agents/`, `skills/`, and `hooks/hooks.json` by convention, and the plugin's version lives in its README's `**Version**:` header. The directory → namespace mapping lives in top-level `namespaces.json`.
 
 ---
 
@@ -261,12 +209,11 @@ Every plugin follows this structure:
 1. **Create plugin directory structure**
 
    ```bash
-   mkdir -p plugins/[plugin-name]/{.claude-plugin,commands,agents,docs}
+   mkdir -p plugins/[plugin-name]/{commands,agents,skills,docs}
    ```
 
-2. **Create plugin.json**
-   - Define name, version, description, author
-   - Specify entry points (commands, agents, hooks, skills)
+2. **Register the namespace**
+   - Add a `"dir-name": "namespace"` entry to top-level `namespaces.json` (usually 1:1 with the directory name)
 
 3. **Implement functionality**
    - Commands: Markdown with optional YAML frontmatter
@@ -274,15 +221,11 @@ Every plugin follows this structure:
    - Hooks: Bash scripts + hooks.json registry
    - Skills: SKILL.md in named directory
 
-4. **Update marketplace.json**
-   - Add plugin to `plugins` array
-   - Set correct source path
-
-5. **Write documentation**
-   - README.md with usage examples
+4. **Write documentation**
+   - README.md with usage examples and a `**Version**:` header (this is where the plugin version lives)
    - Add LICENSE file (MIT recommended)
 
-6. **Test installation**
+5. **Test installation**
 
    ```bash
    ./install.sh --only [plugin-name]   # or ./install.sh to (re)install all
@@ -291,12 +234,12 @@ Every plugin follows this structure:
 ### Modifying Existing Plugins
 
 1. **Read existing implementation**
-   - Review plugin.json for structure
+   - Review the plugin README for structure and version
    - Read command/agent/hook files
    - Check docs/ for specifications
 
 2. **Make changes incrementally**
-   - Update version in plugin.json (increment minor for content, major for structure)
+   - Update the version in the plugin README (increment minor for content, major for structure)
    - Test each change in isolation
    - Update documentation to match
 
@@ -545,10 +488,10 @@ fi
 
 **Before committing plugin changes**:
 
-1. **Plugin Metadata**
-   - [ ] plugin.json is valid JSON
-   - [ ] Version incremented appropriately
-   - [ ] All entry points (commands, agents, hooks) exist
+1. **Plugin Registration**
+   - [ ] Plugin directory mapped in `namespaces.json` (new namespaces only)
+   - [ ] Version incremented appropriately in the plugin README
+   - [ ] All shipped primitives (commands, agents, skills, hooks) exist on disk
 
 2. **Frontmatter Validation**
    - [ ] All YAML frontmatter is valid
@@ -580,9 +523,9 @@ fi
    # Check for errors in output
    ```
 
-### No Automated Test Suite
+### Automated Test Suite
 
-This repository uses **manual validation** and **documentation-driven testing**:
+Run `./tests/run-tests.sh` for the full suite (plugin validation, version consistency, hook handlers, Python unit tests, optional shellcheck — see README's Testing section for the breakdown). Beyond that, the repo relies on documentation-driven testing:
 
 - Character files validated against schema
 - Frontmatter validated on read
@@ -696,9 +639,9 @@ git push -u origin <branch-name>
    - Behavior description
    - Examples
 
-4. **Update plugin.json**
-   - If using directory: `"commands": "./commands"` (auto-discovers)
-   - If using array: Add `"./commands/[command].md"` to array
+4. **Reinstall to mount it**
+   - No registration needed — the installer auto-discovers `commands/*.md`
+   - Re-run `./install.sh --only [plugin-name]` (Codex/Copilot regenerate command-skills; symlinks alone don't propagate new commands there)
 
 5. **Test command**
 
@@ -788,26 +731,20 @@ git push -u origin <branch-name>
    - Minor (Y): New features, content updates
    - Patch (Z): Bug fixes, typos
 
-2. **Update plugin.json**
+2. **Update the plugin README**
 
-   ```json
-   "version": "X.Y.Z"
+   ```markdown
+   **Version**: X.Y.Z
    ```
 
-3. **Update marketplace.json** (if needed)
+   (The plugin README is the single home for a plugin's version — there is no plugin.json.)
 
-   ```json
-   "metadata": {
-     "version": "X.Y.Z"
-   }
-   ```
-
-4. **Update documentation**
-   - README.md version history
+3. **Update documentation**
+   - Top-level README.md version history
    - CLAUDE.md last updated timestamp
    - Any version references in docs
 
-5. **Commit with version tag**
+4. **Commit with version tag**
 
    ```bash
    git commit -m "chore: Bump version to X.Y.Z"
@@ -869,9 +806,9 @@ git push -u origin <branch-name>
    - Keep timestamps in UTC format
 
 3. **Test installation after changes**
-   - Verify plugin.json is valid JSON
-   - Check command/agent files exist at specified paths
-   - Test end-to-end installation flow
+   - Verify hooks.json (and any other JSON) is valid
+   - Check command/agent/skill files exist at expected paths
+   - Test end-to-end installation flow (`./install.sh --only [plugin]`, `asha doctor`)
 
 4. **Update documentation**
    - README.md reflects current behavior
@@ -886,11 +823,12 @@ git push -u origin <branch-name>
 ### When Reading User Requests
 
 1. **Identify plugin scope**
-   - Panel system: `/panel` command, character profiles, recruitment (Research domain)
-   - Code: `/code:review` command, codebase-historian, orchestration (Development domain)
-   - Write: 5 writing agents, recipes, prose craft (Creative domain)
-   - Output Styles: `/style` command, response formatting
-   - Asha: `/asha:*` commands, Memory Bank, core modules (Core scaffold)
+   - Panel system: `/panel` command, 6 agents, character profiles, recruitment (Research domain)
+   - Code: `/code:review`/`verify`/`orchestrate`, 5 agents, postgres skill (Development domain)
+   - Write: 10 writing agents, recipes, prose craft (Creative domain)
+   - Session: `/session:*` commands, Memory Bank, core modules, hooks (Core scaffold)
+   - Asha: identity templates only (`soul.md`, `voice.md`)
+   - Admin / Security / Image: skill-only plugins (integrations, review checklist, image generation)
 
 2. **Check for Memory file references**
    - Memory files live in user projects, not this repo
@@ -917,7 +855,7 @@ git push -u origin <branch-name>
    - Characters in `docs/characters/`
    - Technical specs in README.md, SKILL.md, etc.
 
-3. **Don't break plugin.json structure**
+3. **Don't break hooks.json structure**
    - Always validate JSON before committing
    - Test that paths resolve correctly
    - Use `${CLAUDE_PLUGIN_ROOT}` for hook commands
@@ -925,7 +863,7 @@ git push -u origin <branch-name>
 4. **Don't skip version increments**
    - Every content change = minor bump
    - Every structure change = major bump
-   - Update plugin.json + marketplace.json
+   - Update the plugin README's `**Version**:` header (+ top-level README history)
 
 5. **Don't ignore marker files**
    - Silence marker = no Memory logging
@@ -938,17 +876,19 @@ git push -u origin <branch-name>
 
 ### Documentation Files
 
-- `README.md`: Marketplace overview
+- `README.md`: Toolkit overview and per-plugin summaries
+- `INSTALLER.md`: Install model, per-harness layouts
+- `docs/harness-enforcement.md`: Cross-harness capability verdicts (single source of truth)
+- `docs/memory-architecture.md`: Memory scopes and lifecycle
 - `plugins/panel/README.md`: Panel system documentation
 
 ### Key Configuration Files
 
-- `.claude-plugin/marketplace.json`: Plugin registry
-- `plugins/panel/.claude-plugin/plugin.json`: Panel metadata
-- `plugins/code/.claude-plugin/plugin.json`: Code metadata
-- `plugins/write/.claude-plugin/plugin.json`: Write metadata
-- `plugins/output-styles/.claude-plugin/plugin.json`: Output Styles metadata
-- `plugins/asha/.claude-plugin/plugin.json`: Asha metadata
+- `namespaces.json`: Plugin directory → command namespace map
+- `lib/install.sh` / `lib/uninstall.sh`: Install/uninstall engines
+- `plugins/session/hooks/hooks.json`: Session lifecycle hook wiring
+- `plugins/session/hooks/policies/rules.json`: PreToolUse policy guardrails
+- `~/.asha/config.json`: Cross-project settings (incl. `asha_root` for bare launches)
 
 ### External References
 
@@ -959,6 +899,16 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v2.1.0 (2026-07-10) — Ecosystem audit prune
+
+- **13 → 9 plugin namespaces** — schedule (scheduler), devops, prompt, output-styles retired.
+- **Agents 46 → ~23** — write 17→10 (consolidations: continuity-reviewer, prose-analysis, voice-analyst, intimacy-arbiter); code 15→5; database-reviewer → code `postgres` skill; image-engineer → image `generation` skill; book-maker absorbed into book-export.
+- **Commands 23 → 14, skills 24 → 15** — `/asha:init` merged into `/session:init`; session spawn/agents/stop-agents/note/prime, code:checkpoint, partner-sentiment, task-manager, verify-app removed (verify lives on as `/code:verify`).
+- **Portable-first policy adopted** — Claude-native equivalents are never sufficient removal grounds for cross-harness components.
+- **Panel**: all 6 agents gained frontmatter (delegable on Claude); vendored `fabricator` replaces the external agent-fabricator dependency; harness-aware Role Execution Model in `/panel`.
+- **ASHA_ROOT config fallback** — resolves from `~/.asha/config.json` under bare launches.
+- Doc sync: marketplace-era sections (plugin.json / marketplace.json) removed from this guide. Full rulings: `Work/panels/2026-07-10--ecosystem-audit/`.
 
 ### v2.0.0 (2026-06-18) — Asha learnings: OKF bundle
 

@@ -29,7 +29,7 @@ persona re‑tested 2026‑06‑24) plus upstream docs and issue trackers.
 |---|---|---|---|
 | Corpus mount (skills/agents) | ✅ | ✅ | ✅ |
 | Slash commands | ✅ native | ⚠️ converted to skills | ⚠️ converted to skills |
-| Output styles (`/style`) | ✅ | ✖ skipped | ✖ skipped |
+| Output styles | ✅ retired from asha (2026‑07‑10 audit) — Claude's native `/output-style` covers switching; the test canary style still mounts | ✖ n/a | ✖ n/a |
 | Persona injection | ✅ (`--append-system-prompt-file`) | ✅ (`-c model_instructions_file`) | ✅ (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch) |
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
@@ -43,7 +43,8 @@ file-based layers — corpus, persona (all three; Copilot persona fixed
 2026‑06‑24), and the operational layer (operation.md + learnings; Copilot +
 Codex both wired 2026‑06‑24 — file-based, no working hook required) — work on all
 three CLIs. Note: slash commands are remapped to skills on Codex/Copilot (no
-native command primitive), and the `output-styles` plugin is Claude-only. Codex
+native command primitive), and the `output-styles` plugin was retired in the
+2026‑07‑10 ecosystem audit (Claude's native `/output-style` covers it). Codex
 also gets native execution-policy `prefix_rule()` prompts for a narrow subset of
 high-risk shell commands; these are not equivalent to Asha's regex guardrails.
 
