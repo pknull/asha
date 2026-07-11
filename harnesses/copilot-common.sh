@@ -98,25 +98,20 @@ sys.stdout.write(f"---\n{new_fm}\n---\n{preamble}{body}")
 PYEOF
 )"
 
-  # Idempotent write. On the unchanged path the dest mtime is STILL bumped —
-  # the drift check compares mtimes, and a content-identical dest with an old
-  # mtime would be flagged stale forever (mirrors the codex twin,
-  # harnesses/codex.sh — omitting this made `asha doctor copilot` flap).
-  if [[ -f "$dest" ]]; then
-    local current; current="$(cat "$dest")"
-    if [[ "$current" == "$content" ]]; then
-      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
-      log "[copilot] command-skill unchanged: $dest"
-      return 0
-    fi
-  fi
-
-  if [[ $DRY_RUN -eq 1 ]]; then
+  local prepared
+  prepared="$(mktemp)"
+  printf '%s' "$content" > "$prepared"
+  if declare -F asha_artifact_install_prepared >/dev/null 2>&1 \
+     && [[ "${ASHA_ARTIFACT_HARNESS:-}" == copilot ]]; then
+    asha_artifact_install_prepared copilot "$src" "$dest" copilot-command-skill "$prepared"
+  elif [[ $DRY_RUN -eq 1 ]]; then
     say "  EMIT [copilot-command-skill]  $src -> $dest"
   else
+    mkdir -p "$(dirname "$dest")"
     printf '%s' "$content" > "$dest"
     log "emitted [copilot-command-skill]: $dest (from $src)"
   fi
+  rm -f "$prepared"
 }
 
 # Generate a Copilot .agent.md from a Claude agent MD. KEEP-list policy:
@@ -169,21 +164,18 @@ sys.stdout.write(f"---\n{new_fm}\n---\n{body}")
 PYEOF
 )"
 
-  if [[ -f "$dest" ]]; then
-    local current; current="$(cat "$dest")"
-    if [[ "$current" == "$content" ]]; then
-      # mtime bump on the unchanged path — same rationale as the command-skill
-      # emitter above (mtime-based freshness audits must not flag this).
-      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
-      log "[copilot] agent unchanged: $dest"
-      return 0
-    fi
-  fi
-
-  if [[ $DRY_RUN -eq 1 ]]; then
+  local prepared
+  prepared="$(mktemp)"
+  printf '%s' "$content" > "$prepared"
+  if declare -F asha_artifact_install_prepared >/dev/null 2>&1 \
+     && [[ "${ASHA_ARTIFACT_HARNESS:-}" == copilot ]]; then
+    asha_artifact_install_prepared copilot "$src" "$dest" copilot-agent "$prepared"
+  elif [[ $DRY_RUN -eq 1 ]]; then
     say "  EMIT [copilot-agent]  $src -> $dest"
   else
+    mkdir -p "$(dirname "$dest")"
     printf '%s' "$content" > "$dest"
     log "emitted [copilot-agent]: $dest (from $src)"
   fi
+  rm -f "$prepared"
 }

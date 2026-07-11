@@ -11,7 +11,9 @@ INPUT=$(cat)
 FILE_PATH=$(echo "$INPUT" | jq -r '.tool_input.file_path // empty')
 
 if [[ -z "$FILE_PATH" || ! -f "$FILE_PATH" ]]; then
-    echo "$INPUT"
+    # Stdout is the hook response envelope. Echoing the event payload produces
+    # invalid PostToolUse response JSON on Codex.
+    echo '{}'
     exit 0
 fi
 
@@ -35,7 +37,7 @@ case "$EXT" in
             DIR=$(dirname "$FILE_PATH")
             while [[ "$DIR" != "/" ]]; do
                 if [[ -f "$DIR/tsconfig.json" ]]; then
-                    (cd "$DIR" && tsc --noEmit 2>&1 | head -20) &
+                    (cd "$DIR" && tsc --noEmit 2>&1 | head -20) >&2 &
                     break
                 fi
                 DIR=$(dirname "$DIR")
@@ -53,7 +55,7 @@ case "$EXT" in
         fi
         # Type check (non-blocking, runs in background)
         if command -v mypy &>/dev/null; then
-            (mypy "$FILE_PATH" --ignore-missing-imports 2>&1 | head -20) &
+            (mypy "$FILE_PATH" --ignore-missing-imports 2>&1 | head -20) >&2 &
         fi
         ;;
 
@@ -121,5 +123,6 @@ if [[ -n "$TOOL_OUTPUT" && "$TOOL_OUTPUT" != *"unchanged"* ]]; then
     echo "[post-edit-lint] $EXT: $TOOL_OUTPUT" >&2
 fi
 
-# Pass through original input
-echo "$INPUT"
+# Return an empty response object. The original event payload is input, not a
+# valid PostToolUse response.
+echo '{}'

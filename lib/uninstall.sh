@@ -30,12 +30,16 @@ ABS_MARKET_ROOT="$(resolve_path "$MARKET_ROOT")"
 HARNESSES_DIR="$MARKET_ROOT/harnesses"
 PLUGINS_DIR="$MARKET_ROOT/plugins"
 NAMESPACES_FILE="$MARKET_ROOT/namespaces.json"
+# shellcheck source=../harnesses/registry.sh
+source "$HARNESSES_DIR/registry.sh"
+# shellcheck source=../harnesses/generated-artifacts.sh
+source "$HARNESSES_DIR/generated-artifacts.sh"
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-die()  { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+die()  { echo "ERROR: ${1:-error}" >&2; exit "${2:-1}"; }
 log()  { [[ ${VERBOSE:-0} -eq 1 ]] && echo "  $*" >&2; return 0; }
 info() { echo "$*" >&2; }
 say()  { echo "$*"; }
@@ -65,7 +69,7 @@ remove_symlinks_under() {
       local raw
       raw="$(readlink "$link" 2>/dev/null || true)"
       case "$raw" in
-        asha|asha-claude|asha-codex|asha-copilot|"$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*|"$MARKET_ROOT"|"$MARKET_ROOT"/*)
+        asha|asha-*|"$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*|"$MARKET_ROOT"|"$MARKET_ROOT"/*)
           if [[ ${DRY_RUN:-0} -eq 1 ]]; then
             info "  RM  $link (broken -> $raw)"
           else
@@ -104,7 +108,7 @@ uninstall.sh / `asha uninstall` — reverse the symlink-mount install.
 
 Usage:
   ./uninstall.sh [--target T] [--dry-run] [--verbose]
-  asha uninstall <claude|codex|copilot|both|all> [--dry-run] [--verbose]
+  asha uninstall <claude|codex|copilot|opencode|both|all> [--dry-run] [--verbose]
 
 Targets:
   claude | codex | copilot | both (claude+codex) | all (claude+codex+copilot)
@@ -125,10 +129,8 @@ parse_args() {
     shift
   done
 
-  case "$TARGET" in
-    claude|codex|copilot|both|all) ;;
-    *) die "invalid --target '$TARGET' (expected: claude|codex|copilot|both|all)" 1 ;;
-  esac
+  asha_target_exists "$TARGET" \
+    || die "invalid --target '$TARGET' (expected: $(asha_harness_names_inline)|both|all)" 1
 }
 
 asha_uninstall_main() {
@@ -142,14 +144,9 @@ asha_uninstall_main() {
   say "   target = $TARGET"
   [[ $DRY_RUN -eq 1 ]] && say "   (dry-run)"
 
-  local targets
-  case "$TARGET" in
-    claude)  targets=(claude) ;;
-    codex)   targets=(codex)  ;;
-    copilot) targets=(copilot) ;;
-    both)    targets=(claude codex) ;;
-    all)     targets=(claude codex copilot) ;;
-  esac
+  local -a targets=()
+  local expanded
+  while IFS= read -r expanded; do targets+=("$expanded"); done < <(asha_expand_target "$TARGET")
 
   local t total=0
   local -a failed=()
@@ -189,13 +186,23 @@ asha_uninstall_main() {
     total=$((total + ${n_harness:-0}))
   done
 
-  # Clean asha bin entries from ~/.local/bin/. The dispatcher `asha` resolves
-  # into the repo (removed by realpath match); the relative shims (asha-* ->
-  # asha) go broken once `asha` is gone and are caught by the broken-link branch
-  # in remove_symlinks_under regardless of sweep order.
+  # Targeted uninstall removes only the selected harness shims. The shared
+  # dispatcher and unselected shims remain usable. Full uninstall removes all.
   local user_bin="$HOME/.local/bin"
   if [[ -d "$user_bin" ]]; then
-    local n; n="$(remove_symlinks_under "$user_bin" 1)"
+    local n=0 shim h raw
+    if [[ "$TARGET" == all ]]; then
+      n="$(remove_symlinks_under "$user_bin" 1)"
+    else
+      for h in "${targets[@]}"; do
+        shim="$user_bin/asha-$h"
+        [[ -L "$shim" ]] || continue
+        raw="$(readlink "$shim" 2>/dev/null || true)"
+        [[ "$raw" == asha ]] || continue
+        if [[ $DRY_RUN -eq 1 ]]; then info "  RM  $shim"; else rm -f "$shim"; fi
+        n=$((n+1))
+      done
+    fi
     [[ "$n" -gt 0 ]] && say "removed $n bin entr(y/ies) from $user_bin"
     total=$((total + n))
   fi

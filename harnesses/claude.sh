@@ -19,8 +19,8 @@
 # entries point at absolute source paths so each script's $(dirname "$0")
 # resolves to its real directory.
 
-CLAUDE_HOME="$HOME/.claude"
-CLAUDE_SETTINGS_FILE="$CLAUDE_HOME/settings.json"
+CLAUDE_HOME="$(asha_harness_home claude)"
+CLAUDE_SETTINGS_FILE="$(asha_harness_native_config claude)"
 
 # ---------------------------------------------------------------------------
 # Claude-specific helpers

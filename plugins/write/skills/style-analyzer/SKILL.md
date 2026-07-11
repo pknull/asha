@@ -137,8 +137,7 @@ Machine-readable output for integration with other tools:
 |-----------|--------------|
 | voice-analyst agent | Uses this script for metric extraction (analyze phase) |
 | voice-analyst agent (merge phase) | Consumes analysis outputs |
-| prose-analysis | Validates against derived thresholds |
-| perplexity-gate | Complements with AI flatness detection |
+| prose-analysis | Uses descriptive metrics alongside editorial judgment |
 
 ## AI Signal Words
 

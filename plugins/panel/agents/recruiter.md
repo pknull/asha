@@ -60,9 +60,9 @@ Produce a concise 5-bullet brief per panel protocol:
 **Phase 2: Systematic Agent Search**
 1. For each atomic task, search existing agents via multiple keywords:
    ```bash
-   grep -l "description.*{domain_keyword}" .claude/agents/*.md
+   rg -l "description.*{domain_keyword}" plugins/*/agents/*.md
    ```
-2. Read candidate agent files (don't assume from name alone)
+2. Read candidate definitions from the active harness catalogue or source corpus (don't assume from name alone)
 3. Score each agent-task pairing (0-10 scale)
 4. Document for each task:
    - **Best Agent**: [name] (score: X/10, rationale)

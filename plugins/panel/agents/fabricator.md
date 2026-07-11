@@ -19,7 +19,7 @@ A capability spec from the Analyst:
 
 ## Output
 
-One agent file. Default destination: the host project's `.claude/agents/<name>.md` (project-scoped — do NOT write into `~/.claude/agents/` or the asha repo unless explicitly directed). Report the path you wrote.
+One portable candidate agent file. Default destination: `Work/panels/<panel-id>/agents/<name>.md`. This does not install or activate the agent. Harness-specific installation requires explicit direction and must use that harness's native format. Report the path you wrote.
 
 ## Construction Rules
 
@@ -42,7 +42,7 @@ One agent file. Default destination: the host project's `.claude/agents/<name>.m
 
 ## Boundaries
 
-- Never duplicate an existing capability: before writing, Glob the available agent libraries (`.claude/agents/**/*.md` in the project, then user scope) and report if a near-match (score >4 by the Analyst's rubric) already exists instead of fabricating.
+- Never duplicate an existing capability: inspect the current harness catalogue and `plugins/*/agents/*.md`; report a near-match (score >4 by the Analyst's rubric) instead of fabricating.
 - Never fabricate agents whose purpose is to bypass policy, guardrails, or review gates.
 - One agent per deployment. If the gap spans two disciplines, report the split back to the Analyst rather than building a hybrid.
 

@@ -25,7 +25,7 @@
 # Plugins skipped entirely (Claude-only): none currently
 # Hook events Codex doesn't support: SessionEnd, Setup (warned & dropped)
 
-CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
+CODEX_HOME="$(asha_harness_home codex)"
 CODEX_CONFIG_FILE="$CODEX_HOME/config.toml"
 CODEX_SKILLS_DIR="$CODEX_HOME/skills"
 CODEX_AGENTS_DIR="$CODEX_HOME/agents"
@@ -230,24 +230,20 @@ sys.stdout.write(f"---\n{new_fm}\n---\n{preamble}{body}")
 PYEOF
 )"
 
-  # Idempotent write. On the unchanged path, still bump dest mtime — the
-  # drift check compares source vs dest mtimes, so a content-identical dest
-  # with an old mtime would be flagged stale forever.
-  if [[ -f "$dest" ]]; then
-    local current; current="$(cat "$dest")"
-    if [[ "$current" == "$content" ]]; then
-      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
-      log "[codex] command-skill unchanged: $dest"
-      return 0
-    fi
-  fi
-
-  if [[ $DRY_RUN -eq 1 ]]; then
+  local prepared
+  prepared="$(mktemp)"
+  printf '%s' "$content" > "$prepared"
+  if declare -F asha_artifact_install_prepared >/dev/null 2>&1 \
+     && [[ "${ASHA_ARTIFACT_HARNESS:-}" == codex ]]; then
+    asha_artifact_install_prepared codex "$src" "$dest" codex-command-skill "$prepared"
+  elif [[ $DRY_RUN -eq 1 ]]; then
     say "  EMIT [codex-command-skill]  $src -> $dest"
   else
+    ensure_dir "$(dirname "$dest")"
     printf '%s' "$content" > "$dest"
     log "emitted [codex-command-skill]: $dest (from $src)"
   fi
+  rm -f "$prepared"
 }
 
 # Generate Codex custom-agent TOML files from Asha agent Markdown. This is the
@@ -340,21 +336,20 @@ print("developer_instructions = " + json.dumps(instructions))
 PYEOF
 )"
 
-  if [[ -f "$dest" ]]; then
-    local current; current="$(cat "$dest")"
-    if [[ "$current" == "$content" ]]; then
-      [[ $DRY_RUN -eq 1 ]] || touch "$dest"
-      log "[codex] agent unchanged: $dest"
-      return 0
-    fi
-  fi
-
-  if [[ $DRY_RUN -eq 1 ]]; then
+  local prepared
+  prepared="$(mktemp)"
+  printf '%s\n' "$content" > "$prepared"
+  if declare -F asha_artifact_install_prepared >/dev/null 2>&1 \
+     && [[ "${ASHA_ARTIFACT_HARNESS:-}" == codex ]]; then
+    asha_artifact_install_prepared codex "$src" "$dest" codex-agent-toml "$prepared"
+  elif [[ $DRY_RUN -eq 1 ]]; then
     say "  EMIT [codex-agent-toml]  $src -> $dest"
   else
+    ensure_dir "$(dirname "$dest")"
     printf '%s\n' "$content" > "$dest"
     log "emitted [codex-agent-toml]: $dest (from $src)"
   fi
+  rm -f "$prepared"
 }
 
 # ---------------------------------------------------------------------------
@@ -557,7 +552,7 @@ _codex_build_hook_block() {
     [[ -z "$plugin_emit" ]] && continue
     emitted+="$plugin_emit"$'\n'
     count=$((count+1))
-  done < <(selected_plugins)
+  done < <(all_plugin_dirs)
 
   emitted+="$CODEX_HOOK_FENCE_END"$'\n'
   [[ $count -eq 0 ]] && return 1
@@ -653,6 +648,7 @@ codex_install() {
   [[ -f "$CODEX_CONFIG_FILE" ]] || die "Codex config.toml not found: $CODEX_CONFIG_FILE (run codex once to bootstrap)"
 
   say "[codex] target = $CODEX_HOME"
+  asha_artifact_begin codex
 
   _codex_migrate_legacy
 
@@ -680,6 +676,7 @@ codex_install() {
   say ""
   say "== [codex] hooks =="
   codex_install_hooks
+  asha_artifact_finalize codex "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)"
 }
 
 # ---------------------------------------------------------------------------
@@ -690,9 +687,21 @@ codex_uninstall() {
   command -v python3 >/dev/null 2>&1 || die "python3 required for Codex uninstall (TOML validation)" 3
   [[ -d "$CODEX_HOME" ]] || { say "[codex] $CODEX_HOME does not exist; nothing to remove"; CODEX_UNINSTALL_TOTAL=0; return 0; }
 
+  local ownership_manifest
+  ownership_manifest="$(asha_artifact_manifest_path codex)"
+  if [[ ! -f "$ownership_manifest" ]] && {
+       grep -rlq '## Codex harness adapter' "$CODEX_SKILLS_DIR" 2>/dev/null \
+       || grep -rlq 'Asha custom agent rendered for OpenAI Codex' "$CODEX_AGENTS_DIR" 2>/dev/null;
+     }; then
+    die "pre-manifest Codex artifacts detected; run 'asha install codex --force' once, then retry uninstall" 2
+  fi
+
   say "[codex] target = $CODEX_HOME"
 
   local total=0 n
+  n="$(asha_artifact_uninstall codex)"
+  [[ "$n" -gt 0 ]] && say "[codex] removed $n owned generated artifact(s)"
+  total=$((total + n))
 
   # Skills cleanup: three kinds of asha-installed entries to remove —
   #   1. Whole-dir symlinks (plugin skills) — remove via remove_symlinks_under
@@ -704,30 +713,6 @@ codex_uninstall() {
     n="$(remove_symlinks_under "$CODEX_SKILLS_DIR" 2)"
     [[ "$n" -gt 0 ]] && say "[codex] removed $n skill symlink(s) from $CODEX_SKILLS_DIR"
     total=$((total + n))
-
-    # Generated command-skills (real files): identify by walking plugin command MDs,
-    # reading their declared name, and checking if a non-symlink SKILL.md exists.
-    local removed_generated=0
-    while IFS= read -r cmd; do
-      [[ -f "$cmd" ]] || continue
-      case "$cmd" in *output-styles*) continue ;; esac
-      local declared_name
-      declared_name="$(_codex_skill_name_from_md "$cmd")"
-      [[ -z "$declared_name" ]] && continue
-      local skill_md="$CODEX_SKILLS_DIR/$declared_name/SKILL.md"
-      # Only remove if it's a real file (not symlink — symlinks were handled above)
-      if [[ -f "$skill_md" && ! -L "$skill_md" ]]; then
-        if [[ $DRY_RUN -eq 1 ]]; then
-          info "  RM (generated)  $skill_md"
-        else
-          rm -f "$skill_md"
-          log "removed generated command-skill: $skill_md"
-        fi
-        removed_generated=$((removed_generated+1))
-      fi
-    done < <(find "$PLUGINS_DIR" -mindepth 3 -maxdepth 3 -path '*/commands/*.md' -type f 2>/dev/null)
-    [[ $removed_generated -gt 0 ]] && say "[codex] removed $removed_generated generated command-skill(s)"
-    total=$((total + removed_generated))
 
     # Prune now-empty skill dirs that we created (only real dirs, not .system)
     while IFS= read -r d; do
@@ -749,28 +734,6 @@ codex_uninstall() {
     [[ "$n" -gt 0 ]] && say "[codex] removed $n agent symlink(s) from $CODEX_AGENTS_DIR"
     total=$((total + n))
 
-    local removed_generated_agents=0
-    while IFS= read -r agent; do
-      [[ -f "$agent" ]] || continue
-      local plugin_dir ns declared_name base dest
-      plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
-      ns="$(ns_for "$plugin_dir")"
-      base="$(basename "$agent" .md)"
-      declared_name="$(_codex_skill_name_from_md "$agent")"
-      [[ -n "$declared_name" ]] || declared_name="$base"
-      dest="$CODEX_AGENTS_DIR/${ns}-${declared_name}.toml"
-      if [[ -f "$dest" && ! -L "$dest" ]]; then
-        if [[ $DRY_RUN -eq 1 ]]; then
-          info "  RM (generated agent)  $dest"
-        else
-          rm -f "$dest"
-          log "removed generated Codex agent: $dest"
-        fi
-        removed_generated_agents=$((removed_generated_agents+1))
-      fi
-    done < <(find "$PLUGINS_DIR" -mindepth 3 -maxdepth 3 -path '*/agents/*.md' -type f 2>/dev/null)
-    [[ $removed_generated_agents -gt 0 ]] && say "[codex] removed $removed_generated_agents generated agent file(s)"
-    total=$((total + removed_generated_agents))
   fi
 
   # Legacy: any remaining prompts dir entries from pre-Step-7 installs

@@ -66,8 +66,8 @@ ln -sfn ch01 Work/novel/state/current
 
 ## Integration
 
-- Consistency-checker reads from `bible/` for validation
-- Perplexity-gate writes metrics to `state/[chapter]/metrics.json`
+- Continuity-reviewer reads from `bible/`, `timeline/`, and current state for validation
+- Editorial review outcomes may be recorded in `state/[chapter]/metrics.json`
 - Book-export reads from `story/manuscript.md`
 
 ## File Purposes
@@ -77,5 +77,5 @@ ln -sfn ch01 Work/novel/state/current
 | `bible/voice.md` | Authoritative voice guide (prohibited/required patterns) |
 | `bible/rules.md` | Immutable story constraints |
 | `state/current` | Symlink to active chapter |
-| `state/[ch]/metrics.json` | Perplexity gate results per draft |
+| `state/[ch]/metrics.json` | Draft metadata and editorial review outcomes |
 | `timeline/events.json` | Structured timeline for consistency |

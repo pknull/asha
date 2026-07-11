@@ -242,6 +242,25 @@ else
 fi
 assert_eq "symlinks swept despite broken TMPDIR" "0" "$(repo_links)"
 
+# ---------------------------------------------------------------------------
+# Test 9: pre-manifest generated files must never be silently stranded.
+# ---------------------------------------------------------------------------
+echo "--- test 9: legacy generated artifacts require explicit adoption ---"
+build_sandbox
+mkdir -p "$SANDBOX/.codex/skills/session-save"
+printf '%s\n' '## Codex harness adapter' > "$SANDBOX/.codex/skills/session-save/SKILL.md"
+rc=0
+out="$(env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+  bash "$REPO_ROOT/uninstall.sh" --target codex 2>&1)" || rc=$?
+if [[ $rc -ne 0 && "$out" == *"pre-manifest Codex artifacts detected"* ]]; then
+  ok "legacy Codex uninstall fails loudly with migration instruction"
+else
+  fail "legacy Codex uninstall fails loudly with migration instruction (rc=$rc)"
+fi
+[[ -f "$SANDBOX/.codex/skills/session-save/SKILL.md" ]] \
+  && ok "legacy generated file preserved until explicit adoption" \
+  || fail "legacy generated file preserved until explicit adoption"
+
 echo ""
 echo "test-uninstall: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

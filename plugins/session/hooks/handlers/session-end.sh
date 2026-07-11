@@ -38,6 +38,11 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
 [[ -n "$SESSION_ID" ]] && export ASHA_SESSION_ID="$SESSION_ID" && export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
 export ASHA_HARNESS="${ASHA_HARNESS:-claude}"
 
+# Silence is durable user policy, not ephemeral session state. Inspect it before
+# cleanup and leave it in place until `/session:silence off` removes it.
+SILENCED=0
+[[ -f "$PROJECT_DIR/Work/markers/silence" ]] && SILENCED=1
+
 # Clear this session's ephemeral policy state (session_state — not durable
 # Memory); sweep state files leaked by prior unclean exits.
 if [[ -f "$SCRIPT_DIR/state.sh" ]]; then
@@ -49,14 +54,17 @@ fi
 
 # Clean up session markers (auto-removed at session-end)
 rm -f "$PROJECT_DIR/Work/markers/rp-active"
-rm -f "$PROJECT_DIR/Work/markers/silence"
 rm -f "$PROJECT_DIR/Work/markers/save-pending"
 
 # Extract session end reason
 REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null || true)
 
 # Only archive on clean logout/exit/idle (not on /clear which continues session)
-if [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" || "$REASON" == "idle" ]]; then
+if [[ "$SILENCED" == "1" ]]; then
+    # A clean exit from a silenced session must not launch synthesis.
+    echo "{}"
+
+elif [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" || "$REASON" == "idle" ]]; then
     # Use save script in automatic mode.
     #
     # DETACHED, not inline: the old `exec save-session.sh --automatic` ran the

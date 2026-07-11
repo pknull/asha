@@ -2320,7 +2320,7 @@ CODEX_WHY=""
 printf '[features]\nhooks = true\n' > "$CODEX_TMP/config.toml"
 mkdir -p "$CODEX_TMP/asha"
 printf '{}\n' > "$CODEX_TMP/asha/config.json"
-if ! CODEX_HOME="$CODEX_TMP" ASHA_CONFIG="$CODEX_TMP/asha/config.json" "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP/install.err"; then
+if ! CODEX_HOME="$CODEX_TMP" ASHA_HOME="$CODEX_TMP/asha" ASHA_CONFIG="$CODEX_TMP/asha/config.json" "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP/install.err"; then
     CODEX_OK=0
     CODEX_WHY=" install-failed:$(cat "$CODEX_TMP/install.err")"
 elif ! python3 - "$CODEX_TMP/config.toml" "$CODEX_TMP/rules/asha.rules" "$CODEX_TMP/agents/session-loop-operator.toml" "$CODEX_TMP/skills/session-save/SKILL.md" <<'PY' >/dev/null 2>"$CODEX_TMP/check.err"
@@ -2365,11 +2365,26 @@ else
 fi
 
 # ============================================================================
+# Test 106b: PostToolUse lint hook returns a response, not its event input
+# ============================================================================
+echo -n "Test 106b: Post-edit lint emits valid PostToolUse response... "
+POST_EDIT_INPUT='{"session_id":"test","hook_event_name":"PostToolUse","tool_name":"apply_patch","tool_input":{"command":"*** Begin Patch"},"tool_response":"Done"}'
+POST_EDIT_OUTPUT="$(printf '%s' "$POST_EDIT_INPUT" | "$REPO_ROOT/plugins/code/hooks/post-edit-lint.sh")"
+if [[ "$POST_EDIT_OUTPUT" == '{}' ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  expected {}, got: $POST_EDIT_OUTPUT"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 107: Total test count matches expected
 # ============================================================================
 echo -n "Test 107: Test infrastructure self-check... "
 # This test verifies the test suite is complete
-EXPECTED_TESTS=87
+EXPECTED_TESTS=85
 if [[ $((PASSED + FAILED + SKIPPED + 1)) -eq $EXPECTED_TESTS ]]; then
     echo -e "${GREEN}PASS${NC} ($EXPECTED_TESTS tests)"
     PASSED=$((PASSED + 1))

@@ -24,7 +24,7 @@ is_asha_initialized 2>/dev/null || exit 0
 SESSION_FILE="$PROJECT_DIR/Memory/sessions/current-session.md"
 [[ -f "$SESSION_FILE" ]] || exit 0
 # Respect the silence marker (no logging when silenced).
-[[ -f "$PROJECT_DIR/Memory/markers/silence" ]] && exit 0
+[[ -f "$PROJECT_DIR/Work/markers/silence" ]] && exit 0
 
 SELF_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || exit 0
 REPO_RULES="$SELF_DIR/../policies/rules.json"

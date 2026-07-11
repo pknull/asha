@@ -74,6 +74,13 @@ TIMESTAMP_FILE=$(date -u '+%Y-%m-%d_%H-%M')
 
 MODE="${1:---interactive}"  # --interactive (default), --automatic, --synthesize, etc.
 
+# Silence is durable user policy. Every entry point, including direct script
+# invocation and archive-only mode, must stop before writing or rotating data.
+if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
+    echo "[save-session] skipped: Work/markers/silence is active" >&2
+    exit 0
+fi
+
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
@@ -100,7 +107,7 @@ get_python_cmd() {
 # (2026-05-11) by env probe inside each running CLI; do not rename without
 # re-verifying against the host.
 #
-# Returns: claude | copilot | codex | unknown
+# Returns: claude | copilot | codex | opencode | unknown
 detect_harness() {
     if [[ -n "${ASHA_HARNESS:-}" ]]; then
         echo "$ASHA_HARNESS"
@@ -110,6 +117,8 @@ detect_harness() {
         echo "copilot"
     elif [[ -n "${CODEX_THREAD_ID:-}" ]] || [[ -n "${CODEX_MANAGED_BY_NPM:-}" ]]; then
         echo "codex"
+    elif [[ -n "${OPENCODE:-}" ]] || [[ -n "${OPENCODE_SESSION_ID:-}" ]]; then
+        echo "opencode"
     else
         echo "unknown"
     fi
@@ -120,7 +129,7 @@ detect_harness() {
 # pattern_analyzer.py via the ASHA_EVENTS_FILE env override.
 #
 # Args:
-#   $1: harness (claude|copilot|codex)
+#   $1: harness (claude|copilot|codex|opencode)
 #   $2: output path (where to write the regenerated events.jsonl)
 #   $3: session_id to embed in the synth events
 # Returns: 0 on success, non-zero if jsonl_reader couldn't locate a transcript.
@@ -296,6 +305,7 @@ from_transcript_mode() {
         claude)  SID="${ASHA_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}" ;;
         copilot) SID="${ASHA_SESSION_ID:-${COPILOT_SESSION_ID:-}}" ;;
         codex)   SID="${ASHA_SESSION_ID:-${CODEX_THREAD_ID:-}}" ;;
+        opencode) SID="${ASHA_SESSION_ID:-${OPENCODE_SESSION_ID:-}}" ;;
     esac
 
     SIDE_FILE="$PROJECT_DIR/Memory/events/events-from-transcript.jsonl"
@@ -341,7 +351,9 @@ automatic_mode() {
     # Archive legacy markdown if exists
     archive_watching_file
 
-    # Run pattern analyzer synthesis (updates activeContext, learnings, voice, keeper)
+    # Run project-memory synthesis. Automatic mode deliberately omits
+    # --capture-calibration: unattended saves must never mutate global
+    # ~/.asha/keeper.md or ~/.asha/voice.md.
     PATTERN_ANALYZER="$PLUGIN_ROOT/tools/pattern_analyzer.py"
     PYTHON_CMD=$(get_python_cmd)
 

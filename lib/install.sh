@@ -33,12 +33,16 @@ HARNESSES_DIR="$MARKET_ROOT/harnesses"
 # Cross-platform shims (resolve_path); re-exported to sourced harness scripts.
 # shellcheck source=lib/portable.sh
 source "$MARKET_ROOT/lib/portable.sh"
+# shellcheck source=../harnesses/registry.sh
+source "$HARNESSES_DIR/registry.sh"
+# shellcheck source=../harnesses/generated-artifacts.sh
+source "$HARNESSES_DIR/generated-artifacts.sh"
 
 # ---------------------------------------------------------------------------
 # Shared helpers (used by all harness implementations)
 # ---------------------------------------------------------------------------
 
-die()  { echo "ERROR: $*" >&2; exit "${2:-1}"; }
+die()  { echo "ERROR: ${1:-error}" >&2; exit "${2:-1}"; }
 log()  { [[ ${VERBOSE:-0} -eq 1 ]] && echo "  $*"; return 0; }
 say()  { echo "$*"; }
 info() { echo "$*" >&2; }
@@ -124,20 +128,45 @@ all_plugin_dirs() {
   done | sort
 }
 
+# Remove only broken symlinks whose stored target points into this Asha source
+# tree. Full installs use this to reconcile primitives removed or renamed since
+# the previous install; foreign broken links are preserved.
+prune_retired_asha_symlinks() {
+  local home="$1" link raw n=0
+  [[ -d "$home" ]] || return 0
+  while IFS= read -r -d '' link; do
+    [[ ! -e "$link" ]] || continue
+    raw="$(readlink "$link" 2>/dev/null || true)"
+    case "$raw" in
+      "$MARKET_ROOT"/plugins/*|"${ABS_MARKET_ROOT:-$MARKET_ROOT}"/plugins/*)
+        if [[ ${DRY_RUN:-0} -eq 1 ]]; then
+          say "  RM [retired-link]  $link -> $raw"
+        else
+          rm -f "$link"
+          log "removed retired Asha symlink: $link -> $raw"
+        fi
+        n=$((n + 1))
+        ;;
+    esac
+  done < <(find "$home" -mindepth 1 -maxdepth 4 -type l -print0 2>/dev/null)
+  [[ $n -gt 0 ]] && say "[$(basename "$home")] removed $n retired symlink(s)"
+  return 0
+}
+
 usage() {
   cat <<'EOF'
 install.sh / `asha install` — symlink-mount installer (multi-harness).
 
 Usage:
   ./install.sh [--target T] [--bin B] [--default D] [--only ns,...] [--dry-run] [--force] [--verbose]
-  asha install <claude|codex|copilot|both|all> [--bin B] [--default D] [--only ...] [--dry-run] [--force]
+  asha install <claude|codex|copilot|opencode|both|all> [--bin B] [--default D] [--only ...] [--dry-run] [--force]
 
 Targets (--target or positional after `asha install`):
   claude | codex | copilot | both (claude+codex) | all (claude+codex+copilot)
 
 Bin:
-  --bin <claude|codex|copilot|all>   install ~/.local/bin/asha dispatcher + harness shims
-  --default <claude|codex|copilot>   default harness for bare `asha` (persisted to ~/.asha/config.json)
+  --bin <claude|codex|copilot|opencode|all> install ~/.local/bin/asha dispatcher + harness shims
+  --default <claude|codex|copilot|opencode> default harness for bare `asha` (persisted to ~/.asha/config.json)
 
 Other:
   --only ns1,ns2   limit to named plugin dirs
@@ -168,20 +197,14 @@ parse_args() {
     shift
   done
 
-  case "$TARGET" in
-    claude|codex|copilot|both|all) ;;
-    *) die "invalid --target '$TARGET' (expected: claude|codex|copilot|both|all)" 1 ;;
-  esac
+  asha_target_exists "$TARGET" \
+    || die "invalid --target '$TARGET' (expected: $(asha_harness_names_inline)|both|all)" 1
   if [[ -n "$BIN" ]]; then
-    case "$BIN" in
-      claude|codex|copilot|all) ;;
-      *) die "invalid --bin '$BIN' (expected: claude|codex|copilot|all)" 1 ;;
-    esac
+    { asha_harness_exists "$BIN" || [[ "$BIN" == all ]]; } \
+      || die "invalid --bin '$BIN' (expected: $(asha_harness_names_inline)|all)" 1
   fi
-  case "$BIN_DEFAULT" in
-    claude|codex|copilot) ;;
-    *) die "invalid --default '$BIN_DEFAULT' (expected: claude|codex|copilot)" 1 ;;
-  esac
+  asha_harness_exists "$BIN_DEFAULT" \
+    || die "invalid --default '$BIN_DEFAULT' (expected: $(asha_harness_names_inline))" 1
 }
 
 # ---------------------------------------------------------------------------
@@ -214,11 +237,11 @@ install_bin() {
 
   # Per-harness shims: relative symlinks to `asha` (bin/asha routes on basename).
   local h
-  for h in claude codex copilot; do
+  while IFS= read -r h; do
     case "$choice" in
       "$h"|all) _install_shim_link "$user_bin" "asha-$h" ;;
     esac
-  done
+  done < <(asha_harnesses)
 
   # Persist the default harness only when --default was explicitly given (so a
   # first-run `asha codex` auto-config doesn't silently change the default).
@@ -402,7 +425,8 @@ _register_hooks_is_skip() {
 register_hooks() {
   # Defaults so the function is safe to call standalone (bare source).
   : "${DRY_RUN:=0}"; : "${VERBOSE:=0}"
-  local settings="${CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"
+  local settings
+  settings="$(asha_harness_native_config claude)"
   local asha_root
   asha_root="$(resolve_path "$MARKET_ROOT")"
 
@@ -647,14 +671,8 @@ asha_install_main() {
   [[ $FORCE   -eq 1 ]] && say "   (force: will replace mismatched symlinks)"
   [[ -n "$ONLY"     ]] && say "   (only: $ONLY)"
 
-  local targets
-  case "$TARGET" in
-    claude)  targets=(claude) ;;
-    codex)   targets=(codex)  ;;
-    copilot) targets=(copilot) ;;
-    both)    targets=(claude codex) ;;
-    all)     targets=(claude codex copilot) ;;
-  esac
+  local -a targets=()
+  while IFS= read -r t; do targets+=("$t"); done < <(asha_expand_target "$TARGET")
 
   local t
   for t in "${targets[@]}"; do
@@ -663,6 +681,7 @@ asha_install_main() {
     # shellcheck disable=SC1090
     source "$harness_script"
     "${t}_install"
+    [[ -z "$ONLY" ]] && prune_retired_asha_symlinks "$(asha_harness_home "$t")"
     # The installer OWNS Claude's settings.json .hooks: after the claude target
     # has mounted its symlinks, rebuild the asha hook set centrally so legacy
     # untagged duplicates are collapsed and the test canary is excluded.

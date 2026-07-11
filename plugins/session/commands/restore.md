@@ -8,33 +8,17 @@ allowed-tools: ["Bash", "Read"]
 
 Re-enables Memory logging after silence mode.
 
-## What This Does
+This is a compatibility alias for `/session:silence off`. It removes only the
+durable silence marker; it does not reconstruct events from the silenced window.
 
-- **Restores hooks**: User prompt and tool usage logging resume
-- **Restores session watching**: Automatic operation tracking to `current-session.md`
-- **Restores Memory synthesis**: `/save` will have full session context
-- **Preserves context markers**: Does NOT remove `project-active` or `rp-active` markers
+```bash
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+rm -f "$PROJECT_DIR/Work/markers/silence"
+echo "Memory synthesis enabled"
+```
 
-## Status After Restore
-
-After restore, normal marker hierarchy applies:
-
-- If `rp-active` exists: RP logging mode (hooks disabled, session watching may vary)
-- If `project-active` exists: Project context loaded, normal logging
-- If no markers: Default logging behavior
-
-## Statusline Update
-
-Statusline will reflect active context after silence removed:
-
-- `[ProjectName]` if project active
-- `[🎭 RP]` if RP active
-- Normal prompt if no markers
-
----
-
-**Execute**: Invoke workspace-manager skill.
-
-Command: `silence off`
+Manual transcript synthesis is then available on Claude, Codex, Copilot, and
+OpenCode. Claude also regains clean-exit automatic save. Other harnesses require
+an explicit `/session:save` because Asha has no SessionEnd lifecycle hook there.
 
 ARGUMENTS: {command_args}

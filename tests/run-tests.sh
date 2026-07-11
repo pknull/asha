@@ -132,6 +132,17 @@ else
 fi
 echo ""
 
+# Test Suite 4e: OpenCode Adapter + Ownership Manifest
+echo -e "${BLUE}--- Test Suite 4e: OpenCode Adapter Tests ---${NC}"
+if "$SCRIPT_DIR/test-opencode.sh"; then
+    echo -e "${GREEN}✓ OpenCode adapter tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ OpenCode adapter tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Test Suite 5: Shellcheck (if available)
 echo -e "${BLUE}--- Test Suite 5: Shell Script Linting ---${NC}"
 if command -v shellcheck &>/dev/null; then
