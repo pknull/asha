@@ -13,10 +13,11 @@
 #   tools:    python3 on PATH (frontmatter parsing)
 
 # Plugins never converted for Copilot (Claude-only content).
-_COPILOT_SKIP_PLUGINS=(output-styles)
+_COPILOT_SKIP_PLUGINS=()  # no Claude-only plugins currently shipped
 
 _copilot_is_skip_plugin() {
   local p="$1" sp
+  [[ ${#_COPILOT_SKIP_PLUGINS[@]} -eq 0 ]] && return 1  # empty-array guard (bash 3.2 + set -u)
   for sp in "${_COPILOT_SKIP_PLUGINS[@]}"; do [[ "$p" == "$sp" ]] && return 0; done
   return 1
 }
