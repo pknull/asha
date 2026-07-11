@@ -4,7 +4,7 @@ description: Create a chapter from concept to polished prose with perplexity gat
 complexity: standard
 
 agents:
-  - name: consistency-checker
+  - name: continuity-reviewer
     role: Verify continuity before new content
     model: sonnet
     trigger: "@chapter-requested"
@@ -34,8 +34,8 @@ agents:
     checkpoint: false
     skill: perplexity-gate
 
-  # NEW: Diversity rewriter for failed perplexity
-  - name: diversity-rewriter
+  # NEW: Perplexity improver for failed perplexity
+  - name: perplexity-improver
     role: Rewrite flat passages using VS-Tail sampling
     model: sonnet
     trigger: "@perplexity-failed"
@@ -74,7 +74,7 @@ flow:
   transitions:
     - from: "@chapter-requested"
       to: "@continuity-clear"
-      agent: consistency-checker
+      agent: continuity-reviewer
 
     - from: "@continuity-clear"
       to: "@outline-ready"
@@ -106,7 +106,7 @@ flow:
     # Rewrite loop for failed perplexity
     - from: "@perplexity-failed"
       to: "@rewrite-complete"
-      agent: diversity-rewriter
+      agent: perplexity-improver
       note: "Apply VS-Tail sampling to flagged sections"
 
     - from: "@rewrite-complete"

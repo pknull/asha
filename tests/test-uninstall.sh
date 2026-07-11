@@ -54,7 +54,7 @@ build_sandbox() {
   ln -s "$REPO_ROOT/plugins/session/commands/save.md"          "$SANDBOX/.claude/commands/session/save.md"
   ln -s "$REPO_ROOT/plugins/session/skills/memory-maintenance" "$SANDBOX/.codex/skills/memory-maintenance"
   ln -s "$REPO_ROOT/plugins/session/skills/memory-maintenance" "$SANDBOX/.copilot/skills/memory-maintenance"
-  ln -s "$REPO_ROOT/plugins/write/skills/book-maker"           "$SANDBOX/.copilot/skills/book-maker"
+  ln -s "$REPO_ROOT/plugins/write/skills/book-export"          "$SANDBOX/.copilot/skills/book-export"
   ln -s "$REPO_ROOT/bin/asha"                                  "$SANDBOX/.local/bin/asha"
 
   # A foreign symlink that must survive every sweep.

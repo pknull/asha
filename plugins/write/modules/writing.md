@@ -8,16 +8,7 @@ This module governs prose craft, voice management, and adaptive creative output.
 
 ## Prose Craft: Sentence Rhythm
 
-For fiction and narrative prose, sentence length distribution signals emotional register. Match rhythm to scene intent:
-
-| Scene Type | Short | Medium | Long/Run-on | Character |
-|------------|-------|--------|-------------|-----------|
-| **Calm** | 10% | 60% | 30% long | Steady, breathing room |
-| **Anxious** | 40% | 30% | 30% run-ons | Jagged, accelerating |
-| **Grief** | 20% fragments | 30% | 50% meandering | Slow, heavy, circular |
-| **Action** | 70% | 20% | 10% single-word | Staccato, punchy |
-| **Confusion** | uneven | fragments | run-ons + questions | Chaotic, disorienting |
-| **Intimacy** | 30% | 50% | 20% fragments | Flowing but punctuated |
+For fiction and narrative prose, sentence length distribution signals emotional register. Match rhythm to scene intent — the scene-type → sentence-pattern table lives in `agents/prose-writer.md` ("Rhythm Matching"), which is the source of truth.
 
 **Application**: These aren't prescriptions—they're diagnostic. If a scene feels wrong, check whether rhythm matches intent.
 
@@ -102,7 +93,7 @@ Exemplar lines belong in character sheets, not in prompts.
 | Phase | Gate | Agent/Skill | Blocking |
 |-------|------|-------------|----------|
 | Pre-Draft | Structure Approved | outline-architect | Yes |
-| Pre-Draft | Continuity Clear | consistency-checker | Yes |
+| Pre-Draft | Continuity Clear | continuity-reviewer | Yes |
 | Post-Draft 1 | Beats Covered | prose-writer | Yes |
 | **Post-Draft 1** | **Perplexity Pass** | **perplexity-gate** | **Yes** |
 | Post-Draft 2 | Structure Sound | developmental-editor | Yes |

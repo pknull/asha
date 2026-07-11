@@ -35,7 +35,7 @@ See the whole story. Evaluate whether the structure serves the story's goals. Id
 **OUT OF SCOPE:**
 - Line-level prose quality (line-editor)
 - Grammar and mechanics (line-editor)
-- Worldbuilding consistency (consistency-checker)
+- Worldbuilding consistency (continuity-reviewer)
 - Initial structure creation (outline-architect)
 
 ## Evaluation Framework

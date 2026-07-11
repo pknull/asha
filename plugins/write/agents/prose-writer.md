@@ -197,7 +197,7 @@ Apply Cognitive Texture rules + project voice. Follow Staged Draft Protocol.
 Works with:
 
 - **outline-architect**: Receives structure to expand
-- **consistency-checker**: Validates against established lore
+- **continuity-reviewer**: Validates against established lore
 - **line-editor**: Reviews prose quality after draft
 - **developmental-editor**: May request structural changes
 

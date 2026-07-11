@@ -18,7 +18,7 @@ agents:
     output: "@backstory-complete"
     checkpoint: true
 
-  - name: consistency-checker
+  - name: continuity-reviewer
     role: Verify against existing characters/world
     model: sonnet
     trigger: "@backstory-approved"
@@ -59,7 +59,7 @@ flow:
 
     - from: "@backstory-approved"
       to: "@consistency-checked"
-      agent: consistency-checker
+      agent: continuity-reviewer
 
     - from: "@consistency-checked"
       to: "@voice-samples-ready"

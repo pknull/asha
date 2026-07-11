@@ -4,7 +4,7 @@ description: Complete revision pass on existing manuscript
 complexity: full
 
 agents:
-  - name: consistency-checker
+  - name: continuity-reviewer
     role: Full continuity audit
     model: sonnet
     trigger: "@revision-requested"
@@ -47,7 +47,7 @@ flow:
   transitions:
     - from: "@revision-requested"
       to: "@continuity-report-ready"
-      agent: consistency-checker
+      agent: continuity-reviewer
 
     # CHECKPOINT: Human reviews continuity issues
     - from: "@continuity-report-ready"

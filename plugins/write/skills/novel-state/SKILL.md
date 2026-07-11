@@ -320,7 +320,7 @@ EOF
 | Skill | Relationship |
 |-------|--------------|
 | **perplexity-gate** | Writes to `metrics.json` |
-| **consistency-checker** | Reads `bible/` and `timeline/` |
+| **continuity-reviewer** | Reads `bible/` and `timeline/` |
 | **book-export** | Reads `story/manuscript.md` |
 
 ## Files
@@ -333,5 +333,5 @@ EOF
 ## Related
 
 - `write/skills/perplexity-gate/` — Quality gate populating metrics
-- `write/agents/consistency-checker.md` — Validates against bible
+- `write/agents/continuity-reviewer.md` — Validates against bible
 - `write/recipes/chapter-creation.yaml` — Chapter workflow using state
