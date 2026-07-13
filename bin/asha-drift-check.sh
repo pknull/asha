@@ -334,8 +334,8 @@ fi
 # No residual ${CLAUDE_PLUGIN_ROOT} in plugin command/skill/agent markdown
 # (symlinked verbatim, so a placeholder there would reach the model unported).
 # Excludes docs/ — design docs legitimately show the hooks.json placeholder.
-n="$(grep -rn 'CLAUDE_PLUGIN_ROOT' "$ASHA/plugins" --include='*.md' --exclude-dir=docs 2>/dev/null | wc -l)"
-if [[ "$n" == "0" ]]; then
+n="$(grep -rn 'CLAUDE_PLUGIN_ROOT' "$ASHA/plugins" --include='*.md' --exclude-dir=docs 2>/dev/null | wc -l | tr -d '[:space:]')"
+if [[ "$n" -eq 0 ]]; then
   pass "no CLAUDE_PLUGIN_ROOT in plugin markdown"
 else
   nope "$n CLAUDE_PLUGIN_ROOT refs remain in plugin markdown:"
