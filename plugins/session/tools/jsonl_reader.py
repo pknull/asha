@@ -97,6 +97,32 @@ class IdentityError(RuntimeError):
     """Raised when a save run's harness/session/transcript identity is unsafe."""
 
 
+# WWA provenance is consumed both before synthesis (drift classification) and
+# after synthesis (save_preflight's hard gate). Keep the parser here beside the
+# transcript identity primitives so the two stages cannot drift apart.
+_WWA_HEADER_RE = re.compile(r"^##\s+What Was Accomplished\b.*$", re.MULTILINE)
+_WWA_SESSION_RE = re.compile(r"<!--\s*wwa-session:\s*(\S+?)\s*-->")
+
+
+def lead_wwa_body(text: str) -> Optional[str]:
+    """Return the first WWA section body, or None when no WWA exists."""
+    match = _WWA_HEADER_RE.search(text)
+    if not match:
+        return None
+    start = match.end()
+    next_section = re.search(r"^##\s", text[start:], re.MULTILINE)
+    return text[start:start + next_section.start()] if next_section else text[start:]
+
+
+def lead_wwa_session(text: str) -> Optional[str]:
+    """Return the provenance stamp from the lead WWA section."""
+    body = lead_wwa_body(text)
+    if body is None:
+        return None
+    match = _WWA_SESSION_RE.search(body)
+    return match.group(1) if match else None
+
+
 HARNESS_CHOICES = {"claude", "codex", "copilot", "opencode"}
 _CODEX_ROLLOUT_RE = re.compile(
     r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
@@ -185,6 +211,44 @@ def transcript_session_id(path: Path, harness: str) -> Optional[str]:
             return m.group(1)
     if harness == "claude" and path.suffix == ".jsonl":
         return path.stem
+    if harness == "copilot" and path.name == "events.jsonl":
+        return path.parent.name
+    if harness == "opencode" and path.suffix == ".json" and path.stem.startswith("ses_"):
+        return path.stem
+    return None
+
+
+def transcript_session_ids(path: Path, harness: str) -> set[str]:
+    """Collect every explicit native session stamp present in a transcript."""
+    found: set[str] = set()
+    try:
+        for _, data in stream_jsonl(path, label="session identity scan"):
+            sid = None
+            if harness == "claude":
+                sid = data.get("sessionId")
+            elif harness == "codex" and data.get("type") == "session_meta":
+                payload = data.get("payload") or {}
+                sid = payload.get("id") if isinstance(payload, dict) else None
+            elif harness == "copilot":
+                payload = data.get("data") or {}
+                sid = payload.get("sessionId") if isinstance(payload, dict) else None
+            elif harness == "opencode":
+                candidate = data.get("id")
+                sid = candidate if str(candidate).startswith("ses_") else None
+            if sid:
+                found.add(str(sid))
+    except OSError:
+        return set()
+    return found
+
+
+def transcript_path_session_id(path: Path, harness: str) -> Optional[str]:
+    """Extract only the session-id component carried by the native path."""
+    if harness == "claude" and path.suffix == ".jsonl":
+        return path.stem
+    if harness == "codex":
+        match = _CODEX_ROLLOUT_RE.match(path.name)
+        return match.group(1) if match else None
     if harness == "copilot" and path.name == "events.jsonl":
         return path.parent.name
     if harness == "opencode" and path.suffix == ".json" and path.stem.startswith("ses_"):
@@ -289,9 +353,26 @@ def resolve_identity(
 
     embedded_sid = transcript_session_id(transcript_path, resolved_harness)
     if embedded_sid and embedded_sid != resolved_sid:
-        raise IdentityError(
-            f"session id mismatch: resolved {resolved_sid}, transcript contains {embedded_sid}: {transcript_path}"
+        # An authoritative session id outranks a stale/foreign transcript
+        # override. Resolve by exact id using the explicit project directory so
+        # post-synthesis save_preflight sees the same auto-pin as the classifier.
+        correct = (
+            locate_session_log_for_id(resolved_harness, project_dir, resolved_sid)
+            if project_dir is not None
+            else None
         )
+        if correct is None:
+            raise IdentityError(
+                f"session id mismatch: resolved {resolved_sid}, transcript contains "
+                f"{embedded_sid}: {transcript_path}"
+            )
+        transcript_path = correct
+        embedded_sid = transcript_session_id(transcript_path, resolved_harness)
+        if embedded_sid != resolved_sid:
+            raise IdentityError(
+                f"exact-id transcript still mismatched: resolved {resolved_sid}, "
+                f"transcript contains {embedded_sid}: {transcript_path}"
+            )
 
     return SessionIdentity(resolved_harness, resolved_sid, transcript_path)
 
@@ -376,6 +457,42 @@ def _locate_claude(project_dir: Path) -> Optional[Path]:
         return candidates[0]
     if os.environ.get("ASHA_ALLOW_MTIME_FALLBACK") == "1" and candidates:
         return candidates[0]
+    return None
+
+
+def locate_session_log_for_id(
+    harness: str,
+    project_dir: Path,
+    session_id: str,
+) -> Optional[Path]:
+    """Locate an exact session transcript without consulting override env vars.
+
+    Drift recovery calls this after discovering that ASHA_TRANSCRIPT_PATH names
+    a foreign session. Re-entering locate_session_log() would simply return the
+    same override, so exact-id recovery needs a narrow, override-free path.
+    """
+    project_dir = project_dir.resolve()
+    if harness == "claude":
+        base = Path.home() / ".claude" / "projects" / _project_slug_for_claude(project_dir)
+        candidate = base / f"{session_id}.jsonl"
+        return candidate if candidate.exists() else None
+    if harness == "codex":
+        base = Path.home() / ".codex" / "sessions"
+        if not base.exists():
+            return None
+        matches = sorted(
+            base.rglob(f"rollout-*-{session_id}.jsonl"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+        return matches[0] if matches else None
+    if harness == "copilot":
+        candidate = Path.home() / ".copilot" / "session-state" / session_id / "events.jsonl"
+        return candidate if candidate.exists() else None
+    if harness == "opencode":
+        base = Path.home() / ".local" / "share" / "opencode" / "storage" / "session"
+        matches = list(base.rglob(f"{session_id}.json")) if base.exists() else []
+        return matches[0] if matches else None
     return None
 
 

@@ -6,7 +6,7 @@ Reads events.jsonl, identifies recurring patterns, extracts calibration signals,
 and synthesizes Memory files using the Four Questions structure.
 
 Usage:
-    python pattern_analyzer.py synthesize [--session-id ID]
+    python pattern_analyzer.py synthesize --project-dir DIR [--session-id ID]
     python pattern_analyzer.py patterns [--min-confidence 0.7]
     python pattern_analyzer.py calibration [--session-id ID]
 """
@@ -15,9 +15,14 @@ import os
 import re
 import sys
 import json
+import fcntl
 import hashlib
 import argparse
 import subprocess
+import tempfile
+import stat
+from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, List, Tuple
@@ -25,7 +30,18 @@ from collections import defaultdict, Counter
 
 
 def detect_project_root() -> Path:
-    """Find project root via environment, git, or upward search for Memory/"""
+    """Find project root, honoring the CLI's explicit directory before cwd."""
+    for index, argument in enumerate(sys.argv[1:]):
+        explicit = None
+        if argument in {"--project-dir", "-p"} and index + 2 <= len(sys.argv[1:]):
+            explicit = sys.argv[1:][index + 1]
+        elif argument.startswith("--project-dir="):
+            explicit = argument.split("=", 1)[1]
+        if explicit:
+            project_path = Path(explicit).resolve()
+            if (project_path / "Memory").is_dir():
+                return project_path
+
     claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
     if claude_project_dir:
         project_path = Path(claude_project_dir)
@@ -66,6 +82,78 @@ VOICE_FILE = Path.home() / ".asha" / "voice.md"
 KEEPER_FILE = Path.home() / ".asha" / "keeper.md"
 PATTERNS_FILE = PROJECT_ROOT / "Memory" / "events" / "patterns.json"
 SILENCE_MARKER = PROJECT_ROOT / "Work" / "markers" / "silence"
+
+
+def configure_project_root(project_dir: Path) -> None:
+    """Bind all synthesis paths to the caller's explicit project directory."""
+    global PROJECT_ROOT, EVENTS_FILE, ACTIVE_CONTEXT, PATTERNS_FILE
+    global SILENCE_MARKER, EVAL_RESULTS_FILE
+    PROJECT_ROOT = project_dir.resolve()
+    events_override = os.environ.get("ASHA_EVENTS_FILE")
+    EVENTS_FILE = (
+        Path(events_override)
+        if events_override
+        else PROJECT_ROOT / "Memory" / "events" / "events.jsonl"
+    )
+    ACTIVE_CONTEXT = PROJECT_ROOT / "Memory" / "activeContext.md"
+    PATTERNS_FILE = PROJECT_ROOT / "Memory" / "events" / "patterns.json"
+    SILENCE_MARKER = PROJECT_ROOT / "Work" / "markers" / "silence"
+    EVAL_RESULTS_FILE = PROJECT_ROOT / "Memory" / "events" / "eval_history.jsonl"
+
+
+@contextmanager
+def _project_save_lock(project_dir: Path):
+    """Serialize the full save transaction for one project."""
+    roots = [Path(os.environ["XDG_RUNTIME_DIR"])] if os.environ.get("XDG_RUNTIME_DIR") else []
+    roots.append(Path("/tmp"))
+    lock_dir = None
+    last_error = None
+    for runtime in roots:
+        candidate = runtime / f"asha-save-locks-{os.getuid()}"
+        try:
+            candidate.mkdir(parents=True, mode=0o700, exist_ok=True)
+            info = os.lstat(candidate)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                raise PermissionError(f"unsafe save lock directory: {candidate}")
+            os.chmod(candidate, 0o700)
+            lock_dir = candidate
+            break
+        except OSError as exc:
+            last_error = exc
+    if lock_dir is None:
+        raise PermissionError("no safe writable save lock directory") from last_error
+    key = hashlib.sha256(str(project_dir.resolve()).encode("utf-8")).hexdigest()[:24]
+    flags = os.O_RDWR | os.O_CREAT
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(lock_dir / f"{key}.lock", flags, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, "a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Replace a text file atomically without exposing a truncated state."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    mode = (path.stat().st_mode & 0o777) if path.exists() else 0o644
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(tmp_path, mode)
+        os.replace(tmp_path, path)
+    finally:
+        try:
+            tmp_path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 # Calibration signal patterns
@@ -423,52 +511,215 @@ def _strict_save_mode() -> bool:
     return os.environ.get("ASHA_SAVE_STRICT") == "1"
 
 
-def _current_identity(project_dir: Path, session_id: Optional[str] = None):
+@dataclass
+class DriftDecision:
+    classification: str
+    identity: object
+    transcript_events: list
+    synth_events: List[Dict]
+    tool_summary: str = ""
+    topic: str = "session activity"
+    needs_minimal_wwa: bool = False
+    concurrent_session: Optional[str] = None
+    detail: str = ""
+
+
+def _event_timestamp_is_recent(value: str, minutes: int = 15) -> bool:
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - timestamp.astimezone(timezone.utc)
+    return timedelta(0) <= age <= timedelta(minutes=minutes)
+
+
+def _recent_session_activity(events_file: Path, session_id: str) -> bool:
+    if not events_file.exists():
+        return False
+    for line in events_file.read_text(errors="replace").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            event.get("session_id") == session_id
+            and _event_timestamp_is_recent(event.get("timestamp", ""))
+        ):
+            return True
+    return False
+
+
+def _topic_from_events(events: List[Dict]) -> str:
+    for event in events:
+        if event.get("subtype") == "decision":
+            detail = str((event.get("payload") or {}).get("detail", "")).strip()
+            if detail:
+                return re.sub(r"\s+", " ", detail)[:72].rstrip(" .")
+    return "session tool activity"
+
+
+def _tool_activity_summary(transcript_events: list) -> str:
+    tools = Counter(
+        str(event.tool)
+        for event in transcript_events
+        if event.kind in {"tool_use", "skill", "agent"} and event.tool
+    )
+    return ", ".join(
+        f"{tool} ({count}x)" if count > 1 else tool
+        for tool, count in tools.most_common(8)
+    )
+
+
+def _declared_identity_parts(jsonl_reader, session_id: Optional[str]):
+    candidate_text = os.environ.get("ASHA_TRANSCRIPT_PATH")
+    candidate = Path(os.path.expanduser(candidate_text)) if candidate_text else None
+    harness = os.environ.get("ASHA_HARNESS")
+    if not harness and candidate and candidate.exists():
+        harness = jsonl_reader.sniff_harness(candidate)
+    if not harness:
+        harness = jsonl_reader.detect_harness_from_env()
+    if not harness:
+        raise RuntimeError("save harness is unknown")
+    sid = session_id or os.environ.get("ASHA_SESSION_ID") or jsonl_reader._native_session_id(harness)
+    if not sid:
+        raise RuntimeError("current session id is unknown")
+    return harness, sid, candidate
+
+
+def classify_drift(project_dir: Path, session_id: Optional[str] = None) -> DriftDecision:
+    """Classify transcript/event drift before synthesis writes shared state."""
     try:
         import jsonl_reader  # type: ignore
     except ImportError as exc:
-        if _strict_save_mode() or session_id:
-            raise RuntimeError(f"jsonl_reader unavailable: {exc}") from exc
-        return None
+        raise RuntimeError(f"UNCLASSIFIABLE: jsonl_reader unavailable: {exc}") from exc
+
     try:
-        return jsonl_reader.resolve_identity(project_dir, session_id=session_id)
-    except Exception as exc:  # noqa: BLE001 - convert identity failure to save result
-        has_identity_signal = any(os.environ.get(k) for k in (
-            "ASHA_HARNESS", "ASHA_SESSION_ID", "ASHA_TRANSCRIPT_PATH",
-            "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID", "COPILOT_SESSION_ID",
-        ))
-        if _strict_save_mode() or session_id or has_identity_signal:
-            raise RuntimeError(str(exc)) from exc
-        return None
+        harness, current_sid, candidate = _declared_identity_parts(jsonl_reader, session_id)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"UNCLASSIFIABLE: {exc}") from exc
+
+    candidate = candidate or jsonl_reader.locate_session_log(harness, project_dir)
+    if candidate is None or not candidate.exists():
+        raise RuntimeError(
+            f"UNCLASSIFIABLE: no candidate transcript for {harness} session {current_sid}"
+        )
+
+    candidate_sid = jsonl_reader.transcript_session_id(candidate, harness)
+    candidate_path_sid = jsonl_reader.transcript_path_session_id(candidate, harness)
+    classification = "CLEAN"
+    detail = f"transcript {candidate} matches session {current_sid}"
+    selected = candidate
+    if candidate_sid != current_sid or candidate_path_sid != current_sid:
+        correct = jsonl_reader.locate_session_log_for_id(harness, project_dir, current_sid)
+        if correct is None:
+            raise RuntimeError(
+                "UNCLASSIFIABLE: candidate transcript belongs to "
+                f"{candidate_sid or 'unknown'} at path id {candidate_path_sid or 'unknown'}, "
+                f"expected {current_sid}, and no exact transcript exists"
+            )
+        selected = correct
+        classification = "WRONG_TRANSCRIPT"
+        detail = f"candidate {candidate} belonged to {candidate_sid}; auto-pinned {correct}"
+
+    selected_sids = jsonl_reader.transcript_session_ids(selected, harness)
+    selected_path_sid = jsonl_reader.transcript_path_session_id(selected, harness)
+    if selected_sids != {current_sid} or selected_path_sid != current_sid:
+        raise RuntimeError(
+            "UNCLASSIFIABLE: selected transcript identity is not wholly current: "
+            f"event stamps={sorted(selected_sids)}, path id={selected_path_sid or 'unknown'}, "
+            f"expected only {current_sid}"
+        )
+
+    try:
+        identity = jsonl_reader.resolve_identity(
+            project_dir,
+            harness=harness,
+            session_id=current_sid,
+            transcript=selected,
+        )
+        transcript_events = list(jsonl_reader.stream_events(selected, harness))
+        synth_events = jsonl_reader.to_synth_events(transcript_events, project_dir, identity.session_id)
+    except Exception as exc:  # noqa: BLE001
+        raise RuntimeError(f"UNCLASSIFIABLE: transcript parse failed: {exc}") from exc
+
+    tool_summary = _tool_activity_summary(transcript_events)
+    has_edits = any(
+        event.get("subtype") in {"file_modified", "file_created"}
+        for event in synth_events
+    )
+    needs_minimal = bool(tool_summary and not has_edits)
+    if needs_minimal and not synth_events:
+        synth_events.append({
+            "id": f"evt_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_toolactivity",
+            "timestamp": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "session_id": identity.session_id,
+            "type": "event",
+            "subtype": "tool_activity",
+            "payload": {"detail": f"Tool activity: {tool_summary}"},
+            "metadata": {"source": "drift_classifier", "project_dir": str(project_dir)},
+        })
+    if classification == "CLEAN" and needs_minimal:
+        classification = "NO_EDIT_EVENTS"
+        detail = "correct transcript has tool activity but no Edit/Write events"
+
+    concurrent_sid = None
+    active_context = project_dir / "Memory" / "activeContext.md"
+    if active_context.exists():
+        foreign_sid = jsonl_reader.lead_wwa_session(active_context.read_text(errors="replace"))
+        canonical_events = project_dir / "Memory" / "events" / "events.jsonl"
+        if (
+            foreign_sid
+            and foreign_sid != current_sid
+            and _recent_session_activity(canonical_events, foreign_sid)
+        ):
+            concurrent_sid = foreign_sid
+            if classification == "CLEAN":
+                classification = "CONCURRENT"
+                detail = f"lead WWA belongs to active session {foreign_sid}"
+
+    return DriftDecision(
+        classification=classification,
+        identity=identity,
+        transcript_events=transcript_events,
+        synth_events=synth_events,
+        tool_summary=tool_summary,
+        topic=_topic_from_events(synth_events),
+        needs_minimal_wwa=needs_minimal,
+        concurrent_session=concurrent_sid,
+        detail=detail,
+    )
 
 
-def _rebuild_events_from_transcript(project_dir: Path, session_id: Optional[str] = None):
+def _rebuild_events_from_transcript(
+    project_dir: Path,
+    session_id: Optional[str] = None,
+    decision: Optional[DriftDecision] = None,
+):
     """Regenerate EVENTS_FILE from the active harness transcript.
 
     Returns (event_count, session_id). If ASHA_EVENTS_FILE is set, the caller is
     responsible for that file; identity is still resolved so synthesis can filter
     by the current session instead of laundering stale event contents.
     """
-    identity = _current_identity(project_dir, session_id=session_id)
-    if identity is None:
-        return 0, session_id
+    global _LAST_DRIFT_DECISION
+    decision = decision or classify_drift(project_dir, session_id=session_id)
+    _LAST_DRIFT_DECISION = decision
+    identity = decision.identity
     if os.environ.get("ASHA_EVENTS_FILE"):
         return 0, identity.session_id
 
-    import jsonl_reader  # type: ignore
-    try:
-        events = list(jsonl_reader.stream_events(identity.transcript_path, identity.harness))
-        synth = jsonl_reader.to_synth_events(events, project_dir, identity.session_id)
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError(f"transcript rebuild failed: {exc}") from exc
+    synth = decision.synth_events
 
-    EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    # Truncate even when the parse yields zero synth events. Leaving the stale
-    # file intact is the bleed vector this guard exists to close.
-    with open(EVENTS_FILE, "w") as f:
-        for ev in synth:
-            f.write(json.dumps(ev) + "\n")
+    # Replace even when the parse yields zero synth events. Leaving the stale
+    # file intact is a bleed vector, whilst direct truncation exposes a partial
+    # state to readers if the process dies mid-write.
+    _atomic_write_text(EVENTS_FILE, "".join(json.dumps(ev) + "\n" for ev in synth))
     return len(synth), identity.session_id
+
+
+_LAST_DRIFT_DECISION: Optional[DriftDecision] = None
 
 def get_last_session_id() -> Optional[str]:
     """Get the most recent session ID from events"""
@@ -874,6 +1125,33 @@ def generate_active_context(events: List[Dict], existing_patterns: Dict,
     return "\n".join(lines)
 
 
+def _prepend_recovery_wwa(
+    content: str,
+    session_id: str,
+    topic: str,
+    tool_summary: str,
+) -> str:
+    """Prepend a stamped WWA without disturbing a concurrent session's WWA."""
+    try:
+        import jsonl_reader  # type: ignore
+        if jsonl_reader.lead_wwa_session(content) == session_id:
+            return content
+    except ImportError:
+        pass
+
+    heading = f"## What Was Accomplished ({datetime.now(timezone.utc).date()} — {topic})"
+    summary = tool_summary or "tool activity recorded in the session transcript"
+    section = (
+        f"{heading}\n\n"
+        f"<!-- {WWA_SESSION_MARKER}: {session_id} -->\n"
+        f"- Tool activity: {summary}.\n\n"
+    )
+    match = re.search(r"^##\s", content, re.MULTILINE)
+    if not match:
+        return content.rstrip() + "\n\n" + section
+    return content[:match.start()].rstrip() + "\n\n" + section + content[match.start():]
+
+
 # =============================================================================
 # Calibration Updates
 # =============================================================================
@@ -1171,8 +1449,24 @@ def run_synthesis(
     days: int = 7,
     skip_eval: bool = False,
     capture_calibration: bool = False,
+    project_dir: Optional[Path] = None,
+    _lock_held: bool = False,
 ) -> Dict:
     """Run full synthesis pipeline"""
+    if project_dir is not None:
+        configure_project_root(project_dir)
+    if not _lock_held:
+        # Classification, event replacement, curated merge, and publication
+        # form one transaction. Re-entry avoids indenting every early return.
+        with _project_save_lock(PROJECT_ROOT):
+            return run_synthesis(
+                session_id=session_id,
+                days=days,
+                skip_eval=skip_eval,
+                capture_calibration=capture_calibration,
+                project_dir=PROJECT_ROOT,
+                _lock_held=True,
+            )
     # Silence marker honored across the whole synthesis. Same semantics as
     # the hook handlers: if the user has /silence on, an explicit /save must
     # not write to Memory/, ~/.asha/learnings.md, voice.md, or keeper.md.
@@ -1191,12 +1485,15 @@ def run_synthesis(
         "events_processed": 0,
         "patterns_found": 0,
         "calibration_signals": {"voice": 0, "keeper": 0},
-        "eval": None
+        "eval": None,
+        "drift": None,
     }
 
     # Refresh events from the active harness transcript before loading. Identity
     # failure on a save path is fatal to synthesis; falling back to stale shared
     # events is how foreign-session handoffs are produced.
+    global _LAST_DRIFT_DECISION
+    _LAST_DRIFT_DECISION = None
     try:
         rebuilt, resolved_sid = _rebuild_events_from_transcript(PROJECT_ROOT, session_id=session_id)
     except RuntimeError as exc:
@@ -1208,6 +1505,26 @@ def run_synthesis(
         results["session_id"] = session_id
     if rebuilt:
         results["events_rebuilt_from_transcript"] = rebuilt
+
+    decision = _LAST_DRIFT_DECISION
+    if decision is not None:
+        actions = []
+        if decision.classification == "WRONG_TRANSCRIPT":
+            actions.append("auto-pinned")
+        if decision.needs_minimal_wwa:
+            actions.append("minimal-WWA")
+        if decision.concurrent_session:
+            actions.append("prepended-preserving-concurrent")
+            results["concurrency"] = (
+                f"> Concurrency: preserved WWA from active session {decision.concurrent_session}"
+            )
+        suffix = f"→{'+'.join(actions)}" if actions else ""
+        results["drift"] = f"{decision.classification}{suffix}"
+        results["drift_detail"] = decision.detail
+        if decision.needs_minimal_wwa:
+            results["drift_action_required"] = (
+                "Auto-generated minimal stamped WWA; flesh it out before commit when an agent is present."
+            )
 
     # Load events. When identity is known, filter to it; never infer a current
     # save session from event contents.
@@ -1251,7 +1568,19 @@ def run_synthesis(
             results["activeContext_merged"] = True
         active_context = merged
 
-    ACTIVE_CONTEXT.write_text(active_context)
+    if decision is not None and (
+        decision.needs_minimal_wwa
+        or decision.concurrent_session
+        or decision.classification == "WRONG_TRANSCRIPT"
+    ):
+        active_context = _prepend_recovery_wwa(
+            active_context,
+            session_id or decision.identity.session_id,
+            decision.topic,
+            decision.tool_summary,
+        )
+
+    _atomic_write_text(ACTIVE_CONTEXT, active_context)
     _write_synthhash(active_context)
 
     # Extract learnings for activeContext display
@@ -1583,6 +1912,12 @@ def main():
     # Synthesize command
     synth_parser = subparsers.add_parser("synthesize", help="Run full synthesis pipeline")
     synth_parser.add_argument("--session-id", "-s", help="Specific session to synthesize")
+    synth_parser.add_argument(
+        "--project-dir",
+        "-p",
+        required=True,
+        help="Explicit project root used for transcript resolution",
+    )
     synth_parser.add_argument("--days", "-d", type=int, default=7, help="Days of history (default: 7)")
     synth_parser.add_argument(
         "--capture-calibration",
@@ -1606,6 +1941,7 @@ def main():
     # Recover command
     recover_parser = subparsers.add_parser("recover", help="Recover and synthesize orphaned session")
     recover_parser.add_argument("--session-id", "-s", required=True, help="Orphaned session ID")
+    recover_parser.add_argument("--project-dir", "-p", required=True, help="Explicit project root")
 
     # Eval command
     eval_parser = subparsers.add_parser("eval", help="Evaluate a session")
@@ -1631,6 +1967,7 @@ def main():
                 session_id=args.session_id,
                 days=args.days,
                 capture_calibration=args.capture_calibration,
+                project_dir=Path(args.project_dir),
             )
             print(json.dumps(result, indent=2))
 
@@ -1656,7 +1993,11 @@ def main():
                 print(json.dumps({"orphaned_session": None}))
 
         elif args.command == "recover":
-            result = run_synthesis(session_id=args.session_id, days=30)
+            result = run_synthesis(
+                session_id=args.session_id,
+                days=30,
+                project_dir=Path(args.project_dir),
+            )
             result["recovered"] = True
             print(json.dumps(result, indent=2))
 

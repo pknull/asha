@@ -175,6 +175,9 @@ claude_install_hooks() {
           value: (
             .value
             | map(
+                select(((._asha_harnesses // ["claude"]) | index("claude")) != null)
+                | del(._asha_harnesses)
+                |
                 .hooks |= map(
                   . + {
                     command: (.command | gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $root)),

@@ -120,6 +120,29 @@ Do NOT update for:
 - Temporary context (single-session)
 - Redundant information
 
+## Recall Fixture Convention
+
+When a durable memory records a diagnosed failure or a reusable runbook, add a
+natural-language recall fixture in the same change. Prefer the project's
+`Memory/recall_fixtures.yaml`; use `~/.asha/recall_fixtures.yaml` for memories
+that should be tested across projects.
+
+```yaml
+- q: "root disk full, service healthy, shell output disappeared"
+  expect: reference_pk_lintop_syslog_flood_triage
+```
+
+`expect` is the target memory filename stem or learning id. Keep the question
+phrased as a future user/task symptom, not as a copy of the description. Run:
+
+```bash
+recall_bench.py --project-dir "$PWD" --format human
+```
+
+The metric is hit@5. Misses warn but never block `/session:save`; a new miss
+means a previously passing fixture stopped retrieving and should be corrected
+by repairing the catalogue or description rather than keyword-stuffing bodies.
+
 ## File Interdependencies
 
 **Foundation Files** (always read first):

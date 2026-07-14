@@ -60,7 +60,7 @@ if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
         # Recover orphaned session
         echo "<system-reminder>" >&2
         echo "Recovering orphaned session: $ORPHAN_SESSION" >&2
-        "$PYTHON_CMD" "$PATTERN_ANALYZER" recover --session-id "$ORPHAN_SESSION" >/dev/null 2>&1 || true
+        "$PYTHON_CMD" "$PATTERN_ANALYZER" recover --project-dir "$PROJECT_DIR" --session-id "$ORPHAN_SESSION" >/dev/null 2>&1 || true
         echo "Orphaned session recovered and synthesized." >&2
         echo "</system-reminder>" >&2
     fi
@@ -68,6 +68,14 @@ fi
 
 # Store current session ID
 echo "$NEW_SESSION_ID" > "$SESSION_MARKER"
+
+# Build the compact description-only memory nudge index. This is Claude-only
+# runtime behavior, non-blocking, and skipped entirely by the kill switch.
+MEMORY_NUDGE="$PLUGIN_ROOT/tools/memory_nudge.py"
+if [[ "${ASHA_HARNESS:-claude}" == "claude" && "${ASHA_NUDGE:-1}" != "0" \
+      && -f "$MEMORY_NUDGE" && -n "$PYTHON_CMD" ]]; then
+    "$PYTHON_CMD" "$MEMORY_NUDGE" build --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
+fi
 
 # ==============================================================================
 # CONTEXT INJECTION
