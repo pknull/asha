@@ -59,7 +59,7 @@ Run the synthesis pipeline:
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/pattern_analyzer.py" synthesize --days 7 --capture-calibration
+"$ASHA_ROOT/plugins/session/tools/pattern_analyzer.py" synthesize --project-dir "$PROJECT_DIR" --days 7 --capture-calibration
 ```
 
 Then archive and rotate events:
@@ -94,6 +94,16 @@ fi
 ```
 
 Surface any `ERROR` lines in chat (a malformed concept file), but do not block the commit on them.
+
+Then run the fixture-based recall benchmark against the real memory catalogue
+and learnings bundle. This is **warn-only** and always exits zero. Surface the
+aggregate `hit@5` and any rows marked `NEW` in chat; an existing known miss is
+still reported but does not need repeated narration.
+
+```bash
+"$ASHA_ROOT/plugins/session/tools/recall_bench.py" --project-dir "$PROJECT_DIR" --format human
+"$ASHA_ROOT/plugins/session/tools/memory_nudge.py" stats --days 7
+```
 
 Then **suggest cross-links** for recently-touched learnings. This is the model — you — proposing links; it runs only on interactive `/save` (the automatic session-end path has no model and skips it). Best-effort and **non-blocking**: skip silently if the bundle is absent or this was a read-only/throwaway session.
 

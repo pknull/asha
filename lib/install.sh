@@ -467,6 +467,9 @@ register_hooks() {
             value: (
               .value
               | map(
+                  select(((._asha_harnesses // ["claude"]) | index("claude")) != null)
+                  | del(._asha_harnesses)
+                  |
                   .hooks |= map(
                     . + {
                       command: (.command | gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $root)),
@@ -573,6 +576,7 @@ bootstrap_identity() {
     [[ -f "$asha_home/communicationStyle.md" ]] || [[ ! -f "$tmpl_dir/communicationStyle.md" ]] || say "  IDENTITY  would create $asha_home/communicationStyle.md"
     [[ -f "$asha_home/keeper.md" ]]   || say "  IDENTITY  would create $asha_home/keeper.md"
     [[ -f "$asha_home/config.json" ]] || say "  IDENTITY  would create $asha_home/config.json"
+    [[ -f "$asha_home/recall_fixtures.yaml" ]] || [[ ! -f "$tmpl_dir/recall_fixtures.yaml" ]] || say "  IDENTITY  would create $asha_home/recall_fixtures.yaml"
     return 0
   fi
 
@@ -646,6 +650,12 @@ KEEPER_EOF
 }
 CONFIG_EOF
     say "Created ~/.asha/config.json"
+  fi
+
+  # recall_fixtures.yaml — seed once; fixture curation is user-owned thereafter.
+  if [[ ! -f "$asha_home/recall_fixtures.yaml" ]] && [[ -f "$tmpl_dir/recall_fixtures.yaml" ]]; then
+    cp "$tmpl_dir/recall_fixtures.yaml" "$asha_home/recall_fixtures.yaml"
+    say "Created ~/.asha/recall_fixtures.yaml"
   fi
 }
 

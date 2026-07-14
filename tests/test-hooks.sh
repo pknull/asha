@@ -2334,6 +2334,7 @@ tomllib.loads(text)
 assert '[[hooks.PreToolUse]]' in text
 assert '[[hooks.PreToolUse.hooks]]' in text
 assert 'type = "command"' in text
+assert 'memory_nudge.sh' not in text, 'Claude-only nudge leaked into Codex hooks'
 rule_text = rules.read_text()
 assert 'prefix_rule(' in rule_text
 assert 'pattern = ["git", "reset", "--hard"]' in rule_text
@@ -2361,6 +2362,44 @@ if [[ $CODEX_OK -eq 1 ]]; then
 else
     echo -e "${RED}FAIL${NC}"
     echo "  codex installer mismatch:$CODEX_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 106a: Claude-only hook selection + recall fixture bootstrap
+# ============================================================================
+echo -n "Test 106a: Claude installs nudge and recall fixtures without metadata leakage... "
+CLAUDE_TMP="$(mktemp -d)"
+CLAUDE_OK=1
+CLAUDE_WHY=""
+mkdir -p "$CLAUDE_TMP/.claude"
+printf '{}\n' > "$CLAUDE_TMP/.claude/settings.json"
+if ! HOME="$CLAUDE_TMP" CLAUDE_CONFIG_DIR="$CLAUDE_TMP/.claude" \
+    "$REPO_ROOT/install.sh" --target claude --only session \
+    >/dev/null 2>"$CLAUDE_TMP/install.err"; then
+    CLAUDE_OK=0
+    CLAUDE_WHY=" install-failed:$(cat "$CLAUDE_TMP/install.err")"
+elif ! python3 - "$CLAUDE_TMP" <<'PY' >/dev/null 2>"$CLAUDE_TMP/check.err"
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+data = json.loads((root / ".claude/settings.json").read_text())
+groups = [g for event in data.get("hooks", {}).values() for g in event]
+entries = [h for group in groups for h in group.get("hooks", [])]
+assert any("memory_nudge.sh" in h.get("command", "") for h in entries)
+assert not any("_asha_harnesses" in group for group in groups)
+assert (root / ".asha/recall_fixtures.yaml").is_file()
+PY
+then
+    CLAUDE_OK=0
+    CLAUDE_WHY=" selection-check-failed:$(cat "$CLAUDE_TMP/check.err")"
+fi
+rm -rf "$CLAUDE_TMP"
+if [[ $CLAUDE_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  claude hook selection mismatch:$CLAUDE_WHY"
     FAILED=$((FAILED + 1))
 fi
 

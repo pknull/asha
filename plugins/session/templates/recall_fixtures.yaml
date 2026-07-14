@@ -1,0 +1,35 @@
+# Recall fixtures are questions a future session may naturally ask, not keyword
+# bags. `expect` is a memory filename stem or a learning id. Add one fixture in
+# the same change whenever a durable diagnosed-failure memory is inscribed.
+# Initial global baseline (2026-07-14): 12/12 hit@5.
+
+# B1 locked recall set (2026-04-17), translated to question -> memory id.
+# The original identity-email question is intentionally excluded: its answer
+# belongs to keeper.md, outside the memory/learning retrieval substrate measured
+# here. A permanently impossible fixture would conceal real score regressions.
+- q: "Where does egregore work happen, and should it be set up in the life repo?"
+  expect: project_egregore_setup
+- q: "Where did the old threshold repository tooling land, and when?"
+  expect: project_threshold_merged
+- q: "Where does asha-marketplace live and how does Claude see it from its plugins directory?"
+  expect: project_marketplace_relocated
+- q: "Where is the pknull.ai working directory, is it independent from life, and what is its remote?"
+  expect: project_journal_site
+- q: "Can task-manager pull Todoist now, or must its MCP connection be verified first?"
+  expect: feedback_verify_agent_output
+- q: "For Gmail Calendar or Drive should I use google-workspace MCP or gws CLI?"
+  expect: feedback_gws_over_mcp
+- q: "What are the UDM SE gateway and Egregore container-host IP addresses?"
+  expect: reference_home_network
+- q: "Which files register a new asha-marketplace plugin?"
+  expect: reference_plugin_registration
+- q: "How does the session and asha persona plugin split connect to ASHA_PERSONA and marketplace installation?"
+  expect: project_asha_prompt_architecture
+
+# Diagnosed failures inscribed after B1 and used by issue #8/#9 acceptance.
+- q: "MC server unjoinable, TPS low, container healthy"
+  expect: reference_modded_mc_server_hang_diagnosis
+- q: "root disk 100% full, Bash output lost"
+  expect: reference_pk_lintop_syslog_flood_triage
+- q: "gws call returns 403 after adding scope"
+  expect: reference_gws_scope_add_token_cache

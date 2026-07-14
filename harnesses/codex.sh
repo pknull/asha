@@ -502,6 +502,9 @@ for event, groups in events.items():
         dropped.append(event); continue
     if not isinstance(groups, list): continue
     for grp in groups:
+        harnesses = grp.get("_asha_harnesses")
+        if harnesses is not None and "codex" not in harnesses:
+            continue
         matcher = grp.get("matcher")
         if matcher == "*": matcher = None
         for h in grp.get("hooks", []):

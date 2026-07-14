@@ -196,8 +196,8 @@ check_generated_agents() { # agents_dir label ext fix_fn
 
 # ── Shared command-skill coverage check (codex + copilot) ──
 # Every plugin command MD (except output-styles) should have a SKILL.md under
-# <skills_dir>/<name>/. Generated files are checked for freshness via mtime
-# (--fix regenerates from source); legacy symlinked SKILL.md must resolve to
+# <skills_dir>/<name>/. Generated files are checked against deterministic
+# rendered bytes (--fix regenerates from source); legacy symlinked SKILL.md must resolve to
 # the source; a whole-dir symlink collision (plugin skill claims the name) is
 # an accepted skip.
 check_command_skills() { # skills_dir label fix_fn
@@ -334,8 +334,8 @@ fi
 # No residual ${CLAUDE_PLUGIN_ROOT} in plugin command/skill/agent markdown
 # (symlinked verbatim, so a placeholder there would reach the model unported).
 # Excludes docs/ — design docs legitimately show the hooks.json placeholder.
-n="$(grep -rn 'CLAUDE_PLUGIN_ROOT' "$ASHA/plugins" --include='*.md' --exclude-dir=docs 2>/dev/null | wc -l)"
-if [[ "$n" == "0" ]]; then
+n="$(grep -rn 'CLAUDE_PLUGIN_ROOT' "$ASHA/plugins" --include='*.md' --exclude-dir=docs 2>/dev/null | wc -l | tr -d '[:space:]')"
+if [[ "$n" -eq 0 ]]; then
   pass "no CLAUDE_PLUGIN_ROOT in plugin markdown"
 else
   nope "$n CLAUDE_PLUGIN_ROOT refs remain in plugin markdown:"
