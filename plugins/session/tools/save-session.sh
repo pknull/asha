@@ -214,7 +214,7 @@ synthesize_from_events() {
 
     if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
         # Use pattern_analyzer for consistent Four Questions output format
-        RESULT=$(ASHA_SAVE_STRICT=1 "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days "$days" || echo '{"status":"error"}')
+        RESULT=$(ASHA_SAVE_STRICT=1 "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --project-dir "$PROJECT_DIR" --days "$days" || echo '{"status":"error"}')
         # Read the generated activeContext.md
         if [[ -f "$ACTIVE_CONTEXT" ]]; then
             cat "$ACTIVE_CONTEXT"
@@ -331,7 +331,7 @@ from_transcript_mode() {
 
     log "Running synthesis against transcript-derived events..."
     ASHA_EVENTS_FILE="$SIDE_FILE" ASHA_SAVE_STRICT=1 ASHA_SESSION_ID="$SID" ASHA_HARNESS="$HARNESS" \
-        "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days 7 \
+        "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --project-dir "$PROJECT_DIR" --days 7 \
         > /tmp/synth-from-transcript.json 2>&1 \
         || log "synthesis returned non-zero (see /tmp/synth-from-transcript.json)"
 
@@ -359,12 +359,14 @@ automatic_mode() {
 
     if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
         log "Running pattern analysis and synthesis..."
-        RESULT=$(ASHA_SAVE_STRICT=1 "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --days 7 || echo '{"status":"error"}')
+        RESULT=$(ASHA_SAVE_STRICT=1 "$PYTHON_CMD" "$PATTERN_ANALYZER" synthesize --project-dir "$PROJECT_DIR" --days 7 || echo '{"status":"error"}')
 
         # Log results
         EVENTS_COUNT=$(echo "$RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('events_processed',0))" 2>/dev/null || echo "0")
         PATTERNS_COUNT=$(echo "$RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('patterns_found',0))" 2>/dev/null || echo "0")
+        DRIFT=$(echo "$RESULT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('drift') or 'UNCLASSIFIABLE')" 2>/dev/null || echo "UNCLASSIFIABLE")
         log "Synthesis complete: $EVENTS_COUNT events processed, $PATTERNS_COUNT patterns found"
+        log "Drift classification: $DRIFT"
     else
         log "Pattern analyzer not available, skipping synthesis"
     fi
@@ -379,6 +381,17 @@ automatic_mode() {
         [[ "${ASHA_LEARNINGS_VALIDATE:-warn}" == "strict" ]] && VFLAG="--strict"
         "$PYTHON_CMD" "$VALIDATE" "$LEARNINGS_DIR" $VFLAG >&2 \
             || log "learnings bundle validation reported issues (non-fatal; see above)"
+    fi
+
+    # Recall quality ratchet (WARN-ONLY). Human output includes aggregate hit@5
+    # and marks misses that were hits at the previous run.
+    RECALL_BENCH="$PLUGIN_ROOT/tools/recall_bench.py"
+    if [[ -f "$RECALL_BENCH" && -n "$PYTHON_CMD" ]]; then
+        "$PYTHON_CMD" "$RECALL_BENCH" --project-dir "$PROJECT_DIR" --format human >&2 || true
+    fi
+    MEMORY_NUDGE="$PLUGIN_ROOT/tools/memory_nudge.py"
+    if [[ -f "$MEMORY_NUDGE" && -n "$PYTHON_CMD" ]]; then
+        "$PYTHON_CMD" "$MEMORY_NUDGE" stats --days 7 >&2 || true
     fi
 
     # Rotate old events (keep last 30 days in active file)

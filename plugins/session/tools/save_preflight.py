@@ -183,21 +183,11 @@ def gate_active_context(project_dir: Path, save_start: Optional[datetime]) -> li
 # --------------------------------------------------------------------------- #
 # Gate 3b — WWA provenance (lead handoff belongs to THIS session)
 # --------------------------------------------------------------------------- #
-# Matches the stamp pattern_analyzer writes under the lead WWA header. Keep in
-# sync with pattern_analyzer.WWA_SESSION_MARKER.
-_WWA_HEADER_RE = re.compile(r"^##\s+What Was Accomplished\b.*$", re.MULTILINE)
-_WWA_SESSION_RE = re.compile(r"<!--\s*wwa-session:\s*(\S+?)\s*-->")
-
-
 def _lead_wwa_section(text: str) -> Optional[str]:
     """Body of the FIRST '## What Was Accomplished*' section (the lead handoff a
     cold-start session reads first), or None if there is no such section."""
-    m = _WWA_HEADER_RE.search(text)
-    if not m:
-        return None
-    start = m.end()
-    nxt = re.search(r"^##\s", text[start:], re.MULTILINE)
-    return text[start:start + nxt.start()] if nxt else text[start:]
+    import jsonl_reader  # type: ignore
+    return jsonl_reader.lead_wwa_body(text)
 
 
 def _session_event_count(project_dir: Path, current_sid: Optional[str]) -> int:
@@ -243,8 +233,8 @@ def gate_wwa_provenance(project_dir: Path, current_sid: Optional[str]) -> GateRe
     if lead is None:
         return GateResult("ac_wwa_provenance", "pass", False,
                           "no 'What Was Accomplished' section present to verify")
-    m = _WWA_SESSION_RE.search(lead)
-    stamped = m.group(1) if m else None
+    import jsonl_reader  # type: ignore
+    stamped = jsonl_reader.lead_wwa_session(ac.read_text())
     if current_sid and stamped == current_sid:
         return GateResult("ac_wwa_provenance", "pass", True,
                           f"lead WWA stamped current session {current_sid}")

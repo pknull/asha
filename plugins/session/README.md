@@ -67,6 +67,7 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 | `operation.md` | Operational quality rules | When rules evolve |
 | `learnings/` | Patterns from experience (OKF concept bundle) | Via `/session:save` |
 | `config.json` | Settings | When config changes |
+| `recall_fixtures.yaml` | Cross-project question -> memory retrieval checks | With diagnosed-failure memories |
 
 ### Per-project (`Memory/`)
 
@@ -101,8 +102,8 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 
 | Hook | Purpose |
 |------|---------|
-| SessionStart | Load operation.md + learnings hot tier; conditionally load persona files |
-| PreToolUse | Guardrails — `block-secrets` (deny secret-file access) + `policy-guard` (declarative deny/ask/`max_per_session` rules from `policies/rules.json` + `~/.asha/policies.json`, backed by session_state). Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
+| SessionStart | Load operation.md + learnings hot tier; conditionally load persona files; build Claude's compact memory-nudge index |
+| PreToolUse | Guardrails plus Claude-only, non-blocking memory nudges for Grep/Bash/WebSearch. Nudges index catalogue descriptions only, deduplicate per session, cap at five, fail open, and can be disabled with `ASHA_NUDGE=0`. Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
 | PostToolUse | Intervention (ReasoningBank, vector-index refresh, violation check) — capture moved to `/save` jsonl_reader |
 | UserPromptSubmit | Track user interaction patterns |
 | Stop | Save-preflight cleanup |

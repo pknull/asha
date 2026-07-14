@@ -25,6 +25,36 @@ run() { # forwards to drift-check with sandbox HOME
     bash "$REPO_ROOT/bin/asha-drift-check.sh" "$@"
 }
 
+# BSD wc pads counts with leading whitespace. The stat shim rejects GNU -c and
+# implements BSD -f %m so this fixture also catches GNU-only mtime reads if they
+# return to the doctor. Current command-skill checks compare rendered bytes and
+# therefore do not need stat at all.
+PORTABLE_BIN="$SANDBOX/portable-bin"
+mkdir -p "$PORTABLE_BIN"
+REAL_WC="$(command -v wc)"
+cat > "$PORTABLE_BIN/wc" <<EOF
+#!/usr/bin/env bash
+out="\$("$REAL_WC" "\$@")"
+printf '%8s\n' "\$out"
+EOF
+cat > "$PORTABLE_BIN/stat" <<'EOF'
+#!/usr/bin/env bash
+if [[ "${1:-}" == "-c" ]]; then
+  exit 64
+fi
+if [[ "${1:-}" == "-f" && "${2:-}" == "%m" && $# -eq 3 ]]; then
+  python3 -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_mtime))' "$3"
+  exit
+fi
+exit 64
+EOF
+chmod +x "$PORTABLE_BIN/wc" "$PORTABLE_BIN/stat"
+
+run_portable() { # run with BSD-like wc/stat behavior on every host
+  env -i HOME="$SANDBOX" PATH="$PORTABLE_BIN:$PATH" USER="${USER:-test}" \
+    bash "$REPO_ROOT/bin/asha-drift-check.sh" "$@"
+}
+
 # ---------------------------------------------------------------------------
 echo "--- fixture: real copilot install into sandbox HOME ---"
 mkdir -p "$SANDBOX/.copilot"
@@ -133,6 +163,34 @@ bash "$REPO_ROOT/bin/asha" doctor --help >/dev/null 2>&1 \
   || fail "asha doctor --help exits 0"
 bash "$REPO_ROOT/bin/asha" doctor bogus >/dev/null 2>&1; rc=$?
 [[ $rc -eq 2 ]] && ok "asha doctor bogus exits 2" || fail "asha doctor bogus exits 2 (got $rc)"
+
+# ---------------------------------------------------------------------------
+echo "--- test 5: BSD userland compatibility ---"
+out="$(run_portable --target copilot 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] && grep -q "no CLAUDE_PLUGIN_ROOT in plugin markdown" <<<"$out"; then
+  ok "BSD-padded wc count does not cause a false repo-state failure"
+else
+  fail "BSD-padded wc count does not cause a false repo-state failure (rc=$rc)"
+fi
+if grep -Eq '^FAIL[[:space:]]+0 CLAUDE_PLUGIN_ROOT refs remain' <<<"$out"; then
+  fail "healthy BSD-like run does not emit FAIL 0"
+else
+  ok "healthy BSD-like run does not emit FAIL 0"
+fi
+
+echo "corrupted on BSD fixture" > "$stale_md"
+touch "$stale_md"
+out="$(run_portable --target copilot 2>&1 || true)"
+grep -q "command-skill content drifted" <<<"$out" \
+  && ok "drifted command-skill is detected without GNU stat" \
+  || fail "drifted command-skill is detected without GNU stat"
+out="$(run_portable --target copilot --fix 2>&1 || true)"
+grep -q "FIXED  regenerated drifted command-skill" <<<"$out" \
+  && ok "--fix repairs a drifted command-skill without GNU stat" \
+  || fail "--fix repairs a drifted command-skill without GNU stat"
+run_portable --target copilot >/dev/null 2>&1 \
+  && ok "BSD-like post-fix re-run is clean" \
+  || fail "BSD-like post-fix re-run is clean"
 
 echo ""
 echo "test-doctor: $PASS passed, $FAIL failed"
