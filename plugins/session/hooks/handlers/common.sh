@@ -6,24 +6,28 @@
 # Returns project directory path on stdout, or empty string if not found
 # Always returns 0 (safe under set -e)
 detect_project_dir() {
+    local dir=""
+
     # Use CLAUDE_PROJECT_DIR if set (Claude Code hook invocation)
     if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        echo "$CLAUDE_PROJECT_DIR"
-        return 0
-    fi
-
+        dir="$CLAUDE_PROJECT_DIR"
     # Fallback: Try git root
-    if command -v git >/dev/null 2>&1; then
+    elif command -v git >/dev/null 2>&1; then
         local git_root
         git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
         if [[ -n "$git_root" ]] && [[ -d "$git_root/Memory" ]]; then
-            echo "$git_root"
-            return 0
+            dir="$git_root"
         fi
     fi
 
-    # All detection methods failed — return empty string, not error
-    echo ""
+    # $HOME is the identity layer (~/.asha), never a project — home-cwd
+    # sessions and one-shot invocations must not grow Memory/ or Work/ at ~
+    if [[ -n "$dir" ]] && [[ "$(readlink -f "$dir")" == "$(readlink -f "$HOME")" ]]; then
+        dir=""
+    fi
+
+    # Empty string (not error) when no project detected
+    echo "$dir"
     return 0
 }
 
