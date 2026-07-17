@@ -23,7 +23,9 @@
     "PreToolUse": [
       {
         "matcher": "Grep|Bash|WebSearch",
-        "_asha_harnesses": ["claude"],
+        "_asha_harnesses": [
+          "claude"
+        ],
         "hooks": [
           {
             "type": "command",
@@ -51,6 +53,16 @@
           }
         ],
         "description": "Declarative policy guardrails (deny/ask) from hooks/policies/rules.json + ~/.asha/policies.json"
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/save-commit-gate.sh"
+          }
+        ],
+        "description": "Refuse git commits touching Memory/ until save-preflight-env.sh gates pass (hash-bound save-gates-ok marker)"
       }
     ],
     "PostToolUse": [

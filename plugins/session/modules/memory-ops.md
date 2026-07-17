@@ -8,6 +8,29 @@
 
 ---
 
+## Ground-Truth Hierarchy
+
+**Applies always** — during sessions, not only at save time. When a claim can
+be checked against more than one source, the trust order is:
+
+1. **Live state** — the running system: game-server data, service status,
+   actual command output
+2. **Disk** — files as they exist right now
+3. **Notes** — Memory files, session logs, cached summaries, offline exports
+   (a `.dat` snapshot is notes, not live state)
+
+Memory notes are claims about the world, not the world. Never assert a
+project, campaign, or system fact from notes alone while disk or live state is
+reachable — check the higher tier first and say what was checked. When tiers
+disagree, the **lower tier is corrected, never the higher**: notes get fixed to
+match disk; disk-derived exports yield to the live system. Flag every
+contradiction found; silent preference in either direction is the failure mode.
+
+(The `/session:save` `disk_truth` gate enforces this mechanically at save time;
+this rule covers the hours in between.)
+
+---
+
 ## Session Watching & Synthesis
 
 **System**: Automated via hooks and slash commands (see `techEnvironment.md` for paths)
@@ -80,6 +103,7 @@ superseded_by: null | <filename>
 | `reference` | reference_*.md | On demand |
 
 Rules:
+
 - Every `.md` file in `~/.asha/`, `Memory/`, and the auto-memory store must have `type:`.
 - Validate: `grep -rL "^type:" ~/.asha/*.md Memory/*.md` should return nothing.
 

@@ -45,7 +45,30 @@ if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
 fi
 ```
 
-First, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
+Then resolve the environment and verify the save plugin — fail fast, BEFORE any
+synthesis. `save-preflight-env.sh` auto-detects and validates `ASHA_ROOT` (a
+stale `config.json` pointing at a moved repo is caught here, not five steps
+later), resolves `PROJECT_DIR`/harness/session id, and verifies every required
+save tool exists on disk. Exit 2 = environment unresolved (fix and retry);
+exit 3 = plugin missing/partial → follow `docs/save-manual-pipeline.md` (the
+script prints the path, or an embedded copy when even the doc is unreachable):
+
+```bash
+PREFLIGHT=""
+for cand in "${ASHA_ROOT:-}" "$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)"; do
+    [[ -n "$cand" && -x "$cand/plugins/session/tools/save-preflight-env.sh" ]] \
+        && { PREFLIGHT="$cand/plugins/session/tools/save-preflight-env.sh"; break; }
+done
+[[ -n "$PREFLIGHT" ]] || { echo "ERROR: save plugin unmounted — follow docs/save-manual-pipeline.md in the asha repo" >&2; exit 1; }
+ENV_EXPORTS="$("$PREFLIGHT" --report --print-env)" || exit $?
+eval "$ENV_EXPORTS"
+```
+
+The `--report` run also evaluates the continuity gates read-only, so disk-truth
+contradictions (Memory notes referencing paths that no longer exist — disk is
+ground truth, the notes get corrected) surface before synthesis, not after.
+
+Next, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
 
 ```bash
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
@@ -110,9 +133,11 @@ Then **suggest cross-links** for recently-touched learnings. This is the model �
 1. Get the bounded candidate set + a summary of the whole bundle:
 
    ```bash
+
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link-candidates --days 7
+
 ```
 
 2. For each candidate, decide whether it has a **genuine semantic relationship** to any other learning in the returned `bundle` list — e.g. "preflight → cutover", "both build PreToolUse guardrails", "filesystem caution before a risky op". **Do NOT link two learnings merely because they share a `category`** — category overlap is not a relationship. Most candidates get zero or one good link; skip a candidate entirely if nothing genuinely relates (forced links are worse than none).
@@ -125,12 +150,14 @@ ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 
 "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link --id <source> --to <target>[,<target2>] --reason "<short why>" --bidirectional
 ```
 
-4. Drop any links orphaned by deletions:
+1. Drop any links orphaned by deletions:
 
    ```bash
+
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" prune-links
+
 ```
 
 Report links added in chat. `## Related` sections live in the concept-file bodies, not the injected hot tier, so they add zero session-start cost.
@@ -167,10 +194,18 @@ Then run the pre-flight verification gate (engine-backed — the enforced versio
 ```bash
 ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/save_preflight.py" --mode guard --skip-push --project-dir "$PROJECT_DIR"
+"$ASHA_ROOT/plugins/session/tools/save-preflight-env.sh" --guard
 ```
 
 If it exits non-zero (a HARD gate failed), STOP — fix the flagged issue (re-run synthesis with the correct transcript, regenerate the affected activeContext section, or prepend the current-session WWA the `ac_wwa_provenance` message names) before committing. Do not commit over a hard failure. The same gates re-run post-commit via the Stop hook as a final net.
+
+On pass, the script writes `Work/markers/save-gates-ok` bound to the sha256 of
+`Memory/activeContext.md`. The `save-commit-gate` PreToolUse hook REFUSES any
+`git commit` touching `Memory/` without that marker — and if activeContext.md
+changes after the gates passed, the hash no longer matches and the commit is
+refused again until the preflight re-runs. Passing the gates and then editing
+the handoff is not a loophole. Do not edit `Memory/activeContext.md` between
+this step and the commit.
 
 Then commit Memory changes. Dropping the `save-pending` marker first arms the Stop hook to run the post-commit verification gate for this turn:
 
