@@ -1,6 +1,6 @@
 # Code Plugin
 
-**Version**: 1.2.0
+**Version**: 1.3.0
 
 Development workflows for implementation, debugging, review, refactoring, and verification.
 

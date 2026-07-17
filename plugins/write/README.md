@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.5.0
+**Version**: 1.6.0
 
 Fiction drafting, editorial review, manuscript state, style measurement, and export workflows.
 
@@ -8,6 +8,7 @@ Fiction drafting, editorial review, manuscript state, style measurement, and exp
 
 | Agent | Role |
 |---|---|
+| `claim-verifier` | Structurally read-only verification of consistency-report claims against the manuscript (confirmed/denied matrix) |
 | `continuity-reviewer` | Manuscript continuity and pre-writing state checks |
 | `developmental-editor` | Structure, pacing, arc, and theme review |
 | `intimacy-arbiter` | Review-only boundary and heat-level arbitration |
@@ -41,6 +42,7 @@ Fiction drafting, editorial review, manuscript state, style measurement, and exp
 | `chapter-creation.yaml` | Outline, draft, developmental review, voice pass, and line edit |
 | `character-development.yaml` | Character development and voice testing |
 | `manuscript-revision.yaml` | Manuscript revision workflow |
+| `verify-consistency-report.yaml` | Verify a consistency report's rewrite-triggering claims via parallel read-only claim-verifiers before revising |
 
 ## Quality boundary
 

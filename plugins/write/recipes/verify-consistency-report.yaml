@@ -1,0 +1,76 @@
+name: verify-consistency-report
+version: "1.0"
+description: >
+  Independently verify a continuity/consistency report before acting on it.
+  A consistency report is model output, and model output is untrusted input:
+  a false "contradiction" verdict forces a needless redraft or, worse,
+  "corrects" canon that was right. This recipe partitions the report's claims
+  by blast radius, fans read-only claim-verifier agents across the
+  rewrite-triggering ones, and merges a confirmed/denied matrix. Only
+  confirmed claims proceed to revision.
+complexity: standard
+
+agents:
+  - name: claim-verifier
+    role: Verify one batch of claims against the manuscript text (read-only)
+    model: sonnet
+    trigger: "@claims-partitioned"
+    output: "@batch-verdict-ready"
+    checkpoint: false
+    # Spawn ONE instance PER BATCH. On Claude, launch all batches in a single
+    # parallel wave (independent subagents). On Codex/Copilot/OpenCode, run
+    # the same batches sequentially — identical matrix, slower wall-clock.
+    # See docs/harness-enforcement.md for current delegation verdicts.
+
+flow:
+  start: "@consistency-report-ready"
+  end: "@verified-report-ready"
+
+  transitions:
+    # Partitioning is orchestrator work, not an agent spawn.
+    - from: "@consistency-report-ready"
+      to: "@claims-partitioned"
+      description: >
+        Split the report's claims into (a) REWRITE-TRIGGERING — canon
+        contradictions, timeline/knowledge/object violations, anything whose
+        acceptance forces text changes — and (b) STYLE-LEVEL observations.
+        Only (a) gets verified; (b) passes through unverified, labeled as
+        such. Batch (a) into groups of 3-8 claims, grouped by the manuscript
+        region they touch so each verifier reads few files deeply rather
+        than many files shallowly.
+
+    - from: "@claims-partitioned"
+      to: "@batch-verdict-ready"
+      agent: claim-verifier
+
+    # Merge is orchestrator work: concatenate batch matrices, re-number.
+    - from: "@batch-verdict-ready"
+      to: "@matrix-merged"
+      description: >
+        Merge all batch matrices into one confirmed/denied/unverifiable
+        table. Any manuscript-vs-state-file disagreement a verifier surfaced
+        gets promoted to its own row — state drift is a first-class finding.
+
+    # CHECKPOINT: human sees the matrix BEFORE any revision is planned.
+    - from: "@matrix-merged"
+      to: "@verified-report-ready"
+      type: checkpoint
+      description: >
+        Human reviews the matrix. Denied claims are struck from the report;
+        confirmed claims proceed to revision (e.g. into the
+        manuscript-revision recipe at @continuity-reviewed); unverifiable
+        claims are judgment calls, decided here, not by agents.
+
+failure_policy: >
+  A verifier that errors or times out marks its whole batch `unverifiable`
+  rather than silently dropping it — a missing verdict must be visible in the
+  matrix, never absorbed. If MORE THAN HALF of verified claims come back
+  denied, stop and question the producing reviewer's inputs (wrong state
+  files, stale canon, wrong MODE) before trusting anything it produced.
+
+proportionality: >
+  This recipe earns its cost on section/chapter reviews feeding a revision
+  pass, and on live-RP invariant disputes where a wrong verdict rewrites
+  canon. Do not run it on every /write:review-section invocation by default —
+  style-level reports without rewrite-triggering claims have nothing to
+  verify.

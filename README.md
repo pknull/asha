@@ -122,11 +122,11 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.0.0 | Session memory, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Core** | `session` | v1.1.0 | Session memory, `/save` synthesis, guardrail hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
-| **Development** | `code` | v1.2.0 | Code review, orchestration patterns, TDD — 5 agents |
-| **Creative** | `write` | v1.5.0 | Fiction writing, prose craft, continuity, and style analysis — 9 agents |
+| **Development** | `code` | v1.3.0 | Code review, orchestration patterns, TDD — 5 agents |
+| **Creative** | `write` | v1.6.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
 | **Integrations** | `admin` | v0.1.0 | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
 | **Security** | `security` | v1.0.0 | Web-app security review checklist skill |
@@ -551,6 +551,15 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Unreleased — Save preflight hardening (2026-07-17)
+
+- **Session v1.1.0** — new `save-preflight-env.sh` single-entry preflight: validated layered `ASHA_ROOT` detection (stale `config.json` caught at resolution, not five steps later), required-tool manifest check with a documented manual fallback (`docs/save-manual-pipeline.md`), and a hash-bound `save-gates-ok` marker.
+- **New `disk_truth` gate** in `save_preflight.py` — disk is ground truth over Memory notes; `activeContext.md` references to nonexistent paths and future `lastUpdated` stamps are flagged as contradictions (warn-level).
+- **New `save-commit-gate` PreToolUse hook** — mechanically refuses any `git commit` touching `Memory/` until all continuity gates pass; the marker is invalidated automatically if `activeContext.md` changes after gates pass. Override: `ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1`. Memory commits under an active silence marker are refused outright.
+- **Write v1.6.0** — new `claim-verifier` agent (structurally read-only via tool allowlist) + `verify-consistency-report.yaml` recipe: consistency reports are untrusted model output; rewrite-triggering claims get independently verified against the manuscript (not state files) into a confirmed/denied matrix before any revision proceeds.
+- **Code v1.3.0** — new `fix-loop.yaml` recipe: test-gated autonomous fix loop over an issue backlog; unattended counterpart to `bug-investigation.yaml` with human checkpoints replaced by mechanical gates (reproduction-required, red-before-green, full-suite-plus-regression, revert-on-collateral) and a shipped/needs-input ledger.
+- **Session modules** — ground-truth hierarchy rule (`live state > disk > notes`, correct the lower tier) in `memory-ops.md`; chunk-large-deliverables-to-files rule in CORE Output Defaults.
 
 ### Unreleased — Ecosystem audit prune (2026-07-10)
 

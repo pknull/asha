@@ -85,12 +85,15 @@ States use `@label` format (inspired by Pied-Piper). Common states across recipe
 ### Recipe-Specific States
 
 **bug-investigation:**
+
 - `@bug-reported` → `@history-checked` → `@root-cause-found` → `@root-cause-confirmed` (checkpoint) → `@regression-test-written` → `@fix-implemented`
 
 **refactor-safe:**
+
 - `@refactor-requested` → `@patterns-checked` → `@refactor-plan-ready` → `@refactor-approved` (checkpoint) → `@refactor-complete`
 
 **security-audit:**
+
 - `@audit-requested` → `@history-reviewed` → `@vulnerabilities-found` → `@findings-reviewed` (checkpoint) → `@remediation-plan-ready` → `@remediation-approved` (checkpoint) → `@fixes-implemented` → `@verification-passed` → `@audit-complete`
 
 ## Available Recipes
@@ -98,13 +101,15 @@ States use `@label` format (inspired by Pied-Piper). Common states across recipe
 | Recipe | Complexity | Use Case |
 |--------|------------|----------|
 | `feature-implementation.yaml` | full | New features end-to-end |
-| `bug-investigation.yaml` | standard | Bug diagnosis and fix |
+| `bug-investigation.yaml` | standard | Bug diagnosis and fix (interactive, single bug) |
+| `fix-loop.yaml` | full | Test-gated autonomous fix loop over an issue backlog (unattended; mechanical gates) |
 | `refactor-safe.yaml` | standard | Code cleanup with safety |
 | `security-audit.yaml` | full | Security hardening |
 
 ## Customizing Recipes
 
 Copy a recipe and modify:
+
 - Swap agents for project-specific alternatives
 - Add/remove checkpoints based on risk tolerance
 - Adjust failure policies
@@ -113,6 +118,7 @@ Copy a recipe and modify:
 ## Integration with Orchestration Module
 
 Recipes implement the patterns from `modules/orchestration.md`:
+
 - **Quality Gates** → Checkpoints in recipe flow
 - **Scale-Adaptive** → Recipe complexity field
 - **Two-Stage Review** → Separate spec-compliance and code-quality agents

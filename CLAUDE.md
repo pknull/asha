@@ -41,11 +41,11 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.0.0 | Core | Memory persistence, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Session** | v1.1.0 | Core | Memory persistence, `/save` synthesis, guardrail hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
-| **Code** | v1.2.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
-| **Write** | v1.5.0 | Creative | Prose craft, continuity, and style analysis — 9 agents, 4 skills |
+| **Code** | v1.3.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
+| **Write** | v1.6.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
 | **Admin** | v0.1.0 | Integrations | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
 | **Security** | v1.0.0 | Security | Web-app security review checklist skill |
@@ -79,7 +79,7 @@ asha/
 │   │   ├── commands/                 # review.md, verify.md, orchestrate.md
 │   │   ├── skills/postgres/
 │   │   ├── hooks/                    # post-edit-lint
-│   │   ├── recipes/                  # 4 multi-agent workflows
+│   │   ├── recipes/                  # 5 multi-agent workflows
 │   │   ├── modules/                  # code, orchestration, complexity-routing, parallel-agents
 │   │   ├── templates/                # harness instruction templates (copilot/cursor/devin)
 │   │   └── tools/                    # verify.py
@@ -102,7 +102,7 @@ asha/
 │   │   └── tools/                    # save pipeline, jsonl_reader, learnings, event_store …
 │   ├── test/                         # installer canary (ping command/skill/agent, stop hook)
 │   └── write/                        # creative writing
-│       ├── agents/                   # 9 agents
+│       ├── agents/                   # 10 agents
 │       ├── commands/                 # init-novel, review-section
 │       ├── skills/                   # book-export, languagetool, novel-state,
 │       │                             #   style-analyzer

@@ -1,0 +1,195 @@
+name: fix-loop
+version: "1.0"
+description: >
+  Test-gated autonomous fix loop over an issue backlog. The unattended outer
+  layer around bug-investigation.yaml: where that recipe pauses for human
+  checkpoints on a single bug, this one iterates a whole backlog with the
+  checkpoints replaced by MECHANICAL gates — no change ships unless the
+  reproduction was observed, the regression test failed before the fix and
+  passes after, and the full suite is green. Fixes that cannot clear the gates
+  are ledgered for human input, never forced. Designed to pair with
+  /session:loop guardrails for overnight runs.
+complexity: full
+
+# Relationship to bug-investigation.yaml — NOT a duplicate:
+#   bug-investigation = interactive, single bug, human confirms root cause.
+#   fix-loop          = unattended, N issues, mechanical gates, PR per fix.
+# For one bug with a human present, use bug-investigation.
+
+agents:
+  - name: loop-operator
+    role: Run guardrails — checkpoint tracking, failure detection, budget stops
+    model: sonnet
+    trigger: "@backlog-loaded"
+    output: "@loop-armed"
+    checkpoint: false
+
+  - name: codebase-historian
+    role: Prior art for the current issue (similar bugs, past failed fixes)
+    model: sonnet
+    trigger: "@issue-selected"
+    output: "@history-checked"
+    checkpoint: false
+
+  - name: debugger
+    role: Reproduce the failure; enumerate RANKED root-cause hypotheses
+    model: sonnet
+    trigger: "@history-checked"
+    output: "@reproduced | @cannot-reproduce"
+    checkpoint: false
+    # GATE reproduction-required: no observed reproduction -> no edit. Ever.
+
+  - name: tdd
+    role: Write a regression test capturing the failure; observe it FAIL
+    model: sonnet
+    trigger: "@reproduced"
+    output: "@red-confirmed | @test-invalid"
+    checkpoint: false
+    # GATE red-before-green: a regression test that passes pre-fix is invalid.
+
+  - name: debugger
+    role: Implement the MINIMAL fix for the top-ranked confirmed hypothesis
+    model: sonnet
+    trigger: "@red-confirmed"
+    output: "@fix-implemented"
+    checkpoint: false
+
+  - name: reviewer
+    role: Post-green review — correctness, no scope creep, no new hazards
+    model: sonnet
+    trigger: "@suite-green"
+    output: "@review-passed | @changes-requested"
+    checkpoint: false
+    gate: code-review
+
+flow:
+  start: "@backlog-loaded"
+  end: "@backlog-complete"
+
+  transitions:
+    - from: "@backlog-loaded"
+      to: "@loop-armed"
+      agent: loop-operator
+
+    # Orchestrator: pick next open issue; TaskCreate one task per issue.
+    - from: "@loop-armed"
+      to: "@issue-selected"
+      description: >
+        Select the next unprocessed issue (oldest first unless prioritized).
+        Working tree MUST be clean before selection — a dirty tree from the
+        previous iteration is a loop bug; stop and ledger it.
+
+    - from: "@issue-selected"
+      to: "@history-checked"
+      agent: codebase-historian
+
+    - from: "@history-checked"
+      to: "@reproduced"
+      agent: debugger
+
+    # GATE: no reproduction, no edits — ledger and move on.
+    - from: "@cannot-reproduce"
+      to: "@issue-ledgered"
+      description: >
+        Mark issue needs-input (cannot reproduce; hypotheses + what was
+        checked, citing live state or source per the ground-truth hierarchy).
+        Select next issue.
+
+    - from: "@reproduced"
+      to: "@red-confirmed"
+      agent: tdd
+
+    - from: "@test-invalid"
+      to: "@issue-ledgered"
+      description: >
+        Regression test passed before any fix — it does not capture the
+        failure. One rewrite attempt; if still not red, ledger needs-input.
+
+    - from: "@red-confirmed"
+      to: "@fix-implemented"
+      agent: debugger
+
+    # GATE full-suite-plus-regression: both green or the fix does not exist.
+    - from: "@fix-implemented"
+      to: "@suite-green | @suite-broken"
+      description: >
+        Run /code:verify (or the project's full test command) PLUS the new
+        regression test. Both must pass.
+
+    # GATE revert-on-collateral: one re-approach, then ledger.
+    - from: "@suite-broken"
+      to: "@fix-implemented | @issue-ledgered"
+      description: >
+        A previously-passing test now fails: REVERT the fix entirely (restore
+        clean tree), re-approach ONCE from the next-ranked hypothesis. A second
+        collateral failure ledgers the issue needs-input with both attempts
+        documented. Never ship a fix that moves breakage elsewhere.
+
+    - from: "@suite-green"
+      to: "@review-passed"
+      agent: reviewer
+
+    - from: "@changes-requested"
+      to: "@fix-implemented"
+      agent: debugger
+
+    # Ship: branch per issue, commit, PR. No direct-to-main.
+    - from: "@review-passed"
+      to: "@issue-shipped"
+      type: action
+      description: >
+        Commit on an issue branch with a message naming issue, root cause, and
+        regression test. Open a PR (or queue the push per push_retry when no
+        remote). Mark the issue's task completed.
+
+    - from: "@issue-shipped"
+      to: "@issue-selected"
+      description: Loop — next issue.
+
+    - from: "@issue-ledgered"
+      to: "@issue-selected"
+      description: Loop — next issue.
+
+    # Termination: backlog empty, or loop-operator budget/failure stop.
+    - from: "@issue-selected"
+      to: "@backlog-complete"
+      description: >
+        No unprocessed issues remain (or loop-operator halts on budget /
+        repeated-failure guardrail). Emit the final ledger: shipped (issue,
+        branch, PR) vs needs-input (issue, reason, evidence). The ledger is
+        the deliverable; silence about a skipped issue is a defect.
+
+failure:
+  max_retries: 1            # per issue, post-collateral — then ledger, move on
+  on_blocked: ledger_and_continue
+  final: escalate_to_user   # ledger always reaches the human
+  record_learnings: true
+
+gates:
+  - name: reproduction-required
+    description: "No observed reproduction -> no edits; ledger needs-input"
+    blocking: true
+    bypass: none
+  - name: red-before-green
+    description: "Regression test must FAIL before the fix and PASS after"
+    blocking: true
+    bypass: none
+  - name: full-suite-plus-regression
+    description: "Full suite AND the new regression test green before commit"
+    blocking: true
+    bypass: none
+  - name: revert-on-collateral
+    description: "Collateral test breakage -> full revert, one re-approach, then ledger"
+    blocking: true
+    bypass: none
+  - name: code-review
+    description: "Reviewer verifies correctness and no scope creep after green"
+    blocking: true
+    bypass: "Trivial fix <10 lines with regression test"
+
+notes:
+  - "Unattended by design: every human checkpoint from bug-investigation is replaced by a mechanical gate; anything a gate cannot decide goes to the ledger, not to a guess."
+  - "Ranked hypotheses BEFORE editing (ground-truth hierarchy: verify against live state / source, cite what was checked); fixing the top guess without ranking is how wrong-approach iterations happen."
+  - "Minimal fix discipline per operation.md Surgical Edits: the diff answers the issue, nothing else."
+  - "Clean tree between iterations is a hard invariant; branch per issue; never force-push."
+  - "Run under /session:loop for overnight operation so its guardrails (budget, failure detection, intervention) wrap the whole backlog."
