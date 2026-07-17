@@ -100,6 +100,10 @@ Context is finite. Delegate exploration to preserve it for decisions and edits.
 - Expand when tone, context, or complexity require
 - Minimal preamble/postamble unless asked
 - When unclear: ask for the single most critical missing input
+- **Large deliverables: chunk to files.** An output-token failure mid-response
+  loses the whole response unrecoverably. Write large audits, manuscripts, and
+  multi-part reports to files incrementally — section by section — and reply
+  with a short per-chunk summary, never one giant emission.
 
 ## Module Reference
 

@@ -24,6 +24,9 @@ Gates (each logged to Memory/events/save-preflight.jsonl):
       provenance      session (HARD when the session had real activity but the
                       lead WWA belongs to a foreign/prior session — the bg
                       0-Edit/Write handoff gap; a truly empty session passes).
+  3c disk_truth       disk is ground truth over Memory notes: paths referenced
+                      by activeContext.md must exist; future lastUpdated stamps
+                      are contradictions (WARN — flagged, never trusted).
   4 push_durability   git push has a destination, else HEAD is queued for retry
                       with backoff — never silent (PASS). Delegates to push_retry.
 """
@@ -36,7 +39,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass, asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -254,6 +257,70 @@ def gate_wwa_provenance(project_dir: Path, current_sid: Optional[str]) -> GateRe
 
 
 # --------------------------------------------------------------------------- #
+# Gate 3c — disk ground truth (Memory notes vs filesystem)
+# --------------------------------------------------------------------------- #
+# Backtick-quoted tokens that look like paths (contain a slash).
+_PATH_TOKEN_RE = re.compile(r"`([~/A-Za-z0-9_.-]*/[A-Za-z0-9_./-]+)`")
+# lastUpdated frontmatter value, e.g. "2026-07-17 04:10 UTC" or ISO-ish.
+_LAST_UPDATED_RE = re.compile(r'^lastUpdated:\s*["\']?(\d{4}-\d{2}-\d{2})[ T](\d{2}):(\d{2})', re.MULTILINE)
+
+
+def gate_disk_truth(project_dir: Path) -> GateResult:
+    """Disk is ground truth over Memory notes. Flags contradictions:
+
+      - activeContext.md references a path (backtick-quoted, repo-relative under
+        a directory that exists, or absolute under the project) that is NOT on
+        disk — the note describes a world the filesystem contradicts.
+      - frontmatter lastUpdated is in the future relative to the system clock.
+
+    WARN-level: contradictions are flagged for correction, never trusted; the
+    note is wrong, not the disk. Deliberately conservative about what counts as
+    a path (first segment must be an existing project dir, or the path must be
+    absolute inside the project) so prose like `input/output` never false-flags.
+    """
+    ac = project_dir / "Memory" / "activeContext.md"
+    if not ac.exists():
+        return GateResult("disk_truth", "pass", False, "activeContext.md missing (see ac_fresh)")
+    text = ac.read_text()
+
+    contradictions: list[str] = []
+    proj = project_dir.resolve()
+    for token in sorted(set(_PATH_TOKEN_RE.findall(text))):
+        if token.startswith(("http", "~")) or "*" in token or "$" in token:
+            continue
+        if token.startswith("/"):
+            p = Path(token)
+            try:
+                p.resolve().relative_to(proj)   # only judge absolute paths inside the project
+            except ValueError:
+                continue
+        else:
+            first_seg = token.split("/", 1)[0]
+            if not (project_dir / first_seg).is_dir():
+                continue                        # not evidently a repo path; skip, don't guess
+            p = project_dir / token
+        if not p.exists():
+            contradictions.append(f"references `{token}` which does not exist on disk")
+
+    m = _LAST_UPDATED_RE.search(text)
+    if m:
+        try:
+            stamped = datetime(int(m.group(1)[:4]), int(m.group(1)[5:7]), int(m.group(1)[8:10]),
+                               int(m.group(2)), int(m.group(3)), tzinfo=timezone.utc)
+            if stamped > _now().replace(second=0, microsecond=0) + timedelta(minutes=10):
+                contradictions.append(f"frontmatter lastUpdated {m.group(0).split(':', 1)[1].strip()} is in the future")
+        except ValueError:
+            pass
+
+    if contradictions:
+        shown = "; ".join(contradictions[:5])
+        more = f" (+{len(contradictions) - 5} more)" if len(contradictions) > 5 else ""
+        return GateResult("disk_truth", "warn", False,
+                          f"Memory notes contradict disk — disk wins; correct the notes: {shown}{more}")
+    return GateResult("disk_truth", "pass", False, "no Memory-note/disk contradictions detected")
+
+
+# --------------------------------------------------------------------------- #
 # Gate 4 — push durability (queue + backoff, never silent)
 # --------------------------------------------------------------------------- #
 def gate_push(project_dir: Path, dry_run: bool = False) -> GateResult:
@@ -305,6 +372,7 @@ def run_gates(project_dir: Path, current_sid: Optional[str], save_start: Optiona
     results.append(gate_clobber(project_dir))
     results += gate_active_context(project_dir, save_start)
     results.append(gate_wwa_provenance(project_dir, current_sid))
+    results.append(gate_disk_truth(project_dir))
     if not skip_push:
         results.append(gate_push(project_dir, dry_run=dry_run))
     return results
