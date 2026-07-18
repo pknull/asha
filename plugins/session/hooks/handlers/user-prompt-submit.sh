@@ -119,6 +119,14 @@ try:
     original_text = os.environ['LT_ORIGINAL_TEXT']
 
     matches = response.get('matches', [])
+
+    # Never apply spelling suggestions: the model reads through typos, and
+    # the speller's first guess on domain jargon is confidently wrong
+    # (observed: 'xslx' -> 'XSLT' while the user meant the .xlsx file).
+    # Grammar/punctuation/style matches remain eligible.
+    matches = [m for m in matches
+               if m.get('rule', {}).get('issueType') != 'misspelling']
+
     if not matches:
         print('UNCHANGED')
         sys.exit(0)

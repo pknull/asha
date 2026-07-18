@@ -21,7 +21,8 @@ user_prompt_submit_correction() {
     local refined="$1"
     cat <<EOF
 <system-reminder>
-User's prompt has been corrected. Interpret as: "$refined"
+A local grammar pass suggests this reading of the prompt: "$refined"
+This is advisory — when it conflicts with conversation context or technical terms, trust the context and the user's original wording.
 </system-reminder>
 EOF
 }
