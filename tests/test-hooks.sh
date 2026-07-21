@@ -2344,18 +2344,32 @@ echo -n "Test 106: Codex installer emits nested hooks + native rules... "
 CODEX_TMP="$(mktemp -d)"
 CODEX_OK=1
 CODEX_WHY=""
+CODEX_USER_HOME="${HOME:-}"
+if [[ -z "$CODEX_USER_HOME" ]]; then
+    CODEX_USER_HOME="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || true)"
+fi
+CODEX_USER_HOME="${CODEX_USER_HOME%/}"
+# Machine-independent regression guard. The rule_text assertion below is skipped
+# when the resolved home legitimately equals the old hardcoded value, so on the
+# author's own machine it cannot catch a re-hardcode. Check the generator source
+# directly instead: it must derive the user's home, never embed one.
+if grep -qF '/home/pknull' "$REPO_ROOT/harnesses/codex.sh"; then
+    CODEX_OK=0
+    CODEX_WHY="$CODEX_WHY hardcoded-home-in-generator"
+fi
 printf '[features]\nhooks = true\n' > "$CODEX_TMP/config.toml"
 mkdir -p "$CODEX_TMP/asha"
 printf '{}\n' > "$CODEX_TMP/asha/config.json"
 if ! CODEX_HOME="$CODEX_TMP" ASHA_HOME="$CODEX_TMP/asha" ASHA_CONFIG="$CODEX_TMP/asha/config.json" "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP/install.err"; then
     CODEX_OK=0
     CODEX_WHY=" install-failed:$(cat "$CODEX_TMP/install.err")"
-elif ! python3 - "$CODEX_TMP/config.toml" "$CODEX_TMP/rules/asha.rules" "$CODEX_TMP/agents/session-loop-operator.toml" "$CODEX_TMP/skills/session-save/SKILL.md" <<'PY' >/dev/null 2>"$CODEX_TMP/check.err"
+elif ! python3 - "$CODEX_TMP/config.toml" "$CODEX_TMP/rules/asha.rules" "$CODEX_TMP/agents/session-loop-operator.toml" "$CODEX_TMP/skills/session-save/SKILL.md" "$CODEX_USER_HOME" <<'PY' >/dev/null 2>"$CODEX_TMP/check.err"
 import pathlib, sys, tomllib
 config = pathlib.Path(sys.argv[1])
 rules = pathlib.Path(sys.argv[2])
 agent = pathlib.Path(sys.argv[3])
 skill = pathlib.Path(sys.argv[4])
+home = sys.argv[5]
 text = config.read_text()
 tomllib.loads(text)
 assert '[[hooks.PreToolUse]]' in text
@@ -2366,6 +2380,10 @@ rule_text = rules.read_text()
 assert 'prefix_rule(' in rule_text
 assert 'pattern = ["git", "reset", "--hard"]' in rule_text
 assert 'pattern = ["find", "/home"]' in rule_text
+if home and home not in ("/home", "/"):
+    assert f'pattern = ["find", "{home}"]' in rule_text
+if home != "/home/pknull":
+    assert "/home/pknull" not in rule_text
 agent_data = tomllib.loads(agent.read_text())
 assert agent_data["name"] == "loop-operator"
 assert "developer_instructions" in agent_data
