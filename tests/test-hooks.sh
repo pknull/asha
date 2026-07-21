@@ -2247,14 +2247,16 @@ else
 fi
 
 # ============================================================================
-# Test 104: Ported policy rules (destructive-git ask, memory-protection exclude, vault-structure warn)
+# Test 104: Ported policy rules (destructive-git deny, memory-protection exclude, vault-structure warn)
 # ============================================================================
 echo -n "Test 104: Ported policy rules enforce correctly... "
 PG_PORTED="$REPO_ROOT/plugins/session/hooks/handlers/policy-guard.sh"
 pg_decision() {
-    local out
-    out="$(printf '%s' "$1" | env -u ASHA_HARNESS bash "$PG_PORTED" 2>/dev/null)"
-    if [[ -n "$out" ]]; then
+    local out rc=0
+    out="$(printf '%s' "$1" | env -u ASHA_HARNESS bash "$PG_PORTED" 2>/dev/null)" || rc=$?
+    if [[ $rc -eq 2 ]]; then
+        echo "deny"
+    elif [[ -n "$out" ]]; then
         printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null
     else
         echo "allow"
@@ -2262,15 +2264,26 @@ pg_decision() {
 }
 PG_OK=1; PG_WHY=""
 chk_pg() { local got; got="$(pg_decision "$2")"; [[ "$got" == "$3" ]] || { PG_OK=0; PG_WHY="$PG_WHY $1(got=$got want=$3)"; }; }
-chk_pg force_push   '{"tool_name":"Bash","tool_input":{"command":"git push --force"}}'              ask
+chk_pg force_push   '{"tool_name":"Bash","tool_input":{"command":"git push --force"}}'              deny
+chk_pg lease_ok     '{"tool_name":"Bash","tool_input":{"command":"git push --force-with-lease"}}'  allow
+chk_pg co_dashdash  '{"tool_name":"Bash","tool_input":{"command":"git checkout -- src/a.py"}}'     deny
+chk_pg co_dot       '{"tool_name":"Bash","tool_input":{"command":"git checkout ."}}'               deny
+chk_pg co_branch    '{"tool_name":"Bash","tool_input":{"command":"git checkout main"}}'            allow
+chk_pg co_newbranch '{"tool_name":"Bash","tool_input":{"command":"git checkout -b feature-x"}}'    allow
+chk_pg restore_wt   '{"tool_name":"Bash","tool_input":{"command":"git restore ."}}'                deny
+chk_pg restore_stg  '{"tool_name":"Bash","tool_input":{"command":"git restore --staged src/a.py"}}' allow
+chk_pg clean_force  '{"tool_name":"Bash","tool_input":{"command":"git clean -fd"}}'                deny
+chk_pg clean_dry    '{"tool_name":"Bash","tool_input":{"command":"git clean -n"}}'                 allow
 chk_pg plain_push   '{"tool_name":"Bash","tool_input":{"command":"git push origin main"}}'          allow
-chk_pg hard_reset   '{"tool_name":"Bash","tool_input":{"command":"git reset --hard HEAD~1"}}'       ask
-chk_pg del_main     '{"tool_name":"Bash","tool_input":{"command":"git branch -D main"}}'            ask
-chk_pg mem_immutable '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/projectbrief.md"}}' ask
+chk_pg hard_reset   '{"tool_name":"Bash","tool_input":{"command":"git reset --hard HEAD~1"}}'       deny
+chk_pg del_main     '{"tool_name":"Bash","tool_input":{"command":"git branch -D main"}}'            deny
+chk_pg mem_immutable '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/projectbrief.md"}}' deny
 chk_pg mem_mutable   '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/activeContext.md"}}' allow
+chk_pg mem_scratchpad '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/scratchpad.md"}}'   allow
+chk_pg mem_ideas      '{"tool_name":"Write","tool_input":{"file_path":"/p/Memory/ideas.md"}}'        allow
 chk_pg vault_warn    '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/Random/x.md"}}'       allow
-chk_pg broad_home    '{"tool_name":"Bash","tool_input":{"command":"find /home -name x"}}'             ask
-chk_pg broad_user    '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull -name x"}}'      ask
+chk_pg broad_home    '{"tool_name":"Bash","tool_input":{"command":"find /home -name x"}}'             deny
+chk_pg broad_user    '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull -name x"}}'      deny
 chk_pg scoped_home   '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull/life -name x"}}' allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
@@ -2279,6 +2292,20 @@ else
     echo -e "${RED}FAIL${NC}"
     echo "  policy-guard ported-rule mismatch:$PG_WHY"
     FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 104b: Evaluator tolerates patterns beginning with "--"
+# ============================================================================
+echo -n 'Test 104b: Evaluator tolerates patterns beginning with "--"... '
+VC_PORTED="$REPO_ROOT/plugins/session/hooks/handlers/violation-checker.sh"
+if grep -Fq 'grep -Eq "' "$PG_PORTED" "$VC_PORTED"; then
+    echo -e "${RED}FAIL${NC}"
+    echo "  evaluator contains a grep pattern invocation without an end-of-options guard"
+    FAILED=$((FAILED + 1))
+else
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
 fi
 
 # ============================================================================
@@ -2291,12 +2318,12 @@ cp_decision() {
 }
 CP_OK=1; CP_WHY=""
 chk_cp() { local got; got="$(cp_decision "$2")"; [[ "$got" == "$3" ]] || { CP_OK=0; CP_WHY="$CP_WHY $1(got=$got want=$3)"; }; }
-# broad /home scan, toolArgs as an object -> ask (no-broad-home-scans)
-chk_cp scan_obj   '{"toolName":"bash","toolArgs":{"command":"find /home/pknull -name x"}}'      ask
+# broad /home scan, toolArgs as an object -> deny (no-broad-home-scans)
+chk_cp scan_obj   '{"toolName":"bash","toolArgs":{"command":"find /home/pknull -name x"}}'      deny
 # toolArgs as a JSON-encoded STRING, benign -> allow (exercises the string path)
 chk_cp benign_str '{"toolName":"bash","toolArgs":"{\"command\":\"echo hi\"}"}'                   allow
-# force-push -> ask (destructive-git)
-chk_cp force_push '{"toolName":"bash","toolArgs":{"command":"git push --force"}}'                ask
+# force-push -> deny (destructive-git)
+chk_cp force_push '{"toolName":"bash","toolArgs":{"command":"git push --force"}}'                deny
 # create a secrets file via the `path` field -> deny (block-secrets)
 chk_cp secret     '{"toolName":"create","toolArgs":{"path":"/p/.ssh/id_rsa","file_text":"x"}}'  deny
 # read a normal file -> allow
@@ -2419,11 +2446,41 @@ else
 fi
 
 # ============================================================================
-# Test 107: Total test count matches expected
+# Test 107: Policy-guard rule tools are covered by registered matchers
 # ============================================================================
-echo -n "Test 107: Test infrastructure self-check... "
+echo -n "Test 107: Policy-guard rules are reachable... "
+REACH_COVERED="$(jq -r '[.hooks.PreToolUse[] | select(any(.hooks[]?; ((.command // "") | test("policy-guard\\.sh$")))) | (.matcher // "*")] | join("|")' "$REPO_ROOT/plugins/session/hooks/hooks.json")"
+REACH_OK=1
+REACH_WHY=""
+if [[ -z "$REACH_COVERED" ]]; then
+    REACH_OK=0
+    REACH_WHY="policy-guard not registered on PreToolUse"
+elif [[ ! "$REACH_COVERED" =~ (^|\|)\*($|\|) ]]; then
+    while IFS=$'\t' read -r rule_id rule_tool; do
+        IFS='|' read -ra rule_tools <<< "$rule_tool"
+        for rule_tool_token in "${rule_tools[@]}"; do
+            if [[ "|$REACH_COVERED|" != *"|$rule_tool_token|"* ]]; then
+                REACH_OK=0
+                REACH_WHY="${REACH_WHY:+$REACH_WHY }$rule_id:$rule_tool_token"
+            fi
+        done
+    done < <(jq -r '.rules[] | [.id, .tool] | @tsv' "$REPO_ROOT/plugins/session/hooks/policies/rules.json")
+fi
+if [[ $REACH_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  $REACH_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 108: Total test count matches expected
+# ============================================================================
+echo -n "Test 108: Test infrastructure self-check... "
 # This test verifies the test suite is complete
-EXPECTED_TESTS=85
+EXPECTED_TESTS=88
 if [[ $((PASSED + FAILED + SKIPPED + 1)) -eq $EXPECTED_TESTS ]]; then
     echo -e "${GREEN}PASS${NC} ($EXPECTED_TESTS tests)"
     PASSED=$((PASSED + 1))
