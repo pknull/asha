@@ -75,7 +75,7 @@ At a glance: skills, agents, persona, the operational layer, and manual `/save` 
 
 ### Policy guardrails (PreToolUse deny/ask)
 
-Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny`, `ask`, or a `max_per_session` rate limit (counted in session_state — see [State model](#state-model-guardrails-session_state-and-memory)), with an optional `override_env` escape hatch. The seed rule blocks broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (slow HDD + Keybase I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`).
+Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny`, `ask`, or a `max_per_session` rate limit (counted in session_state — see [State model](#state-model-guardrails-session_state-and-memory)), with an optional `override_env` escape hatch. The seed rule blocks broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (rotational disk with background sync I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`). Rules are user-tunable, and this one is an example rather than a universal: adjust or drop it in `~/.asha/policies.json` if your `/home` is on SSD.
 
 **Prefer `deny` over `ask` for rules that must bite.** An `ask` decision is auto-approved without surfacing a prompt in any session running an auto-accept permission mode, which makes the rule silently inert. `deny` (exit 2) blocks regardless of mode. The shipped rules use `deny` with `override_env` escape hatches for exactly this reason; `ask` remains in the schema for rules whose value is the prompt itself.
 
@@ -210,7 +210,7 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 
 **Plugin Name**: `code`
 **Commands**: `/code:review`, `/code:verify`, `/code:orchestrate`
-**Version**: 1.2.0
+**Version**: 1.3.0
 **Domain**: Development
 
 Development workflows with orchestration patterns, code review, TDD, and 5 specialized agents.

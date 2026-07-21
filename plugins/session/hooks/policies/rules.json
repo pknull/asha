@@ -7,7 +7,7 @@
       "tool": "Bash",
       "command_regex": "\\b(bfs|fd|find|rg|grep[[:space:]]+-[a-zA-Z]*[rR])\\b[^|;]*[[:space:]]/home(/pknull)?/?([[:space:]]|$)",
       "action": "deny",
-      "reason": "Blocked broad scan over /home — /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to allow.",
+      "reason": "Blocked broad scan over /home — unscoped find/grep/bfs/fd/rg across a whole home directory causes severe disk pressure, badly so on rotational storage or alongside a background sync client (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to allow. Tune or remove this rule in ~/.asha/policies.json if it does not fit your machine.",
       "override_env": "ASHA_ALLOW_BROAD_SCAN"
     },
     {
