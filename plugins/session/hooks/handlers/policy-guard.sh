@@ -78,20 +78,20 @@ while [[ $i -lt $COUNT ]]; do
   r_exclude="$(printf '%s' "$rule" | jq -r '.exclude_regex // empty' 2>/dev/null || true)"
 
   [[ -n "$r_tool" ]] || continue
-  printf '%s' "$TOOL_NAME" | grep -Eq "^($r_tool)\$" 2>/dev/null || continue
+  printf '%s' "$TOOL_NAME" | grep -Eq -- "^($r_tool)\$" 2>/dev/null || continue
 
   matched=0
   if [[ -n "$r_cmdre" && -n "$CMD" ]]; then
-    printf '%s' "$CMD" | grep -Eq "$r_cmdre" 2>/dev/null && matched=1
+    printf '%s' "$CMD" | grep -Eq -- "$r_cmdre" 2>/dev/null && matched=1
   fi
   if [[ $matched -eq 0 && -n "$r_filere" && -n "$FILE" ]]; then
-    printf '%s' "$FILE" | grep -Eq "$r_filere" 2>/dev/null && matched=1
+    printf '%s' "$FILE" | grep -Eq -- "$r_filere" 2>/dev/null && matched=1
   fi
   # exclude_regex: suppress a matched rule when the command/file ALSO matches the
   # exclusion (lets a rule mean "Memory/ but NOT the mutable subset").
   if [[ $matched -eq 1 && -n "$r_exclude" ]]; then
-    if [[ -n "$CMD" ]]  && printf '%s' "$CMD"  | grep -Eq "$r_exclude" 2>/dev/null; then matched=0; fi
-    if [[ $matched -eq 1 && -n "$FILE" ]] && printf '%s' "$FILE" | grep -Eq "$r_exclude" 2>/dev/null; then matched=0; fi
+    if [[ -n "$CMD" ]]  && printf '%s' "$CMD"  | grep -Eq -- "$r_exclude" 2>/dev/null; then matched=0; fi
+    if [[ $matched -eq 1 && -n "$FILE" ]] && printf '%s' "$FILE" | grep -Eq -- "$r_exclude" 2>/dev/null; then matched=0; fi
   fi
   [[ $matched -eq 1 ]] || continue
 

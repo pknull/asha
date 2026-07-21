@@ -6,25 +6,26 @@
       "id": "no-broad-home-scans",
       "tool": "Bash",
       "command_regex": "\\b(bfs|fd|find|rg|grep[[:space:]]+-[a-zA-Z]*[rR])\\b[^|;]*[[:space:]]/home(/pknull)?/?([[:space:]]|$)",
-      "action": "ask",
-      "reason": "Broad scan over /home — /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to override.",
+      "action": "deny",
+      "reason": "Blocked broad scan over /home — /home is a slow spinning HDD with active Keybase I/O; broad find/grep/bfs/fd/rg cause severe disk pressure (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to allow.",
       "override_env": "ASHA_ALLOW_BROAD_SCAN"
     },
     {
       "id": "destructive-git",
       "tool": "Bash",
-      "command_regex": "git[[:space:]]+(push[[:space:]][^|;]*(--force|-f([[:space:]]|$))|reset[[:space:]]+--hard|branch[[:space:]]+-[dD][[:space:]]+(main|master)([[:space:]]|$))",
-      "action": "ask",
-      "reason": "Destructive git operation (force-push / hard-reset / protected-branch delete) — irreversible or affects shared state. Confirm, or set ASHA_ALLOW_DESTRUCTIVE_GIT=1 to skip the prompt.",
+      "command_regex": "git[[:space:]]+(push[[:space:]][^|;]*(--force|-f([[:space:]]|$))|reset[[:space:]]+--hard|branch[[:space:]]+-[dD][[:space:]]+(main|master)([[:space:]]|$)|checkout[[:space:]]+(--[[:space:]]|\\.([[:space:]]|$))|restore[[:space:]]|clean[[:space:]][^|;]*(--force|-[a-zA-Z]*f))",
+      "exclude_regex": "--force-with-lease|restore[[:space:]]+--staged",
+      "action": "deny",
+      "reason": "Blocked destructive git operation — irreversible, or affects shared state. Discarding uncommitted work (checkout --, restore, clean -f) has no reflog: use `git stash` instead, which is recoverable. Force-push: use --force-with-lease, which is permitted. Set ASHA_ALLOW_DESTRUCTIVE_GIT=1 to allow.",
       "override_env": "ASHA_ALLOW_DESTRUCTIVE_GIT"
     },
     {
       "id": "memory-protection",
       "tool": "Write|Edit",
       "file_path_regex": "/Memory/",
-      "exclude_regex": "/sessions/|/vector_db/|activeContext\\.md|techEnvironment\\.md|workflowProtocols\\.md",
-      "action": "ask",
-      "reason": "Edit to an immutable Memory/ file (identity/config). Mutable files (sessions/, activeContext, techEnvironment, workflowProtocols, vector_db) are exempt. Confirm, or set ASHA_ALLOW_MEMORY_EDIT=1.",
+      "exclude_regex": "/sessions/|/vector_db/|activeContext\\.md|techEnvironment\\.md|workflowProtocols\\.md|scratchpad\\.md|ideas\\.md",
+      "action": "deny",
+      "reason": "Blocked edit to an immutable Memory/ file (identity/config). Mutable files (sessions/, activeContext, techEnvironment, workflowProtocols, scratchpad, ideas, vector_db) are exempt. Set ASHA_ALLOW_MEMORY_EDIT=1 to allow.",
       "override_env": "ASHA_ALLOW_MEMORY_EDIT"
     },
     {

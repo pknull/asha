@@ -55,6 +55,17 @@
         "description": "Declarative policy guardrails (deny/ask) from hooks/policies/rules.json + ~/.asha/policies.json"
       },
       {
+        "matcher": "Edit|Write|MultiEdit",
+        "_asha_harnesses": ["claude"],
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/policy-guard.sh"
+          }
+        ],
+        "description": "Same engine, file-path rules (memory-protection, vault-structure). Without this entry those rules are unreachable: the Bash-only registration above never receives an Edit/Write payload. Claude-only by necessity: on Codex pretooluse_policy_ask degrades to a hard deny."
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
