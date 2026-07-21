@@ -357,7 +357,7 @@ PYEOF
 # ---------------------------------------------------------------------------
 
 codex_install_rules() {
-  local content
+  local content user_home
   content="$(cat <<'EOF'
 # Managed by asha installer; do not edit.
 #
@@ -374,10 +374,10 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["find", "/home/pknull"],
+    pattern = ["find", "__ASHA_USER_HOME__"],
     decision = "prompt",
-    justification = "Broad scan over /home/pknull can cause severe disk pressure; scope to a subdirectory first.",
-    match = ["find /home/pknull -name x"],
+    justification = "Broad scan over __ASHA_USER_HOME__ can cause severe disk pressure; scope to a subdirectory first.",
+    match = ["find __ASHA_USER_HOME__ -name x"],
 )
 
 prefix_rule(
@@ -388,10 +388,10 @@ prefix_rule(
 )
 
 prefix_rule(
-    pattern = ["bfs", "/home/pknull"],
+    pattern = ["bfs", "__ASHA_USER_HOME__"],
     decision = "prompt",
-    justification = "Broad scan over /home/pknull can cause severe disk pressure; scope to a subdirectory first.",
-    match = ["bfs /home/pknull -name x"],
+    justification = "Broad scan over __ASHA_USER_HOME__ can cause severe disk pressure; scope to a subdirectory first.",
+    match = ["bfs __ASHA_USER_HOME__ -name x"],
 )
 
 prefix_rule(
@@ -444,6 +444,25 @@ prefix_rule(
 )
 EOF
 )"
+
+  user_home="${HOME:-}"
+  if [[ -z "$user_home" ]]; then
+    user_home="$(getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6 || true)"
+  fi
+  user_home="${user_home%/}"
+
+  if [[ -z "$user_home" || "$user_home" == "/home" || "$user_home" == "/" ]]; then
+    local command rule_start block_remainder
+    for command in find bfs; do
+      rule_start=$'\nprefix_rule(\n    pattern = ["'"$command"'", "__ASHA_USER_HOME__"],'
+      if [[ "$content" == *"$rule_start"* ]]; then
+        block_remainder="${content#*"$rule_start"}"
+        content="${content%%"$rule_start"*}${block_remainder#*$'\n)\n'}"
+      fi
+    done
+  else
+    content="${content//__ASHA_USER_HOME__/$user_home}"
+  fi
 
   if [[ $DRY_RUN -eq 1 ]]; then
     say "  WRITE [codex-rules]  $CODEX_RULES_FILE"
