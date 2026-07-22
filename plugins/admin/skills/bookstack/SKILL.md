@@ -162,5 +162,5 @@ For an external URL link instead of a file upload, swap `-F "file=@..."` for `-F
 ## See also
 
 - BookStack API docs: `$BOOKSTACK_BASE_URL/docs` (the running instance serves them)
-- Pattern doc: `~/life/asha/docs/secrets.md`
-- Sibling: `~/life/asha/plugins/admin/skills/todoist/SKILL.md` (same dotenv-bootstrap pattern)
+- Pattern doc: `docs/secrets.md` in the asha repo (checkout path = `asha_root` in `~/.asha/config.json`)
+- Sibling: `plugins/admin/skills/todoist/SKILL.md` in the asha repo (same dotenv-bootstrap pattern)

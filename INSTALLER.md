@@ -13,7 +13,7 @@ harness's native form.
 ## Architecture
 
 ```
-~/life/asha/
+<asha repo>/                       # checkout path; recorded as asha_root in ~/.asha/config.json
 ├── install.sh            # thin shim → lib/install.sh (back-compat: --target, --bin)
 ├── uninstall.sh          # thin shim → lib/uninstall.sh (mirrors --target)
 ├── namespaces.json       # plugin → namespace map (harness-agnostic)

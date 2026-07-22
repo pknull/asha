@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """push_retry.py — durable push queue for session-save commits.
 
-The ~/life repo has no git remote by design, so a bare ``git push`` fails with
-exit 128. Rather than fail silently, each save records its HEAD commit to a
+Some project repos have no git remote by design, so a bare ``git push`` fails
+with exit 128. Rather than fail silently, each save records its HEAD commit to a
 backoff retry queue; if a remote is ever configured the queued commits drain on
 the next save. This turns an invisible no-op into a visible, recoverable state.
 

@@ -19,7 +19,7 @@ The token is loaded from `~/.asha/secrets.env` automatically when you launch via
 
 If `$TODOIST_API_TOKEN` is unset when this skill runs, halt with a clear message:
 
-> `TODOIST_API_TOKEN not set. Add it to ~/.asha/secrets.env (see ~/life/asha/secrets.example) and relaunch via asha-claude.`
+> `TODOIST_API_TOKEN not set. Add it to ~/.asha/secrets.env (see secrets.example in the asha repo) and relaunch via asha-claude.`
 
 Do **not** prompt the user to paste the token into chat — that puts it in conversation history. Do **not** read `~/.asha/secrets.env` directly with `cat` or Read; the env var is what the user expects you to use, and reading the file leaks the value into your context.
 

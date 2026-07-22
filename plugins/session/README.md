@@ -98,13 +98,20 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 
 (Verification is `/code:verify`; Todoist access is the `admin-todoist` skill.)
 
+## Skills
+
+| Skill | Purpose |
+|-------|---------|
+| `memory-maintenance` (installs as `session-memory-maintenance`) | Memory file structure guidance: frontmatter schema, update triggers, file interdependencies, validation |
+| `skill-creator` (installs as `session-skill-creator`) | Create or update a SKILL.md: frontmatter, progressive disclosure, bundled resources, quality validation |
+
 ## Hooks
 
 | Hook | Purpose |
 |------|---------|
 | SessionStart | Load operation.md + learnings hot tier; conditionally load persona files; build Claude's compact memory-nudge index |
 | PreToolUse | Guardrails plus Claude-only, non-blocking memory nudges for Grep/Bash/WebSearch. Nudges index catalogue descriptions only, deduplicate per session, cap at five, fail open, and can be disabled with `ASHA_NUDGE=0`. Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
-| PostToolUse | Intervention (ReasoningBank, vector-index refresh, violation check) — capture moved to `/save` jsonl_reader |
+| PostToolUse | Claude-only memory nudge on Read; background violation check for Write/Edit/Bash — capture moved to `/save` jsonl_reader |
 | UserPromptSubmit | Track user interaction patterns |
 | Stop | Save-preflight cleanup |
 | SessionEnd | Synthesize session on clean exit; clear this session's session_state |
