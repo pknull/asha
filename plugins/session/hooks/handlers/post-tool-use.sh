@@ -78,30 +78,6 @@ if [[ "$TOOL_NAME" == "Read" && "${ASHA_NUDGE:-1}" != "0" ]]; then
     fi
 fi
 
-# Vector DB refresh for indexed file changes (background, non-blocking)
-# Only trigger for files in Memory/, asha/, or .claude/ directories
-case "$TOOL_NAME" in
-    "Edit"|"Write"|"NotebookEdit")
-        FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // .notebook_path // empty' 2>/dev/null)
-        if [[ -n "$FILE_PATH" && "$FILE_PATH" != "null" ]]; then
-            # Check if file is in an indexed directory
-            if [[ "$FILE_PATH" =~ Memory/.*\.md$ ]] || \
-               [[ "$FILE_PATH" =~ \.claude/.*\.md$ ]]; then
-
-                MEMORY_INDEX="$PLUGIN_ROOT/tools/memory_index.py"
-                PYTHON_CMD=$(get_python_cmd)
-                if [[ -f "$MEMORY_INDEX" && -n "$PYTHON_CMD" ]]; then
-                    # Run incremental ingest in background (non-blocking)
-                    # Skip if already running to prevent process accumulation
-                    if ! pgrep -f "memory_index.py ingest" >/dev/null 2>&1; then
-                        ("$PYTHON_CMD" "$MEMORY_INDEX" ingest --changed >/dev/null 2>&1) &
-                    fi
-                fi
-            fi
-        fi
-        ;;
-esac
-
 # Run violation checker (non-blocking, logs to session file)
 # Only runs for Write/Edit/Bash operations that might violate rules
 case "$TOOL_NAME" in
