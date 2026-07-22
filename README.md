@@ -1,6 +1,6 @@
 # asha
 
-**Version**: 2.1.0
+**Version**: 2.2.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, GitHub Copilot CLI, and OpenCode.
 
 Asha renders or mounts skills, agents, commands, and hooks into each harness's native or compatible surfaces, ships a single `asha` dispatcher that injects a shared persona, and normalizes session activity from all four CLIs into one synthesis pipeline.
@@ -124,13 +124,13 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.1.0 | Session memory, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Core** | `session` | v1.3.0 | Session memory, `/save` synthesis, guardrail hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
-| **Development** | `code` | v1.3.0 | Code review, orchestration patterns, TDD — 5 agents |
+| **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
 | **Creative** | `write` | v1.6.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
-| **Integrations** | `admin` | v0.1.0 | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
+| **Integrations** | `admin` | v0.2.0 | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
 | **Security** | `security` | v1.0.0 | Web-app security review checklist skill |
 | **Tooling** | `test` | — | Installer canary (`/test:ping` command/skill/agent) |
 
@@ -210,7 +210,7 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 
 **Plugin Name**: `code`
 **Commands**: `/code:review`, `/code:verify`, `/code:orchestrate`
-**Version**: 1.3.0
+**Version**: 1.4.0
 **Domain**: Development
 
 Development workflows with orchestration patterns, code review, TDD, and 5 specialized agents.
@@ -256,17 +256,17 @@ Development workflows with orchestration patterns, code review, TDD, and 5 speci
 
 **Plugin Name**: `write`
 **Commands**: `/write:init-novel`, `/write:review-section`
-**Version**: 1.5.0
+**Version**: 1.6.0
 **Domain**: Creative Writing
 
-Creative writing workflows with prose craft, style analysis, manuscript state, and 9 specialized agents.
+Creative writing workflows with prose craft, style analysis, manuscript state, and 10 specialized agents.
 
 ```bash
 /write:init-novel /path/to/proj  # Initialize novel state structure
 /write:review-section            # Run periodic review suite
 ```
 
-**Agents** (9):
+**Agents** (10):
 
 | Agent | Role |
 |-------|------|
@@ -279,6 +279,7 @@ Creative writing workflows with prose craft, style analysis, manuscript state, a
 | **intimacy-arbiter** | Adult-content arbitration — boundary rulings, heat-level consistency; review-only (slimmed from intimacy-designer) |
 | **novel-state-updater** | State extraction after sections pass validation |
 | **voice-analyst** | Voice bible pipeline: analyze exemplar texts + merge into unified voice.md (merged bible-merger + book-analyzer) |
+| **claim-verifier** | Read-only verification of consistency-report claims against the manuscript (tool-allowlisted) |
 
 **Skills**:
 
@@ -332,7 +333,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.0.0
+**Version**: 1.3.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -554,7 +555,18 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 ## Version History
 
-### Unreleased — Policy guardrails made reachable and enforcing (2026-07-21)
+### v2.2.0 — Ecosystem audit remediation (2026-07-22)
+
+Full-project audit (goals, effectiveness, 88-script inventory, reachability) followed by fixes for all ten findings. Also rolls up the 2026-07-21 policy-guardrail work below.
+
+- **Session v1.3.0** — dead memory-index feature removed (`post-tool-use.sh` no longer invokes the nonexistent `memory_index.py`; scaffolding template stops promising `memory_index.py`/`reasoning_bank.py`); orphaned `run-python.sh` deleted; `jsonl_reader.py` fully self-contained (no `~/life/bin` import path); save.md baseline capture resolved via `ASHA_BASELINE_CAPTURE`/config, not a personal path; both session skills documented.
+- **Installer** — per-harness failure isolation in `asha_install_main` (one harness failing no longer aborts the rest; per-harness summary, non-zero exit on partial failure).
+- **Code v1.4.0** — new `asha calibration` dispatcher verb makes `bin/calibration` reachable everywhere; orchestrate/complexity-routing docs use it; postgres skill documented.
+- **Admin v0.2.0** — SKILL prose de-localized (repo paths resolve via `asha_root`, not `~/life/asha`).
+- **Docs** — `~/life`/`~/life/marketplace` swept from all shipped prose (INSTALLER.md, secrets.md, memory-architecture.md, test-ping); README/CLAUDE.md version tables re-synced (session detail section had drifted to 1.0.0, write to 1.5.0/9-agents).
+- **Tests** — shellcheck now covers `bin/ lib/ harnesses/ identity/` + root shims; `validate-versions.sh` cross-checks every plugin README version against both top-level tables; new `test-install.sh` (sandboxed round-trip incl. failure isolation) and `test-identity-merge.sh` (merge-script smoke) suites; bash-safety flags classified and annotated repo-wide.
+
+### Policy guardrails made reachable and enforcing (2026-07-21, rolled into v2.2.0)
 
 - **Session v1.2.0.** Two independent defects meant **all four policy rules were doing nothing**; both are fixed and verified live.
 - **Fixed: file-path rules were unreachable.** `policy-guard.sh` was registered on `matcher: "Bash"` only, so `memory-protection` (`tool: "Write|Edit"`) and `vault-structure` (`tool: "Write"`) had never received a payload. Added a second `Edit|Write|MultiEdit` registration, claude-only via `_asha_harnesses` — on Codex `pretooluse_policy_ask` degrades to a hard deny, so a Codex-side registration would over-block. `memory-protection` has now fired for the first time.
