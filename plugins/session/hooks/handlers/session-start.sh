@@ -85,7 +85,7 @@ fi
 #   - Operational layer (operation.md + learnings.md): ALWAYS loaded
 #   - Persona layer (soul.md + voice.md + keeper.md): ONLY when ASHA_PERSONA=1
 #
-# The `asha` wrapper (~/bin/asha) sets ASHA_PERSONA=1 and injects persona
+# The `asha` wrapper (~/.local/bin/asha) sets ASHA_PERSONA=1 and injects persona
 # via --append-system-prompt-file. The hook handles operational + learnings.
 
 CORE_MD="$PLUGIN_ROOT/modules/CORE.md"

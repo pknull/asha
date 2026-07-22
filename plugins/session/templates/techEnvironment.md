@@ -23,10 +23,7 @@ Tools are provided by the Asha plugin. Tool paths are injected via SessionStart 
 
 ### Tool Invocation
 
-Tools are executed via the plugin's Python environment. Example patterns provided in session context.
-
-**Semantic Search**: Query indexed files using memory_index.py
-**Pattern Tracking**: Track and query patterns via reasoning_bank.py
+Tools are executed via the plugin's Python environment.
 
 ## Project-Specific Stack
 

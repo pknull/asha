@@ -34,25 +34,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
-# Shared streaming utilities (factored out of bin/asha-search-index.py).
-sys.path.insert(0, os.path.expanduser("~/life/bin"))
-try:
-    from asha_jsonl import stream_jsonl  # type: ignore[import-not-found]
-except ImportError:
-    # Fallback minimal streamer — keeps the module importable even if
-    # ~/life/bin/asha_jsonl.py is missing in the environment.
-    def stream_jsonl(path: Path, label: str | None = None) -> Iterator[tuple[str, dict]]:
-        with path.open("r", encoding="utf-8", errors="replace") as fh:
-            for lineno, raw in enumerate(fh, start=1):
-                raw = raw.strip()
-                if not raw:
-                    continue
-                try:
-                    parsed = json.loads(raw)
-                except json.JSONDecodeError:
-                    continue
-                if isinstance(parsed, dict):
-                    yield str(lineno), parsed
+# Self-contained JSONL streaming utility.
+def stream_jsonl(path: Path, label: str | None = None) -> Iterator[tuple[str, dict]]:
+    with path.open("r", encoding="utf-8", errors="replace") as fh:
+        for lineno, raw in enumerate(fh, start=1):
+            raw = raw.strip()
+            if not raw:
+                continue
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                context = f" ({label})" if label else ""
+                print(
+                    f"WARNING: JSON parse error in {path}:{lineno}{context}: {exc}",
+                    file=sys.stderr,
+                )
+                continue
+            if isinstance(parsed, dict):
+                yield str(lineno), parsed
 
 
 # ---------------------------------------------------------------------------

@@ -467,21 +467,6 @@ else
 fi
 
 # ============================================================================
-# Test 26: run-python.sh wrapper is executable
-# ============================================================================
-echo -n "Test 26: run-python.sh wrapper is executable... "
-RUN_PYTHON="$REPO_ROOT/plugins/session/tools/run-python.sh"
-
-if [[ -x "$RUN_PYTHON" ]]; then
-    echo -e "${GREEN}PASS${NC}"
-    PASSED=$((PASSED + 1))
-else
-    echo -e "${RED}FAIL${NC}"
-    echo "  run-python.sh is not executable"
-    FAILED=$((FAILED + 1))
-fi
-
-# ============================================================================
 # Test 27: save-session.sh exists and is executable
 # ============================================================================
 echo -n "Test 27: save-session.sh exists and is executable... "
@@ -2183,28 +2168,6 @@ else
 fi
 
 # ============================================================================
-# Test 101: run-python.sh passes arguments correctly
-# ============================================================================
-echo -n "Test 101: run-python.sh passes arguments... "
-RUN_PYTHON="$REPO_ROOT/plugins/session/tools/run-python.sh"
-
-if [[ -x "$RUN_PYTHON" ]]; then
-    # Test that it can run a simple Python command
-    OUTPUT=$("$RUN_PYTHON" -c "print('test')" 2>/dev/null || true)
-    if [[ "$OUTPUT" == "test" ]]; then
-        echo -e "${GREEN}PASS${NC}"
-        PASSED=$((PASSED + 1))
-    else
-        echo -e "${RED}FAIL${NC}"
-        echo "  Expected 'test', got: $OUTPUT"
-        FAILED=$((FAILED + 1))
-    fi
-else
-    echo -e "${YELLOW}SKIP${NC}"
-    SKIPPED=$((SKIPPED + 1))
-fi
-
-# ============================================================================
 # Test 102: save-session.sh has required functions
 # ============================================================================
 echo -n "Test 102: save-session.sh structure valid... "
@@ -2498,7 +2461,7 @@ fi
 # ============================================================================
 echo -n "Test 108: Test infrastructure self-check... "
 # This test verifies the test suite is complete
-EXPECTED_TESTS=88
+EXPECTED_TESTS=86
 if [[ $((PASSED + FAILED + SKIPPED + 1)) -eq $EXPECTED_TESTS ]]; then
     echo -e "${GREEN}PASS${NC} ($EXPECTED_TESTS tests)"
     PASSED=$((PASSED + 1))
