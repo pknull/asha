@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 2.1.0
-**Last Updated**: 2026-07-10
+**Version**: 2.2.0
+**Last Updated**: 2026-07-22
 **Repository**: pknull/asha
 
 ---
@@ -41,13 +41,13 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.1.0 | Core | Memory persistence, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Session** | v1.3.0 | Core | Memory persistence, `/save` synthesis, guardrail hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
-| **Code** | v1.3.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
+| **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
 | **Write** | v1.6.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
-| **Admin** | v0.1.0 | Integrations | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
+| **Admin** | v0.2.0 | Integrations | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
 | **Security** | v1.0.0 | Security | Web-app security review checklist skill |
 | **Test** | — | Tooling | Installer canary (`/test:ping` command/skill/agent) |
 
@@ -899,6 +899,14 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v2.2.0 (2026-07-22) — Audit remediation
+
+- Full-project audit (Work/audit/2026-07-22--project-audit.md): all ten findings fixed.
+- Session v1.3.0 (dead memory-index feature removed; run-python.sh orphan deleted; jsonl_reader self-contained; skills documented), Code v1.4.0 (`asha calibration` dispatcher verb; postgres skill documented), Admin v0.2.0 (prose de-localized).
+- Installer: per-harness failure isolation in `asha_install_main` (mirrors uninstall's issue-#4 pattern).
+- `~/life` paths swept from all shipped prose; version tables re-synced.
+- Tests: shellcheck scope extended to bin/lib/harnesses/identity; validate-versions cross-checks plugin READMEs vs both top-level tables; new install round-trip + identity-merge smoke suites; bash-safety flags classified repo-wide.
 
 ### v2.1.0 (2026-07-10) — Ecosystem audit prune
 
