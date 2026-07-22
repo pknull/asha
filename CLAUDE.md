@@ -360,11 +360,27 @@ status: draft
 
 ### Bash Script Safety
 
-**All scripts must include**:
+Three tiers (v2.2.0 classification — see tests/run-tests.sh shellcheck suite):
+
+1. **Standalone-executed scripts** — full trio:
 
 ```bash
 #!/usr/bin/env bash
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
+```
+
+1. **Hook handlers** — `set -uo pipefail` only, with the annotation
+   `# fail-open by design: no set -e — a handler crash must never block the session`.
+   A file may document a stronger local reason (e.g. `detached-save.sh` keeps
+   non-errexit so its footer log line survives a failed stage) — in-file
+   contracts outrank this default.
+2. **Sourced libraries** (lib/, harnesses/, handlers' helpers) — no flags at
+   file scope (they would mutate the caller's shell); annotate with
+   `# source-scoped library: no set flags at file scope (runs in the caller's shell)`.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail  # tier 1 shown; see classification above
 
 # Optional: Source shared utilities
 source "$(dirname "$0")/common.sh"
