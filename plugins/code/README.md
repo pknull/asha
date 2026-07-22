@@ -24,6 +24,12 @@ Development workflows for implementation, debugging, review, refactoring, and ve
 
 Review severity and verdict rules are canonical in `agents/reviewer.md`; the review command supplies orchestration lenses rather than a second policy.
 
+## Skills
+
+| Skill | Purpose |
+|---|---|
+| `postgres` (installs as `code-postgres`) | PostgreSQL review and design guidance: query optimization, EXPLAIN analysis, schema design, RLS policies, migration safety |
+
 ## Installation
 
 ```bash

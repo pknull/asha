@@ -178,8 +178,9 @@ Then capture a baseline sample (best-effort, non-blocking — only runs if the A
 **Step 5b — Invoke capture.sh** with the archetype:
 
 ```bash
-CAPTURE=~/life/Work/panels/baseline--2026-04-17/capture.sh
-if [[ -x "$CAPTURE" ]]; then
+# Resolved from env or ~/.asha/config.json — never hardcoded to one machine's layout
+CAPTURE="${ASHA_BASELINE_CAPTURE:-$(jq -r '.baseline_capture // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+if [[ -n "$CAPTURE" && -x "$CAPTURE" ]]; then
     # ARCHETYPE set per heuristic above; SAVE_DURATION left empty for v1
     "$CAPTURE" "$ARCHETYPE" "" --notes "auto-captured from /session:save" || {
         echo "warn: capture.sh failed (non-fatal); continuing with commit" >&2
@@ -187,7 +188,7 @@ if [[ -x "$CAPTURE" ]]; then
 fi
 ```
 
-**Failures are non-fatal.** If the script is missing (other projects, or baseline dir not set up), skip silently. If it exits non-zero, log a one-line warning and continue — baseline accumulation is best-effort, not a gate on save.
+**Failures are non-fatal.** If no capture script is configured (`ASHA_BASELINE_CAPTURE` env var or `baseline_capture` key in `~/.asha/config.json`) or the configured path is missing, skip silently. If it exits non-zero, log a one-line warning and continue — baseline accumulation is best-effort, not a gate on save.
 
 Then run the pre-flight verification gate (engine-backed — the enforced version of the manual Verification Gate below). It self-heals `Memory/`, confirms synthesis ran on THIS session's transcript (not a concurrent session's), blocks a clobbered or foreign-sourced `activeContext.md`, and — via `ac_wwa_provenance` — hard-fails when the session did real work but the lead "What Was Accomplished" still belongs to a foreign/prior session (the bg 0-Edit/Write handoff gap). Run Verification-Gate Check 1 BEFORE this so the lead WWA is already current and stamped:
 

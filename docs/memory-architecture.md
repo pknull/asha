@@ -164,7 +164,7 @@ always; here's how to judge for a given project.
 **Diagnostics you can run:**
 
 ```bash
-T=~/life/asha/plugins/session/tools
+T="$(jq -r .asha_root ~/.asha/config.json)/plugins/session/tools"
 python3 $T/learnings_manager.py render-hot --max-bytes 3000   # exactly what gets injected — would you want a fresh you to know this?
 python3 $T/learnings_manager.py list                          # categories + counts + avg confidence
 python3 $T/learnings_manager.py query --min-confidence 0.7    # the hot set, ranked

@@ -17,4 +17,4 @@ When invoked, reply with exactly this line and nothing else:
 TEST-PING-OK sentinel=asha skill=test-ping
 ```
 
-If you're reading this, the skill resolved via Claude Code's skill scanner. The install path that delivered it is recorded at install time in `~/.claude/skills/test-ping/SKILL.md` (symlink) whose `readlink -f` resolves into `~/life/marketplace/plugins/test/skills/ping/SKILL.md`.
+If you're reading this, the skill resolved via Claude Code's skill scanner. The install path that delivered it is recorded at install time in `~/.claude/skills/test-ping/SKILL.md` (symlink) whose `readlink -f` resolves into `plugins/test/skills/ping/SKILL.md` under the asha checkout (`asha_root` in `~/.asha/config.json`).

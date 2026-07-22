@@ -7,10 +7,13 @@ Asha skills that talk to authenticated APIs (Todoist, Bookstack, Gemini, etc.) r
 Asha uses **dotenv with wrapper-scoped sourcing**:
 
 ```
-~/life/asha/secrets.example       # committed — documents which vars exist
-~/life/asha/bin/asha-env-bootstrap.sh   # committed — sources the live file
-~/.asha/secrets.env                # local-only, gitignored, mode 0600
+<asha repo>/secrets.example              # committed — documents which vars exist
+<asha repo>/bin/asha-env-bootstrap.sh    # committed — sources the live file
+~/.asha/secrets.env                      # local-only, gitignored, mode 0600
 ```
+
+(`<asha repo>` is wherever the checkout lives; the installed path is recorded as
+`asha_root` in `~/.asha/config.json`.)
 
 (The example file omits the `.env` suffix on purpose — Asha's `block-secrets` hook treats `*.env` as restricted. The committed template needs to slip past that guard since it carries no real values.)
 
@@ -27,8 +30,10 @@ Sourcing from the user's shell rc would put every Asha token into every subproce
 ## Setup
 
 1. Copy the template:
+
    ```bash
-   cp ~/life/asha/secrets.example ~/.asha/secrets.env
+   ASHA_ROOT=$(jq -r .asha_root ~/.asha/config.json)
+   cp "$ASHA_ROOT/secrets.example" ~/.asha/secrets.env
    chmod 600 ~/.asha/secrets.env
    ```
 
