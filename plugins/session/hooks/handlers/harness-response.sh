@@ -1,4 +1,5 @@
 #!/bin/bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # harness-response.sh — shared hook output contracts across harnesses.
 #
 # This file is sourced by hook handlers from the source tree. It is not copied

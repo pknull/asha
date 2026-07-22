@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # Central catalogue for harness identity, homes, executables, and target sets.
 # Keep launch-specific behavior in bin/asha and native install behavior in each
 # harness adapter; this file owns only the data shared across lifecycle phases.

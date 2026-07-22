@@ -30,7 +30,8 @@
 #   1  continuity gate hard failure — DO NOT COMMIT
 #   2  environment resolution failure (no ASHA_ROOT / no project)
 #   3  save plugin missing or partial — use the manual pipeline
-set -uo pipefail   # NOT -e: every failure path owns its exit code
+# fail-open by design: no set -e — a handler crash must never block the session
+set -uo pipefail
 
 MODE="guard"
 PRINT_ENV=0

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # asha-env-bootstrap — load secrets and shared env vars used by Asha skills.
 #
 # Sourced by asha-claude and asha-codex before exec'ing their harness, so

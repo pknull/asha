@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # Asha → GitHub Copilot harness adapter.
 #
 # Mirrors harnesses/codex.sh. Key divergences:
@@ -35,8 +36,6 @@ COPILOT_HOOKS_FILE="$COPILOT_HOME/hooks/hooks.json"
 # Asha's own guardrail hooks live in a DEDICATED file so we never touch a user's
 # hooks.json (Copilot loads every ~/.copilot/hooks/*.json).
 COPILOT_GUARDRAILS_FILE="$COPILOT_HOME/hooks/asha-guardrails.json"
-# Referenced for forward-compat; this implementation does NOT manage MCP.
-COPILOT_MCP_FILE="$COPILOT_HOME/mcp-config.json"
 
 # Events Copilot is assumed to support (camelCase). UNVERIFIED — see header.
 _COPILOT_EVENTS=(sessionStart sessionEnd userPromptSubmitted preToolUse postToolUse errorOccurred)
@@ -519,5 +518,7 @@ copilot_uninstall() {
     fi
   fi
 
+  # Read indirectly by lib/uninstall.sh after this sourced function returns.
+  # shellcheck disable=SC2034
   COPILOT_UNINSTALL_TOTAL=$total
 }

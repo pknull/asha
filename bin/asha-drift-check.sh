@@ -31,8 +31,7 @@ CLAUDE="$(asha_harness_home claude)"
 CODEX="$(asha_harness_home codex)"
 COPILOT="$(asha_harness_home copilot)"
 OPENCODE="$(asha_harness_home opencode)"
-CODEX_OVERLAY="${CODEX_HOME:-$HOME/.codex}-asha"
-
+HOME_LABEL="~"
 TARGET="all"
 FIX=0          # --fix: self-heal stale codex command-skills (audit-only otherwise)
 while [[ $# -gt 0 ]]; do
@@ -66,6 +65,8 @@ section() { echo ""; echo "── $1 ──"; }
 # say/log/resolve_path/ns_for/path globals it depends on). DRY_RUN/VERBOSE are
 # pinned to 0 so the generator actually writes and stays quiet.
 _FIX_CODEX_SOURCED=0
+# Invoked indirectly through the fix callback selected by the audit helper.
+# shellcheck disable=SC2317,SC2034
 fix_regen_command_skill() {
   local cmd="$1" skill_md="$2" mode="${3:-fix}"
   if [[ $_FIX_CODEX_SOURCED -eq 0 ]]; then
@@ -87,6 +88,8 @@ fix_regen_command_skill() {
 }
 
 _FIX_CODEX_AGENT_SOURCED=0
+# Invoked indirectly through the fix callback selected by the audit helper.
+# shellcheck disable=SC2317,SC2034
 fix_regen_codex_agent() {
   local agent="$1" dest="$2" mode="${3:-fix}"
   if [[ $_FIX_CODEX_AGENT_SOURCED -eq 0 ]]; then
@@ -110,6 +113,8 @@ fix_regen_codex_agent() {
 # Copilot twin: same lazy-source pattern, but only the shared converter module
 # is needed (harnesses/copilot-common.sh defines _copilot_emit_command_skill).
 _FIX_COPILOT_SOURCED=0
+# Invoked indirectly through the fix callback selected by the audit helper.
+# shellcheck disable=SC2317,SC2034
 fix_regen_copilot_command_skill() {
   local cmd="$1" skill_md="$2" mode="${3:-fix}"
   if [[ $_FIX_COPILOT_SOURCED -eq 0 ]]; then
@@ -131,6 +136,8 @@ fix_regen_copilot_command_skill() {
 }
 
 _FIX_COPILOT_AGENT_SOURCED=0
+# Invoked indirectly through the fix callback selected by the audit helper.
+# shellcheck disable=SC2317,SC2034
 fix_regen_copilot_agent() {
   local agent="$1" dest="$2" mode="${3:-fix}"
   if [[ $_FIX_COPILOT_AGENT_SOURCED -eq 0 ]]; then
@@ -409,9 +416,9 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
     # config.toml parses as TOML
     if [[ -f "$CODEX/config.toml" ]]; then
       if python3 -c "import tomllib; tomllib.load(open('$CODEX/config.toml','rb'))" 2>/dev/null; then
-        pass "~/.codex/config.toml parses as valid TOML"
+        pass "$HOME_LABEL/.codex/config.toml parses as valid TOML"
       else
-        nope "~/.codex/config.toml is invalid TOML"
+        nope "$HOME_LABEL/.codex/config.toml is invalid TOML"
       fi
 
       # Every tagged hook command path exists
@@ -577,20 +584,20 @@ user_bin="$HOME/.local/bin/asha"
 if [[ -L "$user_bin" ]]; then
   t="$(readlink -f "$user_bin" 2>/dev/null || true)"
   case "$t" in
-    "$ASHA"/*) pass "~/.local/bin/asha resolves into this checkout" ;;
-    *) nope "~/.local/bin/asha resolves elsewhere: $t (foreign checkout? rerun ./install.sh --bin all)" ;;
+    "$ASHA"/*) pass "$HOME_LABEL/.local/bin/asha resolves into this checkout" ;;
+    *) nope "$HOME_LABEL/.local/bin/asha resolves elsewhere: $t (foreign checkout? rerun ./install.sh --bin all)" ;;
   esac
   while IFS= read -r shim; do
-    [[ -e "$HOME/.local/bin/$shim" ]] || warn "shim missing: ~/.local/bin/$shim (optional; ./install.sh --bin all)"
+    [[ -e "$HOME/.local/bin/$shim" ]] || warn "shim missing: $HOME_LABEL/.local/bin/$shim (optional; ./install.sh --bin all)"
   done < <(asha_harness_shims)
 elif [[ -e "$user_bin" ]]; then
-  warn "~/.local/bin/asha exists but is not a symlink (legacy standalone wrapper?)"
+  warn "$HOME_LABEL/.local/bin/asha exists but is not a symlink (legacy standalone wrapper?)"
 else
-  warn "asha dispatcher not installed at ~/.local/bin/asha (optional; ./install.sh --bin all)"
+  warn "asha dispatcher not installed at $HOME_LABEL/.local/bin/asha (optional; ./install.sh --bin all)"
 fi
 case ":$PATH:" in
   *":$HOME/.local/bin:"*) ;;
-  *) warn "~/.local/bin not in PATH" ;;
+  *) warn "$HOME_LABEL/.local/bin not in PATH" ;;
 esac
 
 # Repo identity file is a hard requirement of identity-merge.sh; the ~/.asha
@@ -601,7 +608,7 @@ else
   nope "repo identity file missing: identity/asha-identity-system-prompt.md"
 fi
 for f in soul.md voice.md keeper.md config.json; do
-  [[ -f "$HOME/.asha/$f" ]] || warn "~/.asha/$f absent (optional; session:init or /save can seed it)"
+  [[ -f "$HOME/.asha/$f" ]] || warn "$HOME_LABEL/.asha/$f absent (optional; session:init or /save can seed it)"
 done
 
 # ===========================================================================

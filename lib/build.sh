@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # lib/build.sh — asha build engine: package plugins for Copilot-native
 # distribution (`asha build copilot`, issue #3).
 #
@@ -221,6 +222,8 @@ _build_rewrite_paths() { # file ns rel_prefix
     sed -i.bak 's#](\.\./#](../../#g' "$file" && rm -f "$file.bak"
     info "  REWROTE relative md links (+1 level) in ${file##*/skills/}"
   fi
+  # The single-quoted segment is a literal source token, not a shell variable.
+  # shellcheck disable=SC2016
   local before_own='\$ASHA_ROOT/plugins/'"$ns"'/'
   if grep -qE "$before_own" "$file"; then
     # Replace the path only — surrounding quotes must stay balanced.
@@ -235,6 +238,8 @@ _build_rewrite_paths() { # file ns rel_prefix
     info "  STRIPPED ASHA_ROOT resolver/guard lines in ${file##*/skills/}"
   fi
   local residue
+  # Search generated content for the literal source token.
+  # shellcheck disable=SC2016
   residue="$(grep -n '\$ASHA_ROOT' "$file" || true)"
   [[ -n "$residue" ]] && info "WARN: [$ns] unresolvable \$ASHA_ROOT reference(s) survive in $file:"$'\n'"$residue"
   return 0
@@ -373,6 +378,8 @@ _build_emit_dist_readme() { # built-lines file
     echo '```'
     echo
     echo "Repo-scope pinning: merge \`settings-snippet.json\` into your repo's"
+    # Backticks are literal Markdown delimiters in generated documentation.
+    # shellcheck disable=SC2016
     echo '`.github/copilot/settings.json` (`enabledPlugins`).'
   } | _build_write "$OUT/README.md"
 }

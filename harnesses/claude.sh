@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # harnesses/claude.sh — Claude Code install/uninstall logic.
 #
 # Sourced by ../install.sh and ../uninstall.sh. Expects these globals to be
@@ -149,6 +150,8 @@ claude_install_hooks() {
   local source_tag="asha:$ns"
 
   # Step 1: remove pre-existing entries with our source tag (idempotent).
+  # jq variables must remain protected from shell expansion.
+  # shellcheck disable=SC2016
   claude_settings_update '
     if .hooks then
       .hooks |= with_entries(
@@ -191,6 +194,8 @@ claude_install_hooks() {
     ' "$hooks_json")"
 
   # Step 3: merge tagged entries into settings.json.
+  # jq variables must remain protected from shell expansion.
+  # shellcheck disable=SC2016
   claude_settings_update '
       .hooks = (.hooks // {})
       | reduce ($add | to_entries[]) as $e (
@@ -266,8 +271,8 @@ claude_uninstall() {
 
   local total=0 n
   for spec in "skills 1" "agents 2" "output-styles 1" "commands 2"; do
-    set -- $spec
-    local subdir="$1" depth="$2"
+    local subdir depth
+    read -r subdir depth <<< "$spec"
     n="$(remove_symlinks_under "$CLAUDE_HOME/$subdir" "$depth")"
     [[ "$n" -gt 0 ]] && say "[claude] removed $n symlink(s) from $CLAUDE_HOME/$subdir"
     total=$((total + n))
@@ -304,6 +309,8 @@ claude_uninstall() {
     : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
     local prefix="$ABS_MARKET_ROOT/plugins/"
     local tag_regex='^(asha|marketplace):'
+    # jq variables must remain protected from shell expansion.
+    # shellcheck disable=SC2016
     local count_expr='[.hooks // {} | .[] | .[]? | .hooks[]?
       | select(((.command // "") | startswith($prefix)) or ((.source // "") | test($re)))] | length'
     local before after removed
@@ -313,6 +320,8 @@ claude_uninstall() {
         say "[claude] would remove $before asha hook entr$([[ $before -eq 1 ]] && echo y || echo ies) from settings.json"
       else
         claude_backup_settings_once
+        # jq variables must remain protected from shell expansion.
+        # shellcheck disable=SC2016
         claude_settings_update '
           def is_asha_hook:
             ((.command // "") | startswith($prefix))
@@ -334,5 +343,7 @@ claude_uninstall() {
     fi
   fi
 
+  # Read indirectly by lib/uninstall.sh after this sourced function returns.
+  # shellcheck disable=SC2034
   CLAUDE_UNINSTALL_TOTAL=$total
 }

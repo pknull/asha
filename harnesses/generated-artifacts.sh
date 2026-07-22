@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # Ownership ledger for generated (non-symlink) harness artifacts.
 # Manifest location is independent of harness homes so source deletion/rename
 # cannot erase the evidence required for safe uninstall.
@@ -8,6 +9,8 @@ asha_artifact_manifest_path() {
 }
 
 asha_artifact_begin() {
+  # Consumed by separately sourced harness emitters while a manifest is active.
+  # shellcheck disable=SC2034
   ASHA_ARTIFACT_HARNESS="$1"
   ASHA_ARTIFACT_STAGE="${TMPDIR:-/tmp}/asha-artifacts-$1-$$.jsonl"
   : > "$ASHA_ARTIFACT_STAGE"

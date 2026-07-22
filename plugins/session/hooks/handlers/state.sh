@@ -1,4 +1,5 @@
 #!/bin/bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # state.sh — ephemeral per-session state (counters/flags) for Asha hooks.
 #
 # This is *working memory*, NOT durable Memory: small mechanical counters keyed

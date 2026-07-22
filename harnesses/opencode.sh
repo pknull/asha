@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # harnesses/opencode.sh — OpenCode install/uninstall adapter.
 #
 # Native surfaces:
@@ -220,6 +221,8 @@ opencode_uninstall() {
 
   n="$(asha_artifact_uninstall opencode)"
   total=$((total + n))
+  # Read indirectly by lib/uninstall.sh after this sourced function returns.
+  # shellcheck disable=SC2034
   OPENCODE_UNINSTALL_TOTAL=$total
   say "[opencode] removed $total managed artifact(s)"
 }

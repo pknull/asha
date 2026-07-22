@@ -28,6 +28,9 @@ MARKET_ROOT="${MARKET_ROOT:-$(dirname "$__ASHA_LIB_DIR")}"
 source "$MARKET_ROOT/lib/portable.sh"
 ABS_MARKET_ROOT="$(resolve_path "$MARKET_ROOT")"
 HARNESSES_DIR="$MARKET_ROOT/harnesses"
+# Part of the harness-adapter sourcing contract (see harnesses/codex.sh header):
+# adapters may dereference it, and this file runs under set -u.
+# shellcheck disable=SC2034
 PLUGINS_DIR="$MARKET_ROOT/plugins"
 NAMESPACES_FILE="$MARKET_ROOT/namespaces.json"
 # shellcheck source=../harnesses/registry.sh
