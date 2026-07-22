@@ -88,8 +88,8 @@ else
 fi
 echo ""
 
-# Test Suite 4a: Copilot Plugin Build Tests (issue #3)
-echo -e "${BLUE}--- Test Suite 4a: Copilot Plugin Build Tests ---${NC}"
+# Test Suite 5: Copilot Plugin Build Tests (issue #3)
+echo -e "${BLUE}--- Test Suite 5: Copilot Plugin Build Tests ---${NC}"
 if "$SCRIPT_DIR/test-build-copilot.sh"; then
     echo -e "${GREEN}✓ Copilot plugin build tests passed${NC}"
     TOTAL_PASSED=$((TOTAL_PASSED + 1))
@@ -99,8 +99,8 @@ else
 fi
 echo ""
 
-# Test Suite 4c: Doctor / Drift-Check Tests (issue #3)
-echo -e "${BLUE}--- Test Suite 4c: Doctor / Drift-Check Tests ---${NC}"
+# Test Suite 6: Doctor / Drift-Check Tests (issue #3)
+echo -e "${BLUE}--- Test Suite 6: Doctor / Drift-Check Tests ---${NC}"
 if "$SCRIPT_DIR/test-doctor.sh"; then
     echo -e "${GREEN}✓ Doctor tests passed${NC}"
     TOTAL_PASSED=$((TOTAL_PASSED + 1))
@@ -110,8 +110,8 @@ else
 fi
 echo ""
 
-# Test Suite 4d: init-repo Scaffold Tests (issue #3)
-echo -e "${BLUE}--- Test Suite 4d: init-repo Scaffold Tests ---${NC}"
+# Test Suite 7: init-repo Scaffold Tests (issue #3)
+echo -e "${BLUE}--- Test Suite 7: init-repo Scaffold Tests ---${NC}"
 if "$SCRIPT_DIR/test-init-repo.sh"; then
     echo -e "${GREEN}✓ init-repo tests passed${NC}"
     TOTAL_PASSED=$((TOTAL_PASSED + 1))
@@ -121,8 +121,8 @@ else
 fi
 echo ""
 
-# Test Suite 4b: Uninstall Regression Tests (issue #4)
-echo -e "${BLUE}--- Test Suite 4b: Uninstall Regression Tests ---${NC}"
+# Test Suite 8: Uninstall Regression Tests (issue #4)
+echo -e "${BLUE}--- Test Suite 8: Uninstall Regression Tests ---${NC}"
 if "$SCRIPT_DIR/test-uninstall.sh"; then
     echo -e "${GREEN}✓ Uninstall regression tests passed${NC}"
     TOTAL_PASSED=$((TOTAL_PASSED + 1))
@@ -132,8 +132,8 @@ else
 fi
 echo ""
 
-# Test Suite 4e: OpenCode Adapter + Ownership Manifest
-echo -e "${BLUE}--- Test Suite 4e: OpenCode Adapter Tests ---${NC}"
+# Test Suite 9: OpenCode Adapter + Ownership Manifest
+echo -e "${BLUE}--- Test Suite 9: OpenCode Adapter Tests ---${NC}"
 if "$SCRIPT_DIR/test-opencode.sh"; then
     echo -e "${GREEN}✓ OpenCode adapter tests passed${NC}"
     TOTAL_PASSED=$((TOTAL_PASSED + 1))
@@ -143,8 +143,30 @@ else
 fi
 echo ""
 
-# Test Suite 5: Shellcheck (if available)
-echo -e "${BLUE}--- Test Suite 5: Shell Script Linting ---${NC}"
+# Test Suite 10: Install Round-Trip Tests
+echo -e "${BLUE}--- Test Suite 10: Install Round-Trip Tests ---${NC}"
+if "$SCRIPT_DIR/test-install.sh"; then
+    echo -e "${GREEN}✓ Install round-trip tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Install round-trip tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
+# Test Suite 11: Identity Merge Smoke Tests
+echo -e "${BLUE}--- Test Suite 11: Identity Merge Smoke Tests ---${NC}"
+if "$SCRIPT_DIR/test-identity-merge.sh"; then
+    echo -e "${GREEN}✓ Identity merge smoke tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Identity merge smoke tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
+# Test Suite 12: Shellcheck (if available)
+echo -e "${BLUE}--- Test Suite 12: Shell Script Linting ---${NC}"
 if command -v shellcheck &>/dev/null; then
     SHELL_ERRORS=0
     # Exclude false positives for dynamic source paths
@@ -155,7 +177,11 @@ if command -v shellcheck &>/dev/null; then
                 SHELL_ERRORS=$((SHELL_ERRORS + 1))
             fi
         fi
-    done < <(find "$REPO_ROOT/plugins" -type f \( -name "*.sh" -o -path "*/hooks/handlers/*" \) ! -name "*.json" -print0 2>/dev/null)
+    done < <(
+        find "$REPO_ROOT/plugins" "$REPO_ROOT/bin" "$REPO_ROOT/lib" \
+             "$REPO_ROOT/harnesses" "$REPO_ROOT/identity" -type f -print0 2>/dev/null
+        printf '%s\0' "$REPO_ROOT/install.sh" "$REPO_ROOT/uninstall.sh"
+    )
 
     if [[ $SHELL_ERRORS -eq 0 ]]; then
         echo -e "${GREEN}✓ Shell script linting passed${NC}"
@@ -171,8 +197,8 @@ else
 fi
 echo ""
 
-# Test Suite 6: JavaScript Engine Tests (if node available)
-echo -e "${BLUE}--- Test Suite 6: JavaScript Engine Tests ---${NC}"
+# Test Suite 13: JavaScript Engine Tests (if node available)
+echo -e "${BLUE}--- Test Suite 13: JavaScript Engine Tests ---${NC}"
 if command -v node &>/dev/null; then
     if compgen -G "$SCRIPT_DIR/js/*.test.mjs" >/dev/null; then
         JS_ERRORS=0

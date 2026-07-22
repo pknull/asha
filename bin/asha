@@ -32,7 +32,8 @@ while [ -h "$__asha_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
 unset __asha_src __asha_dir
-export ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+export ASHA_ROOT
 
 IDENTITY_DIR="$ASHA_ROOT/identity"
 MERGE_SCRIPT="$IDENTITY_DIR/identity-merge.sh"
@@ -47,7 +48,6 @@ info() { echo "$*" >&2; }
 source "$ASHA_ROOT/lib/portable.sh"
 # shellcheck source=../harnesses/registry.sh
 source "$ASHA_ROOT/harnesses/registry.sh"
-HARNESSES="$(asha_harnesses | tr '\n' ' ')"
 
 is_harness() { asha_harness_exists "${1:-}"; }
 is_target()  { asha_target_exists "${1:-}"; }

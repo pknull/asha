@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # harnesses/codex.sh — OpenAI Codex CLI install/uninstall logic (Step 7-revised).
 #
 # Sourced by ../install.sh and ../uninstall.sh. Expects globals from the
@@ -828,5 +829,7 @@ codex_uninstall() {
     fi
   fi
 
+  # Read indirectly by lib/uninstall.sh after this sourced function returns.
+  # shellcheck disable=SC2034
   CODEX_UNINSTALL_TOTAL=$total
 }

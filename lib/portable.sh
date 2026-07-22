@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # lib/portable.sh — cross-platform shims for asha install/launch scripts.
 #
 # Sourced by install.sh and uninstall.sh (which re-export to the harness

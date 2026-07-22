@@ -33,7 +33,6 @@ while [ -h "$__asha_src" ]; do
 done
 SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
 unset __asha_src __asha_dir
-ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 IDENTITY_FILE="$SCRIPT_DIR/asha-identity-system-prompt.md"
 
 OUTPUT="${1:-}"

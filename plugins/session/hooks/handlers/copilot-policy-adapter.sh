@@ -21,6 +21,7 @@
 # own upstream caveat: preToolUse can be bypassed under parallel tool calls /
 # timeouts — github/copilot-cli#2893 — so this is a soft deterrent, not containment.)
 
+# fail-open by design: no set -e — a handler crash must never block the session
 set -uo pipefail
 
 allow() { echo '{"permissionDecision":"allow"}'; exit 0; }

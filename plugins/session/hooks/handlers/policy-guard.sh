@@ -19,7 +19,8 @@
 # Rule schema: {id, tool, command_regex|file_path_regex, exclude_regex?, action: deny|ask|warn, reason, override_env?}
 # action=warn => awareness-only (violation-checker logs it; this guard does not block).
 
-set -uo pipefail   # deliberately NOT -e: we own every exit code; never die mid-eval
+# fail-open by design: no set -e — a handler crash must never block the session
+set -uo pipefail
 
 # Shared harness-specific output contracts. Fail-open if unavailable.
 SELF_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || exit 0

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# source-scoped library: no set flags at file scope (runs in the caller's shell)
 # harnesses/copilot-common.sh — Copilot content converters shared by the
 # install engine (via harnesses/copilot.sh) and the build engine (lib/build.sh,
 # `asha build copilot` — Copilot-native plugin packaging).
