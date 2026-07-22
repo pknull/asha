@@ -2,7 +2,8 @@
 # bin/asha — Asha cross-agent dispatcher + launcher.
 #
 # Grammar:  asha [VERB] [HARNESS] [PASSTHROUGH...]
-#   VERB     install | uninstall          (optional; absent => launch)
+#   VERB     install | uninstall | build | doctor | init-repo | calibration
+#                                            (optional; absent => launch)
 #   HARNESS  claude | codex | copilot     (launch) ; also both|all for verbs
 #            (absent on launch => default_harness from ~/.asha/config.json, else claude)
 #   PASSTHROUGH  forwarded to the harness CLI (launch) or to the engine (verb)
@@ -285,6 +286,8 @@ Usage:
                                    (Claude Code's native doctor: asha claude doctor)
   asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
                                    (--dry-run | --check for CI | --force)
+  asha calibration [args...]       inspect orchestration calibration metrics
+                                   (--tier=T --workflow=W --tail=N --all)
   asha-<harness> [args...]         shim form (launch that harness)
 
 Harnesses: claude | codex | copilot | opencode
@@ -315,6 +318,12 @@ ASHA_FLAG_YES=0
 case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;
 esac
+
+# Orchestration self-review calibration report.
+if [[ "${1:-}" == "calibration" ]]; then
+  shift
+  exec "$ASHA_ROOT/bin/calibration" "$@"
+fi
 
 # asha's own install-health audit. Verb-first — `asha claude doctor` still
 # reaches Claude Code's native doctor via launch forwarding.

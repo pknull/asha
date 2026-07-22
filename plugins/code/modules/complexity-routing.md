@@ -97,9 +97,9 @@ The `mkdir -p ~/.asha/metrics` runs defensively before append. If write fails (d
 ### Reading calibration
 
 ```bash
-~/life/asha/bin/calibration            # last 30 runs summary
-~/life/asha/bin/calibration --tier=high   # filter to high-tier
-~/life/asha/bin/calibration --tail=10  # last 10 runs detail
+asha calibration            # last 30 runs summary
+asha calibration --tier=high   # filter to high-tier
+asha calibration --tail=10  # last 10 runs detail
 ```
 
 False-positive rate = `claimed=ready AND review=fail` / `total claimed=ready`. Sustained rates above ~25% mean implementer self-review is miscalibrated and the agent prompt needs tightening.

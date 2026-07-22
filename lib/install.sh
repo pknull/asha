@@ -410,7 +410,7 @@ _detect_legacy_learnings() {
 #   - Called from asha_install_main() for the claude target after symlinks.
 #   - Standalone: `source lib/install.sh; register_hooks` (e.g. to dry-run
 #     against a COPY). Target file is $CLAUDE_SETTINGS (default
-#     /home/pknull/.claude/settings.json) so a reviewer can point it elsewhere.
+#     ~/.claude/settings.json) so a reviewer can point it elsewhere.
 #   - Honors DRY_RUN / VERBOSE if already set; defaults them when sourced bare.
 #
 # Plugins excluded from prod hook registration.
@@ -685,17 +685,43 @@ asha_install_main() {
   while IFS= read -r t; do targets+=("$t"); done < <(asha_expand_target "$TARGET")
 
   local t
+  local -a results=()
+  local -a failed=()
+  # Remember the caller's errexit state so we can toggle around each harness.
+  local had_e=0
+  case "$-" in *e*) had_e=1 ;; esac
   for t in "${targets[@]}"; do
     local harness_script="$HARNESSES_DIR/$t.sh"
     [[ -f "$harness_script" ]] || die "harness script missing: $harness_script"
     # shellcheck disable=SC1090
     source "$harness_script"
-    "${t}_install"
-    [[ -z "$ONLY" ]] && prune_retired_asha_symlinks "$(asha_harness_home "$t")"
-    # The installer OWNS Claude's settings.json .hooks: after the claude target
-    # has mounted its symlinks, rebuild the asha hook set centrally so legacy
-    # untagged duplicates are collapsed and the test canary is excluded.
-    [[ "$t" == "claude" ]] && register_hooks
+    # Failure isolation: one harness failing must never prevent later harnesses
+    # from installing. Run each harness in its own errexit subshell, outside an
+    # if/&&/|| condition (where bash would suppress errexit), and capture the
+    # status only after restoring control to this loop.
+    set +e
+    (
+      set -e
+      "${t}_install"
+      if [[ -z "$ONLY" ]]; then
+        prune_retired_asha_symlinks "$(asha_harness_home "$t")"
+      fi
+      # The installer OWNS Claude's settings.json .hooks: after the claude target
+      # has mounted its symlinks, rebuild the asha hook set centrally so legacy
+      # untagged duplicates are collapsed and the test canary is excluded.
+      if [[ "$t" == "claude" ]]; then
+        register_hooks
+      fi
+    )
+    local rc=$?
+    [[ $had_e -eq 1 ]] && set -e
+    if [[ $rc -eq 0 ]]; then
+      results+=("ok")
+    else
+      results+=("FAILED")
+      failed+=("$t")
+      info "WARN: [$t] install failed (exit $rc); continuing with remaining targets"
+    fi
   done
 
   # Cross-project identity layer (~/.asha/). Idempotent; never clobbers user data.
@@ -707,6 +733,18 @@ asha_install_main() {
   [[ -n "$BIN" ]] && install_bin "$BIN"
 
   _detect_legacy_learnings
+
+  say ""
+  say "install summary:"
+  local i
+  for ((i = 0; i < ${#targets[@]}; i++)); do
+    say "  ${targets[$i]}: ${results[$i]}"
+  done
+
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    say "WARNING: install incomplete for: ${failed[*]} — re-run after fixing the errors above"
+    return 1
+  fi
 
   say ""
   say "done."
