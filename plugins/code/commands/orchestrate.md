@@ -249,9 +249,9 @@ Steps:
 Inspect over time:
 
 ```
-~/life/asha/bin/calibration              # last 30 runs summary
-~/life/asha/bin/calibration --tier=high  # filter by tier
-~/life/asha/bin/calibration --tail=10    # last 10 runs detail
+asha calibration              # last 30 runs summary
+asha calibration --tier=high  # filter by tier
+asha calibration --tail=10    # last 10 runs detail
 ```
 
 Sustained false-positive rate (claimed=ready AND review=fail) above ~25% means the implementer agent's self-review is miscalibrated.
