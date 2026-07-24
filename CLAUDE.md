@@ -47,7 +47,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
 | **Write** | v1.6.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
-| **Admin** | v0.2.0 | Integrations | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
+| **Admin** | v0.3.0 | Integrations | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
 | **Security** | v1.0.0 | Security | Web-app security review checklist skill |
 | **Test** | — | Tooling | Installer canary (`/test:ping` command/skill/agent) |
 
@@ -71,7 +71,7 @@ asha/
 ├── lib/                              # install/uninstall/doctor/build/init-repo engines
 ├── namespaces.json                   # plugin dir → command namespace map (panel → panel-system)
 ├── plugins/
-│   ├── admin/                        # skills/ (bookstack, gemini, todoist, wolfram)
+│   ├── admin/                        # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
 │   ├── asha/                         # templates/ (soul.md, voice.md) — identity only
 │   ├── code/                         # development workflows
 │   │   ├── agents/                   # 5 agents (codebase-historian, debugger,
@@ -915,6 +915,11 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Admin v0.3.0 (2026-07-23) — Proton Mail Bridge skill
+
+- Added a localhost-only, verified-STARTTLS Proton Mail Bridge helper for safe reads and hash-bound two-phase mail writes.
+- Added structured search, bounded MIME parsing, mailbox/UIDVALIDITY/UID identity, native MOVE-only moves, move-to-Trash deletion, draft APPEND, Bcc envelope privacy, and credential redaction.
 
 ### v2.2.0 (2026-07-22) — Audit remediation
 
