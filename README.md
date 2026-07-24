@@ -130,7 +130,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
 | **Creative** | `write` | v1.6.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
-| **Integrations** | `admin` | v0.2.0 | REST-direct skills: Todoist, Gemini search, Wolfram, BookStack |
+| **Integrations** | `admin` | v0.3.0 | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
 | **Security** | `security` | v1.0.0 | Web-app security review checklist skill |
 | **Tooling** | `test` | — | Installer canary (`/test:ping` command/skill/agent) |
 
@@ -467,7 +467,7 @@ asha/
 ├── lib/                          # install/uninstall/doctor/build/init-repo engines
 ├── namespaces.json               # plugin dir → command namespace map (panel → panel-system)
 ├── plugins/
-│   ├── admin/                    # skills/ (bookstack, gemini, todoist, wolfram)
+│   ├── admin/                    # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
 │   ├── asha/                     # templates/ (soul.md, voice.md) — identity only
 │   ├── code/                     # agents/ (5), commands/ (3), skills/ (postgres),
 │   │                             #   hooks/, recipes/ (4), modules/, templates/, tools/
@@ -554,6 +554,11 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Admin v0.3.0 — Proton Mail Bridge skill (2026-07-23)
+
+- Added localhost-only Proton Mail Bridge administration through a stdlib Python helper: safe reads, structured search and triage, and hash-bound two-phase draft/send/move/delete operations.
+- Enforced verified STARTTLS, UID-based message identity, native MOVE, move-to-Trash deletion, bounded MIME parsing, Bcc envelope privacy, and credential redaction.
 
 ### v2.2.0 — Ecosystem audit remediation (2026-07-22)
 
