@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "_comment": "Asha declarative guidance-nudge rules — the advisory counterpart to policies/rules.json (policies constrain via deny/ask; nudges inform via context injection, never block). Evaluated by hooks/handlers/nudge-engine.sh, invoked with the hook event name as its first argument. User overrides/additions: ~/.asha/nudges.json (merged by id, user wins). Schema per rule: {id, event (hook event name), tool? (anchored ERE on tool_name), match_regex? (ERE on the event's text fields: prompt/command/file_path/pattern/query), harnesses? (allowlist; absent = all), disable_env? (env var whose value '0' disables the rule), marker_required? / marker_off? (Work/markers/<name> gates), silence_gated? (default true: skip when Work/markers/silence exists), requires_init? (default true: skip unless .asha/config.json exists), cooldown_hours? (engine-managed marker nudge-<id>-cooldown), priority? (default 50, lower fires first), payload: exactly one of handler (allowlisted function in handlers/nudge-builtins.sh) | inject (inline text) | inject_file (path relative to hooks/nudges/)}. Every rule additionally honors the kill-switch marker Work/markers/nudge-<id>-off.",
+  "rules": [
+    {
+      "id": "memory-lexical",
+      "event": "PreToolUse",
+      "tool": "Grep|Bash|WebSearch",
+      "harnesses": [
+        "claude"
+      ],
+      "disable_env": "ASHA_NUDGE",
+      "silence_gated": false,
+      "requires_init": false,
+      "priority": 10,
+      "handler": "memory_lexical",
+      "_comment": "Lexical memory-index awareness nudge (tools/memory_nudge.py). Claude-only, bounded (0.1s python timeout), no project gates — mirrors the retired hooks/memory_nudge.sh exactly, including the ASHA_NUDGE=0 kill switch and ASHA_NUDGE_INDEX override."
+    },
+    {
+      "id": "rp-routing",
+      "event": "UserPromptSubmit",
+      "marker_required": "rp-active",
+      "marker_off": "rp-hook-off",
+      "priority": 10,
+      "inject_file": "fragments/rp-routing.md",
+      "_comment": "Per-turn RP routing directive, formerly inlined in handlers/harness-response.sh and emitted by user-prompt-submit.sh. The one-shot /rp setup scrolls out of the model's attention; this injection cannot. marker_off preserves the historical rp-hook-off kill switch."
+    },
+    {
+      "id": "suggest-compact",
+      "event": "PostToolUse",
+      "cooldown_hours": 2,
+      "priority": 50,
+      "handler": "suggest_compact",
+      "_comment": "Session-activity compaction suggestion, formerly handlers/suggest-compact.sh. The tool-call counter lives in the builtin; the 2h cooldown is engine-managed (marker nudge-suggest-compact-cooldown replaces the legacy compact-suggested marker — one cooldown reset at migration is accepted)."
+    }
+  ]
+}

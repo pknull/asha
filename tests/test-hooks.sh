@@ -377,7 +377,7 @@ mkdir -p "$TEST20_DIR/Work/markers"
 mkdir -p "$TEST20_DIR/.asha"
 echo '{"initialized": true}' > "$TEST20_DIR/.asha/config.json"
 
-for hook in session-start.sh post-tool-use.sh user-prompt-submit.sh session-end.sh; do
+for hook in session-start.sh post-tool-use.sh user-prompt-submit.sh session-end.sh nudge-engine.sh; do
     HOOK_FILE="$HOOKS_DIR/$hook"
     [[ ! -f "$HOOK_FILE" ]] && continue
 
@@ -660,6 +660,9 @@ for cmd in find_commands(data):
         [[ -z "$cmd" ]] && continue
         # Replace ${CLAUDE_PLUGIN_ROOT} with actual plugin directory
         resolved_cmd="${cmd//\$\{CLAUDE_PLUGIN_ROOT\}/$plugin_dir}"
+        # A command may carry arguments (e.g. nudge-engine.sh PreToolUse);
+        # only the executable itself must exist.
+        resolved_cmd="${resolved_cmd%% *}"
         if [[ ! -f "$resolved_cmd" ]]; then
             if [[ $MISSING_HANDLERS -eq 0 ]]; then
                 echo -e "${RED}FAIL${NC}"
@@ -1080,7 +1083,7 @@ for handler in "$REPO_ROOT"/plugins/*/hooks/handlers/*.sh \
     handler_name=$(basename "$handler")
 
     # Skip sourced libraries which must not alter the caller's shell options.
-    [[ "$handler_name" == "common.sh" || "$handler_name" == "state.sh" || "$handler_name" == "harness-response.sh" ]] && continue
+    [[ "$handler_name" == "common.sh" || "$handler_name" == "state.sh" || "$handler_name" == "harness-response.sh" || "$handler_name" == "nudge-builtins.sh" ]] && continue
 
     # Check for set -e or set -euo pipefail in first 10 lines
     if ! head -40 "$handler" | grep -qE "set -e|set -.*e"; then
@@ -1700,6 +1703,9 @@ for hooks_json in "$REPO_ROOT"/plugins/*/hooks/hooks.json; do
     HANDLER_PATHS=$(grep -o '"command": "[^"]*"' "$hooks_json" 2>/dev/null | sed 's/"command": "//;s/"$//' | sed 's|\${CLAUDE_PLUGIN_ROOT}||' || true)
 
     for handler_path in $HANDLER_PATHS; do
+        # Word splitting also yields command arguments (e.g. the event name
+        # passed to nudge-engine.sh); only plugin-rooted paths are handlers.
+        [[ "$handler_path" == /* ]] || continue
         full_path="$plugin_dir$handler_path"
         if [[ ! -f "$full_path" ]]; then
             if [[ $INVALID_PATHS -eq 0 ]]; then
@@ -1881,14 +1887,16 @@ else
 fi
 
 # ============================================================================
-# Test 91: UserPromptSubmit injects RP routing directive during RP
+# Test 91: nudge engine injects RP routing directive during RP
 # ============================================================================
-# Contract change (increment A of the living-world plan): rp-active no longer
-# means "skip everything" — LanguageTool refinement stays skipped, but the
-# hook now re-asserts the per-turn RP routing directive (spawn roleplay-gm,
-# inline SCENE_STATE) and passes the prompt through unchanged.
-echo -n "Test 91: UserPromptSubmit injects RP routing during rp-active... "
+# The per-turn RP routing directive moved from user-prompt-submit.sh to the
+# declarative nudge engine (nudges/rules.json row rp-routing, fragment
+# nudges/fragments/rp-routing.md). Both handlers register on
+# UserPromptSubmit: the engine injects, the passthrough handler passes the
+# prompt through unchanged (Test 91a).
+echo -n "Test 91: nudge engine injects RP routing during rp-active... "
 TEST91_DIR=$(mktemp -d)
+TEST91_HOME=$(mktemp -d)
 mkdir -p "$TEST91_DIR/Memory/sessions"
 mkdir -p "$TEST91_DIR/Work/markers"
 mkdir -p "$TEST91_DIR/.asha"
@@ -1898,60 +1906,89 @@ touch "$TEST91_DIR/Work/markers/rp-active"
 export CLAUDE_PROJECT_DIR="$TEST91_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
+OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | HOME="$TEST91_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+rm -rf "$TEST91_DIR" "$TEST91_HOME"
 
-# LanguageTool must remain skipped in RP: the correction marker is only
-# touched on the refinement path, so its absence proves the skip held.
-CORRECTION_MARKER_ABSENT=1
-[[ -f "$TEST91_DIR/Work/markers/last-correction" ]] && CORRECTION_MARKER_ABSENT=0
-rm -rf "$TEST91_DIR"
-
+# The engine emits only the fragment — never a {prompt} shape (that contract
+# belongs to the passthrough handler).
 if [[ "$OUTPUT" == *"<system-reminder>"* && "$OUTPUT" == *"roleplay-gm"* \
-      && "$OUTPUT" == *'"prompt": "test prompt during RP"'* \
-      && $CORRECTION_MARKER_ABSENT -eq 1 ]]; then
+      && "$OUTPUT" != *'"prompt"'* ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
     [[ "$OUTPUT" != *"roleplay-gm"* ]] && echo "  Routing directive missing from output"
-    [[ "$OUTPUT" != *'"prompt": "test prompt during RP"'* ]] && echo "  Prompt passthrough missing or altered"
-    [[ $CORRECTION_MARKER_ABSENT -eq 0 ]] && echo "  LanguageTool refinement ran during RP (must stay skipped)"
+    [[ "$OUTPUT" == *'"prompt"'* ]] && echo "  Engine leaked a {prompt} shape"
     echo "  Got: ${OUTPUT:0:200}..."
     FAILED=$((FAILED + 1))
 fi
 
 # ============================================================================
-# Test 91b: UserPromptSubmit rp-hook-off kill-switch suppresses injection
+# Test 91a: user-prompt-submit passes the prompt through during rp-active
 # ============================================================================
-echo -n "Test 91b: rp-hook-off marker suppresses RP routing directive... "
-TEST91B_DIR=$(mktemp -d)
-mkdir -p "$TEST91B_DIR/Work/markers"
-mkdir -p "$TEST91B_DIR/.asha"
-echo '{"initialized": true}' > "$TEST91B_DIR/.asha/config.json"
-touch "$TEST91B_DIR/Work/markers/rp-active"
-touch "$TEST91B_DIR/Work/markers/rp-hook-off"
-export CLAUDE_PROJECT_DIR="$TEST91B_DIR"
+echo -n "Test 91a: passthrough handler unaffected by rp-active... "
+TEST91A_DIR=$(mktemp -d)
+mkdir -p "$TEST91A_DIR/Memory/sessions"
+mkdir -p "$TEST91A_DIR/Work/markers"
+mkdir -p "$TEST91A_DIR/.asha"
+echo '{"initialized": true}' > "$TEST91A_DIR/.asha/config.json"
+touch "$TEST91A_DIR/Work/markers/rp-active"
+export CLAUDE_PROJECT_DIR="$TEST91A_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
-rm -rf "$TEST91B_DIR"
+OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
+rm -rf "$TEST91A_DIR"
 
-if [[ "$OUTPUT" == "{}" ]]; then
+if [[ "$(printf '%s' "$OUTPUT" | jq -r '.prompt // empty' 2>/dev/null)" == "test prompt during RP" \
+      && "$OUTPUT" != *"<system-reminder>"* ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  Expected {} with kill-switch present, got: ${OUTPUT:0:200}..."
+    echo "  Expected clean {prompt} passthrough, got: ${OUTPUT:0:200}..."
     FAILED=$((FAILED + 1))
 fi
 
 # ============================================================================
-# Test 91c: RP routing on Codex stops after the raw fragment
+# Test 91b: kill-switch markers suppress the RP routing injection
+# ============================================================================
+# Both the legacy rp-hook-off marker (row marker_off) and the engine's
+# generic nudge-<id>-off marker must suppress.
+echo -n "Test 91b: rp-hook-off + nudge-rp-routing-off suppress injection... "
+TEST91B_DIR=$(mktemp -d)
+TEST91B_HOME=$(mktemp -d)
+mkdir -p "$TEST91B_DIR/Work/markers"
+mkdir -p "$TEST91B_DIR/.asha"
+echo '{"initialized": true}' > "$TEST91B_DIR/.asha/config.json"
+touch "$TEST91B_DIR/Work/markers/rp-active"
+export CLAUDE_PROJECT_DIR="$TEST91B_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+touch "$TEST91B_DIR/Work/markers/rp-hook-off"
+OUTPUT_LEGACY=$(echo '{"prompt": "x"}' | HOME="$TEST91B_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+rm "$TEST91B_DIR/Work/markers/rp-hook-off"
+touch "$TEST91B_DIR/Work/markers/nudge-rp-routing-off"
+OUTPUT_GENERIC=$(echo '{"prompt": "x"}' | HOME="$TEST91B_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+rm -rf "$TEST91B_DIR" "$TEST91B_HOME"
+
+if [[ "$OUTPUT_LEGACY" == "{}" && "$OUTPUT_GENERIC" == "{}" ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$OUTPUT_LEGACY" != "{}" ]] && echo "  rp-hook-off not honored: ${OUTPUT_LEGACY:0:120}..."
+    [[ "$OUTPUT_GENERIC" != "{}" ]] && echo "  nudge-rp-routing-off not honored: ${OUTPUT_GENERIC:0:120}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 91c: RP routing on Codex is the raw fragment only
 # ============================================================================
 # Codex rejects the Claude-only {prompt: ...} passthrough as invalid JSON;
-# the raw <system-reminder> fragment must be the handler's final output.
+# the engine emits the raw <system-reminder> fragment and nothing else.
 echo -n "Test 91c: RP routing codex output omits {prompt} passthrough... "
 TEST91C_DIR=$(mktemp -d)
+TEST91C_HOME=$(mktemp -d)
 mkdir -p "$TEST91C_DIR/Work/markers"
 mkdir -p "$TEST91C_DIR/.asha"
 echo '{"initialized": true}' > "$TEST91C_DIR/.asha/config.json"
@@ -1959,8 +1996,8 @@ touch "$TEST91C_DIR/Work/markers/rp-active"
 export CLAUDE_PROJECT_DIR="$TEST91C_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | ASHA_HARNESS=codex "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null || true)
-rm -rf "$TEST91C_DIR"
+OUTPUT=$(echo '{"prompt": "test prompt during RP"}' | HOME="$TEST91C_HOME" ASHA_HARNESS=codex "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+rm -rf "$TEST91C_DIR" "$TEST91C_HOME"
 
 if [[ "$OUTPUT" == *"roleplay-gm"* && "$OUTPUT" != *'"prompt"'* ]]; then
     echo -e "${GREEN}PASS${NC}"
@@ -1973,10 +2010,14 @@ else
 fi
 
 # ============================================================================
-# Test 91d: RP routing no-ops on malformed stdin
+# Test 91d: RP routing survives malformed stdin
 # ============================================================================
-echo -n "Test 91d: RP routing no-ops on malformed stdin... "
+# The injection is stdin-independent (marker-gated, not payload-gated); the
+# legacy no-op protected the {prompt} passthrough, which now lives in the
+# separate passthrough handler. The engine must emit the directive and exit 0.
+echo -n "Test 91d: RP routing emits on malformed stdin, exit 0... "
 TEST91D_DIR=$(mktemp -d)
+TEST91D_HOME=$(mktemp -d)
 mkdir -p "$TEST91D_DIR/Work/markers"
 mkdir -p "$TEST91D_DIR/.asha"
 echo '{"initialized": true}' > "$TEST91D_DIR/.asha/config.json"
@@ -1985,15 +2026,132 @@ export CLAUDE_PROJECT_DIR="$TEST91D_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
 EXIT_CODE=0
-OUTPUT=$(echo 'not valid json at all' | "$REPO_ROOT/plugins/session/hooks/handlers/user-prompt-submit.sh" 2>/dev/null) || EXIT_CODE=$?
-rm -rf "$TEST91D_DIR"
+OUTPUT=$(echo 'not valid json at all' | HOME="$TEST91D_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null) || EXIT_CODE=$?
+rm -rf "$TEST91D_DIR" "$TEST91D_HOME"
 
-if [[ "$OUTPUT" == "{}" && $EXIT_CODE -eq 0 ]]; then
+if [[ "$OUTPUT" == *"roleplay-gm"* && $EXIT_CODE -eq 0 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
 else
     echo -e "${RED}FAIL${NC}"
-    echo "  Expected {} and exit 0, got exit $EXIT_CODE: ${OUTPUT:0:200}..."
+    echo "  Expected directive and exit 0, got exit $EXIT_CODE: ${OUTPUT:0:200}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 92: nudge engine — suggest-compact fires at threshold
+# ============================================================================
+echo -n "Test 92: suggest-compact fires at tool-count threshold... "
+TEST92_DIR=$(mktemp -d)
+TEST92_HOME=$(mktemp -d)
+mkdir -p "$TEST92_DIR/Work/markers"
+mkdir -p "$TEST92_DIR/.asha"
+echo '{"initialized": true}' > "$TEST92_DIR/.asha/config.json"
+echo 99 > "$TEST92_DIR/Work/markers/tool-count"
+export CLAUDE_PROJECT_DIR="$TEST92_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+COUNT_AFTER=$(cat "$TEST92_DIR/Work/markers/tool-count" 2>/dev/null || echo missing)
+COOLDOWN_EXISTS=0
+[[ -f "$TEST92_DIR/Work/markers/nudge-suggest-compact-cooldown" ]] && COOLDOWN_EXISTS=1
+
+if [[ "$OUTPUT" == *"Context check"* && "$OUTPUT" == *"100 tool calls"* \
+      && "$COUNT_AFTER" == "0" && $COOLDOWN_EXISTS -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$OUTPUT" != *"Context check"* ]] && echo "  Suggestion missing: ${OUTPUT:0:120}..."
+    [[ "$COUNT_AFTER" != "0" ]] && echo "  tool-count not reset (got $COUNT_AFTER)"
+    [[ $COOLDOWN_EXISTS -eq 0 ]] && echo "  cooldown marker not stamped"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 92a: suggest-compact cooldown suppresses (counter untouched)
+# ============================================================================
+echo -n "Test 92a: suggest-compact cooldown suppresses re-fire... "
+# Continues from Test 92 state: cooldown just stamped, counter at 0.
+OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+COUNT_AFTER=$(cat "$TEST92_DIR/Work/markers/tool-count" 2>/dev/null || echo missing)
+
+if [[ "$OUTPUT" == "{}" && "$COUNT_AFTER" == "0" ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$OUTPUT" != "{}" ]] && echo "  Expected {} during cooldown, got: ${OUTPUT:0:120}..."
+    [[ "$COUNT_AFTER" != "0" ]] && echo "  Counter incremented during cooldown (got $COUNT_AFTER)"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 92b: silence marker suppresses the suggest-compact row
+# ============================================================================
+echo -n "Test 92b: silence marker suppresses suggest-compact... "
+rm -f "$TEST92_DIR/Work/markers/nudge-suggest-compact-cooldown"
+echo 99 > "$TEST92_DIR/Work/markers/tool-count"
+touch "$TEST92_DIR/Work/markers/silence"
+OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+COUNT_AFTER=$(cat "$TEST92_DIR/Work/markers/tool-count" 2>/dev/null || echo missing)
+rm -rf "$TEST92_DIR" "$TEST92_HOME"
+
+if [[ "$OUTPUT" == "{}" && "$COUNT_AFTER" == "99" ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$OUTPUT" != "{}" ]] && echo "  Expected {} under silence, got: ${OUTPUT:0:120}..."
+    [[ "$COUNT_AFTER" != "99" ]] && echo "  Counter touched under silence (got $COUNT_AFTER)"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 92c: user layer (~/.asha/nudges.json) merges by id
+# ============================================================================
+echo -n "Test 92c: user-layer nudge row fires via HOME merge... "
+TEST92C_DIR=$(mktemp -d)
+mkdir -p "$TEST92C_DIR/.asha"
+cat > "$TEST92C_DIR/.asha/nudges.json" <<'EOF'
+{"rules": [{"id": "test-user-nudge", "event": "UserPromptSubmit", "requires_init": false, "silence_gated": false, "inject": "USER-LAYER-FIRED"}]}
+EOF
+export CLAUDE_PROJECT_DIR="$TEST92C_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+OUTPUT=$(echo '{"prompt": "x"}' | HOME="$TEST92C_DIR" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+rm -rf "$TEST92C_DIR"
+
+if [[ "$OUTPUT" == "USER-LAYER-FIRED" ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  Expected USER-LAYER-FIRED, got: ${OUTPUT:0:120}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 92d: memory-lexical row gates — harness allowlist and tool matcher
+# ============================================================================
+echo -n "Test 92d: memory-lexical gated to Claude + Grep/Bash/WebSearch... "
+TEST92D_DIR=$(mktemp -d)
+export CLAUDE_PROJECT_DIR=""
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+CODEX_OUT=$(echo '{"session_id":"t","tool_name":"Grep","tool_input":{"pattern":"x"}}' | HOME="$TEST92D_DIR" ASHA_HARNESS=codex "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PreToolUse 2>/dev/null || true)
+READ_OUT=$(echo '{"session_id":"t","tool_name":"Read","tool_input":{"file_path":"x"}}' | HOME="$TEST92D_DIR" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PreToolUse 2>/dev/null || true)
+KILL_OUT=$(echo '{"session_id":"t","tool_name":"Grep","tool_input":{"pattern":"x"}}' | HOME="$TEST92D_DIR" ASHA_NUDGE=0 "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PreToolUse 2>/dev/null || true)
+rm -rf "$TEST92D_DIR"
+
+if [[ -z "$CODEX_OUT" && -z "$READ_OUT" && -z "$KILL_OUT" ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ -n "$CODEX_OUT" ]] && echo "  Codex harness leaked: ${CODEX_OUT:0:120}..."
+    [[ -n "$READ_OUT" ]] && echo "  Unmatched tool leaked: ${READ_OUT:0:120}..."
+    [[ -n "$KILL_OUT" ]] && echo "  ASHA_NUDGE=0 kill switch ignored: ${KILL_OUT:0:120}..."
     FAILED=$((FAILED + 1))
 fi
 
@@ -2338,7 +2496,10 @@ tomllib.loads(text)
 assert '[[hooks.PreToolUse]]' in text
 assert '[[hooks.PreToolUse.hooks]]' in text
 assert 'type = "command"' in text
-assert 'memory_nudge.sh' not in text, 'Claude-only nudge leaked into Codex hooks'
+# Argument-free registration: the engine reads hook_event_name from stdin, so
+# entries are told apart by count. Codex gets UserPromptSubmit + PostToolUse;
+# the PreToolUse entry is Claude-only and must not leak (would make 3).
+assert text.count('nudge-engine.sh') == 2, f"expected 2 Codex nudge-engine entries, got {text.count('nudge-engine.sh')}"
 rule_text = rules.read_text()
 assert 'prefix_rule(' in rule_text
 assert 'pattern = ["git", "reset", "--hard"]' in rule_text
@@ -2393,7 +2554,9 @@ root = pathlib.Path(sys.argv[1])
 data = json.loads((root / ".claude/settings.json").read_text())
 groups = [g for event in data.get("hooks", {}).values() for g in event]
 entries = [h for group in groups for h in group.get("hooks", [])]
-assert any("memory_nudge.sh" in h.get("command", "") for h in entries)
+# Argument-free registration (event resolved from stdin): all three engine
+# entries — PreToolUse (Claude-only), PostToolUse, UserPromptSubmit.
+assert sum("nudge-engine.sh" in h.get("command", "") for h in entries) == 3
 assert not any("_asha_harnesses" in group for group in groups)
 assert (root / ".asha/recall_fixtures.yaml").is_file()
 PY

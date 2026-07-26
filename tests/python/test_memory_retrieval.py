@@ -159,12 +159,17 @@ class NudgeCLITest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     def test_shell_kill_switch_suppresses_nudge(self):
-        hook = REPO / "plugins" / "session" / "hooks" / "memory_nudge.sh"
+        # ASHA_NUDGE=0 is the memory-lexical row's disable_env in the
+        # declarative nudge registry (hooks/nudges/rules.json), evaluated by
+        # nudge-engine.sh — the successor to the retired memory_nudge.sh.
+        hook = REPO / "plugins" / "session" / "hooks" / "handlers" / "nudge-engine.sh"
         env = os.environ.copy()
-        env.update({"ASHA_NUDGE": "0", "ASHA_NUDGE_INDEX": str(self.index)})
+        env.update({"ASHA_NUDGE": "0", "ASHA_NUDGE_INDEX": str(self.index),
+                    "HOME": str(self.root)})
         result = subprocess.run(
-            ["bash", str(hook)], input=json.dumps({"session_id": "off", "tool_name": "Grep",
-                                                   "tool_input": {"pattern": "zephyrquartz"}}),
+            ["bash", str(hook), "PreToolUse"],
+            input=json.dumps({"session_id": "off", "tool_name": "Grep",
+                              "tool_input": {"pattern": "zephyrquartz"}}),
             text=True, capture_output=True, env=env, check=False,
         )
         self.assertEqual(result.returncode, 0)
