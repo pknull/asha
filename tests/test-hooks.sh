@@ -2478,7 +2478,10 @@ if grep -qF '/home/pknull' "$REPO_ROOT/harnesses/codex.sh"; then
     CODEX_OK=0
     CODEX_WHY="$CODEX_WHY hardcoded-home-in-generator"
 fi
-printf '[features]\nhooks = true\n' > "$CODEX_TMP/config.toml"
+# No hooks flag pre-seeded: the installer must add [features] hooks = true
+# itself (codex hook feature-gate, 2026-07-26). steer=true proves sibling
+# keys survive the insertion.
+printf '[features]\nsteer = true\n' > "$CODEX_TMP/config.toml"
 mkdir -p "$CODEX_TMP/asha"
 printf '{}\n' > "$CODEX_TMP/asha/config.json"
 if ! CODEX_HOME="$CODEX_TMP" ASHA_HOME="$CODEX_TMP/asha" ASHA_CONFIG="$CODEX_TMP/asha/config.json" "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP/install.err"; then
@@ -2492,10 +2495,15 @@ agent = pathlib.Path(sys.argv[3])
 skill = pathlib.Path(sys.argv[4])
 home = sys.argv[5]
 text = config.read_text()
-tomllib.loads(text)
+parsed = tomllib.loads(text)
 assert '[[hooks.PreToolUse]]' in text
 assert '[[hooks.PreToolUse.hooks]]' in text
 assert 'type = "command"' in text
+# Installer owns the hooks feature-gate: adds the flag when absent, keeps
+# sibling keys intact (an explicit user value is never rewritten — see
+# Test 106c).
+assert parsed.get('features', {}).get('hooks') is True, 'installer must enable [features] hooks'
+assert parsed.get('features', {}).get('steer') is True, 'sibling feature keys must survive'
 # Argument-free registration: the engine reads hook_event_name from stdin, so
 # entries are told apart by count. Codex gets UserPromptSubmit + PostToolUse;
 # the PreToolUse entry is Claude-only and must not leak (would make 3).
@@ -2531,6 +2539,91 @@ if [[ $CODEX_OK -eq 1 ]]; then
 else
     echo -e "${RED}FAIL${NC}"
     echo "  codex installer mismatch:$CODEX_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 106c: explicit [features] hooks = false is never rewritten by install
+# ============================================================================
+echo -n "Test 106c: installer preserves explicit hooks = false... "
+CODEX_TMP2="$(mktemp -d)"
+CODEX_OK2=1
+printf '[features]\nhooks = false\n' > "$CODEX_TMP2/config.toml"
+mkdir -p "$CODEX_TMP2/asha"
+printf '{}\n' > "$CODEX_TMP2/asha/config.json"
+if ! CODEX_HOME="$CODEX_TMP2" ASHA_HOME="$CODEX_TMP2/asha" ASHA_CONFIG="$CODEX_TMP2/asha/config.json" \
+    "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>"$CODEX_TMP2/install.err"; then
+    CODEX_OK2=0
+    echo -e "${RED}FAIL${NC}"
+    echo "  install failed: $(cat "$CODEX_TMP2/install.err")"
+elif ! python3 -c "
+import tomllib, sys
+parsed = tomllib.load(open('$CODEX_TMP2/config.toml', 'rb'))
+assert parsed.get('features', {}).get('hooks') is False, 'explicit hooks = false must survive install'
+" 2>"$CODEX_TMP2/check.err"; then
+    CODEX_OK2=0
+    echo -e "${RED}FAIL${NC}"
+    echo "  $(cat "$CODEX_TMP2/check.err" | tail -1)"
+fi
+rm -rf "$CODEX_TMP2"
+if [[ $CODEX_OK2 -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 106d: reinstall preserves codex-owned [hooks.state] trust inside fence
+# ============================================================================
+# Codex appends its hash-bound trust store after the hook arrays it trusts —
+# mid-fence. Found live 2026-07-26: the old region-strip excise wiped all 11
+# production trust grants on reinstall. Replay: install, graft a state
+# subtable inside the fence exactly where codex writes it, reinstall, assert
+# the grant survives and the config stays valid TOML with ONE state table.
+echo -n "Test 106d: codex trust state survives fence rewrite... "
+CODEX_TMP3="$(mktemp -d)"
+CODEX_OK3=1
+CODEX_WHY3=""
+printf '[features]\nhooks = true\n' > "$CODEX_TMP3/config.toml"
+mkdir -p "$CODEX_TMP3/asha"
+printf '{}\n' > "$CODEX_TMP3/asha/config.json"
+if ! CODEX_HOME="$CODEX_TMP3" ASHA_HOME="$CODEX_TMP3/asha" ASHA_CONFIG="$CODEX_TMP3/asha/config.json" \
+    "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>&1; then
+    CODEX_OK3=0; CODEX_WHY3=" first-install-failed"
+else
+    python3 - "$CODEX_TMP3/config.toml" <<'PY'
+import sys
+path = sys.argv[1]
+lines = open(path).read().splitlines()
+graft = ['[hooks.state]', '', '[hooks.state."config.toml:user_prompt_submit:0:0"]',
+         'trusted_hash = "sha256:cafe1234"', '']
+for i, line in enumerate(lines):
+    if line.startswith("# ===== asha:end"):
+        lines[i:i] = graft
+        break
+open(path, "w").write("\n".join(lines) + "\n")
+PY
+    if ! CODEX_HOME="$CODEX_TMP3" ASHA_HOME="$CODEX_TMP3/asha" ASHA_CONFIG="$CODEX_TMP3/asha/config.json" \
+        "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>&1; then
+        CODEX_OK3=0; CODEX_WHY3=" reinstall-failed"
+    elif ! python3 -c "
+import tomllib
+parsed = tomllib.load(open('$CODEX_TMP3/config.toml', 'rb'))
+state = (parsed.get('hooks') or {}).get('state') or {}
+assert any(v.get('trusted_hash') == 'sha256:cafe1234' for v in state.values() if isinstance(v, dict)), \
+    'trust grant lost across fence rewrite'
+" 2>"$CODEX_TMP3/check.err"; then
+        CODEX_OK3=0; CODEX_WHY3=" $(tail -1 "$CODEX_TMP3/check.err")"
+    fi
+fi
+rm -rf "$CODEX_TMP3"
+if [[ $CODEX_OK3 -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo " $CODEX_WHY3"
     FAILED=$((FAILED + 1))
 fi
 

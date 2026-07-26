@@ -555,6 +555,11 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 ## Version History
 
+### Codex hook enablement — feature gate, trust preservation, doctor coverage (2026-07-26)
+
+- Live verification on codex 0.145 proved the asha hook fence works end-to-end (isolated `CODEX_HOME` replay: RP fragment reached the model) and exposed three defects, all fixed: the installer never set the required `[features] hooks = true` (now `_codex_ensure_hooks_feature` — adds when absent, never rewrites an explicit value); the fence excise destroyed codex's hash-bound `[hooks.state]` trust store on every reinstall (now preserved; Test 106d replays the failure; 11 production slots restored from backup); the doctor's codex hook-path check passed vacuously (crashed on `[hooks.state]`, silenced) — now walks nested commands and reports the feature gate + trust-slot count.
+- Production codex hooks are enabled on the reference machine; full verdict in `docs/harness-enforcement.md` "Codex hook gating".
+
 ### Session v1.5.0 — Memory recall economics (2026-07-26)
 
 Three disciplines ported from harness-native memory prompts into Asha's own stores; comparison in `docs/memory-architecture.md`.
