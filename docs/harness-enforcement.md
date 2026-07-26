@@ -36,9 +36,22 @@ separately from empirical verification. Codex documentation was refreshed
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
-| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ registered (UserPromptSubmit + PostToolUse). UserPromptSubmit raw-fragment injection is the documented pre-migration RP path; PostToolUse advisory text untested live | ⚠️ registered via event mapping; untested live |
+| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **mechanism verified live 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present in the payload; command argv shell-splitting confirmed). **Production hooks are OFF on this machine** — see the hook-gating note below | ⚠️ registered via event mapping; untested live |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
 | Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
+
+**Codex hook gating (0.145, verified 2026‑07‑26):** codex runs a configured
+hook only when BOTH `[features] hooks = true` is set in `config.toml` AND the
+hook has persisted trust (granted interactively; `codex exec` offers a
+per-invocation `--dangerously-bypass-hook-trust` for vetted automation).
+Without both, every hook is silently skipped — no error, no log. The
+production `~/.codex/config.toml` on the reference machine currently has
+neither, so the entire installed asha fence (session-start, policy-guard,
+save gates, nudges) is inert under codex until the operator adds the flag and
+grants trust. This gate is also a plausible contributor to the 0.142 probe
+non-fire recorded below, alongside the documented `unified_exec` interception
+limits — the two causes were not separable at the time. The isolated-home
+replay proves the fence itself works when the gate is open.
 
 Guardrails enforce across the tested Claude and Copilot paths (Copilot
 single-call deny verified live on 1.0.63, 2026‑06‑24). Codex has a real native
