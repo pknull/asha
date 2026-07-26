@@ -140,15 +140,25 @@ if [[ -f "$OPERATION_FILE" ]]; then
     OPERATION_CONTENT=$(truncate_content "$(cat "$OPERATION_FILE")" $OPERATION_MAX "operation.md")
 fi
 
-# Learnings: render the hot tier from the OKF bundle (confidence-ranked, budgeted).
+# Learnings: index-first injection (default) — one capped line per concept
+# across the WHOLE bundle, bodies read on demand (the memory-lexical nudge
+# points at them at tool-time). ASHA_LEARNINGS_INJECT=hot reverts to the
+# legacy top-10 full-body hot tier without a code change.
 # Falls back to the legacy flat file for projects not yet migrated to the bundle.
+LEARNINGS_LABEL="Learnings index (one line per concept; Read the concept file before acting when the line is insufficient)"
 if [[ -d "$LEARNINGS_DIR" && -f "$LEARNINGS_MANAGER" && -n "$PYTHON_CMD" ]]; then
-    RENDERED_HOT=$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-hot --max-bytes "$LEARNINGS_MAX" 2>/dev/null || true)
-    if [[ -n "$RENDERED_HOT" ]]; then
-        LEARNINGS_CONTENT=$(truncate_content "$RENDERED_HOT" $LEARNINGS_MAX "learnings hot tier")
+    if [[ "${ASHA_LEARNINGS_INJECT:-index}" == "hot" ]]; then
+        RENDERED=$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-hot --max-bytes "$LEARNINGS_MAX" 2>/dev/null || true)
+        LEARNINGS_LABEL="Learnings (hot tier)"
+    else
+        RENDERED=$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-index --max-bytes "$LEARNINGS_MAX" 2>/dev/null || true)
+    fi
+    if [[ -n "$RENDERED" ]]; then
+        LEARNINGS_CONTENT=$(truncate_content "$RENDERED" $LEARNINGS_MAX "learnings injection")
     fi
 elif [[ -f "$LEARNINGS_FILE" ]]; then
     LEARNINGS_CONTENT=$(truncate_content "$(cat "$LEARNINGS_FILE")" $LEARNINGS_MAX "learnings.md")
+    LEARNINGS_LABEL="Learnings (legacy flat file)"
 fi
 
 # Fall back to CORE.md if operation.md doesn't exist yet
@@ -176,7 +186,7 @@ fi
 if [[ -n "$LEARNINGS_CONTENT" ]]; then
     cat <<EOF
 <system-reminder>
-Learnings (hot tier) loaded from ~/.asha/learnings/:
+$LEARNINGS_LABEL loaded from ~/.asha/learnings/:
 
 $LEARNINGS_CONTENT
 </system-reminder>

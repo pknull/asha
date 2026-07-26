@@ -166,6 +166,106 @@ class HotTierTests(OKFLearningsTestBase):
         self.assertIn("Cross-project patterns", rendered)
 
 
+class IndexTierTests(OKFLearningsTestBase):
+    """render_index_tier: one-line-per-concept index-first injection."""
+
+    def _seed(self, n, trigger="t", action="a"):
+        for i in range(n):
+            conf = round(0.30 + 0.03 * i, 2)
+            learning = self.lm.Learning(
+                id=f"idx{i:02d}", category="C", confidence=conf,
+                trigger=trigger, action=action,
+                evidence=[self.lm.Evidence("2026-01-01", "p", "n", "initial")],
+                created="2026-01-01", updated="2026-01-01",
+            )
+            self.lm._atomic_write_file(self.lm._learning_path(learning.id),
+                                       self.lm._render_learning(learning))
+
+    def _index_lines(self, rendered):
+        return [l for l in rendered.splitlines() if l.startswith("- ")]
+
+    def test_every_concept_gets_one_line_hot_first(self):
+        self._seed(6)
+        rendered = self.lm.render_index_tier(max_bytes=1_000_000)
+        lines = self._index_lines(rendered)
+        self.assertEqual(len(lines), 6, "whole bundle indexed, not just the hot tier")
+        confs = [float(l.split("[C ", 1)[1].split("]", 1)[0]) for l in lines]
+        self.assertEqual(confs, sorted(confs, reverse=True), "confidence-descending order")
+        self.assertIn("idx05", lines[0], "highest confidence first")
+
+    def test_hook_is_compressed_and_capped(self):
+        self._seed(1, trigger="word " * 60, action="line\none\ntwo   three")
+        rendered = self.lm.render_index_tier(max_bytes=1_000_000)
+        line = self._index_lines(rendered)[0]
+        self.assertNotIn("\t", line)
+        self.assertLess(len(line), 200, "hook capped near _INDEX_HOOK_CHARS")
+        self.assertIn("…", line, "over-cap hook carries an ellipsis")
+
+    def test_multiline_hook_never_breaks_one_line_contract(self):
+        self._seed(1, trigger="a\nb\nc", action="d\ne")
+        rendered = self.lm.render_index_tier(max_bytes=1_000_000)
+        line = self._index_lines(rendered)[0]
+        self.assertIn("a b c -> d e", line, "newlines collapse to spaces")
+
+    def test_budget_truncates_with_honest_tail(self):
+        self._seed(12)
+        full = self.lm.render_index_tier(max_bytes=1_000_000)
+        budget = len(full.encode("utf-8")) // 2
+        truncated = self.lm.render_index_tier(max_bytes=budget)
+        self.assertLessEqual(len(truncated.encode("utf-8")), budget + 120,
+                             "tail reservation keeps output near budget")
+        shown = len(self._index_lines(truncated))
+        self.assertGreaterEqual(shown, 1)
+        self.assertLess(shown, 12)
+        self.assertIn(f"{12 - shown} more concept(s) omitted", truncated)
+        self.assertIn("full index: ~/.asha/learnings/index.md", truncated)
+
+    def test_empty_bundle_is_preamble_only(self):
+        self.lm.LEARNINGS_DIR.mkdir(exist_ok=True)
+        rendered = self.lm.render_index_tier(max_bytes=3000)
+        self.assertEqual(self._index_lines(rendered), [])
+        self.assertIn("Learnings index", rendered)
+
+
+class RetireTests(OKFLearningsTestBase):
+    """retire: concluded records leave the live bundle for the archive."""
+
+    def test_retire_moves_file_and_leaves_every_live_surface(self):
+        self.lm.add_learning("Rollout", "b9-acceptance", "phase b9 verification",
+                             "PASS", "asha", "closed record")
+        self.lm.add_learning("Tooling", "keeper", "still live", "act", "p", "r")
+        result = self.lm.retire_learning("b9-acceptance", "phase shipped; can never recur")
+        self.assertEqual(result["status"], "retired")
+
+        live = [p.name for p in self.lm.LEARNINGS_DIR.glob("*.md")]
+        self.assertNotIn("b9-acceptance.md", live)
+        archived = self.asha / self.lm.ARCHIVE_DIR_NAME / "b9-acceptance.md"
+        self.assertTrue(archived.is_file())
+        text = archived.read_text()
+        self.assertIn("retired:", text)
+        self.assertIn("phase shipped; can never recur", text)
+        self.assertIn("phase b9 verification", text, "full record survives archival")
+
+        index = (self.lm.LEARNINGS_DIR / "index.md").read_text()
+        self.assertNotIn("b9-acceptance", index)
+        self.assertIn("keeper", index)
+        self.assertNotIn("b9-acceptance", self.lm.render_index_tier(max_bytes=100_000))
+
+    def test_retire_unknown_id_errors_without_side_effects(self):
+        result = self.lm.retire_learning("no-such-concept", "n/a")
+        self.assertIn("error", result)
+        self.assertFalse((self.asha / self.lm.ARCHIVE_DIR_NAME).exists())
+
+    def test_retired_concept_is_not_retrievable(self):
+        self.lm.add_learning("Cat", "xanthic-probe", "xanthic probe calibration",
+                             "act", "p", "r")
+        self.lm.retire_learning("xanthic-probe", "concluded")
+        sys.path.insert(0, str(TOOLS_DIR))
+        import memory_retrieval  # type: ignore[reportMissingImports]
+        entries = memory_retrieval.learning_entries(self.lm.LEARNINGS_DIR)
+        self.assertEqual([e for e in entries if e.id == "xanthic-probe"], [])
+
+
 class MigrationTests(OKFLearningsTestBase):
     HOT = """# Learnings
 

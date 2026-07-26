@@ -202,6 +202,14 @@ def source_signature(memory_dirs: Iterable[Path], learnings_dir: Path) -> dict[s
     return signature
 
 
+# Broad-entry scrutiny (harness memory-selector discipline, ported lexically):
+# a sprawling catalogue line has more surface to collide with any query, so
+# breadth both discounts the score (BM25-style, _BM25_B) and — in the nudge's
+# firing gate — disqualifies weak single-token evidence entirely.
+BROAD_ENTRY_TOKENS = 25
+_BM25_B = 0.4
+
+
 def rank(query: str, entries: Iterable[Entry], limit: int = 5) -> list[dict]:
     entries = list(entries)
     query_tokens = tokenize(query)
@@ -213,6 +221,7 @@ def rank(query: str, entries: Iterable[Entry], limit: int = 5) -> list[dict]:
         for token in set(item.tokens):
             df[token] = df.get(token, 0) + 1
     total = len(entries)
+    avg_breadth = sum(len(set(item.tokens)) for item in entries) / total
 
     def idf(token: str) -> float:
         return math.log((total + 1) / (df.get(token, 0) + 1)) + 1.0
@@ -226,8 +235,15 @@ def rank(query: str, entries: Iterable[Entry], limit: int = 5) -> list[dict]:
         if not overlap:
             continue
         overlap_weight = sum(idf(token) for token in overlap)
-        score = overlap_weight / denominator
+        # Mild length normalization: entries at average breadth keep their
+        # score; broader ones are discounted, narrower ones lifted (b=0.4).
+        breadth_norm = 1.0
+        if avg_breadth > 0:
+            breadth_norm = 1.0 / (1.0 - _BM25_B + _BM25_B * (len(item_set) / avg_breadth))
+        score = (overlap_weight / denominator) * breadth_norm
         normalized_desc = " ".join(item.tokens)
+        # Exact-phrase containment is strong aboutness evidence — the bonus
+        # stays un-normalized on purpose.
         if len(normalized_query) >= 5 and normalized_query in normalized_desc:
             score += 0.25
         results.append({
@@ -240,6 +256,7 @@ def rank(query: str, entries: Iterable[Entry], limit: int = 5) -> list[dict]:
             "overlap_idf": round(overlap_weight, 6),
             "max_overlap_idf": round(max(idf(token) for token in overlap), 6),
             "min_overlap_df": min(df.get(token, 0) for token in overlap),
+            "entry_tokens": len(item_set),
             "corpus_size": total,
         })
     results.sort(key=lambda row: (-row["score"], -len(row["overlap"]), row["id"], row["path"]))

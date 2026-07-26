@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from memory_retrieval import (
-    discover_memory_dirs, dump_index, load_index, rank,
+    BROAD_ENTRY_TOKENS, discover_memory_dirs, dump_index, load_index, rank,
 )
 
 
@@ -133,9 +133,15 @@ def match(args) -> None:
     overlaps = best["overlap"]
     # High precision: two catalogue-token matches, or one distinctive rare token.
     rare_limit = max(2, int(best["corpus_size"] * 0.02))
-    distinctive = (len(overlaps) == 1 and len(overlaps[0]) >= 7
+    # Broad-entry scrutiny: a sprawling catalogue line matches everything on
+    # surface overlap, so it never fires on a lone rare token and needs three
+    # agreeing tokens instead of two ("what the query is ABOUT, not keyword
+    # overlap" — harness memory-selector discipline, ported lexically).
+    broad = int(best.get("entry_tokens") or 0) >= BROAD_ENTRY_TOKENS
+    distinctive = (not broad and len(overlaps) == 1 and len(overlaps[0]) >= 7
                    and best["min_overlap_df"] <= rare_limit)
-    if best["score"] < args.threshold or (len(overlaps) < 2 and not distinctive):
+    required_overlap = 3 if broad else 2
+    if best["score"] < args.threshold or (len(overlaps) < required_overlap and not distinctive):
         return
     if len(ranked) > 1 and best["score"] < ranked[1]["score"] * 1.12 and not distinctive:
         return
