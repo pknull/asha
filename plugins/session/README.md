@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 1.4.0
+**Version**: 1.5.0
 
 Session management with memory persistence, pattern extraction, and operational quality.
 
@@ -34,6 +34,7 @@ Then initialize in your project:
 | `/session:silence` | Toggle silence mode (disable logging) |
 | `/session:restore` | Re-enable logging after silence |
 | `/session:loop` | Autonomous agent loop with guardrails |
+| `/session:consolidate` | Periodic memory compaction: merge drift, resolve contradictions, retire concluded records, enforce index budgets |
 
 ## Loading Architecture
 
@@ -44,7 +45,7 @@ The SessionStart hook loads these on every session:
 | File | Purpose |
 |------|---------|
 | `~/.asha/operation.md` | Operational quality rules, thoroughness rebalancing |
-| `~/.asha/learnings/` | Cross-project patterns (OKF concept bundle; hot tier injected) |
+| `~/.asha/learnings/` | Cross-project patterns (OKF concept bundle). Index-first injection: one capped line per concept across the whole bundle, hot-first; bodies Read on demand (the memory-lexical nudge points at them). `ASHA_LEARNINGS_INJECT=hot` reverts to the legacy top-10 full-body hot tier |
 
 ### Persona layer (optional)
 
@@ -109,7 +110,7 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 
 | Hook | Purpose |
 |------|---------|
-| SessionStart | Load operation.md + learnings hot tier; conditionally load persona files; build Claude's compact memory-nudge index |
+| SessionStart | Load operation.md + the learnings index (index-first; `ASHA_LEARNINGS_INJECT=hot` reverts); conditionally load persona files; build Claude's compact memory-nudge index |
 | PreToolUse | Guardrails (policy-guard) plus guidance nudges — the Claude-only lexical memory nudge for Grep/Bash/WebSearch is now registry row `memory-lexical` (indexes catalogue descriptions only, deduplicates per session, caps at five, fails open, disable with `ASHA_NUDGE=0`). Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
 | PostToolUse | Claude-only memory-nudge acted-tracking on Read; background violation check for Write/Edit/Bash; guidance nudge row `suggest-compact` — capture moved to `/save` jsonl_reader |
 | UserPromptSubmit | Guidance nudge row `rp-routing` (re-asserts the per-turn RP routing directive while `rp-active`); harness-appropriate prompt passthrough |

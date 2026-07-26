@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.4.0 | Session memory, `/save` synthesis, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.5.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
@@ -554,6 +554,14 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.5.0 — Memory recall economics (2026-07-26)
+
+Three disciplines ported from harness-native memory prompts into Asha's own stores; comparison in `docs/memory-architecture.md`.
+
+- **Index-first injection** — SessionStart now injects one capped line per learning across the WHOLE bundle (`render-index`, hot-first, honest truncation tail) instead of the top-10 full bodies. Same byte budget, ~4× concept coverage; bodies Read on demand via the memory-lexical nudge. `ASHA_LEARNINGS_INJECT=hot` reverts.
+- **`/session:consolidate`** — periodic four-phase compaction (orient → gather signal → consolidate → prune/index): merge drift, contradict disproven patterns, `retire` concluded records to `~/.asha/learnings-archive/` (new manager verb; full text preserved, out of every live surface), keeper.md calibration-log folding behind interactive confirmation, index-budget enforcement.
+- **Broad-entry scrutiny** — BM25-style length normalization in `memory_retrieval.rank()` plus firing gates in the nudge: sprawling catalogue entries (≥25 tokens) are score-discounted, never fire on a lone rare token, and need three agreeing tokens. Live recall benchmark held at 12/13 hit@5.
 
 ### Session v1.4.0 — Declarative guidance-nudge engine (2026-07-25)
 
