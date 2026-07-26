@@ -20,6 +20,10 @@
 # hook may emit only a single response object.
 #
 # Output contracts (kept alongside harness-response.sh's enforcement shapes):
+#   copilot (any event) -> {"additionalContext": ...} JSON — the only channel
+#                       Copilot injects (top-level key, verified live on
+#                       1.0.68, 2026-07-26; raw stdout is discarded there);
+#                       "{}" when nothing fires
 #   UserPromptSubmit -> raw fragment text (context on Claude; Codex accepts
 #                       raw fragments); "{}" when nothing fires
 #   PreToolUse       -> hookSpecificOutput.additionalContext JSON on Claude;
@@ -190,6 +194,12 @@ while IFS= read -r rule; do
 done <<< "$ROWS"
 
 [[ -n "$FRAGMENTS" ]] || noop
+
+# Copilot injects ONLY via a top-level additionalContext key, on every event.
+if [[ "$HARNESS" == "copilot" ]]; then
+    jq -n --arg ctx "$FRAGMENTS" '{additionalContext: $ctx}'
+    exit 0
+fi
 
 case "$EVENT" in
     PreToolUse)

@@ -2156,6 +2156,42 @@ else
 fi
 
 # ============================================================================
+# Test 92e: copilot emission contract — additionalContext-only injection
+# ============================================================================
+# Verified live on 1.0.68 (2026-07-26): Copilot injects hook output ONLY via
+# a top-level {"additionalContext": ...} JSON response; raw stdout is
+# discarded. The engine must emit that shape for copilot on every event —
+# whether the harness comes from ASHA_HARNESS or from the COPILOT_CLI=1 env
+# copilot stamps on its own hook processes (env -u strips the suite's own
+# ASHA_HARNESS so the fallback path is actually exercised).
+echo -n "Test 92e: copilot gets additionalContext JSON (both detections)... "
+TEST92E_DIR=$(mktemp -d)
+TEST92E_HOME=$(mktemp -d)
+mkdir -p "$TEST92E_DIR/Work/markers"
+mkdir -p "$TEST92E_DIR/.asha"
+echo '{"initialized": true}' > "$TEST92E_DIR/.asha/config.json"
+touch "$TEST92E_DIR/Work/markers/rp-active"
+export CLAUDE_PROJECT_DIR="$TEST92E_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+EXPLICIT=$(echo '{"prompt": "x"}' | env HOME="$TEST92E_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+DETECTED=$(echo '{"prompt": "x"}' | env -u ASHA_HARNESS HOME="$TEST92E_HOME" COPILOT_CLI=1 "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+rm -rf "$TEST92E_DIR" "$TEST92E_HOME"
+
+EXPLICIT_CTX=$(printf '%s' "$EXPLICIT" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+DETECTED_CTX=$(printf '%s' "$DETECTED" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+
+if [[ "$EXPLICIT_CTX" == *"roleplay-gm"* && "$DETECTED_CTX" == *"roleplay-gm"* ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$EXPLICIT_CTX" != *"roleplay-gm"* ]] && echo "  ASHA_HARNESS=copilot shape wrong: ${EXPLICIT:0:120}..."
+    [[ "$DETECTED_CTX" != *"roleplay-gm"* ]] && echo "  COPILOT_CLI=1 detection failed: ${DETECTED:0:120}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 93: All commands have description frontmatter
 # ============================================================================
 echo -n "Test 93: All commands have description frontmatter... "

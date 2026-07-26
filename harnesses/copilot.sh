@@ -36,6 +36,7 @@ COPILOT_HOOKS_FILE="$COPILOT_HOME/hooks/hooks.json"
 # Asha's own guardrail hooks live in a DEDICATED file so we never touch a user's
 # hooks.json (Copilot loads every ~/.copilot/hooks/*.json).
 COPILOT_GUARDRAILS_FILE="$COPILOT_HOME/hooks/asha-guardrails.json"
+COPILOT_NUDGES_FILE="$COPILOT_HOME/hooks/asha-nudges.json"
 
 # Events Copilot is assumed to support (camelCase). UNVERIFIED — see header.
 _COPILOT_EVENTS=(sessionStart sessionEnd userPromptSubmitted preToolUse postToolUse errorOccurred)
@@ -373,6 +374,47 @@ copilot_install_hooks() {
   say "[copilot] installed PreToolUse guardrails -> $COPILOT_GUARDRAILS_FILE"
 }
 
+# Advisory guidance nudges (session plugin nudge-engine). Verified live on
+# 1.0.68 (2026-07-26): Copilot fires userPromptSubmitted/postToolUse hooks,
+# shell-splits the command string (the engine takes the Claude event name as
+# argv — Copilot payloads carry no hook_event_name), and injects ONLY via a
+# top-level {"additionalContext": ...} JSON response (raw stdout discarded).
+# The engine detects Copilot via the COPILOT_CLI=1 env it stamps on hook
+# processes and emits that shape. preToolUse is not registered here: the only
+# PreToolUse nudge row (memory-lexical) is Claude-only by design.
+copilot_install_nudge_hooks() {
+  local engine="$PLUGINS_DIR/session/hooks/handlers/nudge-engine.sh"
+  if [[ ! -x "$engine" ]]; then
+    log "[copilot] nudge engine missing/not executable ($engine); skipping nudge hooks"
+    return 0
+  fi
+  local abs_engine content
+  abs_engine="$(resolve_path "$engine")"
+
+  content="$(jq -nc --arg e "$abs_engine" '{
+    version: 1,
+    hooks: {
+      userPromptSubmitted: [{type:"command", bash:($e + " UserPromptSubmit"), timeoutSec:10}],
+      postToolUse:         [{type:"command", bash:($e + " PostToolUse"),      timeoutSec:10}]
+    }
+  }')" || { log "[copilot] failed to build nudges json; skipping"; return 0; }
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "[copilot] would write $COPILOT_NUDGES_FILE (guidance nudges -> nudge-engine)"
+    return 0
+  fi
+
+  ensure_dir "$(dirname "$COPILOT_NUDGES_FILE")"
+  if [[ -f "$COPILOT_NUDGES_FILE" ]] \
+     && [[ "$(jq -S . "$COPILOT_NUDGES_FILE" 2>/dev/null)" == "$(printf '%s' "$content" | jq -S .)" ]]; then
+    log "[copilot] nudges unchanged"
+    return 0
+  fi
+  local tmp="$COPILOT_NUDGES_FILE.tmp.$$"
+  printf '%s\n' "$content" > "$tmp" && mv "$tmp" "$COPILOT_NUDGES_FILE"
+  say "[copilot] installed guidance nudges -> $COPILOT_NUDGES_FILE"
+}
+
 # ---------------------------------------------------------------------------
 # Entry point: copilot_install
 # ---------------------------------------------------------------------------
@@ -411,6 +453,7 @@ copilot_install() {
   say ""
   say "== [copilot] hooks =="
   copilot_install_hooks
+  copilot_install_nudge_hooks
   asha_artifact_finalize copilot "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)"
 }
 
@@ -477,6 +520,15 @@ copilot_uninstall() {
     else
       rm -f "$COPILOT_GUARDRAILS_FILE"
       say "[copilot] removed PreToolUse guardrails ($COPILOT_GUARDRAILS_FILE)"
+    fi
+  fi
+
+  if [[ -f "$COPILOT_NUDGES_FILE" ]]; then
+    if [[ $DRY_RUN -eq 1 ]]; then
+      say "[copilot] would remove $COPILOT_NUDGES_FILE"
+    else
+      rm -f "$COPILOT_NUDGES_FILE"
+      say "[copilot] removed guidance nudges ($COPILOT_NUDGES_FILE)"
     fi
   fi
 

@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 1.5.0
+**Version**: 1.6.0
 
 Session management with memory persistence, pattern extraction, and operational quality.
 
@@ -124,9 +124,13 @@ guard: policies constrain (deny/ask), nudges inform (context injection — a
 nudge can never block a tool call or a turn). Rows live in
 `hooks/nudges/rules.json`; users add or override rows in `~/.asha/nudges.json`
 (merged by `id`, user wins) without touching the repo. The engine resolves the
-hook event from the stdin payload's `hook_event_name`, so one argument-free
-registration serves every event and survives hook runners that do not
-shell-split command strings.
+hook event from the stdin payload's `hook_event_name` (Claude/Codex payloads
+carry it — argument-free registration there) with `$1` as the override for
+harnesses whose payloads do not (Copilot registrations pass the Claude event
+name as an argument). Injection shape is per-harness: raw text on Claude,
+raw fragments on Codex, and a top-level `{"additionalContext": ...}` JSON
+response on Copilot — the only channel it injects (detected via the
+`COPILOT_CLI=1` env Copilot stamps on hook processes, so bare launches work).
 
 Per-row gates: `tool` (anchored ERE on tool_name), `match_regex` (ERE on the
 event's text fields), `harnesses` allowlist, `marker_required`/`marker_off`,
