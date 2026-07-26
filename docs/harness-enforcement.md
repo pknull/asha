@@ -36,7 +36,7 @@ separately from empirical verification. Codex documentation was refreshed
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
-| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ✅ **verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below) | ⚠️ registered via event mapping; untested live |
+| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ✅ **verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below) | ✅ **verified live + wired 2026‑07‑26 on 1.0.68** (`hooks/asha-nudges.json`: userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; production RP probe answered INJECTED — see the Copilot hook contract note below) |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
 | Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
 
@@ -60,6 +60,22 @@ and trust-slot count. The trust-wipe defect is also a plausible contributor
 to the 0.142 probe non-fire recorded below, alongside the documented
 `unified_exec` interception limits. End-to-end injection was proven by an
 isolated-home replay of the real fence (probe answered INJECTED).
+
+**Copilot hook contract (1.0.68, verified live 2026‑07‑26):** hook files under
+`~/.copilot/hooks/*.json` fire without any feature flag or trust grant.
+Payloads are `{sessionId, timestamp, cwd, prompt|initialPrompt, …}` — **no
+`hook_event_name`** — so asha registrations pass the Claude event name as a
+command argument (Copilot shell-splits the `bash` string; verified). Hook
+processes receive `COPILOT_CLI=1`, `COPILOT_PROJECT_DIR`, and a
+`CLAUDE_PROJECT_DIR` alias — `asha_harness()` uses the first for detection
+under bare launches, and project detection works unmodified. Injection: raw
+stdout is **discarded**; the only context channel is a top-level
+`{"additionalContext": "…"}` JSON response, which the nudge engine emits for
+copilot on every event. Advisory nudges are wired via
+`hooks/asha-nudges.json` (userPromptSubmitted + postToolUse); sessionStart /
+sessionEnd side-effect wiring (orphan recovery, automatic clean-exit save —
+the remaining Claude-parity gap) is a deliberate opt-in follow-up, since
+auto-save is a behavioral change.
 
 Guardrails enforce across the tested Claude and Copilot paths (Copilot
 single-call deny verified live on 1.0.63, 2026‑06‑24). Codex has a real native

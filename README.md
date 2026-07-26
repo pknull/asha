@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.5.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.6.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
@@ -554,6 +554,12 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.6.0 — Copilot guidance-nudge parity (2026-07-26)
+
+- Live-probed Copilot CLI 1.0.68's hook contract: events fire with no feature flag or trust gate, payloads carry no `hook_event_name` (argv registration instead — Copilot shell-splits), hook processes receive `COPILOT_CLI=1` + `CLAUDE_PROJECT_DIR`, raw stdout is discarded, and the ONLY injection channel is a top-level `{"additionalContext": ...}` JSON response (isolated by key: `systemMessage` et al. do nothing).
+- Wired accordingly: `asha_harness()` detects Copilot via `COPILOT_CLI`; the nudge engine emits the additionalContext shape for copilot on every event; new `~/.copilot/hooks/asha-nudges.json` registers userPromptSubmitted + postToolUse (installed/uninstalled symmetrically). Production RP probe answered INJECTED. Full contract: `docs/harness-enforcement.md` "Copilot hook contract".
+- Remaining Claude-parity gap, deliberately opt-in: sessionStart/sessionEnd side-effect wiring (orphan recovery + automatic clean-exit save).
 
 ### Codex hook enablement — feature gate, trust preservation, doctor coverage (2026-07-26)
 

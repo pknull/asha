@@ -7,7 +7,17 @@
 # contracts differ by event and by harness, so generic formatting hides bugs.
 
 asha_harness() {
-    echo "${ASHA_HARNESS:-claude}"
+    # Explicit wins; otherwise recognize Copilot from the env it stamps on its
+    # own hook processes (COPILOT_CLI=1, verified live on 1.0.68, 2026-07-26)
+    # so bare `copilot` launches — without the asha wrapper — still get the
+    # right response shapes. Default remains claude.
+    if [[ -n "${ASHA_HARNESS:-}" ]]; then
+        echo "$ASHA_HARNESS"
+    elif [[ "${COPILOT_CLI:-}" == "1" ]]; then
+        echo "copilot"
+    else
+        echo "claude"
+    fi
 }
 
 hook_noop() {

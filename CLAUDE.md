@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.5.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.6.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
@@ -917,6 +917,10 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.6.0 (2026-07-26) — Copilot guidance-nudge parity
+
+- Copilot 1.0.68 hook contract live-probed and wired: argv event names (no `hook_event_name` in payloads), `COPILOT_CLI=1` harness detection, injection solely via top-level `{"additionalContext": ...}` JSON (raw stdout discarded). New `hooks/asha-nudges.json` registration (userPromptSubmitted + postToolUse), symmetric uninstall. Production RP probe: INJECTED. Opt-in follow-up: sessionStart/sessionEnd side-effect wiring (auto-save parity).
 
 ### Codex hook enablement (2026-07-26) — feature gate, trust preservation, doctor coverage
 
