@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
 **Version**: 2.2.0
-**Last Updated**: 2026-07-25
+**Last Updated**: 2026-07-26
 **Repository**: pknull/asha
 
 ---
@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.4.0 | Core | Memory persistence, `/save` synthesis, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.5.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
@@ -92,7 +92,7 @@ asha/
 │   │   └── templates/                # seed.yaml
 │   ├── security/                     # skills/security-review/
 │   ├── session/                      # core scaffold
-│   │   ├── commands/                 # init, save, status, silence, restore, loop
+│   │   ├── commands/                 # init, save, status, silence, restore, loop, consolidate
 │   │   ├── agents/loop-operator.md
 │   │   ├── skills/                   # memory-maintenance, skill-creator
 │   │   ├── hooks/                    # hooks.json, handlers/, policies/rules.json,
@@ -917,6 +917,12 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.5.0 (2026-07-26) — Memory recall economics
+
+- Index-first injection: SessionStart injects `render-index` (one capped line per concept, whole bundle, truncation tail) instead of top-10 full bodies; `ASHA_LEARNINGS_INJECT=hot` reverts.
+- New `/session:consolidate` four-phase compaction + `learnings_manager.py retire` (concluded records → `~/.asha/learnings-archive/`).
+- Broad-entry scrutiny in retrieval: BM25-style length normalization in `rank()`; nudge firing gates (broad entries: no lone-rare-token fires, three agreeing tokens required). Recall bench held 12/13.
 
 ### Session v1.4.0 (2026-07-25) — Declarative guidance-nudge engine
 

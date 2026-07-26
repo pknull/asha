@@ -38,7 +38,7 @@ flowchart TB
     end
 
     START -->|inject| OP
-    START -->|render-hot ≥0.7| LRN
+    START -->|render-index 1 line/concept| LRN
     START -->|if persona| PERS
     START -.->|harness injects| AM
     WORK -->|native transcript, regenerated at save| EV
@@ -57,7 +57,8 @@ MEMORY (3 scopes)
 │
 ├─ ~/.asha/                 cross-project · read at SessionStart · follows you everywhere
 │   ├─ operation.md         always · operational rules (4KB inject cap)
-│   ├─ learnings/  ←──OKF── growing concept bundle, hot tier injected, deduped by id
+│   ├─ learnings/  ←──OKF── growing concept bundle, index injected, deduped by id
+│   ├─ learnings-archive/   retired (concluded) concepts — out of every live surface
 │   ├─ soul/voice/keeper    persona · only with ASHA_PERSONA=1
 │   └─ config.json
 │
@@ -81,9 +82,12 @@ the Claude Code harness manages on its own; Asha neither writes nor depends on i
 
 **Rhythm.** Memory is **read at the top of a session and consolidated at the end**:
 
-- **SessionStart reads.** The hook injects `operation.md` + the learnings hot tier
-  (`render-hot`, top ≤10 entries with Confidence ≥ 0.7, byte-budgeted), plus the
-  persona files when `ASHA_PERSONA=1`.
+- **SessionStart reads.** The hook injects `operation.md` + the learnings index
+  (`render-index`: one capped line per concept across the whole bundle,
+  hot-first, byte-budgeted with an explicit truncation tail), plus the persona
+  files when `ASHA_PERSONA=1`. The line is a hook, not the content — bodies are
+  Read on demand, and the memory-lexical nudge points at them at tool-time.
+  `ASHA_LEARNINGS_INJECT=hot` reverts to the legacy top-10 full-body hot tier.
 - **The harness records.** Each harness owns its native transcript. At save time,
   Asha regenerates `Memory/events/*.jsonl` from that transcript. Copilot capture
   is partial for existing-file edits until a stable native schema is verified.
@@ -98,6 +102,14 @@ the Claude Code harness manages on its own; Asha neither writes nor depends on i
 - **Global calibration is interactive policy.** Automatic save never writes
   `~/.asha/keeper.md` or `~/.asha/voice.md`. Explicit save can do so only when
   `capture_calibration` is true in `~/.asha/config.json`.
+
+- **`/session:consolidate` compacts, periodically.** `/save` accumulates;
+  consolidation is the reverse stroke — merge drifted facts, resolve
+  contradictions against disk truth, `retire` concluded records to
+  `~/.asha/learnings-archive/`, fold keeper.md's calibration log into its
+  synthesis sections (interactive, confirmed), and bring the injected index
+  back under budget. Run it when the session-start index reports omitted
+  concepts, or roughly monthly.
 
 So the event log is the input, and `activeContext` + `learnings/` are the refined
 outputs a future cold-start session actually reads.
@@ -165,7 +177,7 @@ always; here's how to judge for a given project.
 
 ```bash
 T="$(jq -r .asha_root ~/.asha/config.json)/plugins/session/tools"
-python3 $T/learnings_manager.py render-hot --max-bytes 3000   # exactly what gets injected — would you want a fresh you to know this?
+python3 $T/learnings_manager.py render-index --max-bytes 3000 # exactly what gets injected — would you want a fresh you to know this?
 python3 $T/learnings_manager.py list                          # categories + counts + avg confidence
 python3 $T/learnings_manager.py query --min-confidence 0.7    # the hot set, ranked
 python3 $T/validate.py ~/.asha/learnings --strict             # structural health
@@ -183,7 +195,9 @@ and synthesis are overhead with no cold-start to serve.
 | Lever | Effect |
 |---|---|
 | `/session:silence` (or `Work/markers/silence`) | Stop all capture + synthesis for throwaway work |
-| Hot-tier threshold (Confidence ≥ 0.7) + cap (≤10) | Bounds what's injected; everything else stays cold in the bundle |
+| Index-first injection budget (3KB, `ASHA_LEARNINGS_INJECT=hot` reverts) | One line per concept, hot-first; over-budget tail names how many concepts were omitted |
+| `/session:consolidate` + `learnings_manager.py retire` | Periodic compaction: merge, contradict, retire concluded records out of every live surface |
+| Broad-entry scrutiny (rank length-normalization + nudge gates) | Sprawling catalogue lines are score-discounted and cannot fire on one rare token |
 | `save_guardrail.py` | Prunes `sequence-*`/`prefer-*` noise at save time |
 | `validate.py` (warn-only; `ASHA_LEARNINGS_VALIDATE=strict`) | Surfaces structural drift without blocking saves |
 | `learnings_manager.py link` / auto-suggest at `/save` | Cross-links related concepts (`## Related`); builds the graph over time, non-blocking, zero inject cost |
