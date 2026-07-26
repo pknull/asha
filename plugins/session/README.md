@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 1.3.0
+**Version**: 1.4.0
 
 Session management with memory persistence, pattern extraction, and operational quality.
 
@@ -110,11 +110,35 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 | Hook | Purpose |
 |------|---------|
 | SessionStart | Load operation.md + learnings hot tier; conditionally load persona files; build Claude's compact memory-nudge index |
-| PreToolUse | Guardrails plus Claude-only, non-blocking memory nudges for Grep/Bash/WebSearch. Nudges index catalogue descriptions only, deduplicate per session, cap at five, fail open, and can be disabled with `ASHA_NUDGE=0`. Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
-| PostToolUse | Claude-only memory nudge on Read; background violation check for Write/Edit/Bash — capture moved to `/save` jsonl_reader |
-| UserPromptSubmit | Track user interaction patterns |
+| PreToolUse | Guardrails (policy-guard) plus guidance nudges — the Claude-only lexical memory nudge for Grep/Bash/WebSearch is now registry row `memory-lexical` (indexes catalogue descriptions only, deduplicates per session, caps at five, fails open, disable with `ASHA_NUDGE=0`). Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
+| PostToolUse | Claude-only memory-nudge acted-tracking on Read; background violation check for Write/Edit/Bash; guidance nudge row `suggest-compact` — capture moved to `/save` jsonl_reader |
+| UserPromptSubmit | Guidance nudge row `rp-routing` (re-asserts the per-turn RP routing directive while `rp-active`); harness-appropriate prompt passthrough |
 | Stop | Save-preflight cleanup |
 | SessionEnd | Synthesize session on clean exit; clear this session's session_state |
+
+### Guidance nudges (advisory layer)
+
+`hooks/handlers/nudge-engine.sh` is the advisory counterpart to the policy
+guard: policies constrain (deny/ask), nudges inform (context injection — a
+nudge can never block a tool call or a turn). Rows live in
+`hooks/nudges/rules.json`; users add or override rows in `~/.asha/nudges.json`
+(merged by `id`, user wins) without touching the repo. The engine resolves the
+hook event from the stdin payload's `hook_event_name`, so one argument-free
+registration serves every event and survives hook runners that do not
+shell-split command strings.
+
+Per-row gates: `tool` (anchored ERE on tool_name), `match_regex` (ERE on the
+event's text fields), `harnesses` allowlist, `marker_required`/`marker_off`,
+silence (`silence_gated`, default on), init (`requires_init`, default on),
+and an engine-managed `cooldown_hours`. Payloads: inline `inject` text, an
+`inject_file` fragment under `hooks/nudges/fragments/`, or an allowlisted
+builtin in `handlers/nudge-builtins.sh` for dynamic content (index queries,
+stateful counters).
+
+Kill switches, narrowest first: per-row `disable_env` (e.g. `ASHA_NUDGE=0`
+for `memory-lexical`), the per-row marker `Work/markers/nudge-<id>-off`
+(the legacy `rp-hook-off` marker is also honoured for `rp-routing`), and
+`Work/markers/silence` for every silence-gated row.
 
 ## Persona Plugins
 

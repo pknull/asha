@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.3.0 | Session memory, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Core** | `session` | v1.4.0 | Session memory, `/save` synthesis, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
@@ -554,6 +554,14 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.4.0 — Declarative guidance-nudge engine (2026-07-25)
+
+- New advisory counterpart to the policy guard: `hooks/handlers/nudge-engine.sh` evaluates declarative rows from `hooks/nudges/rules.json` (+ user layer `~/.asha/nudges.json`, merged by id) and injects context fragments — informational only, never blocking. Pattern extracted from severity1/claude-code-prompt-improver; its payload nudges were not adopted (largely absorbed by current harness behavior).
+- Three ad hoc injections migrated to registry rows and their bespoke scripts retired: `memory-lexical` (was `hooks/memory_nudge.sh`), `rp-routing` (directive text now a single-source fragment, was inlined in `harness-response.sh` and emitted by `user-prompt-submit.sh`), `suggest-compact` (was `handlers/suggest-compact.sh`; cooldown is now engine-managed).
+- Generic per-row gates (tool/regex/harness/marker/silence/init/cooldown), kill switches (`disable_env`, `Work/markers/nudge-<id>-off`), and priority-merged single-response output per event. Dynamic payloads via an allowlisted `nudge-builtins.sh` dispatch.
+- Event resolved from the stdin payload's `hook_event_name`: argument-free registration survives hook runners that do not shell-split command strings (Codex TOML).
+- Tests: engine coverage (RP routing claude/codex, kill switches, compact threshold/cooldown/silence, user-layer merge, harness/tool/env gates) + installer assertions retargeted; full suite green.
 
 ### Admin v0.3.0 — Proton Mail Bridge skill (2026-07-23)
 
