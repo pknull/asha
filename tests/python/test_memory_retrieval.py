@@ -118,6 +118,77 @@ class RetrievalTest(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(index.stat().st_mode), 0o600)
 
 
+class BroadEntryScrutinyTest(unittest.TestCase):
+    """Harness memory-selector discipline, ported lexically: breadth discounts
+    the score and disqualifies weak evidence at the firing gate."""
+
+    NARROW_DESC = "kelvium reactor calibration"
+    BROAD_DESC = ("xanthogloss flanged manifold recalibration " +
+                  " ".join(f"filler{i:02d}" for i in range(26)))
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="asha_broad_"))
+        self.state = self.root / "state"
+        self.log = self.root / "events.jsonl"
+        self.index = self.root / "index.json"
+        entries = [
+            memory_retrieval.Entry(
+                "narrow_case", self.NARROW_DESC, str(self.root / "narrow_case.md"),
+                "memory", tuple(memory_retrieval.tokenize(self.NARROW_DESC))),
+            memory_retrieval.Entry(
+                "broad_case", self.BROAD_DESC, str(self.root / "broad_case.md"),
+                "memory", tuple(memory_retrieval.tokenize(self.BROAD_DESC))),
+        ]
+        self.index.write_text(
+            json.dumps({"version": 1, "entries": [e.json() for e in entries]}),
+            encoding="utf-8")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def _match(self, session, pattern):
+        command = [sys.executable, str(TOOLS / "memory_nudge.py"),
+                   "--index", str(self.index), "--state-dir", str(self.state),
+                   "--log", str(self.log), "match"]
+        payload = {"session_id": session, "tool_name": "Grep",
+                   "tool_input": {"pattern": pattern}}
+        return subprocess.run(command, input=json.dumps(payload), text=True,
+                              capture_output=True, check=False)
+
+    def test_breadth_discount_prefers_narrow_entry_on_equal_overlap(self):
+        shared = "kelvium reactor calibration"
+        narrow = memory_retrieval.Entry(
+            "narrow", shared, "/m/narrow.md", "memory",
+            tuple(memory_retrieval.tokenize(shared)))
+        broad = memory_retrieval.Entry(
+            "broad", shared + " " + " ".join(f"pad{i:02d}" for i in range(30)),
+            "/m/broad.md", "memory",
+            tuple(memory_retrieval.tokenize(
+                shared + " " + " ".join(f"pad{i:02d}" for i in range(30)))))
+        ranked = memory_retrieval.rank(shared, [narrow, broad], limit=2)
+        self.assertEqual([row["id"] for row in ranked], ["narrow", "broad"])
+        self.assertGreater(ranked[0]["score"], ranked[1]["score"])
+        self.assertGreaterEqual(ranked[1]["entry_tokens"],
+                                memory_retrieval.BROAD_ENTRY_TOKENS)
+
+    def test_single_rare_token_never_fires_a_broad_entry(self):
+        result = self._match("one", "xanthogloss")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "", "lone rare token in a broad entry must not fire")
+
+    def test_broad_entry_needs_three_agreeing_tokens(self):
+        two = self._match("two", "xanthogloss flanged")
+        self.assertEqual(two.stdout, "", "two overlaps insufficient for a broad entry")
+        three = self._match("three", "xanthogloss flanged manifold")
+        self.assertIn("broad_case", three.stdout, "three agreeing tokens fire")
+
+    def test_narrow_entry_keeps_two_token_and_rare_single_paths(self):
+        rare = self._match("rare", "kelvium")
+        self.assertIn("narrow_case", rare.stdout, "rare single token still fires narrow entries")
+        pair = self._match("pair", "reactor calibration")
+        self.assertIn("narrow_case", pair.stdout, "two agreeing tokens still fire narrow entries")
+
+
 class NudgeCLITest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="asha_nudge_"))

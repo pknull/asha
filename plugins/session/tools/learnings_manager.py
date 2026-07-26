@@ -146,6 +146,7 @@ class Learning:
 
 ASHA_DIR = Path.home() / ".asha"
 LEARNINGS_DIR = ASHA_DIR / "learnings"          # OKF bundle (concept files)
+ARCHIVE_DIR_NAME = "learnings-archive"          # retired concepts (outside the bundle)
 
 RESERVED_SLUGS = {"index", "log"}               # OKF reserved filenames
 HOT_MIN_CONFIDENCE = 0.7
@@ -515,6 +516,65 @@ def render_hot_tier(
     return result + "\n"
 
 
+_INDEX_PREAMBLE = (
+    "# Learnings index\n\n"
+    "One line per learning, hot-first. The line is a hook, not the content: "
+    "Read ~/.asha/learnings/<id>.md before acting when the line is "
+    "insufficient.\n\n"
+    "---\n"
+)
+
+_INDEX_HOOK_CHARS = 150
+
+
+def _index_hook(learning: Learning, max_chars: int = _INDEX_HOOK_CHARS) -> str:
+    """Compress trigger -> action into a single whitespace-normalized hook."""
+    trigger = " ".join((learning.trigger or "").split())
+    action = " ".join((learning.action or "").split())
+    hook = f"{trigger} -> {action}" if trigger and action else (trigger or action)
+    if len(hook) > max_chars:
+        hook = hook[: max_chars - 1].rstrip() + "…"
+    return hook
+
+
+def render_index_tier(max_bytes: int = HOT_MAX_BYTES) -> str:
+    """Render a one-line-per-concept index for session-start injection.
+
+    Index-first injection: instead of the top-10 full bodies (render_hot_tier),
+    EVERY concept gets one capped line — id, category, confidence, and a
+    trigger->action hook — ordered hot-first (confidence desc, updated desc,
+    id asc). Coverage widens to the whole bundle while the injected bytes
+    shrink; bodies stay on disk for on-demand Reads (the memory-lexical nudge
+    points at them at tool-time). Byte-capped at a line boundary with an
+    explicit truncation tail so a partial index never masquerades as the
+    whole.
+    """
+    learnings = parse_learnings()
+    flat = [l for entries in learnings.values() for l in entries]
+    flat.sort(key=lambda l: l.id)
+    flat.sort(key=lambda l: l.updated or "", reverse=True)
+    flat.sort(key=lambda l: l.confidence, reverse=True)
+
+    if not flat:
+        return _INDEX_PREAMBLE
+
+    result = _INDEX_PREAMBLE
+    shown = 0
+    for learning in flat:
+        line = f"\n- {learning.id} [{learning.category} {learning.confidence}]: " \
+               f"{_index_hook(learning)}"
+        tail = f"\n\n[{len(flat) - shown - 1} more concept(s) omitted for budget — " \
+               f"full index: ~/.asha/learnings/index.md]"
+        # Reserve room for the truncation tail so the cap never silently eats it.
+        if shown > 0 and len((result + line + tail).encode("utf-8")) > max_bytes:
+            result += f"\n\n[{len(flat) - shown} more concept(s) omitted for budget — " \
+                      f"full index: ~/.asha/learnings/index.md]"
+            break
+        result += line
+        shown += 1
+    return result + "\n"
+
+
 # =============================================================================
 # Operations (public API — signatures and return dicts are frozen)
 # =============================================================================
@@ -556,6 +616,42 @@ def add_learning(
     _write_learning(learning)
     _rebuild_index()
     return {"status": "created", "id": slug, "confidence": learning.confidence}
+
+
+def retire_learning(learning_id: str, reason: str) -> Dict[str, Any]:
+    """Move a concept out of the live bundle into ~/.asha/learnings-archive/.
+
+    Retirement is for CONCLUDED records — closed acceptance records, superseded
+    patterns, one-time migrations — distinct from `contradict`, which lowers
+    confidence on a still-live pattern. The archived file keeps its full text
+    plus `retired`/`retire_reason` frontmatter; it leaves the index, the
+    session-start injection, and the nudge index (all of which read only
+    LEARNINGS_DIR). Used by /session:consolidate."""
+    path = _learning_path(learning_id)
+    if not path.exists():
+        return {"error": f"unknown learning: {learning_id}"}
+
+    archive_dir = ASHA_DIR / ARCHIVE_DIR_NAME
+    archive_dir.mkdir(parents=True, exist_ok=True)
+
+    text = path.read_text(encoding="utf-8")
+    stamp = f"retired: {_today()}\nretire_reason: {json.dumps(reason)}"
+    match = _FRONTMATTER_RE.match(text)
+    if match:
+        head = text[:match.end()]
+        closing = head.rstrip().rfind("---")
+        text = head[:closing] + stamp + "\n" + head[closing:] + text[match.end():]
+    else:
+        text = f"---\n{stamp}\n---\n\n{text}"
+
+    target = archive_dir / path.name
+    if target.exists():
+        target = archive_dir / f"{path.stem}-{_today()}{path.suffix}"
+    _atomic_write_file(target, text)
+    path.unlink()
+    _rebuild_index()
+    return {"status": "retired", "id": learning_id,
+            "archived_to": str(target), "reason": reason}
 
 
 def confirm_learning(learning_id: str, project: str, reason: str = "Pattern confirmed") -> Dict[str, Any]:
@@ -843,6 +939,11 @@ def main():
     contradict_parser.add_argument("--project", "-p", required=True, help="Project contradicting")
     contradict_parser.add_argument("--reason", "-r", required=True, help="Why it was wrong")
 
+    # Retire command (consolidation: concluded records leave the live bundle)
+    retire_parser = subparsers.add_parser("retire", help="Archive a concluded learning out of the live bundle")
+    retire_parser.add_argument("--id", "-i", required=True, help="Learning ID")
+    retire_parser.add_argument("--reason", "-r", required=True, help="Why it is concluded")
+
     # Query command
     query_parser = subparsers.add_parser("query", help="Query learnings")
     query_parser.add_argument("--category", "-c", help="Filter by category")
@@ -855,10 +956,15 @@ def main():
     # Export command
     subparsers.add_parser("export", help="Export all learnings as JSON")
 
-    # Render-hot command (session-start injection)
+    # Render-hot command (legacy full-body session-start injection)
     render_parser = subparsers.add_parser("render-hot", help="Render the hot tier for injection")
     render_parser.add_argument("--max-bytes", type=int, default=HOT_MAX_BYTES, help="Byte budget")
     render_parser.add_argument("--max-entries", type=int, default=HOT_MAX_ENTRIES, help="Entry cap")
+
+    # Render-index command (index-first session-start injection)
+    render_index_parser = subparsers.add_parser(
+        "render-index", help="Render the one-line-per-concept index for injection")
+    render_index_parser.add_argument("--max-bytes", type=int, default=HOT_MAX_BYTES, help="Byte budget")
 
     # Rebuild-index command
     subparsers.add_parser("rebuild-index", help="Regenerate index.md")
@@ -902,6 +1008,8 @@ def main():
             result = confirm_learning(args.id, args.project, args.reason)
         elif args.command == "contradict":
             result = contradict_learning(args.id, args.project, args.reason)
+        elif args.command == "retire":
+            result = retire_learning(args.id, args.reason)
         elif args.command == "query":
             result = query_learnings(
                 category=args.category,
@@ -915,6 +1023,10 @@ def main():
         elif args.command == "render-hot":
             # Plain text to stdout (consumed by session-start.sh), not JSON.
             sys.stdout.write(render_hot_tier(max_entries=args.max_entries, max_bytes=args.max_bytes))
+            return
+        elif args.command == "render-index":
+            # Plain text to stdout (consumed by session-start.sh), not JSON.
+            sys.stdout.write(render_index_tier(max_bytes=args.max_bytes))
             return
         elif args.command == "rebuild-index":
             _rebuild_index()
