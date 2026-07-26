@@ -36,6 +36,7 @@ separately from empirical verification. Codex documentation was refreshed
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
+| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ registered (UserPromptSubmit + PostToolUse). UserPromptSubmit raw-fragment injection is the documented pre-migration RP path; PostToolUse advisory text untested live | ⚠️ registered via event mapping; untested live |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
 | Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
 

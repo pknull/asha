@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
 **Version**: 2.2.0
-**Last Updated**: 2026-07-22
+**Last Updated**: 2026-07-25
 **Repository**: pknull/asha
 
 ---
@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.3.0 | Core | Memory persistence, `/save` synthesis, guardrail hooks, autonomous loops |
+| **Session** | v1.4.0 | Core | Memory persistence, `/save` synthesis, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
@@ -95,7 +95,8 @@ asha/
 │   │   ├── commands/                 # init, save, status, silence, restore, loop
 │   │   ├── agents/loop-operator.md
 │   │   ├── skills/                   # memory-maintenance, skill-creator
-│   │   ├── hooks/                    # hooks.json, handlers/, policies/rules.json
+│   │   ├── hooks/                    # hooks.json, handlers/, policies/rules.json,
+│   │   │                             #   nudges/rules.json (+ fragments/)
 │   │   ├── modules/                  # CORE, cognitive, research, memory-ops,
 │   │   │                             #   high-stakes, verbalized-sampling
 │   │   ├── templates/                # Memory Bank + loop templates
@@ -904,6 +905,7 @@ git push -u origin <branch-name>
 - `lib/install.sh` / `lib/uninstall.sh`: Install/uninstall engines
 - `plugins/session/hooks/hooks.json`: Session lifecycle hook wiring
 - `plugins/session/hooks/policies/rules.json`: PreToolUse policy guardrails
+- `plugins/session/hooks/nudges/rules.json`: Declarative guidance nudges (advisory context injection; user layer `~/.asha/nudges.json`)
 - `~/.asha/config.json`: Cross-project settings (incl. `asha_root` for bare launches)
 
 ### External References
@@ -915,6 +917,12 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.4.0 (2026-07-25) — Declarative guidance-nudge engine
+
+- Advisory counterpart to the policy guard: `hooks/handlers/nudge-engine.sh` evaluates `hooks/nudges/rules.json` (+ `~/.asha/nudges.json`, merged by id) and injects context fragments — never blocking. Pattern extracted from severity1/claude-code-prompt-improver; its payload nudges were not adopted.
+- Migrated to registry rows, bespoke scripts retired: `memory-lexical` (was `hooks/memory_nudge.sh`), `rp-routing` (fragment file replaces the text inlined in `harness-response.sh`), `suggest-compact` (was `handlers/suggest-compact.sh`).
+- Event resolves from the stdin payload's `hook_event_name` (argument-free registration); per-row gates + `disable_env` / `nudge-<id>-off` kill switches; engine-managed cooldowns.
 
 ### Admin v0.3.0 (2026-07-23) — Proton Mail Bridge skill
 
