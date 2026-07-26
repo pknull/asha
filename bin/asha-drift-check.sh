@@ -421,24 +421,56 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
         nope "$HOME_LABEL/.codex/config.toml is invalid TOML"
       fi
 
-      # Every tagged hook command path exists
+      # Every tagged hook command path exists. Commands live one level down
+      # ([[hooks.EVENT.hooks]]), and [hooks.state] is codex's trust store, not
+      # an event — the old shallow walk crashed on it and the silenced
+      # exception made this check pass vacuously.
       missing=0
+      enumerated=0
       while IFS= read -r c; do
         [[ -z "$c" ]] && continue
-        if [[ ! -e "$c" ]]; then
+        enumerated=$((enumerated+1))
+        # The command string may carry arguments; only the executable must exist.
+        exe="${c%% *}"
+        if [[ ! -e "$exe" ]]; then
           [[ $missing -eq 0 ]] && nope "tagged hook paths missing in config.toml:"
-          echo "  $c"
+          echo "  $exe"
           missing=$((missing+1))
         fi
       done < <(python3 -c "
 import tomllib
 c = tomllib.load(open('$CODEX/config.toml','rb'))
 for ev, blocks in (c.get('hooks') or {}).items():
+    if not isinstance(blocks, list):
+        continue  # [hooks.state] trust store
     for b in blocks:
-        cmd = b.get('command')
-        if cmd: print(cmd)
+        if not isinstance(b, dict):
+            continue
+        if b.get('command'):
+            print(b['command'])
+        for h in (b.get('hooks') or []):
+            if isinstance(h, dict) and h.get('command'):
+                print(h['command'])
 " 2>/dev/null)
-      [[ $missing -eq 0 ]] && pass "all hook command paths exist (codex)"
+      [[ $missing -eq 0 ]] && pass "all hook command paths exist (codex: $enumerated command(s) enumerated)"
+
+      # Feature gate: codex runs hooks only with [features] hooks = true AND
+      # per-entry persisted trust (hash-bound). A registered fence without the
+      # flag is silently inert — the exact failure verified live 2026-07-26.
+      hook_gate="$(python3 -c "
+import tomllib
+c = tomllib.load(open('$CODEX/config.toml','rb'))
+events = [k for k, v in (c.get('hooks') or {}).items() if isinstance(v, list) and v]
+feats = c.get('features') or {}
+trust = (c.get('hooks') or {}).get('state') or {}
+print(f\"{len(events)} {str(feats.get('hooks', False)).lower()} {len(trust)}\")
+" 2>/dev/null || echo "0 false 0")"
+      read -r gate_events gate_flag gate_trust <<< "$hook_gate"
+      if [[ "$gate_events" != "0" && "$gate_flag" != "true" ]]; then
+        nope "codex hooks registered but [features] hooks != true — the whole fence silently skips (rerun install: the installer now adds the flag)"
+      elif [[ "$gate_events" != "0" ]]; then
+        pass "codex hooks feature-enabled ([features] hooks = true; $gate_trust trusted entry slot(s) in [hooks.state] — hash validity is not externally verifiable, codex re-prompts on drift)"
+      fi
     fi
 
     # ───── Command-skill coverage check (shared with copilot) ─────

@@ -918,6 +918,10 @@ git push -u origin <branch-name>
 
 ## Version History
 
+### Codex hook enablement (2026-07-26) — feature gate, trust preservation, doctor coverage
+
+- `_codex_ensure_hooks_feature` adds `[features] hooks = true` when absent (never rewrites an explicit value); the fence excise now preserves codex-owned `[hooks.state]` trust subtables it previously destroyed on every reinstall (Test 106d); doctor's codex hook checks fixed (nested command walk, feature-gate + trust-slot report). Verdict: `docs/harness-enforcement.md` "Codex hook gating".
+
 ### Session v1.5.0 (2026-07-26) — Memory recall economics
 
 - Index-first injection: SessionStart injects `render-index` (one capped line per concept, whole bundle, truncation tail) instead of top-10 full bodies; `ASHA_LEARNINGS_INJECT=hot` reverts.

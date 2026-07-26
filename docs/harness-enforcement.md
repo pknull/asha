@@ -36,22 +36,30 @@ separately from empirical verification. Codex documentation was refreshed
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
-| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **mechanism verified live 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present in the payload; command argv shell-splitting confirmed). **Production hooks are OFF on this machine** — see the hook-gating note below | ⚠️ registered via event mapping; untested live |
+| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ✅ **verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below) | ⚠️ registered via event mapping; untested live |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
 | Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
 
-**Codex hook gating (0.145, verified 2026‑07‑26):** codex runs a configured
-hook only when BOTH `[features] hooks = true` is set in `config.toml` AND the
-hook has persisted trust (granted interactively; `codex exec` offers a
-per-invocation `--dangerously-bypass-hook-trust` for vetted automation).
-Without both, every hook is silently skipped — no error, no log. The
-production `~/.codex/config.toml` on the reference machine currently has
-neither, so the entire installed asha fence (session-start, policy-guard,
-save gates, nudges) is inert under codex until the operator adds the flag and
-grants trust. This gate is also a plausible contributor to the 0.142 probe
-non-fire recorded below, alongside the documented `unified_exec` interception
-limits — the two causes were not separable at the time. The isolated-home
-replay proves the fence itself works when the gate is open.
+**Codex hook gating (0.145, verified + fixed 2026‑07‑26):** codex runs a
+configured hook only when BOTH `[features] hooks = true` is set in
+`config.toml` AND the entry has persisted trust — hash-bound
+`[hooks.state]` `trusted_hash` subtables codex writes itself (granted
+interactively; `codex exec` offers a per-invocation
+`--dangerously-bypass-hook-trust` for vetted automation). Without both,
+every hook is silently skipped — no error, no log. Three defects found and
+fixed the same day: (1) the installer never set the feature flag (test
+fixtures pre-seeded it) — `_codex_ensure_hooks_feature` now adds it when
+absent and never rewrites an explicit user value; (2) codex appends its
+trust subtables mid-fence, and the old region-strip excise **destroyed
+every trust grant on reinstall** (11 production slots wiped, restored from
+backup) — the excise now preserves codex-owned `[hooks.state]` content,
+replay-tested by Test 106d; (3) the doctor's codex hook-path check crashed
+on `[hooks.state]` and passed vacuously via a silenced exception — it now
+walks the nested command arrays and additionally reports the feature gate
+and trust-slot count. The trust-wipe defect is also a plausible contributor
+to the 0.142 probe non-fire recorded below, alongside the documented
+`unified_exec` interception limits. End-to-end injection was proven by an
+isolated-home replay of the real fence (probe answered INJECTED).
 
 Guardrails enforce across the tested Claude and Copilot paths (Copilot
 single-call deny verified live on 1.0.63, 2026‑06‑24). Codex has a real native

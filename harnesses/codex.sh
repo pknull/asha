@@ -483,14 +483,51 @@ EOF
 # Hooks (TOML emission, fenced, atomic)
 # ---------------------------------------------------------------------------
 
+# Excise the asha fence, PRESERVING codex-owned content inside it: codex
+# persists hook trust as [hooks.state] subtables appended after the hook
+# arrays it trusts — which lands mid-fence, so a naive region strip destroys
+# every trust grant on reinstall (found live 2026-07-26: 11 trusted_hash
+# entries wiped). Preserved state is re-emitted after the fence region,
+# skipped entirely if a [hooks.state] table already exists outside it.
 _codex_excise_fence() {
   [[ -f "$CODEX_CONFIG_FILE" ]] || return 0
-  awk -v s="$CODEX_HOOK_FENCE_START" -v e="$CODEX_HOOK_FENCE_END" '
-    BEGIN { skip = 0 }
-    $0 == s { skip = 1; next }
-    $0 == e { skip = 0; next }
-    skip == 0 { print }
-  ' "$CODEX_CONFIG_FILE"
+  PYTHONIOENCODING=utf-8 python3 - "$CODEX_CONFIG_FILE" "$CODEX_HOOK_FENCE_START" "$CODEX_HOOK_FENCE_END" <<'PYEOF'
+import sys
+path, start, end = sys.argv[1], sys.argv[2], sys.argv[3]
+out, preserved = [], []
+in_fence = False
+in_state = False
+for line in open(path, encoding="utf-8").read().splitlines():
+    if line == start:
+        in_fence, in_state = True, False
+        continue
+    if line == end:
+        in_fence, in_state = False, False
+        continue
+    if not in_fence:
+        out.append(line)
+        continue
+    stripped = line.lstrip()
+    if stripped.startswith("[hooks.state]") or stripped.startswith('[hooks.state.'):
+        in_state = True
+        preserved.append(line)
+        continue
+    if in_state:
+        if stripped.startswith("[") and not stripped.startswith('[hooks.state'):
+            in_state = False  # a different table ends the state block; drop below
+        else:
+            preserved.append(line)
+            continue
+    # anything else inside the fence is asha-owned: dropped for the rebuild
+already_outside = any(l.lstrip().startswith("[hooks.state]")
+                      or l.lstrip().startswith('[hooks.state.') for l in out)
+if preserved and not already_outside:
+    while preserved and not preserved[-1].strip():
+        preserved.pop()
+    out += ["", "# codex-owned hook trust state (preserved across asha fence rewrites)"]
+    out += preserved
+sys.stdout.write("\n".join(out) + ("\n" if out else ""))
+PYEOF
 }
 
 _codex_emit_hooks_for_plugin() {
@@ -582,8 +619,59 @@ _codex_build_hook_block() {
   printf '%s' "$emitted"
 }
 
+# Codex runs a configured hook only when BOTH [features] hooks = true is set
+# AND the entry has persisted trust (hash-bound, granted interactively; see
+# docs/harness-enforcement.md "Codex hook gating", 2026-07-26). The installer
+# owns the fence, not [features] — so this ADDS the key only when absent and
+# never rewrites an explicit user value (hooks = false stays untouched). The
+# trust grant remains the operator's interactive step; uninstall leaves the
+# flag in place (shared config, user-visible).
+_codex_ensure_hooks_feature() {
+  [[ -f "$CODEX_CONFIG_FILE" ]] || return 0
+  # Detect first (read-only) so the backup fires only when a write follows.
+  local needs
+  needs="$(python3 -c '
+import sys, tomllib
+try:
+    feats = tomllib.load(open(sys.argv[1], "rb")).get("features") or {}
+except Exception:
+    print("no"); raise SystemExit
+print("no" if "hooks" in feats else "yes")' "$CODEX_CONFIG_FILE" 2>/dev/null || echo no)"
+  [[ "$needs" == "yes" ]] || return 0
+  _codex_backup_config_once
+  local result
+  result="$(PYTHONIOENCODING=utf-8 python3 - "$CODEX_CONFIG_FILE" <<'PYEOF'
+import os, re, sys, tempfile
+path = sys.argv[1]
+text = open(path, encoding="utf-8").read()
+try:
+    import tomllib
+    feats = tomllib.loads(text).get("features") or {}
+except Exception:
+    sys.exit(0)  # unparseable: leave alone; the doctor TOML check reports it
+if "hooks" in feats:
+    sys.exit(0)  # explicit user value (true or false) — never rewrite
+if re.search(r"(?m)^\[features\][ \t]*$", text):
+    text = re.sub(r"(?m)^\[features\][ \t]*\n", "[features]\nhooks = true\n",
+                  text, count=1)
+else:
+    text = text.rstrip("\n") + "\n\n[features]\nhooks = true\n"
+fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
+with os.fdopen(fd, "w", encoding="utf-8") as handle:
+    handle.write(text)
+os.replace(tmp, path)
+print("added")
+PYEOF
+)" || true
+  if [[ "$result" == "added" ]]; then
+    log "[codex] enabled [features] hooks = true (hooks were feature-gated off; trust grant remains interactive)"
+  fi
+}
+
 codex_install_hooks() {
   [[ -f "$CODEX_CONFIG_FILE" ]] || die "Codex config.toml not found: $CODEX_CONFIG_FILE"
+
+  _codex_ensure_hooks_feature
 
   local existing_no_fence
   existing_no_fence="$(_codex_excise_fence)"
