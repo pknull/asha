@@ -360,6 +360,132 @@ not canonical at all
             self.assertTrue(self.lm._learning_path(slug).exists(),
                             f"{slug} must survive migration")
 
+    def test_migration_stamps_superseded_banner_content_preserved(self):
+        self._seed_legacy()
+        self.mig.run(dry_run=False)
+        for name in ("learnings.md", "learnings-archive.md"):
+            content = (self.asha / name).read_text()
+            self.assertTrue(content.startswith(self.lm.SUPERSEDED_SENTINEL),
+                            f"{name} must lead with the supersession sentinel")
+        # Original entries preserved verbatim below the banner.
+        stamped_hot = (self.asha / "learnings.md").read_text()
+        self.assertIn(self.HOT, stamped_hot)
+        # Re-run: banner not duplicated, parse unaffected, no new files.
+        self.mig.run(dry_run=False)
+        self.assertEqual(
+            (self.asha / "learnings.md").read_text().count(self.lm.SUPERSEDED_SENTINEL), 1)
+        alpha = self.lm._parse_file(self.lm._learning_path("alpha"))
+        self.assertEqual(len(alpha.evidence), 3)
+
+    def test_migration_stamp_report_lists_first_run_only(self):
+        self._seed_legacy()
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.mig.run(dry_run=False)
+        self.assertEqual(json.loads(buf.getvalue())["legacy_stamped"],
+                         ["learnings.md", "learnings-archive.md"])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.mig.run(dry_run=False)
+        self.assertEqual(json.loads(buf.getvalue())["legacy_stamped"], [])
+
+    def test_migration_dry_run_writes_nothing(self):
+        self._seed_legacy()
+        import io, contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.mig.run(dry_run=True)
+        self.assertFalse(self.lm.LEARNINGS_DIR.exists(), "dry run must not create the bundle")
+        self.assertEqual((self.asha / "learnings.md").read_text(), self.HOT,
+                         "dry run must not stamp the legacy file")
+
+    def test_migration_preserves_symlink_and_stamps_external_target(self):
+        # The issue-#12 scenario: learnings.md is a dotfiles symlink; the flat
+        # file is backed up, the bundle is not.
+        dotfiles = Path(self.tmp) / "dotfiles"
+        dotfiles.mkdir()
+        target = dotfiles / "learnings.md"
+        target.write_text(self.HOT)
+        (self.asha / "learnings.md").symlink_to(target)
+
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = self.mig.run(dry_run=False)
+        self.assertEqual(rc, 0)
+        report = json.loads(buf.getvalue())
+
+        # Coverage warning surfaced in the report.
+        self.assertTrue(report["backup_coverage_warnings"],
+                        "symlinked legacy file must produce a coverage warning")
+        self.assertIn("learnings.md", report["backup_coverage_warnings"][0])
+
+        # The symlink survives; the banner landed in the external target, so the
+        # backed-up copy is self-describing as stale.
+        link = self.asha / "learnings.md"
+        self.assertTrue(link.is_symlink(), "stamping must not replace the symlink")
+        stamped = target.read_text()
+        self.assertTrue(stamped.startswith(self.lm.SUPERSEDED_SENTINEL))
+        self.assertIn(self.HOT, stamped)
+
+    def test_migration_no_coverage_warning_for_plain_files(self):
+        self._seed_legacy()
+        import io, contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.mig.run(dry_run=False)
+        self.assertEqual(json.loads(buf.getvalue())["backup_coverage_warnings"], [])
+
+
+class LegacyStatusTests(OKFLearningsTestBase):
+    def test_clean_when_no_legacy_files(self):
+        self.lm.add_learning("C", "solo", "t", "a", "p", "r")
+        status = self.lm.legacy_flat_status()
+        self.assertEqual(status["status"], "ok")
+        self.assertEqual(status["legacy"], [])
+
+    def test_flags_unstamped_decoy_next_to_live_bundle(self):
+        self.lm.add_learning("C", "solo", "t", "a", "p", "r")
+        (self.asha / "learnings.md").write_text(MigrationTests.HOT)
+        status = self.lm.legacy_flat_status()
+        self.assertEqual(status["status"], "warnings")
+        self.assertTrue(status["legacy"][0]["stale_decoy"])
+        self.assertIn("resurrect", status["warnings"][0])
+
+    def test_no_decoy_flag_without_bundle(self):
+        # Pre-migration state: flat file only. Nothing has diverged yet.
+        (self.asha / "learnings.md").write_text(MigrationTests.HOT)
+        status = self.lm.legacy_flat_status()
+        self.assertEqual(status["status"], "ok")
+        self.assertFalse(status["legacy"][0]["stale_decoy"])
+
+    def test_clean_after_migration_stamps(self):
+        (self.asha / "learnings.md").write_text(MigrationTests.HOT)
+        (self.asha / "learnings-archive.md").write_text(MigrationTests.COLD)
+        import io, contextlib
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.mig.run(dry_run=False)
+        status = self.lm.legacy_flat_status()
+        self.assertEqual(status["status"], "ok")
+        for entry in status["legacy"]:
+            self.assertTrue(entry["superseded_banner"])
+            self.assertFalse(entry["stale_decoy"])
+
+    def test_unstamped_symlink_gets_both_warnings(self):
+        self.lm.add_learning("C", "solo", "t", "a", "p", "r")
+        dotfiles = Path(self.tmp) / "dotfiles"
+        dotfiles.mkdir()
+        target = dotfiles / "learnings.md"
+        target.write_text(MigrationTests.HOT)
+        (self.asha / "learnings.md").symlink_to(target)
+        status = self.lm.legacy_flat_status()
+        self.assertEqual(status["status"], "warnings")
+        entry = status["legacy"][0]
+        self.assertTrue(entry["symlink"])
+        self.assertTrue(entry["resolves_outside_asha"])
+        self.assertEqual(len(status["warnings"]), 2,
+                         "decoy + backup-coverage warnings expected")
+
 
 class GuardrailTests(OKFLearningsTestBase):
     def test_per_file_strip_removes_only_noise(self):

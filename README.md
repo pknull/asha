@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.7.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.8.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
@@ -555,6 +555,15 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.8.0 — Learnings durability: migration decoy fix (2026-07-27)
+
+Fixes issue #12: `migrate-okf` relocated the learnings store to `~/.asha/learnings/` while leaving the legacy flat file behind untouched — silently dropping users out of existing backup arrangements (e.g. a dotfiles symlink covering `learnings.md`) and leaving a stale decoy that makes a restore look successful.
+
+- **Supersession banner** — after a successful migration, each legacy flat file is stamped (idempotently) with a banner + sentinel declaring it a frozen pre-migration snapshot; original content preserved verbatim below (still the rollback path). Stamping writes through symlinks (atomic replace of the resolved target), so an externally-tracked copy becomes self-describing as stale.
+- **Backup-coverage warning** — migration (including `--dry-run`) now warns on stderr and in the report JSON when a legacy file is a symlink or resolves outside `~/.asha`: the bundle directory the store moved to is outside that arrangement's coverage.
+- **`legacy-status` divergence check** — new `learnings_manager.py` verb, run warn-only by `/save` and `/session:consolidate`: flags an unstamped flat file next to the live bundle (the stale-decoy state where a restore would resurrect pre-migration data).
+- **Durability documented** — the bundle is local-only by default; `docs/memory-architecture.md` "Durability & backup" states it and shows how to extend a dotfiles arrangement to cover `learnings/` + `learnings-archive/`.
 
 ### Session v1.6.0 — Copilot guidance-nudge parity (2026-07-26)
 

@@ -114,9 +114,10 @@ if [[ -d "$LEARNINGS_DIR" ]]; then
     "$ASHA_ROOT/plugins/session/tools/validate.py" "$LEARNINGS_DIR" $VFLAG \
         || echo "warn: learnings bundle validation reported issues (non-fatal)" >&2
 fi
+"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" legacy-status
 ```
 
-Surface any `ERROR` lines in chat (a malformed concept file), but do not block the commit on them.
+Surface any `ERROR` lines in chat (a malformed concept file), but do not block the commit on them. Likewise surface any `warnings` from `legacy-status` — a legacy flat `learnings.md` sitting unstamped next to the live bundle means an old backup arrangement is silently tracking a stale decoy instead of the bundle (issue #12); tell the user, never block.
 
 Then run the fixture-based recall benchmark against the real memory catalogue
 and learnings bundle. This is **warn-only** and always exits zero. Surface the
