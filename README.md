@@ -57,7 +57,7 @@ Asha drives four agent CLIs from **one source corpus** (`plugins/<ns>/`). They d
 
 > **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
 
-At a glance: skills, agents, persona, the operational layer, and manual `/save` capture work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot, while OpenCode receives native files under `command/`. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated native Markdown under `agent/`, and Claude agents retain the source Markdown. OpenCode memory is manual-save only because Asha has no OpenCode SessionEnd persistence hook.
+At a glance: skills, agents, persona, the operational layer, and manual `/save` capture work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot, while OpenCode receives native files under `command/`. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated native Markdown under `agent/`, and Claude agents retain the source Markdown. Automatic clean-exit save and orphan recovery run on Claude **and Copilot** (lifecycle hooks, verified live 2026-07-27); Codex and OpenCode memory is manual-save only because Asha has no SessionEnd persistence path there.
 
 ### Why the behaviors differ
 
@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.9.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.10.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
@@ -555,6 +555,16 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.10.0 — Copilot lifecycle: auto-save + orphan recovery (2026-07-27)
+
+Closes issue #13 (wired on operator opt-in) — the last substantive Claude-parity gap on Copilot. Live-probed on 1.0.75, then verified end-to-end:
+
+- **sessionEnd verdict** — fires on clean exit with `{sessionId, timestamp, cwd, reason}`; reasons observed live: `complete` (non-interactive `-p`) and `user_exit` (interactive `/exit`); SIGKILL fires nothing. sessionStart fires at first prompt submission and carries `initialPrompt`.
+- **Lifecycle wiring** — new installer-generated `~/.copilot/hooks/asha-lifecycle.json`: sessionStart → `session-start.sh` (side effects only; context injection naturally discarded — the custom-instructions layer already injects), sessionEnd → `session-end.sh` (camelCase payload, copilot clean-exit reasons, detached save; `COPILOT_CLI=1` overrides inherited `ASHA_HARNESS`).
+- **Crash-safe orphan trail** — copilot has no per-tool event capture, so sessionStart appends one identity breadcrumb event stamped with the harness uuid; a crashed session's work is recovered from its surviving native transcript at the next session start. Verified live: SIGKILL mid-session → recovered + synthesized next start.
+- **False-orphan guard (all harnesses)** — a session whose `wwa-session` stamp is already published in activeContext.md is no longer re-recovered on every post-save session start.
+- **Doctor + uninstall symmetry** — `asha doctor copilot` now byte-checks the guardrails, nudges (previously uncovered), and lifecycle files, `--fix` rewrites them; uninstall removes the lifecycle file. New `test_orphan_detection.py` unit suite.
 
 ### Session v1.9.0 — Codex PostToolUse verdict: fires but discards (2026-07-27)
 

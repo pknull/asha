@@ -12,6 +12,11 @@
 # UNVERIFIED ASSUMPTIONS (test against live Copilot CLI):
 #   1. Hook config location: ~/.copilot/hooks/hooks.json (Q1, defaulted user-scope)
 #   2. Stop → sessionEnd event mapping (Claude has both Stop and SessionEnd)
+#      — sessionEnd itself VERIFIED live 2026-07-27 on 1.0.75: fires on clean
+#      exit with {sessionId, timestamp, cwd, reason}; reasons observed:
+#      "complete" (non-interactive -p) and "user_exit" (interactive /exit).
+#      The Stop→sessionEnd FOLD for translated hooks.json entries remains a
+#      mapping decision, not a probe result.
 #   3. PermissionRequest events have no Copilot analog (currently dropped + warned)
 #   4. Hook stdin/stdout JSON contract field names (e.g. tool_name vs toolName)
 #   5. Veto semantics — exit-code-2 vs {decision:"block"} return payload
@@ -37,6 +42,7 @@ COPILOT_HOOKS_FILE="$COPILOT_HOME/hooks/hooks.json"
 # hooks.json (Copilot loads every ~/.copilot/hooks/*.json).
 COPILOT_GUARDRAILS_FILE="$COPILOT_HOME/hooks/asha-guardrails.json"
 COPILOT_NUDGES_FILE="$COPILOT_HOME/hooks/asha-nudges.json"
+COPILOT_LIFECYCLE_FILE="$COPILOT_HOME/hooks/asha-lifecycle.json"
 
 # Events Copilot is assumed to support (camelCase). UNVERIFIED — see header.
 _COPILOT_EVENTS=(sessionStart sessionEnd userPromptSubmitted preToolUse postToolUse errorOccurred)
@@ -415,6 +421,53 @@ copilot_install_nudge_hooks() {
   say "[copilot] installed guidance nudges -> $COPILOT_NUDGES_FILE"
 }
 
+# Lifecycle side-effect hooks (Claude parity; issue #13). Verified live on
+# 1.0.75 (2026-07-27): sessionStart fires with {sessionId, timestamp, cwd,
+# source, initialPrompt}; sessionEnd fires on clean exit with {sessionId,
+# timestamp, cwd, reason} — reason "complete" (-p runs) / "user_exit"
+# (interactive /exit). Handlers are the same event-specific scripts Claude
+# registers:
+#   sessionStart -> session-start.sh  (orphan recovery + marker cleanup; its
+#                   raw-stdout context injection is DISCARDED by copilot —
+#                   deliberate: the custom-instructions layer already injects
+#                   the operational context at launch, so side effects only)
+#   sessionEnd   -> session-end.sh    (detached automatic save; copilot's
+#                   camelCase payload + clean-exit reasons handled there)
+copilot_install_lifecycle_hooks() {
+  local start_h="$PLUGINS_DIR/session/hooks/handlers/session-start.sh"
+  local end_h="$PLUGINS_DIR/session/hooks/handlers/session-end.sh"
+  if [[ ! -x "$start_h" || ! -x "$end_h" ]]; then
+    log "[copilot] lifecycle handlers missing/not executable; skipping lifecycle hooks"
+    return 0
+  fi
+  local abs_start abs_end content
+  abs_start="$(resolve_path "$start_h")"
+  abs_end="$(resolve_path "$end_h")"
+
+  content="$(jq -nc --arg s "$abs_start" --arg e "$abs_end" '{
+    version: 1,
+    hooks: {
+      sessionStart: [{type:"command", bash:$s, timeoutSec:60}],
+      sessionEnd:   [{type:"command", bash:$e, timeoutSec:30}]
+    }
+  }')" || { log "[copilot] failed to build lifecycle json; skipping"; return 0; }
+
+  if [[ $DRY_RUN -eq 1 ]]; then
+    say "[copilot] would write $COPILOT_LIFECYCLE_FILE (lifecycle side effects -> session-start/end)"
+    return 0
+  fi
+
+  ensure_dir "$(dirname "$COPILOT_LIFECYCLE_FILE")"
+  if [[ -f "$COPILOT_LIFECYCLE_FILE" ]] \
+     && [[ "$(jq -S . "$COPILOT_LIFECYCLE_FILE" 2>/dev/null)" == "$(printf '%s' "$content" | jq -S .)" ]]; then
+    log "[copilot] lifecycle hooks unchanged"
+    return 0
+  fi
+  local tmp="$COPILOT_LIFECYCLE_FILE.tmp.$$"
+  printf '%s\n' "$content" > "$tmp" && mv "$tmp" "$COPILOT_LIFECYCLE_FILE"
+  say "[copilot] installed lifecycle hooks -> $COPILOT_LIFECYCLE_FILE"
+}
+
 # ---------------------------------------------------------------------------
 # Entry point: copilot_install
 # ---------------------------------------------------------------------------
@@ -454,6 +507,7 @@ copilot_install() {
   say "== [copilot] hooks =="
   copilot_install_hooks
   copilot_install_nudge_hooks
+  copilot_install_lifecycle_hooks
   asha_artifact_finalize copilot "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)"
 }
 
@@ -529,6 +583,15 @@ copilot_uninstall() {
     else
       rm -f "$COPILOT_NUDGES_FILE"
       say "[copilot] removed guidance nudges ($COPILOT_NUDGES_FILE)"
+    fi
+  fi
+
+  if [[ -f "$COPILOT_LIFECYCLE_FILE" ]]; then
+    if [[ $DRY_RUN -eq 1 ]]; then
+      say "[copilot] would remove $COPILOT_LIFECYCLE_FILE"
+    else
+      rm -f "$COPILOT_LIFECYCLE_FILE"
+      say "[copilot] removed lifecycle hooks ($COPILOT_LIFECYCLE_FILE)"
     fi
   fi
 

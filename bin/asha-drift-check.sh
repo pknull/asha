@@ -560,6 +560,62 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
       fi
     fi
 
+    # ───── Guidance nudges file matches what the installer emits ─────
+    nudges="$COPILOT/hooks/asha-nudges.json"
+    nudge_engine="$ASHA/plugins/session/hooks/handlers/nudge-engine.sh"
+    if [[ ! -x "$nudge_engine" ]]; then
+      nope "nudge engine missing or not executable: $nudge_engine"
+    elif [[ ! -f "$nudges" ]]; then
+      nope "nudges file missing: $nudges (run ./install.sh --target copilot)"
+    elif ! jq empty "$nudges" 2>/dev/null; then
+      nope "nudges file is invalid JSON: $nudges"
+    else
+      expected="$(jq -nc --arg e "$nudge_engine" '{
+        version: 1,
+        hooks: {
+          userPromptSubmitted: [{type:"command", bash:($e + " UserPromptSubmit"), timeoutSec:10}],
+          postToolUse:         [{type:"command", bash:($e + " PostToolUse"),      timeoutSec:10}]
+        }
+      }')"
+      if [[ "$(jq -S . "$nudges")" == "$(jq -S . <<<"$expected")" ]]; then
+        pass "nudges file matches installer-expected content"
+      elif [[ $FIX -eq 1 ]]; then
+        printf '%s\n' "$expected" > "$nudges"
+        echo "FIXED  rewrote nudges file: $nudges"
+      else
+        nope "nudges file content drifted from installer-expected (pass --fix or rerun ./install.sh --target copilot)"
+      fi
+    fi
+
+    # ───── Lifecycle hooks file matches what the installer emits ─────
+    lifecycle="$COPILOT/hooks/asha-lifecycle.json"
+    start_handler="$ASHA/plugins/session/hooks/handlers/session-start.sh"
+    end_handler="$ASHA/plugins/session/hooks/handlers/session-end.sh"
+    if [[ ! -x "$start_handler" || ! -x "$end_handler" ]]; then
+      nope "lifecycle handlers missing or not executable: $start_handler / $end_handler"
+    elif [[ ! -f "$lifecycle" ]]; then
+      nope "lifecycle file missing: $lifecycle (run ./install.sh --target copilot)"
+    elif ! jq empty "$lifecycle" 2>/dev/null; then
+      nope "lifecycle file is invalid JSON: $lifecycle"
+    else
+      expected="$(jq -nc --arg s "$start_handler" --arg e "$end_handler" '{
+        version: 1,
+        hooks: {
+          sessionStart: [{type:"command", bash:$s, timeoutSec:60}],
+          sessionEnd:   [{type:"command", bash:$e, timeoutSec:30}]
+        }
+      }')"
+      if [[ "$(jq -S . "$lifecycle")" == "$(jq -S . <<<"$expected")" ]]; then
+        pass "lifecycle file matches installer-expected content"
+        info_line "sessionEnd auto-save verified live on 1.0.75 (reasons: complete/user_exit); silence marker disables per-project"
+      elif [[ $FIX -eq 1 ]]; then
+        printf '%s\n' "$expected" > "$lifecycle"
+        echo "FIXED  rewrote lifecycle file: $lifecycle"
+      else
+        nope "lifecycle file content drifted from installer-expected (pass --fix or rerun ./install.sh --target copilot)"
+      fi
+    fi
+
     # ───── Context (never failures) ─────
     info_line "persona loads via 'asha copilot' wrapper only (by design); plain 'copilot' is persona-free"
     if command -v copilot >/dev/null 2>&1; then
