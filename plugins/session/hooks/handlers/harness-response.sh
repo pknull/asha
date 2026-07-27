@@ -37,7 +37,7 @@ user_prompt_submit_noop() {
 user_prompt_submit_final_prompt() {
     local prompt="$1"
     case "$(asha_harness)" in
-        codex|opencode)
+        codex)
             # Codex rejects Claude's {"prompt": ...} response shape for this
             # event. Empty JSON is the portable no-op.
             hook_noop
@@ -51,7 +51,7 @@ user_prompt_submit_final_prompt() {
 pretooluse_ask() {
     local reason="$1"
     case "$(asha_harness)" in
-        codex|opencode)
+        codex)
             # Codex has no hook-mediated ask channel here. Preserve safety by
             # degrading ask -> deny with the same message on stderr.
             printf '%s\n' "$reason" >&2
@@ -80,7 +80,7 @@ pretooluse_policy_ask() {
     local reason="$2"
     local override_hint="${3:-}"
     case "$(asha_harness)" in
-        codex|opencode)
+        codex)
             pretooluse_deny "BLOCKED by Asha policy [$policy_id]: ${reason}${override_hint}"
             ;;
         *)

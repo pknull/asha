@@ -13,7 +13,6 @@ from unittest import mock
 REPO = Path(__file__).resolve().parents[2]
 TOOLS = REPO / "plugins/session/tools"
 SESSION_END = REPO / "plugins/session/hooks/handlers/session-end.sh"
-OPENCODE_POLICY = REPO / "plugins/session/hooks/handlers/opencode-policy-adapter.sh"
 SAVE_SESSION = REPO / "plugins/session/tools/save-session.sh"
 sys.path.insert(0, str(TOOLS))
 
@@ -128,30 +127,6 @@ class CalibrationPolicyTests(unittest.TestCase):
                 voice.assert_called_once()
                 keeper.assert_called_once()
 
-
-class OpenCodePolicyAdapterTests(unittest.TestCase):
-    def _run(self, payload):
-        return subprocess.run(
-            ["bash", str(OPENCODE_POLICY)], input=json.dumps(payload), text=True,
-            capture_output=True, timeout=10,
-        )
-
-    def test_policy_ask_degrades_to_deny(self):
-        proc = self._run({
-            "sessionID": "ses_test", "tool": "bash",
-            "args": {"command": "find /home"},
-        })
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("BLOCKED", proc.stderr)
-
-    def test_secret_file_is_denied(self):
-        proc = self._run({"tool": "read", "args": {"filePath": "/tmp/.env"}})
-        self.assertEqual(proc.returncode, 2)
-        self.assertIn("Secrets file access denied", proc.stderr)
-
-    def test_unmatched_tool_is_allowed(self):
-        proc = self._run({"tool": "bash", "args": {"command": "printf ok"}})
-        self.assertEqual(proc.returncode, 0, proc.stderr)
 
 
 if __name__ == "__main__":

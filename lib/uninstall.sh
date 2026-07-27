@@ -111,7 +111,7 @@ uninstall.sh / `asha uninstall` — reverse the symlink-mount install.
 
 Usage:
   ./uninstall.sh [--target T] [--dry-run] [--verbose]
-  asha uninstall <claude|codex|copilot|opencode|both|all> [--dry-run] [--verbose]
+  asha uninstall <claude|codex|copilot|both|all> [--dry-run] [--verbose]
 
 Targets:
   claude | codex | copilot | both (claude+codex) | all (claude+codex+copilot)

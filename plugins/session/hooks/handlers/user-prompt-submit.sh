@@ -13,7 +13,7 @@ set -euo pipefail
 #     handlers/nudge-engine.sh, registered on this same event).
 #
 # What remains: the silence-mode noop and the prompt passthrough contract
-# (Claude: {prompt: ...}; Codex/OpenCode: {} — see harness-response.sh).
+# (Claude: {prompt: ...}; Codex: {} — see harness-response.sh).
 
 # Source common utilities
 source "$(dirname "$0")/common.sh"

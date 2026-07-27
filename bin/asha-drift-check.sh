@@ -5,7 +5,7 @@
 # `asha doctor` is the front door for this script (lib/doctor.sh).
 #
 # Usage:
-#   asha-drift-check.sh [--target {claude,codex,copilot,opencode,all}] [--fix]
+#   asha-drift-check.sh [--target {claude,codex,copilot,all}] [--fix]
 #
 # Default target is 'all'. Per-target flags scope the checks.
 # --fix self-heals stale codex/copilot command-skills (regenerates SKILL.md
@@ -30,7 +30,6 @@ source "$ASHA/harnesses/generated-artifacts.sh"
 CLAUDE="$(asha_harness_home claude)"
 CODEX="$(asha_harness_home codex)"
 COPILOT="$(asha_harness_home copilot)"
-OPENCODE="$(asha_harness_home opencode)"
 HOME_LABEL="~"
 TARGET="all"
 FIX=0          # --fix: self-heal stale codex command-skills (audit-only otherwise)
@@ -625,38 +624,6 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
     fi
     [[ -f "$COPILOT/copilot-instructions.md" ]] \
       && info_line "user-managed $COPILOT/copilot-instructions.md present (not asha-owned; auto-loads globally)"
-  fi
-fi
-
-# ===========================================================================
-# OpenCode harness checks
-# ===========================================================================
-
-if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
-  section "opencode harness"
-  opencode_manifest="$(asha_artifact_manifest_path opencode)"
-  opencode_link="$(find "$OPENCODE/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null || true)"
-  if [[ ! -f "$opencode_manifest" && -z "$opencode_link" ]]; then
-    pass "opencode not configured by Asha (skipping opencode checks)"
-  else
-    check_dangling "$OPENCODE" opencode skills:1
-    manifest_out="$(asha_artifact_doctor opencode 2>&1)"; manifest_rc=$?
-    if [[ $manifest_rc -eq 0 ]]; then
-      pass "generated-artifact ownership manifest clean (opencode)"
-    elif [[ $manifest_rc -eq 2 ]]; then
-      nope "generated-artifact ownership manifest missing (opencode; reinstall required)"
-    else
-      nope "generated-artifact ownership drift (opencode):"
-      printf '%s\n' "$manifest_out" | sed 's/^/  /'
-    fi
-    adapter="$ASHA/plugins/session/hooks/handlers/opencode-policy-adapter.sh"
-    [[ -x "$adapter" ]] \
-      && pass "OpenCode policy adapter is executable" \
-      || nope "OpenCode policy adapter missing or not executable: $adapter"
-    [[ -f "$OPENCODE/plugin/asha-guardrails.js" ]] \
-      && pass "OpenCode tool.execute.before guardrail plugin installed" \
-      || nope "OpenCode guardrail plugin missing: $OPENCODE/plugin/asha-guardrails.js"
-    info_line "persona loads via 'asha opencode' wrapper only; plain 'opencode' is persona-free"
   fi
 fi
 

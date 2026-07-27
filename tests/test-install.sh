@@ -77,9 +77,6 @@ fi
 [[ -f "$SANDBOX/.codex/rules/asha.rules" ]] \
   && ok "Codex native rules file exists" \
   || fail "Codex native rules file exists"
-[[ -n "$(find "$SANDBOX/.config/opencode/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null)" ]] \
-  && ok "OpenCode skills include a symlink mount" \
-  || fail "OpenCode skills include a symlink mount"
 jq -e --arg root "$REPO_ROOT" '.asha_root == $root' "$SANDBOX/.asha/config.json" >/dev/null \
   && ok "identity config records asha_root" \
   || fail "identity config records asha_root"
@@ -110,9 +107,6 @@ fi
 [[ -n "$(find "$SANDBOX/.claude/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null)" ]] \
   && ok "Claude mounts survive Codex failure" \
   || fail "Claude mounts survive Codex failure"
-[[ -n "$(find "$SANDBOX/.config/opencode/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null)" ]] \
-  && ok "OpenCode runs after Codex failure" \
-  || fail "OpenCode runs after Codex failure"
 grep -q '^install summary:$' <<<"$isolation_out" && grep -q '^  codex: FAILED$' <<<"$isolation_out" \
   && ok "per-harness summary names the Codex failure" \
   || fail "per-harness summary names the Codex failure"
