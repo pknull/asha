@@ -57,7 +57,7 @@ Asha drives four agent CLIs from **one source corpus** (`plugins/<ns>/`). They d
 
 > **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
 
-At a glance: skills, agents, persona, the operational layer, and manual `/save` capture work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot, while OpenCode receives native files under `command/`. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated native Markdown under `agent/`, and Claude agents retain the source Markdown. Automatic clean-exit save and orphan recovery run on Claude **and Copilot** (lifecycle hooks, verified live 2026-07-27); Codex and OpenCode memory is manual-save only because Asha has no SessionEnd persistence path there.
+At a glance: skills, agents, persona, and the operational layer work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot, while OpenCode receives native files under `command/`. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated native Markdown under `agent/`, and Claude agents retain the source Markdown. Automatic clean-exit save and orphan recovery run on Claude **and Copilot** (lifecycle hooks, verified live 2026-07-27); Codex memory is manual-save only because Asha has no SessionEnd persistence path there. OpenCode ≥1.18 moved transcripts to sqlite, which the save pipeline does not read yet — even manual `/save` is broken there until the sqlite backend lands (verdict: harness-enforcement.md "Plugin API survey").
 
 ### Why the behaviors differ
 
@@ -555,6 +555,10 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### OpenCode plugin-API survey — verdicts for all four parity questions (2026-07-27)
+
+Closes issue #14 with the probe-first method (isolated `XDG_*` rig, instrumented plugin, local ollama model). Live verdicts in `docs/harness-enforcement.md` "Plugin API survey": the plugin surface is far richer than the one `tool.execute.before` hook asha uses — `chat.message` fires per user prompt, a catch-all `event` stream delivers `session.idle` (end of turn; no process-exit event exists), and `experimental.chat.system.transform` **injects** (sentinel quoted back by the model — the guidance-nudge channel, filed as #16). Two negatives verified: pushing a synthetic part in `chat.message` persists to the store but never reaches the LLM payload, and opencode ≥1.18 moved transcripts to sqlite (`opencode.db`), which jsonl_reader does not read — **`/save` is broken on current opencode** until the sqlite backend lands (filed as #17; at-a-glance claims corrected).
 
 ### Session v1.10.0 — Copilot lifecycle: auto-save + orphan recovery (2026-07-27)
 
