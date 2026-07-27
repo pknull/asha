@@ -36,7 +36,7 @@ separately from empirical verification. Codex documentation was refreshed
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
-| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ✅ **verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below) | ✅ **verified live + wired 2026‑07‑26 on 1.0.68** (`hooks/asha-nudges.json`: userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; production RP probe answered INJECTED — see the Copilot hook contract note below) |
+| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **UserPromptSubmit verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below). **PostToolUse fires but stdout is discarded — no injection channel for that event** (verified live 2026‑07‑27; see the PostToolUse note below); the `suggest-compact` row is harness-gated to claude+copilot accordingly | ✅ **verified live + wired 2026‑07‑26 on 1.0.68** (`hooks/asha-nudges.json`: userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; production RP probe answered INJECTED — see the Copilot hook contract note below) |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
 | Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
 
@@ -60,6 +60,30 @@ and trust-slot count. The trust-wipe defect is also a plausible contributor
 to the 0.142 probe non-fire recorded below, alongside the documented
 `unified_exec` interception limits. End-to-end injection was proven by an
 isolated-home replay of the real fence (probe answered INJECTED).
+
+**Codex PostToolUse (0.145, verified live 2026‑07‑27):** four isolated‑`CODEX_HOME`
+probes (`--dangerously-bypass-hook-trust`; UserPromptSubmit sentinel as the
+positive control, which injected in every run). Findings: (1) **fires** — for
+plain shell (`tool_name: "Bash"`, identical with `unified_exec = true`) and for
+a successful `apply_patch` (`tool_name: "apply_patch"`, patch text in
+`tool_input.command`); it does **not** fire for a tool call rejected by the
+sandbox/approval layer. (2) **Payload** is the full Claude-shaped envelope —
+`hook_event_name` present (argument-free nudge-engine registration resolves the
+event), plus `tool_name`/`tool_input`/`tool_response`/`tool_use_id`/
+`permission_mode`/`cwd`/`session_id`/`turn_id`/`transcript_path` — so all row
+gates work. (3) **Hook stdout is discarded entirely**: neither raw text, the
+legacy raw+`{}` shape, nor anything else reaches the model or even the session
+transcript (zero sentinel occurrences); there is no PostToolUse injection
+channel to emit for, so the correct adjustment was gating the `suggest-compact`
+row (`harnesses: [claude, copilot]`) rather than changing the emission — an
+ungated row burned the shared tool-count and stamped the 2h cooldown for output
+codex discards, suppressing the nudge for a later Claude session. Bonus
+findings: codex **honors `matcher`** (a `Edit|Write|MultiEdit` matcher filtered
+the Bash call) and **aliases `apply_patch` into that matcher class** while
+reporting the native tool name in the payload — so the production
+post-edit-lint registration does fire on codex file edits, though its
+Claude-style `tool_input.file_path` extraction sees a patch blob instead and
+fail-opens.
 
 **Copilot hook contract (1.0.68, verified live 2026‑07‑26):** hook files under
 `~/.copilot/hooks/*.json` fire without any feature flag or trust grant.
@@ -143,12 +167,20 @@ consistent with the documented `unified_exec` gap. It does **not** establish
 that all Codex hooks or all PreToolUse targets are inert, and the earlier text
 claiming that `apply_patch` and MCP were unsupported was incorrect.
 
+**0.145 live results (2026-07-26/27):** UserPromptSubmit fires and its raw
+stdout injects (production-enabled); PostToolUse fires on shell and successful
+`apply_patch` paths with a full Claude-shaped payload but **discards hook
+stdout** — advisory injection is impossible on that event (full verdict: "Codex
+PostToolUse" above). Matchers are honored, with `apply_patch` aliased into the
+`Edit|Write|MultiEdit` class.
+
 **Asha implementation:** Persona plus required operational context are supplied
 through the wrapper's `model_instructions_file`. Asha also installs native hook
 configuration and `rules/asha.rules`. The hooks may protect supported tool paths;
 the rules add coarse approval policy for selected shell prefixes. Neither layer
-should be described as full containment. A fresh live hook matrix should be run
-before claiming behavior for Codex versions newer than the recorded 0.142 probe.
+should be described as full containment. Live probes now cover 0.145 for
+UserPromptSubmit and PostToolUse; PreToolUse coverage beyond the 0.142 shell
+probe remains unverified — re-probe before claiming it for newer versions.
 
 ### GitHub Copilot CLI 1.0.63 — persona, operational, AND guardrails all work
 

@@ -2192,6 +2192,47 @@ else
 fi
 
 # ============================================================================
+# Test 92f: suggest-compact harness gate — codex skipped, copilot fires
+# ============================================================================
+# Codex 0.145 fires PostToolUse but discards hook stdout (verified live
+# 2026-07-27; harness-enforcement.md "Codex PostToolUse"), so the row carries
+# harnesses: [claude, copilot]. Under codex the row must be skipped BEFORE the
+# builtin runs: no counter increment, no cooldown stamp — an ungated row burned
+# the 2h cooldown on discarded output, suppressing the nudge for a later
+# Claude session. Copilot must still fire (additionalContext shape).
+echo -n "Test 92f: suggest-compact skips codex (counter untouched), fires copilot... "
+TEST92F_DIR=$(mktemp -d)
+TEST92F_HOME=$(mktemp -d)
+mkdir -p "$TEST92F_DIR/Work/markers"
+mkdir -p "$TEST92F_DIR/.asha"
+echo '{"initialized": true}' > "$TEST92F_DIR/.asha/config.json"
+echo 99 > "$TEST92F_DIR/Work/markers/tool-count"
+export CLAUDE_PROJECT_DIR="$TEST92F_DIR"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+CODEX_OUT=$(echo '{"tool_name": "Bash"}' | HOME="$TEST92F_HOME" ASHA_HARNESS=codex "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+CODEX_COUNT=$(cat "$TEST92F_DIR/Work/markers/tool-count" 2>/dev/null || echo missing)
+CODEX_COOLDOWN=0
+[[ -f "$TEST92F_DIR/Work/markers/nudge-suggest-compact-cooldown" ]] && CODEX_COOLDOWN=1
+
+COPILOT_OUT=$(echo '{"tool_name": "Bash"}' | HOME="$TEST92F_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+COPILOT_CTX=$(printf '%s' "$COPILOT_OUT" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+rm -rf "$TEST92F_DIR" "$TEST92F_HOME"
+
+if [[ "$CODEX_OUT" == "{}" && "$CODEX_COUNT" == "99" && $CODEX_COOLDOWN -eq 0 \
+      && "$COPILOT_CTX" == *"Context check"* ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$CODEX_OUT" != "{}" ]] && echo "  codex not skipped: ${CODEX_OUT:0:120}..."
+    [[ "$CODEX_COUNT" != "99" ]] && echo "  codex touched tool-count (got $CODEX_COUNT, want untouched 99)"
+    [[ $CODEX_COOLDOWN -eq 1 ]] && echo "  codex stamped the cooldown marker"
+    [[ "$COPILOT_CTX" != *"Context check"* ]] && echo "  copilot did not fire: ${COPILOT_OUT:0:120}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 93: All commands have description frontmatter
 # ============================================================================
 echo -n "Test 93: All commands have description frontmatter... "

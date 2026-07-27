@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.8.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.9.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
@@ -918,6 +918,11 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.9.0 (2026-07-27) — Codex PostToolUse verdict: fires but discards (issue #15)
+
+- Live-probed codex 0.145 PostToolUse (isolated `CODEX_HOME`, UserPromptSubmit sentinel as positive control): the event fires for shell and successful `apply_patch` with a full Claude-shaped payload (`hook_event_name` present — argument-free registration works; native tool names: `Bash`, `apply_patch`), but hook stdout is discarded entirely — no injection channel exists for this event. Codex honors `matcher` and aliases `apply_patch` into `Edit|Write|MultiEdit`.
+- `suggest-compact` row harness-gated to claude+copilot: an ungated row burned tool-count and the 2h cooldown on discarded output, suppressing the nudge for later Claude sessions. Test 92f guards the gate. Verdict: `docs/harness-enforcement.md` "Codex PostToolUse".
 
 ### Session v1.8.0 (2026-07-27) — Learnings durability: migration decoy fix (issue #12)
 
