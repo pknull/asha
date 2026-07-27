@@ -9,11 +9,24 @@ and writes one concept file per learning into ~/.asha/learnings/ (plus index.md)
 via learnings_manager's renderer + atomic writer.
 
 Guarantees:
-  * Non-destructive  — legacy files are READ ONLY; never modified or deleted.
-                       They are the rollback path.
+  * Content-preserving — legacy entries are never altered or deleted; the files
+                       remain the rollback path. After a successful migration
+                       each legacy file gains a prepended supersession banner
+                       (original content verbatim below it) so it can no longer
+                       masquerade as a current store — a stale-looking-current
+                       flat file is a decoy that silently breaks backup
+                       arrangements (see issue #12).
+  * Symlink-safe     — banner stamping writes through symlinks (atomic replace
+                       of the resolved target), so a dotfiles-tracked copy
+                       becomes self-describing as stale while the symlink at
+                       ~/.asha survives. When a legacy file IS a symlink (or
+                       resolves outside ~/.asha), the migration additionally
+                       warns that the new bundle directory is outside that
+                       backup arrangement's coverage.
   * Idempotent       — existing concept files are the base; legacy entries merge
                        in (evidence unioned, max confidence kept). Re-running, or
-                       running after a save already created some files, is safe.
+                       running after a save already created some files, is safe;
+                       the banner is stamped at most once.
   * Reported, not dropped — '### ' blocks that don't match the canonical schema
                        are counted and reported; they remain in the legacy file.
 
@@ -114,6 +127,63 @@ def _merge(into: dict, learning: lm.Learning) -> None:
     existing.updated = max(d for d in (existing.updated, learning.updated) if d) if (existing.updated or learning.updated) else lm._today()
 
 
+def _superseded_banner() -> str:
+    return (
+        f"{lm.SUPERSEDED_SENTINEL}\n"
+        f"> **SUPERSEDED {lm._today()}** — this flat file was migrated to the OKF concept\n"
+        f"> bundle at `~/.asha/learnings/` and is **no longer updated**. It is retained\n"
+        f"> verbatim below as a frozen pre-migration snapshot (rollback path only).\n"
+        f">\n"
+        f"> If this file is under backup or version control (e.g. a dotfiles symlink),\n"
+        f"> move that coverage to the `learnings/` and `learnings-archive/` directories —\n"
+        f"> restoring from this file alone would resurrect pre-migration state.\n"
+        f"\n"
+    )
+
+
+def _stamp_superseded(path: Path) -> bool:
+    """Prepend the supersession banner to a legacy flat file (idempotent).
+
+    Writes through symlinks — atomic replace of the *resolved* target — so the
+    symlink at the legacy path survives and an externally-tracked copy becomes
+    self-describing as stale. Returns True iff the file was stamped this call.
+    """
+    if not path.exists():
+        return False
+    content = path.read_text(encoding="utf-8")
+    if lm.SUPERSEDED_SENTINEL in content:
+        return False
+    lm._atomic_write_file(path.resolve(), _superseded_banner() + content)
+    return True
+
+
+def _backup_coverage_warnings() -> list:
+    """One warning per legacy file whose backing store lives outside ~/.asha.
+
+    Such a file is (typically) covered by an existing backup arrangement — a
+    dotfiles symlink being the natural case — that does NOT cover the bundle
+    directory the store is moving to. Silence here is how a user ends up with a
+    plausible-looking stale backup and an unprotected live store.
+    """
+    warnings = []
+    asha_resolved = lm.ASHA_DIR.resolve()
+    for path in (LEGACY_HOT, LEGACY_COLD):
+        if not (path.exists() or path.is_symlink()):
+            continue
+        try:
+            outside = asha_resolved not in path.resolve().parents
+        except OSError:
+            outside = False
+        if path.is_symlink() or outside:
+            warnings.append(
+                f"{path} resolves outside ~/.asha (symlink/external target). The live "
+                f"store is moving to {lm.LEARNINGS_DIR}/ — a directory that arrangement "
+                f"does NOT cover. Extend your backup/VCS to the bundle directory; the "
+                f"flat file is frozen at migration and will no longer be updated."
+            )
+    return warnings
+
+
 def run(dry_run: bool = False) -> int:
     # Base the merge on any existing concept files (idempotency / post-save safety),
     # then fold in legacy hot, then legacy cold.
@@ -133,6 +203,7 @@ def run(dry_run: bool = False) -> int:
         _merge(merged, l)
 
     new_slugs = [s for s in merged if s not in existing_slugs]
+    coverage_warnings = _backup_coverage_warnings()
     report = {
         "legacy_hot": str(LEGACY_HOT),
         "legacy_hot_present": LEGACY_HOT.exists(),
@@ -146,11 +217,14 @@ def run(dry_run: bool = False) -> int:
         "total_after": len(merged),
         "target_dir": str(lm.LEARNINGS_DIR),
         "new_filenames": sorted(f"{s}.md" for s in new_slugs),
+        "backup_coverage_warnings": coverage_warnings,
     }
 
     if hot_unparsed + cold_unparsed:
         print(f"warning: {hot_unparsed + cold_unparsed} non-canonical '### ' block(s) "
               f"left in legacy files (not migrated; legacy retained).", file=sys.stderr)
+    for warning in coverage_warnings:
+        print(f"warning: {warning}", file=sys.stderr)
 
     if dry_run:
         report["dry_run"] = True
@@ -161,8 +235,11 @@ def run(dry_run: bool = False) -> int:
         lm._atomic_write_file(lm._learning_path(learning.id), lm._render_learning(learning))
     lm._rebuild_index()
 
+    stamped = [p.name for p in (LEGACY_HOT, LEGACY_COLD) if _stamp_superseded(p)]
+
     report["dry_run"] = False
     report["legacy_retained"] = True
+    report["legacy_stamped"] = stamped
     print(json.dumps(report, indent=2))
     return 0
 

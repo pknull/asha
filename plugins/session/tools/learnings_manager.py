@@ -27,6 +27,7 @@ Usage:
     python learnings_manager.py render-hot --max-bytes 3000   # session-start injection
     python learnings_manager.py rebuild-index
     python learnings_manager.py migrate-okf [--dry-run]       # one-time flat->dir migration
+    python learnings_manager.py legacy-status                 # divergence check vs legacy flat files
 """
 
 import os
@@ -147,6 +148,14 @@ class Learning:
 ASHA_DIR = Path.home() / ".asha"
 LEARNINGS_DIR = ASHA_DIR / "learnings"          # OKF bundle (concept files)
 ARCHIVE_DIR_NAME = "learnings-archive"          # retired concepts (outside the bundle)
+
+# Legacy flat stores superseded by the bundle. After a successful migration,
+# migrate_learnings_to_okf stamps each with this sentinel; a flat file that
+# still exists next to a live bundle WITHOUT it is a stale decoy (it looks like
+# a current store — and may be the only copy a backup arrangement tracks —
+# while the live bundle diverges silently).
+LEGACY_FLAT_NAMES = ("learnings.md", "learnings-archive.md")
+SUPERSEDED_SENTINEL = "<!-- asha:superseded-by-okf -->"
 
 RESERVED_SLUGS = {"index", "log"}               # OKF reserved filenames
 HOT_MIN_CONFIDENCE = 0.7
@@ -906,6 +915,66 @@ def link_candidates(days: int = 7) -> Dict[str, Any]:
     }
 
 
+def legacy_flat_status() -> Dict[str, Any]:
+    """Divergence check between the live OKF bundle and the legacy flat files.
+
+    Reports, per surviving legacy file: whether it is a symlink or resolves
+    outside ~/.asha (i.e. an external backup arrangement covers the flat file
+    but not the bundle), whether it carries the migrator's supersession banner,
+    and whether it is a stale decoy (present next to a live bundle, unstamped).
+    Warn-only: callers (/save, /session:consolidate) surface `warnings`, never
+    block on them.
+    """
+    bundle_present = LEARNINGS_DIR.is_dir()
+    asha_resolved = ASHA_DIR.resolve()
+    legacy: List[Dict[str, Any]] = []
+    warnings: List[str] = []
+    for name in LEGACY_FLAT_NAMES:
+        path = ASHA_DIR / name
+        if not (path.exists() or path.is_symlink()):
+            continue
+        is_symlink = path.is_symlink()
+        try:
+            outside = asha_resolved not in path.resolve().parents
+        except OSError:
+            outside = False
+        try:
+            stamped = SUPERSEDED_SENTINEL in path.read_text(encoding="utf-8")
+        except OSError:
+            stamped = False
+        stale_decoy = bundle_present and not stamped
+        legacy.append({
+            "path": str(path),
+            "symlink": is_symlink,
+            "resolves_outside_asha": outside,
+            "superseded_banner": stamped,
+            "stale_decoy": stale_decoy,
+        })
+        if stale_decoy:
+            warnings.append(
+                f"{path} exists next to the live bundle without a supersession "
+                f"banner — a restore from it would silently resurrect "
+                f"pre-migration state. Re-run 'learnings_manager.py migrate-okf' "
+                f"to stamp it."
+            )
+        # Once stamped, the banner in the file itself carries this guidance —
+        # only unstamped externally-tracked files still need the nudge here.
+        if bundle_present and not stamped and (is_symlink or outside):
+            warnings.append(
+                f"{path} is covered by an arrangement outside ~/.asha "
+                f"(symlink/external target), but the live store is the "
+                f"{LEARNINGS_DIR}/ directory — extend that backup to the bundle "
+                f"or it is unprotected."
+            )
+    return {
+        "status": "warnings" if warnings else "ok",
+        "bundle_present": bundle_present,
+        "bundle_dir": str(LEARNINGS_DIR),
+        "legacy": legacy,
+        "warnings": warnings,
+    }
+
+
 # =============================================================================
 # CLI
 # =============================================================================
@@ -988,6 +1057,10 @@ def main():
     cand_parser = subparsers.add_parser("link-candidates", help="Recently-updated learnings + bundle summary (JSON)")
     cand_parser.add_argument("--days", type=int, default=7, help="Rolling window in days")
 
+    subparsers.add_parser(
+        "legacy-status",
+        help="Divergence/backup-coverage check vs legacy flat learnings files (warn-only)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1038,6 +1111,8 @@ def main():
             result = prune_dangling_links()
         elif args.command == "link-candidates":
             result = link_candidates(days=args.days)
+        elif args.command == "legacy-status":
+            result = legacy_flat_status()
         elif args.command in ("migrate-okf", "migrate"):
             migrator = Path(__file__).parent / "migrate_learnings_to_okf.py"
             cmd = [sys.executable, str(migrator)]

@@ -143,6 +143,28 @@ is *tagged* with a `type` but is **not** OKF-bundled — those are fixed state
 documents or telemetry, not growing concept collections, so the format buys
 nothing there.
 
+## Durability & backup
+
+The learnings bundle is **local-only by default**: nothing in the installer or
+save pipeline backs up `~/.asha/learnings/` (or `~/.asha/learnings-archive/`)
+anywhere. That is a deliberate posture — the bundle can contain sensitive
+project context — but it means durability is the user's arrangement to make.
+
+- **If you back up `~/.asha` identity files** (the common pattern: symlinking
+  `keeper.md`, `soul.md`, `voice.md`, `config.json` into a version-controlled
+  dotfiles repo), **include the `learnings/` and `learnings-archive/`
+  directories too**. A symlinked directory works the same way as a symlinked
+  file; the bundle is plain markdown and diffs cleanly.
+- **The legacy flat files are frozen snapshots.** `migrate-okf` moved the store
+  from `~/.asha/learnings.md` to the bundle directory; the flat files are
+  retained verbatim as the rollback path, stamped with a supersession banner so
+  they cannot masquerade as a current store. A backup that still tracks only
+  the flat file stopped protecting anything at the migration date.
+- **Divergence is surfaced, warn-only.** `learnings_manager.py legacy-status`
+  (run automatically by `/save` and `/session:consolidate`) flags an unstamped
+  flat file sitting next to the live bundle — the stale-decoy state where a
+  restore would silently resurrect pre-migration data (issue #12).
+
 ## Is it providing value? (how to tell)
 
 The memory system has real cost — context spent on injection every session, plus

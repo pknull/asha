@@ -39,8 +39,13 @@ PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null |
 
 python3 "$T/learnings_manager.py" list                       # categories, counts, avg confidence
 python3 "$T/learnings_manager.py" render-index --max-bytes 3000 | tail -3   # is the injection truncating?
+python3 "$T/learnings_manager.py" legacy-status              # stale flat-file decoys / backup-coverage drift
 ls "$PROJECT_DIR/Memory/sessions/archive/" 2>/dev/null | tail -5
 ```
+
+Surface any `legacy-status` warnings to the user (warn-only): an unstamped
+legacy `learnings.md` next to the live bundle is a stale decoy that can
+silently break an existing backup arrangement.
 
 Read `~/.asha/learnings/index.md`, `Memory/activeContext.md`, and — persona
 sessions only — the `## Calibration Log` tail of `~/.asha/keeper.md`.
