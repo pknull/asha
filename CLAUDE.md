@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.10.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.10.1 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
