@@ -224,6 +224,10 @@ case "$EVENT" in
         esac
         ;;
     PostToolUse)
+        # Codex fires this event but DISCARDS hook stdout — no injection
+        # channel exists for it (verified live 2026-07-27, 0.145; see
+        # harness-enforcement.md "Codex PostToolUse"). Rows reachable on codex
+        # should carry a harnesses allowlist rather than rely on emission.
         printf '%s\n' "$FRAGMENTS"
         echo "{}"
         ;;

@@ -28,10 +28,14 @@
     {
       "id": "suggest-compact",
       "event": "PostToolUse",
+      "harnesses": [
+        "claude",
+        "copilot"
+      ],
       "cooldown_hours": 2,
       "priority": 50,
       "handler": "suggest_compact",
-      "_comment": "Session-activity compaction suggestion, formerly handlers/suggest-compact.sh. The tool-call counter lives in the builtin; the 2h cooldown is engine-managed (marker nudge-suggest-compact-cooldown replaces the legacy compact-suggested marker — one cooldown reset at migration is accepted)."
+      "_comment": "Session-activity compaction suggestion, formerly handlers/suggest-compact.sh. The tool-call counter lives in the builtin; the 2h cooldown is engine-managed (marker nudge-suggest-compact-cooldown replaces the legacy compact-suggested marker — one cooldown reset at migration is accepted). Harness-gated off codex (verified live 2026-07-27, codex 0.145): codex fires PostToolUse but discards hook stdout entirely, so an ungated row would burn the shared tool-count and stamp the 2h cooldown for an emission the model never sees — suppressing the nudge for a later Claude session where it works. Bare codex launches (no ASHA_HARNESS) still detect as claude and degrade to the old discard behavior; see docs/harness-enforcement.md 'Codex PostToolUse'."
     }
   ]
 }

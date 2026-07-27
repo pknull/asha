@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.8.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.9.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
@@ -555,6 +555,15 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.9.0 — Codex PostToolUse verdict: fires but discards (2026-07-27)
+
+Closes the verification gap from the 2026-07-26 codex hook work (issue #15). Four isolated-`CODEX_HOME` probes on codex 0.145, with the proven UserPromptSubmit injection as positive control:
+
+- **Fires, but stdout is discarded** — PostToolUse fires for plain shell (`tool_name: "Bash"`, identical under `unified_exec = true`) and successful `apply_patch` (native `tool_name: "apply_patch"`); not for sandbox-rejected calls. Hook stdout never reaches the model or the session transcript in any shape — there is no PostToolUse injection channel.
+- **Payload is Claude-shaped** — `hook_event_name` present (argument-free nudge-engine registration resolves correctly), plus full `tool_name`/`tool_input`/`tool_response`/`tool_use_id` for row gates.
+- **`suggest-compact` harness-gated to claude+copilot** — an ungated row burned the shared tool-count and stamped the 2h cooldown for output codex discards, suppressing the nudge for a later Claude session. New Test 92f guards the gate (codex skipped with counter untouched; copilot still fires).
+- **Bonus verdicts** — codex honors `matcher`, and aliases `apply_patch` into the `Edit|Write|MultiEdit` class (so post-edit-lint's registration does fire on codex file edits). Full verdict: `docs/harness-enforcement.md` "Codex PostToolUse".
 
 ### Session v1.8.0 — Learnings durability: migration decoy fix (2026-07-27)
 
