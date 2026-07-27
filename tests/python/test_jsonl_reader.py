@@ -366,7 +366,12 @@ class ToSynthEventsTests(unittest.TestCase):
         # One survives: dedup collapsed the two "Refactor..." entries; "Use PyJWT"
         # was filtered by the >15-char threshold.
         self.assertEqual(len(prompts), 1)
-        self.assertIn("Refactor", prompts[0]["payload"]["detail"])
+        # PRIVACY contract (2026-07-26): the rebuild stores a size-stub skeleton,
+        # never the verbatim prompt — transcripts can hold content the live hooks
+        # were gated against (rp-active is gone by rebuild time).
+        detail = prompts[0]["payload"]["detail"]
+        self.assertRegex(detail, r"^\[user_input: \d+ chars\]$")
+        self.assertNotIn("Refactor", detail)
 
     def test_short_prompts_below_threshold_dropped(self):
         # "Use PyJWT" is 9 chars (< 15) and has no question mark — under the

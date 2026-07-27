@@ -1029,8 +1029,16 @@ def _map_event(
             return None
         if len(text) <= 15 and "?" not in text:
             return None  # mirrors user-prompt-submit.sh threshold
+        # PRIVACY: skeleton only — never verbatim prose. The transcript rebuild
+        # runs at session end, AFTER /rp-end removes the rp-active marker, so
+        # marker-gating cannot protect it and the transcript may contain RP or
+        # other sensitive content the live hooks were told to skip. 2026-07-26:
+        # this path had accumulated 1,265 verbatim RP user-inputs across a
+        # project's Memory/events/** before being caught. Synthesis keeps the
+        # event's existence, cadence, and size; the prose stays in the
+        # transcript where scrubbing policies apply.
         return ("context", "decision", {
-            "detail": _shorten(text, 120),
+            "detail": f"[user_input: {len(text)} chars]",
             "source": "user_input",
         }, None)
 
