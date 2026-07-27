@@ -27,7 +27,7 @@
 #   UserPromptSubmit -> raw fragment text (context on Claude; Codex accepts
 #                       raw fragments); "{}" when nothing fires
 #   PreToolUse       -> hookSpecificOutput.additionalContext JSON on Claude;
-#                       raw text on codex/opencode; silent when nothing fires
+#                       raw text on codex; silent when nothing fires
 #   PostToolUse      -> raw fragment text + trailing "{}" (legacy
 #                       suggest-compact shape); "{}" when nothing fires
 #   other events     -> raw fragment text; "{}" when nothing fires
@@ -218,7 +218,7 @@ fi
 case "$EVENT" in
     PreToolUse)
         case "$HARNESS" in
-            codex|opencode) printf '%s\n' "$FRAGMENTS" ;;
+            codex) printf '%s\n' "$FRAGMENTS" ;;
             *) jq -n --arg ctx "$FRAGMENTS" \
                  '{hookSpecificOutput: {hookEventName: "PreToolUse", additionalContext: $ctx}}' ;;
         esac

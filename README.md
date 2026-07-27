@@ -1,13 +1,13 @@
 # asha
 
-**Version**: 2.2.0
-**Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, GitHub Copilot CLI, and OpenCode.
+**Version**: 2.3.0
+**Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
-Asha renders or mounts skills, agents, commands, and hooks into each harness's native or compatible surfaces, ships a single `asha` dispatcher that injects a shared persona, and normalizes session activity from all four CLIs into one synthesis pipeline.
+Asha renders or mounts skills, agents, commands, and hooks into each harness's native or compatible surfaces, ships a single `asha` dispatcher that injects a shared persona, and normalizes session activity from all three CLIs into one synthesis pipeline.
 
 ---
 
-## Install model: native rendering across four harnesses
+## Install model: native rendering across three harnesses
 
 Plugins live in `plugins/<name>/`. The installer symlinks byte-compatible primitives and renders harness-specific forms where required:
 
@@ -16,7 +16,6 @@ Plugins live in `plugins/<name>/`. The installer symlinks byte-compatible primit
 | **Claude Code** | `~/.claude/*` (skills, agents, hooks, settings.json entries) | `asha claude` injects via `--append-system-prompt-file` at launch |
 | **OpenAI Codex** | `~/.codex/*` (skill directories, TOML custom agents, hooks, rules) | `asha codex` injects via `-c model_instructions_file=<merged-identity>` at launch |
 | **GitHub Copilot CLI** | `~/.copilot/*` (skills, agents) | `asha copilot` writes the merged identity and wires it per-launch via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` (Copilot auto-loads `<dir>/.github/instructions/*.instructions.md`); plain `copilot` stays persona-free |
-| **OpenCode** | `~/.config/opencode/{skills,command,agent,plugin}` | `asha opencode` appends the merged identity through launch-scoped `OPENCODE_CONFIG_CONTENT`; plain `opencode` stays persona-free |
 
 Install commands:
 
@@ -24,8 +23,7 @@ Install commands:
 ./install.sh                                # mount into ~/.claude/* (default target)
 ./install.sh --target codex                 # mount into ~/.codex/*
 ./install.sh --target copilot               # mount into ~/.copilot/*
-./install.sh --target opencode              # mount into ~/.config/opencode/*
-./install.sh --target all                   # mount into all four
+./install.sh --target all                   # mount into all three
 ./install.sh --bin all --default claude     # install the asha dispatcher + harness shims in ~/.local/bin
 ./uninstall.sh                              # remove asha-tagged symlinks/entries
 ```
@@ -35,10 +33,10 @@ After `./install.sh --bin all` you'll have:
 | Command | Effect |
 |---|---|
 | `asha` | launch the default harness (set via `--default`; else claude) |
-| `asha <harness>` | launch `claude`/`codex`/`copilot`/`opencode` — auto-configures that harness on first use |
-| `asha install <target>` | provision a harness (`claude`/`codex`/`copilot`/`opencode`/`both`/`all`) |
+| `asha <harness>` | launch `claude`/`codex`/`copilot` — auto-configures that harness on first use |
+| `asha install <target>` | provision a harness (`claude`/`codex`/`copilot`/`both`/`all`) |
 | `asha uninstall <target>` | remove Asha from a harness |
-| `asha-claude` · `asha-codex` · `asha-copilot` · `asha-opencode` | harness shims (each ≡ `asha <harness>`) |
+| `asha-claude` · `asha-codex` · `asha-copilot` | harness shims (each ≡ `asha <harness>`) |
 
 Grammar is positional — `asha [install|uninstall] [harness] [args…]`. A verb *after* the harness is passed through, so `asha claude install` runs `claude install` (not the Asha installer).
 
@@ -53,11 +51,11 @@ using ordinary collision-safe updates.
 
 ## Harness support & behavior
 
-Asha drives four agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and each mounts the same primitive differently. First-class support means native rendering at each harness seam, not fake parity: see `harnesses/capabilities.json` for the machine-readable contract.
+Asha drives three agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and each mounts the same primitive differently. First-class support means native rendering at each harness seam, not fake parity: see `harnesses/capabilities.json` for the machine-readable contract.
 
 > **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
 
-At a glance: skills, agents, persona, and the operational layer work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot, while OpenCode receives native files under `command/`. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated native Markdown under `agent/`, and Claude agents retain the source Markdown. Automatic clean-exit save and orphan recovery run on Claude **and Copilot** (lifecycle hooks, verified live 2026-07-27); Codex memory is manual-save only because Asha has no SessionEnd persistence path there. OpenCode ≥1.18 moved transcripts to sqlite, which the save pipeline does not read yet — even manual `/save` is broken there until the sqlite backend lands (verdict: harness-enforcement.md "Plugin API survey").
+At a glance: skills, agents, persona, the operational layer, and manual `/save` capture work across all three harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, and Claude agents retain the source Markdown. Automatic clean-exit save and orphan recovery run on Claude **and Copilot** (lifecycle hooks, verified live 2026-07-27); Codex memory is manual-save only because Asha has no SessionEnd persistence path there. OpenCode support was dropped 2026-07-27 (its ≥1.18 sqlite transcript store broke memory capture — see harness-enforcement.md).
 
 ### Why the behaviors differ
 
@@ -65,13 +63,13 @@ At a glance: skills, agents, persona, and the operational layer work across all 
 
 **Output styles are retired.** The former `output-styles` plugin (`/style` + 8 style files) was Claude-only by design and was retired in the 2026-07-10 ecosystem audit — Claude's native output-style switching covers the need, and Codex/Copilot never had an equivalent seam.
 
-**Persona is injected at each harness's real seam.** Claude uses `--append-system-prompt-file`; Codex uses `model_instructions_file`; Copilot uses `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`; OpenCode receives an appended `instructions` path through `OPENCODE_CONFIG_CONTENT`. Every mechanism is wrapper-scoped, so the plain harness remains persona-free.
+**Persona is injected at each harness's real seam.** Claude uses `--append-system-prompt-file`; Codex uses `model_instructions_file`; Copilot uses `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Every mechanism is wrapper-scoped, so the plain harness remains persona-free.
 
-**The operational layer reaches all four.** `~/.asha/operation.md` + the learnings hot tier load via Claude's SessionStart hook. Codex receives them through `model_instructions_file`, Copilot through its custom instructions directory, and OpenCode through the same launch-scoped `instructions` entry as identity. Files are generated by `identity/operational-merge.sh` with the same budgets.
+**The operational layer reaches all three.** `~/.asha/operation.md` + the learnings hot tier load via Claude's SessionStart hook. Codex receives them through `model_instructions_file`, and Copilot through its custom instructions directory. Files are generated by `identity/operational-merge.sh` with the same budgets.
 
-**Hook surfaces are harness-native.** Claude uses JSON in `settings.json`; Codex uses nested TOML hook tables; Copilot uses a dedicated `asha-guardrails.json`; OpenCode uses a JavaScript plugin with `tool.execute.before`. Transcript capture is post-hoc where possible, while policy adapters bridge each real-time hook contract to the shared rules.
+**Hook surfaces are harness-native.** Claude uses JSON in `settings.json`; Codex uses nested TOML hook tables; Copilot uses a dedicated `asha-guardrails.json`. Transcript capture is post-hoc where possible, while policy adapters bridge each real-time hook contract to the shared rules.
 
-**First launch requires the harness's own config to already exist** for Claude and Codex. Their installers deliberately refuse to fabricate `settings.json` / `config.toml` (the harness owns that file's format). Copilot and OpenCode use additive Asha-owned files and have no such precondition.
+**First launch requires the harness's own config to already exist** for Claude and Codex. Their installers deliberately refuse to fabricate `settings.json` / `config.toml` (the harness owns that file's format). Copilot uses additive Asha-owned files and has no such precondition.
 
 ### Policy guardrails (PreToolUse deny/ask)
 
@@ -94,11 +92,10 @@ Each harness writes its own session transcript to disk:
 - Claude: `~/.claude/projects/<slug>/<sid>.jsonl`
 - Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 - Copilot: `~/.copilot/session-state/<sid>/events.jsonl`
-- OpenCode: `~/.local/share/opencode/storage/{session,message,part}/...`
 
 The session plugin no longer captures tool calls through hooks. `/save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings/` updates. Hooks remain only for *intervention* (block-secrets, policy guardrails, post-edit-lint, prompt refinement, session-start context injection).
 
-This gives all four harnesses a shared normalized event model. Claude, Codex, and Copilot retain their established capture paths; OpenCode reads its native directory storage during manual save.
+This gives all three harnesses a shared normalized event model.
 
 ---
 
@@ -124,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.10.1 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.11.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
@@ -420,7 +417,7 @@ The legacy `/plugin marketplace add` flow is retired. Installation is now a dire
 git clone https://github.com/pknull/asha.git ~/some/dir/asha
 cd ~/some/dir/asha
 
-# Install primitives into all four harnesses + launch wrappers into ~/.local/bin
+# Install primitives into all three harnesses + launch wrappers into ~/.local/bin
 ./install.sh --target all --bin all --default claude
 ```
 
@@ -430,7 +427,6 @@ cd ~/some/dir/asha
 ./install.sh                              # ~/.claude/* only (default)
 ./install.sh --target codex               # ~/.codex/* only
 ./install.sh --target copilot             # ~/.copilot/* only
-./install.sh --target opencode            # ~/.config/opencode/* only
 ./install.sh --only code,session          # restrict to specific plugins
 ./install.sh --dry-run                    # preview the action plan
 ```
@@ -452,7 +448,6 @@ asha                       # default harness (set via --default; else claude)
 asha codex                 # Codex with Asha persona (auto-configures on first run)
 asha claude                # Claude Code with Asha persona
 asha copilot               # Copilot with Asha persona (auto-injected per-launch)
-asha opencode              # OpenCode with Asha persona (auto-injected per-launch)
 asha-codex                 # back-compat shim (== asha codex)
 ```
 
@@ -505,7 +500,7 @@ Run the full test suite:
 | Plugin + version validation | Frontmatter, namespace, structure, and version contracts |
 | Python unit tests | Transcript parsing, memory policy, learnings, synthesis, and save preflight |
 | Hook handlers | Lifecycle hooks, policy adapters, output contracts, and repository hygiene |
-| Harness integration | Copilot build, doctor, uninstall, init-repo, and OpenCode native loading |
+| Harness integration | Copilot build, doctor, uninstall, and init-repo |
 | Shell + JavaScript | shellcheck and writing-engine behavior |
 
 `jsonl_reader` tests pin Claude, Codex, Copilot, and OpenCode transcript/storage contracts so host format changes fail loudly rather than producing silently degraded synthesis.
@@ -555,6 +550,14 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### v2.3.0 — OpenCode support dropped (2026-07-27)
+
+Operator decision following the #14 survey: OpenCode ≥1.18 moved session transcripts to sqlite, breaking Asha's memory capture — the system's value core — and the fix (a sqlite reader backend) was judged not worth carrying for the least-used harness. Asha is now a **three-harness** toolkit (Claude Code, Codex, Copilot CLI).
+
+- Removed: `harnesses/opencode.sh`, the `asha-guardrails.js` emission + `opencode-policy-adapter.sh`, jsonl_reader's opencode backend, dispatcher/doctor/registry/capabilities wiring, the opencode test suite, and all opencode branches in shared handlers and save tools (session plugin v1.11.0).
+- Live artifacts were uninstalled from the reference machine before the code was removed; other machines: check out a pre-2.3.0 tag and run `./uninstall.sh --target opencode`, or delete the asha entries under `~/.config/opencode/` manually.
+- Retirement record with the final plugin-API survey verdicts preserved in `docs/harness-enforcement.md`; follow-up issues #16/#17 closed as not planned.
 
 ### OpenCode plugin-API survey — verdicts for all four parity questions (2026-07-27)
 

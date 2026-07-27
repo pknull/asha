@@ -98,8 +98,7 @@ the Claude Code harness manages on its own; Asha neither writes nor depends on i
 - **Automatic clean-exit save runs on Claude and Copilot.** Copilot's
   sessionEnd lifecycle hook was wired + verified live 2026-07-27 (1.0.75),
   including orphan recovery from the native transcript at the next session
-  start. Codex and OpenCode have no Asha SessionEnd lifecycle path and require
-  manual save. A silence marker suppresses both explicit synthesis and
+  start. Codex has no Asha SessionEnd lifecycle path and requires manual save. A silence marker suppresses both explicit synthesis and
   automatic save, and persists until explicitly disabled.
 - **Global calibration is interactive policy.** Automatic save never writes
   `~/.asha/keeper.md` or `~/.asha/voice.md`. Explicit save can do so only when

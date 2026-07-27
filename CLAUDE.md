@@ -1,6 +1,6 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 2.2.0
+**Version**: 2.3.0
 **Last Updated**: 2026-07-27
 **Repository**: pknull/asha
 
@@ -35,13 +35,13 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 ## Project Overview
 
-**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot, OpenCode) providing tools for multi-perspective analysis, code review, creative writing, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md).
+**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot) providing tools for multi-perspective analysis, code review, creative writing, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md).
 
 ### Current Plugins
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.10.1 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.11.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
@@ -404,7 +404,7 @@ mkdir -p "$PROJECT_DIR/Work/markers"
 
 ### Documentation: single source of truth for harness verdicts
 
-Cross-harness capability and enforcement **verdicts** — what works on Claude, Codex, Copilot, and OpenCode — live in **one** place: [`docs/harness-enforcement.md`](docs/harness-enforcement.md). Every other doc describes mechanism and links to that document for current status.
+Cross-harness capability and enforcement **verdicts** — what works on Claude, Codex, and Copilot — live in **one** place: [`docs/harness-enforcement.md`](docs/harness-enforcement.md). Every other doc describes mechanism and links to that document for current status.
 
 This is the `feedback_no_duplication` rule applied to prose: the same status fact lived in five docs and drifted three times in a single session. When a capability changes, edit `harness-enforcement.md` and add a README Version History line — do not hand-propagate the claim across satellite docs.
 
@@ -918,6 +918,10 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v2.3.0 (2026-07-27) — OpenCode support dropped
+
+- Operator decision after the #14 plugin-API survey: OpenCode ≥1.18 stores transcripts in sqlite, which broke memory capture; support was removed rather than maintained. Three-harness toolkit now (Claude, Codex, Copilot). All opencode code paths deleted (adapter, policy plugin, jsonl_reader backend, dispatcher/doctor wiring, tests); live artifacts uninstalled first; retirement record + final survey verdicts in `docs/harness-enforcement.md`. Session plugin v1.11.0.
 
 ### Session v1.10.0 (2026-07-27) — Copilot lifecycle: auto-save + orphan recovery (issue #13)
 

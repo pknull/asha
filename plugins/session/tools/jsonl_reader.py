@@ -14,7 +14,6 @@ Four harness branches:
   - claude:  ~/.claude/projects/<slug>/<sid>.jsonl
   - codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
   - copilot: ~/.copilot/session-state/<sid>/events.jsonl
-  - opencode: ~/.local/share/opencode/storage/{session,message,part}/...json
 
 Three public functions:
   - locate_session_log(harness)  -> Path | None
@@ -122,7 +121,7 @@ def lead_wwa_session(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-HARNESS_CHOICES = {"claude", "codex", "copilot", "opencode"}
+HARNESS_CHOICES = {"claude", "codex", "copilot"}
 _CODEX_ROLLOUT_RE = re.compile(
     r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
     r"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$",
@@ -161,8 +160,6 @@ def sniff_harness(path: Path) -> Optional[str]:
         return "codex"
     if typ.startswith("session.") or typ in {"user.message", "assistant.turn_start"}:
         return "copilot"
-    if str(data.get("id", "")).startswith("ses_") and "directory" in data:
-        return "opencode"
     if "sessionId" in data:
         return "claude"
     return None
@@ -198,10 +195,6 @@ def transcript_session_id(path: Path, harness: str) -> Optional[str]:
                         sid = data_obj.get("sessionId")
                         if sid:
                             return str(sid)
-                elif harness == "opencode":
-                    sid = data.get("id")
-                    if str(sid).startswith("ses_"):
-                        return str(sid)
     except OSError:
         return None
     if harness == "codex":
@@ -212,8 +205,6 @@ def transcript_session_id(path: Path, harness: str) -> Optional[str]:
         return path.stem
     if harness == "copilot" and path.name == "events.jsonl":
         return path.parent.name
-    if harness == "opencode" and path.suffix == ".json" and path.stem.startswith("ses_"):
-        return path.stem
     return None
 
 
@@ -231,9 +222,6 @@ def transcript_session_ids(path: Path, harness: str) -> set[str]:
             elif harness == "copilot":
                 payload = data.get("data") or {}
                 sid = payload.get("sessionId") if isinstance(payload, dict) else None
-            elif harness == "opencode":
-                candidate = data.get("id")
-                sid = candidate if str(candidate).startswith("ses_") else None
             if sid:
                 found.add(str(sid))
     except OSError:
@@ -250,8 +238,6 @@ def transcript_path_session_id(path: Path, harness: str) -> Optional[str]:
         return match.group(1) if match else None
     if harness == "copilot" and path.name == "events.jsonl":
         return path.parent.name
-    if harness == "opencode" and path.suffix == ".json" and path.stem.startswith("ses_"):
-        return path.stem
     return None
 
 
@@ -262,8 +248,6 @@ def _native_session_id(harness: str) -> Optional[str]:
         return os.environ.get("CODEX_THREAD_ID")
     if harness == "copilot":
         return os.environ.get("COPILOT_SESSION_ID")
-    if harness == "opencode":
-        return os.environ.get("OPENCODE_SESSION_ID")
     return None
 
 
@@ -287,8 +271,6 @@ def detect_harness_from_env() -> Optional[str]:
         markers.append("codex")
     if os.environ.get("COPILOT_CLI") or os.environ.get("COPILOT_SESSION_ID"):
         markers.append("copilot")
-    if os.environ.get("OPENCODE") or os.environ.get("OPENCODE_SESSION_ID"):
-        markers.append("opencode")
     unique = sorted(set(markers))
     if len(unique) > 1:
         raise IdentityError(
@@ -404,9 +386,6 @@ def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Opti
       copilot : scan ~/.copilot/session-state/*/inuse.<pid>.lock matching
                 the parent process chain. Fallback: newest session whose
                 workspace.yaml.cwd == project_dir.
-      opencode: $OPENCODE_SESSION_ID -> directory JSON under OpenCode storage.
-                Fallback: newest session metadata whose directory matches the
-                project. Message and part records are joined during parsing.
     """
     # Authoritative override: when the caller knows the exact transcript (e.g. a
     # Stop/SessionEnd hook payload's transcript_path), honor it verbatim and skip
@@ -429,8 +408,6 @@ def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Opti
         return _locate_codex(project_dir)
     if harness == "copilot":
         return _locate_copilot(project_dir)
-    if harness == "opencode":
-        return _locate_opencode(project_dir)
     return None
 
 
@@ -488,10 +465,6 @@ def locate_session_log_for_id(
     if harness == "copilot":
         candidate = Path.home() / ".copilot" / "session-state" / session_id / "events.jsonl"
         return candidate if candidate.exists() else None
-    if harness == "opencode":
-        base = Path.home() / ".local" / "share" / "opencode" / "storage" / "session"
-        matches = list(base.rglob(f"{session_id}.json")) if base.exists() else []
-        return matches[0] if matches else None
     return None
 
 
@@ -587,35 +560,6 @@ def _locate_copilot(project_dir: Path) -> Optional[Path]:
     return None
 
 
-def _locate_opencode(project_dir: Path) -> Optional[Path]:
-    data_home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
-    base = data_home / "opencode/storage/session"
-    if not base.exists():
-        return None
-
-    sid = os.environ.get("OPENCODE_SESSION_ID") or os.environ.get("ASHA_SESSION_ID")
-    if sid:
-        matches = list(base.glob(f"*/{sid}.json"))
-        if len(matches) == 1:
-            return matches[0]
-        return None
-
-    project_str = str(project_dir)
-    candidates: list[tuple[int, Path]] = []
-    for path in base.glob("*/*.json"):
-        try:
-            data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
-            if data.get("directory") != project_str:
-                continue
-            updated = int((data.get("time") or {}).get("updated", 0))
-            candidates.append((updated, path))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            continue
-    if candidates:
-        candidates.sort(key=lambda item: item[0], reverse=True)
-        return candidates[0][1]
-    return None
-
 
 # ---------------------------------------------------------------------------
 # stream_events — three harness-specific parsers, one common Event shape
@@ -633,9 +577,6 @@ def stream_events(path: Path, harness: str) -> Iterator[Event]:
         parser = _parse_codex_line
     elif harness == "copilot":
         parser = _parse_copilot_line
-    elif harness == "opencode":
-        yield from _stream_opencode_session(path)
-        return
     else:
         print(f"  WARNING: jsonl_reader: unknown harness {harness!r}", file=sys.stderr)
         return
@@ -719,82 +660,6 @@ def _parse_claude_line(line: dict) -> Iterator[Event]:
     # signal in the current vocabulary.
     return
 
-
-def _millis_to_iso(value: object) -> str:
-    try:
-        return datetime.fromtimestamp(int(value) / 1000, timezone.utc).isoformat().replace("+00:00", "Z")
-    except (TypeError, ValueError, OSError, OverflowError):
-        return ""
-
-
-def _stream_opencode_session(session_path: Path) -> Iterator[Event]:
-    """Join OpenCode 1.0.78+ directory JSON into normalized events.
-
-    The session metadata file is the transcript identity boundary. Message and
-    part records are loaded only from sibling storage roots and filtered by the
-    embedded session/message IDs. This avoids invoking `opencode export` during
-    save and keeps parsing deterministic and fixture-testable.
-    """
-    try:
-        session = json.loads(session_path.read_text(encoding="utf-8", errors="replace"))
-    except (OSError, json.JSONDecodeError) as exc:
-        print(f"  WARNING: opencode session unreadable: {exc}", file=sys.stderr)
-        return
-    sid = str(session.get("id", ""))
-    if not sid.startswith("ses_"):
-        return
-
-    storage = session_path.parents[2]
-    message_dir = storage / "message" / sid
-    if not message_dir.exists():
-        return
-
-    messages: list[tuple[int, dict]] = []
-    for message_path in message_dir.glob("*.json"):
-        try:
-            message = json.loads(message_path.read_text(encoding="utf-8", errors="replace"))
-            if message.get("sessionID") != sid:
-                continue
-            created = int((message.get("time") or {}).get("created", 0))
-            messages.append((created, message))
-        except (OSError, json.JSONDecodeError, TypeError, ValueError):
-            continue
-
-    for _, message in sorted(messages, key=lambda item: item[0]):
-        mid = str(message.get("id", ""))
-        role = message.get("role")
-        ts = _millis_to_iso((message.get("time") or {}).get("created"))
-        part_dir = storage / "part" / mid
-        parts: list[tuple[int, dict]] = []
-        if part_dir.exists():
-            for part_path in part_dir.glob("*.json"):
-                try:
-                    part = json.loads(part_path.read_text(encoding="utf-8", errors="replace"))
-                    if part.get("sessionID") != sid or part.get("messageID") != mid:
-                        continue
-                    start = int((part.get("time") or {}).get("start", 0))
-                    parts.append((start, part))
-                except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                    continue
-
-        for _, part in sorted(parts, key=lambda item: item[0]):
-            part_type = part.get("type")
-            if role == "user" and part_type == "text" and str(part.get("text", "")).strip():
-                yield Event(timestamp=ts, kind="prompt", actor="user", text=str(part["text"]).strip(), raw=part)
-            elif role == "assistant" and part_type == "tool":
-                state = part.get("state") or {}
-                if state.get("status") not in {"completed", "running"}:
-                    continue
-                tool = str(part.get("tool", ""))
-                tool_ts = _millis_to_iso((state.get("time") or {}).get("start")) or ts
-                yield Event(
-                    timestamp=tool_ts,
-                    kind="tool_use",
-                    actor="assistant",
-                    tool=tool,
-                    detail=json.dumps(state.get("input") or {}, default=str)[:1000],
-                    raw={"input": state.get("input") or {}, "state": state},
-                )
 
 
 # Codex rollout shape:

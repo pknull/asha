@@ -92,7 +92,6 @@ harness_configured() {
     foreign=1
   fi
   local scan_dirs="skills agents commands output-styles"
-  [[ "$h" == opencode ]] && scan_dirs="skills agent command plugin"
   for sub in $scan_dirs; do
     dir="$home/$sub"
     [[ -d "$dir" ]] || continue
@@ -241,33 +240,6 @@ launch() {
     copilot)
       exec_copilot "$@"
       ;;
-    opencode)
-      local base instr op_merge op_tmp cfg
-      base="${ASHA_OPENCODE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-opencode.md}"
-      instr="$base"
-      export ASHA_PERSONA=1
-      if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
-        op_merge="$IDENTITY_DIR/operational-merge.sh"
-        if [[ -x "$op_merge" ]]; then
-          op_tmp="$(mktemp)"
-          if "$op_merge" "$op_tmp" 2>/dev/null; then
-            instr="$HOME/.cache/asha/instructions-opencode-combined.md"
-            { cat "$base"; printf '\n\n'; cat "$op_tmp"; } >"$instr"
-          fi
-          rm -f "$op_tmp"
-        fi
-        # OpenCode merges OPENCODE_CONFIG_CONTENT with normal global, project,
-        # and OPENCODE_CONFIG_DIR configuration. Append our launch-scoped
-        # instruction file without hiding a user's custom config directory.
-        cfg="$(jq -cn --argjson base "${OPENCODE_CONFIG_CONTENT:-{}}" --arg f "$instr" \
-          '$base * {instructions: (($base.instructions // []) + [$f] | unique)}')" \
-          || die "OPENCODE_CONFIG_CONTENT is not valid JSON"
-        export OPENCODE_CONFIG_CONTENT="$cfg"
-        exec "$executable" "$@"
-      fi
-      info "warn: identity merge failed; launching plain opencode"
-      exec "$executable" "$@"
-      ;;
     *) die "unknown harness: $h" ;;
   esac
 }
@@ -278,11 +250,11 @@ asha — cross-agent dispatcher
 
 Usage:
   asha [HARNESS] [args...]         launch a harness (default: configured default, else claude)
-  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|opencode|both|all)
+  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|both|all)
   asha uninstall <target> [...]    remove Asha from a harness
   asha build copilot [...]         package plugins for Copilot-native distribution
                                    (--only ns,.. --out DIR --version X.Y.Z --dry-run --force)
-  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|opencode|all)
+  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|all)
                                    (Claude Code's native doctor: asha claude doctor)
   asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
                                    (--dry-run | --check for CI | --force)
@@ -290,7 +262,7 @@ Usage:
                                    (--tier=T --workflow=W --tail=N --all)
   asha-<harness> [args...]         shim form (launch that harness)
 
-Harnesses: claude | codex | copilot | opencode
+Harnesses: claude | codex | copilot
 Flags:
   --yes, -y        skip the first-run configure prompt (or set ASHA_YES=1)
 
