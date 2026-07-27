@@ -79,6 +79,18 @@ GM_SPAWN_LOG: |  # Optional — list of character agents that were/were-not spaw
   - <npc-a>: spawned (for confrontation)
   - <npc-b>: NOT spawned (routine line, written from GM-voice)
   - <npc-c>: NOT spawned (mentioned but did not act/speak)
+
+SOURCE_LOG: |  # Optional — provenance of the draft's world-claims (category 10)
+  sourced:
+    - claim: "<what the beat asserts>"
+      file: "<source opened this turn>"
+      quote: "<the governing line, verbatim>"
+  inferred:
+    - claim: "<what the beat asserts>"
+      basis: "<what the source does not cover>"
+  priced_stake_touched: true | false
+
+PRICED_STAKES: "<path to the project's canon-source register, e.g. Lore/TTRPG/canon-sources.md>"
 ```
 
 ---
@@ -197,6 +209,28 @@ Read the session file if needed to verify spawn directives.
 (The specific installations in play come from `SCENE_STATE.recent_installations` and the project's invariants.)
 
 **Hard severity** when a major installation vanishes from a scene where it's clearly applicable. **Soft severity** when the installation could plausibly be off-frame.
+
+---
+
+### 10. source_fidelity
+
+Guards a failure the other nine cannot see. Categories 1–9 evaluate the draft against `INVARIANTS_FILE` — but that file is a **generated projection**, lossy by construction. A claim about how the world works that nobody compiled into it is not *wrong* to those checks, it is **invisible**. This category is the path back to primary source.
+
+Applies only when `SOURCE_LOG` is supplied. Absent it, skip and record nothing.
+
+**Looks for:**
+
+- `SOURCE_LOG.priced_stake_touched: true` with an empty or missing `sourced` list — a stake the setting explicitly prices, adjudicated without opening the governing file
+- A draft that resolves a **priced question at no cost** — a way out with no key, price, or limit; an entry with no consequence; something destroyed that the source says returns. *A costless answer to a priced question is the tell that the source went unread.*
+- A `sourced` entry whose `quote` is a **paraphrase** rather than a verbatim line — restatement is where qualifiers die
+- A world-claim load-bearing for the beat that appears in neither `sourced` nor `inferred` — unmarked gap-filling
+- A claim built on a **prior** `inferred` entry that has since become structural, without that inference being re-checked against source
+
+**Not a violation:** inference itself. Generating beyond the source is the job, and a populated `inferred` list is expected on most beats. The defect is inference that is unmarked, or that occupies ground the source already decided.
+
+**Hard severity** when `priced_stake_touched` is true with no sourced provenance, or when the draft prices something the source prices differently. **Soft severity** for unmarked minor claims, paraphrased quotes, and un-rechecked inferences.
+
+When `PRICED_STAKES` is supplied, read that register to determine which stakes the project treats as priced. Absent it, fall back to the universal set: **how a place is left, what leaving or severance costs, how a place is entered, what is permanent versus what returns, and any published stat block or closed list.**
 
 ---
 

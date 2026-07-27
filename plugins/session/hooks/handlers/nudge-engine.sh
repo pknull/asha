@@ -64,21 +64,34 @@ fi
 [[ -f "$SELF_DIR/harness-response.sh" ]] && source "$SELF_DIR/harness-response.sh" 2>/dev/null || noop
 
 NUDGES_DIR="$SELF_DIR/../nudges"
-REPO_RULES="$NUDGES_DIR/rules.json"
+PLUGINS_DIR="$SELF_DIR/../../.."
 USER_RULES="$HOME/.asha/nudges.json"
 
-# Merge repo + user rules (user overrides by id) — same contract as policy-guard.
+# Repo rows may ship from ANY plugin (<plugin>/hooks/nudges/rules.json — the
+# contract documented in this header); the optional user layer is applied last.
+# Files are merged in order and later rows override earlier ones by id, so a
+# user row still wins over any plugin's — same contract as policy-guard.
+RULE_FILES=()
+for _rulefile in "$PLUGINS_DIR"/*/hooks/nudges/rules.json; do
+    [[ -f "$_rulefile" ]] && RULE_FILES+=("$_rulefile")
+done
+[[ -f "$USER_RULES" ]] && RULE_FILES+=("$USER_RULES")
+
+# Each row is stamped with the nudges dir that shipped it, so a relative
+# inject_file resolves against its OWN plugin rather than session's.
+_acc="[]"
+for _rulefile in "${RULE_FILES[@]:-}"; do
+    [[ -n "$_rulefile" && -f "$_rulefile" ]] || continue
+    _part="$(jq -c --arg d "$(dirname "$_rulefile")" \
+        '[ (.rules // [])[] | . + {_nudges_dir: $d} ]' "$_rulefile" 2>/dev/null || printf '[]')"
+    _acc="$(jq -c -n --argjson a "$_acc" --argjson b "${_part:-[]}" '$a + $b' 2>/dev/null || printf '%s' "$_acc")"
+done
+
 RULES=""
-if [[ -f "$REPO_RULES" && -f "$USER_RULES" ]]; then
-    RULES="$(jq -s '
-      (.[0].rules // []) as $base | (.[1].rules // []) as $user
-      | ($user | map(.id)) as $uids
-      | { rules: (($base | map(select((.id) as $i | ($uids | index($i)) | not))) + $user) }
-    ' "$REPO_RULES" "$USER_RULES" 2>/dev/null || true)"
-elif [[ -f "$REPO_RULES" ]]; then
-    RULES="$(jq '{rules: (.rules // [])}' "$REPO_RULES" 2>/dev/null || true)"
-elif [[ -f "$USER_RULES" ]]; then
-    RULES="$(jq '{rules: (.rules // [])}' "$USER_RULES" 2>/dev/null || true)"
+if [[ "$_acc" != "[]" ]]; then
+    RULES="$(printf '%s' "$_acc" | jq -c '
+      { rules: ( reduce .[] as $r ({}; .[($r.id // ($r | @json))] = $r) | [ .[] ] ) }
+    ' 2>/dev/null || true)"
 fi
 [[ -n "$RULES" ]] || noop
 
@@ -177,7 +190,8 @@ while IFS= read -r rule; do
     elif [[ -n "$r_ifile" ]]; then
         fpath="$r_ifile"
         fpath="${fpath/#\~\//$HOME/}"
-        [[ "$fpath" == /* ]] || fpath="$NUDGES_DIR/$fpath"
+        r_ndir="$(printf '%s' "$rule" | jq -r '._nudges_dir // empty' 2>/dev/null || true)"
+        [[ "$fpath" == /* ]] || fpath="${r_ndir:-$NUDGES_DIR}/$fpath"
         [[ -f "$fpath" ]] && frag="$(cat "$fpath" 2>/dev/null || true)"
     elif [[ -n "$r_inject" ]]; then
         frag="$r_inject"

@@ -5,6 +5,7 @@
   "code": "code",
   "image": "image",
   "panel": "panel-system",
+  "rp": "rp",
   "security": "security",
   "session": "session",
   "test": "test",

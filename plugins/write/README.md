@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.6.0
+**Version**: 1.7.0
 
 Fiction drafting, editorial review, manuscript state, style measurement, and export workflows.
 

@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "_comment": "RP plugin guidance-nudge rows. Schema and gate semantics: see plugins/session/hooks/nudges/rules.json. Rows here are merged by nudge-engine.sh alongside every other plugin's rules.json and the ~/.asha/nudges.json user layer (later wins by id). A relative inject_file resolves against THIS plugin's hooks/nudges/ directory.",
+  "rules": [
+    {
+      "id": "rp-priced-stakes",
+      "event": "UserPromptSubmit",
+      "marker_required": "rp-active",
+      "marker_off": "rp-priced-stakes-off",
+      "match_regex": "escape|escaping|get out|getting out|way out|leave the|leaving the|exit|doorman|gatekeeper|mystic door|mystic tool|sever|severing|close off the|anchor point|dollhouse|break in|entrance|entry point|permanently kill|come back|reset|doom",
+      "cooldown_hours": 1,
+      "priority": 20,
+      "inject_file": "fragments/canon-priced-stakes.md",
+      "_comment": "Fires when a turn's text touches something the setting's source explicitly prices. Diagnosed 2026-07-26 (Darkest House): a GM adjudicated how a character leaves the house and invented a costless exit without ever opening the Source Rules Reference, which lists six escape methods, closed, each priced. Payload is a POINTER plus a protocol duty, not injected content — the register stays in the project, and content injection would cost context on every fire. Marker-gated so it is inert outside RP; 1h cooldown so a stake-heavy scene does not nag. Kill switch: Work/markers/nudge-rp-priced-stakes-off (generic) or rp-priced-stakes-off (marker_off)."
+    }
+  ]
+}
