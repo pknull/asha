@@ -296,6 +296,48 @@ custom config directory. Manual save parses OpenCode's directory storage under
 `~/.local/share/opencode/storage/{session,message,part}`. Automatic SessionEnd
 persistence is not implemented.
 
+**Plugin API survey (1.18.7 / plugin SDK 1.1.4, live-probed 2026‑07‑27 —
+issue #14, isolated `XDG_CONFIG_HOME`/`XDG_DATA_HOME` rig, local ollama
+model, all four questions answered empirically):**
+
+1. **Events beyond `tool.execute.before` — YES.** The plugin `Hooks` surface
+   carries `chat.message` (fires once per submitted user message — the
+   prompt-submit analog; verified live), `tool.execute.before/after` (verified),
+   `permission.ask`, `chat.params`, `experimental.chat.system.transform` /
+   `experimental.chat.messages.transform` (fire on every LLM roundtrip;
+   verified), plus a catch-all `event` stream (verified delivering
+   `session.created`, `session.status`, `session.idle`, `message.part.delta`,
+   `session.diff`, …). `session.idle` fires at end of turn and is the natural
+   deferred-save trigger; **no process-exit event exists** — the stream simply
+   stops, so an in-process plugin cannot observe its own session's exit.
+2. **Context injection — YES, one proven channel.**
+   `experimental.chat.system.transform` appends to the system prompt array; a
+   sentinel pushed there was quoted back verbatim by the model (INJECTED).
+   Pushing a synthetic part in `chat.message` does NOT inject: the part
+   persists in the conversation store but is excluded from the LLM payload
+   (verified via a payload scan in `messages.transform`, which fired after the
+   push and did not contain it).
+3. **Callback context — sufficient.** `PluginInput` hands the plugin
+   `directory` (project dir), `worktree`, `project`, an SDK `client`, and a Bun
+   shell; every hook carries `sessionID`. The opencode process stamps
+   `OPENCODE=1`. An `ASHA_HARNESS` value inherited from a parent harness leaks
+   through (same nesting hazard verified on copilot/codex) — adapters must
+   stamp `ASHA_HARNESS=opencode` explicitly when spawning shell handlers, as
+   `asha-guardrails.js` already does.
+4. **Transcript — MOVED to sqlite; jsonl_reader is stale.** A fresh 1.18.7
+   state writes NO `storage/{session,message,part}` JSON tree; sessions,
+   messages, and parts persist in `~/.local/share/opencode/opencode.db`
+   (tables `session`/`message`/`part`, JSON `data` columns). jsonl_reader's
+   opencode backend reads the legacy JSON layout only, so **`/save` synthesis
+   from opencode-native transcripts is broken for sessions created by current
+   versions** until a sqlite backend lands. Existing legacy JSON storage
+   remains on disk and readable.
+
+Follow-ups are filed as their own scoped issues: guidance nudges via the
+verified `system.transform` channel, and the sqlite transcript backend that
+gates any save automation (`session.idle`-triggered, opt-in per the #13
+stance).
+
 ## Verdict — can / can't / won't fix
 
 | Item | Status |
