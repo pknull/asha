@@ -15,7 +15,7 @@ flowchart TB
     subgraph LIFECYCLE["Session lifecycle"]
         START([SessionStart hook])
         WORK([work happens])
-        SAVE([manual save on all harnesses; clean SessionEnd on Claude])
+        SAVE([manual save on all harnesses; clean SessionEnd on Claude + Copilot])
     end
 
     subgraph ASHA["~/.asha/ — cross-project, user-global, travels with you"]
@@ -95,10 +95,12 @@ the Claude Code harness manages on its own; Asha neither writes nor depends on i
   `activeContext.md` from the event log; `learnings_manager.py` upserts new
   learnings into the bundle; `save_guardrail.py` prunes noise; `validate.py` checks
   the bundle (warn-only); `Memory/` is committed.
-- **Automatic clean-exit save is Claude-only.** Codex, Copilot, and OpenCode have
-  no Asha SessionEnd lifecycle path and require manual save. A silence marker
-  suppresses both explicit synthesis and Claude automatic save, and persists
-  until explicitly disabled.
+- **Automatic clean-exit save runs on Claude and Copilot.** Copilot's
+  sessionEnd lifecycle hook was wired + verified live 2026-07-27 (1.0.75),
+  including orphan recovery from the native transcript at the next session
+  start. Codex and OpenCode have no Asha SessionEnd lifecycle path and require
+  manual save. A silence marker suppresses both explicit synthesis and
+  automatic save, and persists until explicitly disabled.
 - **Global calibration is interactive policy.** Automatic save never writes
   `~/.asha/keeper.md` or `~/.asha/voice.md`. Explicit save can do so only when
   `capture_calibration` is true in `~/.asha/config.json`.

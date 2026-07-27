@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.9.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.10.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
@@ -918,6 +918,11 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.10.0 (2026-07-27) — Copilot lifecycle: auto-save + orphan recovery (issue #13)
+
+- Live-probed copilot 1.0.75 sessionEnd (fires on clean exit; reasons `complete`/`user_exit`; camelCase payload, no transcript_path) and wired `~/.copilot/hooks/asha-lifecycle.json`: sessionStart → session-start.sh side effects, sessionEnd → session-end.sh detached auto-save. Verified end-to-end: clean exit synthesizes `Memory/activeContext.md` with all provenance gates passing; SIGKILL mid-session recovers from the native transcript at next session start (identity breadcrumb event replaces the per-tool capture copilot lacks).
+- False-orphan guard in `check_orphaned_session` (wwa-session stamp = already published) — fixes redundant post-save re-recovery on Claude too. Doctor byte-checks guardrails + nudges + lifecycle files; uninstall symmetric. Verdicts: `docs/harness-enforcement.md` "Copilot lifecycle".
 
 ### Session v1.9.0 (2026-07-27) — Codex PostToolUse verdict: fires but discards (issue #15)
 

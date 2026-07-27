@@ -1623,6 +1623,17 @@ def check_orphaned_session(current_session_id: str) -> Optional[str]:
     last_session = get_last_session_id()
 
     if last_session and last_session != current_session_id:
+        # A session whose synthesis already published is NOT an orphan. Clean
+        # exits leave transcript-derived events behind in events.jsonl, so
+        # without this guard every session start after a clean save would
+        # "recover" (redundantly re-synthesize) the prior session. The lead
+        # WWA stamp in activeContext.md records which session published it.
+        ac_path = PROJECT_ROOT / "Memory" / "activeContext.md"
+        try:
+            if ac_path.exists() and f"wwa-session: {last_session}" in ac_path.read_text(encoding="utf-8"):
+                return None
+        except OSError:
+            pass
         # There's a previous session that might not have been synthesized
         # Check if it has events
         events = load_events(session_id=last_session, days=30)

@@ -29,8 +29,29 @@ fi
 # ORPHAN RECOVERY - Synthesize previous session if it didn't end cleanly
 # ==============================================================================
 
-# Generate new session ID
+# Consume the hook payload (skip on a tty so manual debug runs don't hang).
+INPUT=""
+[[ -t 0 ]] || INPUT=$(cat 2>/dev/null || true)
+
+# Generate new session ID. Under copilot (COPILOT_CLI=1 stamped on its own
+# hook processes; payload verified live 2026-07-27 on 1.0.75:
+# {sessionId, timestamp, cwd, source, initialPrompt}) use the harness's own
+# session uuid — it is the id transcript-derived events are stamped with, so
+# orphan detection and recovery resolve the right native transcript.
 NEW_SESSION_ID="session_$(date -u '+%Y%m%d_%H%M%S')_$$"
+if [[ "${COPILOT_CLI:-}" == "1" ]]; then
+    # COPILOT_CLI is stamped by copilot on its own hook processes and is
+    # authoritative; an inherited ASHA_HARNESS (e.g. copilot launched from
+    # inside a Claude session) would send orphan recovery hunting for a
+    # Claude transcript that does not exist.
+    export ASHA_HARNESS="copilot"
+    if command -v jq >/dev/null 2>&1; then
+        COPILOT_SID=$(echo "$INPUT" | jq -r '.sessionId // empty' 2>/dev/null || true)
+        if [[ -n "$COPILOT_SID" ]]; then
+            NEW_SESSION_ID="$COPILOT_SID"
+        fi
+    fi
+fi
 SESSION_MARKER="$PROJECT_DIR/Work/markers/session-id"
 MARKER_DIR="$PROJECT_DIR/Work/markers"
 mkdir -p "$MARKER_DIR"
@@ -69,10 +90,33 @@ fi
 # Store current session ID
 echo "$NEW_SESSION_ID" > "$SESSION_MARKER"
 
+# Copilot has no per-tool event capture (retired 2026-05-10; save derives
+# events from the native transcript on demand), so a crashed copilot session
+# would leave NO trace in Memory/events/events.jsonl and orphan detection
+# could never see it. Append one identity breadcrumb stamped with the harness
+# session uuid: a crash leaves it as the last event, the next session start
+# flags it, and recovery re-synthesizes from the surviving native transcript
+# (~/.copilot/session-state/<sid>/events.jsonl). Clean saves replace the
+# events file wholesale, so the breadcrumb never accumulates.
+if [[ "${COPILOT_CLI:-}" == "1" ]] && command -v jq >/dev/null 2>&1; then
+    mkdir -p "$PROJECT_DIR/Memory/events"
+    jq -nc --arg sid "$NEW_SESSION_ID" --arg pd "$PROJECT_DIR" \
+        --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')" \
+        --arg id "evt_$(date -u '+%Y%m%d_%H%M%S')_sessionstart" '{
+          id: $id, timestamp: $ts, session_id: $sid,
+          type: "event", subtype: "session_started",
+          payload: {detail: "copilot session started (identity breadcrumb)"},
+          metadata: {source: "session-start-hook", project_dir: $pd, tool_name: null}
+        }' >> "$PROJECT_DIR/Memory/events/events.jsonl" 2>/dev/null || true
+fi
+
 # Build the compact description-only memory nudge index. This is Claude-only
 # runtime behavior, non-blocking, and skipped entirely by the kill switch.
+# COPILOT_CLI is stamped by copilot on its own hook processes (this handler
+# also runs as a copilot sessionStart hook, where ASHA_HARNESS may be unset).
 MEMORY_NUDGE="$PLUGIN_ROOT/tools/memory_nudge.py"
-if [[ "${ASHA_HARNESS:-claude}" == "claude" && "${ASHA_NUDGE:-1}" != "0" \
+if [[ "${ASHA_HARNESS:-claude}" == "claude" && "${COPILOT_CLI:-}" != "1" \
+      && "${ASHA_NUDGE:-1}" != "0" \
       && -f "$MEMORY_NUDGE" && -n "$PYTHON_CMD" ]]; then
     "$PYTHON_CMD" "$MEMORY_NUDGE" build --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
 fi

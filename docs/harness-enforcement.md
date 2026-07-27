@@ -35,6 +35,7 @@ separately from empirical verification. Codex documentation was refreshed
 | Persona injection | ✅ (`--append-system-prompt-file`) | ✅ (`-c model_instructions_file`) | ✅ (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch) |
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
+| Lifecycle side effects (orphan recovery at start; automatic clean-exit save) | ✅ (SessionStart/SessionEnd hooks) | ✖ no wired path | ✅ **verified live 2026‑07‑27 on 1.0.75** (`hooks/asha-lifecycle.json`: sessionStart → session-start.sh side effects, sessionEnd → session-end.sh detached save; clean-exit reasons `complete`/`user_exit`; crash → orphan recovered from the native transcript at next start — see the Copilot lifecycle note below) |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
 | Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **UserPromptSubmit verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below). **PostToolUse fires but stdout is discarded — no injection channel for that event** (verified live 2026‑07‑27; see the PostToolUse note below); the `suggest-compact` row is harness-gated to claude+copilot accordingly | ✅ **verified live + wired 2026‑07‑26 on 1.0.68** (`hooks/asha-nudges.json`: userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; production RP probe answered INJECTED — see the Copilot hook contract note below) |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
@@ -96,10 +97,28 @@ under bare launches, and project detection works unmodified. Injection: raw
 stdout is **discarded**; the only context channel is a top-level
 `{"additionalContext": "…"}` JSON response, which the nudge engine emits for
 copilot on every event. Advisory nudges are wired via
-`hooks/asha-nudges.json` (userPromptSubmitted + postToolUse); sessionStart /
-sessionEnd side-effect wiring (orphan recovery, automatic clean-exit save —
-the remaining Claude-parity gap) is a deliberate opt-in follow-up, since
-auto-save is a behavioral change.
+`hooks/asha-nudges.json` (userPromptSubmitted + postToolUse).
+
+**Copilot lifecycle (1.0.75, verified live 2026‑07‑27 — issue #13, wired on
+operator opt-in):** `sessionEnd` fires on clean exit with `{sessionId,
+timestamp, cwd, reason}` — reasons observed live: `complete` (non-interactive
+`-p` run) and `user_exit` (interactive `/exit`); a SIGKILL fires nothing.
+`sessionStart` fires at the first prompt submission (payload carries
+`initialPrompt`), not at TUI launch. Wiring (`hooks/asha-lifecycle.json`,
+installer-generated, doctor-checked, uninstalled symmetrically): sessionStart →
+`session-start.sh` (side effects only — raw-stdout context injection is
+naturally discarded, deliberate since the custom-instructions layer already
+carries the operational context; under copilot the session marker takes the
+harness uuid from the payload and one identity **breadcrumb event** is
+appended, because copilot has no per-tool capture and a crashed session would
+otherwise leave no orphan trail); sessionEnd → `session-end.sh` (camelCase
+payload + copilot clean-exit reasons handled; detached save; `COPILOT_CLI=1`
+overrides any inherited `ASHA_HARNESS`). Verified end-to-end: clean exit →
+`activeContext.md` synthesized from that session's transcript with all
+provenance gates passing; SIGKILL mid-session → recovered and synthesized from
+the surviving native transcript at the next session start. A published-session
+guard (wwa-session stamp) prevents the pre-existing false-orphan re-synthesis
+after every clean save — that fix applies to Claude too.
 
 Guardrails enforce across the tested Claude and Copilot paths (Copilot
 single-call deny verified live on 1.0.63, 2026‑06‑24). Codex has a real native
@@ -245,13 +264,16 @@ as the Claude string-pattern guard). [#2540](https://github.com/github/copilot-c
 **Classification: WIRED + enforced (verified). To disable: `asha uninstall copilot`
 removes the file, or set the rules' override envs.**
 
-**Audit (2026‑07‑01):** `asha doctor copilot` verifies the guardrails file
-byte-matches the installer-expected JSON (and `--fix` rewrites it), alongside
-symlink and command-skill freshness checks. The wrapper-only persona split is
-intentional and reported as INFO, never a failure: `asha copilot` loads the
-persona per-launch; plain `copilot` stays vanilla — while skills, agents,
-guardrails, and /save capture are wrapper-independent. Native plugin
-distribution is mechanism, not enforcement — its verification table lives in
+**Audit (2026‑07‑01; extended 2026‑07‑27):** `asha doctor copilot` verifies the
+guardrails, nudges, and lifecycle files each byte-match the installer-expected
+JSON (and `--fix` rewrites them), alongside symlink and command-skill freshness
+checks. The wrapper-only persona split is intentional and reported as INFO,
+never a failure: `asha copilot` loads the persona per-launch; plain `copilot`
+stays vanilla — while skills, agents, guardrails, lifecycle hooks, and /save
+capture are wrapper-independent. Automatic clean-exit save and orphan recovery
+are live (see the Copilot lifecycle note above) — `/save` remains available but
+is no longer the only path. Native plugin distribution is mechanism, not
+enforcement — its verification table lives in
 [distribution-copilot.md](distribution-copilot.md).
 
 ### OpenCode 1.0.78 — native corpus and hooks, manual-save memory

@@ -32,11 +32,23 @@ INPUT=$(cat)
 # save so synthesis reads THIS session's transcript, not a concurrent session's
 # newest-by-mtime log. jsonl_reader/pattern_analyzer honor these env vars, and
 # exec (below) preserves the exported environment.
+#
+# Copilot (verified live 2026-07-27, 1.0.75): payload is camelCase
+# {sessionId, timestamp, cwd, reason} with NO transcript_path — jsonl_reader
+# resolves ~/.copilot/session-state/<sid>/events.jsonl from ASHA_SESSION_ID.
+# COPILOT_CLI=1 is stamped by copilot on its own hook processes and is
+# authoritative there; an inherited ASHA_HARNESS (e.g. a copilot session
+# launched from inside a Claude session) must not override it.
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || true)
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // .sessionId // empty' 2>/dev/null || true)
 [[ -n "$TRANSCRIPT_PATH" ]] && export ASHA_TRANSCRIPT_PATH="$TRANSCRIPT_PATH"
-[[ -n "$SESSION_ID" ]] && export ASHA_SESSION_ID="$SESSION_ID" && export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
-export ASHA_HARNESS="${ASHA_HARNESS:-claude}"
+if [[ "${COPILOT_CLI:-}" == "1" ]]; then
+    export ASHA_HARNESS="copilot"
+    [[ -n "$SESSION_ID" ]] && export ASHA_SESSION_ID="$SESSION_ID"
+else
+    export ASHA_HARNESS="${ASHA_HARNESS:-claude}"
+    [[ -n "$SESSION_ID" ]] && export ASHA_SESSION_ID="$SESSION_ID" && export CLAUDE_CODE_SESSION_ID="$SESSION_ID"
+fi
 
 # Silence is durable user policy, not ephemeral session state. Inspect it before
 # cleanup and leave it in place until `/session:silence off` removes it.
@@ -59,12 +71,24 @@ rm -f "$PROJECT_DIR/Work/markers/save-pending"
 # Extract session end reason
 REASON=$(echo "$INPUT" | jq -r '.reason // empty' 2>/dev/null || true)
 
-# Only archive on clean logout/exit/idle (not on /clear which continues session)
+# Clean-exit reasons are harness-specific:
+#   claude : logout | prompt_input_exit | idle  (skip: clear, crashes)
+#   copilot: complete (non-interactive -p run) | user_exit (interactive /exit)
+#            — both observed live 2026-07-27 on 1.0.75. Unknown reasons skip
+#            the save; orphan recovery at the next session start covers them.
+CLEAN_EXIT=0
+if [[ "$ASHA_HARNESS" == "copilot" ]]; then
+    [[ "$REASON" == "complete" || "$REASON" == "user_exit" ]] && CLEAN_EXIT=1
+else
+    [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" || "$REASON" == "idle" ]] && CLEAN_EXIT=1
+fi
+
+# Only archive on clean exit (not on /clear which continues session)
 if [[ "$SILENCED" == "1" ]]; then
     # A clean exit from a silenced session must not launch synthesis.
     echo "{}"
 
-elif [[ "$REASON" == "logout" || "$REASON" == "prompt_input_exit" || "$REASON" == "idle" ]]; then
+elif [[ "$CLEAN_EXIT" == "1" ]]; then
     # Use save script in automatic mode.
     #
     # DETACHED, not inline: the old `exec save-session.sh --automatic` ran the
