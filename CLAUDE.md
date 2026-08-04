@@ -928,7 +928,13 @@ Five repairs from a `/insights` review of 145 sessions; each routes a recurring 
 - **Agent authority**: `roleplay-gm` is now `Task, Read, Grep, Glob`. It previously held `Edit, Write, Bash` it was never told to use, while *lacking* the `Read` its own instructions demanded — drafting blind against `Memory/invariants.md` yet able to write past the continuity gate that the calling command is supposed to own. When auditing an agent, check the allowlist against the instructions in both directions: unearned authority *and* missing capability are the same defect.
 - **RP portability**: canon paths resolve through a project-owned `Memory/canon-layout.md` (template in `plugins/rp/templates/`); historical defaults preserved so existing projects need no edit. Campaign proper nouns removed from shipped primitives.
 
-> **Rule established here**: a shipped primitive must not contain one project's proper nouns or directory tree. A `match_regex` keyed to one campaign's vocabulary fires only there; a hardcoded canon path resolves to nothing elsewhere — and an empty result is indistinguishable from "no such thing exists", so the failure is silent. Provenance in a `_comment` (naming the campaign a bug was diagnosed in) is fine and useful; *operative* strings must be setting-agnostic. Projects extend shipped rules via `~/.asha/nudges.json` / `~/.asha/policies.json`, merged by id.
+**Core de-personalization** (same rule, applied to the layer every project installs):
+
+- `no-broad-home-scans` hardcoded the maintainer's account (`/home(/pknull)?`), so a full scan of any *other* user's home was allowed — the guard protected one machine. Now username-agnostic.
+- `templates/recall_fixtures.yaml` seeded the maintainer's personal recall benchmark into every new `~/.asha/` (`lib/install.sh`). Its fixtures name memories no other install can have, so they score 0 permanently — the exact failure the file's own comment warns about ("a permanently impossible fixture would conceal real score regressions"). Now a documented empty starter; live user files are untouched, since install seeds only when absent.
+- `pattern_analyzer.py` and the memory-maintenance skill lost their "AAS vault" / `pk_lintop` references.
+
+> **Rule established here**: a shipped primitive must not contain one project's proper nouns, directory tree, machine, or account name. A `match_regex` keyed to one campaign's vocabulary fires only there; a hardcoded canon path resolves to nothing elsewhere — and an empty result is indistinguishable from "no such thing exists", so the failure is silent. Provenance in a `_comment` (naming the campaign a bug was diagnosed in) is fine and useful; *operative* strings must be setting-agnostic. Projects extend shipped rules via `~/.asha/nudges.json` / `~/.asha/policies.json`, merged by id.
 
 ### v2.3.0 (2026-07-27) — OpenCode support dropped
 
