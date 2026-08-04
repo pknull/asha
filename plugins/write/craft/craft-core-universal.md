@@ -1,6 +1,6 @@
 # Draft-Loop Craft Core — SHARED across all profiles
 
-> Shared, content-agnostic craft auto-fails + generative directives inherited by **every** draft-loop profile (rp, hush, future, and every project). The engine (`plugins/write/engines/rp-draft-loop.js`) feeds this file to **every** profile's PROSE/solo drafter (via `SOURCES`) and to the **CRITIC** + **solo self-audit** as scoring rules. It does **not** feed the CONTINUITY agent (these are voice/craft, not continuity). Profile rubrics (a project's `reference_<mode>_draft_loop_rubric.md`) carry domain-specific rules **in addition** to these. On any conflict, the stricter rule wins.
+> Shared, content-agnostic craft auto-fails + generative directives inherited by **every** draft-loop profile a project defines. The engine (`plugins/write/engines/rp-draft-loop.js`) feeds this file to **every** profile's PROSE/solo drafter (via `SOURCES`) and to the **CRITIC** + **solo self-audit** as scoring rules. It does **not** feed the CONTINUITY agent (these are voice/craft, not continuity). Profile rubrics (a project's `reference_<mode>_draft_loop_rubric.md`) carry domain-specific rules **in addition** to these. On any conflict, the stricter rule wins.
 >
 > **Portable:** this file ships with the asha `write` plugin. A project's mode manifest binds `slots.craftCore` to it (conventionally `${asha}/craft/craft-core-universal.md`), so every project inherits the same universal craft layer; the project supplies only its profile-specific rubric, voice, and bible.
 
@@ -36,9 +36,9 @@ These are **content-agnostic**. They describe *how prose manages tension, state,
 
 These failures are shared across profiles; the **definition lives here** (maintained once), but whether a profile treats one as auto-fail or minor is set in that profile's rubric, which also carries the domain-specific instance and detection.
 
-- **`exposition_control`** — Backstory, mechanism, cosmology, or world-info delivered as a *block*, an *announcement*, or a *gloss/decode*, instead of surfaced through action / object / friction — or left withheld where withholding is the design. **Fix:** install it through routine and let it be discovered; never declare it. *(Profile instances: RP `exposition_dump` — the cultivation announced; Hush `exposition_decode` — the cosmology / untranslated German glossed.)*
-- **`abstract_sensation`** — An emotion, sensation, or action met with a *named label* ("he felt X," "it activates," "responds," "violated") instead of a specific *rendered* concrete. **Fix:** render the physical particular; cut the label. *(Profile instances: RP `abstract_body_response`; Hush minor "slack abstraction where a concrete image was available.")*
-- **`uniform_rhythm`** — Sentence rhythm flattened: uniform length and shape, no variance; at the structural extreme, smooth even beat-architecture (the GPTZero template). **Fix:** vary length and shape — a long clause against a one-word line; break the even cadence. *(Profile instances: RP minor `uniform_rhythm`; Hush auto-fail `rhythm_flatness`.)*
+- **`exposition_control`** — Backstory, mechanism, cosmology, or world-info delivered as a *block*, an *announcement*, or a *gloss/decode*, instead of surfaced through action / object / friction — or left withheld where withholding is the design. **Fix:** install it through routine and let it be discovered; never declare it. *(A profile names its own instance — e.g. an `exposition_dump` for mechanics announced outright, an `exposition_decode` for cosmology or untranslated language glossed for the reader.)*
+- **`abstract_sensation`** — An emotion, sensation, or action met with a *named label* ("he felt X," "it activates," "responds," "violated") instead of a specific *rendered* concrete. **Fix:** render the physical particular; cut the label. *(A profile names its own instance and severity — e.g. an `abstract_body_response` auto-fail, or a minor "slack abstraction where a concrete image was available".)*
+- **`uniform_rhythm`** — Sentence rhythm flattened: uniform length and shape, no variance; at the structural extreme, smooth even beat-architecture (the GPTZero template). **Fix:** vary length and shape — a long clause against a one-word line; break the even cadence. *(Severity is per-profile: one may treat this as minor, another as an auto-fail `rhythm_flatness`.)*
 
 ---
 
@@ -55,21 +55,24 @@ These failures are shared across profiles; the **definition lives here** (mainta
 
 ## Profile mapping (reference)
 
-Single source of truth for each universal kernel; the profile rubrics keep the domain instance, detection, and severity, and point back here. The rows below document the AAS reference profiles (rp, hush) as the worked example; a new project adds its own profile rows in its own rubric.
+This file is the single source of truth for each universal kernel. A profile's rubric keeps the *domain instance*, the *detection method*, and the *severity*, and points back here rather than restating the rule.
 
-| Core rule | RP category | Hush category |
+Maintain that correspondence as a table in your own rubric, one column per profile you run:
+
+| Core rule (defined here) | `<your-profile>` category | Notes |
 |---|---|---|
-| `both_true_resolution` | (enforced via core) | cf. `tautological_recursion` |
-| `narrated_contradiction` | (enforced via core) | cf. `tautological_recursion` |
-| `editorializing_close` | (enforced via core) | cf. `resolution_creep` (related, not identical) |
-| `telegraphed_destination` | (enforced via core; RP detection in rubric) | (enforced via core) |
-| `arrived_not_approached` | (enforced via core; RP detection in rubric) | (enforced via core) |
-| `rushed_increment` | (enforced via core; RP detection in rubric) | (enforced via core) |
-| `dwell_deficit` | RP detection in rubric (severity) | (enforced via core) |
-| `exposition_control` | `exposition_dump` | `exposition_decode` |
-| `abstract_sensation` | `abstract_body_response` | "slack abstraction" (minor) |
-| `uniform_rhythm` | `uniform_rhythm` (minor) | `rhythm_flatness` (auto-fail) |
+| `exposition_control` | *your rubric's name for it* | detection + severity live in your rubric |
+| `abstract_sensation` | *or* `(enforced via core)` | when the kernel needs no domain instance |
+| `uniform_rhythm` | *or* `cf. <related-rule>` | when your rule is adjacent, not identical |
 
-**Deliberately NOT migrated (stays profile-specific):** RP `tic_density` (literal substring scan — the tuning is the specificity), `tag_word_labeling`, `smooth_at_recognition`, `telegraphing`, and `flatness_engine` (a *dramatic-stakes* rule — **not** merged with Hush's rhythm flatness); Hush `register_break`, `tautological_recursion`, `resolution_creep`.
+Three honest relationships, and the distinction matters: **`(enforced via core)`** means the kernel is sufficient as written. **A named category** means your profile detects a domain-specific instance of it. **`cf. <rule>`** means related but *not* the same rule — do not silently merge those, or you lose the narrower one's detection.
+
+**What should stay profile-specific.** Resist migrating a rule up into core when its value *is* its specificity:
+
+- Literal substring or tic scans — the tuning is the whole point, and a generic version detects nothing.
+- Rules keyed to your setting's vocabulary, register, or conventions.
+- Rules that look similar to a core kernel but measure a different axis. A dramatic-stakes flatness rule and a prose-rhythm flatness rule share a word, not a meaning; merging them silently drops one.
+
+When in doubt, leave it in the rubric. A kernel that belongs to one project is not a kernel.
 
 > **Pacing note:** the anti-rush auto-fails above are the *hard floor* (any one = FAIL). The richer pacing assessment — dwell weighting, texture, state-settling — is the job of the optional **Director reviewer** (`plugins/write/craft/director-rubric.md`), enabled per-manifest via `slots.directorRubric`.

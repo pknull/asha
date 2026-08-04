@@ -4,7 +4,7 @@ A generic, profile-driven prose-drafting loop used as a Workflow script. Despite
 name, it is **mode-agnostic** — it carries no project-specific paths. All wiring arrives at runtime
 via `args.profileConfig` (a resolved *mode manifest*).
 
-> Origin: relocated here from the AAS project (`.claude/workflows/rp-draft-loop.js`) during the
+> Origin: relocated here from a consuming project's `.claude/workflows/rp-draft-loop.js` during the
 > storytelling-convergence work (Phase 3a). Projects consume it by symlinking their workflow file
 > back to this path (same pattern as the `write` agents).
 
@@ -37,7 +37,7 @@ Output stays in the caller's chat. The engine **never writes to a manuscript or 
 
 ```js
 {
-  mode,                 // string key for telemetry/labels (e.g. "rp", "hush")
+  mode,                 // string key for telemetry/labels (your profile's name)
   label,                // human display
   unit,                 // what one draft produces ("GM-voice RP scene beat", "prose passage")
   rubric,               // ABS path: profile-specific craft rubric (auto-fails + scoring)
@@ -60,11 +60,14 @@ All paths must be **absolute** (the engine has no filesystem access and does no 
 ## How a project consumes the engine
 
 1. **Symlink** the project's workflow to this file so the Workflow registry discovers it:
+
    ```
    .claude/workflows/rp-draft-loop.js  ->  <ASHA_ROOT>/plugins/write/engines/rp-draft-loop.js
    ```
-2. **Author mode manifests** under `.claude/modes/<mode>.yaml` (nested, human-readable — see the
-   AAS `mode-manifest-schema.md`). Each manifest declares `roots`, `slots`, `models`, `extensions`.
+
+2. **Author mode manifests** under `.claude/modes/<mode>.yaml` (nested, human-readable; a project
+   may keep its own `mode-manifest-schema.md` alongside them). Each manifest declares `roots`,
+   `slots`, `models`, `extensions`.
 3. **Resolve** a manifest into the flat `profileConfig` before invoking (the caller does this —
    the engine cannot read files). The mapping:
 
@@ -84,6 +87,7 @@ All paths must be **absolute** (the engine has no filesystem access and does no 
 
    `extensions.*` (the live-interactive layer) is **not** consumed by this engine.
 4. **Invoke**:
+
    ```
    Workflow({ name: 'rp-draft-loop',
               args: { profileConfig: <resolved>, beatBrief: '…', mode: 'gate' } })

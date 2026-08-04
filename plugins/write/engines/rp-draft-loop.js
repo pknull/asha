@@ -1,6 +1,6 @@
 export const meta = {
   name: 'rp-draft-loop',
-  description: 'Profile-driven drafting engine. mode:"solo" = one agent drafts + self-audits against the profile (cheap default). mode:"gate" = Prose -> Critic + Continuity in parallel -> iterate (scrutiny tier). Profiles: rp | hush. Returns the passage + what was caught.',
+  description: 'Profile-driven drafting engine. mode:"solo" = one agent drafts + self-audits against the profile (cheap default). mode:"gate" = Prose -> Critic + Continuity in parallel -> iterate (scrutiny tier). Profiles are supplied by the caller via profileConfig; the engine has no built-in list. Returns the passage + what was caught.',
   whenToUse: 'Pass {profileConfig:<resolved mode manifest>, beatBrief, mode?:"solo"|"gate", contextFile?, maxIterations?, reviewerModel?, draftModel?}. The caller resolves .claude/modes/<mode>.yaml into a flat profileConfig (see plugins/write/engines/README.md). profileConfig points agents at its own rubric/voice/bible/continuity-authority/craftCore. Output stays in chat; never written to a manuscript or canon file.',
   phases: [
     { title: 'Draft', detail: 'Prose agent drafts the passage from the profile canon + brief' },

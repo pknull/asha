@@ -1,6 +1,6 @@
 # asha
 
-**Version**: 2.3.0
+**Version**: 2.4.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
 Asha renders or mounts skills, agents, commands, and hooks into each harness's native or compatible surfaces, ships a single `asha` dispatcher that injects a shared persona, and normalizes session activity from all three CLIs into one synthesis pipeline.
@@ -125,7 +125,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
-| **Creative** | `write` | v1.7.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
+| **Creative** | `write` | v1.8.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
 | **Creative** | `rp` | v0.2.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
 | **Integrations** | `admin` | v0.3.0 | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
@@ -566,6 +566,12 @@ Five repairs driven by a `/insights` review of 145 sessions. Each maps a recurri
 - **`no-broad-home-scans` was username-hardcoded** — its regex matched `/home(/pknull)?`, so on any other machine a full scan of `/home/<someone-else>` was **allowed**. The guard protected exactly one account. Now `/home(/[^/[:space:]]+)?`, denying for any user while leaving scoped paths (`/home/<user>/code`) allowed. Regression cases added to Test 104.
 - **`recall_fixtures.yaml` shipped the maintainer's benchmark to every install** — `lib/install.sh` seeds it into each new `~/.asha/`, so a fresh user received twelve fixtures expecting memories (`project_egregore_setup`, `reference_home_network`) that could never exist for them. They score 0 forever, and the file's own comment explains the cost: *"A permanently impossible fixture would conceal real score regressions."* It then shipped twelve of them. Four also referenced the retired marketplace flow. Replaced with a documented, empty starter — `recall_bench` handles zero fixtures cleanly (`score … if cases else 0.0`), and existing `~/.asha/recall_fixtures.yaml` files are untouched because install only seeds when absent.
 - **Personal names removed from core prose** — an "AAS vault" aside in `pattern_analyzer.py`'s RP calibration guard, and a `reference_pk_lintop_…` memory id used as the worked example in the memory-maintenance skill.
+
+**`write` plugin de-specialized (v1.8.0).** The last domain plugin carrying one project's material:
+
+- **`prose-analysis` hardcoded a voice doc** — `Vault/Docs/MasterWritingStyleGuide.md`, with a "**Always** read MasterWritingStyleGuide.md first" best-practice and a "missing → request location" fallback. In any other project the glob resolved nothing and the agent proceeded on assumed voice standards. Now a convention search (`**/*StyleGuide*.md` among generic candidates), with an explicit declaration — a manifest's `slots.voiceSpec` or a user-given path — taking precedence, and a refusal to proceed on assumed standards when nothing resolves.
+- **A project's canon shipped inside a generic agent** — a "Hush-Specific Checks" block listing coined transformation-anatomy terms and their body-location constraints. Replaced by the *generalizable* half: constrained-term checking, where a term carries a constraint (location, rank, material, direction) that prose drifts on before it drifts on the term itself, and where the negative cases must be written out because the wrong answers are the adjacent ones.
+- **`craft-core-universal` profile mapping** — the `rp`/`hush` column table became a template for a project's own mapping, plus the three honest relationships a mapping can express (`enforced via core` / a named category / `cf.` for adjacent-but-not-identical) and guidance on what should *stay* profile-specific. The engine itself was already generic (`profileKey = a.profile || P.mode || 'custom'`, no built-in list); only its description string claimed `Profiles: rp | hush`.
 
 ### v2.3.0 — OpenCode support dropped (2026-07-27)
 

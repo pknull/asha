@@ -347,7 +347,7 @@ class CalibrationDedupTests(unittest.TestCase):
     # (see keeper.md Calibration Log scrub notes 2026-06-25, 2026-07-01)
     # -------------------------------------------------------------------------
 
-    def _decision(self, sid, detail, ts="2026-07-01T00:00:00Z", project="/tmp/aas"):
+    def _decision(self, sid, detail, ts="2026-07-01T00:00:00Z", project="/tmp/proj"):
         return {
             "session_id": sid,
             "type": "context",

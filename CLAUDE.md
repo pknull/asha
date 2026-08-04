@@ -45,7 +45,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
-| **Write** | v1.7.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
+| **Write** | v1.8.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
 | **RP** | v0.2.0 | Creative | Live-interactive roleplay: session lifecycle, per-turn continuity gate, canon ratification — 6 agents |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
 | **Admin** | v0.3.0 | Integrations | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
@@ -933,6 +933,12 @@ Five repairs from a `/insights` review of 145 sessions; each routes a recurring 
 - `no-broad-home-scans` hardcoded the maintainer's account (`/home(/pknull)?`), so a full scan of any *other* user's home was allowed — the guard protected one machine. Now username-agnostic.
 - `templates/recall_fixtures.yaml` seeded the maintainer's personal recall benchmark into every new `~/.asha/` (`lib/install.sh`). Its fixtures name memories no other install can have, so they score 0 permanently — the exact failure the file's own comment warns about ("a permanently impossible fixture would conceal real score regressions"). Now a documented empty starter; live user files are untouched, since install seeds only when absent.
 - `pattern_analyzer.py` and the memory-maintenance skill lost their "AAS vault" / `pk_lintop` references.
+
+**`write` plugin de-specialized (v1.8.0)** — the last domain plugin carrying one project's material:
+
+- `prose-analysis` hardcoded `Vault/Docs/MasterWritingStyleGuide.md` *and* instructed itself to "**always** read it first". Elsewhere that resolved nothing and the agent proceeded on assumed voice standards — the silent-empty-result failure again. Now a convention search, an explicit declaration that overrides it, and a refusal to proceed when nothing resolves.
+- A "Hush-Specific Checks" block shipped one project's coined transformation-anatomy terms and body-location constraints inside a generic agent. Replaced with the generalizable pattern: constrained-term checking with negative cases written out.
+- `craft-core-universal`'s `rp`/`hush` mapping table became a template for a project's own. Note the engine was *already* generic — only its description string claimed a fixed profile list, which is the cheapest kind of drift to miss.
 
 > **Rule established here**: a shipped primitive must not contain one project's proper nouns, directory tree, machine, or account name. A `match_regex` keyed to one campaign's vocabulary fires only there; a hardcoded canon path resolves to nothing elsewhere — and an empty result is indistinguishable from "no such thing exists", so the failure is silent. Provenance in a `_comment` (naming the campaign a bug was diagnosed in) is fine and useful; *operative* strings must be setting-agnostic. Projects extend shipped rules via `~/.asha/nudges.json` / `~/.asha/policies.json`, merged by id.
 
