@@ -2039,6 +2039,37 @@ else
 fi
 
 # ============================================================================
+# Test 91e: match_ci — capitalized stake fires priced-stakes; mundane stays quiet
+# ============================================================================
+# The rp-priced-stakes row sets match_ci: true because its alternations are
+# lowercase and real turns start with capitals — without the flag, "Escape
+# through the cellar?" silently never fired (2026-08-04 adversarial review).
+# Two fixtures so the first fire's cooldown stamp cannot mask the second case.
+echo -n "Test 91e: match_ci fires on capitals, mundane text stays quiet... "
+TEST91E_OK=1; TEST91E_WHY=""
+for CASE in "Escape through the cellar?|fire" "She hands me the letter.|quiet"; do
+    PROMPT="${CASE%|*}"; WANT="${CASE#*|}"
+    T91E_DIR=$(mktemp -d); T91E_HOME=$(mktemp -d)
+    mkdir -p "$T91E_DIR/Work/markers" "$T91E_DIR/.asha"
+    echo '{"initialized": true}' > "$T91E_DIR/.asha/config.json"
+    touch "$T91E_DIR/Work/markers/rp-active"
+    export CLAUDE_PROJECT_DIR="$T91E_DIR"
+    export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+    OUT=$(printf '{"prompt": "%s"}' "$PROMPT" | HOME="$T91E_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+    rm -rf "$T91E_DIR" "$T91E_HOME"
+    GOT=quiet; [[ "$OUT" == *"PRICED STAKE"* ]] && GOT=fire
+    [[ "$GOT" == "$WANT" ]] || { TEST91E_OK=0; TEST91E_WHY="$TEST91E_WHY [$PROMPT: want=$WANT got=$GOT]"; }
+done
+if [[ $TEST91E_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  priced-stakes match_ci mismatch:$TEST91E_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 92: nudge engine — suggest-compact fires at threshold
 # ============================================================================
 echo -n "Test 92: suggest-compact fires at tool-count threshold... "
@@ -2510,6 +2541,28 @@ chk_pg rm_venv        '{"tool_name":"Bash","tool_input":{"command":"rm -rf .venv
 chk_pg rm_tmp         '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/scratch"}}'            allow
 chk_pg rmdir_empty    '{"tool_name":"Bash","tool_input":{"command":"rmdir emptydir"}}'                 allow
 chk_pg grep_word_rm   '{"tool_name":"Bash","tool_input":{"command":"grep -rn rm plugins/"}}'           allow
+# 2026-08-04 adversarial-review pins. BLOCKER: the toolkit's own marker cleanup
+# (rm -f Work/markers/<x> in /rp:end, /session:silence, /session:restore) was
+# denied by the v1 rule — a guard that blocks its own shipped workflows gets
+# overridden into uselessness.
+chk_pg marker_rm      '{"tool_name":"Bash","tool_input":{"command":"rm -f Work/markers/rp-active"}}'   allow
+chk_pg marker_rm_var  '{"tool_name":"Bash","tool_input":{"command":"rm -f \"$PROJECT_DIR/Work/markers/silence\""}}' allow
+# Archive arm: quoted names and mixed targets no longer slip (archive rule has
+# NO path exemptions and is ordered before the general delete rule).
+chk_pg arch_quoted    '{"tool_name":"Bash","tool_input":{"command":"rm \"backup.7z\""}}'               deny
+chk_pg arch_mixed     '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/extract ~/Downloads/pdfs.7z"}}' deny
+chk_pg arch_gitrm     '{"tool_name":"Bash","tool_input":{"command":"git rm old.zip"}}'                 allow
+# General rule: an exempt string in a DIFFERENT segment no longer rescues.
+chk_pg compound_tmp   '{"tool_name":"Bash","tool_input":{"command":"rm -rf important && mkdir -p /tmp/stage"}}' deny
+chk_pg compound_ls    '{"tool_name":"Bash","tool_input":{"command":"rm -f a.txt && ls /tmp/"}}'        deny
+# Home-scan v3: tilde/$HOME/quoted/flag-order forms, and the && false positive.
+chk_pg home_tilde     '{"tool_name":"Bash","tool_input":{"command":"grep -r pattern ~"}}'              deny
+chk_pg home_var       '{"tool_name":"Bash","tool_input":{"command":"find $HOME -name x"}}'             deny
+chk_pg home_quoted    '{"tool_name":"Bash","tool_input":{"command":"find \"/home/alice\" -name x"}}'   deny
+chk_pg home_flags     '{"tool_name":"Bash","tool_input":{"command":"grep --include=*.md -R needle /home/alice"}}' deny
+chk_pg home_tilde_ok  '{"tool_name":"Bash","tool_input":{"command":"find ~/Code -name x"}}'            allow
+chk_pg home_var_ok    '{"tool_name":"Bash","tool_input":{"command":"find \"$HOME/Code\" -name x"}}'    allow
+chk_pg home_amp_ok    '{"tool_name":"Bash","tool_input":{"command":"find ./src -name x && cd /home/alice"}}' allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))

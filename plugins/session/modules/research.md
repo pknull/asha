@@ -47,7 +47,7 @@ Checked: `fd -e yaml -e json . config/`, `grep -rn -i lora src/` — no matches 
 
 | Claim | NOT authoritative | Authoritative |
 |---|---|---|
-| "no newer release exists" | a version/tag in a compose file or lockfile | the upstream release channel or branch list |
+| "no newer release exists" | a version/tag in a compose file or lockfile; a branch list alone (releases ship as tags, registry entries, or channel builds that need no branch) | the upstream release channel itself — tags/releases page, package registry, or the distribution branch the project actually publishes on |
 | "that file doesn't exist" | your recollection of the tree | a glob/find over the directory the user named |
 | "it isn't tracked in git" | absence from `git status` output | `git ls-files -- <path>` |
 | "the library has no such method" | a tutorial, a summary, or memory | the vendored source or the reference docs |

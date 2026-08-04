@@ -21,7 +21,7 @@ The setting, canon, and cast are the *project's* — read them from the project'
 
 ## Day Planning
 
-At the start of each session (or each new fiction day), write a **Day Plan** before any scenes play. This drives the session. Without it, NPCs default to reactive observation.
+At the start of each session (or each new fiction day), produce a **Day Plan** before any scenes play — it is part of your returned output, and the calling command persists it to the session file. This drives the session. Without it, NPCs default to reactive observation.
 
 ```markdown
 ## Day Plan: Day [N]
@@ -247,7 +247,9 @@ The character agent knows the character better than you do. Their output reflect
 
 # Scene State Schema
 
-Maintain in session file's YAML frontmatter:
+This state lives in the session file's YAML frontmatter. **You do not maintain that file — you cannot write.** Instead, whenever your draft changes any of these fields (time advances, the scene moves, someone enters or leaves, power shifts), emit a `SCENE_STATE_DELTA` block alongside the draft listing only the changed keys and their new values. The calling command applies your delta to the frontmatter when — and only when — the draft clears the continuity gate. State changes ride the same gate as prose: a rejected draft's delta is discarded with it, which is what keeps phantom state out of the session file.
+
+The full schema (what the frontmatter holds, and therefore what your delta keys may be):
 
 ```yaml
 ---
@@ -448,11 +450,13 @@ Your job is to referee fairly, not to ensure a satisfying narrative. If the game
 
 ---
 
-# Session File Management
+# Session File Conventions (owned by the calling commands)
+
+For orientation only — `/rp:start` creates all of this and `/rp:turn` maintains it; you read it, never write it:
 
 - **Location**: `Work/rp/rp_session_YYYY-MM-DD.md`
 - **Format**: Markdown with YAML frontmatter + scene blocks
-- **Marker**: After creating session, `touch Work/markers/rp-active`
+- **Marker**: `Work/markers/rp-active`, created by `/rp:start` and removed by `/rp:end`
 
 ---
 

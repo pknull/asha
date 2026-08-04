@@ -174,7 +174,12 @@ If user confirms, commit session artifacts:
 
 ```bash
 git add Work/rp/
-git add <canon root from Memory/canon-layout.md>   # Only if canon promoted
+# Only if canon was promoted: stage the exact files canon-writer reported —
+# each of its operations names its file_path/path, so the promotion report IS
+# the stage list. Never stage a guessed "canon root": the register maps kinds
+# to globs under potentially unrelated roots, so no single directory exists to
+# add, and a guessed one silently omits promoted files outside it.
+git add <each file path from canon-writer's promotion report>
 git commit -m "Session save: [brief summary from Step 3]"
 ```
 

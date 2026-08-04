@@ -510,7 +510,7 @@ Return unified multi-step report with executive summary, detailed findings per t
 
 **Fallback Strategies:**
 
-- No voice doc found by any glob → Request the file location; do not proceed on assumed voice standards
+- No voice doc found by any glob → Proceed in **general-craft mode**: apply universal craft standards, label the report "[general craft standards — no project voice doc resolved]", mark every voice-adjacent finding as general-standards-based, and NEVER state or imply a project-specific voice rule (that fabrication is the failure this policy exists to prevent). If the request was specifically voice-compliance review, also ask for the doc's location — that part cannot be done without it.
 - LanguageTool unavailable → Note "Technical verification pending"
 - Ambiguous voice context → Present options, request clarification
 
@@ -756,7 +756,7 @@ If server down → note "Technical verification pending" and continue.
 
 **Failure Modes:**
 
-- Voice doc not found → Proceed with general craft standards, note limitation
+- Voice doc not found → Proceed in general-craft mode per Fallback Strategies: universal standards only, "[general craft standards — no project voice doc resolved]" label, no fabricated project-voice claims
 - Character sheets/state files not found → Build profiles from manuscript context only, note limitation
 - style-analyzer unavailable → Note "Quantified metrics pending", continue with qualitative analysis
 - LanguageTool down → Note pending technical verification, continue

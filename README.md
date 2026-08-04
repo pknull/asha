@@ -254,7 +254,7 @@ Development workflows with orchestration patterns, code review, TDD, and 5 speci
 
 **Plugin Name**: `write`
 **Commands**: `/write:init-novel`, `/write:review-section`
-**Version**: 1.6.0
+**Version**: 1.8.0
 **Domain**: Creative Writing
 
 Creative writing workflows with prose craft, style analysis, manuscript state, and 10 specialized agents.
@@ -331,7 +331,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.3.0
+**Version**: 1.12.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -567,6 +567,8 @@ Five repairs driven by a `/insights` review of 145 sessions. Each maps a recurri
 - **`recall_fixtures.yaml` shipped the maintainer's benchmark to every install** — `lib/install.sh` seeds it into each new `~/.asha/`, so a fresh user received twelve fixtures expecting memories (`project_egregore_setup`, `reference_home_network`) that could never exist for them. They score 0 forever, and the file's own comment explains the cost: *"A permanently impossible fixture would conceal real score regressions."* It then shipped twelve of them. Four also referenced the retired marketplace flow. Replaced with a documented, empty starter — `recall_bench` handles zero fixtures cleanly (`score … if cases else 0.0`), and existing `~/.asha/recall_fixtures.yaml` files are untouched because install only seeds when absent.
 - **Personal names removed from core prose** — an "AAS vault" aside in `pattern_analyzer.py`'s RP calibration guard, and a `reference_pk_lintop_…` memory id used as the worked example in the memory-maintenance skill.
 - **`vault-structure` content root widened** — was anchored on the literal `Vault/`; now matches any of `Vault|Lore|Wiki|Codex|Compendium|Archive`, with the same bucket taxonomy as the exclude. The root stays a *named* anchor deliberately: it is what scopes the rule, and a bare wildcard degenerates the trigger into "every write not in a bucket" — measured at 129/129 markdown files in this repo, `CLAUDE.md` and every doc included. Test 104c pins that blast radius while leaving the root list extensible. Projects whose content lives elsewhere redefine the row in `~/.asha/policies.json`.
+
+**Adversarial review pass (2026-08-04, Codex as external reviewer + self-review).** The four remediation commits were themselves reviewed before release; 13 findings, all verified against the live guard before fixing. The ones that mattered: the v1 delete rule **denied the toolkit's own marker cleanup** (`rm -f Work/markers/…` in `/rp:end`, `/session:silence`, `/session:restore`) — a guard that blocks its own shipped workflows gets overridden into uselessness; an exemption string anywhere in a command suppressed the whole rule (`rm -rf important && mkdir -p /tmp/stage` was allowed), fixed by scoping path exemptions to the rm segment and giving archives their own prior rule with **no** path exemptions; quoted archives (`rm "backup.7z"`) slipped the terminator; `~`/`$HOME`/quoted forms — the most natural phrasings — bypassed the home-scan rule entirely; the priced-stakes nudge was case-sensitive (sentence-initial capitals never fired) and unbounded (`impact` fired via `pact`), fixed with a new opt-in `match_ci` engine flag plus word-boundary discipline; scene-state maintenance was orphaned by the roleplay-gm allowlist cut, redesigned as a `SCENE_STATE_DELTA` the GM emits and `/rp:turn` applies only on a clean verdict — state now rides the same gate as prose; `/rp:turn` and the priced-stakes fragment still hardcoded the stake register the canon-layout work was meant to own; and README's per-plugin detail sections carried versions two releases stale, outside `validate-versions.sh`'s net (now its Test 5). Residual gaps are documented in the rules' `_comment` fields rather than silently carried.
 
 **`write` plugin de-specialized (v1.8.0).** The last domain plugin carrying one project's material:
 

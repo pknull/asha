@@ -139,7 +139,7 @@ If exact match fails:
 
 ### Characters
 
-- Check both Lore/World/Characters/ and Lore/TTRPG/RP Assets/Characters/
+- Check every glob the register lists for BOTH the `character` and `pc` kinds — NPC canon and player-facing sheets often live in different trees, and a lookup that stops at the first kind misses the other
 - Include relationship to PC if documented
 - Note knowledge boundaries (what character knows)
 
