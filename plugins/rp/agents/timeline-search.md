@@ -38,9 +38,11 @@ SESSION_RANGE:
 
 ### Secondary Sources (for deeper context)
 
-| Source | Path | Content |
+Paths come from `Memory/canon-layout.md` (`session_curated`, plus any project-specific rows); the values below are the default fallback.
+
+| Source | Register kind → default path | Content |
 |--------|------|---------|
-| Curated Sessions | `Lore/TTRPG/Notes/*.md` | Promoted/edited sessions |
+| Curated Sessions | `session_curated` → `Lore/TTRPG/Notes/*.md` | Promoted/edited sessions |
 | Fiction References | `Lore/Books/**/*.md` | Canonical story events |
 
 ## Search Protocol

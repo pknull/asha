@@ -13,11 +13,20 @@
     {
       "id": "destructive-git",
       "tool": "Bash",
-      "command_regex": "git[[:space:]]+(push[[:space:]][^|;]*(--force|-f([[:space:]]|$))|reset[[:space:]]+--hard|branch[[:space:]]+-[dD][[:space:]]+(main|master)([[:space:]]|$)|checkout[[:space:]]+(--[[:space:]]|\\.([[:space:]]|$))|restore[[:space:]]|clean[[:space:]][^|;]*(--force|-[a-zA-Z]*f))",
+      "command_regex": "git[[:space:]]+(push[[:space:]][^|;]*(--force|-f([[:space:]]|$))|reset[[:space:]]+--hard|branch[[:space:]]+-[dD][[:space:]]+(main|master)([[:space:]]|$)|checkout[[:space:]]+(--[[:space:]]|\\.([[:space:]]|$))|restore[[:space:]]|clean[[:space:]][^|;]*(--force|-[a-zA-Z]*f)|filter-repo([[:space:]]|$)|filter-branch([[:space:]]|$))",
       "exclude_regex": "--force-with-lease|restore[[:space:]]+--staged",
       "action": "deny",
-      "reason": "Blocked destructive git operation — irreversible, or affects shared state. Discarding uncommitted work (checkout --, restore, clean -f) has no reflog: use `git stash` instead, which is recoverable. Force-push: use --force-with-lease, which is permitted. Set ASHA_ALLOW_DESTRUCTIVE_GIT=1 to allow.",
+      "reason": "Blocked destructive git operation — irreversible, or affects shared state. Discarding uncommitted work (checkout --, restore, clean -f) has no reflog: use `git stash` instead, which is recoverable. Force-push: use --force-with-lease, which is permitted. History rewrites (filter-repo, filter-branch) invalidate every existing clone and cannot be undone once pushed — re-verify the blast radius, and prefer a fresh repo over rewriting a shared one. Set ASHA_ALLOW_DESTRUCTIVE_GIT=1 to allow.",
       "override_env": "ASHA_ALLOW_DESTRUCTIVE_GIT"
+    },
+    {
+      "id": "destructive-delete",
+      "tool": "Bash",
+      "command_regex": "(^|[[:space:];|&(])rm[[:space:]]+([^|;]*[[:space:]])?(-[a-zA-Z]*[rRf]|--recursive|--force)|(^|[[:space:];|&(])rm[[:space:]][^|;]*(\\*|\\.(7z|zip|tar|tgz|gz|bz2|xz|rar|iso))([[:space:]]|$)|(^|[[:space:];|&(])shred[[:space:]]|gh[[:space:]]+repo[[:space:]]+delete",
+      "exclude_regex": "(^|[[:space:];|&(])(git|npm|pnpm|yarn|cargo|docker|podman|nerdctl)[[:space:]]+rm|/tmp/|\\$CLAUDE_JOB_DIR|/\\.claude/jobs/|\\.trash/|node_modules|__pycache__|\\.venv|\\.pytest_cache",
+      "action": "deny",
+      "reason": "Blocked irreversible deletion (rm -r/-f, rm of a glob or archive, shred, gh repo delete). Deleting an archive before its contents are extracted AND verified is the specific failure this rule exists for — extract first, confirm the files are readable, then remove. Prefer moving to a `.trash/` staging dir over deleting outright. Regenerable trees (node_modules, .venv, __pycache__, /tmp) and package/container removal (git rm, npm rm, docker rm) are exempt. Set ASHA_ALLOW_DESTRUCTIVE_DELETE=1 to allow.",
+      "override_env": "ASHA_ALLOW_DESTRUCTIVE_DELETE"
     },
     {
       "id": "memory-protection",
