@@ -122,6 +122,11 @@ while IFS= read -r rule; do
     [[ -n "$r_id" ]] || continue
     r_tool="$(printf '%s' "$rule" | jq -r '.tool // empty' 2>/dev/null || true)"
     r_regex="$(printf '%s' "$rule" | jq -r '.match_regex // empty' 2>/dev/null || true)"
+    # match_ci: opt-in case-insensitive matching for match_regex. Opt-in (not the
+    # default) so user-layer rules relying on case-sensitive matching keep their
+    # behavior. Without it, a lowercase-alternation rule silently never fires on
+    # sentence-initial capitals ("Escape the house?") — found 2026-08-04.
+    r_ci="$(printf '%s' "$rule" | jq -r 'if .match_ci == true then "1" else "0" end' 2>/dev/null || echo 0)"
     r_denv="$(printf '%s' "$rule" | jq -r '.disable_env // empty' 2>/dev/null || true)"
     r_mreq="$(printf '%s' "$rule" | jq -r '.marker_required // empty' 2>/dev/null || true)"
     r_moff="$(printf '%s' "$rule" | jq -r '.marker_off // empty' 2>/dev/null || true)"
@@ -153,7 +158,11 @@ while IFS= read -r rule; do
         printf '%s' "$TOOL_NAME" | grep -Eq -- "^($r_tool)\$" 2>/dev/null || continue
     fi
     if [[ -n "$r_regex" ]]; then
-        printf '%s' "$MATCH_TEXT" | grep -Eq -- "$r_regex" 2>/dev/null || continue
+        if [[ "$r_ci" == "1" ]]; then
+            printf '%s' "$MATCH_TEXT" | grep -Eiq -- "$r_regex" 2>/dev/null || continue
+        else
+            printf '%s' "$MATCH_TEXT" | grep -Eq -- "$r_regex" 2>/dev/null || continue
+        fi
     fi
 
     # Project-scoped gates. A row that needs them is skipped outside a project;

@@ -79,9 +79,12 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
       GM_DIRECTIVE on spawns, register-stack persistence, no softening,
       no time skips, no fade-to-black).
 
-      Emit GM_SPAWN_LOG and SOURCE_LOG with the draft.
+      Emit GM_SPAWN_LOG, SOURCE_LOG, and SCENE_STATE_DELTA (changed
+      frontmatter keys only — time, location, participants, power) with
+      the draft. You cannot write files; the delta is how state changes
+      reach the session file.
 
-  Receive DRAFT, GM_SPAWN_LOG and SOURCE_LOG from roleplay-gm output.
+  Receive DRAFT, GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA from roleplay-gm output.
 
   # 3b. Spawn the continuity reviewer (live_roleplay mode) to check the draft
   Spawn continuity-reviewer via Task:
@@ -97,7 +100,12 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
       PRIOR_VIOLATIONS: <PRIOR_VIOLATIONS if attempt > 1>
       GM_SPAWN_LOG: <GM_SPAWN_LOG from roleplay-gm>
       SOURCE_LOG: <SOURCE_LOG from roleplay-gm>
-      PRICED_STAKES: "Lore/TTRPG/canon-sources.md"   # project's canon-source register, if it has one
+      PRICED_STAKES: <the `priced_stakes` path from Memory/canon-layout.md;
+        default Lore/TTRPG/canon-sources.md when no register exists>
+      # Resolve from the register, not a literal: a project keeping its
+      # stake register elsewhere would otherwise be validated against a
+      # nonexistent file — silently, because a missing source and an
+      # unpriced stake look identical to the reviewer.
 
   Receive VERDICT from continuity-reviewer (clean | violations_found | hard_fail,
   with violations/clean_passes/prior_violation_check fields).
@@ -105,6 +113,11 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
   # 3c. Decide based on verdict
   if VERDICT.verdict == "clean":
     APPEND DRAFT to SESSION_FILE
+    APPLY SCENE_STATE_DELTA to SESSION_FILE's YAML frontmatter
+      (state rides the same gate as prose: a delta is applied only on a
+      clean verdict, so rejected drafts leave no phantom state behind.
+      Without this step the frontmatter goes stale and every later turn's
+      SCENE_STATE is constructed from the wrong scene.)
     LOG attempt count and clean-pass categories for telemetry
     OUTPUT DRAFT to Keeper
     BREAK loop
