@@ -32,18 +32,21 @@ CONTEXT: |
 
 ### 1. Assess Fact Type
 
-| Type | Target Location | File Pattern |
+Resolve every target from `Memory/canon-layout.md` (*Entity paths*). The kind column below maps to that register's rows; the paths are the historical default, used only when the project ships no register.
+
+| Type | Register kind → default path | File Pattern |
 |------|-----------------|--------------|
-| Location | `Lore/World/Places/` | Hierarchical by parent location |
-| Character | `Lore/World/Characters/` | One file per character |
-| Artifact | `Lore/World/Magic/Artefacts/` | One file per item |
-| Magic/Spell | `Lore/World/Magic/` | Appropriate subsection |
-| Faction | `Lore/World/Factions/` | One file per faction |
+| Location | `location` → `Lore/World/Places/` | Hierarchical by parent location |
+| Character | `character` → `Lore/World/Characters/` | One file per character |
+| Artifact | `artifact` → `Lore/World/Magic/Artefacts/` | One file per item |
+| Magic/Spell | `magic` → `Lore/World/Magic/` | Appropriate subsection |
+| Faction | `faction` → `Lore/World/Factions/` | One file per faction |
 | Relationship | Existing character files | Update both parties |
 
 ### 2. Check for Existing Files
 
 Before creating new files:
+
 1. Search for existing file on the subject
 2. If exists → Edit to add new information
 3. If not exists → Create new file
@@ -51,6 +54,7 @@ Before creating new files:
 ### 3. Match Existing Patterns
 
 Read similar files in the target directory to match:
+
 - Frontmatter schema
 - Section structure
 - Voice/style
@@ -68,7 +72,7 @@ content: |
   title: Ashfield House
   type: doc
   status: draft
-  universe: AAS
+  universe: <project universe key>
   privacy: players
   rating: Teen
   tags:
@@ -116,7 +120,7 @@ changes:
     add: |
       ### Academy Connection
 
-      Suspected ties to the Academy of Anomalous Studies. Nature unclear.
+      Suspected ties to the setting's central institution. Nature unclear.
       (Established: Session 2026-02-03)
   - section: "Properties"
     add: |
@@ -133,7 +137,7 @@ content: |
   title: The Siphon
   type: doc
   status: draft
-  universe: AAS
+  universe: <project universe key>
   privacy: players
   rating: Teen
   tags:
@@ -218,14 +222,14 @@ summary: |
 
 ## Frontmatter Standards
 
-All Vault files use this schema:
+All canon files use this schema. Match the project's existing frontmatter first — read a neighbouring canon file and mirror its keys. The schema below is the shape, not a mandate; a project that uses different keys wins.
 
 ```yaml
 ---
 title: "Display Title"
 type: doc
 status: draft|active|canon
-universe: AAS
+universe: <project universe key>
 privacy: players|keeper|public
 rating: General|Teen|Mature
 tags:
@@ -249,6 +253,7 @@ established: "Session YYYY-MM-DD"  # For RP-sourced canon
 ## Integration
 
 This agent is spawned by `/rp:end` command after:
+
 1. Session summary generated
 2. Timeline search completed
 3. GM confirms canon items

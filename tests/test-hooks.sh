@@ -2445,7 +2445,7 @@ else
 fi
 
 # ============================================================================
-# Test 104: Ported policy rules (destructive-git deny, memory-protection exclude, vault-structure warn)
+# Test 104: Ported policy rules (destructive-git/-delete deny, memory-protection exclude, vault-structure warn)
 # ============================================================================
 echo -n "Test 104: Ported policy rules enforce correctly... "
 PG_PORTED="$REPO_ROOT/plugins/session/hooks/handlers/policy-guard.sh"
@@ -2483,6 +2483,27 @@ chk_pg vault_warn    '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/R
 chk_pg broad_home    '{"tool_name":"Bash","tool_input":{"command":"find /home -name x"}}'             deny
 chk_pg broad_user    '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull -name x"}}'      deny
 chk_pg scoped_home   '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull/life -name x"}}' allow
+# destructive-delete: irreversible removal. The archive cases are the documented
+# failure this rule exists for (archives deleted before extraction, forcing re-download).
+chk_pg rm_archive     '{"tool_name":"Bash","tool_input":{"command":"rm -f ~/Downloads/pdfs.7z"}}'      deny
+chk_pg rm_glob_arch   '{"tool_name":"Bash","tool_input":{"command":"rm *.zip"}}'                       deny
+chk_pg rm_recursive   '{"tool_name":"Bash","tool_input":{"command":"rm -rf /data/world"}}'             deny
+chk_pg rm_longflags   '{"tool_name":"Bash","tool_input":{"command":"rm --recursive --force build"}}'   deny
+chk_pg rm_chained     '{"tool_name":"Bash","tool_input":{"command":"cd /data && rm -rf world"}}'       deny
+chk_pg shred_file     '{"tool_name":"Bash","tool_input":{"command":"shred -u secrets.env"}}'           deny
+chk_pg gh_repo_delete '{"tool_name":"Bash","tool_input":{"command":"gh repo delete o/r --yes"}}'       deny
+chk_pg git_filterrepo '{"tool_name":"Bash","tool_input":{"command":"git filter-repo --path Memory"}}'  deny
+chk_pg git_filterbr   '{"tool_name":"Bash","tool_input":{"command":"git filter-branch -f HEAD"}}'      deny
+# Exemptions: these are routine and must NOT be blocked, or the rule gets disabled.
+chk_pg docker_rm      '{"tool_name":"Bash","tool_input":{"command":"docker rm -f zomboid"}}'           allow
+chk_pg podman_rm      '{"tool_name":"Bash","tool_input":{"command":"podman rm -f mc-proxy"}}'          allow
+chk_pg git_rm_cached  '{"tool_name":"Bash","tool_input":{"command":"git rm -r --cached secrets"}}'     allow
+chk_pg npm_rm         '{"tool_name":"Bash","tool_input":{"command":"npm rm left-pad"}}'                allow
+chk_pg rm_nodemodules '{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"}}'            allow
+chk_pg rm_venv        '{"tool_name":"Bash","tool_input":{"command":"rm -rf .venv"}}'                   allow
+chk_pg rm_tmp         '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/scratch"}}'            allow
+chk_pg rmdir_empty    '{"tool_name":"Bash","tool_input":{"command":"rmdir emptydir"}}'                 allow
+chk_pg grep_word_rm   '{"tool_name":"Bash","tool_input":{"command":"grep -rn rm plugins/"}}'           allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))

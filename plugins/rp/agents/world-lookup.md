@@ -1,6 +1,6 @@
 ---
 name: world-lookup
-description: Dual-source world lookup agent. Searches Lore/World/ for canonical facts and current session for pending canon. Returns location, character, or lore details when proper nouns are mentioned.
+description: Dual-source world lookup agent. Searches the project's canon (paths resolved from Memory/canon-layout.md) plus the current session's pending canon. Returns location, character, or lore details when proper nouns are mentioned, and reports which globs it searched when nothing matches.
 tools: Read, Grep, Glob
 model: haiku
 ---
@@ -9,7 +9,7 @@ model: haiku
 
 ## Purpose
 
-Resolve proper nouns and world references by searching both canonical sources (Lore/World/) and session-pending canon. Return structured information for the GM orchestrator to synthesize into narrative.
+Resolve proper nouns and world references by searching both the project's canonical sources (paths from `Memory/canon-layout.md`) and session-pending canon. Return structured information for the GM orchestrator to synthesize into narrative.
 
 ## Invocation Format
 
@@ -26,11 +26,13 @@ SESSION_FILE: "Work/rp/rp_session_2026-02-03.md"  # Current session for pending 
 
 ## Search Protocol
 
-### 1. Canonical Sources (Lore/World/)
+### 1. Canonical Sources — resolve paths from the project's register
 
-Search in order of relevance to TYPE_HINT:
+**Step 0 (MANDATORY): read `Memory/canon-layout.md`** and take your search globs from its *Entity paths* table. That register is the project's, not this plugin's. Do not hardcode a canon path.
 
-| Type Hint | Primary Search Paths |
+If `Memory/canon-layout.md` does not exist, fall back to the historical default below and **say so in your response** — a project without a layout register may simply keep its canon somewhere else, and a silent empty result is indistinguishable from a missing file.
+
+| Type Hint | Default search paths (fallback only) |
 |-----------|---------------------|
 | location | `Lore/World/Places/**/*.md` |
 | character | `Lore/World/Characters/*.md`, `Lore/TTRPG/RP Assets/Characters/*.md` |
@@ -44,6 +46,8 @@ Search in order of relevance to TYPE_HINT:
 1. Glob for files matching query pattern
 2. If no exact match, Grep for query term in likely paths
 3. Read matching files for relevant content
+
+**Negative results carry their evidence.** If nothing matches, report the globs you actually searched and where they came from (register or fallback). "Not established in canon" is a claim about the world; "no file matched these three globs" is a claim about the search. Only the second one is yours to make — never report the first without the second, because a stale layout register produces exactly the same empty result as genuinely absent canon.
 
 ### 2. Session-Pending Canon
 

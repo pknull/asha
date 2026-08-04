@@ -121,12 +121,12 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.11.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.12.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
 | **Creative** | `write` | v1.7.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
-| **Creative** | `rp` | v0.1.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
+| **Creative** | `rp` | v0.2.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
 | **Integrations** | `admin` | v0.3.0 | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
 | **Security** | `security` | v1.0.0 | Web-app security review checklist skill |
@@ -550,6 +550,16 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### v2.4.0 — Usage-insights remediation (2026-08-04)
+
+Five repairs driven by a `/insights` review of 145 sessions. Each maps a recurring real-world failure to the mechanism that should already have carried it.
+
+- **`destructive-delete` policy rule** (session v1.12.0) — `rm -r/-f`, `rm` of a glob or archive, `shred`, `gh repo delete` now deny by default; `destructive-git` gains `filter-repo`/`filter-branch`. Motivating incident: two `.7z` archives deleted before extraction, forcing re-download. Exemptions are deliberate and tested — `docker rm`, `git rm`, `npm rm`, `node_modules`, `.venv`, `/tmp` — because an over-broad rule gets disabled and then protects nothing. Override: `ASHA_ALLOW_DESTRUCTIVE_DELETE=1`. 19 new cases in Test 104.
+- **Negative claims require an evidence trail** (`modules/research.md`) — the severity markers only ever covered *hedged* claims; confident assertions of absence ("no update exists", "no such file", "not version-controlled") attracted no marker and were the highest-frequency correction in the review. Negative findings now carry a `Checked:` line, with an authoritative-source table. Two rules generalize the specific incidents: **a pin is a claim, not evidence** (a branch/tag in config says what was selected, never what is available) and **a cache is not its source** (absence from an index means *not indexed*).
+- **`roleplay-gm` made structurally read-only** (rp v0.2.0) — was `Task, Edit, Write, Bash`, now `Task, Read, Grep, Glob`. It had write access it was never instructed to use, and lacked the `Read` its own instructions required ("Read `Memory/invariants.md` at session start"). It drafted blind against the continuity contract while able to bypass it: the turn loop has the *calling command* append only on a clean verdict, so a GM that writes its own draft skips the gate entirely. Follows the `claim-verifier` allowlist-as-enforcement pattern. Also fixed a stale `rp-validator` reference (renamed to `continuity-reviewer` in v2.1.0).
+- **Decline-once directive** in the per-turn RP routing fragment — a session was abandoned after refusals oscillated mid-scene and poisoned the context. Oscillation, not refusal, is the expensive failure: state the boundary once and hold it. Paired with an explicit ban on authoring PC actions.
+- **RP portability** (rp v0.2.0) — the plugin's README promised the *nouns* stay in the project; the implementation contradicted it. Canon paths now resolve through a project-owned `Memory/canon-layout.md` register (template shipped, historical defaults preserved so existing projects need no edit). Campaign proper nouns removed from shipped primitives: the `rp-priced-stakes` `match_regex` carried one campaign's vocabulary (`doorman`, `mystic door`, `dollhouse`) and so fired only there, and `roleplay-gm`/`canon-writer` hardcoded a specific setting.
 
 ### v2.3.0 — OpenCode support dropped (2026-07-27)
 

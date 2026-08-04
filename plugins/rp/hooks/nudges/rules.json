@@ -7,11 +7,11 @@
       "event": "UserPromptSubmit",
       "marker_required": "rp-active",
       "marker_off": "rp-priced-stakes-off",
-      "match_regex": "escape|escaping|get out|getting out|way out|leave the|leaving the|exit|doorman|gatekeeper|mystic door|mystic tool|sever|severing|close off the|anchor point|dollhouse|break in|entrance|entry point|permanently kill|come back|reset|doom",
+      "match_regex": "escap(e|ing)|get(ting)? out|way out|leav(e|ing) the|exit|entrance|entry point|break in|sever(ing)?|close off|cut off|permanent(ly)?|forever|irreversib|undo|resurrect|revive|bring .* back|come back|banish|dispel|the price|what it costs|what does it cost|at what cost|bargain|pact|toll|reset",
       "cooldown_hours": 1,
       "priority": 20,
       "inject_file": "fragments/canon-priced-stakes.md",
-      "_comment": "Fires when a turn's text touches something the setting's source explicitly prices. Diagnosed 2026-07-26 (Darkest House): a GM adjudicated how a character leaves the house and invented a costless exit without ever opening the Source Rules Reference, which lists six escape methods, closed, each priced. Payload is a POINTER plus a protocol duty, not injected content — the register stays in the project, and content injection would cost context on every fire. Marker-gated so it is inert outside RP; 1h cooldown so a stake-heavy scene does not nag. Kill switch: Work/markers/nudge-rp-priced-stakes-off (generic) or rp-priced-stakes-off (marker_off)."
+      "_comment": "Fires when a turn's text touches a class of thing settings typically price: exits and entrances, permanence and reversal, resurrection, banishment, bargains. Diagnosed 2026-07-26 (Darkest House): a GM adjudicated how a character leaves the house and invented a costless exit without ever opening the Source Rules Reference, which lists six escape methods, closed, each priced. That diagnosis is provenance only — the regex is deliberately setting-agnostic and MUST stay that way: proper nouns from one campaign (a specific NPC, door, or location) in a shipped rule fire on that campaign's vocabulary and stay silent in every other project, which is the opposite of the intent. Projects add their own trigger vocabulary by redefining this row in ~/.asha/nudges.json (merged by id, user wins). Payload is a POINTER plus a protocol duty, not injected content — the register stays in the project, and content injection would cost context on every fire. Marker-gated so it is inert outside RP; 1h cooldown so a stake-heavy scene does not nag. Kill switch: Work/markers/nudge-rp-priced-stakes-off (generic) or rp-priced-stakes-off (marker_off)."
     }
   ]
 }
