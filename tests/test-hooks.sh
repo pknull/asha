@@ -2483,6 +2483,12 @@ chk_pg vault_warn    '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/R
 chk_pg broad_home    '{"tool_name":"Bash","tool_input":{"command":"find /home -name x"}}'             deny
 chk_pg broad_user    '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull -name x"}}'      deny
 chk_pg scoped_home   '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull/life -name x"}}' allow
+# no-broad-home-scans must be username-agnostic. It previously hardcoded the
+# maintainer's account, so it protected exactly one machine and silently
+# allowed a full home scan for every other user.
+chk_pg broad_other   '{"tool_name":"Bash","tool_input":{"command":"find /home/alice -name x"}}'       deny
+chk_pg broad_other2  '{"tool_name":"Bash","tool_input":{"command":"rg needle /home/bob"}}'            deny
+chk_pg scoped_other  '{"tool_name":"Bash","tool_input":{"command":"find /home/alice/code -name x"}}'  allow
 # destructive-delete: irreversible removal. The archive cases are the documented
 # failure this rule exists for (archives deleted before extraction, forcing re-download).
 chk_pg rm_archive     '{"tool_name":"Bash","tool_input":{"command":"rm -f ~/Downloads/pdfs.7z"}}'      deny
