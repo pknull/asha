@@ -40,10 +40,11 @@
     {
       "id": "vault-structure",
       "tool": "Write",
-      "file_path_regex": "/Vault/",
-      "exclude_regex": "/Vault/(World|Books|Sessions|Characters|Templates|Resources)/",
+      "file_path_regex": "/(Vault|Lore|Wiki|Codex|Compendium|Archive)/",
+      "exclude_regex": "/(Vault|Lore|Wiki|Codex|Compendium|Archive)/(World|Books|Sessions|Characters|Templates|Resources)/",
       "action": "warn",
-      "reason": "File written under Vault/ outside the expected top-level structure (World/Books/Sessions/Characters/Templates/Resources)."
+      "reason": "File written into a content root (Vault/Lore/Wiki/Codex/Compendium/Archive) outside its expected top-level buckets (World/Books/Sessions/Characters/Templates/Resources). Warn-only: this is a scatter check, not a block.",
+      "_comment": "The content root must stay a NAMED anchor, not a wildcard. It is what scopes the rule: with a wildcard root the trigger degenerates to 'every write not in a bucket', which measured 129/129 markdown files in this repo — CLAUDE.md, AGENTS.md, every doc. The root list is the portable part and is meant to be extended; the taxonomy is the project-specific part. A project whose content lives elsewhere (docs/setting/, notes/) redefines this whole row in ~/.asha/policies.json, merged by id. Warn-only by design: violation-checker logs it, the guard never blocks, so a wrong root list costs a log line rather than a failed write."
     }
   ]
 }

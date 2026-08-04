@@ -2534,6 +2534,49 @@ else
 fi
 
 # ============================================================================
+# Test 104c: vault-structure keeps a NAMED content root (no wildcard)
+# ============================================================================
+# The content root anchors the rule's scope. If it is ever widened to a bare
+# wildcard, the trigger degenerates to "every write not in a bucket" — measured
+# at 129/129 markdown files in this repo, CLAUDE.md and every doc included.
+# This test pins the blast radius rather than the exact root list, so the list
+# stays extensible while the anchor stays mandatory.
+echo -n "Test 104c: vault-structure trigger stays scoped to a named root... "
+VS_RULES="$REPO_ROOT/plugins/session/hooks/policies/rules.json"
+VS_TRIG="$(jq -r '.rules[] | select(.id=="vault-structure") | .file_path_regex' "$VS_RULES" 2>/dev/null || true)"
+VS_EXCL="$(jq -r '.rules[] | select(.id=="vault-structure") | .exclude_regex' "$VS_RULES" 2>/dev/null || true)"
+VS_OK=1; VS_WHY=""
+vs_chk() { # vs_chk <label> <path> <want: WARN|silent>
+    local got=silent
+    if printf '%s' "$2" | grep -Eq -- "$VS_TRIG" && ! printf '%s' "$2" | grep -Eq -- "$VS_EXCL"; then got=WARN; fi
+    [[ "$got" == "$3" ]] || { VS_OK=0; VS_WHY="$VS_WHY $1(got=$got want=$3)"; }
+}
+if [[ -z "$VS_TRIG" || -z "$VS_EXCL" ]]; then
+    VS_OK=0; VS_WHY=" rule or its regexes missing"
+else
+    # In scope and outside a bucket -> warn.
+    vs_chk stray_vault  "/p/Vault/Random/x.md"      WARN
+    vs_chk stray_lore   "/p/Lore/Junk/x.md"         WARN
+    # In scope and inside a bucket -> silent.
+    vs_chk ok_world     "/p/Vault/World/x.md"       silent
+    vs_chk ok_chars     "/p/Lore/Characters/x.md"   silent
+    # Out of scope entirely -> silent. These are the blast-radius guards.
+    vs_chk repo_readme  "/p/README.md"              silent
+    vs_chk repo_doc     "/p/docs/guide.md"          silent
+    vs_chk repo_src     "/p/src/main.py"            silent
+    vs_chk repo_nested  "/p/plugins/write/x.md"     silent
+    vs_chk repo_claude  "/p/CLAUDE.md"              silent
+fi
+if [[ $VS_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  vault-structure scope mismatch:$VS_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 105: Copilot policy adapter (Copilot payload -> Asha decision)
 # ============================================================================
 echo -n "Test 105: Copilot hook adapter translates + enforces... "
