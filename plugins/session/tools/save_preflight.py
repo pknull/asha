@@ -296,6 +296,12 @@ def gate_disk_truth(project_dir: Path) -> GateResult:
                 continue
         else:
             first_seg = token.split("/", 1)[0]
+            # "." and ".." are a directory under EVERY project, so they sail
+            # through the check below and make `./x` resolve here no matter
+            # which repo the note was written about -- flagging correct notes
+            # about a sibling checkout as contradictions, permanently.
+            if first_seg in (".", ".."):
+                continue
             if not (project_dir / first_seg).is_dir():
                 continue                        # not evidently a repo path; skip, don't guess
             p = project_dir / token

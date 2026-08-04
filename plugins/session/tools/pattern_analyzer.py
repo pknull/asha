@@ -1188,30 +1188,15 @@ def detect_learnable_patterns(events: List[Dict]) -> List[Dict]:
                 })
                 break
 
-    # 2. Effective agent sequences
-    agents = [
-        (i, e.get("payload", {}).get("agent_type"))
-        for i, e in enumerate(events)
-        if e.get("subtype") == "agent_deployed"
-    ]
-
-    # Find pairs that led to successful outcomes (no errors after)
-    for i in range(len(agents) - 1):
-        idx1, agent1 = agents[i]
-        idx2, agent2 = agents[i + 1]
-
-        # Check if this sequence was error-free. Skip X->X tautologies: a skill
-        # invoked repeatedly in a row ("follow X with X") is not a learnable
-        # sequence and otherwise floods learnings.md with identical entries.
-        errors_between = [e for e in events[idx1:idx2] if e.get("subtype") == "error"]
-        if not errors_between and agent1 and agent2 and agent1 != agent2:
-            candidates.append({
-                "category": "Workflow",
-                "id": f"sequence-{agent1.lower()}-{agent2.lower()}",
-                "trigger": f"Task requiring {agent1} analysis",
-                "action": f"Follow {agent1} with {agent2} for comprehensive coverage",
-                "reason": f"Effective sequence observed in {project_name}"
-            })
+    # 2. (removed) Adjacent agent pairs previously emitted "sequence-<a>-<b>"
+    # learnings ("Follow general-purpose with reviewer for comprehensive
+    # coverage"). Two agents running in a row without an error between them is
+    # adjacency, not a lesson — the "reason" was only ever "observed in
+    # <project>". save_guardrail's strip-sequence-noise has been deleting every
+    # one of them on every save since it was added, so the emission was pure
+    # churn: synthesis reported `learnings_added: 3`, the guardrail removed 3,
+    # net zero, twice per session. Removed at source, exactly as the prefer-*
+    # emission below was; the guardrail op stays to self-heal stale copies.
 
     # 3. (removed) Repeated tool-use previously emitted "prefer-<tool>" learnings
     # ("Use Edit for file modifications (proven effective)"). These are vacuous —
