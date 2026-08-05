@@ -45,7 +45,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
-| **Write** | v1.8.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
+| **Write** | v1.9.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
 | **RP** | v0.2.0 | Creative | Live-interactive roleplay: session lifecycle, per-turn continuity gate, canon ratification — 6 agents |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
 | **Admin** | v0.3.0 | Integrations | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
