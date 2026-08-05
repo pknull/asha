@@ -1,6 +1,6 @@
 # asha
 
-**Version**: 2.4.0
+**Version**: 2.5.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
 Asha renders or mounts skills, agents, commands, and hooks into each harness's native or compatible surfaces, ships a single `asha` dispatcher that injects a shared persona, and normalizes session activity from all three CLIs into one synthesis pipeline.
@@ -124,7 +124,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 | **Core** | `session` | v1.12.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
-| **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
+| **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
 | **Creative** | `write` | v1.9.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
 | **Creative** | `rp` | v0.2.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
@@ -207,11 +207,11 @@ Dynamic multi-perspective analysis with 3 core roles (Moderator, Analyst, Challe
 ### Code
 
 **Plugin Name**: `code`
-**Commands**: `/code:review`, `/code:verify`, `/code:orchestrate`
-**Version**: 1.4.0
+**Commands**: `/code:review`, `/code:verify`, `/code:orchestrate`, `/code:issue-loop`
+**Version**: 1.5.0
 **Domain**: Development
 
-Development workflows with orchestration patterns, code review, TDD, and 5 specialized agents.
+Development workflows with orchestration patterns, code review, TDD, an overnight issue-to-merge loop, and 5 specialized agents.
 
 ```bash
 /code:review              # Review staged changes
@@ -219,6 +219,8 @@ Development workflows with orchestration patterns, code review, TDD, and 5 speci
 /code:review --all        # Review all uncommitted changes
 /code:verify              # Run types, lint, tests, security
 /code:orchestrate         # Multi-agent workflow (sequential + parallel phases)
+/code:issue-loop          # Triage issues → worker-per-issue worktrees → cold review → draft PRs
+/code:issue-loop --dry-run  # Safety rails + preflight only
 ```
 
 **Agents** (5):
@@ -243,6 +245,8 @@ Development workflows with orchestration patterns, code review, TDD, and 5 speci
 | `bug-investigation.yaml` | Bug diagnosis and fix |
 | `refactor-safe.yaml` | Code cleanup with safety |
 | `security-audit.yaml` | Security hardening |
+
+**Engines**: `issue-loop` (Workflow-tool script behind `/code:issue-loop`, commission-loop verdict discipline; dual opt-in via `.asha/issue-loop.json` + `~/.asha/config.json` allowlist, guarded by `tools/issue-loop-preflight.sh` and published solely through `tools/issue-loop-publish.sh` — draft PRs only, never main, never merge)
 
 **Also ships**: orchestration/complexity-routing/parallel-agents modules and harness instruction templates (`templates/copilot.md`, `cursor.md`, `devin.md`).
 
@@ -550,6 +554,15 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### v2.5.0 — Overnight issue-to-merge loop (2026-08-05)
+
+Builds the deferred spec in `docs/proposals/2026-08-04--issue-to-merge-loop.md`: a dispatcher that triages open GitHub issues, fixes each safe one test-first in an isolated worktree, cold-reviews the diff, and opens **draft PRs only** — the human merges over coffee, the machine never merges. Code plugin v1.5.0.
+
+- **Safety rails before features, and rails first in the build**: `issue-loop-preflight.sh` enforces a **dual opt-in** (the target repo commits `.asha/issue-loop.json` AND the repo path is allowlisted in `~/.asha/config.json` — a cloned repo cannot self-authorize, a local allowlist cannot enable a repo that never opted in), probes `gh` auth with clean surrender, requires `.asha/worktrees/` git-ignored, and — rail 6 made *runtime* — pipes the loop's own command set through the live policy guard (user overlay merged) before every dispatch: an allow-side deny **or a gutted deny-side protection** refuses to run. 20 cases in `tests/test-issue-loop.sh` (Suite 14).
+- **"Never push main / never merge" is structural, not policy**: plain `git push origin main` stays intentionally allowed for humans (pinned in Test 104), so the loop's only push path is `issue-loop-publish.sh` — refuses main/master, foreign prefixes, unregistered worktrees, and dirty trees; hardcodes `--draft`. Worktree cleanup is `git worktree remove` only; the `rm -rf` form stays denied and is now pinned as such (7 new issue-loop cases in Test 104).
+- **Engine** (`plugins/code/engines/issue-loop.js`, first engine in the code plugin — write/engines precedent): Triage → Iterate → Review → Publish → Report with commission-loop's verdict discipline — uncertainty fails, a dead agent fails its item, findings outrank the verdict label (the five-criterion triage conjunction is recomputed engine-side), silence is never success (thrown stages become indexed failure envelopes; the run report is mandatory, with a caller-side fallback duty). Worker contract: failing test FIRST or report "no-failing-test"; attempt cap then surrender with diagnosis; worktree evidence checked by the engine, not trusted from the label. The reviewer is **cold** — diff + issue text only, worker reasoning structurally withheld — and judges scope against the Change Budget rule. Wiring test: `tests/js/issue-loop.test.mjs` (13 scenarios).
+- **v1 has no outward-write path to the tracker** (triage comments deliberately not built — rejections and needed clarifications live in the run report at `Work/loops/<run-id>/`, manual pruning), no auto-merge ever, and the loop does not run against asha itself until it has a track record on lower-stakes repos.
 
 ### v2.4.0 — Usage-insights remediation (2026-08-04)
 

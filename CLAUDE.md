@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 2.4.0
-**Last Updated**: 2026-08-04
+**Version**: 2.5.0
+**Last Updated**: 2026-08-05
 **Repository**: pknull/asha
 
 ---
@@ -44,7 +44,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 | **Session** | v1.12.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
-| **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
+| **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
 | **Write** | v1.9.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
 | **RP** | v0.2.0 | Creative | Live-interactive roleplay: session lifecycle, per-turn continuity gate, canon ratification — 6 agents |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
@@ -77,13 +77,14 @@ asha/
 │   ├── code/                         # development workflows
 │   │   ├── agents/                   # 5 agents (codebase-historian, debugger,
 │   │   │                             #   refactor-cleaner, reviewer, tdd)
-│   │   ├── commands/                 # review.md, verify.md, orchestrate.md
+│   │   ├── commands/                 # review.md, verify.md, orchestrate.md, issue-loop.md
+│   │   ├── engines/                  # issue-loop.js (Workflow-tool script)
 │   │   ├── skills/postgres/
 │   │   ├── hooks/                    # post-edit-lint
 │   │   ├── recipes/                  # 5 multi-agent workflows
 │   │   ├── modules/                  # code, orchestration, complexity-routing, parallel-agents
 │   │   ├── templates/                # harness instruction templates (copilot/cursor/devin)
-│   │   └── tools/                    # verify.py
+│   │   └── tools/                    # verify.py, issue-loop-preflight.sh, issue-loop-publish.sh
 │   ├── image/                        # skills/generation/ (installs as image-generation)
 │   ├── panel/                        # research & analysis
 │   │   ├── agents/                   # 6 agents (thinker, questioner, examiner,
@@ -918,6 +919,15 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v2.5.0 (2026-08-05) — Overnight issue-to-merge loop
+
+Implements the deferred spec (`docs/proposals/2026-08-04--issue-to-merge-loop.md`). Code plugin v1.5.0: `/code:issue-loop` command + `engines/issue-loop.js` (first code-plugin engine; write/engines Workflow-script precedent) + two rail scripts.
+
+- **Rails were built first, tests-first**: `tools/issue-loop-preflight.sh` (dual opt-in — project `.asha/issue-loop.json` AND `~/.asha/config.json` `issue_loop.repos` allowlist; gh probe; `.asha/worktrees/` must be git-ignored; **live rail-6 guard self-check**: the loop's own command set is piped through policy-guard with the user overlay merged, and either a denied loop command or a weakened deny-side protection refuses dispatch). `tools/issue-loop-publish.sh` is the sole push path — never main/master, prefix-enforced branches, registered worktrees only, clean trees only, `--draft` hardcoded. A *global* deny on pushing main was deliberately rejected: plain push is a pinned-intentional allow for humans (Test 104), so the rail is structural instead.
+- **Engine verdict discipline is commission-loop's, verbatim in spirit**: uncertainty fails, dead agents fail their item, findings outrank the verdict label (triage's five-criterion conjunction recomputed engine-side; a "candidate" without failing-test/worktree/branch evidence is demoted by the engine). The reviewer is cold — diff + issue text only — and scope is judged by the Change Budget rule. Report is mandatory; a dead report agent hands the caller a `fallback_report` and the duty to write it.
+- Tests: `tests/test-issue-loop.sh` (Suite 14, 20 cases, fixture repos + PATH-shimmed gh), `tests/js/issue-loop.test.mjs` (13 wiring scenarios incl. source-purity), 7 issue-loop pins in Test 104 (worktree add/remove, `gh pr create --draft`, plain `push -u` allowed; force-push and `rm -rf .asha/worktrees/…` stay denied — cleanup is `git worktree remove` by convention).
+- Scope held to the proposal's v1: no tracker comments (no outward-write path exists), no auto-merge ever, reports in `Work/loops/<run-id>/` with manual pruning, and no runs against asha itself until the loop has a track record elsewhere.
 
 ### v2.4.0 (2026-08-04) — Usage-insights remediation
 
