@@ -1,35 +1,51 @@
-# Recall fixtures are questions a future session may naturally ask, not keyword
-# bags. `expect` is a memory filename stem or a learning id. Add one fixture in
-# the same change whenever a durable diagnosed-failure memory is inscribed.
-# Initial global baseline (2026-07-14): 12/12 hit@5.
+# Recall fixtures — retrieval regression checks for your own memory bundle.
+#
+# Each fixture is a question a future session might naturally ask, paired with
+# the memory it should surface. `recall_bench.py` ranks your memories against
+# each question and scores hit@k. The point is to catch retrieval *regressions*:
+# a memory that used to be findable and quietly stopped being findable.
+#
+# Schema — questions, not keyword bags:
+#
+#   - q: "<a question phrased the way you would actually ask it>"
+#     expect: <memory filename stem, or a learning id>
+#
+# `expect` must name a memory that exists in YOUR bundle (`~/.asha/learnings/`
+# or a project `Memory/`). That is why this file ships EMPTY.
+#
+# Why empty rather than pre-populated: a fixture whose `expect` names a memory
+# you do not have can never hit. It scores 0 forever, drags the baseline down,
+# and — the real cost — hides genuine regressions in the fixtures that *do*
+# work, because the aggregate score is already bad and stays bad. A permanently
+# impossible fixture conceals exactly what this benchmark exists to detect.
+# Seeding this file with another person's memory ids would do that to every
+# fixture in it, on every machine but theirs.
+#
+# How to build your set:
+#
+#   1. Add one fixture in the same change whenever you inscribe a durable
+#      diagnosed-failure memory. Write the question the way you would ask it
+#      six months from now, having forgotten the details — not the way you
+#      would grep for it.
+#   2. Prefer symptom-shaped questions for diagnosed failures ("gws call
+#      returns 403 after adding scope") — that is how the problem re-arrives.
+#   3. Run `recall_bench.py` after memory consolidation. A drop means retrieval
+#      regressed, usually because a consolidation blurred a distinctive term.
+#   4. Keep every fixture scorable. If you retire the memory behind a fixture,
+#      retire the fixture in the same change.
+#
+# Illustrative shape only — these are commented out on purpose. Uncomment
+# nothing; write your own against memories you actually have.
+#
+#   - q: "Which host runs the media stack, and what is its address?"
+#     expect: reference_home_network
+#   - q: "Build fails only in CI, passes locally, no code change"
+#     expect: reference_ci_env_drift
+#   - q: "Should I use the vendor CLI or the MCP server for calendar work?"
+#     expect: feedback_cli_over_mcp
+#
+# Scope: this file is the cross-project set (`~/.asha/recall_fixtures.yaml`).
+# A project may keep its own at `Memory/recall_fixtures.yaml`, which takes
+# precedence when present. See plugins/session/skills/memory-maintenance.
 
-# B1 locked recall set (2026-04-17), translated to question -> memory id.
-# The original identity-email question is intentionally excluded: its answer
-# belongs to keeper.md, outside the memory/learning retrieval substrate measured
-# here. A permanently impossible fixture would conceal real score regressions.
-- q: "Where does egregore work happen, and should it be set up in the life repo?"
-  expect: project_egregore_setup
-- q: "Where did the old threshold repository tooling land, and when?"
-  expect: project_threshold_merged
-- q: "Where does asha-marketplace live and how does Claude see it from its plugins directory?"
-  expect: project_marketplace_relocated
-- q: "Where is the pknull.ai working directory, is it independent from life, and what is its remote?"
-  expect: project_journal_site
-- q: "Can task-manager pull Todoist now, or must its MCP connection be verified first?"
-  expect: feedback_verify_agent_output
-- q: "For Gmail Calendar or Drive should I use google-workspace MCP or gws CLI?"
-  expect: feedback_gws_over_mcp
-- q: "What are the UDM SE gateway and Egregore container-host IP addresses?"
-  expect: reference_home_network
-- q: "Which files register a new asha-marketplace plugin?"
-  expect: reference_plugin_registration
-- q: "How does the session and asha persona plugin split connect to ASHA_PERSONA and marketplace installation?"
-  expect: project_asha_prompt_architecture
-
-# Diagnosed failures inscribed after B1 and used by issue #8/#9 acceptance.
-- q: "MC server unjoinable, TPS low, container healthy"
-  expect: reference_modded_mc_server_hang_diagnosis
-- q: "root disk 100% full, Bash output lost"
-  expect: reference_pk_lintop_syslog_flood_triage
-- q: "gws call returns 403 after adding scope"
-  expect: reference_gws_scope_add_token_cache
+# (Empty. Add fixtures below as you inscribe memories.)

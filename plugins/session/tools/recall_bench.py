@@ -44,6 +44,19 @@ def load_fixtures(path: Path) -> list[dict[str, str]]:
     bad = [i + 1 for i, row in enumerate(rows) if not row.get("q") or not row.get("expect")]
     if bad:
         raise ValueError(f"fixtures missing q/expect at entries: {bad}")
+    if not rows:
+        # A comments-only starter is a deliberate empty benchmark; content that
+        # parses to nothing is a schema mistake ("- question:"/"expected:") and
+        # must not silently score as a successful 0/0 — for a tool whose whole
+        # purpose is catching silent regressions, that failure mode is the worst
+        # one. main()'s warn-only boundary turns this into status: "warning".
+        content = [ln for ln in text.splitlines()
+                   if ln.strip() and not ln.lstrip().startswith("#")]
+        if content:
+            raise ValueError(
+                f"{path.name} has {len(content)} non-comment line(s) but no fixtures "
+                "parsed — schema mismatch? Expected entries of the form "
+                "'- q: \"<question>\"' followed by '  expect: <memory-id>'")
     return rows
 
 

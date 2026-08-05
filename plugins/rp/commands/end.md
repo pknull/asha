@@ -119,7 +119,12 @@ prompt: |
   INVARIANTS_FILE: "Memory/invariants.md"
   SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"
 
-  Identify all canon-worthy additions from the session. For each:
+  Identify all canon-worthy additions from the session. EXCLUDE content
+  inside "## VALIDATOR SURRENDER" blocks unless the block carries the
+  "KEEPER: accepted" marker — a surrendered draft failed the continuity
+  gate, and only the Keeper's explicit acceptance (recorded by /rp:turn)
+  makes its events real. Canonizing an unmarked surrender block promotes
+  the exact fabrications the gate caught. For each addition:
   1. Categorize against invariants (extends_existing | new_canon | conflicts_with_invariants | pending_resolution)
   2. Surface to Keeper via AskUserQuestion for accept / reject / defer (and accept-and-update-invariants for conflicts)
   3. Route accepted items into the canon-writer queue
@@ -156,13 +161,17 @@ prompt: |
 
 **Canon Promotion Targets:**
 
-| Type | Destination | Update Style |
+Resolve every destination from `Memory/canon-layout.md` (*Entity paths* table) — the same register `world-lookup` reads for lookups, so a project that relocates its canon edits one file rather than every agent. Fall back to the defaults below only when the register is absent, and say so before writing.
+
+| Type | Destination (default — see register) | Update Style |
 |------|-------------|--------------|
-| Locations | `Lore/World/Places/` | Create or expand |
-| Characters | `Lore/World/Characters/` | Add relationships, details |
-| Artifacts | `Lore/World/Magic/Artefacts/` | Create new |
-| Magic | `Lore/World/Magic/` | Document new spells/effects |
-| Factions | `Lore/World/Factions/` | Update membership, goals |
+| Locations | `location` → `Lore/World/Places/` | Create or expand |
+| Characters | `character` → `Lore/World/Characters/` | Add relationships, details |
+| Artifacts | `artifact` → `Lore/World/Magic/Artefacts/` | Create new |
+| Magic | `magic` → `Lore/World/Magic/` | Document new spells/effects |
+| Factions | `faction` → `Lore/World/Factions/` | Update membership, goals |
+
+Never invent a destination. If a ratified item has no matching kind in the register, stop and ask the Keeper where it belongs — writing canon to a guessed path scatters the source of truth, and the next lookup will not find it.
 
 ### Step 7: Git Commit (Optional)
 
@@ -170,7 +179,12 @@ If user confirms, commit session artifacts:
 
 ```bash
 git add Work/rp/
-git add Lore/World/  # Only if canon promoted
+# Only if canon was promoted: stage the exact files canon-writer reported —
+# each of its operations names its file_path/path, so the promotion report IS
+# the stage list. Never stage a guessed "canon root": the register maps kinds
+# to globs under potentially unrelated roots, so no single directory exists to
+# add, and a guessed one silently omits promoted files outside it.
+git add <each file path from canon-writer's promotion report>
 git commit -m "Session save: [brief summary from Step 3]"
 ```
 

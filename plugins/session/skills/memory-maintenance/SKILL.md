@@ -15,6 +15,7 @@ license: MIT
 ## When to Use This Skill
 
 This skill provides guidance for:
+
 - Creating new Memory files
 - Updating existing Memory files
 - Maintaining frontmatter schema
@@ -26,6 +27,7 @@ This skill provides guidance for:
 ### Required Files
 
 **Memory/activeContext.md**:
+
 - Current project status
 - Recent activities (last 2-3 sessions)
 - Critical reference information
@@ -33,6 +35,7 @@ This skill provides guidance for:
 - Update: Every session
 
 **Memory/projectbrief.md**:
+
 - Project overview
 - Scope (in/out)
 - Objectives
@@ -40,6 +43,7 @@ This skill provides guidance for:
 - Update: Rarely (major scope changes)
 
 **Memory/communicationStyle.md**:
+
 - Persona
 - Communication patterns
 - Audience
@@ -49,12 +53,14 @@ This skill provides guidance for:
 ### Optional Files
 
 **Memory/workflowProtocols.md**:
+
 - Project-specific patterns
 - Tool usage conventions
 - Process documentation
 - Create when: Patterns emerge across multiple sessions
 
 **Memory/techEnvironment.md**:
+
 - Stack (languages, frameworks, tools)
 - Code conventions (naming, imports, style)
 - Build system
@@ -62,6 +68,7 @@ This skill provides guidance for:
 - Create when: Software development projects
 
 **Custom Files**:
+
 - Create project-specific Memory files as needed
 - Examples: agentCoverageTest.md, wireframeReference.md
 
@@ -83,6 +90,7 @@ dependencies: ["file1.md", "file2.md"]
 ```
 
 **Field Requirements**:
+
 - **type**: OKF top-level concept type. Lets the bundle be checked/graphed by `validate.py`/`visualize.py`. Add it going forward; the existing rich fields ride along as custom keys (OKF preserves unknown keys). Not back-filled in bulk, and validation is warn-only — legacy files without it are not blocked.
 - **version**: Increment minor (X.Y+1) for content, major (X+1.0) for structure
 - **lastUpdated**: Update on every modification
@@ -110,12 +118,14 @@ growing an ever-longer flat list.
 ## Update Triggers
 
 Update Memory when:
+
 - **≥25% code impact**: Major refactoring, architectural changes
 - **Pattern discovery**: New insights about project/domain
 - **User request**: Explicit instruction to document
 - **Context ambiguity**: Gaps causing confusion
 
 Do NOT update for:
+
 - Trivial changes (typos, formatting)
 - Temporary context (single-session)
 - Redundant information
@@ -129,11 +139,14 @@ that should be tested across projects.
 
 ```yaml
 - q: "root disk full, service healthy, shell output disappeared"
-  expect: reference_pk_lintop_syslog_flood_triage
+  expect: reference_disk_full_log_flood_triage
 ```
 
-`expect` is the target memory filename stem or learning id. Keep the question
-phrased as a future user/task symptom, not as a copy of the description. Run:
+`expect` is the target memory filename stem or learning id, and it must name a
+memory that exists in *this* bundle — a fixture pointing at a memory you do not
+have can never hit, so it drags the baseline down permanently and masks real
+regressions in the fixtures that do work. Keep the question phrased as a future
+user/task symptom, not as a copy of the description. Run:
 
 ```bash
 recall_bench.py --project-dir "$PWD" --format human
@@ -146,11 +159,13 @@ by repairing the catalogue or description rather than keyword-stuffing bodies.
 ## File Interdependencies
 
 **Foundation Files** (always read first):
+
 1. activeContext.md
 2. projectbrief.md
 3. communicationStyle.md
 
 **Conditional Files** (read when triggered):
+
 - workflowProtocols.md
 - techEnvironment.md
 
@@ -159,6 +174,7 @@ Document dependencies in frontmatter.
 ## Self-Contained Principle
 
 **CRITICAL RULE**:
+
 - Memory files MUST be self-contained
 - Memory files MUST NOT reference framework (AGENTS.md)
 - Framework MAY reference Memory files
@@ -168,11 +184,13 @@ This enables framework portability.
 ## Archive Strategy
 
 **activeContext.md**:
+
 - Archive when >500 lines
 - Keep last 2-3 sessions
 - Move older activities to git history
 
 **Session Files**:
+
 - Archive to Work/sessions/archive/
 - Named: session-[timestamp].md
 - Git-ignored (ephemeral)
@@ -180,6 +198,7 @@ This enables framework portability.
 ## Convention Discovery Protocol
 
 When reading code files:
+
 1. Note conventions (naming, imports, style)
 2. Document in Memory/techEnvironment.md
 3. Check Memory before writing code
@@ -191,6 +210,7 @@ This prevents re-discovery overhead and ensures consistency.
 ## Validation Checklist
 
 Before updating Memory:
+
 - [ ] Frontmatter complete and valid
 - [ ] Version incremented
 - [ ] lastUpdated timestamp current
@@ -203,6 +223,7 @@ Before updating Memory:
 ## Examples
 
 See reference implementation:
+
 - Your project's `Memory/` directory
 - Foundation files show minimal structure
 - Optional files show when to extend
@@ -210,6 +231,7 @@ See reference implementation:
 ## Documentation
 
 For complete specifications, see plugin documentation:
+
 - `docs/MEMORY-STRUCTURE.md` - Detailed file specifications
 - `docs/SESSION-CAPTURE.md` - Session watching protocol
 - `docs/SESSION-SAVE.md` - Synthesis workflow
