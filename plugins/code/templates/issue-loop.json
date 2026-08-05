@@ -1,0 +1,8 @@
+{
+  "_comment": "Project-side opt-in for the issue-to-merge loop (/code:issue-loop). Copy to <repo>/.asha/issue-loop.json and set enabled=true. This is HALF of the dual opt-in: the repo must ALSO be listed under issue_loop.repos in ~/.asha/config.json on the machine that runs the loop — a cloned repo cannot self-authorize, and a local allowlist cannot enable a repo that never opted in. test_command is required: it is how a worker proves itself green. attempt_cap is green-loop attempts per issue before surrender. branch_prefix namespaces every loop branch (never main/master). max_issues bounds one run's blast radius.",
+  "enabled": false,
+  "test_command": "./tests/run-tests.sh",
+  "attempt_cap": 3,
+  "branch_prefix": "issue-loop/",
+  "max_issues": 5
+}

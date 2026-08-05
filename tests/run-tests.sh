@@ -214,6 +214,17 @@ else
 fi
 echo ""
 
+# Test Suite 14: Issue-Loop Safety Rail Tests
+echo -e "${BLUE}--- Test Suite 14: Issue-Loop Safety Rail Tests ---${NC}"
+if "$SCRIPT_DIR/test-issue-loop.sh"; then
+    echo -e "${GREEN}✓ Issue-loop safety rail tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Issue-loop safety rail tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"

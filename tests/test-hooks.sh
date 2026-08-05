@@ -2569,6 +2569,20 @@ chk_pg arch_amp       '{"tool_name":"Bash","tool_input":{"command":"rm backup.7z
 chk_pg arch_quotemeta '{"tool_name":"Bash","tool_input":{"command":"rm \"backup&old.7z\""}}'           deny
 chk_pg home_tildeuser '{"tool_name":"Bash","tool_input":{"command":"find ~alice -name x"}}'            deny
 chk_pg tildeuser_ok   '{"tool_name":"Bash","tool_input":{"command":"find ~alice/code -name x"}}'       allow
+# Issue-loop command set (rail 6, static half — 2026-08-05): the overnight
+# loop's own workflow must pass the shipped guards, and the deny-side
+# protections it leans on must hold. issue-loop-preflight.sh re-runs these
+# same expectations live (with the user's policy overlay merged) before every
+# dispatch; these pins keep the SHIPPED rules from drifting under it.
+chk_pg il_wt_add      '{"tool_name":"Bash","tool_input":{"command":"git worktree add .asha/worktrees/issue-7 -b issue-loop/issue-7"}}' allow
+chk_pg il_wt_remove   '{"tool_name":"Bash","tool_input":{"command":"git worktree remove .asha/worktrees/issue-7"}}' allow
+chk_pg il_issue_list  '{"tool_name":"Bash","tool_input":{"command":"gh issue list --state open --json number,title,body,labels"}}' allow
+chk_pg il_pr_draft    '{"tool_name":"Bash","tool_input":{"command":"gh pr create --draft --title t --body-file -"}}' allow
+chk_pg il_push_branch '{"tool_name":"Bash","tool_input":{"command":"git push -u origin issue-loop/issue-7"}}' allow
+chk_pg il_force_push  '{"tool_name":"Bash","tool_input":{"command":"git push --force origin issue-loop/issue-7"}}' deny
+# rm -rf of a worktree dir stays DENIED on purpose: the loop's cleanup
+# convention is `git worktree remove`, never rm — no exemption is added.
+chk_pg il_rm_worktree '{"tool_name":"Bash","tool_input":{"command":"rm -rf .asha/worktrees/issue-7"}}' deny
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
