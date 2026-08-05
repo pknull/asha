@@ -5,19 +5,40 @@
     {
       "id": "no-broad-home-scans",
       "tool": "Bash",
-      "command_regex": "\\b(bfs|fd|find|rg|grep[[:space:]]+-[a-zA-Z]*[rR])\\b[^|;]*[[:space:]]/home(/pknull)?/?([[:space:]]|$)",
+      "command_regex": "\\b(bfs|fd|find|rg|grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*)\\b[^|;&]*[[:space:]][\"']?(/home(/+[^/[:space:]\"']+)?/*|~[A-Za-z0-9_.-]*/*|\\$HOME/*)[\"']?([[:space:]]|$)",
       "action": "deny",
+      "_comment": "v3 after the 2026-08-04 adversarial review: targets now include ~, $HOME, quoted and doubled-slash forms (the most natural accidental phrasings all bypassed v2 — grep -r pattern ~ was ALLOWED); grep arm tolerates flags before the recursive flag (--include=*.md -R); [^|;&] stops the tool arm crossing && into an unrelated path (v2 denied 'find ./src -name x && cd /home/alice'). Scoped forms (~/Code, $HOME/Code, /home/user/dir) stay allowed. Round 2 added ~user (find ~alice scans another account's whole home and was allowed). Known residuals: an expanded-at-runtime variable other than $HOME still passes (the guard sees the unexpanded string), and 'grep -- -r ~' / 'grep -e -r ~' deny despite -r being a pattern argument there — rare enough to accept as safe-side noise.",
       "reason": "Blocked broad scan over /home — unscoped find/grep/bfs/fd/rg across a whole home directory causes severe disk pressure, badly so on rotational storage or alongside a background sync client (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to allow. Tune or remove this rule in ~/.asha/policies.json if it does not fit your machine.",
       "override_env": "ASHA_ALLOW_BROAD_SCAN"
     },
     {
       "id": "destructive-git",
       "tool": "Bash",
-      "command_regex": "git[[:space:]]+(push[[:space:]][^|;]*(--force|-f([[:space:]]|$))|reset[[:space:]]+--hard|branch[[:space:]]+-[dD][[:space:]]+(main|master)([[:space:]]|$)|checkout[[:space:]]+(--[[:space:]]|\\.([[:space:]]|$))|restore[[:space:]]|clean[[:space:]][^|;]*(--force|-[a-zA-Z]*f))",
+      "command_regex": "git[[:space:]]+(push[[:space:]][^|;]*(--force|-f([[:space:]]|$))|reset[[:space:]]+--hard|branch[[:space:]]+-[dD][[:space:]]+(main|master)([[:space:]]|$)|checkout[[:space:]]+(--[[:space:]]|\\.([[:space:]]|$))|restore[[:space:]]|clean[[:space:]][^|;]*(--force|-[a-zA-Z]*f)|filter-repo([[:space:]]|$)|filter-branch([[:space:]]|$))",
       "exclude_regex": "--force-with-lease|restore[[:space:]]+--staged",
       "action": "deny",
-      "reason": "Blocked destructive git operation — irreversible, or affects shared state. Discarding uncommitted work (checkout --, restore, clean -f) has no reflog: use `git stash` instead, which is recoverable. Force-push: use --force-with-lease, which is permitted. Set ASHA_ALLOW_DESTRUCTIVE_GIT=1 to allow.",
+      "reason": "Blocked destructive git operation — irreversible, or affects shared state. Discarding uncommitted work (checkout --, restore, clean -f) has no reflog: use `git stash` instead, which is recoverable. Force-push: use --force-with-lease, which is permitted. History rewrites (filter-repo, filter-branch) invalidate every existing clone and cannot be undone once pushed — re-verify the blast radius, and prefer a fresh repo over rewriting a shared one. Set ASHA_ALLOW_DESTRUCTIVE_GIT=1 to allow.",
       "override_env": "ASHA_ALLOW_DESTRUCTIVE_GIT"
+    },
+    {
+      "id": "destructive-delete-archive",
+      "tool": "Bash",
+      "command_regex": "(^|[[:space:];|&(])rm[[:space:]][^|;]*(\\*|\\.(7z|zip|tar|tgz|gz|bz2|xz|rar|iso)[\"']?([[:space:];|&]|$))",
+      "exclude_regex": "(^|[[:space:];|&(])(git|npm|pnpm|yarn|cargo|docker|podman|nerdctl)[[:space:]]+rm|\\.trash/",
+      "action": "deny",
+      "reason": "Blocked rm of an archive or shell glob. Deleting an archive before its contents are extracted AND verified is the incident class this rule exists for — extract first, confirm the files are readable, then remove, or move to `.trash/` instead. This arm deliberately has NO path exemptions (not even /tmp/): an archive is unextracted data wherever it sits, and a path exemption anywhere in the command previously suppressed protection for every other target on the same line. Set ASHA_ALLOW_DESTRUCTIVE_DELETE=1 to allow.",
+      "override_env": "ASHA_ALLOW_DESTRUCTIVE_DELETE",
+      "_comment": "Ordered before destructive-delete so on a double match THIS rule's incident-specific reason surfaces (an excluded rule continues to the next rule rather than allowing, so ordering picks the reason, not the outcome — round-2 review corrected an earlier overstatement here). Empty path-exemption budget is the mixed-target fix ('rm -rf /tmp/extract pdfs.7z' was ALLOWED because /tmp/ matched the general rule's exclude). Middle class is [^|;] — & deliberately allowed so a quoted 'backup&old.7z' is reachable; terminator [\"']?([[:space:];|&]|$) covers quoted names and adjacent operators ('rm backup.7z&&ls' slipped v2). Known accepted false positive: 'rm -f a.txt && ls x.7z' denies (the middle crosses && to the archive) — safe-side, override hint shown. To relax archive deletion a user must override BOTH delete rules in ~/.asha/policies.json: they overlap on flag-carrying archive deletes, and overriding only this one leaves destructive-delete denying. Overrides replace in place (position = priority)."
+    },
+    {
+      "id": "destructive-delete",
+      "tool": "Bash",
+      "command_regex": "(^|[[:space:];|&(])rm[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*[rRf]|--recursive|--force)|(^|[[:space:];|&(])shred[[:space:]]|gh[[:space:]]+repo[[:space:]]+delete",
+      "exclude_regex": "(^|[[:space:];|&(])(git|npm|pnpm|yarn|cargo|docker|podman|nerdctl)[[:space:]]+rm|rm[[:space:]][\"']?[^|;&]*(/tmp/|\\$CLAUDE_JOB_DIR|/\\.claude/jobs/|\\.trash/|node_modules|__pycache__|\\.venv|\\.pytest_cache|Work/markers/)",
+      "action": "deny",
+      "reason": "Blocked irreversible deletion (rm -r/-f, shred, gh repo delete). Prefer moving to a `.trash/` staging dir over deleting outright. Regenerable trees (node_modules, .venv, __pycache__, /tmp), package/container removal (git rm, npm rm, docker rm), and Asha's own Work/markers/ files are exempt. Set ASHA_ALLOW_DESTRUCTIVE_DELETE=1 to allow.",
+      "override_env": "ASHA_ALLOW_DESTRUCTIVE_DELETE",
+      "_comment": "Reworked after the 2026-08-04 adversarial review. Path exemptions are now scoped to the rm segment itself (rm[[:space:]][\"']?[^|;&]*(...)) — previously '/tmp/' ANYWHERE in the command suppressed the rule, so 'rm -rf important && mkdir -p /tmp/stage' was ALLOWED. Work/markers/ exemption fixes the review's BLOCKER: /rp:end, /rp:start, /session:silence and /session:restore all instruct 'rm -f Work/markers/<x>' and were denied by v1 — a guard that blocks its own toolkit's shipped cleanup gets overridden into uselessness. Known residual, accepted: a manager-prefix in a LATER segment ('rm -rf x; git rm y') still suppresses, because ERE cannot tie that exclusion to the segment that matched; and mixed targets inside ONE rm where an exempt path sits beside a precious NON-ARCHIVE target ('rm -rf /tmp/a precious-dir') are still suppressed — the archive rule above removes the worst class. This is a string-pattern deterrent, not containment (see file _comment)."
     },
     {
       "id": "memory-protection",
@@ -31,10 +52,11 @@
     {
       "id": "vault-structure",
       "tool": "Write",
-      "file_path_regex": "/Vault/",
-      "exclude_regex": "/Vault/(World|Books|Sessions|Characters|Templates|Resources)/",
+      "file_path_regex": "/(Vault|Lore|Wiki|Codex|Compendium|Archive)/",
+      "exclude_regex": "/(Vault|Lore|Wiki|Codex|Compendium|Archive)/(World|Books|Sessions|Characters|Templates|Resources)/",
       "action": "warn",
-      "reason": "File written under Vault/ outside the expected top-level structure (World/Books/Sessions/Characters/Templates/Resources)."
+      "reason": "File written into a content root (Vault/Lore/Wiki/Codex/Compendium/Archive) outside its expected top-level buckets (World/Books/Sessions/Characters/Templates/Resources). Warn-only: this is a scatter check, not a block.",
+      "_comment": "The content root must stay a NAMED anchor, not a wildcard. It is what scopes the rule: with a wildcard root the trigger degenerates to 'every write not in a bucket', which measured 129/129 markdown files in this repo — CLAUDE.md, AGENTS.md, every doc. The root list is the portable part and is meant to be extended; the taxonomy is the project-specific part. A project whose content lives elsewhere (docs/setting/, notes/) redefines this whole row in ~/.asha/policies.json, merged by id. Warn-only by design: violation-checker logs it, the guard never blocks, so a wrong root list costs a log line rather than a failed write."
     }
   ]
 }

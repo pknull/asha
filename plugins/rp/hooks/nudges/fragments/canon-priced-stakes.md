@@ -4,7 +4,7 @@ This turn touches a PRICED STAKE — something the setting's source attaches a c
 Before adjudicating it:
 
 - OPEN the governing source. Do not answer from memory or from the invariants projection — the projection is a lossy cache and is silent on anything nobody compiled into it.
-- Start at the project's canon-source register (`Lore/TTRPG/canon-sources.md` or the project equivalent), which maps stake → file → section.
+- Start at the project's canon-source register — the `priced_stakes` path in `Memory/canon-layout.md` (default `Lore/TTRPG/canon-sources.md` when no register exists) — which maps stake → file → section.
 - QUOTE the governing line verbatim into this beat's `SOURCE_LOG.sourced` entry. Paraphrase is where qualifiers die.
 - Set `SOURCE_LOG.priced_stake_touched: true`. Adjudicating a priced stake with no sourced provenance is a protocol violation the continuity gate flags.
 

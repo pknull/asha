@@ -143,6 +143,64 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# Test 5: README's per-plugin DETAIL sections. The tables above are not the
+# only live version claims — each "### <Plugin>" detail block declares
+# **Plugin Name**: `ns` and **Version**: X.Y.Z, and these escaped the net
+# until 2026-08-04 (Write sat at 1.6.0 and Session at 1.3.0 through two
+# releases while the tables were dutifully bumped).
+echo -n "Test 5: Per-plugin versions match README.md detail sections... "
+DETAIL_MISMATCHES=0
+DETAIL_COUNT=0
+while IFS=$'\t' read -r detail_ns detail_version; do
+    [[ -n "$detail_ns" && -n "$detail_version" ]] || continue
+    plugin_dir=""
+    for cand in "$REPO_ROOT"/plugins/*/; do
+        cand_dir="$(basename "$cand")"
+        cand_ns=$(jq -r --arg plugin "$cand_dir" '.[$plugin] // $plugin' "$REPO_ROOT/namespaces.json")
+        [[ "$cand_ns" == "$detail_ns" ]] && { plugin_dir="$cand_dir"; break; }
+    done
+    # An unknown namespace is a FAILURE, not a skip: a typo in a detail block's
+    # **Plugin Name** would otherwise detach that block from validation and
+    # let its version go stale invisibly — the exact silent gap this test
+    # exists to close.
+    if [[ -z "$plugin_dir" ]]; then
+        if [[ $DETAIL_MISMATCHES -eq 0 ]]; then
+            echo -e "${RED}FAIL${NC}"
+        fi
+        echo "  README.md detail section names unknown namespace \`$detail_ns\` (version $detail_version) — typo, or missing namespaces.json entry"
+        DETAIL_MISMATCHES=$((DETAIL_MISMATCHES + 1))
+        continue
+    fi
+    plugin_version=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/plugins/$plugin_dir/README.md" || true)
+    [[ -n "$plugin_version" ]] || continue
+    DETAIL_COUNT=$((DETAIL_COUNT + 1))
+    if [[ "$detail_version" != "$plugin_version" ]]; then
+        if [[ $DETAIL_MISMATCHES -eq 0 ]]; then
+            echo -e "${RED}FAIL${NC}"
+        fi
+        echo "  $plugin_dir (\`$detail_ns\`): README.md detail section says $detail_version; plugins/$plugin_dir/README.md is $plugin_version"
+        DETAIL_MISMATCHES=$((DETAIL_MISMATCHES + 1))
+    fi
+done < <(awk '
+    /^\*\*Plugin Name\*\*:/ {
+        ns=$0; sub(/^\*\*Plugin Name\*\*:[[:space:]]*/, "", ns)
+        gsub(/`/, "", ns); gsub(/[[:space:]]+$/, "", ns)
+        next
+    }
+    /^\*\*Version\*\*:/ && ns != "" {
+        v=$0; sub(/^\*\*Version\*\*:[[:space:]]*/, "", v)
+        gsub(/[[:space:]]+$/, "", v)
+        printf "%s\t%s\n", ns, v
+        ns=""
+    }
+' "$REPO_ROOT/README.md")
+if [[ $DETAIL_MISMATCHES -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC} ($DETAIL_COUNT detail sections)"
+    PASSED=$((PASSED + 1))
+else
+    FAILED=$((FAILED + 1))
+fi
+
 echo ""
 echo "=== Test Summary ==="
 echo -e "Passed: ${GREEN}$PASSED${NC}"

@@ -91,7 +91,13 @@ SOURCE_LOG: |  # Optional — provenance of the draft's world-claims (category 1
   priced_stake_touched: true | false
 
 PRICED_STAKES: "<path to the project's canon-source register, e.g. Lore/TTRPG/canon-sources.md>"
+
+SCENE_STATE_DELTA: |  # The GM's proposed frontmatter changes for this turn (schema dot-paths)
+  scene.time: "23:00"
+  scene.location: "the street"
 ```
+
+**The delta is part of the reviewed surface.** On a clean verdict the calling command applies SCENE_STATE_DELTA to the session file's frontmatter — so a delta the prose does not support commits unreviewed state. Check category `scene_state_mismatch`: every delta entry must be evidenced by the draft's prose (a `scene.location` change requires the prose to actually move the scene; a participant removal requires a departure on the page), and any state change the prose DOES enact must appear in the delta (a departure in prose with no participants change goes stale silently). Either direction is a violation.
 
 ---
 

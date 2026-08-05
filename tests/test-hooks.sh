@@ -2039,6 +2039,37 @@ else
 fi
 
 # ============================================================================
+# Test 91e: match_ci — capitalized stake fires priced-stakes; mundane stays quiet
+# ============================================================================
+# The rp-priced-stakes row sets match_ci: true because its alternations are
+# lowercase and real turns start with capitals — without the flag, "Escape
+# through the cellar?" silently never fired (2026-08-04 adversarial review).
+# Two fixtures so the first fire's cooldown stamp cannot mask the second case.
+echo -n "Test 91e: match_ci fires on capitals, mundane text stays quiet... "
+TEST91E_OK=1; TEST91E_WHY=""
+for CASE in "Escape through the cellar?|fire" "She hands me the letter.|quiet"; do
+    PROMPT="${CASE%|*}"; WANT="${CASE#*|}"
+    T91E_DIR=$(mktemp -d); T91E_HOME=$(mktemp -d)
+    mkdir -p "$T91E_DIR/Work/markers" "$T91E_DIR/.asha"
+    echo '{"initialized": true}' > "$T91E_DIR/.asha/config.json"
+    touch "$T91E_DIR/Work/markers/rp-active"
+    export CLAUDE_PROJECT_DIR="$T91E_DIR"
+    export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+    OUT=$(printf '{"prompt": "%s"}' "$PROMPT" | HOME="$T91E_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+    rm -rf "$T91E_DIR" "$T91E_HOME"
+    GOT=quiet; [[ "$OUT" == *"PRICED STAKE"* ]] && GOT=fire
+    [[ "$GOT" == "$WANT" ]] || { TEST91E_OK=0; TEST91E_WHY="$TEST91E_WHY [$PROMPT: want=$WANT got=$GOT]"; }
+done
+if [[ $TEST91E_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  priced-stakes match_ci mismatch:$TEST91E_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 92: nudge engine — suggest-compact fires at threshold
 # ============================================================================
 echo -n "Test 92: suggest-compact fires at tool-count threshold... "
@@ -2445,7 +2476,7 @@ else
 fi
 
 # ============================================================================
-# Test 104: Ported policy rules (destructive-git deny, memory-protection exclude, vault-structure warn)
+# Test 104: Ported policy rules (destructive-git/-delete deny, memory-protection exclude, vault-structure warn)
 # ============================================================================
 echo -n "Test 104: Ported policy rules enforce correctly... "
 PG_PORTED="$REPO_ROOT/plugins/session/hooks/handlers/policy-guard.sh"
@@ -2483,6 +2514,61 @@ chk_pg vault_warn    '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/R
 chk_pg broad_home    '{"tool_name":"Bash","tool_input":{"command":"find /home -name x"}}'             deny
 chk_pg broad_user    '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull -name x"}}'      deny
 chk_pg scoped_home   '{"tool_name":"Bash","tool_input":{"command":"find /home/pknull/life -name x"}}' allow
+# no-broad-home-scans must be username-agnostic. It previously hardcoded the
+# maintainer's account, so it protected exactly one machine and silently
+# allowed a full home scan for every other user.
+chk_pg broad_other   '{"tool_name":"Bash","tool_input":{"command":"find /home/alice -name x"}}'       deny
+chk_pg broad_other2  '{"tool_name":"Bash","tool_input":{"command":"rg needle /home/bob"}}'            deny
+chk_pg scoped_other  '{"tool_name":"Bash","tool_input":{"command":"find /home/alice/code -name x"}}'  allow
+# destructive-delete: irreversible removal. The archive cases are the documented
+# failure this rule exists for (archives deleted before extraction, forcing re-download).
+chk_pg rm_archive     '{"tool_name":"Bash","tool_input":{"command":"rm -f ~/Downloads/pdfs.7z"}}'      deny
+chk_pg rm_glob_arch   '{"tool_name":"Bash","tool_input":{"command":"rm *.zip"}}'                       deny
+chk_pg rm_recursive   '{"tool_name":"Bash","tool_input":{"command":"rm -rf /data/world"}}'             deny
+chk_pg rm_longflags   '{"tool_name":"Bash","tool_input":{"command":"rm --recursive --force build"}}'   deny
+chk_pg rm_chained     '{"tool_name":"Bash","tool_input":{"command":"cd /data && rm -rf world"}}'       deny
+chk_pg shred_file     '{"tool_name":"Bash","tool_input":{"command":"shred -u secrets.env"}}'           deny
+chk_pg gh_repo_delete '{"tool_name":"Bash","tool_input":{"command":"gh repo delete o/r --yes"}}'       deny
+chk_pg git_filterrepo '{"tool_name":"Bash","tool_input":{"command":"git filter-repo --path Memory"}}'  deny
+chk_pg git_filterbr   '{"tool_name":"Bash","tool_input":{"command":"git filter-branch -f HEAD"}}'      deny
+# Exemptions: these are routine and must NOT be blocked, or the rule gets disabled.
+chk_pg docker_rm      '{"tool_name":"Bash","tool_input":{"command":"docker rm -f zomboid"}}'           allow
+chk_pg podman_rm      '{"tool_name":"Bash","tool_input":{"command":"podman rm -f mc-proxy"}}'          allow
+chk_pg git_rm_cached  '{"tool_name":"Bash","tool_input":{"command":"git rm -r --cached secrets"}}'     allow
+chk_pg npm_rm         '{"tool_name":"Bash","tool_input":{"command":"npm rm left-pad"}}'                allow
+chk_pg rm_nodemodules '{"tool_name":"Bash","tool_input":{"command":"rm -rf node_modules"}}'            allow
+chk_pg rm_venv        '{"tool_name":"Bash","tool_input":{"command":"rm -rf .venv"}}'                   allow
+chk_pg rm_tmp         '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/scratch"}}'            allow
+chk_pg rmdir_empty    '{"tool_name":"Bash","tool_input":{"command":"rmdir emptydir"}}'                 allow
+chk_pg grep_word_rm   '{"tool_name":"Bash","tool_input":{"command":"grep -rn rm plugins/"}}'           allow
+# 2026-08-04 adversarial-review pins. BLOCKER: the toolkit's own marker cleanup
+# (rm -f Work/markers/<x> in /rp:end, /session:silence, /session:restore) was
+# denied by the v1 rule — a guard that blocks its own shipped workflows gets
+# overridden into uselessness.
+chk_pg marker_rm      '{"tool_name":"Bash","tool_input":{"command":"rm -f Work/markers/rp-active"}}'   allow
+chk_pg marker_rm_var  '{"tool_name":"Bash","tool_input":{"command":"rm -f \"$PROJECT_DIR/Work/markers/silence\""}}' allow
+# Archive arm: quoted names and mixed targets no longer slip (archive rule has
+# NO path exemptions and is ordered before the general delete rule).
+chk_pg arch_quoted    '{"tool_name":"Bash","tool_input":{"command":"rm \"backup.7z\""}}'               deny
+chk_pg arch_mixed     '{"tool_name":"Bash","tool_input":{"command":"rm -rf /tmp/extract ~/Downloads/pdfs.7z"}}' deny
+chk_pg arch_gitrm     '{"tool_name":"Bash","tool_input":{"command":"git rm old.zip"}}'                 allow
+# General rule: an exempt string in a DIFFERENT segment no longer rescues.
+chk_pg compound_tmp   '{"tool_name":"Bash","tool_input":{"command":"rm -rf important && mkdir -p /tmp/stage"}}' deny
+chk_pg compound_ls    '{"tool_name":"Bash","tool_input":{"command":"rm -f a.txt && ls /tmp/"}}'        deny
+# Home-scan v3: tilde/$HOME/quoted/flag-order forms, and the && false positive.
+chk_pg home_tilde     '{"tool_name":"Bash","tool_input":{"command":"grep -r pattern ~"}}'              deny
+chk_pg home_var       '{"tool_name":"Bash","tool_input":{"command":"find $HOME -name x"}}'             deny
+chk_pg home_quoted    '{"tool_name":"Bash","tool_input":{"command":"find \"/home/alice\" -name x"}}'   deny
+chk_pg home_flags     '{"tool_name":"Bash","tool_input":{"command":"grep --include=*.md -R needle /home/alice"}}' deny
+chk_pg home_tilde_ok  '{"tool_name":"Bash","tool_input":{"command":"find ~/Code -name x"}}'            allow
+chk_pg home_var_ok    '{"tool_name":"Bash","tool_input":{"command":"find \"$HOME/Code\" -name x"}}'    allow
+chk_pg home_amp_ok    '{"tool_name":"Bash","tool_input":{"command":"find ./src -name x && cd /home/alice"}}' allow
+# Round-2 pins (2026-08-04): adjacent operators and quoted metacharacters no
+# longer hide archives; ~user is a broad scan of another account's home.
+chk_pg arch_amp       '{"tool_name":"Bash","tool_input":{"command":"rm backup.7z&&ls"}}'               deny
+chk_pg arch_quotemeta '{"tool_name":"Bash","tool_input":{"command":"rm \"backup&old.7z\""}}'           deny
+chk_pg home_tildeuser '{"tool_name":"Bash","tool_input":{"command":"find ~alice -name x"}}'            deny
+chk_pg tildeuser_ok   '{"tool_name":"Bash","tool_input":{"command":"find ~alice/code -name x"}}'       allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
@@ -2504,6 +2590,84 @@ if grep -Fq 'grep -Eq "' "$PG_PORTED" "$VC_PORTED"; then
 else
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
+fi
+
+# ============================================================================
+# Test 104d: user-layer overrides replace IN PLACE (position = priority)
+# ============================================================================
+# The merge previously filtered overridden ids out of the base array and
+# appended the user rules at the end — an override silently migrated to the
+# lowest priority, changing which rule's action fired (round-2 review,
+# 2026-08-04). Behavioral assertion: a user destructive-delete override with a
+# trusted/ exemption is honored, the rest of the rule still denies, and the
+# UNoverridden archive rule keeps working from its original slot.
+echo -n "Test 104d: user policy override replaces in place... "
+T104D_HOME=$(mktemp -d)
+mkdir -p "$T104D_HOME/.asha"
+cat > "$T104D_HOME/.asha/policies.json" <<'EOF104D'
+{"rules":[{"id":"destructive-delete","tool":"Bash","command_regex":"(^|[[:space:];|&(])rm[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*[rRf]|--recursive|--force)","exclude_regex":"rm[[:space:]][\"']?[^|;&]*(/tmp/|trusted/|node_modules)","action":"deny","reason":"user layer"}]}
+EOF104D
+pg_104d() {
+    local rc=0
+    printf '%s' "$1" | env -u ASHA_HARNESS HOME="$T104D_HOME" bash "$PG_PORTED" >/dev/null 2>&1 || rc=$?
+    [[ $rc -eq 2 ]] && echo deny || echo allow
+}
+T104D_OK=1; T104D_WHY=""
+c104d() { local got; got="$(pg_104d "$2")"; [[ "$got" == "$3" ]] || { T104D_OK=0; T104D_WHY="$T104D_WHY $1(got=$got want=$3)"; }; }
+c104d user_exempt '{"tool_name":"Bash","tool_input":{"command":"rm -rf trusted/x"}}'      allow
+c104d user_deny   '{"tool_name":"Bash","tool_input":{"command":"rm -rf other/x"}}'        deny
+c104d base_intact '{"tool_name":"Bash","tool_input":{"command":"rm trusted/cache.7z"}}'   deny
+rm -rf "$T104D_HOME"
+if [[ $T104D_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  user-layer merge mismatch:$T104D_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 104c: vault-structure keeps a NAMED content root (no wildcard)
+# ============================================================================
+# The content root anchors the rule's scope. If it is ever widened to a bare
+# wildcard, the trigger degenerates to "every write not in a bucket" — measured
+# at 129/129 markdown files in this repo, CLAUDE.md and every doc included.
+# This test pins the blast radius rather than the exact root list, so the list
+# stays extensible while the anchor stays mandatory.
+echo -n "Test 104c: vault-structure trigger stays scoped to a named root... "
+VS_RULES="$REPO_ROOT/plugins/session/hooks/policies/rules.json"
+VS_TRIG="$(jq -r '.rules[] | select(.id=="vault-structure") | .file_path_regex' "$VS_RULES" 2>/dev/null || true)"
+VS_EXCL="$(jq -r '.rules[] | select(.id=="vault-structure") | .exclude_regex' "$VS_RULES" 2>/dev/null || true)"
+VS_OK=1; VS_WHY=""
+vs_chk() { # vs_chk <label> <path> <want: WARN|silent>
+    local got=silent
+    if printf '%s' "$2" | grep -Eq -- "$VS_TRIG" && ! printf '%s' "$2" | grep -Eq -- "$VS_EXCL"; then got=WARN; fi
+    [[ "$got" == "$3" ]] || { VS_OK=0; VS_WHY="$VS_WHY $1(got=$got want=$3)"; }
+}
+if [[ -z "$VS_TRIG" || -z "$VS_EXCL" ]]; then
+    VS_OK=0; VS_WHY=" rule or its regexes missing"
+else
+    # In scope and outside a bucket -> warn.
+    vs_chk stray_vault  "/p/Vault/Random/x.md"      WARN
+    vs_chk stray_lore   "/p/Lore/Junk/x.md"         WARN
+    # In scope and inside a bucket -> silent.
+    vs_chk ok_world     "/p/Vault/World/x.md"       silent
+    vs_chk ok_chars     "/p/Lore/Characters/x.md"   silent
+    # Out of scope entirely -> silent. These are the blast-radius guards.
+    vs_chk repo_readme  "/p/README.md"              silent
+    vs_chk repo_doc     "/p/docs/guide.md"          silent
+    vs_chk repo_src     "/p/src/main.py"            silent
+    vs_chk repo_nested  "/p/plugins/write/x.md"     silent
+    vs_chk repo_claude  "/p/CLAUDE.md"              silent
+fi
+if [[ $VS_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  vault-structure scope mismatch:$VS_WHY"
+    FAILED=$((FAILED + 1))
 fi
 
 # ============================================================================

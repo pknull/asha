@@ -105,11 +105,9 @@ The session file may be stale. SCENE_STATE is real-time.
 
 ### Step 4: Load World Context (If Needed)
 
-If the trigger references something your character would know about, use Grep/Glob to find relevant world files:
+If the trigger references something your character would know about, use Grep/Glob to find relevant world files. Take the paths from `Memory/canon-layout.md` (*Entity paths*) — the `location`, `character`, and `artifact` rows. Do not guess a directory name: this project's canon may live nowhere near the default.
 
-- `Lore/World/Locations/` for places
-- `Lore/World/Characters/` for other NPCs
-- `Lore/World/Items/` for artifacts
+If the register is missing, search the defaults (`Lore/World/Places/`, `Lore/World/Characters/`, `Lore/World/Magic/Artefacts/`) and note that you fell back.
 
 ### Step 5: Determine Your Goals
 

@@ -1,6 +1,6 @@
 # asha
 
-**Version**: 2.3.0
+**Version**: 2.4.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, and GitHub Copilot CLI.
 
 Asha renders or mounts skills, agents, commands, and hooks into each harness's native or compatible surfaces, ships a single `asha` dispatcher that injects a shared persona, and normalizes session activity from all three CLIs into one synthesis pipeline.
@@ -121,12 +121,12 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.11.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.12.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
-| **Creative** | `write` | v1.7.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
-| **Creative** | `rp` | v0.1.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
+| **Creative** | `write` | v1.9.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
+| **Creative** | `rp` | v0.2.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
 | **Integrations** | `admin` | v0.3.0 | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
 | **Security** | `security` | v1.0.0 | Web-app security review checklist skill |
@@ -254,7 +254,7 @@ Development workflows with orchestration patterns, code review, TDD, and 5 speci
 
 **Plugin Name**: `write`
 **Commands**: `/write:init-novel`, `/write:review-section`
-**Version**: 1.6.0
+**Version**: 1.9.0
 **Domain**: Creative Writing
 
 Creative writing workflows with prose craft, style analysis, manuscript state, and 10 specialized agents.
@@ -331,7 +331,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.3.0
+**Version**: 1.12.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -550,6 +550,35 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### v2.4.0 — Usage-insights remediation (2026-08-04)
+
+Five repairs driven by a `/insights` review of 145 sessions. Each maps a recurring real-world failure to the mechanism that should already have carried it.
+
+- **`destructive-delete` policy rule** (session v1.12.0) — `rm -r/-f`, `rm` of a glob or archive, `shred`, `gh repo delete` now deny by default; `destructive-git` gains `filter-repo`/`filter-branch`. Motivating incident: two `.7z` archives deleted before extraction, forcing re-download. Exemptions are deliberate and tested — `docker rm`, `git rm`, `npm rm`, `node_modules`, `.venv`, `/tmp` — because an over-broad rule gets disabled and then protects nothing. Override: `ASHA_ALLOW_DESTRUCTIVE_DELETE=1`. 19 new cases in Test 104.
+- **Negative claims require an evidence trail** (`modules/research.md`) — the severity markers only ever covered *hedged* claims; confident assertions of absence ("no update exists", "no such file", "not version-controlled") attracted no marker and were the highest-frequency correction in the review. Negative findings now carry a `Checked:` line, with an authoritative-source table. Two rules generalize the specific incidents: **a pin is a claim, not evidence** (a branch/tag in config says what was selected, never what is available) and **a cache is not its source** (absence from an index means *not indexed*).
+- **`roleplay-gm` made structurally read-only** (rp v0.2.0) — was `Task, Edit, Write, Bash`, now `Task, Read, Grep, Glob`. It had write access it was never instructed to use, and lacked the `Read` its own instructions required ("Read `Memory/invariants.md` at session start"). It drafted blind against the continuity contract while able to bypass it: the turn loop has the *calling command* append only on a clean verdict, so a GM that writes its own draft skips the gate entirely. Follows the `claim-verifier` allowlist-as-enforcement pattern. Also fixed a stale `rp-validator` reference (renamed to `continuity-reviewer` in v2.1.0).
+- **Decline-once directive** in the per-turn RP routing fragment — a session was abandoned after refusals oscillated mid-scene and poisoned the context. Oscillation, not refusal, is the expensive failure: state the boundary once and hold it. Paired with an explicit ban on authoring PC actions.
+- **RP portability** (rp v0.2.0) — the plugin's README promised the *nouns* stay in the project; the implementation contradicted it. Canon paths now resolve through a project-owned `Memory/canon-layout.md` register (template shipped, historical defaults preserved so existing projects need no edit). Campaign proper nouns removed from shipped primitives: the `rp-priced-stakes` `match_regex` carried one campaign's vocabulary (`doorman`, `mystic door`, `dollhouse`) and so fired only there, and `roleplay-gm`/`canon-writer` hardcoded a specific setting.
+
+**Core de-personalization.** The same rule applied to the layer every project installs, where a foreign proper noun costs the most:
+
+- **`no-broad-home-scans` was username-hardcoded** — its regex matched `/home(/pknull)?`, so on any other machine a full scan of `/home/<someone-else>` was **allowed**. The guard protected exactly one account. Now `/home(/[^/[:space:]]+)?`, denying for any user while leaving scoped paths (`/home/<user>/code`) allowed. Regression cases added to Test 104.
+- **`recall_fixtures.yaml` shipped the maintainer's benchmark to every install** — `lib/install.sh` seeds it into each new `~/.asha/`, so a fresh user received twelve fixtures expecting memories (`project_egregore_setup`, `reference_home_network`) that could never exist for them. They score 0 forever, and the file's own comment explains the cost: *"A permanently impossible fixture would conceal real score regressions."* It then shipped twelve of them. Four also referenced the retired marketplace flow. Replaced with a documented, empty starter — `recall_bench` handles zero fixtures cleanly (`score … if cases else 0.0`), and existing `~/.asha/recall_fixtures.yaml` files are untouched because install only seeds when absent.
+- **Personal names removed from core prose** — an "AAS vault" aside in `pattern_analyzer.py`'s RP calibration guard, and a `reference_pk_lintop_…` memory id used as the worked example in the memory-maintenance skill.
+- **`vault-structure` content root widened** — was anchored on the literal `Vault/`; now matches any of `Vault|Lore|Wiki|Codex|Compendium|Archive`, with the same bucket taxonomy as the exclude. The root stays a *named* anchor deliberately: it is what scopes the rule, and a bare wildcard degenerates the trigger into "every write not in a bucket" — measured at 129/129 markdown files in this repo, `CLAUDE.md` and every doc included. Test 104c pins that blast radius while leaving the root list extensible. Projects whose content lives elsewhere redefine the row in `~/.asha/policies.json`.
+
+**Adversarial review pass (2026-08-04, Codex as external reviewer + self-review).** The four remediation commits were themselves reviewed before release; 13 findings, all verified against the live guard before fixing. The ones that mattered: the v1 delete rule **denied the toolkit's own marker cleanup** (`rm -f Work/markers/…` in `/rp:end`, `/session:silence`, `/session:restore`) — a guard that blocks its own shipped workflows gets overridden into uselessness; an exemption string anywhere in a command suppressed the whole rule (`rm -rf important && mkdir -p /tmp/stage` was allowed), fixed by scoping path exemptions to the rm segment and giving archives their own prior rule with **no** path exemptions; quoted archives (`rm "backup.7z"`) slipped the terminator; `~`/`$HOME`/quoted forms — the most natural phrasings — bypassed the home-scan rule entirely; the priced-stakes nudge was case-sensitive (sentence-initial capitals never fired) and unbounded (`impact` fired via `pact`), fixed with a new opt-in `match_ci` engine flag plus word-boundary discipline; scene-state maintenance was orphaned by the roleplay-gm allowlist cut, redesigned as a `SCENE_STATE_DELTA` the GM emits and `/rp:turn` applies only on a clean verdict — state now rides the same gate as prose; `/rp:turn` and the priced-stakes fragment still hardcoded the stake register the canon-layout work was meant to own; and README's per-plugin detail sections carried versions two releases stale, outside `validate-versions.sh`'s net (now its Test 5). Residual gaps are documented in the rules' `_comment` fields rather than silently carried.
+
+**Decisions round (same day).** Working the remaining report items to explicit rulings: **`commission-loop` engine** (write v1.9.0, `engines/commission-loop.js`) — the generalized adversarial commissioning harness: N workers draft one brief from cycled angles with every claim citing a source verbatim; per-draft verifier panels are instructed to refute (uncertainty fails, a dead verifier fails the draft); only survivors are ranked, rejects return with their findings, and the engine itself never writes a file (agents are no-write by instruction, or structurally via read-only `workerAgentType`/`verifierAgentType`) — promotion is the caller's explicit act. Wiring test executes the real engine body (`tests/js/commission-wiring.test.mjs`). Plus two module lines closing the last asha-shaped report items: a **change-budget scope contract** in `cognitive.md` (file list, per-file intent, and adjacent temptations surfaced separately as "out of scope, want it?" before 3+ file work) and **project-root-relative deliverable paths** in CORE.md Output Defaults. The overnight issue-to-merge loop was deliberately deferred with a captured spec (`docs/proposals/2026-08-04--issue-to-merge-loop.md`).
+
+**Adversarial review, round 2 (2026-08-05, Codex again — this time over the fixes and the new engine).** 19 findings, every one verified live before fixing; the reviewer also *corrected this session's own diagnosis once* (the commission-loop erasure is the thrown-stage path, not agent-null). Headlines: the engine's "structural write boundary" claim was **false for workers** (docs now honest; `workerAgentType` added for a genuinely structural boundary); `SCENE_STATE_DELTA` rode *around* the continuity gate instead of through it (now a reviewed input with a `scene_state_mismatch` category, defined merge semantics, and application on the accept-anyway path — plus `/rp:end` refuses to canonize unaccepted surrender blocks); a user-layer policy override silently migrated to lowest priority (merge now replaces in place; Test 104d); archives hid behind adjacent operators and quoted metacharacters (`rm backup.7z&&ls`, `rm "backup&old.7z"`); `find ~alice` scanned another account's home unchallenged; a verifier returning `verdict:pass` alongside a hard finding survived (findings now outrank the label); ranker duplicates/partials could silently discard verified work; and the wiring-test mock diverged from real runtime semantics (throw→null now modeled). Residuals stay documented in `_comment` fields, not silently carried.
+
+**`write` plugin de-specialized (v1.8.0 → v1.9.0 same cycle).** The last domain plugin carrying one project's material:
+
+- **`prose-analysis` hardcoded a voice doc** — `Vault/Docs/MasterWritingStyleGuide.md`, with a "**Always** read MasterWritingStyleGuide.md first" best-practice and a "missing → request location" fallback. In any other project the glob resolved nothing and the agent proceeded on assumed voice standards. Now a convention search (`**/*StyleGuide*.md` among generic candidates), with an explicit declaration — a manifest's `slots.voiceSpec` or a user-given path — taking precedence, and a refusal to proceed on assumed standards when nothing resolves.
+- **A project's canon shipped inside a generic agent** — a "Hush-Specific Checks" block listing coined transformation-anatomy terms and their body-location constraints. Replaced by the *generalizable* half: constrained-term checking, where a term carries a constraint (location, rank, material, direction) that prose drifts on before it drifts on the term itself, and where the negative cases must be written out because the wrong answers are the adjacent ones.
+- **`craft-core-universal` profile mapping** — the `rp`/`hush` column table became a template for a project's own mapping, plus the three honest relationships a mapping can express (`enforced via core` / a named category / `cf.` for adjacent-but-not-identical) and guidance on what should *stay* profile-specific. The engine itself was already generic (`profileKey = a.profile || P.mode || 'custom'`, no built-in list); only its description string claimed `Profiles: rp | hush`.
 
 ### v2.3.0 — OpenCode support dropped (2026-07-27)
 

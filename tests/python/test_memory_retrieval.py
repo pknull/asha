@@ -77,6 +77,30 @@ class RetrievalTest(unittest.TestCase):
         self.assertEqual(recall_bench.load_fixtures(path),
                          [{"q": "some question", "expect": "memory_id"}])
 
+    def test_comments_only_starter_is_a_valid_empty_benchmark(self):
+        # The shipped template is all comments; that is a deliberate empty set,
+        # not an error.
+        path = self.root / "starter.yaml"
+        path.write_text("# add fixtures here\n\n# - q: \"example\"\n#   expect: mem\n",
+                        encoding="utf-8")
+        self.assertEqual(recall_bench.load_fixtures(path), [])
+
+    def test_unparseable_content_warns_instead_of_scoring_empty(self):
+        # Wrong keys ('- question:'/'expected:') used to parse to zero rows and
+        # score a silent, successful 0/0 — the exact silent failure the
+        # benchmark exists to catch (2026-08-04 adversarial review).
+        path = self.root / "wrong-keys.yaml"
+        path.write_text('- question: "where is x"\n  expected: mem_x\n', encoding="utf-8")
+        with self.assertRaises(ValueError):
+            recall_bench.load_fixtures(path)
+        result = subprocess.run(
+            [sys.executable, str(TOOLS / "recall_bench.py"), "--fixtures", str(path),
+             "--project-dir", str(self.root), "--format", "json"],
+            text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["status"], "warning")
+
     def test_cli_is_warn_only_on_bad_fixture(self):
         path = self.root / "bad.yaml"
         path.write_text("- q: missing expectation\n", encoding="utf-8")

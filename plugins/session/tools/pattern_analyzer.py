@@ -847,12 +847,12 @@ def extract_error_patterns(events: List[Dict]) -> List[Dict]:
 
 
 # --- Roleplay calibration guard ---------------------------------------------
-# Roleplay/creative sessions (esp. the AAS vault) fill decision events with
-# in-character first-person lines ("I need...", "(I reach up...") that trip
-# KEEPER_PATTERNS / VOICE_PATTERNS but say nothing about how the Keeper actually
-# works. Keep RP-sourced text out of keeper.md / voice.md entirely — see the
-# keeper.md Calibration Log scrub notes (2026-06-25, 2026-07-01), which were the
-# recurring manual cleanup this replaces.
+# Roleplay/creative sessions fill decision events with in-character first-person
+# lines ("I need...", "(I reach up...") that trip KEEPER_PATTERNS /
+# VOICE_PATTERNS but say nothing about how the Keeper actually works — the
+# speaker is a character, not the user. Keep RP-sourced text out of keeper.md /
+# voice.md entirely; the alternative is a persona slowly calibrated against
+# fiction. Replaces a recurring manual scrub (first diagnosed 2026-06-25).
 _RP_SESSION_MARKERS = (
     "Roleplay Session Command",   # /rp skill header, expanded into a decision event
     "RP Session End",             # /rp-end skill header

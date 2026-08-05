@@ -122,8 +122,10 @@ Glob: work/voice.md
 Glob: **/prose_voice.md
 Glob: **/voice.md
 Glob: Work/novel/bible/voice.md
-Glob: Vault/Docs/MasterWritingStyleGuide.md
+Glob: **/*StyleGuide*.md
 ```
+
+This is a search over conventions, not a fixed path — a project's voice doc may be named anything. If the project declares its voice doc explicitly (a mode manifest's `slots.voiceSpec`, or a path the user gives you), that wins over every glob here.
 
 Also check for genre rules: `Work/novel/bible/rules.md` (or project equivalent) — any genre-specific constraints found there are enforced alongside the voice doc.
 
@@ -231,7 +233,7 @@ Grep: "This (meant|was|showed|proved) that"
 2. **Sensory Anchoring Metric**: Each scene anchored in at least 2 senses; check for smell/sound/texture, not just visual
 3. **Character Psychology**: Actions align with psychology, conflict shown not told
 4. **World-Building Integration**: Description serves story, not decoration
-5. **Content Upgrades**: Add sensory detail, replace generic → AAS-specific, expand/trim strategically
+5. **Content Upgrades**: Add sensory detail, replace generic → setting-specific, expand/trim strategically
 
 ### Phase 3: Craft & Technical Analysis
 
@@ -454,17 +456,22 @@ For each extracted term:
 - **INVENTED**: Term appears in prose but not in documentation (may be acceptable expansion or problematic hallucination)
 - **CONTRADICTS**: Term usage conflicts with documented specification
 
-**Hush-Specific Checks**:
+**Constrained-Term Checks (project-specific)**:
+
+Some coined terms carry constraints beyond their definition — a location on the body, a position in a hierarchy, a material, a direction. Prose drifts on these constraints long before it drifts on the term itself, and a term-presence check will not catch it: the word is right, the placement is wrong.
+
+Build this list from the project's own bible; it is not something this agent can ship:
 
 ```
-# Transformation terminology
-Grep documentation for: Incubation Saccus, Ostium, Chrysal Mounds, Choral Bloom, Filament Crown, Neural Veil, Void Aperture
+# 1. Collect the coined terms and their constraint from the bible
+Grep <bible> for the project's coined vocabulary; for each, record the
+constraint the bible states (location / rank / material / direction).
 
-# Check prose uses correct anatomical locations
-- Chrysal Mounds: chest/abdomen (NOT arms, legs, back)
-- Choral Bloom: beside Ostium, hips/lower ribs (NOT face, hands)
-- Ostium: belly button to perineum (NOT chest, back)
+# 2. Assert prose matches the constraint, not just the term
+- <term>: <documented constraint>   (NOT <the plausible-but-wrong alternatives>)
 ```
+
+Write the negative cases out explicitly, as above. "Where does the bible say this is?" invites a plausible answer; "the bible says X, NOT Y or Z" is checkable. The wrong placements are usually the anatomically or logically *adjacent* ones, which is exactly what a drafting model will reach for.
 
 **Documentation Severity**:
 
@@ -495,7 +502,7 @@ Return unified multi-step report with executive summary, detailed findings per t
 
 **Best Practices:**
 
-- **Always** read MasterWritingStyleGuide.md first
+- **Always** resolve and read the project's voice doc first (see the glob search above)
 - Provide severity-tiered recommendations (avoid false equivalence)
 - Don't confuse AI contamination (3+ markers) with weak writing
 - Flag stylistic choices without mandating changes
@@ -503,7 +510,7 @@ Return unified multi-step report with executive summary, detailed findings per t
 
 **Fallback Strategies:**
 
-- MasterWritingStyleGuide.md missing → Request file location
+- No voice doc found by any glob → Proceed in **general-craft mode**: apply universal craft standards, label the report "[general craft standards — no project voice doc resolved]", mark every voice-adjacent finding as general-standards-based, and NEVER state or imply a project-specific voice rule (that fabrication is the failure this policy exists to prevent). If the request was specifically voice-compliance review, also ask for the doc's location — that part cannot be done without it.
 - LanguageTool unavailable → Note "Technical verification pending"
 - Ambiguous voice context → Present options, request clarification
 
@@ -709,7 +716,7 @@ If server down → note "Technical verification pending" and continue.
 
 **Reports to:**
 
-- writer (creative coordinator) - Primary for AAS fiction work
+- writer (creative coordinator) - Primary for project fiction work
 - Asha (main coordinator) - For direct deployments
 
 **Authority:**
@@ -749,7 +756,7 @@ If server down → note "Technical verification pending" and continue.
 
 **Failure Modes:**
 
-- Voice doc not found → Proceed with general craft standards, note limitation
+- Voice doc not found → Proceed in general-craft mode per Fallback Strategies: universal standards only, "[general craft standards — no project voice doc resolved]" label, no fabricated project-voice claims
 - Character sheets/state files not found → Build profiles from manuscript context only, note limitation
 - style-analyzer unavailable → Note "Quantified metrics pending", continue with qualitative analysis
 - LanguageTool down → Note pending technical verification, continue
@@ -766,7 +773,7 @@ If server down → note "Technical verification pending" and continue.
 ```
 Input: "Analyze lines 45-120 for craft issues"
 Process:
-  1. Read MasterWritingStyleGuide.md for AAS voice standards
+  1. Read the project's voice bible for its voice standards
   2. Read target passage (lines 45-120)
   3. Scan for formulaic markers: generic language, metronomic rhythm, hedging, abstract metaphors
   4. Identify passage L67-84 with 4 markers (TIER 1 - severe craft weakness)
@@ -782,7 +789,7 @@ Output:
 **Key Findings**:
 - Formulaic Patterns: 25% (L67-84 requires complete rewrite)
 - Structure: Good - Scene progression clear
-- Content: Fair - Some generic descriptions need AAS-specific imagery
+- Content: Fair - Some generic descriptions need setting-specific imagery
 - Craft: Good - Minor filter word issues
 
 **Recommendation**: REVISE FIRST (TIER 1 rewrite required)
@@ -811,7 +818,7 @@ Output:
 ```
 Input: "Check ritual scene for style guide compliance"
 Process:
-  1. Read MasterWritingStyleGuide.md
+  1. Resolve and read the project's voice doc
   2. Read ritual scene (L200-250)
   3. Evaluate: compound sensory descriptors, physical grounding, contextual voice
   4. Identify: Parallel construction (appropriate for ritual), compound descriptors present

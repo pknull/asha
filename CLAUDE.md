@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 2.3.0
-**Last Updated**: 2026-07-27
+**Version**: 2.4.0
+**Last Updated**: 2026-08-04
 **Repository**: pknull/asha
 
 ---
@@ -41,12 +41,12 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.11.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.12.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.4.0 | Development | Code review, orchestration patterns, TDD — 5 agents, postgres skill |
-| **Write** | v1.7.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
-| **RP** | v0.1.0 | Creative | Live-interactive roleplay: session lifecycle, per-turn continuity gate, canon ratification — 6 agents |
+| **Write** | v1.9.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |
+| **RP** | v0.2.0 | Creative | Live-interactive roleplay: session lifecycle, per-turn continuity gate, canon ratification — 6 agents |
 | **Image** | v2.0.0 | Creative | Stable Diffusion prompts, ComfyUI workflows (skill only) |
 | **Admin** | v0.3.0 | Integrations | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
 | **Security** | v1.0.0 | Security | Web-app security review checklist skill |
@@ -918,6 +918,31 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v2.4.0 (2026-08-04) — Usage-insights remediation
+
+Five repairs from a `/insights` review of 145 sessions; each routes a recurring real-world failure to the mechanism that should already have owned it. Session v1.12.0, RP v0.2.0.
+
+- **Guardrails**: new `destructive-delete` policy rule (`rm -r/-f`, glob/archive `rm`, `shred`, `gh repo delete`); `destructive-git` extended with `filter-repo`/`filter-branch`. Exemptions (`docker rm`, `git rm`, `npm rm`, `node_modules`, `.venv`, `/tmp`) are load-bearing — an over-broad deny gets switched off and then guards nothing. Test 104 +19 cases.
+- **Verification**: `modules/research.md` gains "Negative Claims Require an Evidence Trail". The existing severity markers only covered hedged claims; confident assertions of *absence* were the top correction category. Two generalizations worth remembering — **a pin is a claim, not evidence**, and **a cache is not its source**.
+- **Agent authority**: `roleplay-gm` is now `Task, Read, Grep, Glob`. It previously held `Edit, Write, Bash` it was never told to use, while *lacking* the `Read` its own instructions demanded — drafting blind against `Memory/invariants.md` yet able to write past the continuity gate that the calling command is supposed to own. When auditing an agent, check the allowlist against the instructions in both directions: unearned authority *and* missing capability are the same defect.
+- **RP portability**: canon paths resolve through a project-owned `Memory/canon-layout.md` (template in `plugins/rp/templates/`); historical defaults preserved so existing projects need no edit. Campaign proper nouns removed from shipped primitives.
+
+**Core de-personalization** (same rule, applied to the layer every project installs):
+
+- `no-broad-home-scans` hardcoded the maintainer's account (`/home(/pknull)?`), so a full scan of any *other* user's home was allowed — the guard protected one machine. Now username-agnostic.
+- `templates/recall_fixtures.yaml` seeded the maintainer's personal recall benchmark into every new `~/.asha/` (`lib/install.sh`). Its fixtures name memories no other install can have, so they score 0 permanently — the exact failure the file's own comment warns about ("a permanently impossible fixture would conceal real score regressions"). Now a documented empty starter; live user files are untouched, since install seeds only when absent.
+- `pattern_analyzer.py` and the memory-maintenance skill lost their "AAS vault" / `pk_lintop` references.
+
+**`write` plugin de-specialized (v1.8.0)** — the last domain plugin carrying one project's material:
+
+- `prose-analysis` hardcoded `Vault/Docs/MasterWritingStyleGuide.md` *and* instructed itself to "**always** read it first". Elsewhere that resolved nothing and the agent proceeded on assumed voice standards — the silent-empty-result failure again. Now a convention search, an explicit declaration that overrides it, and a refusal to proceed when nothing resolves.
+- A "Hush-Specific Checks" block shipped one project's coined transformation-anatomy terms and body-location constraints inside a generic agent. Replaced with the generalizable pattern: constrained-term checking with negative cases written out.
+- `craft-core-universal`'s `rp`/`hush` mapping table became a template for a project's own. Note the engine was *already* generic — only its description string claimed a fixed profile list, which is the cheapest kind of drift to miss.
+
+**Adversarial review pass (same day)** — the remediation itself was reviewed (Codex externally + self-review) before release; every finding verified against the live guard before fixing. Headlines: the delete rule denied the toolkit's own `rm -f Work/markers/…` cleanup (BLOCKER — an over-broad guard gets disabled and then guards nothing, this time proven against ourselves); exemption strings anywhere in a command suppressed the whole rule (now segment-scoped, archives get a prior rule with zero path exemptions); `~`/`$HOME`/quoted home scans bypassed entirely; the priced-stakes nudge never fired on sentence-initial capitals (`match_ci` engine flag added) and fired on `impact` via `pact` (word boundaries); the roleplay-gm allowlist cut orphaned scene-state maintenance (now `SCENE_STATE_DELTA`, applied by `/rp:turn` only on clean verdict); stale README detail-section versions escaped `validate-versions.sh` (new Test 5). Lesson reinforced: **verify a rule against the workflows that ship beside it, not only against the incident that motivated it** — and a reviewer's findings are claims until probed against the live mechanism — all 13 verified as real here, but two were resolved differently than proposed (the overloaded vault roots stay, being warn-only and user-overridable; `/rp:end` stages canon-writer's reported file list rather than gaining a register "root" field).
+
+> **Rule established here**: a shipped primitive must not contain one project's proper nouns, directory tree, machine, or account name. A `match_regex` keyed to one campaign's vocabulary fires only there; a hardcoded canon path resolves to nothing elsewhere — and an empty result is indistinguishable from "no such thing exists", so the failure is silent. Provenance in a `_comment` (naming the campaign a bug was diagnosed in) is fine and useful; *operative* strings must be setting-agnostic. Projects extend shipped rules via `~/.asha/nudges.json` / `~/.asha/policies.json`, merged by id.
 
 ### v2.3.0 (2026-07-27) — OpenCode support dropped
 

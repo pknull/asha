@@ -49,10 +49,16 @@ USER_RULES="$HOME/.asha/policies.json"
 # Merge repo + user rules (user overrides by id). Missing user file is normal.
 RULES=""
 if [[ -f "$REPO_RULES" && -f "$USER_RULES" ]]; then
+  # User rules REPLACE base rules with the same id IN PLACE (array position is
+  # evaluation priority — first match wins — so an override must not migrate to
+  # the end of the list and silently change which rule's action/reason fires).
+  # User rules with new ids append after the base set.
   RULES="$(jq -s '
     (.[0].rules // []) as $base | (.[1].rules // []) as $user
-    | ($user | map(.id)) as $uids
-    | { rules: (($base | map(select((.id) as $i | ($uids | index($i)) | not))) + $user) }
+    | ($base | map(.id)) as $bids
+    | { rules:
+        (($base | map( . as $b | (first($user[] | select(.id == $b.id)) // $b) ))
+         + ($user | map(select( (.id) as $i | ($bids | index($i)) | not )))) }
   ' "$REPO_RULES" "$USER_RULES" 2>/dev/null || true)"
 elif [[ -f "$REPO_RULES" ]]; then
   RULES="$(jq '{rules: (.rules // [])}' "$REPO_RULES" 2>/dev/null || true)"
