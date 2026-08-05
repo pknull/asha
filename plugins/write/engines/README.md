@@ -121,3 +121,57 @@ On no-output: `{ beat:null, …, error|unresolved }`.
 - Pure JS run by the Workflow tool: no `fs`, no imports, no `Date.now()`/`Math.random()`.
 - The TS language server flags `converged`/`uniq` as "unused" — false positives from the script's
   top-level `return`; both are used in the final return block. `node --check` passes.
+
+---
+
+# `commission-loop` engine
+
+The adversarial commissioning harness (added v1.9.0, from the 2026-08-04 usage-insights work): fan-out
+drafting where **fabrication is the risk**. N independent workers draft one brief from distinct angles;
+every factual claim must carry a source path + verbatim quote; a per-draft verifier panel tries to
+**refute** the claims against the sources themselves; a ranker orders only the survivors. Rejects are
+returned *with their findings* — silence is never success.
+
+```
+Commission (N workers, one angle each)        pipeline: a draft enters verification
+  └─▶ Verify (per-draft panel, one agent      the moment it exists — no barrier
+       per lens: fabrication ‖ contradiction ‖ …)
+        └─▶ Rank (survivors only; barrier — ranking needs all of them)
+```
+
+The write boundary is structural: every stage **returns** text; the engine returns a report; nothing
+touches a project file. Promotion of a shortlisted artifact is the caller's explicit act — the same
+gate discipline as the RP turn loop, generalized.
+
+## Inputs (`args`)
+
+| arg | required | meaning |
+|-----|----------|---------|
+| `brief` | **yes** | the commission each worker drafts against |
+| `sources` | **yes** | array of file paths — the ground truth verifiers refute against |
+| `unit` | no | what one artifact is (`"beat"`, `"design proposal"`); default `"artifact"` |
+| `workers` | no | independent drafts; default 3 |
+| `angles` | no | per-worker perspective strings, cycled by index; default conservative/ambitious/skeptical |
+| `verifierLenses` | no | default `["fabrication","contradiction"]`; extra lenses get generic adversarial framing |
+| `requireCitations` | no | default true — an uncited factual assertion is a finding |
+| `maxShortlist` | no | default 3 |
+| `workerModel` / `verifierModel` / `rankModel` | no | model overrides (verifiers default `"sonnet"`) |
+| `verifierAgentType` | no | custom agent type for verifiers — e.g. `claim-verifier`, whose Read/Grep/Glob allowlist makes the verifier read-only *structurally*, not just by instruction |
+| `context` | no | extra working-context path (readable, but not a claim source) |
+
+## Verdict rules
+
+- Any `fabrication` / `uncited` / `misquote` / `contradiction` finding fails the draft.
+- **Uncertainty fails**: a claim the verifier cannot confirm must not ride a pass into promotion.
+- **A dead verifier fails the draft** (`missingVerdicts`): unverified work does not reach the shortlist.
+- A sole survivor skips ranking; zero survivors returns an empty shortlist plus every reject's findings.
+- Ranker misbehavior (empty/unknown indices) falls back to verification order — verified work is never
+  silently discarded.
+
+## Return value
+
+`{ shortlist:[{rank, draft, angle, artifact, claims[], rationale}], rejected:[{draft, angle, findings[], missingVerdicts, artifact_excerpt}], stats:{workers, drafted, survived, lenses, requireCitations}, promotion_note }`
+
+Deterministic by construction (angles cycle by index; no randomness) — resumable under the Workflow
+runtime's caching. Wiring test: `tests/js/commission-wiring.test.mjs` executes the real engine body
+against mocked primitives.

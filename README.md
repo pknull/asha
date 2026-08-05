@@ -125,7 +125,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.4.0 | Code review, orchestration patterns, TDD — 5 agents |
-| **Creative** | `write` | v1.8.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
+| **Creative** | `write` | v1.9.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
 | **Creative** | `rp` | v0.2.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
 | **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
 | **Integrations** | `admin` | v0.3.0 | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
@@ -254,7 +254,7 @@ Development workflows with orchestration patterns, code review, TDD, and 5 speci
 
 **Plugin Name**: `write`
 **Commands**: `/write:init-novel`, `/write:review-section`
-**Version**: 1.8.0
+**Version**: 1.9.0
 **Domain**: Creative Writing
 
 Creative writing workflows with prose craft, style analysis, manuscript state, and 10 specialized agents.
@@ -570,7 +570,9 @@ Five repairs driven by a `/insights` review of 145 sessions. Each maps a recurri
 
 **Adversarial review pass (2026-08-04, Codex as external reviewer + self-review).** The four remediation commits were themselves reviewed before release; 13 findings, all verified against the live guard before fixing. The ones that mattered: the v1 delete rule **denied the toolkit's own marker cleanup** (`rm -f Work/markers/…` in `/rp:end`, `/session:silence`, `/session:restore`) — a guard that blocks its own shipped workflows gets overridden into uselessness; an exemption string anywhere in a command suppressed the whole rule (`rm -rf important && mkdir -p /tmp/stage` was allowed), fixed by scoping path exemptions to the rm segment and giving archives their own prior rule with **no** path exemptions; quoted archives (`rm "backup.7z"`) slipped the terminator; `~`/`$HOME`/quoted forms — the most natural phrasings — bypassed the home-scan rule entirely; the priced-stakes nudge was case-sensitive (sentence-initial capitals never fired) and unbounded (`impact` fired via `pact`), fixed with a new opt-in `match_ci` engine flag plus word-boundary discipline; scene-state maintenance was orphaned by the roleplay-gm allowlist cut, redesigned as a `SCENE_STATE_DELTA` the GM emits and `/rp:turn` applies only on a clean verdict — state now rides the same gate as prose; `/rp:turn` and the priced-stakes fragment still hardcoded the stake register the canon-layout work was meant to own; and README's per-plugin detail sections carried versions two releases stale, outside `validate-versions.sh`'s net (now its Test 5). Residual gaps are documented in the rules' `_comment` fields rather than silently carried.
 
-**`write` plugin de-specialized (v1.8.0).** The last domain plugin carrying one project's material:
+**Decisions round (same day).** Working the remaining report items to explicit rulings: **`commission-loop` engine** (write v1.9.0, `engines/commission-loop.js`) — the generalized adversarial commissioning harness: N workers draft one brief from cycled angles with every claim citing a source verbatim; per-draft verifier panels are instructed to refute (uncertainty fails, a dead verifier fails the draft); only survivors are ranked, rejects return with their findings, and no stage can write a file — promotion is the caller's explicit act. Wiring test executes the real engine body (`tests/js/commission-wiring.test.mjs`). Plus two module lines closing the last asha-shaped report items: a **change-budget scope contract** in `cognitive.md` (file list, per-file intent, and adjacent temptations surfaced separately as "out of scope, want it?" before 3+ file work) and **project-root-relative deliverable paths** in CORE.md Output Defaults. The overnight issue-to-merge loop was deliberately deferred with a captured spec (`Work/proposals/`).
+
+**`write` plugin de-specialized (v1.8.0 → v1.9.0 same cycle).** The last domain plugin carrying one project's material:
 
 - **`prose-analysis` hardcoded a voice doc** — `Vault/Docs/MasterWritingStyleGuide.md`, with a "**Always** read MasterWritingStyleGuide.md first" best-practice and a "missing → request location" fallback. In any other project the glob resolved nothing and the agent proceeded on assumed voice standards. Now a convention search (`**/*StyleGuide*.md` among generic candidates), with an explicit declaration — a manifest's `slots.voiceSpec` or a user-given path — taking precedence, and a refusal to proceed on assumed standards when nothing resolves.
 - **A project's canon shipped inside a generic agent** — a "Hush-Specific Checks" block listing coined transformation-anatomy terms and their body-location constraints. Replaced by the *generalizable* half: constrained-term checking, where a term carries a constraint (location, rank, material, direction) that prose drifts on before it drifts on the term itself, and where the negative cases must be written out because the wrong answers are the adjacent ones.
