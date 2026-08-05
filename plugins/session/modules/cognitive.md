@@ -60,7 +60,7 @@ ACE chooses the path; the change budget contracts its blast radius. Before imple
 
 Item 3 is the load-bearing one. Scope creep does not arrive as a decision — it arrives as an improvement made in passing, discovered by the user in the diff. Naming the temptation converts it from silent expansion into an explicit option the user can decline in one word. If mid-implementation you find work not in the budget: stop, add it to the list, ask — do not fold it in.
 
-Skip the ritual for single-file edits and for changes the user has already specified file-by-file.
+Skip the ritual for changes the user has already specified file-by-file, and for single-file edits that implement exactly what was asked. A single-file change that alters behavior *beyond* the request is not exempt — the trigger is unrequested behavior change, not file count.
 
 ---
 

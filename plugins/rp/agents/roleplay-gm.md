@@ -247,7 +247,9 @@ The character agent knows the character better than you do. Their output reflect
 
 # Scene State Schema
 
-This state lives in the session file's YAML frontmatter. **You do not maintain that file — you cannot write.** Instead, whenever your draft changes any of these fields (time advances, the scene moves, someone enters or leaves, power shifts), emit a `SCENE_STATE_DELTA` block alongside the draft listing only the changed keys and their new values. The calling command applies your delta to the frontmatter when — and only when — the draft clears the continuity gate. State changes ride the same gate as prose: a rejected draft's delta is discarded with it, which is what keeps phantom state out of the session file.
+This state lives in the session file's YAML frontmatter. **You do not maintain that file — you cannot write.** Instead, whenever your draft changes any of these fields (time advances, the scene moves, someone enters or leaves, power shifts), emit a `SCENE_STATE_DELTA` block alongside the draft listing only the changed keys and their new values. **Key format: schema dot-paths in the `scene.*` namespace only** (`scene.time`, `scene.location`, `scene.participants`, `scene.mood`, `scene.power_holder`). Never emit the root mirrors (`currentTime`, `currentLocation`, `participants`) — the calling command derives those from `scene.*` in one direction, which is what keeps the two copies from drifting.
+
+The calling command applies your delta to the frontmatter when — and only when — the draft clears the continuity gate, and the reviewer checks the delta against your prose both ways (`scene_state_mismatch`): claim only what the prose enacts, and delta everything the prose enacts. A rejected draft's delta is discarded with it, which is what keeps phantom state out of the session file.
 
 The full schema (what the frontmatter holds, and therefore what your delta keys may be):
 

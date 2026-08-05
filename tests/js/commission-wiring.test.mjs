@@ -45,10 +45,18 @@ function makeHarness(respond) {
     prompts[label] = prompt;
     return respond(label, prompt, opts);
   };
-  const parallel = async (thunks) => Promise.all(thunks.map((t) => t()));
-  const pipeline = async (items, ...stages) => Promise.all(items.map(async (item) => {
+  // Mirror the REAL Workflow runtime contracts (round-2 review: a divergent
+  // mock hides defects): parallel resolves a throwing thunk to null; pipeline
+  // passes (prevResult, originalItem, index) and DROPS an item to null when a
+  // stage throws.
+  const parallel = async (thunks) => Promise.all(thunks.map((t) => t().catch(() => null)));
+  const pipeline = async (items, ...stages) => Promise.all(items.map(async (item, idx) => {
     let v = item;
-    for (const s of stages) v = await s(v, item);
+    try {
+      for (const s of stages) v = await s(v, item, idx);
+    } catch {
+      return null;
+    }
     return v;
   }));
   const log = () => {};
@@ -152,6 +160,56 @@ function check(name, cond, extra) {
   check('worker prompt demands verbatim citations', w.includes('VERBATIM'));
   check('verifier prompt is refute-framed', v.includes('REFUTE') && v.includes('Assume it contains at least one fabrication'));
   check('verifier fails on uncertainty', v.includes('the verdict is fail'));
+}
+
+// --- Scenario G: a thrown worker stage is an indexed reject, not silence -----
+{
+  const h = makeHarness((label) => {
+    if (label === 'commission:worker:2') throw new Error('worker exploded');
+    if (label.startsWith('commission:worker:')) return draftFor(label.slice(-1));
+    if (label.startsWith('verify:')) return passV;
+    if (label === 'commission:rank') return { ranking: [{ draft: 1, rationale: 'r' }, { draft: 3, rationale: 'r' }] };
+    throw new Error(`unexpected agent: ${label}`);
+  });
+  const out = await run({ args: BASE_ARGS, ...h });
+  console.log('Scenario G: thrown stage surfaces as an indexed reject');
+  check('two survivors shortlisted', out.shortlist.length === 2);
+  check('the thrown worker appears in rejected with its index', out.rejected.some((r) => r.draft === 2 && /threw/.test(r.failed || '')));
+  check('no NaN drafts anywhere', [...out.shortlist, ...out.rejected].every((r) => Number.isFinite(r.draft)));
+  check('stats.drafted excludes the thrown worker', out.stats.drafted === 2);
+}
+
+// --- Scenario H: pass-verdict with a hard finding is an inconsistency -> fail -
+{
+  const inconsistent = { verdict: 'pass', findings: [{ type: 'misquote', detail: 'quote altered', claim: 'c1' }] };
+  const h = makeHarness((label) => {
+    if (label.startsWith('commission:worker:')) return draftFor(label.slice(-1));
+    if (label === 'verify:fabrication:draft1') return inconsistent;
+    if (label.startsWith('verify:')) return passV;
+    if (label === 'commission:rank') return { ranking: [{ draft: 2, rationale: 'r' }, { draft: 3, rationale: 'r' }] };
+    throw new Error(`unexpected agent: ${label}`);
+  });
+  const out = await run({ args: BASE_ARGS, ...h });
+  console.log('Scenario H: findings outrank the verdict label');
+  check('inconsistent draft rejected despite verdict=pass', out.rejected.some((r) => r.draft === 1 && r.findings.some((f) => f.type === 'misquote')));
+  check('clean drafts still shortlist', out.shortlist.length === 2);
+}
+
+// --- Scenario I: ranker duplicates/partial never lose verified work ----------
+{
+  const h = makeHarness((label) => {
+    if (label.startsWith('commission:worker:')) return draftFor(label.slice(-1));
+    if (label.startsWith('verify:')) return passV;
+    if (label === 'commission:rank') return { ranking: [{ draft: 2, rationale: 'best' }, { draft: 2, rationale: 'dup' }, { draft: 999, rationale: 'ghost' }] };
+    throw new Error(`unexpected agent: ${label}`);
+  });
+  const out = await run({ args: BASE_ARGS, ...h });
+  console.log('Scenario I: ranker misbehavior tolerated without data loss');
+  const ids = out.shortlist.map((s) => s.draft);
+  check('no duplicate drafts in shortlist', new Set(ids).size === ids.length);
+  check('unknown index dropped', !ids.includes(999));
+  check('all three verified survivors present', ids.sort().join(',') === '1,2,3');
+  check('ranked entry first, unranked appended after', out.shortlist[0].draft === 2 && /unranked/.test(out.shortlist[1].rationale));
 }
 
 // --- Scenario F: input validation --------------------------------------------

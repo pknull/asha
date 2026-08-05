@@ -139,9 +139,12 @@ Commission (N workers, one angle each)        pipeline: a draft enters verificat
         └─▶ Rank (survivors only; barrier — ranking needs all of them)
 ```
 
-The write boundary is structural: every stage **returns** text; the engine returns a report; nothing
-touches a project file. Promotion of a shortlisted artifact is the caller's explicit act — the same
-gate discipline as the RP turn loop, generalized.
+The write boundary, honestly stated: the **merge path is structural** — the engine only consumes
+returned text and never writes a file — but a default worker or verifier agent still *carries* write
+tools, so for them the no-write rule is instruction-level. Pass `workerAgentType` /
+`verifierAgentType` naming read-only agent definitions (e.g. `claim-verifier`'s Read/Grep/Glob
+allowlist) to make the boundary structural end to end. Promotion of a shortlisted artifact is the
+caller's explicit act — the same gate discipline as the RP turn loop, generalized.
 
 ## Inputs (`args`)
 
@@ -156,6 +159,7 @@ gate discipline as the RP turn loop, generalized.
 | `requireCitations` | no | default true — an uncited factual assertion is a finding |
 | `maxShortlist` | no | default 3 |
 | `workerModel` / `verifierModel` / `rankModel` | no | model overrides (verifiers default `"sonnet"`) |
+| `workerAgentType` | no | custom agent type for workers — a read-only definition makes the worker's no-write rule structural instead of instruction-level |
 | `verifierAgentType` | no | custom agent type for verifiers — e.g. `claim-verifier`, whose Read/Grep/Glob allowlist makes the verifier read-only *structurally*, not just by instruction |
 | `context` | no | extra working-context path (readable, but not a claim source) |
 

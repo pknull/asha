@@ -119,7 +119,12 @@ prompt: |
   INVARIANTS_FILE: "Memory/invariants.md"
   SUMMARY_FILE: "Work/rp/summaries/YYYY-MM-DD.md"
 
-  Identify all canon-worthy additions from the session. For each:
+  Identify all canon-worthy additions from the session. EXCLUDE content
+  inside "## VALIDATOR SURRENDER" blocks unless the block carries the
+  "KEEPER: accepted" marker — a surrendered draft failed the continuity
+  gate, and only the Keeper's explicit acceptance (recorded by /rp:turn)
+  makes its events real. Canonizing an unmarked surrender block promotes
+  the exact fabrications the gate caught. For each addition:
   1. Categorize against invariants (extends_existing | new_canon | conflicts_with_invariants | pending_resolution)
   2. Surface to Keeper via AskUserQuestion for accept / reject / defer (and accept-and-update-invariants for conflicts)
   3. Route accepted items into the canon-writer queue

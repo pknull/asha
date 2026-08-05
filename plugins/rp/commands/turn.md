@@ -100,6 +100,10 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
       PRIOR_VIOLATIONS: <PRIOR_VIOLATIONS if attempt > 1>
       GM_SPAWN_LOG: <GM_SPAWN_LOG from roleplay-gm>
       SOURCE_LOG: <SOURCE_LOG from roleplay-gm>
+      SCENE_STATE_DELTA: <SCENE_STATE_DELTA from roleplay-gm>
+      # The delta rides THROUGH the gate, not around it: the reviewer checks
+      # every delta entry against the prose (scene_state_mismatch) because a
+      # clean verdict commits this delta to the frontmatter.
       PRICED_STAKES: <the `priced_stakes` path from Memory/canon-layout.md;
         default Lore/TTRPG/canon-sources.md when no register exists>
       # Resolve from the register, not a literal: a project keeping its
@@ -118,6 +122,13 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
       clean verdict, so rejected drafts leave no phantom state behind.
       Without this step the frontmatter goes stale and every later turn's
       SCENE_STATE is constructed from the wrong scene.)
+      Merge semantics: delta keys are schema dot-paths with scene.* as the
+      canonical namespace (scene.time, scene.location, scene.participants,
+      scene.mood, scene.power_holder, ...). After applying scene.*, sync the
+      root mirrors from it: currentTime := scene.time, currentLocation :=
+      scene.location, participants := scene.participants names. The GM never
+      emits the root keys directly — one namespace, one merge direction, or
+      the mirrors drift apart.
     LOG attempt count and clean-pass categories for telemetry
     OUTPUT DRAFT to Keeper
     BREAK loop
@@ -135,6 +146,15 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
       "Validator surrendered after <ATTEMPT_NUMBER> attempts. Draft above with violations.
       Options: (1) accept-anyway and continue, (2) provide direction and retry,
       (3) manually edit the draft and tell me to ship the edited version."
+
+    On (1) accept-anyway: the Keeper's acceptance IS the gate decision for
+    this draft. Apply its SCENE_STATE_DELTA (same merge semantics as the
+    clean path — skipping it reintroduces the stale-frontmatter bug through
+    the surrender door) and append the line "KEEPER: accepted" inside the
+    VALIDATOR SURRENDER block. /rp:end treats surrender blocks WITHOUT that
+    marker as non-canon: their events never enter ratification.
+    On (3): apply the delta only after the Keeper's edit ships, and revise
+    the delta first if the edit changed the state facts.
     BREAK loop
 
 END LOOP

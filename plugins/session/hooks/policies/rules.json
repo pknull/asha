@@ -5,9 +5,9 @@
     {
       "id": "no-broad-home-scans",
       "tool": "Bash",
-      "command_regex": "\\b(bfs|fd|find|rg|grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*)\\b[^|;&]*[[:space:]][\"']?(/home(/+[^/[:space:]\"']+)?/*|~/*|\\$HOME/*)[\"']?([[:space:]]|$)",
+      "command_regex": "\\b(bfs|fd|find|rg|grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*)\\b[^|;&]*[[:space:]][\"']?(/home(/+[^/[:space:]\"']+)?/*|~[A-Za-z0-9_.-]*/*|\\$HOME/*)[\"']?([[:space:]]|$)",
       "action": "deny",
-      "_comment": "v3 after the 2026-08-04 adversarial review: targets now include ~, $HOME, quoted and doubled-slash forms (the most natural accidental phrasings all bypassed v2 — grep -r pattern ~ was ALLOWED); grep arm tolerates flags before the recursive flag (--include=*.md -R); [^|;&] stops the tool arm crossing && into an unrelated path (v2 denied 'find ./src -name x && cd /home/alice'). Scoped forms (~/Code, $HOME/Code, /home/user/dir) stay allowed. Known residual: an expanded-at-runtime variable other than $HOME still passes — the guard sees the unexpanded string.",
+      "_comment": "v3 after the 2026-08-04 adversarial review: targets now include ~, $HOME, quoted and doubled-slash forms (the most natural accidental phrasings all bypassed v2 — grep -r pattern ~ was ALLOWED); grep arm tolerates flags before the recursive flag (--include=*.md -R); [^|;&] stops the tool arm crossing && into an unrelated path (v2 denied 'find ./src -name x && cd /home/alice'). Scoped forms (~/Code, $HOME/Code, /home/user/dir) stay allowed. Round 2 added ~user (find ~alice scans another account's whole home and was allowed). Known residuals: an expanded-at-runtime variable other than $HOME still passes (the guard sees the unexpanded string), and 'grep -- -r ~' / 'grep -e -r ~' deny despite -r being a pattern argument there — rare enough to accept as safe-side noise.",
       "reason": "Blocked broad scan over /home — unscoped find/grep/bfs/fd/rg across a whole home directory causes severe disk pressure, badly so on rotational storage or alongside a background sync client (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to allow. Tune or remove this rule in ~/.asha/policies.json if it does not fit your machine.",
       "override_env": "ASHA_ALLOW_BROAD_SCAN"
     },
@@ -23,12 +23,12 @@
     {
       "id": "destructive-delete-archive",
       "tool": "Bash",
-      "command_regex": "(^|[[:space:];|&(])rm[[:space:]][^|;&]*(\\*|\\.(7z|zip|tar|tgz|gz|bz2|xz|rar|iso)[\"']?([[:space:]]|$))",
+      "command_regex": "(^|[[:space:];|&(])rm[[:space:]][^|;]*(\\*|\\.(7z|zip|tar|tgz|gz|bz2|xz|rar|iso)[\"']?([[:space:];|&]|$))",
       "exclude_regex": "(^|[[:space:];|&(])(git|npm|pnpm|yarn|cargo|docker|podman|nerdctl)[[:space:]]+rm|\\.trash/",
       "action": "deny",
       "reason": "Blocked rm of an archive or shell glob. Deleting an archive before its contents are extracted AND verified is the incident class this rule exists for — extract first, confirm the files are readable, then remove, or move to `.trash/` instead. This arm deliberately has NO path exemptions (not even /tmp/): an archive is unextracted data wherever it sits, and a path exemption anywhere in the command previously suppressed protection for every other target on the same line. Set ASHA_ALLOW_DESTRUCTIVE_DELETE=1 to allow.",
       "override_env": "ASHA_ALLOW_DESTRUCTIVE_DELETE",
-      "_comment": "MUST stay ordered before destructive-delete: first match wins, and this rule's empty path-exemption budget is the mixed-target fix from the 2026-08-04 adversarial review ('rm -rf /tmp/extract pdfs.7z' was ALLOWED because /tmp/ matched the general rule's exclude anywhere in the command). The [\"']? before the terminator covers quoted filenames ('rm \"backup.7z\"' previously slipped through)."
+      "_comment": "Ordered before destructive-delete so on a double match THIS rule's incident-specific reason surfaces (an excluded rule continues to the next rule rather than allowing, so ordering picks the reason, not the outcome — round-2 review corrected an earlier overstatement here). Empty path-exemption budget is the mixed-target fix ('rm -rf /tmp/extract pdfs.7z' was ALLOWED because /tmp/ matched the general rule's exclude). Middle class is [^|;] — & deliberately allowed so a quoted 'backup&old.7z' is reachable; terminator [\"']?([[:space:];|&]|$) covers quoted names and adjacent operators ('rm backup.7z&&ls' slipped v2). Known accepted false positive: 'rm -f a.txt && ls x.7z' denies (the middle crosses && to the archive) — safe-side, override hint shown. To relax archive deletion a user must override BOTH delete rules in ~/.asha/policies.json: they overlap on flag-carrying archive deletes, and overriding only this one leaves destructive-delete denying. Overrides replace in place (position = priority)."
     },
     {
       "id": "destructive-delete",

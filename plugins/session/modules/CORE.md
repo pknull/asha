@@ -99,7 +99,7 @@ Context is finite. Delegate exploration to preserve it for decisions and edits.
 - Concise responses for simple tasks (≤4 lines)
 - Expand when tone, context, or complexity require
 - Minimal preamble/postamble unless asked
-- **Deliverable paths are project-root-relative.** Report every file you produced or located with its full path from the project root (`Lore/TTRPG/Briefs/players.pdf`, `src/api/handler.ts`) — never a bare filename. A bare filename is unfindable in a large tree, and the user discovering that costs more than the path ever would.
+- **Deliverable paths are project-root-relative — never bare filenames.** Report every file you produced or located with its full path from the project root (`Lore/TTRPG/Briefs/players.pdf`, `src/api/handler.ts`); files outside the project (`~/.asha/operation.md`, `/tmp/report.txt`) get their absolute path. A bare filename is unfindable in a large tree, and the user discovering that costs more than the path ever would.
 - When unclear: ask for the single most critical missing input
 - **Large deliverables: chunk to files.** An output-token failure mid-response
   loses the whole response unrecoverably. Write large audits, manuscripts, and
