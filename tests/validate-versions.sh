@@ -159,7 +159,18 @@ while IFS=$'\t' read -r detail_ns detail_version; do
         cand_ns=$(jq -r --arg plugin "$cand_dir" '.[$plugin] // $plugin' "$REPO_ROOT/namespaces.json")
         [[ "$cand_ns" == "$detail_ns" ]] && { plugin_dir="$cand_dir"; break; }
     done
-    [[ -n "$plugin_dir" ]] || continue
+    # An unknown namespace is a FAILURE, not a skip: a typo in a detail block's
+    # **Plugin Name** would otherwise detach that block from validation and
+    # let its version go stale invisibly — the exact silent gap this test
+    # exists to close.
+    if [[ -z "$plugin_dir" ]]; then
+        if [[ $DETAIL_MISMATCHES -eq 0 ]]; then
+            echo -e "${RED}FAIL${NC}"
+        fi
+        echo "  README.md detail section names unknown namespace \`$detail_ns\` (version $detail_version) — typo, or missing namespaces.json entry"
+        DETAIL_MISMATCHES=$((DETAIL_MISMATCHES + 1))
+        continue
+    fi
     plugin_version=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/plugins/$plugin_dir/README.md" || true)
     [[ -n "$plugin_version" ]] || continue
     DETAIL_COUNT=$((DETAIL_COUNT + 1))

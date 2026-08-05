@@ -35,17 +35,20 @@ human reviews merges over coffee; the machine never merges.
 
 | Stage | Existing piece | Gap to close |
 |---|---|---|
+| **GitHub transport** | `gh` CLI — present on the reference machine (2.45.0), and the toolkit's own policy rules already reference it | the loop must probe `command -v gh` + auth at startup and surrender triage cleanly when absent; some asha environments (e.g. web-sandbox sessions, per CLAUDE.md's git-workflow notes) do not have it |
 | Dispatch/caps | `session:loop` + `loop-operator` agent (checkpoints, failure detection) | per-issue fan-out |
-| Isolation | worktree isolation (Agent tool / `EnterWorktree` semantics) | naming + cleanup convention |
+| Isolation | `loop-operator` today accepts **branch-only** isolation and merely warns when isolation is absent; worktree semantics exist but are not a portable asha seam across harnesses | ENFORCE worktree-per-worker (refuse to dispatch without it), naming + cleanup convention |
 | Review | `reviewer` agent (read-only) + Change Budget module (cognitive.md) | diff-vs-issue scope check prompt |
 | Verification discipline | `commission-loop`'s verdict rules (uncertainty fails; dead verifier fails) | apply to the reviewer stage |
-| Guardrails | policy rules (no force-push, no destructive delete, marker exemptions) | none — already active |
+| Guardrails | policy rules (no force-push, no destructive delete, marker exemptions) | verify coverage against the loop's OWN commands before enabling (rail 6 below) — "already active" is exactly the assumption that rule was written to forbid |
 | TDD contract | `tdd` agent, agent-coordination rules | wire as the worker's required first step |
 
 ## Triage rubric (autonomy-safety score)
 
-Accept an issue only if ALL hold; otherwise comment asking for clarification
-and skip — a wrong guess implemented overnight is worse than no progress:
+Accept an issue only if ALL hold; otherwise record the clarification needed in
+the run report and skip — posting it as an issue comment is an outward write,
+gated behind open question 3 (default off). A wrong guess implemented
+overnight is worse than no progress:
 
 1. Acceptance criteria are stated or trivially inferable from the issue text.
 2. The touched area is covered by tests (worker can prove itself green).

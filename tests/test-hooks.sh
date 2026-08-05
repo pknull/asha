@@ -2563,6 +2563,12 @@ chk_pg home_flags     '{"tool_name":"Bash","tool_input":{"command":"grep --inclu
 chk_pg home_tilde_ok  '{"tool_name":"Bash","tool_input":{"command":"find ~/Code -name x"}}'            allow
 chk_pg home_var_ok    '{"tool_name":"Bash","tool_input":{"command":"find \"$HOME/Code\" -name x"}}'    allow
 chk_pg home_amp_ok    '{"tool_name":"Bash","tool_input":{"command":"find ./src -name x && cd /home/alice"}}' allow
+# Round-2 pins (2026-08-04): adjacent operators and quoted metacharacters no
+# longer hide archives; ~user is a broad scan of another account's home.
+chk_pg arch_amp       '{"tool_name":"Bash","tool_input":{"command":"rm backup.7z&&ls"}}'               deny
+chk_pg arch_quotemeta '{"tool_name":"Bash","tool_input":{"command":"rm \"backup&old.7z\""}}'           deny
+chk_pg home_tildeuser '{"tool_name":"Bash","tool_input":{"command":"find ~alice -name x"}}'            deny
+chk_pg tildeuser_ok   '{"tool_name":"Bash","tool_input":{"command":"find ~alice/code -name x"}}'       allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
@@ -2584,6 +2590,41 @@ if grep -Fq 'grep -Eq "' "$PG_PORTED" "$VC_PORTED"; then
 else
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
+fi
+
+# ============================================================================
+# Test 104d: user-layer overrides replace IN PLACE (position = priority)
+# ============================================================================
+# The merge previously filtered overridden ids out of the base array and
+# appended the user rules at the end — an override silently migrated to the
+# lowest priority, changing which rule's action fired (round-2 review,
+# 2026-08-04). Behavioral assertion: a user destructive-delete override with a
+# trusted/ exemption is honored, the rest of the rule still denies, and the
+# UNoverridden archive rule keeps working from its original slot.
+echo -n "Test 104d: user policy override replaces in place... "
+T104D_HOME=$(mktemp -d)
+mkdir -p "$T104D_HOME/.asha"
+cat > "$T104D_HOME/.asha/policies.json" <<'EOF104D'
+{"rules":[{"id":"destructive-delete","tool":"Bash","command_regex":"(^|[[:space:];|&(])rm[[:space:]]+([^|;&]*[[:space:]])?(-[a-zA-Z]*[rRf]|--recursive|--force)","exclude_regex":"rm[[:space:]][\"']?[^|;&]*(/tmp/|trusted/|node_modules)","action":"deny","reason":"user layer"}]}
+EOF104D
+pg_104d() {
+    local rc=0
+    printf '%s' "$1" | env -u ASHA_HARNESS HOME="$T104D_HOME" bash "$PG_PORTED" >/dev/null 2>&1 || rc=$?
+    [[ $rc -eq 2 ]] && echo deny || echo allow
+}
+T104D_OK=1; T104D_WHY=""
+c104d() { local got; got="$(pg_104d "$2")"; [[ "$got" == "$3" ]] || { T104D_OK=0; T104D_WHY="$T104D_WHY $1(got=$got want=$3)"; }; }
+c104d user_exempt '{"tool_name":"Bash","tool_input":{"command":"rm -rf trusted/x"}}'      allow
+c104d user_deny   '{"tool_name":"Bash","tool_input":{"command":"rm -rf other/x"}}'        deny
+c104d base_intact '{"tool_name":"Bash","tool_input":{"command":"rm trusted/cache.7z"}}'   deny
+rm -rf "$T104D_HOME"
+if [[ $T104D_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  user-layer merge mismatch:$T104D_WHY"
+    FAILED=$((FAILED + 1))
 fi
 
 # ============================================================================
