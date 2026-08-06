@@ -455,7 +455,7 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
         fi
       done < <(python3 -c "
 import sys
-tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
+tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
 c = tomllib.load(open('$CODEX/config.toml','rb'))
 for ev, blocks in (c.get('hooks') or {}).items():
     if not isinstance(blocks, list):
@@ -476,7 +476,7 @@ for ev, blocks in (c.get('hooks') or {}).items():
       # flag is silently inert — the exact failure verified live 2026-07-26.
       hook_gate="$(python3 -c "
 import sys
-tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
+tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
 c = tomllib.load(open('$CODEX/config.toml','rb'))
 events = [k for k, v in (c.get('hooks') or {}).items() if isinstance(v, list) and v]
 feats = c.get('features') or {}
