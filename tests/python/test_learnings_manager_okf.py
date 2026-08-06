@@ -13,6 +13,7 @@ would be invisible in production).
 import json
 import os
 import shutil
+import site
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ sys.path.insert(0, str(TOOLS_DIR))
 
 import importlib.util
 HAVE_YAML = importlib.util.find_spec("yaml") is not None
+PYTHON_USER_SITE = site.getusersitepackages()
 
 
 class OKFLearningsTestBase(unittest.TestCase):
@@ -574,9 +576,15 @@ class ValidateSmokeTests(OKFLearningsTestBase):
         self.lm.add_learning("Cat", "one", "t1", "a1", "p", "r")
         self.lm.add_learning("Cat", "two", "t2", "a2", "p", "r")
         validate = TOOLS_DIR / "validate.py"
+        env = os.environ.copy()
+        env["PYTHONPATH"] = (
+            PYTHON_USER_SITE
+            if not env.get("PYTHONPATH")
+            else f"{PYTHON_USER_SITE}{os.pathsep}{env['PYTHONPATH']}"
+        )
         proc = subprocess.run(
             [sys.executable, str(validate), str(self.lm.LEARNINGS_DIR), "--strict"],
-            capture_output=True, text=True,
+            capture_output=True, text=True, env=env,
         )
         self.assertEqual(proc.returncode, 0, f"validate failed:\n{proc.stdout}\n{proc.stderr}")
 
@@ -633,9 +641,10 @@ class LinkTests(OKFLearningsTestBase):
         self.assertIn("beta", self._related_of("alpha"))
 
     def test_link_candidates_window(self):
-        import re as _re
         p = self.lm._learning_path("alpha")
-        p.write_text(_re.sub(r"updated: '[^']*'", "updated: '2000-01-01'", p.read_text()))
+        alpha = self.lm._parse_file(p)
+        alpha.updated = "2000-01-01"
+        self.lm._atomic_write_file(p, self.lm._render_learning(alpha))
         out = self.lm.link_candidates(days=7)
         ids = {c["id"] for c in out["candidates"]}
         self.assertNotIn("alpha", ids, "stale learning excluded from window")

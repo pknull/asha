@@ -71,7 +71,7 @@ _codex_atomic_write_config() {
     return 0
   fi
   printf '%s' "$content" > "$tmp"
-  python3 -c "import tomllib,sys; tomllib.load(open(sys.argv[1],'rb'))" "$tmp" \
+  python3 -c "import sys; tomllib=__import__('tomllib' if sys.version_info >= (3, 11) else 'tomli'); tomllib.load(open(sys.argv[1],'rb'))" "$tmp" \
     || { rm -f "$tmp"; die "config.toml would be invalid TOML after write" 4; }
   mv "$tmp" "$CODEX_CONFIG_FILE"
 }
@@ -358,8 +358,9 @@ PYEOF
 # ---------------------------------------------------------------------------
 
 codex_install_rules() {
-  local content user_home
-  content="$(cat <<'EOF'
+  local content user_home rules_template
+  rules_template="$(mktemp)"
+  cat > "$rules_template" <<'EOF'
 # Managed by asha installer; do not edit.
 #
 # These native Codex rules are a coarse fallback for command approvals. Asha's
@@ -444,7 +445,8 @@ prefix_rule(
     match = ["git branch -d master"],
 )
 EOF
-)"
+  content="$(cat "$rules_template")"
+  rm -f "$rules_template"
 
   user_home="${HOME:-}"
   if [[ -z "$user_home" ]]; then
@@ -631,7 +633,8 @@ _codex_ensure_hooks_feature() {
   # Detect first (read-only) so the backup fires only when a write follows.
   local needs
   needs="$(python3 -c '
-import sys, tomllib
+import sys
+tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
 try:
     feats = tomllib.load(open(sys.argv[1], "rb")).get("features") or {}
 except Exception:
@@ -645,7 +648,7 @@ import os, re, sys, tempfile
 path = sys.argv[1]
 text = open(path, encoding="utf-8").read()
 try:
-    import tomllib
+    tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
     feats = tomllib.loads(text).get("features") or {}
 except Exception:
     sys.exit(0)  # unparseable: leave alone; the doctor TOML check reports it

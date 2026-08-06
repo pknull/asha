@@ -126,13 +126,15 @@ fi
 
 echo -n "Test IL-2: preflight refuses when project flag exists but enabled=false... "
 enable_repo "$REPO_A"
-sed -i 's/"enabled": true/"enabled": false/' "$REPO_A/.asha/issue-loop.json"
+sed 's/"enabled": true/"enabled": false/' "$REPO_A/.asha/issue-loop.json" > "$REPO_A/.asha/issue-loop.json.tmp"
+mv "$REPO_A/.asha/issue-loop.json.tmp" "$REPO_A/.asha/issue-loop.json"
 if run_preflight "$HOME_A" "$REPO_A"; then
     fail "preflight exited 0 with enabled=false"
 else
     pass
 fi
-sed -i 's/"enabled": false/"enabled": true/' "$REPO_A/.asha/issue-loop.json"
+sed 's/"enabled": false/"enabled": true/' "$REPO_A/.asha/issue-loop.json" > "$REPO_A/.asha/issue-loop.json.tmp"
+mv "$REPO_A/.asha/issue-loop.json.tmp" "$REPO_A/.asha/issue-loop.json"
 
 echo -n "Test IL-3: preflight refuses when repo is not in the user allowlist... "
 HOME_B="$TEST_DIR/home-b"
