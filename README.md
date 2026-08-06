@@ -494,6 +494,7 @@ asha/
 Run the full test suite:
 
 ```bash
+python3 -m pip install -r requirements.txt
 ./tests/run-tests.sh
 ```
 
@@ -516,6 +517,14 @@ Individual test suites:
 ./tests/validate-versions.sh   # Version consistency
 ./tests/test-hooks.sh          # Hook handlers
 python3 -m unittest discover -s tests/python -v  # Python tests
+```
+
+The authenticated Copilot runtime canary is opt-in because it sends one prompt
+to the local Copilot CLI. It verifies the custom-instructions directory used
+by `asha copilot`:
+
+```bash
+ASHA_LIVE_COPILOT=1 ./tests/test-copilot-live.sh
 ```
 
 ---

@@ -55,6 +55,23 @@ warn() { echo "WARN  $1"; }          # non-failing observation
 info_line() { echo "INFO  $1"; }     # context, never a problem
 section() { echo ""; echo "── $1 ──"; }
 
+version_in_range() {
+  local version="$1" min="$2" max="$3"
+  awk -v version="$version" -v min="$min" -v max="$max" '
+    function compare(left, right, i, l, r, n, right_n) {
+      n = split(left, l, ".")
+      right_n = split(right, r, ".")
+      if (right_n > n) n = right_n
+      for (i = 1; i <= n; i++) {
+        if ((l[i] + 0) < (r[i] + 0)) return -1
+        if ((l[i] + 0) > (r[i] + 0)) return 1
+      }
+      return 0
+    }
+    BEGIN { exit !(compare(version, min) >= 0 && compare(version, max) <= 0) }
+  '
+}
+
 # --fix self-heal: regenerate a stale codex command-skill SKILL.md from its
 # source command MD. Reuses the exact generator the installer uses
 # (harnesses/codex.sh:_codex_emit_command_skill), which strips Claude-only
@@ -414,7 +431,7 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
 
     # config.toml parses as TOML
     if [[ -f "$CODEX/config.toml" ]]; then
-      if python3 -c "import tomllib; tomllib.load(open('$CODEX/config.toml','rb'))" 2>/dev/null; then
+      if python3 -c "import sys; tomllib=__import__('tomllib' if sys.version_info >= (3, 11) else 'tomli'); tomllib.load(open('$CODEX/config.toml','rb'))" 2>/dev/null; then
         pass "$HOME_LABEL/.codex/config.toml parses as valid TOML"
       else
         nope "$HOME_LABEL/.codex/config.toml is invalid TOML"
@@ -437,7 +454,8 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
           missing=$((missing+1))
         fi
       done < <(python3 -c "
-import tomllib
+import sys
+tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
 c = tomllib.load(open('$CODEX/config.toml','rb'))
 for ev, blocks in (c.get('hooks') or {}).items():
     if not isinstance(blocks, list):
@@ -457,7 +475,8 @@ for ev, blocks in (c.get('hooks') or {}).items():
       # per-entry persisted trust (hash-bound). A registered fence without the
       # flag is silently inert — the exact failure verified live 2026-07-26.
       hook_gate="$(python3 -c "
-import tomllib
+import sys
+tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
 c = tomllib.load(open('$CODEX/config.toml','rb'))
 events = [k for k, v in (c.get('hooks') or {}).items() if isinstance(v, list) and v]
 feats = c.get('features') or {}
@@ -617,8 +636,25 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
 
     # ───── Context (never failures) ─────
     info_line "persona loads via 'asha copilot' wrapper only (by design); plain 'copilot' is persona-free"
-    if command -v copilot >/dev/null 2>&1; then
-      info_line "copilot CLI: $(copilot --version 2>/dev/null | head -1 || echo 'version unknown')"
+    copilot_cmd="$(asha_harness_executable copilot)"
+    if command -v "$copilot_cmd" >/dev/null 2>&1; then
+      copilot_version_output="$("$copilot_cmd" --version 2>/dev/null | head -1 || true)"
+      copilot_version="$(printf '%s\n' "$copilot_version_output" | awk '
+        match($0, /[0-9]+\.[0-9]+\.[0-9]+/) {
+          print substr($0, RSTART, RLENGTH)
+          exit
+        }'
+      )"
+      info_line "copilot CLI: ${copilot_version_output:-version unknown}"
+      if [[ -n "$copilot_version" ]]; then
+        copilot_min="$(asha_copilot_verified_min_version)"
+        copilot_max="$(asha_copilot_verified_max_version)"
+        if ! version_in_range "$copilot_version" "$copilot_min" "$copilot_max"; then
+          warn "copilot CLI $copilot_version is outside the live-verified range $copilot_min-$copilot_max; run tests/test-copilot-live.sh with ASHA_LIVE_COPILOT=1 before relying on runtime hooks"
+        fi
+      else
+        warn "could not parse copilot CLI version; runtime compatibility is unverified"
+      fi
     else
       warn "copilot CLI not on PATH (install state can still be audited)"
     fi

@@ -579,7 +579,7 @@ for cmd_file in "$REPO_ROOT"/plugins/*/commands/*.md; do
     # Check if file starts with ---
     if head -1 "$cmd_file" | grep -q "^---"; then
         # Extract frontmatter and validate
-        FRONTMATTER=$(sed -n '1,/^---$/p' "$cmd_file" | tail -n +2 | head -n -1)
+        FRONTMATTER=$(sed -n '1,/^---$/p' "$cmd_file" | sed '1d;$d')
         if ! echo "$FRONTMATTER" | python3 -c "import sys,yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
             if [[ $INVALID_FRONTMATTER -eq 0 ]]; then
                 echo -e "${RED}FAIL${NC}"
@@ -895,7 +895,7 @@ for cmd_file in "$REPO_ROOT"/plugins/*/commands/*.md; do
     # Check if file has frontmatter with description
     if head -1 "$cmd_file" | grep -q "^---"; then
         # Extract frontmatter
-        FRONTMATTER=$(sed -n '1,/^---$/p' "$cmd_file" | tail -n +2 | head -n -1)
+        FRONTMATTER=$(sed -n '1,/^---$/p' "$cmd_file" | sed '1d;$d')
         if ! echo "$FRONTMATTER" | grep -q "description:"; then
             if [[ $MISSING_DESC -eq 0 ]]; then
                 echo -e "${RED}FAIL${NC}"
@@ -961,7 +961,7 @@ for template in "$TEMPLATES_DIR"/*.md; do
     fi
 
     if head -1 "$template" | grep -q "^---"; then
-        FRONTMATTER=$(sed -n '1,/^---$/p' "$template" | tail -n +2 | head -n -1)
+        FRONTMATTER=$(sed -n '1,/^---$/p' "$template" | sed '1d;$d')
         if ! echo "$FRONTMATTER" | python3 -c "import sys,yaml; yaml.safe_load(sys.stdin)" 2>/dev/null; then
             if [[ $INVALID_TEMPLATES -eq 0 ]]; then
                 echo -e "${RED}FAIL${NC}"
@@ -1015,7 +1015,8 @@ fi
 # inside the SAME plugin's commands/ dir.
 echo -n "Test 52: No duplicate command names within a plugin... "
 DUPLICATES=0
-declare -A CMD_NAMES
+CMD_NAMES_FILE="$(mktemp)"
+: > "$CMD_NAMES_FILE"
 
 for cmd_file in "$REPO_ROOT"/plugins/*/commands/*.md; do
     [[ ! -f "$cmd_file" ]] && continue
@@ -1023,16 +1024,17 @@ for cmd_file in "$REPO_ROOT"/plugins/*/commands/*.md; do
     plugin_name=$(basename "$(dirname "$(dirname "$cmd_file")")")
     key="${plugin_name}/${cmd_name}"
 
-    if [[ -n "${CMD_NAMES[$key]:-}" ]]; then
+    if grep -Fqx -- "$key" "$CMD_NAMES_FILE"; then
         if [[ $DUPLICATES -eq 0 ]]; then
             echo -e "${RED}FAIL${NC}"
         fi
         echo "  Duplicate command '$cmd_name' inside plugin '$plugin_name'"
         DUPLICATES=$((DUPLICATES + 1))
     else
-        CMD_NAMES[$key]="$plugin_name"
+        printf '%s\n' "$key" >> "$CMD_NAMES_FILE"
     fi
 done
+rm -f "$CMD_NAMES_FILE"
 
 if [[ $DUPLICATES -eq 0 ]]; then
     echo -e "${GREEN}PASS${NC}"
@@ -1279,7 +1281,7 @@ for cmd_file in "$REPO_ROOT"/plugins/*/commands/*.md; do
     if grep -q "Task tool\|launch.*agent\|spawn.*agent" "$cmd_file"; then
         # Extract frontmatter and check for allowed-tools
         if head -1 "$cmd_file" | grep -q "^---"; then
-            FRONTMATTER=$(sed -n '1,/^---$/p' "$cmd_file" | tail -n +2 | head -n -1)
+            FRONTMATTER=$(sed -n '1,/^---$/p' "$cmd_file" | sed '1d;$d')
             if ! echo "$FRONTMATTER" | grep -q "allowed-tools"; then
                 # This is a warning, not a hard failure
                 : # silently pass
@@ -2150,7 +2152,7 @@ EOF
 export CLAUDE_PROJECT_DIR="$TEST92C_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-OUTPUT=$(echo '{"prompt": "x"}' | HOME="$TEST92C_DIR" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+OUTPUT=$(echo '{"prompt": "x"}' | env -u COPILOT_CLI HOME="$TEST92C_DIR" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
 rm -rf "$TEST92C_DIR"
 
 if [[ "$OUTPUT" == "USER-LAYER-FIRED" ]]; then
@@ -2743,7 +2745,8 @@ if ! CODEX_HOME="$CODEX_TMP" ASHA_HOME="$CODEX_TMP/asha" ASHA_CONFIG="$CODEX_TMP
     CODEX_OK=0
     CODEX_WHY=" install-failed:$(cat "$CODEX_TMP/install.err")"
 elif ! python3 - "$CODEX_TMP/config.toml" "$CODEX_TMP/rules/asha.rules" "$CODEX_TMP/agents/session-loop-operator.toml" "$CODEX_TMP/skills/session-save/SKILL.md" "$CODEX_USER_HOME" <<'PY' >/dev/null 2>"$CODEX_TMP/check.err"
-import pathlib, sys, tomllib
+import pathlib, sys
+tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
 config = pathlib.Path(sys.argv[1])
 rules = pathlib.Path(sys.argv[2])
 agent = pathlib.Path(sys.argv[3])
@@ -2812,7 +2815,8 @@ if ! CODEX_HOME="$CODEX_TMP2" ASHA_HOME="$CODEX_TMP2/asha" ASHA_CONFIG="$CODEX_T
     echo -e "${RED}FAIL${NC}"
     echo "  install failed: $(cat "$CODEX_TMP2/install.err")"
 elif ! python3 -c "
-import tomllib, sys
+import sys
+tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
 parsed = tomllib.load(open('$CODEX_TMP2/config.toml', 'rb'))
 assert parsed.get('features', {}).get('hooks') is False, 'explicit hooks = false must survive install'
 " 2>"$CODEX_TMP2/check.err"; then
@@ -2863,7 +2867,8 @@ PY
         "$REPO_ROOT/install.sh" --target codex --only session >/dev/null 2>&1; then
         CODEX_OK3=0; CODEX_WHY3=" reinstall-failed"
     elif ! python3 -c "
-import tomllib
+import sys
+tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
 parsed = tomllib.load(open('$CODEX_TMP3/config.toml', 'rb'))
 state = (parsed.get('hooks') or {}).get('state') or {}
 assert any(v.get('trusted_hash') == 'sha256:cafe1234' for v in state.values() if isinstance(v, dict)), \

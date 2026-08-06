@@ -2,30 +2,10 @@
 # source-scoped library: no set flags at file scope (runs in the caller's shell)
 # Asha → GitHub Copilot harness adapter.
 #
-# Mirrors harnesses/codex.sh. Key divergences:
-#   - $COPILOT_HOME defaults to ~/.copilot (matches Codex/Claude pattern)
-#   - Hook config is JSON (~/.copilot/hooks/hooks.json), not TOML
-#   - Six lifecycle events use camelCase (sessionStart, preToolUse, ...)
-#     vs Claude's PascalCase (SessionStart, PreToolUse, ...)
-#   - Slash commands fold into skills (codex pattern)
-#
-# UNVERIFIED ASSUMPTIONS (test against live Copilot CLI):
-#   1. Hook config location: ~/.copilot/hooks/hooks.json (Q1, defaulted user-scope)
-#   2. Stop → sessionEnd event mapping (Claude has both Stop and SessionEnd)
-#      — sessionEnd itself VERIFIED live 2026-07-27 on 1.0.75: fires on clean
-#      exit with {sessionId, timestamp, cwd, reason}; reasons observed:
-#      "complete" (non-interactive -p) and "user_exit" (interactive /exit).
-#      The Stop→sessionEnd FOLD for translated hooks.json entries remains a
-#      mapping decision, not a probe result.
-#   3. PermissionRequest events have no Copilot analog (currently dropped + warned)
-#   4. Hook stdin/stdout JSON contract field names (e.g. tool_name vs toolName)
-#   5. Veto semantics — exit-code-2 vs {decision:"block"} return payload
-#   6. Agent files: generated .agent.md files with Copilot-clean frontmatter
-#   7. ${CLAUDE_PLUGIN_ROOT} substitution semantics (assumed identical to Claude)
-#
-# When verification happens, the seam to update is _copilot_translate_event,
-# the JSON-shape jq filter in copilot_install_hooks, and (for veto) any future
-# stdin/stdout shim layer between Copilot and existing hook scripts.
+# Copilot uses native skill and agent directories, rendered command-skills,
+# and three dedicated hook files: guardrails, advisory nudges, and lifecycle
+# side effects. The active hook schema is emitted by the dedicated installers
+# below; user-owned hooks.json is never modified.
 #
 # Sourced by ../install.sh and ../uninstall.sh. Expects globals from the
 # dispatcher: MARKET_ROOT, PLUGINS_DIR, NAMESPACES_FILE, DRY_RUN, FORCE,
@@ -37,54 +17,20 @@
 COPILOT_HOME="$(asha_harness_home copilot)"
 COPILOT_SKILLS_DIR="$COPILOT_HOME/skills"
 COPILOT_AGENTS_DIR="$COPILOT_HOME/agents"
+# Kept only to remove tagged artifacts emitted by pre-dedicated-hook releases.
 COPILOT_HOOKS_FILE="$COPILOT_HOME/hooks/hooks.json"
-# Asha's own guardrail hooks live in a DEDICATED file so we never touch a user's
-# hooks.json (Copilot loads every ~/.copilot/hooks/*.json).
+# Asha's own guardrail hooks live in a dedicated file so user hooks.json is
+# untouched (Copilot loads every ~/.copilot/hooks/*.json).
 COPILOT_GUARDRAILS_FILE="$COPILOT_HOME/hooks/asha-guardrails.json"
 COPILOT_NUDGES_FILE="$COPILOT_HOME/hooks/asha-nudges.json"
 COPILOT_LIFECYCLE_FILE="$COPILOT_HOME/hooks/asha-lifecycle.json"
-
-# Events Copilot is assumed to support (camelCase). UNVERIFIED — see header.
-_COPILOT_EVENTS=(sessionStart sessionEnd userPromptSubmitted preToolUse postToolUse errorOccurred)
 
 # Shared converters (skip-plugin policy, frontmatter parsing, command-skill and
 # agent emitters) — also sourced by lib/build.sh for plugin packaging.
 # shellcheck source=harnesses/copilot-common.sh
 source "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/copilot-common.sh"
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-_copilot_is_event() {
-  local e="$1" ev
-  for ev in "${_COPILOT_EVENTS[@]}"; do [[ "$e" == "$ev" ]] && return 0; done
-  return 1
-}
-
-# Translate a Claude PascalCase event name to its Copilot camelCase equivalent.
-# Echoes the translated name on stdout, or empty string if no mapping exists
-# (caller should warn + drop the entry).
-#
-# UNVERIFIED MAPPINGS:
-#   - Stop → sessionEnd (Claude has both Stop and SessionEnd; both currently
-#     fold into the single Copilot sessionEnd event)
-#   - PermissionRequest → (dropped — no known Copilot analog)
-_copilot_translate_event() {
-  case "$1" in
-    SessionStart)      echo "sessionStart" ;;
-    SessionEnd)        echo "sessionEnd" ;;
-    Stop)              echo "sessionEnd" ;;   # UNVERIFIED — see header
-    UserPromptSubmit)  echo "userPromptSubmitted" ;;
-    PreToolUse)        echo "preToolUse" ;;
-    PostToolUse)       echo "postToolUse" ;;
-    ErrorOccurred)     echo "errorOccurred" ;;
-    PermissionRequest) echo "" ;;             # UNVERIFIED — no Copilot analog
-    *)                 echo "" ;;
-  esac
-}
-
-# Atomic write to hooks.json, validated by jq re-parse.
+# Atomic write to legacy hooks.json, validated by jq re-parse.
 _copilot_atomic_write_hooks() {
   local content="$1"
   local tmp="$COPILOT_HOOKS_FILE.tmp.$$"
@@ -220,91 +166,8 @@ copilot_install_agents() {
   done
 }
 
-# ---------------------------------------------------------------------------
-# Hooks (JSON emission, atomic, source-tagged)
-# ---------------------------------------------------------------------------
-
-# Walk one plugin's hooks.json and emit a JSON object {<event>: [groups...]}
-# with:
-#   - Claude PascalCase events translated to Copilot camelCase
-#   - ${CLAUDE_PLUGIN_ROOT} placeholders resolved to the plugin's absolute path
-#   - each hook entry tagged with "source": "asha:<ns>"
-#   - dropped events (no Copilot analog) warned to stderr
-#
-# Echoes the JSON object on stdout (empty object if nothing emitted).
-_copilot_emit_hooks_for_plugin() {
-  local abs_root="$1" hooks_json="$2" ns="$3"
-  PYTHONIOENCODING=utf-8 python3 - "$abs_root" "$hooks_json" "$ns" <<'PYEOF'
-import json, sys
-
-abs_root, hooks_json, ns = sys.argv[1], sys.argv[2], sys.argv[3]
-
-# UNVERIFIED — Stop folds into sessionEnd; PermissionRequest is dropped.
-EVENT_MAP = {
-    "SessionStart":      "sessionStart",
-    "SessionEnd":        "sessionEnd",
-    "Stop":              "sessionEnd",
-    "UserPromptSubmit":  "userPromptSubmitted",
-    "PreToolUse":        "preToolUse",
-    "PostToolUse":       "postToolUse",
-    "ErrorOccurred":     "errorOccurred",
-}
-DROP = {"PermissionRequest"}
-
-source_tag = f"asha:{ns}"
-
-def resolve_command(cmd):
-    return cmd.replace("${CLAUDE_PLUGIN_ROOT}", abs_root)
-
-with open(hooks_json) as f:
-    data = json.load(f)
-
-events = (data or {}).get("hooks") or {}
-out = {}
-dropped = []
-for event, groups in events.items():
-    if event in DROP:
-        dropped.append(event)
-        continue
-    target = EVENT_MAP.get(event)
-    if not target:
-        dropped.append(event)
-        continue
-    if not isinstance(groups, list):
-        continue
-    new_groups = []
-    for grp in groups:
-        if not isinstance(grp, dict):
-            continue
-        new_grp = {}
-        if "matcher" in grp:
-            new_grp["matcher"] = grp["matcher"]
-        new_hooks = []
-        for h in grp.get("hooks", []) or []:
-            if not isinstance(h, dict) or h.get("type") != "command":
-                continue
-            cmd = resolve_command(h.get("command", ""))
-            if not cmd:
-                continue
-            entry = dict(h)
-            entry["command"] = cmd
-            entry["source"] = source_tag
-            new_hooks.append(entry)
-        if new_hooks:
-            new_grp["hooks"] = new_hooks
-            new_groups.append(new_grp)
-    if new_groups:
-        out.setdefault(target, []).extend(new_groups)
-
-for e in dropped:
-    sys.stderr.write(f"  WARN: dropped {ns}/{e} (no Copilot event mapping)\n")
-
-sys.stdout.write(json.dumps(out))
-PYEOF
-}
-
-# Strip every Asha-tagged hook entry from the current hooks.json (or
-# bootstrap from {"hooks":{}} if missing). Echoes the cleaned JSON.
+# Strip Asha-tagged entries from legacy hooks.json releases. Echoes the
+# cleaned JSON; current installations never write this file.
 _copilot_strip_asha_entries() {
   local current
   if [[ -f "$COPILOT_HOOKS_FILE" ]]; then
@@ -327,9 +190,6 @@ _copilot_strip_asha_entries() {
   '
 }
 
-# Walk all selected plugins, build their tagged hook JSON, merge into the
-# cleaned base, and atomically write the result.
-#
 # RETIRED 2026-05-10: Asha capture (events.jsonl) now derived on-demand at
 # /save time from the host's native session log
 # (~/.copilot/session-state/<sid>/events.jsonl), via jsonl_reader. Hooks are
@@ -348,9 +208,6 @@ _copilot_strip_asha_entries() {
 # handlers (see that script's header). Soft deterrent only: Copilot bypasses
 # preToolUse under parallel tool calls (github/copilot-cli#2893).
 #
-# The legacy _copilot_emit_hooks_for_plugin / _copilot_strip_asha_entries helpers
-# above are now unused (they emitted the wrong, Claude-style schema) and may be
-# pruned in a later pass.
 copilot_install_hooks() {
   local adapter abs_adapter content
   adapter="$PLUGINS_DIR/session/hooks/handlers/copilot-policy-adapter.sh"

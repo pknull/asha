@@ -5,3 +5,4 @@
 # validator/visualizer (validate.py / visualize.py). Tests skip gracefully when
 # it is missing.
 PyYAML>=6.0
+tomli>=2.0; python_version < "3.11"
