@@ -43,7 +43,13 @@ command -v git >/dev/null 2>&1 || refuse "git is required and is not installed"
 
 REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)" \
     || refuse "not inside a git repository"
-REAL_ROOT="$(realpath "$REPO_ROOT")"
+
+canonical_dir() {
+    cd -P "$1" >/dev/null 2>&1 && pwd
+}
+
+REAL_ROOT="$(canonical_dir "$REPO_ROOT")" \
+    || refuse "cannot resolve repository root: $REPO_ROOT"
 
 FLAG="$REPO_ROOT/.asha/issue-loop.json"
 [[ -f "$FLAG" ]] || refuse "project has not opted in — no .asha/issue-loop.json in $REPO_ROOT (template: plugins/code/templates/issue-loop.json)"
@@ -58,7 +64,7 @@ USER_CFG="$HOME/.asha/config.json"
 IN_LIST=false
 while IFS= read -r entry; do
     [[ -z "$entry" ]] && continue
-    e="$(realpath -m "$entry" 2>/dev/null || printf '%s' "$entry")"
+    e="$(canonical_dir "$entry" 2>/dev/null || printf '%s' "$entry")"
     [[ "$e" == "$REAL_ROOT" ]] && IN_LIST=true
 done < <(jq -r '.issue_loop.repos // [] | .[]' "$USER_CFG" 2>/dev/null || true)
 [[ "$IN_LIST" == "true" ]] || refuse "repo $REAL_ROOT is not in the ~/.asha/config.json issue_loop.repos allowlist — both sides must opt in"

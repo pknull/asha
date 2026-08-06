@@ -21,14 +21,27 @@ NC='\033[0m'
 PASSED=0
 FAILED=0
 
+extract_version() {
+    awk '
+        /^\*\*Version\*\*:/ {
+            version = $0
+            sub(/^\*\*Version\*\*:[[:space:]]*/, "", version)
+            if (version ~ /^[0-9]+\.[0-9]+\.[0-9]+$/) {
+                print version
+            }
+            exit
+        }
+    ' "$1"
+}
+
 echo "=== Version Consistency Validator ==="
 echo "Repository: $REPO_ROOT"
 echo ""
 
 # Extract top-level versions from README and CLAUDE.md.
 # Both files are expected to declare `**Version**: X.Y.Z` near the top.
-README_VERSION=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/README.md" || true)
-CLAUDE_MD_VERSION=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/CLAUDE.md" || true)
+README_VERSION=$(extract_version "$REPO_ROOT/README.md")
+CLAUDE_MD_VERSION=$(extract_version "$REPO_ROOT/CLAUDE.md")
 
 # Test 1: README version is present and well-formed.
 echo -n "Test 1: README.md has top-level **Version** in semver form... "
@@ -91,7 +104,7 @@ CLAUDE_TABLE_MISMATCHES=0
 
 echo -n "Test 3: Per-plugin versions match README.md plugin table... "
 for plugin_readme in "$REPO_ROOT"/plugins/*/README.md; do
-    plugin_version=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$plugin_readme" || true)
+    plugin_version=$(extract_version "$plugin_readme")
     [[ -n "$plugin_version" ]] || continue
 
     plugin_dir="$(basename "$(dirname "$plugin_readme")")"
@@ -118,7 +131,7 @@ fi
 
 echo -n "Test 4: Per-plugin versions match CLAUDE.md Current Plugins table... "
 for plugin_readme in "$REPO_ROOT"/plugins/*/README.md; do
-    plugin_version=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$plugin_readme" || true)
+    plugin_version=$(extract_version "$plugin_readme")
     [[ -n "$plugin_version" ]] || continue
 
     plugin_dir="$(basename "$(dirname "$plugin_readme")")"
@@ -171,7 +184,7 @@ while IFS=$'\t' read -r detail_ns detail_version; do
         DETAIL_MISMATCHES=$((DETAIL_MISMATCHES + 1))
         continue
     fi
-    plugin_version=$(grep -m1 -oP '^\*\*Version\*\*:\s*\K[0-9]+\.[0-9]+\.[0-9]+' "$REPO_ROOT/plugins/$plugin_dir/README.md" || true)
+    plugin_version=$(extract_version "$REPO_ROOT/plugins/$plugin_dir/README.md")
     [[ -n "$plugin_version" ]] || continue
     DETAIL_COUNT=$((DETAIL_COUNT + 1))
     if [[ "$detail_version" != "$plugin_version" ]]; then

@@ -80,6 +80,31 @@ grep -q "persona loads via 'asha copilot' wrapper only" <<<"$out" \
   || fail "wrapper-scoped persona reported as INFO (by design, not failure)"
 
 # ---------------------------------------------------------------------------
+echo "--- test 1b: Copilot version outside the live-verified range warns ---"
+VERSION_BIN="$SANDBOX/version-bin"
+mkdir -p "$VERSION_BIN"
+cat > "$VERSION_BIN/copilot" <<'EOF'
+#!/usr/bin/env bash
+[[ "${1:-}" == "--version" ]] && printf 'GitHub Copilot CLI %s\n' "${ASHA_TEST_COPILOT_VERSION:?}"
+EOF
+chmod +x "$VERSION_BIN/copilot"
+run_with_copilot_version() {
+  env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+    ASHA_COPILOT_CMD="$VERSION_BIN/copilot" ASHA_TEST_COPILOT_VERSION="$1" \
+    bash "$REPO_ROOT/bin/asha-drift-check.sh" --target copilot
+}
+out="$(run_with_copilot_version 1.0.75 2>&1)"
+if grep -q "outside the live-verified range" <<<"$out"; then
+  fail "verified Copilot version does not warn"
+else
+  ok "verified Copilot version does not warn"
+fi
+out="$(run_with_copilot_version 1.0.78 2>&1)"
+grep -q "outside the live-verified range 1.0.63-1.0.75" <<<"$out" \
+  && ok "newer Copilot version warns to run the live canary" \
+  || fail "newer Copilot version warns to run the live canary"
+
+# ---------------------------------------------------------------------------
 echo "--- test 2: broken copilot install fails, --fix heals what it owns ---"
 # 2a. dangling asha-rooted symlink
 ln -s "$REPO_ROOT/plugins/does-not-exist" "$SANDBOX/.copilot/skills/dangler"
