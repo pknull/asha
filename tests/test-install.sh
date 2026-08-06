@@ -23,6 +23,7 @@ command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available" >&2; exit 0; }
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
+PYTHON_USER_SITE="$(python3 -c 'import site; print(site.getusersitepackages())')"
 
 reset_sandbox() {
   rm -rf "$SANDBOX"
@@ -37,6 +38,7 @@ seed_native_configs() {
 
 run_install() {
   env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$SANDBOX" \
+    PYTHONPATH="$PYTHON_USER_SITE${PYTHONPATH:+:$PYTHONPATH}" \
     bash "$REPO_ROOT/install.sh" "$@"
 }
 

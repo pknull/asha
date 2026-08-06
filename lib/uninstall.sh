@@ -136,6 +136,15 @@ parse_args() {
     || die "invalid --target '$TARGET' (expected: $(asha_harness_names_inline)|both|all)" 1
 }
 
+uninstall_total_var() {
+  case "$1" in
+    claude)  printf '%s\n' 'CLAUDE_UNINSTALL_TOTAL' ;;
+    codex)   printf '%s\n' 'CODEX_UNINSTALL_TOTAL' ;;
+    copilot) printf '%s\n' 'COPILOT_UNINSTALL_TOTAL' ;;
+    *) return 1 ;;
+  esac
+}
+
 asha_uninstall_main() {
   DRY_RUN=0; VERBOSE=0; TARGET="claude"
   parse_args "$@"
@@ -161,8 +170,11 @@ asha_uninstall_main() {
     [[ -f "$harness_script" ]] || die "harness script missing: $harness_script"
     # shellcheck disable=SC1090
     source "$harness_script"
-    # Each harness exports <T>_UNINSTALL_TOTAL.
-    local var="${t^^}_UNINSTALL_TOTAL"
+    # Each harness exports its matching uninstall total. Keep the mapping
+    # explicit: macOS ships Bash 3.2, which does not support ${var^^}.
+    local var
+    var="$(uninstall_total_var "$t")" \
+      || die "no uninstall total variable for harness: $t"
     local total_file="${TMPDIR:-/tmp}/.asha-uninstall-total.$$"
     # Failure isolation: one harness failing must never silently strand the
     # ones after it (issue #4: codex died mid-uninstall under set -e and

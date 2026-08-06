@@ -44,6 +44,14 @@ asha_harness_executable() {
   esac
 }
 
+asha_copilot_verified_min_version() {
+  printf '%s\n' '1.0.63'
+}
+
+asha_copilot_verified_max_version() {
+  printf '%s\n' '1.0.75'
+}
+
 asha_harness_native_config() {
   local home
   home="$(asha_harness_home "$1")" || return 1

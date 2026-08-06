@@ -364,7 +364,7 @@ def resolve_identity(
 
 def _project_slug_for_claude(project_dir: Path) -> str:
     """Claude's transcript slug: cwd with '/' replaced by '-' (path-as-name)."""
-    return str(project_dir.resolve()).replace("/", "-")
+    return str(project_dir.absolute()).replace("/", "-")
 
 
 def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Optional[Path]:

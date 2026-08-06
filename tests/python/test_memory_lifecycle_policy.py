@@ -2,6 +2,7 @@
 """Composition tests for silence, calibration, and OpenCode policy adaptation."""
 
 import json
+import importlib
 import os
 import subprocess
 import sys
@@ -69,9 +70,26 @@ class SessionEndSilenceTests(unittest.TestCase):
 
 
 class CalibrationPolicyTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.project_tmp = tempfile.TemporaryDirectory(prefix="asha_calibration_project_")
+        project = Path(cls.project_tmp.name)
+        (project / "Memory").mkdir()
+        cls.project_env = mock.patch.dict(
+            os.environ, {"CLAUDE_PROJECT_DIR": str(project)}, clear=False
+        )
+        cls.project_env.start()
+        sys.modules.pop("pattern_analyzer", None)
+        cls.pa = importlib.import_module("pattern_analyzer")
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.project_env.stop()
+        sys.modules.pop("pattern_analyzer", None)
+        cls.project_tmp.cleanup()
+
     def setUp(self):
-        import pattern_analyzer  # type: ignore[reportMissingImports]
-        self.pa = pattern_analyzer
+        self.pa = type(self).pa
 
     def test_default_synthesis_policy_disables_calibration(self):
         with mock.patch.object(self.pa, "_calibration_capture_enabled", wraps=self.pa._calibration_capture_enabled) as enabled:
