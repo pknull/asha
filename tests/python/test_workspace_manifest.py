@@ -8,10 +8,19 @@ fail-closed (any error => no manifest), schema defaults, containment +
 disjointness + the v1 operational_root pin, unknown keys preserved. No
 filesystem access — git-worktree existence and symlink canonicalization
 belong to detection/status (issues 2-3), not this layer.
+
+Pass-2 hardening (PR #32 codex review): the validator must be TOTAL — hostile
+input (cycles, depth, huge ints, NUL/surrogate paths, non-UTF-8 CLI files)
+yields typed fail-closed errors, never an exception — and the error oracle
+here asserts EXACT code sets, not inclusion, so extra or missing errors fail.
 """
 
+import contextlib
+import io
 import json
+import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -23,10 +32,6 @@ import workspace_manifest as wm  # type: ignore[reportMissingImports]  # noqa: E
 
 def _codes(errors):
     return sorted({e.code for e in errors})
-
-
-def _fields(errors):
-    return sorted({e.field for e in errors})
 
 
 MINIMAL = {"version": 1, "workspace_name": "w"}
@@ -117,10 +122,14 @@ class SuccessCases(unittest.TestCase):
         _, errors = wm.validate_manifest(data)
         self.assertEqual(errors, [])
 
+    def test_dotdot_lookalike_segments_are_legal(self):
+        # "..." and "..hidden" are ordinary names, not traversal.
+        data = _valid_full()
+        data["repositories"][0]["path"] = "...archive/..hidden"
+        _, errors = wm.validate_manifest(data)
+        self.assertEqual(errors, [])
 
-# Table of error cases: (name, mutate(data) -> data or raw text, expected codes,
-# optionally expected field substrings). Every case must fail CLOSED: no
-# manifest object alongside errors.
+
 def _mut(fn):
     data = _valid_full()
     fn(data)
@@ -128,6 +137,12 @@ def _mut(fn):
 
 
 class ErrorTable(unittest.TestCase):
+    """Exact-set oracle: expected_codes is the COMPLETE set of distinct codes.
+
+    Inclusion-only oracles let extra errors and suppressed errors pass — the
+    pass-2 review proved it by hiding a collected-errors defect behind one.
+    """
+
     def _assert_fails(self, data_or_text, expected_codes, expected_fields=()):
         if isinstance(data_or_text, str):
             manifest, errors = wm.parse_manifest_text(data_or_text)
@@ -135,12 +150,14 @@ class ErrorTable(unittest.TestCase):
             manifest, errors = wm.validate_manifest(data_or_text)
         self.assertIsNone(manifest, "fail-closed: errors must mean no manifest")
         self.assertTrue(errors, "expected at least one error")
-        for code in expected_codes:
-            self.assertIn(code, _codes(errors), f"missing code {code}: {errors}")
+        self.assertEqual(
+            _codes(errors), sorted(set(expected_codes)),
+            f"exact code-set mismatch: {errors}",
+        )
         for field in expected_fields:
             self.assertTrue(
                 any(field in e.field for e in errors),
-                f"no error on field containing '{field}': {_fields(errors)}",
+                f"no error on field containing '{field}': {errors}",
             )
 
     def test_invalid_json(self):
@@ -170,13 +187,18 @@ class ErrorTable(unittest.TestCase):
             ["version"],
         )
 
+    def test_both_required_fields_absent(self):
+        _, errors = wm.validate_manifest({})
+        self.assertEqual(_codes(errors), ["missing_field"])
+        self.assertEqual(
+            sorted(e.field for e in errors), ["version", "workspace_name"]
+        )
+
     def test_workspace_name_missing(self):
         self._assert_fails({"version": 1}, ["missing_field"], ["workspace_name"])
 
-    def test_workspace_name_empty(self):
-        self._assert_fails(
-            {"version": 1, "workspace_name": "  "}, ["empty_value"]
-        )
+    def test_workspace_name_blank(self):
+        self._assert_fails({"version": 1, "workspace_name": "  "}, ["empty_value"])
 
     def test_workspace_name_wrong_type(self):
         self._assert_fails({"version": 1, "workspace_name": 42}, ["wrong_type"])
@@ -189,7 +211,6 @@ class ErrorTable(unittest.TestCase):
         )
 
     def test_operational_root_reserved_pin(self):
-        # The proposal's own example of a v1-reserved value.
         self._assert_fails(
             _mut(lambda d: d["memory"].__setitem__("operational_root", "ops/memory")),
             ["operational_root_reserved"],
@@ -197,8 +218,6 @@ class ErrorTable(unittest.TestCase):
         )
 
     def test_personal_root_nested_in_operational(self):
-        # Proposal disjointness example: would let `git add Memory/` stage
-        # private files.
         self._assert_fails(
             _mut(lambda d: d["memory"].__setitem__("personal_root", "Memory/private")),
             ["roots_not_disjoint"],
@@ -215,11 +234,13 @@ class ErrorTable(unittest.TestCase):
         )
 
     def test_operational_outside_shared_git_root(self):
-        # Codex pass-1 scenario on PR #28: write root outside the commit repo.
-        self._assert_fails(
-            _mut(lambda d: d["memory"].__setitem__("shared_git_root", "shared")),
-            ["containment_violation"],
-        )
+        data = _mut(lambda d: d["memory"].__setitem__("shared_git_root", "shared"))
+        manifest, errors = wm.validate_manifest(data)
+        self.assertIsNone(manifest)
+        self.assertEqual(_codes(errors), ["containment_violation"])
+        # The relation involves two fields; blaming the pinned-correct
+        # operational_root would misdirect repair (pass-2 nit).
+        self.assertEqual(errors[0].field, "memory")
 
     def test_absolute_path_rejected(self):
         self._assert_fails(
@@ -235,11 +256,19 @@ class ErrorTable(unittest.TestCase):
         )
 
     def test_interior_traversal_rejected(self):
-        # Normalization must not launder interior dot-dot segments.
         self._assert_fails(
             _mut(lambda d: d["repositories"][0].__setitem__("path", "a/../../b")),
             ["path_traversal"],
             ["repositories[0].path"],
+        )
+
+    def test_any_dotdot_segment_rejected_even_if_contained(self):
+        # "a/../b" stays lexically inside the root; the validator still
+        # refuses — normalization must never launder dot-dot (documented
+        # strict-side choice).
+        self._assert_fails(
+            _mut(lambda d: d["repositories"][0].__setitem__("path", "a/../b")),
+            ["path_traversal"],
         )
 
     def test_dot_rejected_for_memory_roots(self):
@@ -254,9 +283,33 @@ class ErrorTable(unittest.TestCase):
             ["invalid_path"],
         )
 
-    def test_windows_drive_path_rejected(self):
+    def test_windows_drive_slash_rejected(self):
         self._assert_fails(
             _mut(lambda d: d["memory"].__setitem__("personal_root", "C:/mem")),
+            ["absolute_path"],
+        )
+
+    def test_windows_drive_backslash_rejected(self):
+        self._assert_fails(
+            _mut(lambda d: d["memory"].__setitem__("personal_root", "C:\\mem")),
+            ["absolute_path"],
+        )
+
+    def test_windows_drive_relative_rejected(self):
+        # C:relative resolves against the drive's CWD on Windows — never
+        # workspace-relative (pass-2 finding: it previously passed).
+        self._assert_fails(
+            _mut(lambda d: d["memory"].__setitem__("personal_root", "C:mem")),
+            ["absolute_path"],
+        )
+
+    def test_unc_path_rejected(self):
+        self._assert_fails(
+            _mut(
+                lambda d: d["memory"].__setitem__(
+                    "personal_root", "\\\\server\\share"
+                )
+            ),
             ["absolute_path"],
         )
 
@@ -287,8 +340,19 @@ class ErrorTable(unittest.TestCase):
             ["repositories[0].path"],
         )
 
+    def test_repository_missing_path_still_collects_other_errors(self):
+        # Pass-2 BLOCKING: an early `continue` used to suppress these.
+        self._assert_fails(
+            _mut(
+                lambda d: d["repositories"].__setitem__(
+                    0, {"role": 3, "docs": "../x"}
+                )
+            ),
+            ["missing_field", "wrong_type", "path_traversal"],
+            ["repositories[0].path", "repositories[0].role", "repositories[0].docs"],
+        )
+
     def test_repository_dot_rejected(self):
-        # A child repository must be a proper subdirectory of the workspace.
         self._assert_fails(
             _mut(lambda d: d["repositories"][0].__setitem__("path", ".")),
             ["repo_path_not_child"],
@@ -320,13 +384,157 @@ class ErrorTable(unittest.TestCase):
         data["repositories"][0]["path"] = "../up"
         manifest, errors = wm.validate_manifest(data)
         self.assertIsNone(manifest)
-        got = _codes(errors)
-        for code in ("absolute_path", "invalid_promotion_mode", "path_traversal"):
-            self.assertIn(code, got)
+        self.assertEqual(
+            _codes(errors),
+            ["absolute_path", "invalid_promotion_mode", "path_traversal"],
+        )
 
     def test_error_objects_carry_message(self):
         _, errors = wm.validate_manifest({"version": 2, "workspace_name": "w"})
         self.assertTrue(all(e.message for e in errors))
+
+
+class HostilePathCases(unittest.TestCase):
+    """Pass-2 BLOCKING: paths the runtime cannot even stat must fail HERE,
+    inside the typed-error boundary, not later in canonicalization or git."""
+
+    def _root_fails(self, value, code):
+        data = _mut(lambda d: d["memory"].__setitem__("personal_root", value))
+        manifest, errors = wm.validate_manifest(data)
+        self.assertIsNone(manifest)
+        self.assertEqual(_codes(errors), [code], f"for path {value!r}")
+
+    def test_embedded_nul_rejected(self):
+        self._root_fails("a\x00b", "invalid_path")
+
+    def test_newline_rejected(self):
+        self._root_fails("a\nb", "invalid_path")
+
+    def test_tab_rejected(self):
+        self._root_fails("a\tb", "invalid_path")
+
+    def test_lone_surrogate_rejected(self):
+        self._root_fails("\ud800", "invalid_path")
+
+    def test_del_control_char_rejected(self):
+        self._root_fails("a\x7fb", "invalid_path")
+
+
+class TotalityCases(unittest.TestCase):
+    """Pass-2 BLOCKING: the validator is total — hostile structure yields a
+    typed fail-closed error, never an exception, never a bogus success."""
+
+    def test_deeply_nested_unknown_value_fails_typed(self):
+        deep = current = {}
+        for _ in range(4000):
+            nxt = {}
+            current["k"] = nxt
+            current = nxt
+        data = {"version": 1, "workspace_name": "w", "x_deep": deep}
+        manifest, errors = wm.validate_manifest(data)
+        self.assertIsNone(manifest)
+        self.assertEqual(_codes(errors), ["unprocessable"])
+
+    def test_deeply_nested_json_text_fails_typed(self):
+        # Whether the C json parser or the representability probe trips first
+        # is a platform recursion-ceiling detail; the pinned contract is a
+        # typed fail-closed verdict with no exception either way.
+        text = (
+            '{"version": 1, "workspace_name": "w", "x_deep": '
+            + "[" * 4000 + "]" * 4000 + "}"
+        )
+        manifest, errors = wm.parse_manifest_text(text)
+        self.assertIsNone(manifest)
+        self.assertEqual(len(errors), 1)
+        self.assertIn(errors[0].code, ("invalid_json", "unprocessable"))
+
+    def test_huge_integer_json_fails_typed(self):
+        text = (
+            '{"version": 1, "workspace_name": "w", "x_big": '
+            + "9" * 5000 + "}"
+        )
+        manifest, errors = wm.parse_manifest_text(text)
+        self.assertIsNone(manifest)
+        self.assertEqual(_codes(errors), ["invalid_json"])
+
+    def test_circular_input_fails_typed(self):
+        data = {"version": 1, "workspace_name": "w"}
+        data["x_cycle"] = data
+        manifest, errors = wm.validate_manifest(data)
+        self.assertIsNone(manifest)
+        self.assertEqual(_codes(errors), ["unprocessable"])
+
+    def test_non_json_value_fails_typed(self):
+        data = {"version": 1, "workspace_name": "w", "x_set": {1, 2}}
+        manifest, errors = wm.validate_manifest(data)
+        self.assertIsNone(manifest)
+        self.assertEqual(_codes(errors), ["unprocessable"])
+
+    def test_nan_and_infinity_rejected(self):
+        for constant in ("NaN", "Infinity", "-Infinity"):
+            text = (
+                '{"version": 1, "workspace_name": "w", "x_c": ' + constant + "}"
+            )
+            manifest, errors = wm.parse_manifest_text(text)
+            self.assertIsNone(manifest, constant)
+            self.assertEqual(_codes(errors), ["invalid_json"], constant)
+
+    def test_none_input_fails_typed(self):
+        manifest, errors = wm.validate_manifest(None)
+        self.assertIsNone(manifest)
+        self.assertEqual(_codes(errors), ["not_object"])
+
+
+class CliCases(unittest.TestCase):
+    """The shipped CLI surface: JSON verdict + exit code, never a traceback."""
+
+    def _run(self, argv):
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = wm.main(argv)
+        return rc, out.getvalue(), err.getvalue()
+
+    def _tmpfile(self, payload: bytes) -> str:
+        fd, path = tempfile.mkstemp(prefix="asha_wm_", suffix=".json")
+        with os.fdopen(fd, "wb") as fh:
+            fh.write(payload)
+        self.addCleanup(os.unlink, path)
+        return path
+
+    def test_valid_file_exits_zero_with_verdict(self):
+        path = self._tmpfile(json.dumps(_valid_full()).encode("utf-8"))
+        rc, out, _ = self._run(["workspace_manifest.py", path])
+        self.assertEqual(rc, 0)
+        verdict = json.loads(out)
+        self.assertTrue(verdict["ok"])
+        self.assertEqual(verdict["errors"], [])
+
+    def test_invalid_manifest_exits_one_with_typed_errors(self):
+        path = self._tmpfile(b'{"version": 2, "workspace_name": "w"}')
+        rc, out, _ = self._run(["workspace_manifest.py", path])
+        self.assertEqual(rc, 1)
+        verdict = json.loads(out)
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["errors"][0]["code"], "unsupported_version")
+
+    def test_non_utf8_file_yields_typed_error_not_traceback(self):
+        path = self._tmpfile(b"\xff\xfe\x00garbage")
+        rc, out, _ = self._run(["workspace_manifest.py", path])
+        self.assertEqual(rc, 1)
+        verdict = json.loads(out)
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["errors"][0]["code"], "unreadable")
+
+    def test_missing_file_exits_one(self):
+        rc, out, _ = self._run(["workspace_manifest.py", "/nonexistent/x.json"])
+        self.assertEqual(rc, 1)
+        self.assertFalse(json.loads(out)["ok"])
+
+    def test_bad_argv_exits_two(self):
+        rc, _, err = self._run(["workspace_manifest.py"])
+        self.assertEqual(rc, 2)
+        self.assertIn("usage", err)
 
 
 if __name__ == "__main__":
