@@ -107,6 +107,9 @@ def detect_project_root() -> Path:
     the tools dir, RuntimeError on failure. No argv layer — this module is
     bound at import time with no CLI escape hatch (historical).
     """
+    tools_dir = str(Path(__file__).resolve().parent)
+    if tools_dir not in sys.path:  # importlib/embedded loaders
+        sys.path.insert(0, tools_dir)
     from project_root import detect_project_root as _shared_detect
     return _shared_detect(
         walk_base=Path(__file__).parent.resolve(),

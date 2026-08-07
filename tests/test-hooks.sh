@@ -315,6 +315,37 @@ got="$(env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
     bash -c "source '$D9B_LIB' 2>/dev/null || true; ARG_PROJECT_DIR='$D9B_ROOT/fakehome'; $D9B_D3FN; resolve_project_dir || true")"
 chk9b d3_home_guard "$got" ""
 
+# --- pass-2 pins (PR #34 review): output fidelity + environment edges ---
+# Verbatim output: no canonicalization, trailing slashes and relative forms
+# survive exactly as the historical detectors emitted them.
+got="$(env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="$D9B_ROOT/proj///" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_trailing_slashes_verbatim "$got" "$D9B_ROOT/proj///"
+got="$(cd "$D9B_ROOT" && env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="proj" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_relative_verbatim "$got" "proj"
+# Empty string is NOT set: the env layer must fall through, not return "".
+got="$(cd "$D9B_ROOT/proj/sub" && env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_empty_env_falls_through "$got" "$D9B_ROOT/proj"
+# git absent from PATH must degrade quietly (historical `command -v git`),
+# and the library must not need external binaries to be sourced.
+got="$(cd "$D9B_ROOT/proj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    PATH="/nonexistent" /bin/bash -c "source '$D9B_COMMON'; detect_project_dir" 2>/dev/null || true)"
+chk9b d1_no_git_no_path "$got" ""
+got="$(cd "$D9B_ROOT/proj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    PATH="/nonexistent" /bin/bash -c "source '$D9B_COMMON'; detect_project_dir" >/dev/null 2>&1; echo "$?")"
+chk9b d1_no_path_rc "$got" "0"
+# A hostile command_not_found_handle must not fabricate a project root.
+got="$(cd "$D9B_ROOT/plain" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "command_not_found_handle() { echo '$D9B_ROOT/proj'; return 0; }
+             PATH=/nonexistent; source '$D9B_COMMON'; detect_project_dir" 2>/dev/null || true)"
+chk9b d1_no_cnf_fabrication "$got" ""
+# resolve_project_dir returns rc 0 on success (consumer uses `|| true`).
+got="$(env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_LIB'; ARG_PROJECT_DIR='$D9B_ROOT/plain'; $D9B_D3FN; resolve_project_dir >/dev/null; echo \$?" || true)"
+chk9b d3_success_rc "$got" "0"
+
 rm -rf "$D9B_ROOT"
 if [[ $D9B_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"

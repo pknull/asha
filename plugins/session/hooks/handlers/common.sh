@@ -2,8 +2,14 @@
 # Common utilities for Asha hooks (plugin version)
 # Source this file in hooks: source "$(dirname "$0")/common.sh"
 
-# Shared project-root resolver (single source of truth for root detection)
-source "$(dirname "${BASH_SOURCE[0]}")/../../tools/project-root.sh"
+# Shared project-root resolver (single source of truth for root detection).
+# Parameter expansion, not `dirname`: a hook must not acquire a dependency on
+# an external binary before it can even resolve a project (a stripped PATH
+# previously degraded to "no project"; it must not become exit 127). Sourced
+# defensively so a partial install degrades instead of erroring.
+if [[ -f "${BASH_SOURCE[0]%/*}/../../tools/project-root.sh" ]]; then
+    source "${BASH_SOURCE[0]%/*}/../../tools/project-root.sh"
+fi
 
 # Detect project directory
 # Returns project directory path on stdout, or empty string if not found
@@ -11,6 +17,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../tools/project-root.sh"
 # Hook detector layer set: env verbatim, else git-with-Memory; NO upward
 # walk; $HOME guard. Semantics pinned by Test 9/9b — do not widen here.
 detect_project_dir() {
+    # Fail-open on a partial install: hooks must never hard-error.
+    if ! declare -F asha_detect_project_root >/dev/null 2>&1; then
+        echo ""
+        return 0
+    fi
     asha_detect_project_root "env,git" 1
 }
 

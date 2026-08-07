@@ -9,8 +9,11 @@ set -euo pipefail
 # CONFIGURATION
 # ==============================================================================
 
-# Shared project-root resolver (single source of truth for root detection)
-source "$(dirname "$0")/project-root.sh"
+# Shared project-root resolver (single source of truth for root detection).
+# BASH_SOURCE, not $0: correct when sourced by a wrapper or invoked through a
+# symlink to this file (an individual-file symlink mount is a shipped install
+# shape). Parameter expansion avoids an external `dirname` dependency.
+source "${BASH_SOURCE[0]%/*}/project-root.sh"
 
 # Multi-layered project directory detection (env, git-with-Memory, upward
 # walk; NO $HOME guard — historical, pinned by Test 9b). Hard-fails with

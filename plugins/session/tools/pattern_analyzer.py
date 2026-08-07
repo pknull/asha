@@ -35,6 +35,9 @@ def detect_project_root() -> Path:
     historical layer set: argv scan, validated env, git-with-Memory, upward
     walk from the tools dir, RuntimeError on failure.
     """
+    tools_dir = str(Path(__file__).resolve().parent)
+    if tools_dir not in sys.path:  # importlib/embedded loaders
+        sys.path.insert(0, tools_dir)
     from project_root import detect_project_root as _shared_detect
     return _shared_detect(
         argv=sys.argv[1:],

@@ -29,7 +29,12 @@ import sys
 from pathlib import Path
 from typing import List, NamedTuple, Optional
 
-import workspace_manifest
+# Sibling import must work even when tools/ is not already on sys.path (an
+# importlib/embedded loader, or a caller importing this by file path).
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import workspace_manifest  # noqa: E402
 
 
 class WorkspaceDetection(NamedTuple):
@@ -109,19 +114,43 @@ def detect_project_root(
     return None
 
 
+def _err(code: str, message: str) -> "workspace_manifest.ManifestError":
+    return workspace_manifest.ManifestError(code, "", message)
+
+
 def detect_workspace(start: Optional[Path] = None) -> WorkspaceDetection:
     """Walk upward for .asha/workspace.json; $HOME and / are never roots.
+
+    TOTAL: every filesystem failure becomes a typed verdict. A consumer must
+    be able to distinguish "no workspace" from "detection could not run" —
+    a traceback escaping here would crash a session hook.
 
     Returns:
       (None, None, [])       — no workspace (the overwhelmingly common case)
       (root, manifest, [])   — valid workspace
-      (root, None, errors)   — manifest found but invalid/unreadable: a typed
-                               fail-closed verdict. The walk STOPS at the
-                               first manifest — climbing past a broken one to
-                               a higher workspace would silently mask it.
+      (root, None, errors)   — manifest found but invalid/unreadable/not a
+                               regular file: a typed fail-closed verdict. The
+                               walk STOPS at the first manifest PATH THAT
+                               EXISTS — climbing past a broken one to a higher
+                               workspace would silently mask it.
+      (None, None, errors)   — detection itself failed (bad start, unreadable
+                               ancestor, symlink loop)
     """
-    candidate = Path(start if start is not None else Path.cwd()).resolve()
-    home = Path(os.environ.get("HOME", str(Path.home()))).resolve()
+    try:
+        raw = Path(start if start is not None else Path.cwd())
+        candidate = raw.resolve()
+        if not candidate.is_dir():
+            return WorkspaceDetection(None, None, [
+                _err("invalid_start",
+                     f"start path is not an existing directory: {raw}")
+            ])
+        home = Path(os.environ.get("HOME") or str(Path.home())).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        # RuntimeError: symlink loop during resolve(); OSError: unreadable
+        # ancestor; ValueError: embedded NUL and friends.
+        return WorkspaceDetection(None, None, [
+            _err("invalid_start", f"cannot resolve start path: {exc}")
+        ])
 
     while True:
         # Both bounds exclusive: the user-scope config dir (~/.asha) must
@@ -131,15 +160,31 @@ def detect_workspace(start: Optional[Path] = None) -> WorkspaceDetection:
             return WorkspaceDetection(None, None, [])
 
         manifest_path = candidate / ".asha" / "workspace.json"
-        if manifest_path.is_file():
+        try:
+            # lexists, not is_file: a manifest path that EXISTS but is a
+            # directory, socket, or broken symlink must fail closed here, not
+            # read as "no manifest at this level" and let the walk continue.
+            exists = manifest_path.is_symlink() or manifest_path.exists()
+            is_regular = manifest_path.is_file()
+        except OSError as exc:
+            return WorkspaceDetection(None, None, [
+                _err("walk_failed",
+                     f"cannot inspect {manifest_path}: {exc}")
+            ])
+
+        if exists and not is_regular:
+            return WorkspaceDetection(candidate, None, [
+                _err("not_a_file",
+                     f"workspace manifest path exists but is not a regular "
+                     f"readable file: {manifest_path}")
+            ])
+        if is_regular:
             try:
                 text = manifest_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
                 return WorkspaceDetection(candidate, None, [
-                    workspace_manifest.ManifestError(
-                        "unreadable", "",
-                        f"workspace manifest exists but cannot be read: {exc}",
-                    )
+                    _err("unreadable",
+                         f"workspace manifest exists but cannot be read: {exc}")
                 ])
             manifest, errors = workspace_manifest.parse_manifest_text(text)
             return WorkspaceDetection(candidate, manifest, errors)
@@ -159,16 +204,17 @@ def main(argv: List[str]) -> int:
         return 2
     start: Optional[Path] = None
     rest = argv[2:]
-    if rest[:1] == ["--start"] and len(rest) >= 2:
+    if rest[:1] == ["--start"] and len(rest) == 2:
         start = Path(rest[1])
-    elif rest and rest[0].startswith("--start="):
+    elif len(rest) == 1 and rest[0].startswith("--start="):
         start = Path(rest[0].split("=", 1)[1])
     elif rest:
+        # Trailing junk is a usage error, never a silent "no workspace".
         print("usage: project_root.py workspace [--start DIR]", file=sys.stderr)
         return 2
 
     det = detect_workspace(start=start)
-    ok = det.root is None or det.manifest is not None
+    ok = not det.errors and (det.root is None or det.manifest is not None)
     print(json.dumps({
         "workspace_root": str(det.root) if det.root is not None else None,
         "ok": ok,

@@ -55,6 +55,9 @@ def _detect_project_root_for_silence() -> Optional[Path]:
     detector's historical base). Returns None if no root can be found —
     callers fail-open (allow the write) rather than block on missing context.
     """
+    tools_dir = str(Path(__file__).resolve().parent)
+    if tools_dir not in sys.path:  # importlib/embedded loaders
+        sys.path.insert(0, tools_dir)
     from project_root import detect_project_root as _shared_detect
     return _shared_detect(walk_base=Path.cwd(), on_fail="none")
 
