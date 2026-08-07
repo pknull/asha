@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.12.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.13.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.12.0
+**Version**: 1.13.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -563,6 +563,21 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.13.0 — destructive-git cross-repo arm (2026-08-07)
+
+First build increment of the ratified workspace-memory proposal
+(`docs/proposals/2026-08-06--workspace-memory.md`, delivery issue 5 — landed
+first because it is independent and closes a live gap): `git -C <dir> push
+--force` and every other `-C`/`--git-dir`/`--work-tree` form previously
+evaded `destructive-git`, because the rule required the destructive verb to
+directly follow `git`. The rule now consumes optional cross-repo global
+flags (quoted, attached, `=`, and repeated forms); plain cross-repo
+commit/push stays allowed by design (workspace saves depend on it). 14 new
+Test 104 pins (`xr_*`). Known residuals documented in the rule: other
+global flags (`-c`, `--no-pager`) still bypass — widening is a separate
+decision — and env-prefixed forms were already caught by unanchored
+matching.
 
 ### v2.5.0 — Overnight issue-to-merge loop (2026-08-05)
 
