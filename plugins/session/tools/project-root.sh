@@ -80,12 +80,17 @@ asha_detect_project_root() {
 asha_find_workspace_manifest() {
     local search home_canon
     search="$(cd -P "${1:-$PWD}" 2>/dev/null && pwd)" || { echo ""; return 0; }
-    home_canon="$(cd -P "$HOME" 2>/dev/null && pwd)" || home_canon=""
+    # ${HOME:-}: unset HOME must not print an unbound-variable diagnostic
+    # under a caller's set -u (pass-2: golden byte-equivalence).
+    home_canon="$(cd -P "${HOME:-}" 2>/dev/null && pwd)" || home_canon=""
     while [[ -n "$search" && "$search" != "/" ]]; do
         if [[ -n "$home_canon" && "$search" == "$home_canon" ]]; then
             break
         fi
-        if [[ -f "$search/.asha/workspace.json" ]]; then
+        # -e OR -L, not -f: a directory, socket, or broken symlink at the
+        # manifest path must route to the (fail-closed) validation branch,
+        # not silently read as "no manifest" (pass-2).
+        if [[ -e "$search/.asha/workspace.json" || -L "$search/.asha/workspace.json" ]]; then
             echo "$search/.asha/workspace.json"
             return 0
         fi

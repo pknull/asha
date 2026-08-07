@@ -55,9 +55,8 @@ the plane mapping and proof — never stage child-repo paths into it:
 TOOLS="$ASHA_ROOT/plugins/session/tools"
 MAPPING="$(python3 "$TOOLS/save_scope.py" resolve --scope workspace)" || { echo "$MAPPING"; exit 1; }
 COMMIT_REPO="$(printf '%s' "$MAPPING" | jq -r .commit_repo)"
-MEM_ROOT="$(printf '%s' "$MAPPING" | jq -r .memory_root)"
 PLANE_BASE="$(printf '%s' "$MAPPING" | jq -r .plane_base)"
-REL_MEM="${MEM_ROOT#"$COMMIT_REPO"/}"
+REL_MEM="$(printf '%s' "$MAPPING" | jq -r .memory_rel)"   # "" = whole repo
 
 python3 "$TOOLS/save_scope.py" write-proof --scope workspace
 python3 "$TOOLS/save_scope.py" verify --scope workspace || exit 1
@@ -70,8 +69,10 @@ jq -n --arg c "$(date -u +%FT%TZ)" --arg p "$PLANE_BASE" \
     '{created:$c, attempts:0, scope:"workspace", plane_base:$p}' \
     > "$PROJECT_DIR/Work/markers/save-pending"
 
-git -C "$COMMIT_REPO" add "$REL_MEM/"
+git -C "$COMMIT_REPO" add "${REL_MEM:-.}/"
 git -C "$COMMIT_REPO" commit -m "Workspace save: ${ARGUMENTS:-checkpoint}"
+# The gate CONSUMES the proof on this commit (one proof = one commit); a
+# failed commit needs a fresh write-proof before retrying.
 "$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"   # unless --no-push
 ```
 
