@@ -27,20 +27,42 @@ TRANSCRIPT=$(echo "$INPUT" | jq -r '.transcript_path // empty' 2>/dev/null || tr
 SID=$(echo "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
 ATTEMPTS=$(jq -r '.attempts // 0' "$MARKER" 2>/dev/null || echo 0)
 [[ "$ATTEMPTS" =~ ^[0-9]+$ ]] || ATTEMPTS=0
+# Workspace v1 (issue #36): a v2 locator carries the plane it belongs to.
+# Legacy markers have no scope field and take the original path untouched.
+MARKER_SCOPE=$(jq -r '.scope // empty' "$MARKER" 2>/dev/null || true)
+MARKER_PLANE=$(jq -r '.plane_base // empty' "$MARKER" 2>/dev/null || true)
 
-ENGINE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../tools" && pwd)/save_preflight.py"
+TOOLS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../tools" && pwd)"
+ENGINE="$TOOLS_DIR/save_preflight.py"
 HOOK_LOG="$PROJECT_DIR/Memory/events/save-preflight-hook.log"
 mkdir -p "$(dirname "$HOOK_LOG")" 2>/dev/null || true
 
-RESULT=$(ASHA_TRANSCRIPT_PATH="$TRANSCRIPT" ASHA_SESSION_ID="$SID" CLAUDE_CODE_SESSION_ID="$SID" \
-    python3 "$ENGINE" --mode enforce \
-        --project-dir "$PROJECT_DIR" \
-        --transcript "$TRANSCRIPT" \
-        --session-id "$SID" \
-        2>>"$HOOK_LOG" || echo '{"hard_fail":false}')
+if [[ "$MARKER_SCOPE" == "workspace" && -n "$MARKER_PLANE" ]]; then
+    # Workspace plane: the session-transcript gates are project-scoped by
+    # design (the workspace plane has no transcript of its own in v1), so
+    # enforcement here is the structural proof: mapping + activeContext sha
+    # via save_scope.py, logged under the PLANE's own tree.
+    HOOK_LOG="$MARKER_PLANE/Memory/events/save-preflight-hook.log"
+    mkdir -p "$(dirname "$HOOK_LOG")" 2>/dev/null || true
+    if WS_REASON=$(python3 "$TOOLS_DIR/save_scope.py" verify \
+            --scope workspace --start "$PROJECT_DIR" 2>>"$HOOK_LOG"); then
+        HARD_FAIL=false
+        REASON="ok"
+    else
+        HARD_FAIL=true
+        REASON="workspace save proof failed: ${WS_REASON:-unverifiable}"
+    fi
+else
+    RESULT=$(ASHA_TRANSCRIPT_PATH="$TRANSCRIPT" ASHA_SESSION_ID="$SID" CLAUDE_CODE_SESSION_ID="$SID" \
+        python3 "$ENGINE" --mode enforce \
+            --project-dir "$PROJECT_DIR" \
+            --transcript "$TRANSCRIPT" \
+            --session-id "$SID" \
+            2>>"$HOOK_LOG" || echo '{"hard_fail":false}')
 
-HARD_FAIL=$(echo "$RESULT" | jq -r '.hard_fail // false' 2>/dev/null || echo false)
-REASON=$(echo "$RESULT" | jq -r '.reason // "save pre-flight gate failed"' 2>/dev/null || echo "save pre-flight gate failed")
+    HARD_FAIL=$(echo "$RESULT" | jq -r '.hard_fail // false' 2>/dev/null || echo false)
+    REASON=$(echo "$RESULT" | jq -r '.reason // "save pre-flight gate failed"' 2>/dev/null || echo "save pre-flight gate failed")
+fi
 
 # All gates pass -> clear marker, allow stop (save completes clean).
 if [[ "$HARD_FAIL" != "true" ]]; then
@@ -57,9 +79,17 @@ if [[ "$ATTEMPTS" -ge 3 || "$STOP_ACTIVE" == "true" ]]; then
     exit 0
 fi
 
-# Block and force remediation; record the attempt.
+# Block and force remediation; record the attempt. A v2 locator's routing
+# fields MUST survive the rewrite or attempt 2 would fall back to the wrong
+# (session-preflight) verifier for a workspace save.
 NEW=$((ATTEMPTS + 1))
-printf '{"created":"%s","attempts":%d}\n' "$(date -u +%FT%TZ)" "$NEW" > "$MARKER"
+if [[ "$MARKER_SCOPE" == "workspace" && -n "$MARKER_PLANE" ]]; then
+    jq -n --arg c "$(date -u +%FT%TZ)" --argjson n "$NEW" \
+        --arg s "$MARKER_SCOPE" --arg p "$MARKER_PLANE" \
+        '{created:$c, attempts:$n, scope:$s, plane_base:$p}' > "$MARKER"
+else
+    printf '{"created":"%s","attempts":%d}\n' "$(date -u +%FT%TZ)" "$NEW" > "$MARKER"
+fi
 echo "[$(date -u +%FT%TZ)] BLOCK attempt ${NEW}/3: ${REASON}" >>"$HOOK_LOG"
 jq -n --arg r "$REASON" --arg n "$NEW" \
     '{decision:"block", reason:("Session-save pre-flight gate failed (attempt " + $n + "/3). " + $r)}'

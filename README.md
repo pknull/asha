@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.16.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.17.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.16.0
+**Version**: 1.17.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -563,6 +563,23 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.17.0 — save scopes + state-based commit gate (2026-08-08)
+
+Workspace v1 delivery issue 4 (issue #36), design ratified via adversarial
+consult. `/save` gains `--scope repo|workspace|none`; the writer-side seam
+(`tools/save_scope.py`) resolves a scope into its plane mapping —
+`plane_base` / `memory_root` / `commit_repo` as three distinct values —
+writes a **versioned structured proof** at the plane, and verifies it
+immediately before commit. `save-commit-gate.sh` becomes plane-aware by
+**repository state, never command parsing** (a spoofed `-C` is irrelevant
+when staged sets decide): a pure-bash existence walk keeps the no-manifest
+path byte-identical at zero python cost (12-case golden corpus pins it);
+manifest-present-but-unvalidatable **fails closed**; both-planes-staged
+denies as ambiguous; each plane's proof satisfies only itself. The
+Stop-hook net routes v2 locators to the plane's structural proof (the
+session-transcript gates stay project-scoped by design). 17 save_scope
+unit tests + Test 9c (19 gate pins), tests-first.
 
 ### Session v1.16.0 + `asha workspace status` — first workspace consumer (2026-08-08)
 
