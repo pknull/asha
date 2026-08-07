@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.13.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.14.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -919,6 +919,14 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.14.0 (2026-08-07) — workspace manifest validator
+
+Workspace v1 delivery issue 1 (issue #31, ratified proposal): pure lexical
+`workspace_manifest.py` — typed collected errors, fail-closed, defaults,
+containment + disjointness + the `operational_root == Memory` v1 pin,
+unknown keys preserved. Filesystem checks deferred to detection/status by
+design. 38 RED-first tests.
 
 ### Session v1.13.0 (2026-08-07) — destructive-git cross-repo arm
 
