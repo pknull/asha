@@ -3,7 +3,7 @@ title: Workspace-aware multi-repository memory
 type: proposal
 status: draft — pending Keeper ratification
 date: 2026-08-06
-origin: issues #23–#26 (workspace RFC cluster); scope decisions ruled by Keeper 2026-08-06; amended per panel review 2026-08-07 (Work/panels/2026-08-06--pr28-workspace-proposal-review/)
+origin: issues #23–#26 (workspace RFC cluster); scope decisions ruled by Keeper 2026-08-06; amended per panel review and codex second-pass 2026-08-07 UTC (Work/panels/2026-08-06--pr28-workspace-proposal-review/)
 ---
 
 # Workspace-aware multi-repository memory — design spec
@@ -87,10 +87,15 @@ through untouched (forward compatibility — preserved, never stripped).
 
 - **Operational workspace memory** (v1's new plane) lives under
   `memory.operational_root`. A workspace save stages only files under that
-  root and **commits** in `shared_git_root` — it never pushes, matching
-  today's save pipeline, which commits without pushing.
-- `memory.personal_root` is private, is never staged by any save scope, and
-  should be ignored in `shared_git_root` (doctor warns when it isn't).
+  root, **commits** in `shared_git_root`, and then follows the same durable
+  push path as today's project saves — `push_retry.py ensure` after the
+  commit, queue drain on explicit saves, `--no-push` honored. (An earlier
+  draft claimed saves never push; that was false to the pipeline.)
+- `memory.personal_root` is **reserved** in v1: shape- and
+  containment-validated, never staged by any save scope — enforced by the
+  save helper's path filter, *not* by `.gitignore`, which cannot protect
+  already-tracked files — and carrying no other v1 semantics. Its plane (a
+  workspace-local private store) arrives only via a future proposal.
 - `memory.shared_root` (canonical knowledge) is inert until v3.
 
 ### Validation (fail closed, no partial writes)
@@ -100,6 +105,15 @@ through untouched (forward compatibility — preserved, never stripped).
 - **Containment**: `operational_root` must resolve *inside* the
   `shared_git_root` worktree — the write root and the commit repo cannot
   diverge. A manifest that places it elsewhere fails validation.
+- **Disjointness**: the three memory roots must be pairwise disjoint — none
+  may nest inside another (`personal_root: "Memory/private"` must fail, or
+  a workspace `git add` of the operational root would stage private files).
+- **v1 value pin**: `operational_root` must equal `"Memory"` (the schema
+  default) in v1. The existing save preflight, hash-bound commit gate, and
+  event machinery all key on the literal `Memory/` path
+  (`save_preflight.py`, `save-commit-gate.sh`); an arbitrary root would
+  bypass them silently. Other values fail validation as "reserved for a
+  future increment" — configurability is deferred, not dropped.
 - Every declared repository must be a git worktree; missing ones are
   *reported*, never assumed.
 - `shared_git_root` must resolve to a git worktree before any workspace
@@ -111,27 +125,39 @@ through untouched (forward compatibility — preserved, never stripped).
 ### Detection
 
 Walk upward from the current directory for `.asha/workspace.json`, stopping
-**before `$HOME`** (exclusive) or at the filesystem root, whichever comes
-first. `~/.asha/workspace.json` is reserved-invalid: the user-scope config
-directory (which exists for every asha install) can never make the home
-directory a workspace. **The invariant that outranks the feature: with no
+**before `$HOME`** and **before the filesystem root** — both exclusive:
+neither `$HOME` nor `/` can ever be a workspace root (a root-level manifest
+would make every session on the machine part of one global workspace).
+Ancestor-vs-`$HOME` comparisons use canonicalized paths, so a symlinked home
+entered via its physical path still stops in the same place.
+`~/.asha/workspace.json` is additionally reserved-invalid: the user-scope
+config directory (which exists for every asha install) can never make the
+home directory a workspace. **The invariant that outranks the feature: with no
 manifest present, behavior is byte-identical to today.** The first v1 tests
 to land are the ones pinning that invariant.
 
 ### Save scopes
 
 ```text
-asha session save --scope repo        # stage only the active child repo's operational memory
-asha session save --scope workspace   # stage only operational workspace memory; commit in shared_git_root
-asha session save --scope none        # synthesize only; no staging, commit, or push
+/session:save --scope repo        # stage only the active child repo's operational memory
+/session:save --scope workspace   # stage only operational workspace memory; commit in shared_git_root
+/session:save --scope none        # synthesize only; no staging, commit, or push
 ```
+
+(Syntax shown as the Claude slash command; on Codex and Copilot the same
+surface is the installer-rendered `session-save` command-skill. A `bin/asha`
+CLI verb is explicitly **out of v1 scope** — no documented invocation may
+depend on a verb no delivery issue builds.)
 
 - **Defaults, pinned**: inside a workspace, a bare save behaves as
   `--scope repo`. Without a manifest, a bare save is byte-identical to
-  today, and passing any `--scope` flag is a hard error. `--scope repo`
-  resolves the active child from cwd; run from the workspace root itself it
-  fails with guidance (use `--scope workspace`, or cd into a child) —
-  explicit child naming is deferred to v2.
+  today, and passing any `--scope` flag is a hard error. `--scope` thereby
+  becomes *reserved argument syntax*: today the same text would be swallowed
+  as free-form commit-message words, so rejecting it is the **single
+  intentional deviation** from the byte-identical invariant, carved out
+  here. `--scope repo` resolves the active child from cwd; run from the
+  workspace root itself it fails with guidance (use `--scope workspace`, or
+  cd into a child) — explicit child naming is deferred to v2.
 - A repo save may not stage workspace files; a workspace save may not stage
   child-repo source changes. Staging isolation is test-pinned in both
   directions.
@@ -146,17 +172,20 @@ hardcoded commit sites: the interactive `/session:save` path (inline git in
 `plugins/session/commands/save.md`) and the automatic SessionEnd path
 (`plugins/session/tools/save-session.sh` via `detached-save.sh`). v1's scope
 routing therefore lands in the save pipeline itself: the two commit sites
-consolidate into one shared, scope-aware helper. An `asha session save` CLI
-verb, if added, is a thin wrapper over that helper — the wrapper is
-convenience, not the mechanism.
+consolidate into one shared, scope-aware helper, reached through the
+`session-save` command surface each harness already renders. A `bin/asha`
+CLI verb is explicitly out of v1 scope (see Save scopes) — v1 documents no
+invocation that no delivery issue builds.
 
-Likewise, project-root detection is currently fragmented: `detect_project_dir`
-exists in two divergent copies (`hooks/handlers/common.sh`,
-`tools/save-session.sh`) plus a third ad-hoc pattern in two handlers
-(`save-commit-gate.sh`, `save-preflight-stop.sh`). Workspace detection added
-to one copy would not propagate — consolidating detection into one shared
-helper is part of v1 (first issue 2), since three divergent fallback chains
-cannot all stay "byte-identical".
+Likewise, project-root detection is currently fragmented across **at least
+four** divergent forms: `detect_project_dir` in two copies
+(`hooks/handlers/common.sh`, `tools/save-session.sh`), an ad-hoc pattern in
+two handlers (`save-commit-gate.sh`, `save-preflight-stop.sh`), and
+`resolve_project_dir` in `tools/save-preflight-env.sh` — plus Python-side
+detectors. That inventory is illustrative, not exhaustive: first issue 2's
+acceptance criterion is an **audit**, not a checklist — after consolidation,
+a repo-wide search must find no remaining independent project-root fallback
+chain, because divergent chains cannot all stay "byte-identical".
 
 ### Status and doctor
 
@@ -167,10 +196,14 @@ same as a section. JSON output is stable enough for automation and
 distinguishes warnings from errors.
 
 Carried from #23's harness contract: `harnesses/capabilities.json` gains a
-`workspace` capability entry per harness (the schema's open capability map
-already permits this) reporting detection, save-scope isolation, and
-automatic-save availability — so a user's own `asha doctor` surfaces
-harness-specific workspace limitations without reading asha's internal docs.
+`workspace` capability entry per harness reporting detection, save-scope
+isolation, and automatic-save availability — so a user's own `asha doctor`
+surfaces harness-specific workspace limitations without reading asha's
+internal docs. The schema's open capability *map* permits the new key, but
+its capability *value* schema is closed (a single `support` enum plus
+`limitations` prose), so per-facet reporting requires a schema extension —
+that entry and any extension are owned by first issue 6 (probe-derived
+values), not issue 3.
 
 ## Memory planes (taxonomy pinned now; only starred planes exist in v1)
 
@@ -181,8 +214,8 @@ harness-specific workspace limitations without reading asha's internal docs.
 | Operational workspace memory | workspace | explicit save (`--scope workspace`) | ★ new |
 | Canonical workspace knowledge | workspace/team | explicit promotion, reviewed | deferred (v3) |
 
-# 23's *optional workspace-local evaluated store* is deliberately cut from
-every pinned increment — evaluated memory stays user-scope. If ever
+Issue #23's *optional workspace-local evaluated store* is deliberately cut
+from every pinned increment — evaluated memory stays user-scope. If ever
 revisited, it re-enters through a new proposal, not through scope drift.
 
 ## Cross-harness parity (v1 ship gate)
@@ -191,8 +224,10 @@ The core contract deliberately lives in shared code: Python/bash under
 `plugins/session/tools/`, the save pipeline, and the consolidated detection
 helper — not in harness-specific hooks.
 
-Per-harness reality (per `docs/harness-enforcement.md`): the manual
-`/session:save` path exists on all three harnesses; the **automatic**
+Per-harness reality (per `docs/harness-enforcement.md`): the manual save
+surface exists on all three harnesses (native `/session:save` on Claude;
+installer-rendered `session-save` command-skills on Codex and Copilot — they
+receive generated skills, not literal slash commands); the **automatic**
 lifecycle save is wired on Claude Code and Copilot, while Codex has no wired
 auto-save path at all — a pre-existing gap unrelated to workspace support.
 
@@ -218,19 +253,24 @@ is an LLM self-assessment (hard-enforced once judged, but judged from issue
 text alone), these increment issues carry an explicit attended label rather
 than relying on triage to recognize them.
 
-**Known policy-rail gap this feature would exercise**: the `destructive-git`
+**Known policy-rail gap, closed as defense-in-depth**: the `destructive-git`
 guard matches only commands where the destructive verb directly follows
 `git` — `git -C <dir> push --force …` bypasses it (verified against the live
-regex), and no Test 104 pin covers `-C`/`--git-dir`/`--work-tree` forms.
-Workspace saves make cross-repo git routine, so extending the rule and
-pinning it is a v1 first issue (issue 5) that lands **before** any
-`shared_git_root` write ships.
+regex), and no Test 104 pin covers `-C`/`--git-dir`/`--work-tree` forms. To
+be precise about the exposure: workspace saves themselves use only add,
+commit, and the plain push the guard deliberately allows — the save path
+does not exercise the gap. What the feature changes is that agents routinely
+running git against a *second* repo root becomes normal, and destructive
+protection currently does not reach that form at all. Extending the rule and
+pinning it is therefore a v1 first issue (issue 5) that lands **before** any
+`shared_git_root` write ships — defense-in-depth for the command class the
+feature normalizes, not a prerequisite of the save path itself.
 
 ## Deferred increments
 
 | Increment | Content | Epic |
 |---|---|---|
-| v2 read-side | session-start workspace detection, bounded index injection (operational workspace memory + a bare `shared_root` listing only — the canonical index arrives with v3), source-aware retrieval ranking | #23 |
+| v2 read-side | session-start workspace detection, bounded index injection (operational workspace memory only — `shared_root` stays inert until v3, whose canonical index is the first thing to read it), source-aware retrieval ranking | #23 |
 | v3 knowledge plane | canonical `knowledge/` layout, `asha workspace promote` (configurable mode, PR default), `asha workspace lint` | #23 |
 | v4 bootstrap | `asha workspace init/status/doctor --fix`, discovery, instruction adapters, ownership hashes | #24 |
 | v5 worktrees | `asha workspace worktree create/status/remove` initiative containers | #25 |
@@ -254,22 +294,28 @@ hygiene; attended labels where marked):
 1. **Manifest parse + validate** — pure function, typed errors, containment
    checks, table-driven tests (`tests/python/test_workspace_manifest.py`).
    Attended (path validation is security surface).
-2. **Detection walk + byte-identical fallback** — includes consolidating the
-   three divergent project-root detection patterns into one shared helper;
-   tests extend the existing single-root pins (`test_save_preflight.py`,
+2. **Detection walk + byte-identical fallback** — consolidates every
+   project-root detection chain into one shared helper; acceptance is an
+   audit (no independent fallback chain remains repo-wide), and tests extend
+   the existing single-root pins (`test_save_preflight.py`,
    `tests/test-hooks.sh`).
 3. **`asha workspace status` + doctor section** — dispatcher verb, `--json`,
-   the doctor reporting from v1 scope, and the `capabilities.json`
-   workspace entry; suite added to `tests/run-tests.sh`.
+   and the doctor reporting from v1 scope; suite added to
+   `tests/run-tests.sh`. (The `capabilities.json` entry belongs to issue 6,
+   which owns probe-derived values.)
 4. **Save-scope routing** — consolidate the two commit sites into the shared
-   scope-aware helper; staging isolation pinned in both directions.
+   scope-aware helper; staging isolation pinned in both directions; the
+   preflight gates, hash-bound commit gate, and push-retry queue must
+   function against `shared_git_root` (acceptance criteria name all three).
    Attended.
 5. **`destructive-git` cross-repo extension** — `-C`/`--git-dir`/
    `--work-tree` arms + Test 104 pins. Attended, guardrail-grade; lands
    before any `shared_git_root` write ships.
-6. **Three-harness parity probes** — a gate-tracking issue (exempt from the
-   test-surface rule: its deliverables are live-probe verdicts written to
-   `docs/harness-enforcement.md` and the `capabilities.json` entry). Last.
+6. **Three-harness parity probes + workspace capability entry** — a
+   gate-tracking issue (exempt from the test-surface rule: its deliverables
+   are live-probe verdicts written to `docs/harness-enforcement.md` and the
+   `capabilities.json` workspace entry, extending the capability value
+   schema if per-facet fields are warranted). Last.
 
 Ordering: 1 → 2 → {3, 4} → 5 before any workspace write ships → 6 closes
 the gate.
