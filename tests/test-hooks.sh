@@ -357,6 +357,129 @@ else
 fi
 
 # ============================================================================
+# Test 9c: save-commit-gate — golden corpus + workspace plane selection
+# (workspace v1, issue #36). The golden half pins TODAY's no-workspace
+# behavior and must be green before AND after the gate learns planes; the
+# ws_* half pins the state-based selection from the ratified design memo.
+# ============================================================================
+echo -n "Test 9c: save-commit-gate golden corpus + plane selection... "
+G9C_OK=1; G9C_WHY=""
+chk9c() { [[ "$2" == "$3" ]] || { G9C_OK=0; G9C_WHY="$G9C_WHY $1(got='$2' want='$3')"; }; }
+
+GATE="$REPO_ROOT/plugins/session/hooks/handlers/save-commit-gate.sh"
+SS_TOOL="$REPO_ROOT/plugins/session/tools/save_scope.py"
+G9C="$(mktemp -d)"
+G9C_HOME="$G9C/home"
+mkdir -p "$G9C_HOME"
+
+g9c_git() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=master "$@" >/dev/null 2>&1; }
+g9c_payload() { jq -cn --arg c "$1" --arg d "$2" '{tool_name:"Bash",tool_input:{command:$c},cwd:$d}'; }
+g9c_decision() {  # payload [extra env pairs...]
+    local payload="$1"; shift
+    local out rc=0
+    out="$(printf '%s' "$payload" | env -u ASHA_HARNESS -u CLAUDE_PROJECT_DIR \
+        HOME="$G9C_HOME" "$@" bash "$GATE" 2>/dev/null)" || rc=$?
+    if [[ $rc -eq 2 ]]; then echo deny
+    elif [[ -n "$out" ]]; then
+        printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // "allow"' 2>/dev/null || echo allow
+    else echo allow; fi
+}
+
+# --- golden fixture: plain project, NO workspace anywhere above ---
+P="$G9C_HOME/proj"
+mkdir -p "$P/Memory" "$P/Work/markers"
+echo "# ctx" > "$P/Memory/activeContext.md"
+g9c_git init "$P"
+( cd "$P" && echo base > base.txt && g9c_git add base.txt && g9c_git commit -m init )
+g9c_ac_sha() { sha256sum "$1/Memory/activeContext.md" | cut -d' ' -f1; }
+
+chk9c g_clean   "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")")" allow
+( cd "$P" && echo o > other.txt && g9c_git add other.txt )
+chk9c g_nonmem  "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")")" allow
+( cd "$P" && g9c_git reset )
+chk9c g_headref "$(g9c_decision "$(g9c_payload 'git add Memory/ && git commit -m x' "$P")")" deny
+( cd "$P" && echo n > Memory/note.md && g9c_git add Memory/note.md )
+chk9c g_staged_nomarker "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")")" deny
+printf '{"ac_sha256":"%s"}' "$(g9c_ac_sha "$P")" > "$P/Work/markers/save-gates-ok"
+chk9c g_valid_marker "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")")" allow
+printf '{"ac_sha256":"deadbeef"}' > "$P/Work/markers/save-gates-ok"
+chk9c g_stale_marker "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")")" deny
+[[ ! -f "$P/Work/markers/save-gates-ok" ]] && g_del=gone || g_del=present
+chk9c g_stale_deleted "$g_del" gone
+touch "$P/Work/markers/silence"
+chk9c g_silence "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")")" deny
+rm -f "$P/Work/markers/silence"
+( cd "$P" && g9c_git reset )
+chk9c g_msg_mention "$(g9c_decision "$(g9c_payload 'git commit -m "docs: Memory/ notes"' "$P")")" allow
+P2="$G9C_HOME/proj2"; mkdir -p "$P2/Memory"
+g9c_git init "$P2"
+( cd "$P2" && echo n > Memory/first.md && g9c_git add Memory/first.md )
+chk9c g_first_init "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P2")")" allow
+( cd "$P" && g9c_git add Memory/note.md )
+chk9c g_payload_cwd_wins "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")" CLAUDE_PROJECT_DIR="$G9C_HOME")" deny
+chk9c g_override "$(g9c_decision "$(g9c_payload 'git commit -m x' "$P")" ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1)" allow
+( cd "$P" && g9c_git reset )
+
+# --- workspace fixture: sgr = ws root, one child repo ---
+WSR="$G9C_HOME/Code/ws"
+mkdir -p "$WSR/.asha" "$WSR/Memory" "$WSR/Work/markers"
+printf '{"version":1,"workspace_name":"ws","repositories":[{"path":"child"}]}' > "$WSR/.asha/workspace.json"
+echo "# ws ctx" > "$WSR/Memory/activeContext.md"
+g9c_git init "$WSR"
+( cd "$WSR" && echo b > b.txt && g9c_git add b.txt && g9c_git commit -m init )
+CH="$WSR/child"
+mkdir -p "$CH/Memory" "$CH/Work/markers"
+echo "# child ctx" > "$CH/Memory/activeContext.md"
+g9c_git init "$CH"
+( cd "$CH" && echo b > b.txt && g9c_git add b.txt && g9c_git commit -m init )
+
+# ws plane staged, no ws proof -> deny
+( cd "$WSR" && echo w > Memory/w.md && g9c_git add Memory/w.md )
+chk9c ws_staged_noproof "$(g9c_decision "$(g9c_payload "git -C $WSR commit -m x" "$CH")")" deny
+# valid v2 proof -> allow
+env HOME="$G9C_HOME" python3 "$SS_TOOL" write-proof --scope workspace --start "$CH" >/dev/null 2>&1
+chk9c ws_staged_proof "$(g9c_decision "$(g9c_payload "git -C $WSR commit -m x" "$CH")")" allow
+# child plane keeps working under a workspace via its legacy marker
+( cd "$WSR" && g9c_git reset )
+( cd "$CH" && echo c > Memory/c.md && g9c_git add Memory/c.md )
+printf '{"ac_sha256":"%s"}' "$(g9c_ac_sha "$CH")" > "$CH/Work/markers/save-gates-ok"
+chk9c ws_child_legacy "$(g9c_decision "$(g9c_payload 'git commit -m x' "$CH")")" allow
+# cross-plane laundering: ONLY the ws proof present, child Memory staged -> deny
+rm -f "$CH/Work/markers/save-gates-ok"
+chk9c ws_cross_plane "$(g9c_decision "$(g9c_payload 'git commit -m x' "$CH")")" deny
+# both planes staged -> ambiguous -> deny
+( cd "$WSR" && g9c_git add Memory/w.md )
+printf '{"ac_sha256":"%s"}' "$(g9c_ac_sha "$CH")" > "$CH/Work/markers/save-gates-ok"
+chk9c ws_ambiguous "$(g9c_decision "$(g9c_payload 'git commit -m x' "$CH")")" deny
+( cd "$WSR" && g9c_git reset )
+( cd "$CH" && g9c_git reset )
+# invalid manifest + Memory signal -> fail closed
+printf '{"version":9}' > "$WSR/.asha/workspace.json"
+( cd "$CH" && g9c_git add Memory/c.md )
+chk9c ws_invalid_manifest "$(g9c_decision "$(g9c_payload 'git commit -m x' "$CH")")" deny
+printf '{"version":1,"workspace_name":"ws","repositories":[{"path":"child"}]}' > "$WSR/.asha/workspace.json"
+# python3 unavailable under a workspace with a Memory signal -> fail closed
+G9C_BIN="$G9C/bin"; mkdir -p "$G9C_BIN"
+for t in git jq grep sha256sum cut rm dirname cat sed mktemp date; do
+    command -v "$t" >/dev/null 2>&1 && ln -s "$(command -v "$t")" "$G9C_BIN/$t"
+done
+out="$(printf '%s' "$(g9c_payload 'git commit -m x' "$CH")" | env -u ASHA_HARNESS -u CLAUDE_PROJECT_DIR \
+    HOME="$G9C_HOME" PATH="$G9C_BIN" /bin/bash "$GATE" 2>/dev/null)" && ws_nopy_rc=0 || ws_nopy_rc=$?
+[[ $ws_nopy_rc -eq 2 ]] && ws_nopy=deny || ws_nopy=allow
+chk9c ws_no_python "$ws_nopy" deny
+( cd "$CH" && g9c_git reset )
+
+rm -rf "$G9C"
+if [[ $G9C_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  gate-pin mismatch:$G9C_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 10: is_asha_initialized function
 # ============================================================================
 echo -n "Test 10: is_asha_initialized correctly detects initialization... "

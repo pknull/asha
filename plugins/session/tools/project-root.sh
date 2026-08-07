@@ -67,3 +67,30 @@ asha_detect_project_root() {
     echo "$dir"
     return 0
 }
+
+# asha_find_workspace_manifest [START]
+#   Pure-bash EXISTENCE walk for .asha/workspace.json — the cheap half of
+#   workspace detection, for hot paths (PreToolUse gates) that must not pay
+#   a python start when no workspace exists. Mirrors project_root.py
+#   detect_workspace bounds exactly: $HOME and / are both EXCLUSIVE, with
+#   canonical comparison. VALIDATION stays in python — a caller that finds a
+#   manifest here must hand off to project_root.py / save_scope.py and fail
+#   closed if that handoff is unavailable. Prints the manifest path, or
+#   nothing; rc 0 always.
+asha_find_workspace_manifest() {
+    local search home_canon
+    search="$(cd -P "${1:-$PWD}" 2>/dev/null && pwd)" || { echo ""; return 0; }
+    home_canon="$(cd -P "$HOME" 2>/dev/null && pwd)" || home_canon=""
+    while [[ -n "$search" && "$search" != "/" ]]; do
+        if [[ -n "$home_canon" && "$search" == "$home_canon" ]]; then
+            break
+        fi
+        if [[ -f "$search/.asha/workspace.json" ]]; then
+            echo "$search/.asha/workspace.json"
+            return 0
+        fi
+        search="$(dirname "$search")"
+    done
+    echo ""
+    return 0
+}
