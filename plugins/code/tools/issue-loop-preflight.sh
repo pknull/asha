@@ -173,6 +173,10 @@ done
 # If a user overlay gutted them, defense-in-depth is gone — also a refusal.
 MUST_DENY=(
     "git push --force origin ${BRANCH_PREFIX}probe"
+    # Cross-repo form (2026-08-07, PR #30 pass-2): a user overlay carrying the
+    # pre-1.13.0 destructive-git rule denies the direct probe above but allows
+    # the -C form — this probe catches that silently-weakened baseline.
+    "git -C .asha/worktrees/issue-loop-probe push --force origin ${BRANCH_PREFIX}probe"
     "rm -rf .asha/worktrees/issue-loop-probe"
 )
 for cmd in "${MUST_DENY[@]}"; do

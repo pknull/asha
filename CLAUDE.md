@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
 **Version**: 2.5.0
-**Last Updated**: 2026-08-05
+**Last Updated**: 2026-08-07
 **Repository**: pknull/asha
 
 ---
@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.12.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.13.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -919,6 +919,23 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.13.0 (2026-08-07) — destructive-git cross-repo arm
+
+Workspace-memory v1, delivery issue 5 (ratified proposal
+`docs/proposals/2026-08-06--workspace-memory.md`; built first as the
+independent increment closing a live gap). `destructive-git` now consumes
+optional `-C`/`--git-dir`/`--work-tree` global flags between `git` and the
+destructive verb — `git -C /ws push --force` previously evaded every arm.
+Cross-repo plain commit/push stays allowed (workspace saves). Pass-2 codex
+review of the fix itself found and fixed three more bypasses (9/9 for the
+rule): mixed-quoted path tokens, exclusion laundering via a safe token in a
+later segment (exclusions now segment-scoped), and backslash-newline
+continuation (evaluator now normalizes to what bash executes). Issue-loop
+preflight gained a cross-repo MUST_DENY probe against silently-weakened user
+overlays. 21 Test 104 pins; residuals (`-c`, `--no-pager` still bypass;
+escaped-space paths fail toward allow; quoted mentions false-positive
+safe-side) documented in the rule's `_comment` per house style.
 
 ### v2.5.0 (2026-08-05) — Overnight issue-to-merge loop
 
