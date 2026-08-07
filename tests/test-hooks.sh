@@ -2605,6 +2605,17 @@ chk_pg xr_commit      '{"tool_name":"Bash","tool_input":{"command":"git -C /work
 chk_pg xr_lease       '{"tool_name":"Bash","tool_input":{"command":"git -C /ws push --force-with-lease origin main"}}' allow
 chk_pg xr_restore_stg '{"tool_name":"Bash","tool_input":{"command":"git -C /ws restore --staged a.py"}}' allow
 chk_pg xr_co_branch   '{"tool_name":"Bash","tool_input":{"command":"git -C /ws checkout main"}}' allow
+# Pass-2 pins (2026-08-07, PR #30 codex adversarial review): mixed-quoted
+# path tokens, exclusion laundering (a safe token in a LATER segment must not
+# rescue a destructive one), and backslash-newline continuation must all
+# deny; the genuine safe forms stay allowed.
+chk_pg xr_mixquote     '{"tool_name":"Bash","tool_input":{"command":"git -C \"$ROOT\"/shared push --force"}}' deny
+chk_pg xr_midquote     '{"tool_name":"Bash","tool_input":{"command":"git -C /work/\"space dir\" push --force"}}' deny
+chk_pg xr_lease_echo   '{"tool_name":"Bash","tool_input":{"command":"git -C /ws push --force && echo --force-with-lease"}}' deny
+chk_pg xr_restore_echo '{"tool_name":"Bash","tool_input":{"command":"git -C /ws reset --hard && echo \"restore --staged\""}}' deny
+chk_pg xr_continuation '{"tool_name":"Bash","tool_input":{"command":"git -C /ws \\\n push --force"}}' deny
+chk_pg xr_lease_real   '{"tool_name":"Bash","tool_input":{"command":"git -C /ws push --force-with-lease && echo done"}}' allow
+chk_pg multiline_ok    '{"tool_name":"Bash","tool_input":{"command":"echo start\ngit status"}}' allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
