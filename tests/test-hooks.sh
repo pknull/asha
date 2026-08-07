@@ -2585,6 +2585,26 @@ chk_pg il_force_push  '{"tool_name":"Bash","tool_input":{"command":"git push --f
 # rm -rf of a worktree dir stays DENIED on purpose: the loop's cleanup
 # convention is `git worktree remove`, never rm — no exemption is added.
 chk_pg il_rm_worktree '{"tool_name":"Bash","tool_input":{"command":"rm -rf .asha/worktrees/issue-7"}}' deny
+# Workspace v1, delivery issue 5 (2026-08-07, ratified proposal
+# docs/proposals/2026-08-06--workspace-memory.md): cross-repo global flags
+# (-C/--git-dir/--work-tree — quoted, attached, =, and repeated forms) must
+# not evade destructive-git. `git -C <dir> push --force` previously sailed
+# past because the rule required the verb to directly follow `git`. Plain
+# cross-repo commit/push stays ALLOWED — workspace saves depend on it.
+chk_pg xr_force_push  '{"tool_name":"Bash","tool_input":{"command":"git -C /workspace/shared push --force origin main"}}' deny
+chk_pg xr_reset_hard  '{"tool_name":"Bash","tool_input":{"command":"git -C /workspace/shared reset --hard HEAD~1"}}' deny
+chk_pg xr_clean       '{"tool_name":"Bash","tool_input":{"command":"git -C /workspace/shared clean -fd"}}' deny
+chk_pg xr_gitdir      '{"tool_name":"Bash","tool_input":{"command":"git --git-dir=/ws/meta push --force"}}' deny
+chk_pg xr_worktree    '{"tool_name":"Bash","tool_input":{"command":"git --work-tree=/ws reset --hard"}}' deny
+chk_pg xr_quoted      '{"tool_name":"Bash","tool_input":{"command":"git -C \"/work space/shared\" push --force"}}' deny
+chk_pg xr_multi       '{"tool_name":"Bash","tool_input":{"command":"git -C /ws --git-dir=/ws/meta push --force"}}' deny
+chk_pg xr_attached    '{"tool_name":"Bash","tool_input":{"command":"git -C/ws push --force"}}' deny
+chk_pg xr_branch_del  '{"tool_name":"Bash","tool_input":{"command":"git -C /ws branch -D main"}}' deny
+chk_pg xr_plain_push  '{"tool_name":"Bash","tool_input":{"command":"git -C /workspace/shared push origin main"}}' allow
+chk_pg xr_commit      '{"tool_name":"Bash","tool_input":{"command":"git -C /workspace/shared commit -m \"workspace save\""}}' allow
+chk_pg xr_lease       '{"tool_name":"Bash","tool_input":{"command":"git -C /ws push --force-with-lease origin main"}}' allow
+chk_pg xr_restore_stg '{"tool_name":"Bash","tool_input":{"command":"git -C /ws restore --staged a.py"}}' allow
+chk_pg xr_co_branch   '{"tool_name":"Bash","tool_input":{"command":"git -C /ws checkout main"}}' allow
 if [[ $PG_OK -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))
