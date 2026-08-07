@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.16.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.17.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -919,6 +919,16 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.17.0 (2026-08-08) — save scopes + state-based commit gate
+
+Workspace v1 delivery issue 4 (issue #36). `/save --scope repo|workspace|
+none`; `save_scope.py` writer seam (plane mapping as three distinct values,
+versioned proof, verify-before-commit); commit gate selects planes by
+staged STATE, never command parsing — bash existence walk keeps no-manifest
+byte-identity at zero python cost (golden corpus), manifest-present-but-
+unvalidatable fails closed, ambiguity denies, proofs are plane-bound. Stop
+hook routes v2 locators to the structural proof. Tests-first throughout.
 
 ### Session v1.16.0 (2026-08-08) — `asha workspace status` + doctor section
 
