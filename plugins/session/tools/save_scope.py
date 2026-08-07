@@ -94,13 +94,31 @@ def resolve_plane(scope: str, start: Optional[Path] = None
                 f"shared_git_root ({sgr}) is not the root of a git worktree "
                 f"— workspace memory commits are impossible; failing closed",
             )]
+        # Canonical runtime containment (defense-in-depth over the lexical
+        # validator): memory_root must land inside commit_repo AFTER symlink
+        # resolution, and memory_rel is computed here so consumers never
+        # re-derive it with string stripping (pass-2: an absolute REL from a
+        # failed strip silently never matched staged paths).
+        try:
+            mem_root = (ws_root / mem.get("operational_root",
+                                          "Memory")).resolve()
+            sgr_resolved = sgr.resolve()
+            memory_rel = str(mem_root.relative_to(sgr_resolved))
+        except (ValueError, OSError, RuntimeError) as exc:
+            return None, [_err(
+                "containment_violation",
+                f"operational_root does not resolve inside shared_git_root "
+                f"({exc}) — failing closed",
+            )]
+        if memory_rel == ".":
+            memory_rel = ""
         return {
             "version": PROOF_VERSION,
             "scope": "workspace",
             "plane_base": str(ws_root),
-            "memory_root": str(ws_root / mem.get("operational_root",
-                                                 "Memory")),
-            "commit_repo": str(sgr),
+            "memory_root": str(mem_root),
+            "memory_rel": memory_rel,
+            "commit_repo": str(sgr_resolved),
         }, []
 
     # scope == "repo": the active child project. Outside a workspace this is
@@ -157,6 +175,7 @@ def resolve_plane(scope: str, start: Optional[Path] = None
         "scope": "repo",
         "plane_base": str(base),
         "memory_root": str(base / "Memory"),
+        "memory_rel": "Memory",
         "commit_repo": str(base),
     }, []
 
@@ -174,7 +193,12 @@ def _marker_path(mapping: dict) -> Path:
 
 
 def write_proof(mapping: dict) -> str:
-    """Write the versioned proof at the plane base. Returns the path."""
+    """Write the versioned proof at the plane base. Returns the path.
+
+    Raises nothing: filesystem failures surface as a typed exception-free
+    empty return via the CLI wrapper; library callers get ValueError with a
+    typed message (kept simple — the CLI is the shipped surface).
+    """
     sha = _ac_sha(mapping)
     record = {
         "version": PROOF_VERSION,
@@ -255,12 +279,19 @@ def main(argv: List[str]) -> int:
     if verb == "resolve":
         print(json.dumps(mapping, indent=2, sort_keys=True))
         return 0
-    if verb == "write-proof":
-        print(write_proof(mapping))
-        return 0
-    ok, reason = verify_proof(mapping)
-    print(reason)
-    return 0 if ok else 1
+    # Totality at the CLI boundary (pass-2): filesystem failures and
+    # malformed mappings are typed verdicts, never tracebacks.
+    try:
+        if verb == "write-proof":
+            print(write_proof(mapping))
+            return 0
+        ok, reason = verify_proof(mapping)
+        print(reason)
+        return 0 if ok else 1
+    except (OSError, KeyError, ValueError) as exc:
+        print(json.dumps({"errors": [
+            _err("proof_io_failed", f"{type(exc).__name__}: {exc}")]}))
+        return 1
 
 
 if __name__ == "__main__":

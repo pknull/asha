@@ -41,9 +41,10 @@ if [[ "$MARKER_SCOPE" == "workspace" && -n "$MARKER_PLANE" ]]; then
     # Workspace plane: the session-transcript gates are project-scoped by
     # design (the workspace plane has no transcript of its own in v1), so
     # enforcement here is the structural proof: mapping + activeContext sha
-    # via save_scope.py, logged under the PLANE's own tree.
-    HOOK_LOG="$MARKER_PLANE/Memory/events/save-preflight-hook.log"
-    mkdir -p "$(dirname "$HOOK_LOG")" 2>/dev/null || true
+    # via save_scope.py. Logs stay under PROJECT_DIR — a marker-supplied
+    # plane_base must never choose a write location (pass-2: crafted marker
+    # = arbitrary-directory log creation). plane_base is used only for the
+    # attempt-rewrite fields below, where it is inert routing data.
     if WS_REASON=$(python3 "$TOOLS_DIR/save_scope.py" verify \
             --scope workspace --start "$PROJECT_DIR" 2>>"$HOOK_LOG"); then
         HARD_FAIL=false

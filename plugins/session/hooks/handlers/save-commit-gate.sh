@@ -51,12 +51,15 @@ CMD_HEAD="${CMD%%commit*}"
 # 9c golden corpus pins it). Used for the no-workspace path AND for the child
 # plane under a workspace.
 gate_check_plane() {
-    local dir="$1"
+    local dir="$1" forced="${2:-0}"
     # Does this commit touch Memory/? Two signals, either suffices:
     #   (a) the command head references Memory/
     #   (b) the staged set already contains Memory/ paths
-    local touches=0
-    printf '%s' "$CMD_HEAD" | grep -q 'Memory/' && touches=1
+    # A caller that ALREADY established candidacy (workspace branch: dirty
+    # state + -a/pathspec) passes forced=1 — re-deriving from staged-only
+    # here would re-open the commit -a / pathspec bypass (pass-2).
+    local touches="$forced"
+    [[ $touches -eq 0 ]] && printf '%s' "$CMD_HEAD" | grep -q 'Memory/' && touches=1
     if [[ $touches -eq 0 ]]; then
         if git -C "$dir" diff --cached --name-only 2>/dev/null | grep -q '^Memory/'; then
             touches=1
@@ -140,45 +143,150 @@ MEM_ROOT="$(printf '%s' "$MAPPING" | jq -r '.memory_root // empty' 2>/dev/null |
 CHILD_TOP="$(git -C "$PROJECT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 HEAD_REF=0
 printf '%s' "$CMD_HEAD" | grep -q 'Memory/' && HEAD_REF=1
+WS_GUESS="${WS_MANIFEST%/.asha/workspace.json}"
+
+# _mem_hit REPO REL MODE — does the repo have Memory-plane paths in the given
+# git listing? Literal prefix comparison, never regex (a REL with metachars
+# must not false-match). Empty REL means the whole repo IS the plane.
+_mem_hit() {
+    local repo="$1" rel="$2" mode="$3" p
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        if [[ -z "$rel" || "$p" == "$rel"/* ]]; then return 0; fi
+    done < <(
+        if [[ "$mode" == staged ]]; then
+            git -C "$repo" diff --cached --name-only 2>/dev/null
+        else
+            # tracked modifications only (-uno): commit -a commits these
+            git -C "$repo" status --porcelain -uno 2>/dev/null | cut -c4-
+        fi
+    )
+    return 1
+}
+# any Memory state at all (staged, dirty-tracked, or untracked) — used for
+# the compound rule's cleanliness requirement, where an about-to-be-added
+# NEW file matters too.
+_mem_any() {
+    local repo="$1" rel="$2" p
+    _mem_hit "$repo" "$rel" staged && return 0
+    while IFS= read -r p; do
+        [[ -z "$p" ]] && continue
+        if [[ -z "$rel" || "$p" == "$rel"/* ]]; then return 0; fi
+    done < <(git -C "$repo" status --porcelain 2>/dev/null | cut -c4-)
+    return 1
+}
 
 if [[ -z "$PLANE_BASE" || -z "$COMMIT_REPO" || -z "$MEM_ROOT" ]]; then
     # Manifest present but not validatable (invalid manifest, or
     # python3/save_scope missing). Fail closed for anything with a visible
-    # Memory signal; a commit with no Memory signal anywhere stays allowed.
-    STAGED_ANY=0
-    [[ -n "$CHILD_TOP" ]] \
-        && git -C "$CHILD_TOP" diff --cached --name-only 2>/dev/null | grep -q '^Memory/' \
-        && STAGED_ANY=1
-    if [[ $HEAD_REF -eq 1 || $STAGED_ANY -eq 1 ]]; then
+    # Memory signal IN EITHER PLANE — the workspace root is known from the
+    # walk even when the resolver is not (pass-2: checking only the child
+    # left workspace-staged Memory ungated exactly when the gate was blind).
+    SIGNAL=0
+    [[ $HEAD_REF -eq 1 ]] && SIGNAL=1
+    [[ -n "$CHILD_TOP" ]] && _mem_hit "$CHILD_TOP" "Memory" staged && SIGNAL=1
+    [[ -n "$CHILD_TOP" ]] && _mem_hit "$CHILD_TOP" "Memory" dirty && SIGNAL=1
+    _mem_hit "$WS_GUESS" "Memory" staged && SIGNAL=1
+    _mem_hit "$WS_GUESS" "Memory" dirty && SIGNAL=1
+    if [[ $SIGNAL -eq 1 ]]; then
         pretooluse_policy_deny "save-commit-gate" \
-            "Memory/ commit refused: a workspace manifest exists at ${WS_MANIFEST%/.asha/workspace.json} but cannot be validated (invalid manifest, or python3/save_scope.py unavailable) — failing closed. Check: asha workspace status" \
+            "Memory/ commit refused: a workspace manifest exists at $WS_GUESS but cannot be validated (invalid manifest, or python3/save_scope.py unavailable) — failing closed. Check: asha workspace status" \
             " (override: ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1)"
         exit $?
     fi
     exit 0
 fi
 
-REL_MEM="${MEM_ROOT#"$COMMIT_REPO"/}"
-STAGED_WS=0
-git -C "$COMMIT_REPO" diff --cached --name-only 2>/dev/null | grep -q "^$REL_MEM/" && STAGED_WS=1
-STAGED_CHILD=0
-if [[ -n "$CHILD_TOP" && "$CHILD_TOP" != "$COMMIT_REPO" ]]; then
-    git -C "$CHILD_TOP" diff --cached --name-only 2>/dev/null | grep -q '^Memory/' && STAGED_CHILD=1
-fi
+REL_MEM="$(printf '%s' "$MAPPING" | jq -r '.memory_rel // "Memory"' 2>/dev/null || echo Memory)"
 
-# A bare Memory/ reference in the command head attributes to the payload-cwd
-# repo (the default git target). A compound that -C's into ANOTHER repo is
-# deliberately not parsed; if its plane lacks staged state now, its own
-# commit-stage state check or proof requirement catches it — conservative,
-# never permissive.
-CAND_CHILD=$STAGED_CHILD
-CAND_WS=$STAGED_WS
-if [[ $HEAD_REF -eq 1 ]]; then
-    if [[ -n "$CHILD_TOP" && "$CHILD_TOP" != "$COMMIT_REPO" ]]; then
-        CAND_CHILD=1
-    else
-        CAND_WS=1
+# Commit-tail flags, with quoted spans stripped so a commit MESSAGE that
+# mentions Memory/ or -a never counts (same principle as CMD_HEAD).
+COMMIT_TAIL="${CMD#*commit}"
+TAIL_STRIPPED="$(printf '%s' "$COMMIT_TAIL" | sed -E "s/'[^']*'//g; s/\"[^\"]*\"//g" 2>/dev/null || true)"
+HAS_ALL=0
+printf '%s' "$TAIL_STRIPPED" | grep -Eq -- '(^|[[:space:]])--all([[:space:]]|$)|(^|[[:space:]])-[a-z]*a[a-z]*([[:space:]]|$)' && HAS_ALL=1
+PATHSPEC_MEM=0
+printf '%s' "$TAIL_STRIPPED" | grep -q 'Memory/' && PATHSPEC_MEM=1
+
+# Candidate planes by STATE: staged always counts; dirty-tracked counts when
+# the commit form can pick it up directly (-a/--all, or an unquoted Memory
+# pathspec after the commit token — pass-2: staged-only let `commit -a` and
+# `git commit Memory/x` bypass the gate entirely).
+CAND_CHILD=0
+CAND_WS=0
+if [[ -n "$CHILD_TOP" && "$CHILD_TOP" != "$COMMIT_REPO" ]]; then
+    _mem_hit "$CHILD_TOP" "Memory" staged && CAND_CHILD=1
+    [[ $HAS_ALL -eq 1 || $PATHSPEC_MEM -eq 1 ]] \
+        && _mem_hit "$CHILD_TOP" "Memory" dirty && CAND_CHILD=1
+fi
+_mem_hit "$COMMIT_REPO" "$REL_MEM" staged && CAND_WS=1
+[[ $HAS_ALL -eq 1 || $PATHSPEC_MEM -eq 1 ]] \
+    && _mem_hit "$COMMIT_REPO" "$REL_MEM" dirty && CAND_WS=1
+
+ws_plane_check() {   # verify + CONSUME the workspace proof
+    if [[ -f "$PLANE_BASE/Work/markers/silence" ]]; then
+        pretooluse_policy_deny "save-commit-gate" \
+            "Workspace Memory commit refused: the workspace's Work/markers/silence is active." \
+            " (override: ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1)"
+        return $?
     fi
+    [[ -f "$MEM_ROOT/activeContext.md" ]] || return 0   # first-init
+    local reason ok=0
+    reason="$(python3 "$SS_TOOL" verify --scope workspace --start "$PROJECT_DIR" 2>/dev/null)" || ok=$?
+    if [[ $ok -ne 0 ]]; then
+        pretooluse_policy_deny "save-commit-gate" \
+            "Workspace Memory commit refused: ${reason:-no valid workspace save proof}. Run /session:save --scope workspace (it writes the proof via save_scope.py before committing)." \
+            " (override: ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1)"
+        return $?
+    fi
+    # Consume-on-use: a proof authorizes exactly one commit (pass-2: an
+    # unconsumed proof replayed indefinitely while activeContext was
+    # unchanged). If the commit itself then fails, /save re-proves.
+    rm -f "$PLANE_BASE/Work/markers/save-gates-ok" 2>/dev/null || true
+    return 0
+}
+
+# _legacy_marker_valid DIR — silent validity probe of the single-plane
+# marker (used by the compound rule; gate_check_plane does the deny texts).
+_legacy_marker_valid() {
+    local dir="$1" m="$1/Work/markers/save-gates-ok" ms ds
+    [[ -f "$m" ]] || return 1
+    ms="$(jq -r '.ac_sha256 // empty' "$m" 2>/dev/null || true)"
+    ds="$(sha256sum "$dir/Memory/activeContext.md" 2>/dev/null | cut -d' ' -f1 || true)"
+    [[ -n "$ms" && -n "$ds" && "$ms" == "$ds" ]]
+}
+
+# Compound add-of-Memory-then-commit: PreToolUse runs BEFORE the add, so
+# staged state cannot attribute the plane, and pass-2 proved cwd attribution
+# is launderable via -C. Rule: allow only when EXACTLY ONE plane holds a
+# valid proof AND the other plane has no Memory state at all (including
+# untracked — the add would stage it); anything else denies.
+if printf '%s' "$CMD_HEAD" | grep -Eq 'add[^|;&]*Memory/'; then
+    CHILD_READY=0
+    WS_READY=0
+    if [[ -n "$CHILD_TOP" && "$CHILD_TOP" != "$COMMIT_REPO" ]] \
+        && _legacy_marker_valid "$CHILD_TOP" \
+        && ! _mem_any "$COMMIT_REPO" "$REL_MEM"; then
+        CHILD_READY=1
+    fi
+    if python3 "$SS_TOOL" verify --scope workspace --start "$PROJECT_DIR" >/dev/null 2>&1; then
+        if [[ -z "$CHILD_TOP" || "$CHILD_TOP" == "$COMMIT_REPO" ]] \
+            || ! _mem_any "$CHILD_TOP" "Memory"; then
+            WS_READY=1
+        fi
+    fi
+    if [[ $CHILD_READY -eq 1 && $WS_READY -eq 0 ]]; then
+        gate_check_plane "$CHILD_TOP"
+        exit $?
+    fi
+    if [[ $WS_READY -eq 1 && $CHILD_READY -eq 0 ]]; then
+        ws_plane_check
+        exit $?
+    fi
+    pretooluse_policy_deny "save-commit-gate" \
+        "Memory/ commit refused: a compound add-and-commit under a workspace cannot be attributed to one plane (proofs: child=$CHILD_READY workspace=$WS_READY). Stage first and commit separately, or use /session:save (child) / /session:save --scope workspace." \
+        " (override: ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1)"
+    exit $?
 fi
 
 if [[ $CAND_CHILD -eq 1 && $CAND_WS -eq 1 ]]; then
@@ -189,27 +297,13 @@ if [[ $CAND_CHILD -eq 1 && $CAND_WS -eq 1 ]]; then
 fi
 
 if [[ $CAND_CHILD -eq 1 ]]; then
-    gate_check_plane "$CHILD_TOP"
+    gate_check_plane "$CHILD_TOP" 1
     exit $?
 fi
 
 if [[ $CAND_WS -eq 1 ]]; then
-    if [[ -f "$PLANE_BASE/Work/markers/silence" ]]; then
-        pretooluse_policy_deny "save-commit-gate" \
-            "Workspace Memory commit refused: the workspace's Work/markers/silence is active." \
-            " (override: ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1)"
-        exit $?
-    fi
-    # First-init exception, same as the single-plane gate.
-    [[ -f "$MEM_ROOT/activeContext.md" ]] || exit 0
-    WS_REASON="$(python3 "$SS_TOOL" verify --scope workspace --start "$PROJECT_DIR" 2>/dev/null)" && WS_OK=0 || WS_OK=$?
-    if [[ $WS_OK -ne 0 ]]; then
-        pretooluse_policy_deny "save-commit-gate" \
-            "Workspace Memory commit refused: ${WS_REASON:-no valid workspace save proof}. Run /session:save --scope workspace (it writes the proof via save_scope.py before committing)." \
-            " (override: ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1)"
-        exit $?
-    fi
-    exit 0
+    ws_plane_check
+    exit $?
 fi
 
 exit 0

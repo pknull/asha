@@ -439,6 +439,8 @@ chk9c ws_staged_noproof "$(g9c_decision "$(g9c_payload "git -C $WSR commit -m x"
 # valid v2 proof -> allow
 env HOME="$G9C_HOME" python3 "$SS_TOOL" write-proof --scope workspace --start "$CH" >/dev/null 2>&1
 chk9c ws_staged_proof "$(g9c_decision "$(g9c_payload "git -C $WSR commit -m x" "$CH")")" allow
+# consume-on-use: the SAME commit again without a fresh proof denies
+chk9c ws_proof_consumed "$(g9c_decision "$(g9c_payload "git -C $WSR commit -m x" "$CH")")" deny
 # child plane keeps working under a workspace via its legacy marker
 ( cd "$WSR" && g9c_git reset )
 ( cd "$CH" && echo c > Memory/c.md && g9c_git add Memory/c.md )
@@ -468,6 +470,52 @@ out="$(printf '%s' "$(g9c_payload 'git commit -m x' "$CH")" | env -u ASHA_HARNES
 [[ $ws_nopy_rc -eq 2 ]] && ws_nopy=deny || ws_nopy=allow
 chk9c ws_no_python "$ws_nopy" deny
 ( cd "$CH" && g9c_git reset )
+
+# --- pass-2 pins (PR #38 review): commit -a, pathspec, compound laundering,
+# broken-resolver ws staging, non-regular manifest nodes, unset HOME ---
+# commit -a picks up dirty TRACKED plane memory: gate must require proof.
+( cd "$WSR" && g9c_git add Memory/activeContext.md && g9c_git commit -m mem )
+echo "changed" >> "$WSR/Memory/activeContext.md"
+chk9c ws_commit_a_noproof "$(g9c_decision "$(g9c_payload "git -C $WSR commit -am x" "$CH")")" deny
+env HOME="$G9C_HOME" python3 "$SS_TOOL" write-proof --scope workspace --start "$CH" >/dev/null 2>&1
+chk9c ws_commit_a_proof "$(g9c_decision "$(g9c_payload "git -C $WSR commit -am x" "$CH")")" allow
+( cd "$WSR" && g9c_git checkout -- Memory/activeContext.md )
+# pathspec commit of a dirty child memory file without a child marker
+( cd "$CH" && g9c_git add Memory/activeContext.md && g9c_git commit -m mem )
+echo "changed" >> "$CH/Memory/activeContext.md"
+rm -f "$CH/Work/markers/save-gates-ok"
+chk9c ws_pathspec_deny "$(g9c_decision "$(g9c_payload 'git commit Memory/activeContext.md -m x' "$CH")")" deny
+# a commit MESSAGE mentioning Memory/ with clean planes stays allowed
+( cd "$CH" && g9c_git checkout -- Memory/activeContext.md )
+chk9c ws_msg_clean "$(g9c_decision "$(g9c_payload 'git commit -m "docs: Memory/ notes"' "$CH")")" allow
+# compound laundering: valid CHILD marker but the ws plane has an untracked
+# memory file the add would stage -> deny (was: allowed via cwd attribution)
+printf '{"ac_sha256":"%s"}' "$(g9c_ac_sha "$CH")" > "$CH/Work/markers/save-gates-ok"
+echo w2 > "$WSR/Memory/w2.md"
+chk9c ws_compound_launder "$(g9c_decision "$(g9c_payload "git -C $WSR add Memory/ && git -C $WSR commit -m x" "$CH")")" deny
+# same compound WITH the ws proof and a memory-clean child -> allow
+rm -f "$CH/Work/markers/save-gates-ok" "$CH/Memory/c.md"
+env HOME="$G9C_HOME" python3 "$SS_TOOL" write-proof --scope workspace --start "$CH" >/dev/null 2>&1
+chk9c ws_compound_ok "$(g9c_decision "$(g9c_payload "git -C $WSR add Memory/ && git -C $WSR commit -m x" "$CH")")" allow
+rm -f "$WSR/Memory/w2.md"
+# broken resolver + WS-plane staging (child clean) must still fail closed
+printf '{"version":9}' > "$WSR/.asha/workspace.json"
+( cd "$WSR" && echo w3 > Memory/w3.md && g9c_git add Memory/w3.md )
+chk9c ws_broken_ws_staged "$(g9c_decision "$(g9c_payload "git -C $WSR commit -m x" "$CH")")" deny
+( cd "$WSR" && g9c_git reset )
+rm -f "$WSR/Memory/w3.md"
+printf '{"version":1,"workspace_name":"ws","repositories":[{"path":"child"}]}' > "$WSR/.asha/workspace.json"
+# a manifest path that is a DIRECTORY routes to fail-closed, not legacy
+WS2="$G9C_HOME/Code/ws2"
+mkdir -p "$WS2/.asha/workspace.json" "$WS2/child2/Memory" "$WS2/child2/Work/markers"
+echo "# c2" > "$WS2/child2/Memory/activeContext.md"
+g9c_git init "$WS2/child2"
+( cd "$WS2/child2" && echo n > Memory/n.md && g9c_git add Memory/n.md )
+chk9c ws_nonregular_manifest "$(g9c_decision "$(g9c_payload 'git commit -m x' "$WS2/child2")")" deny
+# unset HOME: silent and allowing for a clean non-workspace commit
+he="$(printf '%s' "$(g9c_payload 'git commit -m x' "$P")" | env -u ASHA_HARNESS -u CLAUDE_PROJECT_DIR -u HOME \
+    bash "$GATE" 2>&1 >/dev/null)" || true
+chk9c home_unset_quiet "$he" ""
 
 rm -rf "$G9C"
 if [[ $G9C_OK -eq 1 ]]; then
