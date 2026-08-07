@@ -1,7 +1,7 @@
 ---
 name: session-save
 description: "Manually trigger session synthesis and git commit"
-argument-hint: "[--no-push] [commit message]"
+argument-hint: "[--scope repo|workspace|none] [--no-push] [commit message]"
 allowed-tools: ["Bash", "Read", "Edit"]
 ---
 
@@ -30,7 +30,55 @@ currently require this explicit command because Asha has no SessionEnd hook ther
 /save                           # Synthesize + commit + push
 /save --no-push                 # Synthesize + commit only
 /save "Completed auth feature"  # Custom commit message
+/save --scope workspace         # Commit the WORKSPACE memory plane (see below)
+/save --scope none              # Synthesis only: no staging, commit, or push
 ```
+
+## Save scopes (workspace v1, issue #36)
+
+Bare `/save` (or `--scope repo`) is the project save documented below —
+inside a workspace that is the active CHILD repository, which is exactly
+today's behavior. Passing `--scope` in a project with NO workspace manifest
+is a hard error (the single carved-out deviation from byte-identical, pinned
+in the ratified proposal).
+
+**`--scope none`**: run the preflight report and synthesis steps below, then
+STOP — no queue drain, no staging, no commit, no push, no `save-pending`
+marker.
+
+**`--scope workspace`**: commits the workspace operational plane instead of
+the project. The plane's content is authored (v1 does not synthesize
+workspace memory); this flow routes ONLY the staging/commit/push, through
+the plane mapping and proof — never stage child-repo paths into it:
+
+```bash
+TOOLS="$ASHA_ROOT/plugins/session/tools"
+MAPPING="$(python3 "$TOOLS/save_scope.py" resolve --scope workspace)" || { echo "$MAPPING"; exit 1; }
+COMMIT_REPO="$(printf '%s' "$MAPPING" | jq -r .commit_repo)"
+PLANE_BASE="$(printf '%s' "$MAPPING" | jq -r .plane_base)"
+REL_MEM="$(printf '%s' "$MAPPING" | jq -r .memory_rel)"   # "" = whole repo
+
+python3 "$TOOLS/save_scope.py" write-proof --scope workspace
+python3 "$TOOLS/save_scope.py" verify --scope workspace || exit 1
+
+# Arm the Stop-hook net with a v2 locator carrying the plane (at the CHILD
+# project root, where the Stop hook looks; routing fields are load-bearing).
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+mkdir -p "$PROJECT_DIR/Work/markers"
+jq -n --arg c "$(date -u +%FT%TZ)" --arg p "$PLANE_BASE" \
+    '{created:$c, attempts:0, scope:"workspace", plane_base:$p}' \
+    > "$PROJECT_DIR/Work/markers/save-pending"
+
+git -C "$COMMIT_REPO" add "${REL_MEM:-.}/"
+git -C "$COMMIT_REPO" commit -m "Workspace save: ${ARGUMENTS:-checkpoint}"
+# The gate CONSUMES the proof on this commit (one proof = one commit); a
+# failed commit needs a fresh write-proof before retrying.
+"$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"   # unless --no-push
+```
+
+Then STOP — the project-scope pipeline below does not run for a workspace
+save. If any step fails, report the failure verbatim; never fall through to
+the project flow.
 
 ## Execution
 
