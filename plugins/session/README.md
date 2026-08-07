@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 1.13.0
+**Version**: 1.14.0
 
 Session management with memory persistence, pattern extraction, and operational quality.
 
