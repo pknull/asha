@@ -89,29 +89,15 @@ resolve_asha_root() {
     return 1
 }
 
+# Shared project-root resolver (single source of truth for root detection)
+source "$(dirname "$0")/project-root.sh"
+
+# Full layer set (arg, env, git-with-Memory, upward walk) WITH the $HOME
+# guard — the union detector, pinned by Test 9b. Empty output + rc 1 when
+# nothing resolves; the consumer block exits 2 with remediation.
 resolve_project_dir() {
-    local dir=""
-    if [[ -n "$ARG_PROJECT_DIR" ]]; then
-        dir="$ARG_PROJECT_DIR"
-    elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        dir="$CLAUDE_PROJECT_DIR"
-    else
-        local git_root
-        git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-        if [[ -n "$git_root" && -d "$git_root/Memory" ]]; then
-            dir="$git_root"
-        else
-            local search="$PWD"
-            while [[ "$search" != "/" ]]; do
-                if [[ -d "$search/Memory" ]]; then dir="$search"; break; fi
-                search="$(dirname "$search")"
-            done
-        fi
-    fi
-    # $HOME is the identity layer, never a project (see detect_project_dir fix)
-    if [[ -n "$dir" && "$(readlink -f "$dir")" == "$(readlink -f "$HOME")" ]]; then
-        dir=""
-    fi
+    local dir
+    dir="$(asha_detect_project_root "env,git,walk" 1 "$ARG_PROJECT_DIR")"
     [[ -n "$dir" ]] && echo "$dir"
 }
 

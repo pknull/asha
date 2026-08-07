@@ -18,7 +18,6 @@ import json
 import fcntl
 import hashlib
 import argparse
-import subprocess
 import tempfile
 import stat
 from contextlib import contextmanager
@@ -30,42 +29,18 @@ from collections import defaultdict, Counter
 
 
 def detect_project_root() -> Path:
-    """Find project root, honoring the CLI's explicit directory before cwd."""
-    for index, argument in enumerate(sys.argv[1:]):
-        explicit = None
-        if argument in {"--project-dir", "-p"} and index + 2 <= len(sys.argv[1:]):
-            explicit = sys.argv[1:][index + 1]
-        elif argument.startswith("--project-dir="):
-            explicit = argument.split("=", 1)[1]
-        if explicit:
-            project_path = Path(explicit).resolve()
-            if (project_path / "Memory").is_dir():
-                return project_path
+    """Find project root, honoring the CLI's explicit directory before cwd.
 
-    claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if claude_project_dir:
-        project_path = Path(claude_project_dir)
-        if (project_path / "Memory").is_dir():
-            return project_path
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True
-        )
-        git_root = Path(result.stdout.strip())
-        if (git_root / "Memory").is_dir():
-            return git_root
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    search_dir = Path(__file__).parent.resolve()
-    while search_dir != search_dir.parent:
-        if (search_dir / "Memory").is_dir():
-            return search_dir
-        search_dir = search_dir.parent
-
-    raise RuntimeError("Cannot detect project root. Ensure Memory/ directory exists.")
+    Delegates to the shared resolver (project_root.py) with this module's
+    historical layer set: argv scan, validated env, git-with-Memory, upward
+    walk from the tools dir, RuntimeError on failure.
+    """
+    from project_root import detect_project_root as _shared_detect
+    return _shared_detect(
+        argv=sys.argv[1:],
+        walk_base=Path(__file__).parent.resolve(),
+        on_fail="raise",
+    )
 
 
 # Paths

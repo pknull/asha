@@ -2,33 +2,16 @@
 # Common utilities for Asha hooks (plugin version)
 # Source this file in hooks: source "$(dirname "$0")/common.sh"
 
+# Shared project-root resolver (single source of truth for root detection)
+source "$(dirname "${BASH_SOURCE[0]}")/../../tools/project-root.sh"
+
 # Detect project directory
 # Returns project directory path on stdout, or empty string if not found
 # Always returns 0 (safe under set -e)
+# Hook detector layer set: env verbatim, else git-with-Memory; NO upward
+# walk; $HOME guard. Semantics pinned by Test 9/9b — do not widen here.
 detect_project_dir() {
-    local dir=""
-
-    # Use CLAUDE_PROJECT_DIR if set (Claude Code hook invocation)
-    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        dir="$CLAUDE_PROJECT_DIR"
-    # Fallback: Try git root
-    elif command -v git >/dev/null 2>&1; then
-        local git_root
-        git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-        if [[ -n "$git_root" ]] && [[ -d "$git_root/Memory" ]]; then
-            dir="$git_root"
-        fi
-    fi
-
-    # $HOME is the identity layer (~/.asha), never a project — home-cwd
-    # sessions and one-shot invocations must not grow Memory/ or Work/ at ~
-    if [[ -n "$dir" ]] && [[ "$(readlink -f "$dir")" == "$(readlink -f "$HOME")" ]]; then
-        dir=""
-    fi
-
-    # Empty string (not error) when no project detected
-    echo "$dir"
-    return 0
+    asha_detect_project_root "env,git" 1
 }
 
 # Get plugin root directory (where asha plugin is installed)

@@ -9,41 +9,24 @@ set -euo pipefail
 # CONFIGURATION
 # ==============================================================================
 
-# Multi-layered project directory detection
+# Shared project-root resolver (single source of truth for root detection)
+source "$(dirname "$0")/project-root.sh"
+
+# Multi-layered project directory detection (env, git-with-Memory, upward
+# walk; NO $HOME guard — historical, pinned by Test 9b). Hard-fails with
+# remediation text when nothing resolves.
 detect_project_dir() {
-    # Layer 1: Use CLAUDE_PROJECT_DIR if set (hook invocation)
-    if [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        echo "$CLAUDE_PROJECT_DIR"
-        return 0
+    local dir
+    dir="$(asha_detect_project_root "env,git,walk" 0)"
+    if [[ -z "$dir" ]]; then
+        echo "[ERROR] Cannot detect project directory. Tried:" >&2
+        echo "  1. CLAUDE_PROJECT_DIR environment variable (not set)" >&2
+        echo "  2. Git root with Memory/ directory (not found)" >&2
+        echo "  3. Upward search for Memory/ directory (not found)" >&2
+        return 1
     fi
-
-    # Layer 2: Try git root (manual invocation within git repo)
-    if command -v git >/dev/null 2>&1; then
-        local git_root
-        git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-        if [[ -n "$git_root" ]] && [[ -d "$git_root/Memory" ]]; then
-            echo "$git_root"
-            return 0
-        fi
-    fi
-
-    # Layer 3: Search upward for Memory/ directory
-    local search_dir
-    search_dir="$(pwd)"
-    while [[ "$search_dir" != "/" ]]; do
-        if [[ -d "$search_dir/Memory" ]]; then
-            echo "$search_dir"
-            return 0
-        fi
-        search_dir="$(dirname "$search_dir")"
-    done
-
-    # Layer 4: All detection methods failed
-    echo "[ERROR] Cannot detect project directory. Tried:" >&2
-    echo "  1. CLAUDE_PROJECT_DIR environment variable (not set)" >&2
-    echo "  2. Git root with Memory/ directory (not found)" >&2
-    echo "  3. Upward search for Memory/ directory (not found)" >&2
-    return 1
+    echo "$dir"
+    return 0
 }
 
 PROJECT_DIR=$(detect_project_dir) || exit 1
