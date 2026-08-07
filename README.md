@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.13.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.14.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.13.0
+**Version**: 1.14.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -563,6 +563,18 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.14.0 — workspace manifest validator (2026-08-07)
+
+Workspace v1, second of the six increments to land (proposal delivery
+item 1, issue #31): `plugins/session/tools/workspace_manifest.py`, a pure lexical
+parse/validate layer for `.asha/workspace.json` — typed collected errors,
+fail-closed, schema defaults, traversal/absolute-path rejection, the
+containment and disjointness rules, and the v1 `operational_root == Memory`
+pin, with unknown keys preserved at every level. Deliberately
+filesystem-free: worktree existence and symlink canonicalization land with
+detection/status (issues 2–3). 38 table-driven tests in
+`tests/python/test_workspace_manifest.py`, written RED-first.
 
 ### Session v1.13.0 — destructive-git cross-repo arm (2026-08-07)
 
