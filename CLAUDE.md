@@ -927,9 +927,15 @@ Workspace-memory v1, delivery issue 5 (ratified proposal
 independent increment closing a live gap). `destructive-git` now consumes
 optional `-C`/`--git-dir`/`--work-tree` global flags between `git` and the
 destructive verb — `git -C /ws push --force` previously evaded every arm.
-Cross-repo plain commit/push stays allowed (workspace saves). 14 Test 104
-`xr_*` pins; residuals (`-c`, `--no-pager` still bypass; escaped-space paths
-fail toward allow) documented in the rule's `_comment` per house style.
+Cross-repo plain commit/push stays allowed (workspace saves). Pass-2 codex
+review of the fix itself found and fixed three more bypasses (9/9 for the
+rule): mixed-quoted path tokens, exclusion laundering via a safe token in a
+later segment (exclusions now segment-scoped), and backslash-newline
+continuation (evaluator now normalizes to what bash executes). Issue-loop
+preflight gained a cross-repo MUST_DENY probe against silently-weakened user
+overlays. 21 Test 104 pins; residuals (`-c`, `--no-pager` still bypass;
+escaped-space paths fail toward allow; quoted mentions false-positive
+safe-side) documented in the rule's `_comment` per house style.
 
 ### v2.5.0 (2026-08-05) — Overnight issue-to-merge loop
 

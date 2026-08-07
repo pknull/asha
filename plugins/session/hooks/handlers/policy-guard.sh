@@ -36,6 +36,12 @@ TOOL_NAME="$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || t
 [[ -n "$TOOL_NAME" ]] || exit 0
 
 CMD="$(printf '%s' "$INPUT"  | jq -r '.tool_input.command   // empty' 2>/dev/null || true)"
+# Bash removes `\<newline>` before executing, but grep -E matches per line —
+# a continuation-split command (`git -C /ws \` NL `push --force`) would evade
+# every command_regex. Normalize to what bash actually runs (2026-08-07,
+# PR #30 pass-2 finding). Plain newlines are deliberately left alone: they
+# separate commands, and per-line matching is correct for them.
+CMD="${CMD//$'\\\n'/}"
 FILE="$(printf '%s' "$INPUT" | jq -r '.tool_input.file_path // empty' 2>/dev/null || true)"
 SID="$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)"
 
