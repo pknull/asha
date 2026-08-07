@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.14.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.15.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.14.0
+**Version**: 1.15.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -563,6 +563,24 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.15.0 — project-root consolidation + workspace walk (2026-08-07)
+
+Workspace v1 delivery issue 2 (issue #33). The layered Memory-root detection
+algorithm previously existed in **six divergent copies** (three bash, three
+Python — no two byte-identical, five distinct layer orders); workspace
+detection added to one would not have propagated. It now exists exactly once
+per language: `tools/project-root.sh` and `tools/project_root.py`, with each
+historical caller declaring its exact layer set, so per-consumer behavior is
+byte-identical — pinned by the new Test 9b (12 detector-semantics pins,
+green before AND after the rewire) and the existing Python suites. New
+`detect_workspace()` primitive walks upward for `.asha/workspace.json`
+(stopping exclusively before `$HOME` and `/`, canonical comparison, invalid
+manifest = typed verdict, never silent fallthrough) — deliberately consumed
+by NOTHING yet; issues 3–4 wire it. Audit: no independent layered fallback
+chain remains; exempt-by-design sites (build-root detector in verify.py,
+issue-loop's git-only refuse, thin command-MD one-liners, payload-cwd
+hooks) are catalogued in PR #34.
 
 ### Session v1.14.0 — workspace manifest validator (2026-08-07)
 

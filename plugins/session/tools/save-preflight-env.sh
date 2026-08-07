@@ -89,29 +89,25 @@ resolve_asha_root() {
     return 1
 }
 
+# Shared project-root resolver (single source of truth for root detection).
+# BASH_SOURCE, not $0 (correct when sourced or symlink-invoked); missing file
+# is reported as the documented partial-install failure, not a bare
+# command-not-found from the wrapper below.
+if [[ -f "${BASH_SOURCE[0]%/*}/project-root.sh" ]]; then
+    source "${BASH_SOURCE[0]%/*}/project-root.sh"
+fi
+
+# Full layer set (arg, env, git-with-Memory, upward walk) WITH the $HOME
+# guard — the union detector, pinned by Test 9b. Empty output + rc 1 when
+# nothing resolves; the consumer block exits 2 with remediation.
 resolve_project_dir() {
-    local dir=""
-    if [[ -n "$ARG_PROJECT_DIR" ]]; then
-        dir="$ARG_PROJECT_DIR"
-    elif [[ -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
-        dir="$CLAUDE_PROJECT_DIR"
-    else
-        local git_root
-        git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
-        if [[ -n "$git_root" && -d "$git_root/Memory" ]]; then
-            dir="$git_root"
-        else
-            local search="$PWD"
-            while [[ "$search" != "/" ]]; do
-                if [[ -d "$search/Memory" ]]; then dir="$search"; break; fi
-                search="$(dirname "$search")"
-            done
-        fi
+    local dir
+    if ! declare -F asha_detect_project_root >/dev/null 2>&1; then
+        # Partial install: stay silent here so the PLUGIN phase below reports
+        # the documented exit-3 remediation instead of an env-phase failure.
+        return 0
     fi
-    # $HOME is the identity layer, never a project (see detect_project_dir fix)
-    if [[ -n "$dir" && "$(readlink -f "$dir")" == "$(readlink -f "$HOME")" ]]; then
-        dir=""
-    fi
+    dir="$(asha_detect_project_root "env,git,walk" 1 "$ARG_PROJECT_DIR")"
     [[ -n "$dir" ]] && echo "$dir"
 }
 
@@ -192,6 +188,13 @@ REQUIRED_TOOLS=(
     "plugins/session/tools/push_retry.py"
     "plugins/session/tools/jsonl_reader.py"
     "plugins/session/tools/event_store.py"
+    # Shared resolvers — every save path depends on them since the 2026-08-07
+    # detector consolidation. Absent, the pipeline must report the documented
+    # partial-install failure (exit 3 + manual fallback), not a bare
+    # command-not-found from the resolver wrapper.
+    "plugins/session/tools/project-root.sh"
+    "plugins/session/tools/project_root.py"
+    "plugins/session/tools/workspace_manifest.py"
 )
 MISSING=()
 for rel in "${REQUIRED_TOOLS[@]}"; do

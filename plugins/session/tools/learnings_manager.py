@@ -50,35 +50,16 @@ except ImportError:  # pragma: no cover - fallback path exercised only without P
 def _detect_project_root_for_silence() -> Optional[Path]:
     """Best-effort project root detection for silence-marker check.
 
-    Mirrors pattern_analyzer.detect_project_root semantics: env var first,
-    then git rev-parse, then upward search from CWD. Returns None if no root
-    can be found — callers should fail-open (allow the write) in that case
-    rather than block on missing context.
+    Delegates to the shared resolver (project_root.py): validated env, git
+    with Memory/, upward walk from CWD (note: cwd, not the tools dir — this
+    detector's historical base). Returns None if no root can be found —
+    callers fail-open (allow the write) rather than block on missing context.
     """
-    claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if claude_project_dir:
-        candidate = Path(claude_project_dir)
-        if (candidate / "Memory").is_dir():
-            return candidate
-
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True
-        )
-        git_root = Path(result.stdout.strip())
-        if (git_root / "Memory").is_dir():
-            return git_root
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    search_dir = Path.cwd()
-    while search_dir != search_dir.parent:
-        if (search_dir / "Memory").is_dir():
-            return search_dir
-        search_dir = search_dir.parent
-
-    return None
+    tools_dir = str(Path(__file__).resolve().parent)
+    if tools_dir not in sys.path:  # importlib/embedded loaders
+        sys.path.insert(0, tools_dir)
+    from project_root import detect_project_root as _shared_detect
+    return _shared_detect(walk_base=Path.cwd(), on_fail="none")
 
 
 def _silence_marker_present() -> bool:
