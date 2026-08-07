@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.15.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.16.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.15.0
+**Version**: 1.16.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -563,6 +563,21 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.16.0 + `asha workspace status` — first workspace consumer (2026-08-08)
+
+Workspace v1 delivery issue 3 (issue #35). New dispatcher verb
+`asha workspace status [--json] [--start DIR]` (thin `lib/workspace.sh`
+shim; no new fallback chain — detection stays with the shared resolver) over
+new `plugins/session/tools/workspace_status.py`: manifest validity with
+typed errors verbatim, active child repository (cwd-resolved), per-repo
+presence/branch/dirty state (reported, never assumed), `shared_git_root`
+health, manifest trackedness. `asha doctor` gains the same as a section —
+silent outside workspaces, fail-closed on an invalid manifest. Implements
+the ratified open-question-1 decision: **manifest committed in
+`shared_git_root` by convention**; untracked warns, invalid prints guided
+repair (never auto-fix). Suite 15 (10 dispatcher/doctor cases) + 12 python
+unit tests, tests-first.
 
 ### Session v1.15.0 — project-root consolidation + workspace walk (2026-08-07)
 
