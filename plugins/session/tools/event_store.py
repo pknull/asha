@@ -13,14 +13,12 @@ Usage:
     python event_store.py stats
 """
 
-import os
 import sys
 import re
 import json
 import uuid
 import fcntl
 import argparse
-import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Any, Optional, Dict, List
@@ -102,34 +100,21 @@ def scrub_payload(payload: Any) -> Any:
 
 
 def detect_project_root() -> Path:
-    """Find project root via environment, git, or upward search for Memory/"""
-    # Layer 1: Use CLAUDE_PROJECT_DIR if set (hook invocation)
-    claude_project_dir = os.environ.get("CLAUDE_PROJECT_DIR")
-    if claude_project_dir:
-        project_path = Path(claude_project_dir)
-        if (project_path / "Memory").is_dir():
-            return project_path
+    """Find project root via environment, git, or upward search for Memory/
 
-    # Layer 2: Try git root
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, check=True
-        )
-        git_root = Path(result.stdout.strip())
-        if (git_root / "Memory").is_dir():
-            return git_root
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
-
-    # Layer 3: Upward search for Memory/ directory
-    search_dir = Path(__file__).parent.resolve()
-    while search_dir != search_dir.parent:
-        if (search_dir / "Memory").is_dir():
-            return search_dir
-        search_dir = search_dir.parent
-
-    raise RuntimeError("Cannot detect project root. Ensure Memory/ directory exists.")
+    Delegates to the shared resolver (project_root.py) with this module's
+    historical layer set: validated env, git-with-Memory, upward walk from
+    the tools dir, RuntimeError on failure. No argv layer — this module is
+    bound at import time with no CLI escape hatch (historical).
+    """
+    tools_dir = str(Path(__file__).resolve().parent)
+    if tools_dir not in sys.path:  # importlib/embedded loaders
+        sys.path.insert(0, tools_dir)
+    from project_root import detect_project_root as _shared_detect
+    return _shared_detect(
+        walk_base=Path(__file__).parent.resolve(),
+        on_fail="raise",
+    )
 
 
 # Project paths (detected dynamically)

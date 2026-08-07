@@ -238,6 +238,125 @@ else
 fi
 
 # ============================================================================
+# Test 9b: Project-root detector semantics pinned (workspace v1, issue #33)
+# ============================================================================
+# Byte-identical pins captured BEFORE detector consolidation. Each pin records
+# a load-bearing behavior of one of the three bash detectors, INCLUDING their
+# divergences (e.g. save-session's walk + missing HOME guard) — consolidation
+# must preserve these exactly, not "fix" them.
+echo -n "Test 9b: project-root detector layer semantics are pinned... "
+D9B_OK=1; D9B_WHY=""
+chk9b() { [[ "$2" == "$3" ]] || { D9B_OK=0; D9B_WHY="$D9B_WHY $1(got='$2' want='$3')"; }; }
+
+D9B_ROOT="$(mktemp -d)"
+mkdir -p "$D9B_ROOT/proj/Memory" "$D9B_ROOT/proj/sub" \
+         "$D9B_ROOT/walkproj/Memory" "$D9B_ROOT/walkproj/sub" \
+         "$D9B_ROOT/plain" "$D9B_ROOT/gitnomem" "$D9B_ROOT/fakehome"
+git -C "$D9B_ROOT/proj" init -q
+git -C "$D9B_ROOT/gitnomem" init -q
+
+D9B_COMMON="$REPO_ROOT/plugins/session/hooks/handlers/common.sh"
+
+# --- DETECTOR 1: hooks/handlers/common.sh detect_project_dir ---
+# env layer is VERBATIM and unvalidated (no Memory/ check)
+got="$(env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="$D9B_ROOT/plain" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_env_unvalidated "$got" "$D9B_ROOT/plain"
+# git layer fires only when the toplevel contains Memory/
+got="$(cd "$D9B_ROOT/proj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_git_with_memory "$got" "$D9B_ROOT/proj"
+got="$(cd "$D9B_ROOT/gitnomem" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_git_without_memory "$got" ""
+# NO upward walk: an ancestor Memory/ outside git is invisible to detector 1
+got="$(cd "$D9B_ROOT/walkproj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_no_upward_walk "$got" ""
+# $HOME is never a project (identity layer)
+got="$(env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_home_guard "$got" ""
+
+# --- DETECTOR 2: tools/save-session.sh detect_project_dir (extracted; the
+# script body runs a save on execution, so the function is pinned in
+# isolation) ---
+# The extraction subshell sources the shared resolver so these pins keep
+# working across the consolidation (wrapper delegates to the lib).
+D9B_LIB="$REPO_ROOT/plugins/session/tools/project-root.sh"
+D9B_D2FN="$(sed -n '/^detect_project_dir()/,/^}$/p' "$REPO_ROOT/plugins/session/tools/save-session.sh")"
+# layer 3: upward walk from cwd for Memory/ (detector 1 lacks this)
+got="$(cd "$D9B_ROOT/walkproj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_LIB' 2>/dev/null || true; $D9B_D2FN; detect_project_dir 2>/dev/null")"
+chk9b d2_upward_walk "$got" "$D9B_ROOT/walkproj"
+# divergence pin: NO home guard — a walk landing on \$HOME is returned as-is
+got="$(cd "$D9B_ROOT/walkproj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/walkproj" \
+    bash -c "source '$D9B_LIB' 2>/dev/null || true; $D9B_D2FN; detect_project_dir 2>/dev/null")"
+chk9b d2_no_home_guard "$got" "$D9B_ROOT/walkproj"
+# hard failure: rc=1 and no stdout when nothing resolves
+got="$(cd "$D9B_ROOT/plain" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_LIB' 2>/dev/null || true; $D9B_D2FN; detect_project_dir 2>/dev/null")" && d2rc=0 || d2rc=$?
+chk9b d2_fail_output "$got" ""
+chk9b d2_fail_rc "$d2rc" "1"
+
+# --- DETECTOR 3: tools/save-preflight-env.sh resolve_project_dir (extracted;
+# references file-scope ARG_PROJECT_DIR) ---
+D9B_D3FN="$(sed -n '/^resolve_project_dir()/,/^}$/p' "$REPO_ROOT/plugins/session/tools/save-preflight-env.sh")"
+# layer 0: explicit --project-dir wins, unvalidated
+got="$(env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_LIB' 2>/dev/null || true; ARG_PROJECT_DIR='$D9B_ROOT/plain'; $D9B_D3FN; resolve_project_dir || true")"
+chk9b d3_arg_unvalidated "$got" "$D9B_ROOT/plain"
+# layer 3: upward walk (union of detectors 1+2)
+got="$(cd "$D9B_ROOT/walkproj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_LIB' 2>/dev/null || true; ARG_PROJECT_DIR=''; $D9B_D3FN; resolve_project_dir || true")"
+chk9b d3_upward_walk "$got" "$D9B_ROOT/walkproj"
+# home guard present (unlike detector 2)
+got="$(env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_LIB' 2>/dev/null || true; ARG_PROJECT_DIR='$D9B_ROOT/fakehome'; $D9B_D3FN; resolve_project_dir || true")"
+chk9b d3_home_guard "$got" ""
+
+# --- pass-2 pins (PR #34 review): output fidelity + environment edges ---
+# Verbatim output: no canonicalization, trailing slashes and relative forms
+# survive exactly as the historical detectors emitted them.
+got="$(env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="$D9B_ROOT/proj///" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_trailing_slashes_verbatim "$got" "$D9B_ROOT/proj///"
+got="$(cd "$D9B_ROOT" && env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="proj" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_relative_verbatim "$got" "proj"
+# Empty string is NOT set: the env layer must fall through, not return "".
+got="$(cd "$D9B_ROOT/proj/sub" && env HOME="$D9B_ROOT/fakehome" CLAUDE_PROJECT_DIR="" \
+    bash -c "source '$D9B_COMMON'; detect_project_dir")"
+chk9b d1_empty_env_falls_through "$got" "$D9B_ROOT/proj"
+# git absent from PATH must degrade quietly (historical `command -v git`),
+# and the library must not need external binaries to be sourced.
+got="$(cd "$D9B_ROOT/proj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    PATH="/nonexistent" /bin/bash -c "source '$D9B_COMMON'; detect_project_dir" 2>/dev/null || true)"
+chk9b d1_no_git_no_path "$got" ""
+got="$(cd "$D9B_ROOT/proj/sub" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    PATH="/nonexistent" /bin/bash -c "source '$D9B_COMMON'; detect_project_dir" >/dev/null 2>&1; echo "$?")"
+chk9b d1_no_path_rc "$got" "0"
+# A hostile command_not_found_handle must not fabricate a project root.
+got="$(cd "$D9B_ROOT/plain" && env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "command_not_found_handle() { echo '$D9B_ROOT/proj'; return 0; }
+             PATH=/nonexistent; source '$D9B_COMMON'; detect_project_dir" 2>/dev/null || true)"
+chk9b d1_no_cnf_fabrication "$got" ""
+# resolve_project_dir returns rc 0 on success (consumer uses `|| true`).
+got="$(env -u CLAUDE_PROJECT_DIR HOME="$D9B_ROOT/fakehome" \
+    bash -c "source '$D9B_LIB'; ARG_PROJECT_DIR='$D9B_ROOT/plain'; $D9B_D3FN; resolve_project_dir >/dev/null; echo \$?" || true)"
+chk9b d3_success_rc "$got" "0"
+
+rm -rf "$D9B_ROOT"
+if [[ $D9B_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  detector-pin mismatch:$D9B_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 10: is_asha_initialized function
 # ============================================================================
 echo -n "Test 10: is_asha_initialized correctly detects initialization... "
