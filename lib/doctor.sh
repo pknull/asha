@@ -79,7 +79,14 @@ EOF
 _asha_doctor_workspace_section() {
   local tool="$MARKET_ROOT/plugins/session/tools/workspace_status.py"
   [[ -f "$tool" ]] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
+  if ! command -v python3 >/dev/null 2>&1; then
+    # Visible skip, not silence: an invalid manifest coexisting with a green
+    # doctor because python was missing would be a hidden gap (pass-2).
+    echo ""
+    echo "── Workspace (asha workspace status) ──"
+    echo "skipped: python3 unavailable — workspace manifest NOT validated"
+    return 0
+  fi
   local out rc=0
   out="$(python3 "$tool" 2>/dev/null)" || rc=$?
   # Single-project mode: nothing to report, doctor stays quiet.
