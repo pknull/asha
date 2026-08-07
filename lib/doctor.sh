@@ -63,6 +63,29 @@ EOF
   local -a args=(--target "$target")
   [[ $fix -eq 1 ]] && args+=(--fix)
   # Child process, not sourced: drift-check is a standalone set -uo script
-  # that exits directly. Its exit code is the doctor contract.
-  bash "$MARKET_ROOT/bin/asha-drift-check.sh" "${args[@]}"
+  # that exits directly. rc captured with `|| rc=$?` because this runs under
+  # bin/asha's set -e wrapper — a bare non-zero here would skip the
+  # workspace section below.
+  local drift_rc=0
+  bash "$MARKET_ROOT/bin/asha-drift-check.sh" "${args[@]}" || drift_rc=$?
+  local ws_rc=0
+  _asha_doctor_workspace_section || ws_rc=$?
+  [[ $drift_rc -eq 0 && $ws_rc -eq 0 ]]
+}
+
+# Workspace v1 (issue #35): report workspace state from CWD. No workspace is
+# a silent pass; warnings print but pass; an invalid manifest FAILS doctor —
+# fail-closed, a broken workspace definition is install-grade breakage.
+_asha_doctor_workspace_section() {
+  local tool="$MARKET_ROOT/plugins/session/tools/workspace_status.py"
+  [[ -f "$tool" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  local out rc=0
+  out="$(python3 "$tool" 2>/dev/null)" || rc=$?
+  # Single-project mode: nothing to report, doctor stays quiet.
+  [[ $rc -eq 0 && "$out" == "workspace: none"* ]] && return 0
+  echo ""
+  echo "── Workspace (asha workspace status) ──"
+  printf '%s\n' "$out"
+  return $rc
 }

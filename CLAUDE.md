@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.15.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.16.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -919,6 +919,15 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.16.0 (2026-08-08) — `asha workspace status` + doctor section
+
+Workspace v1 delivery issue 3 (issue #35): first consumer of the detection
+primitive. New `workspace` dispatcher verb (thin lib/workspace.sh shim over
+`tools/workspace_status.py`), doctor workspace section (silent outside
+workspaces, fail-closed on invalid manifests), and the ratified manifest
+convention (committed in shared_git_root; untracked warns; invalid gets
+guided repair, never auto-fix). Suite 15 + 12 unit tests, tests-first.
 
 ### Session v1.15.0 (2026-08-07) — project-root consolidation + workspace walk
 

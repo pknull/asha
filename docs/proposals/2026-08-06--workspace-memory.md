@@ -332,13 +332,14 @@ the gate.
 - No implicit `git init`, no implicit branch/worktree/PR creation, and no
   reliance on runtime policy hooks as a substitute for git review and CI.
 
-## Open questions (small, none block ratification)
+## Open questions
 
-1. Should the workspace manifest be committed in the workspace's
-   `shared_git_root` by convention? (asha's own repos gitignore `.asha/`
-   wholesale; target workspaces likely want the manifest versioned —
-   probably a documented convention plus a doctor warning, decided in v1.)
-   Note the consequence either way: a *committed* manifest plus fail-closed
-   validation means one teammate's typo hard-fails every session
-   workspace-wide, so the v1 decision should weigh a doctor-guided repair
-   path alongside the convention.
+1. **RESOLVED (Keeper, 2026-08-08; implemented in v1 issue #35)**: the
+   workspace manifest is **committed in `shared_git_root` by convention**.
+   `asha workspace status` and `asha doctor` warn when it is untracked
+   there; an invalid manifest is a typed error with **guided repair steps**
+   (never an auto-fix), which softens the accepted consequence that a
+   committed manifest plus fail-closed validation lets one teammate's typo
+   hard-fail every session workspace-wide until repaired. (asha's own repos
+   continue to gitignore `.asha/` — the convention binds workspaces, not
+   this toolkit's repositories.)
