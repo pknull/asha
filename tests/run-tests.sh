@@ -225,6 +225,17 @@ else
 fi
 echo ""
 
+# Test Suite 15: Workspace Status Tests (workspace v1, issue #35)
+echo -e "${BLUE}--- Test Suite 15: Workspace Status Tests ---${NC}"
+if "$SCRIPT_DIR/test-workspace.sh"; then
+    echo -e "${GREEN}✓ Workspace status tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Workspace status tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"
