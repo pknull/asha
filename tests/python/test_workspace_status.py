@@ -28,7 +28,9 @@ import workspace_status as ws  # type: ignore[reportMissingImports]  # noqa: E40
 
 def _git(*args, cwd=None):
     subprocess.run(
-        ["git", *args], cwd=cwd, check=True,
+        # init.defaultBranch pinned: the branch assertions must not depend on
+        # the machine's git config (pass-2 portability finding).
+        ["git", "-c", "init.defaultBranch=master", *args], cwd=cwd, check=True,
         capture_output=True, text=True,
         env={**os.environ,
              "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
@@ -168,6 +170,62 @@ class ValidWorkspaceCases(StatusFixture):
         self.assertIn("thallus", out)
         self.assertIn("egregore", out)
         self.assertIn("servitor", out)
+        # The proposal's status surface includes the memory roots (pass-2
+        # blocking finding: they were omitted entirely).
+        self.assertIn("Memory", out)
+        self.assertIn("memory-local", out)
+        self.assertIn("knowledge", out)
+
+    def test_plain_subdirectory_is_not_a_repo(self):
+        # Pass-2 BLOCKING: a declared repo that is a plain subdir inside the
+        # PARENT repo must not inherit the parent's branch/dirty state —
+        # is-inside-work-tree is true anywhere under the workspace repo.
+        plain = self.ws / "plainchild"
+        plain.mkdir()
+        data = json.loads(
+            (self.ws / ".asha" / "workspace.json").read_text(encoding="utf-8")
+        )
+        data["repositories"].append({"path": "plainchild"})
+        self._manifest(data)
+        report = ws.build_status(start=self.egregore)
+        repos = {r["path"]: r for r in report["repositories"]}
+        self.assertTrue(repos["plainchild"]["exists"])
+        self.assertFalse(repos["plainchild"]["is_git_worktree"])
+        self.assertIsNone(repos["plainchild"]["branch"])
+        codes = {w["code"] for w in report["warnings"]}
+        self.assertIn("repo_not_git", codes)
+
+    def test_symlinked_repo_escaping_workspace_is_flagged_not_probed(self):
+        # Pass-2 BLOCKING: a declared path that resolves outside the
+        # workspace must not have git state read from the foreign target.
+        outside = self.tmp / "elsewhere"
+        outside.mkdir()
+        _git("init", "-q", str(outside))
+        (self.ws / "escapee").symlink_to(outside)
+        data = json.loads(
+            (self.ws / ".asha" / "workspace.json").read_text(encoding="utf-8")
+        )
+        data["repositories"].append({"path": "escapee"})
+        self._manifest(data)
+        report = ws.build_status(start=self.egregore)
+        repos = {r["path"]: r for r in report["repositories"]}
+        self.assertFalse(repos["escapee"]["is_git_worktree"])
+        codes = {w["code"] for w in report["warnings"]}
+        self.assertIn("repo_escapes_workspace", codes)
+        self.assertNotEqual(report["active_repository"], "escapee")
+
+    def test_unborn_repo_still_reports_branch(self):
+        unborn = self.ws / "fresh"
+        unborn.mkdir()
+        _git("init", "-q", str(unborn))
+        data = json.loads(
+            (self.ws / ".asha" / "workspace.json").read_text(encoding="utf-8")
+        )
+        data["repositories"].append({"path": "fresh"})
+        self._manifest(data)
+        report = ws.build_status(start=self.egregore)
+        repos = {r["path"]: r for r in report["repositories"]}
+        self.assertEqual(repos["fresh"]["branch"], "master")
 
 
 class InvalidWorkspaceCases(StatusFixture):
@@ -187,6 +245,52 @@ class InvalidWorkspaceCases(StatusFixture):
         # Guided repair, never auto-fix (ratified convention).
         self.assertIn("repair", out.lower())
         self.assertIn("workspace.json", out)
+
+    def test_manifest_outside_shared_git_root_warns(self):
+        # Pass-2 BLOCKING: sgr="Memory" is a VALID layout (op == sgr), but
+        # the workspace manifest then lies outside the sgr tree — the
+        # committed-manifest convention cannot apply, and that must be a
+        # visible warning, not a silent null.
+        self._manifest({
+            "version": 1, "workspace_name": "thallus",
+            "memory": {"shared_git_root": "Memory",
+                       "operational_root": "Memory"},
+        })
+        mem = self.ws / "Memory"
+        mem.mkdir(exist_ok=True)
+        _git("init", "-q", str(mem))
+        (mem / "seed").write_text("x", encoding="utf-8")
+        _git("add", "seed", cwd=mem)
+        _git("commit", "-qm", "init", cwd=mem)
+        child = self._child("egregore", git=False)
+        report = ws.build_status(start=child)
+        self.assertTrue(report["ok"])
+        self.assertIsNone(report["manifest_tracked"])
+        codes = {w["code"] for w in report["warnings"]}
+        self.assertIn("manifest_outside_shared_git_root", codes)
+
+    def test_detection_failure_renders_without_manifest_repair(self):
+        # Pass-2: a bad --start is a DETECTION failure; telling the user to
+        # repair a manifest that was never found is misdirection.
+        rc, out = _run_cli(["workspace_status.py",
+                            "--start", str(self.tmp / "nope")])
+        self.assertEqual(rc, 1)
+        self.assertNotIn("repair: edit", out)
+        self.assertIn("detection", out.lower())
+
+    def test_repair_guidance_uses_absolute_tool_path(self):
+        self._manifest({"version": 2, "workspace_name": "thallus"})
+        child = self._child("egregore", git=False)
+        rc, out = _run_cli(["workspace_status.py", "--start", str(child)])
+        self.assertEqual(rc, 1)
+        self.assertIn(str(TOOLS_DIR / "workspace_manifest.py"), out)
+
+    def test_cli_usage_errors(self):
+        for argv in (["workspace_status.py", "--start="],
+                     ["workspace_status.py", "--start", "--json"],
+                     ["workspace_status.py", "--start"]):
+            rc, _ = _run_cli(argv)
+            self.assertEqual(rc, 2, argv)
 
     def test_shared_git_root_not_a_repo_warns(self):
         self._manifest()

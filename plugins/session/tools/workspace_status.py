@@ -49,27 +49,57 @@ def _git_lines(args: List[str], cwd: Optional[Path] = None) -> Optional[str]:
     return res.stdout.strip()
 
 
-def _is_git_worktree(path: Path) -> bool:
-    out = _git_lines(["-C", str(path), "rev-parse", "--is-inside-work-tree"])
-    return out == "true"
+def _is_repo_root(path: Path) -> bool:
+    """True iff path is itself the toplevel of a git worktree.
+
+    is-inside-work-tree is NOT enough: it answers true for any plain
+    subdirectory of the surrounding workspace repo, which would report the
+    parent's branch/dirty state as the child's (pass-2 blocking finding).
+    """
+    out = _git_lines(["-C", str(path), "rev-parse", "--show-toplevel"])
+    if out is None:
+        return False
+    try:
+        return Path(out).resolve() == path.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return False
 
 
-def _repo_state(path: Path) -> dict:
+def _contained(candidate: Path, root: Path) -> Optional[Path]:
+    """Resolved candidate iff it stays inside resolved root; else None.
+
+    Canonical, not lexical: a declared path that is a symlink out of the
+    workspace must not have git state read from the foreign target.
+    """
+    try:
+        c = candidate.resolve()
+        r = root.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if c == r or r in c.parents:
+        return c
+    return None
+
+
+def _repo_state(path: Path, resolved: Optional[Path]) -> dict:
     state = {
         "exists": path.is_dir(),
         "is_git_worktree": False,
         "branch": None,
         "dirty": None,
     }
-    if not state["exists"]:
+    if not state["exists"] or resolved is None:
         return state
-    if not _is_git_worktree(path):
+    if not _is_repo_root(resolved):
         return state
     state["is_git_worktree"] = True
-    state["branch"] = _git_lines(
-        ["-C", str(path), "rev-parse", "--abbrev-ref", "HEAD"]
+    # Unborn HEAD: abbrev-ref fails before the first commit, but the
+    # symbolic branch name is still known.
+    state["branch"] = (
+        _git_lines(["-C", str(resolved), "rev-parse", "--abbrev-ref", "HEAD"])
+        or _git_lines(["-C", str(resolved), "symbolic-ref", "--short", "HEAD"])
     )
-    porcelain = _git_lines(["-C", str(path), "status", "--porcelain"])
+    porcelain = _git_lines(["-C", str(resolved), "status", "--porcelain"])
     state["dirty"] = None if porcelain is None else bool(porcelain)
     return state
 
@@ -77,10 +107,11 @@ def _repo_state(path: Path) -> dict:
 def _active_repository(ws_root: Path, repos: List[dict],
                        start: Path) -> Optional[str]:
     """Deepest declared repository whose tree contains start. cwd-only per
-    the ratified proposal (explicit child naming is a v2 concern)."""
+    the ratified proposal (explicit child naming is a v2 concern). Escaped
+    (out-of-workspace) declarations never qualify."""
     try:
         resolved = start.resolve()
-    except OSError:
+    except (OSError, RuntimeError, ValueError):
         return None
     best: Optional[str] = None
     best_depth = -1
@@ -88,7 +119,9 @@ def _active_repository(ws_root: Path, repos: List[dict],
         rel = entry.get("path")
         if not isinstance(rel, str):
             continue
-        candidate = (ws_root / rel).resolve()
+        candidate = _contained(ws_root / rel, ws_root)
+        if candidate is None:
+            continue
         if candidate == resolved or candidate in resolved.parents:
             depth = len(candidate.parts)
             if depth > best_depth:
@@ -124,33 +157,57 @@ def build_status(start: Optional[Path] = None) -> dict:
 
     # shared_git_root state — where workspace memory commits land.
     sgr_rel = manifest.get("memory", {}).get("shared_git_root", ".")
-    sgr_path = (ws_root / sgr_rel).resolve() if sgr_rel != "." else ws_root
-    sgr_is_git = _is_git_worktree(sgr_path)
-    sgr_porcelain = (
-        _git_lines(["-C", str(sgr_path), "status", "--porcelain"])
-        if sgr_is_git else None
-    )
-    report["shared_git_root"] = {
-        "path": str(sgr_path),
-        "is_git_worktree": sgr_is_git,
-        "dirty": bool(sgr_porcelain) if sgr_porcelain is not None else None,
-    }
-    if not sgr_is_git:
-        warn("shared_git_root_not_git",
-             f"shared_git_root ({sgr_path}) is not a git worktree — "
-             f"workspace memory commits are unavailable until it is")
+    sgr_resolved = (ws_root if sgr_rel == "."
+                    else _contained(ws_root / sgr_rel, ws_root))
+    if sgr_resolved is None:
+        # Canonical escape (symlink out of the workspace): never probe git
+        # state on the foreign target.
+        report["shared_git_root"] = {
+            "path": str(ws_root / sgr_rel),
+            "is_git_worktree": False,
+            "dirty": None,
+        }
+        warn("shared_git_root_escapes_workspace",
+             f"shared_git_root ({sgr_rel}) resolves outside the workspace "
+             f"root — refusing to inspect it")
+        sgr_is_git = False
+    else:
+        sgr_is_git = _is_repo_root(sgr_resolved)
+        sgr_porcelain = (
+            _git_lines(["-C", str(sgr_resolved), "status", "--porcelain"])
+            if sgr_is_git else None
+        )
+        report["shared_git_root"] = {
+            "path": str(sgr_resolved),
+            "is_git_worktree": sgr_is_git,
+            "dirty": (bool(sgr_porcelain)
+                      if sgr_porcelain is not None else None),
+        }
+        if not sgr_is_git:
+            warn("shared_git_root_not_git",
+                 f"shared_git_root ({sgr_resolved}) is not the root of a "
+                 f"git worktree — workspace memory commits are unavailable "
+                 f"until it is")
 
     # Manifest trackedness — ratified convention: committed in shared_git_root.
-    if sgr_is_git:
+    if sgr_is_git and sgr_resolved is not None:
         rel_manifest = None
         try:
             rel_manifest = (ws_root / ".asha" / "workspace.json").resolve() \
-                .relative_to(sgr_path)
-        except ValueError:
+                .relative_to(sgr_resolved)
+        except (ValueError, OSError, RuntimeError):
             pass
-        if rel_manifest is not None:
+        if rel_manifest is None:
+            # A layout like shared_git_root="Memory" is valid, but the
+            # manifest then lives OUTSIDE the commit repo — the convention
+            # cannot apply, and silence would hide that (pass-2 finding).
+            warn("manifest_outside_shared_git_root",
+                 ".asha/workspace.json lies outside the shared_git_root "
+                 "tree — the committed-manifest convention cannot apply to "
+                 "this layout")
+        else:
             tracked = _git_lines(
-                ["-C", str(sgr_path), "ls-files", "--error-unmatch",
+                ["-C", str(sgr_resolved), "ls-files", "--error-unmatch",
                  str(rel_manifest)]
             )
             report["manifest_tracked"] = tracked is not None
@@ -159,7 +216,7 @@ def build_status(start: Optional[Path] = None) -> dict:
                      "the workspace manifest is not committed in "
                      "shared_git_root — the ratified convention is to track "
                      "it so the workspace definition is shared "
-                     f"(git -C {sgr_path} add {rel_manifest})")
+                     f"(git -C {sgr_resolved} add {rel_manifest})")
 
     # Declared repositories — reported, never assumed.
     start_path = Path(start if start is not None else Path.cwd())
@@ -168,7 +225,9 @@ def build_status(start: Optional[Path] = None) -> dict:
         rel = entry.get("path")
         if not isinstance(rel, str):
             continue
-        state = _repo_state(ws_root / rel)
+        lexical = ws_root / rel
+        resolved = _contained(lexical, ws_root)
+        state = _repo_state(lexical, resolved)
         state["path"] = rel
         if "role" in entry:
             state["role"] = entry["role"]
@@ -177,6 +236,10 @@ def build_status(start: Optional[Path] = None) -> dict:
             warn("repo_missing",
                  f"declared repository {rel} does not exist under the "
                  f"workspace root")
+        elif resolved is None:
+            warn("repo_escapes_workspace",
+                 f"declared repository {rel} resolves outside the workspace "
+                 f"root — refusing to inspect it")
         elif not state["is_git_worktree"]:
             warn("repo_not_git",
                  f"declared repository {rel} exists but is not a git "
@@ -193,6 +256,13 @@ def _render_human(report: dict) -> str:
     with contextlib.redirect_stdout(out):
         if report["workspace_root"] is None and not report["errors"]:
             print("workspace: none (single-project mode)")
+        elif report["workspace_root"] is None and report["errors"]:
+            # Detection itself failed (bad start dir, unreadable ancestor):
+            # there is no manifest to repair — misdirecting the user to edit
+            # one was a pass-2 finding.
+            print("workspace: detection failed")
+            for e in report["errors"]:
+                print(f"  error: {e['code']} — {e['message']}")
         elif not report["ok"]:
             print(f"workspace: INVALID at {report['workspace_root'] or '?'}")
             for e in report["errors"]:
@@ -200,8 +270,8 @@ def _render_human(report: dict) -> str:
                 print(f"  error: {e['code']}{field} — {e['message']}")
             print("  repair: edit .asha/workspace.json at the workspace "
                   "root, then validate with:")
-            print("    python3 plugins/session/tools/workspace_manifest.py "
-                  "<path-to-workspace.json>")
+            validator = Path(__file__).resolve().parent / "workspace_manifest.py"
+            print(f"    python3 {validator} <path-to-workspace.json>")
             print("  (fail-closed by design: no partial workspace behavior "
                   "until the manifest is valid)")
         else:
@@ -215,6 +285,11 @@ def _render_human(report: dict) -> str:
             if sgr.get("dirty") is not None:
                 dirty = ", dirty" if sgr["dirty"] else ", clean"
             print(f"  shared_git_root: {sgr.get('path')} ({state}{dirty})")
+            mem = report["memory"] or {}
+            print(f"  memory: operational={mem.get('operational_root')} "
+                  f"personal={mem.get('personal_root')} "
+                  f"shared={mem.get('shared_root')} "
+                  f"(promotion: {mem.get('promotion_mode')})")
             if report["manifest_tracked"] is not None:
                 print(f"  manifest tracked: "
                       f"{'yes' if report['manifest_tracked'] else 'NO'}")
@@ -242,11 +317,22 @@ def main(argv: List[str]) -> int:
     while i < len(args):
         if args[i] == "--json":
             as_json = True
-        elif args[i] == "--start" and i + 1 < len(args):
+        elif args[i] == "--start":
+            # The value must exist and must not be another flag — silently
+            # consuming "--json" as a directory was a pass-2 finding.
+            if i + 1 >= len(args) or args[i + 1].startswith("--"):
+                print("usage: workspace_status.py [--json] [--start DIR]",
+                      file=sys.stderr)
+                return 2
             start = Path(args[i + 1])
             i += 1
         elif args[i].startswith("--start="):
-            start = Path(args[i].split("=", 1)[1])
+            value = args[i].split("=", 1)[1]
+            if not value:
+                print("usage: workspace_status.py [--json] [--start DIR]",
+                      file=sys.stderr)
+                return 2
+            start = Path(value)
         else:
             print("usage: workspace_status.py [--json] [--start DIR]",
                   file=sys.stderr)

@@ -20,7 +20,7 @@ trap 'rm -rf "$FIX"' EXIT
 export HOME="$FIX/home"   # sandbox: the walk stops before $HOME (exclusive)
 mkdir -p "$HOME"
 
-git_q() { git -c user.name=t -c user.email=t@t "$@" >/dev/null 2>&1; }
+git_q() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=master "$@" >/dev/null 2>&1; }
 
 # Fixture: a valid workspace with one present child repo and one declared-
 # but-missing repo; manifest committed in shared_git_root (the convention).
@@ -59,7 +59,9 @@ if [[ $rc -eq 0 && "$out" == *"workspace: none"* ]]; then pass; else fail "rc=$r
 echo -n "Test WS-2: valid workspace -> exit 0, essentials present... "
 out="$("$ASHA" workspace status --start "$WS/egregore" 2>&1)" && rc=0 || rc=$?
 if [[ $rc -eq 0 && "$out" == *"thallus"* && "$out" == *"egregore"* \
-      && "$out" == *"servitor"* && "$out" == *"repo_missing"* ]]; then
+      && "$out" == *"servitor"* && "$out" == *"repo_missing"* \
+      && "$out" == *"operational=Memory"* \
+      && "$out" == *"memory-local"* && "$out" == *"knowledge"* ]]; then
     pass
 else fail "rc=$rc out=$out"; fi
 
@@ -110,6 +112,14 @@ echo -n "Test WS-10: doctor section reports valid workspace, rc 0... "
 out="$(cd "$WS/egregore" && MARKET_ROOT="$REPO_ROOT" bash -c "
     source '$REPO_ROOT/lib/doctor.sh'; _asha_doctor_workspace_section" 2>&1)" && rc=0 || rc=$?
 if [[ $rc -eq 0 && "$out" == *"thallus"* ]]; then pass; else fail "rc=$rc out=$out"; fi
+
+echo -n "Test WS-11: doctor section visibly skips without python3... "
+out="$(cd "$WS/egregore" && MARKET_ROOT="$REPO_ROOT" bash -c "
+    source '$REPO_ROOT/lib/doctor.sh'; PATH=/nonexistent
+    _asha_doctor_workspace_section" 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 0 && "$out" == *"skipped"* && "$out" == *"python3"* ]]; then
+    pass
+else fail "rc=$rc out=$out"; fi
 
 echo ""
 echo -e "Passed: ${GREEN}${PASSED}${NC}  Failed: ${RED}${FAILED}${NC}"
