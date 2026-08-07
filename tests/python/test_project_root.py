@@ -35,6 +35,35 @@ def _write_manifest(root: Path, data=None) -> None:
     )
 
 
+class SiblingImportTests(unittest.TestCase):
+    """Pass-2: the rewired detectors must import their sibling resolver even
+    when tools/ is not already on sys.path (importlib/embedded loaders)."""
+
+    def test_pattern_analyzer_imports_without_tools_on_syspath(self):
+        import subprocess as sp
+        for module in ("pattern_analyzer", "event_store", "learnings_manager"):
+            path = TOOLS_DIR / f"{module}.py"
+            code = (
+                "import importlib.util,sys;"
+                f"spec=importlib.util.spec_from_file_location('probe_{module}',"
+                f" r'{path}');"
+                "m=importlib.util.module_from_spec(spec);"
+                "spec.loader.exec_module(m);"
+                "print('ok')"
+            )
+            env = dict(os.environ)
+            env["CLAUDE_PROJECT_DIR"] = str(self._project())
+            res = sp.run([sys.executable, "-c", code], capture_output=True,
+                         text=True, env=env)
+            self.assertIn("ok", res.stdout, f"{module}: {res.stderr[-400:]}")
+
+    def _project(self) -> Path:
+        tmp = Path(tempfile.mkdtemp(prefix="asha_sib_"))
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp, True))
+        (tmp / "Memory" / "events").mkdir(parents=True)
+        return tmp
+
+
 class DetectProjectRootTests(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp(prefix="asha_pr_"))
@@ -220,6 +249,62 @@ class DetectWorkspaceTests(unittest.TestCase):
         self.assertEqual(det.root, ws)
         self.assertIsNotNone(det.manifest)
 
+    # -- pass-2 (PR #34 review): the walk must be TOTAL and fail closed ----
+
+    def test_manifest_path_that_is_a_directory_is_typed_not_skipped(self):
+        # exists-but-not-a-regular-file must NOT read as "no manifest here"
+        # and let the walk climb to a higher workspace.
+        outer = self.home / "Code"
+        inner = outer / "ws"
+        child = inner / "repo"
+        child.mkdir(parents=True)
+        _write_manifest(outer)
+        (inner / ".asha" / "workspace.json").mkdir(parents=True)
+        det = pr.detect_workspace(start=child)
+        self.assertEqual(det.root, inner)
+        self.assertIsNone(det.manifest)
+        self.assertEqual({e.code for e in det.errors}, {"not_a_file"})
+
+    def test_broken_symlink_manifest_is_typed(self):
+        ws = self.home / "Code" / "ws"
+        child = ws / "repo"
+        child.mkdir(parents=True)
+        (ws / ".asha").mkdir()
+        (ws / ".asha" / "workspace.json").symlink_to(ws / "nonexistent.json")
+        det = pr.detect_workspace(start=child)
+        self.assertEqual(det.root, ws)
+        self.assertEqual({e.code for e in det.errors}, {"not_a_file"})
+
+    def test_permission_denied_ancestor_is_typed_not_traceback(self):
+        if os.geteuid() == 0:
+            self.skipTest("root bypasses directory permissions")
+        locked = self.home / "locked"
+        child = locked / "repo"
+        child.mkdir(parents=True)
+        locked.chmod(0o000)
+        self.addCleanup(lambda: locked.chmod(0o755))
+        det = pr.detect_workspace(start=child)
+        self.assertIsNone(det.manifest)
+        # Whether the unreadable ancestor trips start validation or the walk
+        # itself is an OS/stat detail; the pinned contract is a typed
+        # fail-closed verdict rather than a traceback out of a session hook.
+        self.assertTrue(det.errors)
+        self.assertIn(
+            det.errors[0].code, ("invalid_start", "walk_failed")
+        )
+
+    def test_nonexistent_start_is_typed(self):
+        det = pr.detect_workspace(start=self.home / "no" / "such" / "dir")
+        self.assertIsNone(det.root)
+        self.assertEqual({e.code for e in det.errors}, {"invalid_start"})
+
+    def test_file_as_start_is_typed(self):
+        f = self.home / "afile"
+        f.write_text("x", encoding="utf-8")
+        det = pr.detect_workspace(start=f)
+        self.assertIsNone(det.root)
+        self.assertEqual({e.code for e in det.errors}, {"invalid_start"})
+
 
 class WorkspaceCliTests(unittest.TestCase):
     def setUp(self):
@@ -263,6 +348,21 @@ class WorkspaceCliTests(unittest.TestCase):
         verdict = json.loads(out)
         self.assertIsNone(verdict["workspace_root"])
         self.assertTrue(verdict["ok"])
+
+    def test_cli_rejects_extra_arguments(self):
+        rc, _ = self._run(
+            ["project_root.py", "workspace", "--start", str(self.tmp), "EXTRA"]
+        )
+        self.assertEqual(rc, 2)
+
+    def test_cli_invalid_start_exits_one(self):
+        rc, out = self._run(
+            ["project_root.py", "workspace", "--start", "/definitely/not/here"]
+        )
+        self.assertEqual(rc, 1)
+        verdict = json.loads(out)
+        self.assertFalse(verdict["ok"])
+        self.assertEqual(verdict["errors"][0]["code"], "invalid_start")
 
     def test_cli_invalid_manifest_exits_one(self):
         ws = self.tmp / "home" / "ws"

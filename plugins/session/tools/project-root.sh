@@ -34,7 +34,11 @@ asha_detect_project_root() {
     elif [[ ",$layers," == *",env,"* && -n "${CLAUDE_PROJECT_DIR:-}" ]]; then
         dir="$CLAUDE_PROJECT_DIR"
     else
-        if [[ -z "$dir" && ",$layers," == *",git,"* ]]; then
+        # `command -v git` guard is load-bearing, not decoration: without it a
+        # shell carrying a command_not_found_handle can fabricate stdout that
+        # would be accepted as a project root.
+        if [[ -z "$dir" && ",$layers," == *",git,"* ]] \
+            && command -v git >/dev/null 2>&1; then
             local git_root
             git_root=$(git rev-parse --show-toplevel 2>/dev/null || true)
             if [[ -n "$git_root" && -d "$git_root/Memory" ]]; then
@@ -55,6 +59,7 @@ asha_detect_project_root() {
     fi
 
     if [[ "$home_guard" == "1" && -n "$dir" ]] \
+        && command -v readlink >/dev/null 2>&1 \
         && [[ "$(readlink -f "$dir")" == "$(readlink -f "$HOME")" ]]; then
         dir=""
     fi
