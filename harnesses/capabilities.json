@@ -39,6 +39,12 @@
           "limitations": [
             "SessionStart supplies additional runtime context"
           ]
+        },
+        "workspace": {
+          "support": "native",
+          "surface": "shared tools (project_root.py, save_scope.py, workspace_status.py) + PreToolUse save-commit-gate",
+          "verifier": "tests: Suite 15, Test 9b/9c live pins",
+          "limitations": []
         }
       }
     },
@@ -93,6 +99,15 @@
           "surface": "model_instructions_file",
           "verifier": "launch-wrapper",
           "limitations": []
+        },
+        "workspace": {
+          "support": "partial",
+          "surface": "shared tools via rendered command-skills",
+          "verifier": "live probe 2026-08-08 (CODEX_THREAD_ID env, no CLAUDE_PROJECT_DIR): detection + save_scope proof round-trip OK",
+          "limitations": [
+            "save-commit-gate registered but not enforced: codex PreToolUse shell interception did not fire (0.142 probe) — writer-side proof is the operative protection",
+            "no automatic-save lifecycle (pre-existing)"
+          ]
         },
         "plugins": {
           "support": "unsupported",
@@ -149,6 +164,14 @@
           "surface": "COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
           "verifier": "launch-wrapper",
           "limitations": []
+        },
+        "workspace": {
+          "support": "partial",
+          "surface": "shared tools via rendered command-skills; auto-save lifecycle wired",
+          "verifier": "live probe 2026-08-08 (COPILOT_CLI env, no CLAUDE_PROJECT_DIR): detection + save_scope proof round-trip OK",
+          "limitations": [
+            "save-commit-gate not chained into copilot-policy-adapter (pre-existing since the gate's creation) — writer-side proof is the operative protection"
+          ]
         }
       }
     }

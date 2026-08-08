@@ -920,6 +920,14 @@ git push -u origin <branch-name>
 
 ## Version History
 
+### Workspace v1 complete (2026-08-08) — parity attested, ship gate closed
+
+Issue #39: live per-harness probes recorded in `docs/harness-enforcement.md`
+- `workspace` capability entries in `harnesses/capabilities.json`. Claude
+full; Codex/Copilot partial (detection + writer-proof verified live; gate
+enforcement honestly limited — writer-side proof is the operative
+protection). All six delivery issues of the ratified proposal are shipped.
+
 ### Session v1.17.0 (2026-08-08) — save scopes + state-based commit gate
 
 Workspace v1 delivery issue 4 (issue #36). `/save --scope repo|workspace|
