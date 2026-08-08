@@ -528,6 +528,158 @@ else
 fi
 
 # ============================================================================
+# Test 9d: auto-commit-memory — plane-aware writer seam for the AUTOMATIC
+# save path (workspace v1, #36 deferral closed under #39). The commit gate
+# never sees hook-context commits (they are not model tool calls on any
+# harness), so this writer seam is the auto path's ONLY protection: legacy
+# no-manifest behavior preserved; workspace plane proof-bound + scope-staged;
+# manifest-present-but-unvalidatable skips the commit (fail closed).
+# ============================================================================
+echo -n "Test 9d: auto-commit-memory plane-aware writer seam... "
+G9D_OK=1; G9D_WHY=""
+chk9d() { [[ "$2" == "$3" ]] || { G9D_OK=0; G9D_WHY="$G9D_WHY $1(got='$2' want='$3')"; }; }
+
+ACM="$REPO_ROOT/plugins/session/tools/auto-commit-memory.sh"
+G9D="$(mktemp -d)"
+G9D_HOME="$G9D/home"
+mkdir -p "$G9D_HOME"
+
+g9d_git() { git -c user.name=t -c user.email=t@t -c init.defaultBranch=master "$@" >/dev/null 2>&1; }
+g9d_repo() {  # init a repo with committable identity (the tool commits itself)
+    g9d_git init "$1"
+    git -C "$1" config user.name t
+    git -C "$1" config user.email t@t
+}
+g9d_run() {   # PROJECT_DIR — run the tool isolated; echo its JSON stdout
+    env -u ASHA_HARNESS -u CLAUDE_PROJECT_DIR HOME="$G9D_HOME" \
+        bash "$ACM" "$1" 2>/dev/null || true
+}
+# NOTE: `// empty` would swallow a legitimate boolean false — tostring keeps it.
+g9d_field() { printf '%s' "$1" | jq -r ".$2 | tostring" 2>/dev/null || true; }
+g9d_head() { git -C "$1" rev-parse HEAD 2>/dev/null || echo none; }
+
+if [[ ! -f "$ACM" ]]; then
+    G9D_OK=0; G9D_WHY=" tool-missing($ACM)"
+else
+    # --- plain project (no workspace): legacy behavior preserved ---
+    DP="$G9D_HOME/proj"
+    mkdir -p "$DP/Memory" "$DP/Work/markers"
+    echo "# ctx" > "$DP/Memory/activeContext.md"
+    g9d_repo "$DP"
+    ( cd "$DP" && echo b > b.txt && g9d_git add b.txt && g9d_git commit -m init )
+    echo note > "$DP/Memory/note.md"
+    echo stray > "$DP/stray.txt"
+    OUT="$(g9d_run "$DP")"
+    chk9d d_plain_committed "$(g9d_field "$OUT" committed)" "true"
+    FILES="$(git -C "$DP" show --name-only --format= HEAD 2>/dev/null | grep -v '^$' | sort | tr '\n' ' ')"
+    chk9d d_plain_only_memory "$FILES" "Memory/activeContext.md Memory/note.md "
+    chk9d d_plain_stray_left "$(git -C "$DP" status --porcelain -- stray.txt | cut -c1-2)" "??"
+    # nothing to commit -> clean skip, exit 0
+    OUT="$(g9d_run "$DP")"
+    chk9d d_plain_nothing "$(g9d_field "$OUT" committed)" "false"
+
+    # --- workspace fixture: sgr = ws root, one declared child repo ---
+    DW="$G9D_HOME/Code/ws"
+    mkdir -p "$DW/.asha" "$DW/Memory" "$DW/Work/markers"
+    printf '{"version":1,"workspace_name":"ws","repositories":[{"path":"child"}]}' > "$DW/.asha/workspace.json"
+    echo "# ws ctx" > "$DW/Memory/activeContext.md"
+    g9d_repo "$DW"
+    ( cd "$DW" && echo b > b.txt && g9d_git add b.txt && g9d_git commit -m init )
+    DC="$DW/child"
+    mkdir -p "$DC/Memory" "$DC/Work/markers"
+    echo "# child ctx" > "$DC/Memory/activeContext.md"
+    g9d_repo "$DC"
+    ( cd "$DC" && echo b > b.txt && g9d_git add b.txt && g9d_git commit -m init )
+
+    # child project under a workspace: commit lands in the CHILD, ws untouched
+    echo cn > "$DC/Memory/child-note.md"
+    WS_HEAD_BEFORE="$(g9d_head "$DW")"
+    OUT="$(g9d_run "$DC")"
+    chk9d d_child_committed "$(g9d_field "$OUT" committed)" "true"
+    chk9d d_child_repo "$(g9d_field "$OUT" commit_repo)" "$DC"
+    chk9d d_child_ws_untouched "$(g9d_head "$DW")" "$WS_HEAD_BEFORE"
+
+    # workspace root: proof-bound scoped commit in the shared repo; DIRTY
+    # child memory and DIRTY ws non-memory must both stay out of it
+    echo wn > "$DW/Memory/ws-note.md"
+    echo wstray > "$DW/ws-stray.txt"
+    echo cn2 > "$DC/Memory/child-note-2.md"
+    CH_HEAD_BEFORE="$(g9d_head "$DC")"
+    OUT="$(g9d_run "$DW")"
+    chk9d d_ws_committed "$(g9d_field "$OUT" committed)" "true"
+    chk9d d_ws_scope "$(g9d_field "$OUT" scope)" "workspace"
+    chk9d d_ws_repo "$(g9d_field "$OUT" commit_repo)" "$DW"
+    WFILES="$(git -C "$DW" show --name-only --format= HEAD 2>/dev/null | grep -v '^$' | sort | tr '\n' ' ')"
+    chk9d d_ws_only_memory "$WFILES" "Memory/activeContext.md Memory/ws-note.md "
+    chk9d d_ws_child_untouched "$(g9d_head "$DC")" "$CH_HEAD_BEFORE"
+    # consume-on-use: the auto proof must not linger for later ad-hoc commits
+    [[ -f "$DW/Work/markers/save-gates-ok" ]] && d_pf=present || d_pf=gone
+    chk9d d_ws_proof_consumed "$d_pf" "gone"
+
+    # invalid manifest: fail CLOSED — no commit in EITHER plane, exit 0
+    printf '{"version":9}' > "$DW/.asha/workspace.json"
+    echo cn3 > "$DC/Memory/child-note-3.md"
+    CH_HEAD_BEFORE="$(g9d_head "$DC")"
+    WS_HEAD_BEFORE="$(g9d_head "$DW")"
+    OUT="$(g9d_run "$DC")"
+    chk9d d_invalid_skip "$(g9d_field "$OUT" committed)" "false"
+    chk9d d_invalid_child_untouched "$(g9d_head "$DC")" "$CH_HEAD_BEFORE"
+    chk9d d_invalid_ws_untouched "$(g9d_head "$DW")" "$WS_HEAD_BEFORE"
+    printf '{"version":1,"workspace_name":"ws","repositories":[{"path":"child"}]}' > "$DW/.asha/workspace.json"
+    rm -f "$DC/Memory/child-note-3.md"
+
+    # undeclared subdirectory INSIDE the shared repo (no own .git): a commit
+    # would land in the shared repo unattributed -> fail closed, ws untouched
+    mkdir -p "$DW/sub/Memory"
+    echo s > "$DW/sub/Memory/activeContext.md"
+    WS_HEAD_BEFORE="$(g9d_head "$DW")"
+    OUT="$(g9d_run "$DW/sub")"
+    chk9d d_subdir_skip "$(g9d_field "$OUT" committed)" "false"
+    chk9d d_subdir_ws_untouched "$(g9d_head "$DW")" "$WS_HEAD_BEFORE"
+
+    # workspace silence marker: persistence is off for the plane -> skip
+    touch "$DW/Work/markers/silence"
+    echo wn2 > "$DW/Memory/ws-note-2.md"
+    WS_HEAD_BEFORE="$(g9d_head "$DW")"
+    OUT="$(g9d_run "$DW")"
+    chk9d d_ws_silence_skip "$(g9d_field "$OUT" committed)" "false"
+    chk9d d_ws_silence_untouched "$(g9d_head "$DW")" "$WS_HEAD_BEFORE"
+    rm -f "$DW/Work/markers/silence"
+
+    # silence parity on the LEGACY paths too (the gate denies these; a direct
+    # tool invocation must not commit what the save pipeline would refuse)
+    touch "$DP/Work/markers/silence"
+    echo n2 > "$DP/Memory/note-2.md"
+    P_HEAD_BEFORE="$(g9d_head "$DP")"
+    OUT="$(g9d_run "$DP")"
+    chk9d d_plain_silence_skip "$(g9d_field "$OUT" committed)" "false"
+    chk9d d_plain_silence_untouched "$(g9d_head "$DP")" "$P_HEAD_BEFORE"
+    rm -f "$DP/Work/markers/silence"
+    touch "$DC/Work/markers/silence"
+    echo cn4 > "$DC/Memory/child-note-4.md"
+    CH_HEAD_BEFORE="$(g9d_head "$DC")"
+    OUT="$(g9d_run "$DC")"
+    chk9d d_child_silence_skip "$(g9d_field "$OUT" committed)" "false"
+    chk9d d_child_silence_untouched "$(g9d_head "$DC")" "$CH_HEAD_BEFORE"
+    rm -f "$DC/Work/markers/silence"
+
+    # save-session.sh automatic mode routes through this seam (wiring pin)
+    grep -q 'auto-commit-memory.sh' "$REPO_ROOT/plugins/session/tools/save-session.sh" \
+        && d_wired=yes || d_wired=no
+    chk9d d_save_session_wired "$d_wired" "yes"
+fi
+
+rm -rf "$G9D"
+if [[ $G9D_OK -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  auto-commit pin mismatch:$G9D_WHY"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
 # Test 10: is_asha_initialized function
 # ============================================================================
 echo -n "Test 10: is_asha_initialized correctly detects initialization... "
@@ -3298,7 +3450,7 @@ fi
 # ============================================================================
 echo -n "Test 108: Test infrastructure self-check... "
 # This test verifies the test suite is complete
-EXPECTED_TESTS=86
+EXPECTED_TESTS=102
 if [[ $((PASSED + FAILED + SKIPPED + 1)) -eq $EXPECTED_TESTS ]]; then
     echo -e "${GREEN}PASS${NC} ($EXPECTED_TESTS tests)"
     PASSED=$((PASSED + 1))

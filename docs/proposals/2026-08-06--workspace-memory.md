@@ -3,7 +3,7 @@ title: Workspace-aware multi-repository memory
 type: proposal
 status: ratified — Keeper, via merge of PR #28 (2026-08-07 UTC)
 date: 2026-08-06
-origin: issues #23–#26 (workspace RFC cluster); scope decisions ruled by Keeper 2026-08-06; amended per panel review and codex second-pass 2026-08-07 UTC (Work/panels/2026-08-06--pr28-workspace-proposal-review/)
+origin: issues #23–#26 (workspace RFC cluster); scope decisions ruled by Keeper 2026-08-06; amended per panel review and codex second-pass 2026-08-07 UTC (Work/panels/2026-08-06--pr28-workspace-proposal-review/); capabilities-schema ruling amended under issue #39 2026-08-08 UTC (see Status and doctor)
 ---
 
 # Workspace-aware multi-repository memory — design spec
@@ -204,6 +204,14 @@ its capability *value* schema is closed (a single `support` enum plus
 `limitations` prose), so per-facet reporting requires a schema extension —
 that entry and any extension are owned by first issue 6 (probe-derived
 values), not issue 3.
+
+> **Amendment (issue #39, 2026-08-08)**: issue 6 ruled the per-facet schema
+> extension **not warranted for v1**. The `workspace` entry ships under the
+> closed v3 value schema, with the four facets (detection / save-scope
+> isolation / auto-save / gate enforcement) reported as precise
+> `limitations` strings; `asha doctor` prints them verbatim in its
+> workspace section. Revisiting per-facet fields requires its own schema
+> change with its own review — not a rider on an attestation.
 
 ## Memory planes (taxonomy pinned now; only starred planes exist in v1)
 
