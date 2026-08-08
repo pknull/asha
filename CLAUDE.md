@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.18.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.19.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -919,6 +919,14 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.19.0 (2026-08-08) — copilot commit gate chained (issue #40)
+
+`copilot-policy-adapter.sh` carries payload `cwd` through the translation
+(was dropped; the gate is cwd-sensitive) and chains `save-commit-gate.sh`.
+Adapter-level deny/allow/self-filter pinned in Test 105; live in-session
+deny probe deferred to the post-merge smoke. Writer-side proof remains the
+primary protection (upstream concurrency caveat #2893).
 
 ### Workspace v1 complete (2026-08-08) — parity attested, ship gate closed (session v1.18.0)
 
