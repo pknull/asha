@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 1.19.0
+**Version**: 1.20.0
 
 Session management with memory persistence, pattern extraction, and operational quality.
 
@@ -110,10 +110,10 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 
 | Hook | Purpose |
 |------|---------|
-| SessionStart | Load operation.md + the learnings index (index-first; `ASHA_LEARNINGS_INJECT=hot` reverts); conditionally load persona files; build Claude's compact memory-nudge index |
+| SessionStart | Load operation.md + the learnings index (index-first; `ASHA_LEARNINGS_INJECT=hot` reverts); conditionally load persona files; build Claude's compact memory-nudge index; inject bounded workspace operational context directly on Claude/Codex and through Copilot's top-level `additionalContext` nudge response |
 | PreToolUse | Guardrails (policy-guard) plus guidance nudges — the Claude-only lexical memory nudge for Grep/Bash/WebSearch is now registry row `memory-lexical` (indexes catalogue descriptions only, deduplicates per session, caps at five, fails open, disable with `ASHA_NUDGE=0`). Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
 | PostToolUse | Claude-only memory-nudge acted-tracking on Read; background violation check for Write/Edit/Bash; guidance nudge row `suggest-compact` — capture moved to `/save` jsonl_reader |
-| UserPromptSubmit | Guidance nudge row `rp-routing` (re-asserts the per-turn RP routing directive while `rp-active`); harness-appropriate prompt passthrough |
+| UserPromptSubmit | Guidance row `rp-routing` (per-turn RP routing while `rp-active`); harness-appropriate prompt passthrough. Workspace context no longer uses this event. |
 | Stop | Save-preflight cleanup |
 | SessionEnd | Synthesize session on clean exit; clear this session's session_state |
 
@@ -144,6 +144,50 @@ Kill switches, narrowest first: per-row `disable_env` (e.g. `ASHA_NUDGE=0`
 for `memory-lexical`), the per-row marker `Work/markers/nudge-<id>-off`
 (the legacy `rp-hook-off` marker is also honoured for `rp-routing`), and
 `Work/markers/silence` for every silence-gated row.
+
+### Workspace read-side context
+
+`tools/workspace_status.py --context` renders the workspace name/root/active
+child plus only the first `##` section of the operational
+`Memory/activeContext.md`. Dynamic fields are sanitized before UTF-8 byte caps;
+the excerpt defaults to 2048 bytes (`ASHA_WS_CONTEXT_MAX`, minimum 256), and
+canonical containment prevents a symlinked memory path from importing foreign
+content. No manifest means no output and no renderer Python startup.
+
+Disable it with `ASHA_WS_INJECT=0`, active-project marker
+`Work/markers/nudge-ws-context-off`, or `Work/markers/silence`. Claude and Codex
+use direct SessionStart delivery. Copilot uses the `ws-context` rule upon
+native `sessionStart`, returning top-level `additionalContext`; raw Copilot
+sessionStart stdout is not used or claimed. All three start channels passed
+live with the exact renderer payload on 2026-08-08 UTC. The former prompt-event
+fallback and its 1 h cooldown are removed.
+
+### Workspace management commands
+
+`asha workspace --help` catalogues the v3-v6 management surfaces: bootstrap and
+discovery; shared-knowledge initialization, lint, and reviewed draft-PR
+promotion; coordinated worktree lifecycle; and the optional private work-item registry. The dispatcher
+passes native arguments to `workspace_init.py`, `workspace_knowledge.py`,
+`workspace_worktree.py`, and `workspace_workitems.py`; use `--help` upon a leaf
+command for its exact flags.
+
+All mutating operations require their core's explicit confirmation or command.
+Knowledge `promote plan` writes a digest-bound review artifact with source,
+evidence, target preimages, base commit, and credential-free GitHub repository
+identity; `promote apply` accepts only that artifact plus
+its digest and explicit `--confirm`, revalidates every preimage, and executes
+no Git operation. In pull-request mode, `promote publish` requires the same
+artifact/digest confirmation, refuses a dirty shared Git root, creates a
+dedicated digest-named branch, stages only the reviewed write-set, commits,
+pushes, and opens a draft PR. It never merges or updates the base branch.
+The shipped publisher targets GitHub through `gh`; other forge remotes are
+reported as unavailable rather than guessed.
+Local commit/push hooks are not executed by default. Add
+`publish --run-git-hooks` only when the repository's hook programs have been
+reviewed and should participate; remote CI still evaluates the draft PR.
+Work-item
+import requires a matching scrubbed preview token, and its worktree seed is
+data-only.
 
 ## Persona Plugins
 

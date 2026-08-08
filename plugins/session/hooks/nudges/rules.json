@@ -26,6 +26,18 @@
       "_comment": "Per-turn RP routing directive, formerly inlined in handlers/harness-response.sh and emitted by user-prompt-submit.sh. The one-shot /rp setup scrolls out of the model's attention; this injection cannot. marker_off preserves the historical rp-hook-off kill switch."
     },
     {
+      "id": "ws-context",
+      "event": "SessionStart",
+      "harnesses": [
+        "copilot"
+      ],
+      "disable_env": "ASHA_WS_INJECT",
+      "marker_off": "nudge-ws-context-off",
+      "priority": 5,
+      "handler": "ws_context",
+      "_comment": "Workspace v2 context on Copilot's native sessionStart additionalContext channel, verified live on Copilot CLI 1.0.78 (2026-08-08 UTC), including exact renderer payload. Codex uses its direct SessionStart raw-fragment registration instead; neither harness retains the prompt fallback. The builtin performs a bash manifest precheck before Python. Standard engine gates provide active-project init, silence, and nudge-ws-context-off. SessionStart is once per session, so no cooldown marker is used."
+    },
+    {
       "id": "suggest-compact",
       "event": "PostToolUse",
       "harnesses": [

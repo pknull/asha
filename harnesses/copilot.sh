@@ -238,10 +238,13 @@ copilot_install_hooks() {
 }
 
 # Advisory guidance nudges (session plugin nudge-engine). Verified live on
-# 1.0.68 (2026-07-26): Copilot fires userPromptSubmitted/postToolUse hooks,
+# 1.0.78 (2026-08-08): Copilot fires sessionStart/userPromptSubmitted/
+# postToolUse hooks,
 # shell-splits the command string (the engine takes the Claude event name as
 # argv — Copilot payloads carry no hook_event_name), and injects ONLY via a
-# top-level {"additionalContext": ...} JSON response (raw stdout discarded).
+# top-level {"additionalContext": ...} JSON response (raw sessionStart stdout
+# was not claimed or used). Workspace v2 exact context delivery passed on
+# sessionStart; userPromptSubmitted remains for other nudge rows only.
 # The engine detects Copilot via the COPILOT_CLI=1 env it stamps on hook
 # processes and emits that shape. preToolUse is not registered here: the only
 # PreToolUse nudge row (memory-lexical) is Claude-only by design.
@@ -257,6 +260,7 @@ copilot_install_nudge_hooks() {
   content="$(jq -nc --arg e "$abs_engine" '{
     version: 1,
     hooks: {
+      sessionStart:        [{type:"command", bash:($e + " SessionStart"),        timeoutSec:10}],
       userPromptSubmitted: [{type:"command", bash:($e + " UserPromptSubmit"), timeoutSec:10}],
       postToolUse:         [{type:"command", bash:($e + " PostToolUse"),      timeoutSec:10}]
     }
@@ -287,7 +291,9 @@ copilot_install_nudge_hooks() {
 #   sessionStart -> session-start.sh  (orphan recovery + marker cleanup; its
 #                   raw-stdout context injection is DISCARDED by copilot —
 #                   deliberate: the custom-instructions layer already injects
-#                   the operational context at launch, so side effects only)
+#                   the operational context at launch, so side effects only;
+#                   workspace context is delivered separately by the nudge
+#                   hook's top-level additionalContext response)
 #   sessionEnd   -> session-end.sh    (detached automatic save; copilot's
 #                   camelCase payload + clean-exit reasons handled there)
 copilot_install_lifecycle_hooks() {

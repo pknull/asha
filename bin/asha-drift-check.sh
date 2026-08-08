@@ -446,17 +446,29 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
       while IFS= read -r c; do
         [[ -z "$c" ]] && continue
         enumerated=$((enumerated+1))
-        # The command string may carry arguments; only the executable must exist.
-        exe="${c%% *}"
-        if [[ ! -e "$exe" ]]; then
+        # The extractor emits the effective executable (including the
+        # installer's `env ASHA_HARNESS=... /path/to/hook` wrapper).
+        if [[ ! -e "$c" ]]; then
           [[ $missing -eq 0 ]] && nope "tagged hook paths missing in config.toml:"
-          echo "  $exe"
+          echo "  $c"
           missing=$((missing+1))
         fi
       done < <(python3 -c "
-import sys
+import re, shlex, sys
 tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
 c = tomllib.load(open('$CODEX/config.toml','rb'))
+def executable(command):
+    try:
+        words = shlex.split(command)
+    except ValueError:
+        return command
+    if not words:
+        return ''
+    if words[0] == 'env':
+        words = words[1:]
+        while words and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', words[0]):
+            words = words[1:]
+    return words[0] if words else ''
 for ev, blocks in (c.get('hooks') or {}).items():
     if not isinstance(blocks, list):
         continue  # [hooks.state] trust store
@@ -464,10 +476,10 @@ for ev, blocks in (c.get('hooks') or {}).items():
         if not isinstance(b, dict):
             continue
         if b.get('command'):
-            print(b['command'])
+            print(executable(b['command']))
         for h in (b.get('hooks') or []):
             if isinstance(h, dict) and h.get('command'):
-                print(h['command'])
+                print(executable(h['command']))
 " 2>/dev/null)
       [[ $missing -eq 0 ]] && pass "all hook command paths exist (codex: $enumerated command(s) enumerated)"
 
@@ -591,6 +603,7 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
       expected="$(jq -nc --arg e "$nudge_engine" '{
         version: 1,
         hooks: {
+          sessionStart:        [{type:"command", bash:($e + " SessionStart"),      timeoutSec:10}],
           userPromptSubmitted: [{type:"command", bash:($e + " UserPromptSubmit"), timeoutSec:10}],
           postToolUse:         [{type:"command", bash:($e + " PostToolUse"),      timeoutSec:10}]
         }

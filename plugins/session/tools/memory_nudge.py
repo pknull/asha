@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from memory_retrieval import (
-    BROAD_ENTRY_TOKENS, discover_memory_dirs, dump_index, load_index, rank,
+    BROAD_ENTRY_TOKENS, discover_retrieval_sources, dump_index, load_index, rank,
 )
 
 
@@ -31,9 +31,12 @@ def build(args) -> None:
     project = Path(args.project_dir).resolve()
     # Runtime context injection never crosses project trust boundaries. Global
     # learnings remain available, but another project's authored memory does not.
-    dirs = discover_memory_dirs(project, all_projects=False)
+    dirs, workspace_dir = discover_retrieval_sources(
+        project, all_projects=False
+    )
     dump_index(Path(args.index) if args.index else _index_path(project), dirs,
-               Path(args.learnings_dir).expanduser())
+               Path(args.learnings_dir).expanduser(),
+               workspace_dir=workspace_dir)
 
 
 def _match_text(payload: dict) -> tuple[str, str]:

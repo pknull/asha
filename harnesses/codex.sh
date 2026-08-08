@@ -570,6 +570,11 @@ for event, groups in events.items():
             if h.get("type") != "command": continue
             cmd = resolve_command(h.get("command",""))
             if not cmd: continue
+            # Bare `codex` launches do not inherit the `asha codex` wrapper's
+            # ASHA_HARNESS export. Stamp identity at the native translation
+            # seam so response-shape and harness-allowlist decisions remain
+            # correct for every generated hook.
+            cmd = "env ASHA_HARNESS=codex " + cmd
             # Current Codex TOML schema uses a matcher group containing one or
             # more nested hook handlers.
             out.append(f"[[hooks.{event}]]")

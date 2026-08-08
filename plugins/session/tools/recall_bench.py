@@ -10,7 +10,7 @@ import re
 import sys
 from pathlib import Path
 
-from memory_retrieval import build_entries, discover_memory_dirs, rank
+from memory_retrieval import build_entries, discover_retrieval_sources, rank
 
 
 def _scalar(value: str) -> str:
@@ -134,10 +134,17 @@ def main() -> int:
         project = Path(args.project_dir).resolve()
         fixture_path, global_fixtures = find_fixtures(project, args.fixtures)
         fixtures = load_fixtures(fixture_path)
-        memory_dirs = ([Path(item).expanduser() for item in args.memory_dir]
-                       if args.memory_dir else
-                       discover_memory_dirs(project, all_projects=global_fixtures))
-        entries = build_entries(memory_dirs, Path(args.learnings_dir).expanduser())
+        if args.memory_dir:
+            memory_dirs = [Path(item).expanduser() for item in args.memory_dir]
+            workspace_dir = None
+        else:
+            memory_dirs, workspace_dir = discover_retrieval_sources(
+                project, all_projects=global_fixtures
+            )
+        entries = build_entries(
+            memory_dirs, Path(args.learnings_dir).expanduser(),
+            workspace_dir=workspace_dir,
+        )
         state_path = Path(args.state_file).expanduser()
         prior = {} if args.no_state else _load_prior(state_path)
         result = run_benchmark(fixtures, entries, k=max(1, args.k), prior=prior)
