@@ -72,6 +72,27 @@ elif command -v python3 >/dev/null 2>&1; then
     PYTHON_CMD="python3"
 fi
 
+# Workspace v2 read-side context. Keep the overwhelmingly common
+# single-project path shell-only: the shared manifest walk runs before Python.
+# Codex/Copilot candidate SessionStart injection channels remain live-verdict
+# pending, so they use the verified prompt-event fallback in nudge-engine.
+if [[ "${ASHA_HARNESS:-claude}" == "claude" \
+      && "${COPILOT_CLI:-}" != "1" \
+      && "${ASHA_WS_INJECT:-1}" != "0" \
+      && ! -f "$PROJECT_DIR/Work/markers/nudge-ws-context-off" \
+      && ! -f "$PROJECT_DIR/Work/markers/silence" \
+      && -n "$PYTHON_CMD" \
+      && -f "$PLUGIN_ROOT/tools/workspace_status.py" ]]; then
+    WS_MANIFEST=""
+    if declare -F asha_find_workspace_manifest >/dev/null 2>&1; then
+        WS_MANIFEST="$(asha_find_workspace_manifest "$PROJECT_DIR" 2>/dev/null || true)"
+    fi
+    if [[ -n "$WS_MANIFEST" ]]; then
+        "$PYTHON_CMD" "$PLUGIN_ROOT/tools/workspace_status.py" \
+            --context --start "$PROJECT_DIR" 2>/dev/null || true
+    fi
+fi
+
 if [[ -f "$PATTERN_ANALYZER" && -n "$PYTHON_CMD" ]]; then
     # Check if there's an orphaned session
     ORPHAN_RESULT=$("$PYTHON_CMD" "$PATTERN_ANALYZER" check-orphan --current-session "$NEW_SESSION_ID" 2>/dev/null || echo '{}')

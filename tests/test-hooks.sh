@@ -75,6 +75,75 @@ else
 fi
 
 # ============================================================================
+# Test 2a: Workspace v2 direct SessionStart injection + active-plane gates
+# ============================================================================
+echo -n "Test 2a: SessionStart injects workspace context and honors all gates... "
+T2A_HOME=$(mktemp -d)
+T2A_WS="$TEST_DIR/ws-v2"
+T2A_CHILD="$T2A_WS/child"
+mkdir -p "$T2A_WS/.asha" "$T2A_WS/Memory" "$T2A_CHILD/.asha" "$T2A_CHILD/Memory" "$T2A_CHILD/Work/markers"
+echo '{"initialized":true}' > "$T2A_CHILD/.asha/config.json"
+printf '{"version":1,"workspace_name":"v2-ws","repositories":[{"path":"child"}]}' > "$T2A_WS/.asha/workspace.json"
+printf '## Current\nworkspace-v2-direct-sentinel\n' > "$T2A_WS/Memory/activeContext.md"
+export CLAUDE_PROJECT_DIR="$T2A_CHILD"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+T2A_ON=$(HOME="$T2A_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" 2>/dev/null || true)
+T2A_ENV_OFF=$(HOME="$T2A_HOME" ASHA_HARNESS=claude ASHA_WS_INJECT=0 "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" 2>/dev/null || true)
+touch "$T2A_CHILD/Work/markers/nudge-ws-context-off"
+T2A_MARKER_OFF=$(HOME="$T2A_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" 2>/dev/null || true)
+rm "$T2A_CHILD/Work/markers/nudge-ws-context-off"
+touch "$T2A_CHILD/Work/markers/silence"
+T2A_SILENT=$(HOME="$T2A_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" 2>/dev/null || true)
+rm "$T2A_CHILD/Work/markers/silence"
+
+if [[ "$T2A_ON" == *"workspace-v2-direct-sentinel"* \
+      && "$T2A_ON" == *"active repo: child"* \
+      && "$T2A_ENV_OFF" != *"workspace-v2-direct-sentinel"* \
+      && "$T2A_MARKER_OFF" != *"workspace-v2-direct-sentinel"* \
+      && "$T2A_SILENT" != *"workspace-v2-direct-sentinel"* ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  direct=${T2A_ON:0:160} env_off=${T2A_ENV_OFF:0:80} marker_off=${T2A_MARKER_OFF:0:80} silent=${T2A_SILENT:0:80}"
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 2b: no-workspace path is byte-identical and skips renderer Python
+# ============================================================================
+echo -n "Test 2b: no-workspace SessionStart is byte-identical and renderer-cold... "
+T2B_PROJECT="$TEST_DIR/plain-v2"
+T2B_HOME=$(mktemp -d)
+T2B_SHIM=$(mktemp -d)
+T2B_LOG="$T2B_SHIM/python.log"
+mkdir -p "$T2B_PROJECT/.asha" "$T2B_PROJECT/Memory" "$T2B_PROJECT/Work/markers"
+echo '{"initialized":true}' > "$T2B_PROJECT/.asha/config.json"
+cat > "$T2B_SHIM/python3" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$T2B_LOG"
+exec "$(command -v python3)" "\$@"
+EOF
+chmod +x "$T2B_SHIM/python3"
+export CLAUDE_PROJECT_DIR="$T2B_PROJECT"
+T2B_BASE=$(HOME="$T2B_HOME" PATH="$T2B_SHIM:$PATH" ASHA_HARNESS=claude ASHA_WS_INJECT=0 "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" 2>/dev/null || true)
+: > "$T2B_LOG"
+T2B_DEFAULT=$(HOME="$T2B_HOME" PATH="$T2B_SHIM:$PATH" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" 2>/dev/null || true)
+T2B_RENDER_CALLS=$(grep -c 'workspace_status.py' "$T2B_LOG" 2>/dev/null || true)
+
+if [[ "$T2B_DEFAULT" == "$T2B_BASE" && "$T2B_RENDER_CALLS" == "0" ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ "$T2B_DEFAULT" != "$T2B_BASE" ]] && echo "  no-workspace stdout changed"
+    [[ "$T2B_RENDER_CALLS" != "0" ]] && echo "  renderer Python invoked without a manifest"
+    FAILED=$((FAILED + 1))
+fi
+rm -rf "$T2A_HOME" "$T2B_HOME" "$T2B_SHIM"
+
+# ============================================================================
 # Test 3: PostToolUse does NOT write Memory/events/events.jsonl
 # ============================================================================
 # Architecture note: capture was moved from hooks to jsonl_reader.py on
@@ -2526,7 +2595,9 @@ echo 99 > "$TEST92_DIR/Work/markers/tool-count"
 export CLAUDE_PROJECT_DIR="$TEST92_DIR"
 export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
 
-OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+# Pin the harness under test. The suite itself may run from Codex and inherit
+# ASHA_HARNESS=codex; these cases assert the Claude-only suggest-compact row.
+OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
 COUNT_AFTER=$(cat "$TEST92_DIR/Work/markers/tool-count" 2>/dev/null || echo missing)
 COOLDOWN_EXISTS=0
 [[ -f "$TEST92_DIR/Work/markers/nudge-suggest-compact-cooldown" ]] && COOLDOWN_EXISTS=1
@@ -2548,7 +2619,7 @@ fi
 # ============================================================================
 echo -n "Test 92a: suggest-compact cooldown suppresses re-fire... "
 # Continues from Test 92 state: cooldown just stamped, counter at 0.
-OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
 COUNT_AFTER=$(cat "$TEST92_DIR/Work/markers/tool-count" 2>/dev/null || echo missing)
 
 if [[ "$OUTPUT" == "{}" && "$COUNT_AFTER" == "0" ]]; then
@@ -2568,7 +2639,7 @@ echo -n "Test 92b: silence marker suppresses suggest-compact... "
 rm -f "$TEST92_DIR/Work/markers/nudge-suggest-compact-cooldown"
 echo 99 > "$TEST92_DIR/Work/markers/tool-count"
 touch "$TEST92_DIR/Work/markers/silence"
-OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
+OUTPUT=$(echo '{"tool_name": "Read"}' | HOME="$TEST92_HOME" ASHA_HARNESS=claude "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" PostToolUse 2>/dev/null || true)
 COUNT_AFTER=$(cat "$TEST92_DIR/Work/markers/tool-count" 2>/dev/null || echo missing)
 rm -rf "$TEST92_DIR" "$TEST92_HOME"
 
@@ -2704,6 +2775,108 @@ else
     [[ "$CODEX_COUNT" != "99" ]] && echo "  codex touched tool-count (got $CODEX_COUNT, want untouched 99)"
     [[ $CODEX_COOLDOWN -eq 1 ]] && echo "  codex stamped the cooldown marker"
     [[ "$COPILOT_CTX" != *"Context check"* ]] && echo "  copilot did not fire: ${COPILOT_OUT:0:120}..."
+    FAILED=$((FAILED + 1))
+fi
+
+# ============================================================================
+# Test 92g: workspace delivery uses proven native start channels
+# ============================================================================
+# Live 2026-08-08: Codex 0.147 consumes the direct SessionStart raw fragment;
+# it must not also receive the prompt fallback. Copilot 1.0.78 consumes only a
+# top-level additionalContext response from sessionStart. No cooldown is needed:
+# sessionStart is already once per session.
+echo -n "Test 92g: proven start channels replace prompt fallback without cooldown... "
+T92G_HOME=$(mktemp -d)
+T92G_WS="$TEST_DIR/ws-nudge-v2"
+T92G_CHILD="$T92G_WS/child"
+mkdir -p "$T92G_WS/.asha" "$T92G_WS/Memory" "$T92G_CHILD/.asha" "$T92G_CHILD/Memory" "$T92G_CHILD/Work/markers"
+echo '{"initialized":true}' > "$T92G_CHILD/.asha/config.json"
+printf '{"version":1,"workspace_name":"nudge-ws","repositories":[{"path":"child"}]}' > "$T92G_WS/.asha/workspace.json"
+printf '## Current\nworkspace-v2-fallback-sentinel\n' > "$T92G_WS/Memory/activeContext.md"
+export CLAUDE_PROJECT_DIR="$T92G_CHILD"
+export CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session"
+
+rm -f "$T92G_CHILD/Work/markers/nudge-ws-context-cooldown"
+T92G_CODEX_PROMPT=$(echo '{"prompt":"first"}' | HOME="$T92G_HOME" ASHA_HARNESS=codex "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+T92G_COPILOT_PROMPT=$(echo '{"prompt":"first"}' | HOME="$T92G_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" UserPromptSubmit 2>/dev/null || true)
+T92G_COPILOT=$(echo '{"initialPrompt":"first"}' | HOME="$T92G_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+T92G_COPILOT_CTX=$(printf '%s' "$T92G_COPILOT" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+T92G_REPEAT=$(echo '{"initialPrompt":"second"}' | HOME="$T92G_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+T92G_REPEAT_CTX=$(printf '%s' "$T92G_REPEAT" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+T92G_STAMPED=0; [[ -f "$T92G_CHILD/Work/markers/nudge-ws-context-cooldown" ]] && T92G_STAMPED=1
+
+# A project-controlled virtualenv is untrusted input. The automatic prompt hook
+# must use the trusted PATH interpreter, never execute a repository binary.
+T92G_EVIL_LOG="$T92G_HOME/project-python-executed"
+mkdir -p "$T92G_CHILD/.asha/.venv/bin"
+cat > "$T92G_CHILD/.asha/.venv/bin/python3" <<EOF
+#!/bin/bash
+touch "$T92G_EVIL_LOG"
+exit 0
+EOF
+chmod +x "$T92G_CHILD/.asha/.venv/bin/python3"
+rm -f "$T92G_CHILD/Work/markers/nudge-ws-context-cooldown"
+T92G_TRUSTED_RAW=$(echo '{"initialPrompt":"trusted-interpreter"}' | HOME="$T92G_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+T92G_TRUSTED=$(printf '%s' "$T92G_TRUSTED_RAW" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+T92G_EVIL_RAN=0; [[ -f "$T92G_EVIL_LOG" ]] && T92G_EVIL_RAN=1
+
+# Inherited PATH is not a trust boundary either. A malicious shim outside the
+# project must not run automatically; a pinned system interpreter still does.
+T92G_PATH_SHIM="$T92G_HOME/evil-path"
+mkdir -p "$T92G_PATH_SHIM"
+cat > "$T92G_PATH_SHIM/python3" <<EOF
+#!/bin/bash
+touch "$T92G_EVIL_LOG"
+exit 0
+EOF
+chmod +x "$T92G_PATH_SHIM/python3"
+rm -f "$T92G_EVIL_LOG" "$T92G_CHILD/Work/markers/nudge-ws-context-cooldown"
+T92G_SAFE_PATH_RAW=$(echo '{"initialPrompt":"trusted-path"}' | HOME="$T92G_HOME" PATH="$T92G_PATH_SHIM:$PATH" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+T92G_SAFE_PATH=$(printf '%s' "$T92G_SAFE_PATH_RAW" | jq -r '.additionalContext // empty' 2>/dev/null || true)
+T92G_PATH_EVIL_RAN=0; [[ -f "$T92G_EVIL_LOG" ]] && T92G_PATH_EVIL_RAN=1
+
+rm -f "$T92G_CHILD/Work/markers/nudge-ws-context-cooldown"
+T92G_DISABLED=$(echo '{"initialPrompt":"x"}' | HOME="$T92G_HOME" ASHA_HARNESS=copilot ASHA_WS_INJECT=0 "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+T92G_DISABLED_STAMP=0; [[ -f "$T92G_CHILD/Work/markers/nudge-ws-context-cooldown" ]] && T92G_DISABLED_STAMP=1
+touch "$T92G_CHILD/Work/markers/nudge-ws-context-off"
+T92G_OFF=$(echo '{"initialPrompt":"x"}' | HOME="$T92G_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+rm "$T92G_CHILD/Work/markers/nudge-ws-context-off"
+touch "$T92G_CHILD/Work/markers/silence"
+T92G_SILENT=$(echo '{"initialPrompt":"x"}' | HOME="$T92G_HOME" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+
+# No manifest: builtin must return before even resolving/invoking Python and
+# must not invoke Python.
+T92G_PLAIN="$TEST_DIR/plain-nudge-v2"
+T92G_SHIM=$(mktemp -d)
+T92G_PYLOG="$T92G_SHIM/python.log"
+mkdir -p "$T92G_PLAIN/.asha" "$T92G_PLAIN/Work/markers"
+echo '{"initialized":true}' > "$T92G_PLAIN/.asha/config.json"
+cat > "$T92G_SHIM/python3" <<EOF
+#!/bin/bash
+printf '%s\n' "\$*" >> "$T92G_PYLOG"
+exit 99
+EOF
+chmod +x "$T92G_SHIM/python3"
+export CLAUDE_PROJECT_DIR="$T92G_PLAIN"
+T92G_PLAIN_OUT=$(echo '{"initialPrompt":"x"}' | HOME="$T92G_HOME" PATH="$T92G_SHIM:$PATH" ASHA_HARNESS=copilot "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" SessionStart 2>/dev/null || true)
+T92G_PLAIN_PY=0; [[ -f "$T92G_PYLOG" ]] && T92G_PLAIN_PY=1
+T92G_PLAIN_STAMP=0; [[ -f "$T92G_PLAIN/Work/markers/nudge-ws-context-cooldown" ]] && T92G_PLAIN_STAMP=1
+rm -rf "$T92G_HOME" "$T92G_SHIM"
+
+if [[ "$T92G_CODEX_PROMPT" == "{}" && "$T92G_COPILOT_PROMPT" == "{}" \
+      && $T92G_STAMPED -eq 0 && "$T92G_REPEAT_CTX" == *"workspace-v2-fallback-sentinel"* \
+      && "$T92G_COPILOT_CTX" == *"workspace-v2-fallback-sentinel"* \
+      && "$T92G_TRUSTED" == *"workspace-v2-fallback-sentinel"* && $T92G_EVIL_RAN -eq 0 \
+      && "$T92G_SAFE_PATH" == *"workspace-v2-fallback-sentinel"* && $T92G_PATH_EVIL_RAN -eq 0 \
+      && "$T92G_DISABLED" == "{}" && $T92G_DISABLED_STAMP -eq 0 \
+      && "$T92G_OFF" == "{}" && "$T92G_SILENT" == "{}" \
+      && "$T92G_PLAIN_OUT" == "{}" && $T92G_PLAIN_PY -eq 0 \
+      && $T92G_PLAIN_STAMP -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    echo "  codex-prompt=${T92G_CODEX_PROMPT:0:80} copilot-prompt=${T92G_COPILOT_PROMPT:0:80} start=${T92G_COPILOT:0:100} repeat=${T92G_REPEAT:0:100} disabled=$T92G_DISABLED off=$T92G_OFF silent=$T92G_SILENT stamped=$T92G_STAMPED/$T92G_DISABLED_STAMP plain=$T92G_PLAIN_OUT/$T92G_PLAIN_PY/$T92G_PLAIN_STAMP"
     FAILED=$((FAILED + 1))
 fi
 
@@ -3272,6 +3445,15 @@ assert parsed.get('features', {}).get('steer') is True, 'sibling feature keys mu
 # entries are told apart by count. Codex gets UserPromptSubmit + PostToolUse;
 # the PreToolUse entry is Claude-only and must not leak (would make 3).
 assert text.count('nudge-engine.sh') == 2, f"expected 2 Codex nudge-engine entries, got {text.count('nudge-engine.sh')}"
+# Bare codex launches do not inherit the `asha codex` wrapper environment.
+# Every translated hook must identify its native harness at the installer seam;
+# otherwise the ws-context row is misclassified as Claude and never fires.
+commands = [handler["command"]
+            for groups in (parsed.get("hooks") or {}).values()
+            for group in groups
+            for handler in group.get("hooks", [])]
+assert commands and all(command.startswith("env ASHA_HARNESS=codex ")
+                        for command in commands), commands
 rule_text = rules.read_text()
 assert 'prefix_rule(' in rule_text
 assert 'pattern = ["git", "reset", "--hard"]' in rule_text
