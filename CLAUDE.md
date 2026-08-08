@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
 **Version**: 2.5.0
-**Last Updated**: 2026-08-07
+**Last Updated**: 2026-08-08
 **Repository**: pknull/asha
 
 ---
@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.20.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.20.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops, workspace context + management CLI, evidence brokerage — 5 agents |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -69,7 +69,7 @@ asha/
 ├── bin/                              # asha dispatcher, drift-check, env bootstrap
 ├── harnesses/                        # per-harness launch shims (claude.sh, codex.sh, copilot.sh)
 ├── identity/                         # persona system prompt + identity/operational merge scripts
-├── lib/                              # install/uninstall/doctor/build/init-repo engines
+├── lib/                              # install/uninstall/doctor/build/init-repo/workspace/broker engines
 ├── namespaces.json                   # plugin dir → command namespace map (panel → panel-system)
 ├── plugins/
 │   ├── admin/                        # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
@@ -95,14 +95,18 @@ asha/
 │   ├── security/                     # skills/security-review/
 │   ├── session/                      # core scaffold
 │   │   ├── commands/                 # init, save, status, silence, restore, loop, consolidate
-│   │   ├── agents/loop-operator.md
+│   │   ├── agents/                   # 5 agents (loop-operator, memory-steward,
+│   │   │                             #   memory-curator, process-router, capability-broker)
+│   │   ├── broker/                   # capabilities.json + capabilities.schema.json
 │   │   ├── skills/                   # memory-maintenance, skill-creator
 │   │   ├── hooks/                    # hooks.json, handlers/, policies/rules.json,
 │   │   │                             #   nudges/rules.json (+ fragments/)
 │   │   ├── modules/                  # CORE, cognitive, research, memory-ops,
 │   │   │                             #   high-stakes, verbalized-sampling
 │   │   ├── templates/                # Memory Bank + loop templates
-│   │   └── tools/                    # save pipeline, jsonl_reader, learnings, event_store …
+│   │   └── tools/                    # save pipeline, jsonl_reader, learnings, event_store,
+│   │                                 #   broker.py, workspace_{manifest,status,init,
+│   │                                 #   knowledge,worktree,workitems}.py …
 │   ├── test/                         # installer canary (ping command/skill/agent, stop hook)
 │   └── write/                        # creative writing
 │       ├── agents/                   # 10 agents
@@ -113,7 +117,8 @@ asha/
 │       ├── engines/                  # rp-draft-loop.js
 │       ├── craft/                    # craft-core-universal, director-rubric
 │       └── modules/writing.md
-├── docs/                             # harness-enforcement.md, memory-architecture.md, …
+├── docs/                             # harness-enforcement.md, memory-architecture.md,
+│                                     #   evidence-backed-brokerage.md, …
 ├── tests/                            # validation suites + python unit tests
 ├── templates/                        # init-repo scaffolding
 ├── install.sh / uninstall.sh         # thin shims over lib/
@@ -137,6 +142,8 @@ asha/
 | `plugins/[name]/skills/*/SKILL.md` | On-demand skills |
 | `plugins/[name]/hooks/hooks.json` | Lifecycle hook configuration |
 | `docs/harness-enforcement.md` | Single source of truth for cross-harness capability verdicts |
+| `docs/evidence-backed-brokerage.md` | Contract for the opt-in `context brief` / `process route` / `capabilities match` protocols |
+| `plugins/session/broker/capabilities.json` | Verified capability registry consumed by `broker.py` (schema alongside it) |
 
 ---
 
@@ -899,6 +906,8 @@ git push -u origin <branch-name>
 - `INSTALLER.md`: Install model, per-harness layouts
 - `docs/harness-enforcement.md`: Cross-harness capability verdicts (single source of truth)
 - `docs/memory-architecture.md`: Memory scopes and lifecycle
+- `docs/evidence-backed-brokerage.md`: Opt-in context/process/capability brokerage protocols
+- `docs/proposals/`: Ratified design proposals (workspace v1, workspace read side, issue-to-merge loop)
 - `plugins/panel/README.md`: Panel system documentation
 
 ### Key Configuration Files
@@ -908,6 +917,8 @@ git push -u origin <branch-name>
 - `plugins/session/hooks/hooks.json`: Session lifecycle hook wiring
 - `plugins/session/hooks/policies/rules.json`: PreToolUse policy guardrails
 - `plugins/session/hooks/nudges/rules.json`: Declarative guidance nudges (advisory context injection; user layer `~/.asha/nudges.json`)
+- `plugins/session/broker/capabilities.json`: Verified capability registry (validated by `capabilities.schema.json`)
+- `<shared-git-root>/.asha/workspace.json`: Workspace manifest (parsed by `workspace_manifest.py`, consumed by detection/status)
 - `~/.asha/config.json`: Cross-project settings (incl. `asha_root` for bare launches)
 
 ### External References
@@ -919,6 +930,59 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Session v1.20.0 (2026-08-08) — workspace v2–v6 + evidence brokerage
+
+PR #51 closed the remaining roadmap in one batch: issues #23–#27 (registry,
+adapters, brokerage) and #45–#50 (workspace read side).
+
+**Read side (v2)** — `workspace_status.py --context` renders one bounded
+background block: workspace name/root/active child plus only the first `##`
+section of the workspace operational `Memory/activeContext.md`. Sanitization
+precedes UTF-8 byte caps, canonical containment stops a symlinked memory path
+importing foreign content, and no manifest means no output and no renderer
+startup. Excerpt budget 2048 bytes (`ASHA_WS_CONTEXT_MAX`; below 256 or invalid
+reverts). Kill switches: `ASHA_WS_INJECT=0`, `Work/markers/nudge-ws-context-off`,
+`Work/markers/silence`. Claude and Codex deliver directly at SessionStart;
+Copilot uses nudge row `ws-context` on native `sessionStart` returning top-level
+`additionalContext` (its raw sessionStart stdout is neither used nor claimed).
+Live-verified on Claude Code 2.1.226, Codex 0.147, Copilot CLI 1.0.78. The old
+first-prompt fallback and its 1 h cooldown are gone. Retrieval discovers the
+contained workspace operational plane as source `workspace`, excludes it from
+ordinary project memory, and orders it after `memory`/`learning` only on exact
+ranking ties.
+
+**Management CLI (v3–v6)** — `asha workspace init|discover|doctor`,
+`knowledge init|lint`, `promote plan|apply|publish`, `worktree create|status|
+remove`, `work-item …`. The shell layer only routes; each Python core owns its
+flags and validation. Every mutation is explicit: `promote plan` writes a
+digest-bound artifact (source, evidence, target preimages, base commit,
+credential-free GitHub identity); `apply` takes only that artifact plus digest
+plus `--confirm`, revalidates every preimage, and runs no Git; `publish` refuses
+a dirty shared root, stages only the reviewed write-set on a digest-named
+branch, and opens a draft PR — never merging or direct-pushing the base. GitHub
+via `gh` is the only shipped review adapter; other forges fail closed rather
+than being guessed equivalent. Local commit/push hooks stay off unless
+`--run-git-hooks` is passed. Work-item import is offline behind a scrubbed
+preview token; `worktree-seed` emits data only.
+
+**Brokerage (#27)** — opt-in `asha context brief` / `process route` /
+`capabilities match`, all deterministic inline protocols over
+`plugins/session/broker/capabilities.json`. `context brief` reads catalogue
+metadata only (never recursive scans, transcripts, or indexed bodies), bounds
+work with `--budget-bytes`/`--timeout-ms`, reports exhaustion instead of
+broadening, and emits a `source_signature` for reuse. The four new agents
+(`memory-steward`, `memory-curator`, `process-router`, `capability-broker`) are
+optional harness wrappers around those protocols — never required for
+correctness, never spawning another broker; `memory-curator` is review-only by
+allowlist. Contract: [docs/evidence-backed-brokerage.md](docs/evidence-backed-brokerage.md).
+
+Seven new Python suites landed with it (broker, memory_retrieval, workspace
+init/knowledge/status/workitems/worktree). **Process note**: this arrived as a
+single ~10k-line agent commit with no GitHub review — its correctness/security
+passes and three-harness probes were run in-session, so the evidence is not on
+the PR. Against the repo's own >1000-line splitting guidance, treat the batch
+boundary as the thing to avoid repeating, not the work.
 
 ### Session v1.19.0 (2026-08-08) — copilot commit gate chained (issue #40)
 

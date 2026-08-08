@@ -1,7 +1,7 @@
 ---
 title: Workspace-aware multi-repository memory
 type: proposal
-status: ratified — Keeper, via merge of PR #28 (2026-08-07 UTC)
+status: delivered — ratified by Keeper via merge of PR #28 (2026-08-07 UTC); all delivery issues shipped (#31/#33/#29/#35/#36/#39 for v1; epics #23–#26 closed by PR #51, 2026-08-08 UTC)
 date: 2026-08-06
 origin: issues #23–#26 (workspace RFC cluster); scope decisions ruled by Keeper 2026-08-06; amended per panel review and codex second-pass 2026-08-07 UTC (Work/panels/2026-08-06--pr28-workspace-proposal-review/); capabilities-schema ruling amended under issue #39 2026-08-08 UTC (see Status and doctor)
 ---

@@ -93,9 +93,20 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 
 ## Agents
 
-| Agent | Purpose |
-|-------|---------|
-| `loop-operator` | Autonomous loop with safety guardrails |
+| Agent | Purpose | Tools |
+|-------|---------|-------|
+| `loop-operator` | Autonomous loop with safety guardrails | Read, Grep, Glob, Bash, Edit |
+| `memory-steward` | Bounded, provenance-backed task context via the read-only context protocol | Read, Grep, Glob, Bash |
+| `memory-curator` | Review-only durable-memory proposals — never writes, promotes, retires, or publishes | Read, Grep, Glob |
+| `process-router` | Registry-backed process recommendation: prerequisites, risk, approvals, verification, inline fallback | Read, Bash |
+| `capability-broker` | Task → verified registry capability, with harness support, approvals, configuration, fallback | Read, Bash |
+
+The last four are optional harness wrappers around the deterministic inline
+protocols documented in
+[`docs/evidence-backed-brokerage.md`](../../docs/evidence-backed-brokerage.md)
+(`asha context brief`, `asha process route`, `asha capabilities match`). They are
+never required for correctness and never spawn another broker; `memory-curator`
+is review-only by allowlist, not merely by instruction.
 
 (Verification is `/code:verify`; Todoist access is the `admin-todoist` skill.)
 

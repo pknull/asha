@@ -1,7 +1,7 @@
 ---
 title: Workspace read-side context injection (v2)
 type: proposal
-status: ratified — Keeper, via merge of PR #43 (2026-08-08 UTC; final codex verdict RATIFY-AS-IS after five passes)
+status: delivered — ratified by Keeper via merge of PR #43 (2026-08-08 UTC; final codex verdict RATIFY-AS-IS after five passes); delivery issues #45–#50 shipped in PR #51 (2026-08-08 UTC)
 date: 2026-08-08
 origin: epic #23, the "v2 read-side" row of the ratified workspace-memory proposal (docs/proposals/2026-08-06--workspace-memory.md, Deferred increments); drafted after workspace v1 shipped complete (issues #31/#33/#29/#35/#36/#39; PRs 30/32/34/37/38/41/42); reworked per codex adversarial review 2026-08-08 (pass 1: 11 findings; pass 2: 3 blocking + 4 should-fix; pass 3 over the second rework: 3 blocking + 4 should-fix, each round REWORK — all addressed through the third rework)
 ---
