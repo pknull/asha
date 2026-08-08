@@ -60,7 +60,8 @@ ratification, one decision per issue, loop-grade hygiene throughout.
    `ASHA_WS_CONTEXT_MAX` budget (default 2048 bytes; non-numeric or <256
    falls back to the default) bounds the EXCERPT alone. Fixed fields get
    their own caps because the manifest validator leaves them unbounded:
-   workspace name truncated at 64 bytes with a trailing `…` marker;
+   workspace name capped at 64 bytes INCLUSIVE of its trailing `…`
+   marker (61 content bytes + the 3-byte marker when truncated);
    rendered paths beyond 120 bytes middle-elided to first-57-bytes + `…`
    + last-60-bytes. Caps apply AFTER decision 8's sanitizer (caps are
    over sanitized bytes), and all truncation lands on UTF-8 character
@@ -107,10 +108,12 @@ ratification, one decision per issue, loop-grade hygiene throughout.
    present. Acceptance is a
    REPO-side oracle: unit fixtures in
    `tests/python/test_memory_retrieval.py` over a corpus DEFINED IN the
-   test module (≤10 entries; at least three non-workspace entries sharing
-   tokens with the pinned query so top-5 membership is competitive, never
-   automatic), asserting the EXACT expected result ordering by id — not
-   mere membership — for: (a) a workspace-plane hit ranks in the top 5
+   test module (≤10 entries; at least SIX non-workspace entries sharing
+   tokens with the pinned query — with only five top-5 slots, membership
+   is then competitive by arithmetic, never automatic — the delivery
+   issue enumerates the exact query string, entry ids, and full expected
+   ordered id list as its acceptance criteria), asserting the EXACT
+   expected result ordering by id — not mere membership — for: (a) a workspace-plane hit ranks in the top 5
    for its pinned query, (b) on equal score a `memory` entry orders
    before a `workspace` entry, (c) ranking without a workspace present is
    byte-identical to today (including existing memory/learning ties),
@@ -139,10 +142,14 @@ ratification, one decision per issue, loop-grade hygiene throughout.
    the active-repo value, and the excerpt — the lexical validator accepts
    a repo path that IS a literal `</system-reminder>`, so field allowlists
    are not enough), in this pinned order, before the per-field caps:
-   (1) decode as UTF-8 with invalid sequences and unpaired surrogates
-   replaced by U+FFFD (the validator admits surrogate-bearing names);
-   (2) strip control characters — the excerpt keeps LF, header fields
-   keep none; (3) replace every `<` with `‹` and every `>` with `›`.
+   (1) unpaired surrogates in manifest-sourced strings (which arrive as
+   already-decoded JSON values; the validator admits them) are replaced
+   by U+FFFD — the excerpt is NOT replacement-decoded: a file that fails
+   strict UTF-8 decode takes the renderer table's no-context state
+   instead (rejection wins over repair for file content); (2) strip
+   control characters — pinned as Unicode C0 + C1 + DEL — with the
+   excerpt keeping LF (U+000A) and header fields keeping none;
+   (3) replace every `<` with `‹` and every `>` with `›`.
    After sanitization the wrapper tags are the only angle-bracketed text
    in the block, so no dynamic content can close or forge the wrapper —
    wholesale, not by sequence-matching. Residual trust is stated, not
