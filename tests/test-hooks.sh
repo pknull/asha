@@ -3179,6 +3179,39 @@ chk_cp force_push '{"toolName":"bash","toolArgs":{"command":"git push --force"}}
 chk_cp secret     '{"toolName":"create","toolArgs":{"path":"/p/.ssh/id_rsa","file_text":"x"}}'  deny
 # read a normal file -> allow
 chk_cp view_ok    '{"toolName":"view","toolArgs":{"path":"/tmp/readme.txt"}}'                    allow
+
+# --- save-commit-gate chaining (issue #40) + cwd passthrough ---
+# The gate is cwd-sensitive: these cases only pass if the adapter carries the
+# Copilot payload's cwd into the Claude shape AND chains the gate. Isolated
+# env (HOME sandbox, no CLAUDE_PROJECT_DIR) so the adapter's own process cwd
+# cannot accidentally resolve the fixture.
+CPG="$(mktemp -d)"
+CPG_HOME="$CPG/home"
+CPG_P="$CPG_HOME/proj"
+mkdir -p "$CPG_HOME" "$CPG_P/Memory" "$CPG_P/Work/markers"
+echo "# ctx" > "$CPG_P/Memory/activeContext.md"
+git -c user.name=t -c user.email=t@t -c init.defaultBranch=master init "$CPG_P" >/dev/null 2>&1
+( cd "$CPG_P" && echo b > b.txt \
+    && git -c user.name=t -c user.email=t@t add b.txt Memory/ >/dev/null 2>&1 \
+    && git -c user.name=t -c user.email=t@t commit -m init >/dev/null 2>&1 )
+echo "change" >> "$CPG_P/Memory/activeContext.md"
+( cd "$CPG_P" && git add Memory/activeContext.md >/dev/null 2>&1 )
+cp_gate_decision() {
+    printf '%s' "$1" | env -u CLAUDE_PROJECT_DIR -u ASHA_HARNESS HOME="$CPG_HOME" \
+        bash "$CP_ADAPTER" 2>/dev/null | jq -r '.permissionDecision // "allow"' 2>/dev/null
+}
+chk_cpg() { local got; got="$(cp_gate_decision "$2")"; [[ "$got" == "$3" ]] || { CP_OK=0; CP_WHY="$CP_WHY $1(got=$got want=$3)"; }; }
+CPG_COMMIT="$(jq -cn --arg d "$CPG_P" '{toolName:"bash",toolArgs:{command:"git commit -m x"},cwd:$d}')"
+# staged Memory, no proof marker -> the chained gate must deny
+chk_cpg gate_deny "$CPG_COMMIT" deny
+# valid hash-bound marker -> allow
+CPG_SHA="$(sha256sum "$CPG_P/Memory/activeContext.md" | cut -d' ' -f1)"
+printf '{"ac_sha256":"%s"}' "$CPG_SHA" > "$CPG_P/Work/markers/save-gates-ok"
+chk_cpg gate_allow "$CPG_COMMIT" allow
+# non-commit git in the same dirty fixture stays allowed (gate self-filters)
+chk_cpg gate_nongit "$(jq -cn --arg d "$CPG_P" '{toolName:"bash",toolArgs:{command:"git status"},cwd:$d}')" allow
+rm -rf "$CPG"
+
 if [[ -x "$CP_ADAPTER" && "$CP_OK" -eq 1 ]]; then
     echo -e "${GREEN}PASS${NC}"
     PASSED=$((PASSED + 1))

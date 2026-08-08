@@ -166,10 +166,11 @@
         },
         "workspace": {
           "support": "partial",
-          "surface": "shared tools via rendered command-skills; auto-save lifecycle wired through the plane-aware writer seam",
-          "verifier": "copilot -p runtime probes 2026-08-08 on 1.0.75: detection, save_scope proof round-trip, staged-set isolation verified live; ungated-commit probe confirmed the gate is absent; sessionEnd auto-save probed end-to-end",
+          "surface": "shared tools via rendered command-skills; auto-save lifecycle wired through the plane-aware writer seam; save-commit-gate chained via copilot-policy-adapter",
+          "verifier": "copilot -p runtime probes 2026-08-08 on 1.0.75: detection, save_scope proof round-trip, staged-set isolation, and sessionEnd auto-save verified live; gate chaining (issue #40) pinned at adapter level in Test 105 — live in-session deny probe pending",
           "limitations": [
-            "save-commit-gate not chained into copilot-policy-adapter (it chains policy-guard + block-secrets only; pre-existing since the gate's creation, issue #40) — the writer-side save_scope proof and the auto-commit seam are the operative protection"
+            "gate deny through the adapter is unit-verified (Test 105), not yet probed live in a real copilot session (pending post-merge smoke)",
+            "copilot preToolUse can be bypassed under parallel tool calls/timeouts (upstream github/copilot-cli#2893) — soft deterrent, not containment; the writer-side save_scope proof and the auto-commit seam remain the primary protection"
           ]
         }
       }

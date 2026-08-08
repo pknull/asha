@@ -3,7 +3,8 @@
 #
 # Copilot's preToolUse contract differs from Claude's, so this shim translates in
 # both directions and lets the policy logic stay in ONE place (policy-guard.sh +
-# policies/rules.json, and block-secrets.sh):
+# policies/rules.json, block-secrets.sh, and save-commit-gate.sh — the latter
+# chained 2026-08-08, issue #40):
 #
 #   Copilot stdin : {sessionId, timestamp, cwd, toolName, toolArgs}
 #                   - toolArgs may be a JSON-ENCODED STRING, not an object
@@ -51,7 +52,8 @@ CLAUDE_JSON="$(printf '%s' "$INPUT" | jq -c '
         command:   ($a.command // ""),
         file_path: ($a.path // $a.file_path // "")
       },
-      session_id: (.sessionId // "")
+      session_id: (.sessionId // ""),
+      cwd:        (.cwd // "")
     }
 ' 2>/dev/null || true)"
 [[ -n "$CLAUDE_JSON" ]] || allow
@@ -89,7 +91,7 @@ consult() {
   return 0
 }
 
-for handler in policy-guard.sh block-secrets.sh; do
+for handler in policy-guard.sh block-secrets.sh save-commit-gate.sh; do
   consult "$SELF_DIR/$handler" || break
 done
 
