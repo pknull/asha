@@ -15,10 +15,21 @@ Catch issues early by running coordinated reviews after completing each section/
 
 ## Configuration Discovery
 
-The skill looks for review configuration in this order:
+Resolve configuration from the supplied section path rather than assuming a
+repository layout:
 
-1. **Project config**: `Vault/Books/[Project]/work/review-config.md`
-2. **Fallback**: the default configuration documented below
+1. Resolve the section argument to an existing manuscript file or directory.
+2. Start at that path's directory and walk upward toward the repository root.
+3. At each directory, check `Work/review-config.md`, then
+   `work/review-config.md`. The nearest match wins. Treat path case as
+   significant.
+4. Never assume that books live under `Vault/Books`, `Lore/Books`, or any
+   other fixed parent directory.
+5. If no project config exists before reaching the repository root, use the
+   fallback configuration documented below.
+
+Keep discovery scoped to the target's ancestor chain. Do not search the whole
+home directory or infer a project by matching its display name elsewhere.
 
 ### Config Format
 
@@ -28,8 +39,11 @@ project: "Example Novel"
 agents:
   - agent: prose-analysis
     modes: [voice, continuity, coherence, docs]
-    voice_guide: "Vault/Books/Example_Novel/work/prose_voice.md"
-    documentation: "Vault/Books/Example_Novel/work/Example_Novel_Complete_Documentation.md"
+    voice_guide: "Work/novel/bible/voice.md"
+    documentation:
+      - "Work/novel/bible/story_bible.md"
+      - "Work/novel/bible/rules.md"
+      - "Work/novel/timeline/master.md"
 full_review_adds:
   - agent: developmental-editor
 report_path: "Work/reports/example-novel/"
@@ -57,31 +71,32 @@ report_path: "Work/reports/"
 Review a section (all configured modes):
 
 ```
-/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03
+/review-section path/to/Example_Novel/03_Chapter/01_Scene.md
 ```
 
 Voice/craft review only:
 
 ```
-/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --voice
+/review-section path/to/Example_Novel/03_Chapter/01_Scene.md --voice
 ```
 
 Facts-only review (continuity + docs):
 
 ```
-/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --continuity --docs
+/review-section path/to/Example_Novel/03_Chapter/01_Scene.md --continuity --docs
 ```
 
 Full review (adds project-configured specialist reviews):
 
 ```
-/review-section Vault/Books/Example_Novel/Example_Novel.md:Ch03 --full
+/review-section path/to/Example_Novel/03_Chapter/01_Scene.md --full
 ```
 
 The skill:
 
-1. Extracts project path from section path
-2. Looks for `work/review-config.md` in that project
+1. Resolves the target from the section path
+2. Walks its ancestor chain for the nearest `Work/review-config.md` or
+   `work/review-config.md`
 3. Falls back to default if not found
 4. Runs configured agents in parallel where possible
 5. Synthesizes combined report
@@ -111,8 +126,8 @@ Generates combined report at configured `report_path` containing:
 │                    /review-section                       │
 │                           │                              │
 │                    Read config from                      │
-│              Vault/Books/[Project]/work/                 │
-│                    review-config.md                      │
+│              nearest ancestor project root              │
+│              Work/review-config.md                       │
 │                           │                              │
 │                           ▼                              │
 │                   prose-analysis                         │
@@ -131,12 +146,17 @@ Generates combined report at configured `report_path` containing:
 
 To set up review for a new project:
 
-1. Create `Vault/Books/[YourProject]/work/review-config.md`
-2. Define which agents to run and their configurations
-3. Specify documentation paths for doc-verification
-4. Set report output path
+1. Locate the manuscript's project root from the section path
+2. Create `Work/review-config.md` at that root (`work/` is also supported)
+3. Define which agents to run and their configurations
+4. Specify documentation paths for doc-verification
+5. Set report output path
 
-See `Vault/Books/Example_Novel/work/review-config.md` for a complete example.
+`documentation` accepts either one path or a list of file/directory paths.
+Resolve relative `voice_guide` and `documentation` paths from the discovered
+project root. Resolve `report_path` from the current repository root unless it
+is absolute. Read all configured documentation entries; do not silently use
+only the first.
 
 ## Optional Verification Pass
 
