@@ -167,7 +167,7 @@
         "workspace": {
           "support": "partial",
           "surface": "shared tools via rendered command-skills; auto-save lifecycle wired through the plane-aware writer seam; save-commit-gate chained via copilot-policy-adapter",
-          "verifier": "copilot -p runtime probes 2026-08-08 on 1.0.75: detection, save_scope proof round-trip, staged-set isolation, sessionEnd auto-save, AND chained gate deny/allow (issue #40) all verified live in real copilot sessions",
+          "verifier": "copilot -p runtime probes 2026-08-08 (1.0.75 pre-fix baseline; chained-gate probes recorded on 1.0.78): detection, save_scope proof round-trip, staged-set isolation, sessionEnd auto-save verified live; chained gate (issue #40) verified live by deny + stale-marker probes — the gate quoted the marker hash against disk and deleted it, ruling out fail-open on the allow path",
           "limitations": [
             "copilot preToolUse can be bypassed under parallel tool calls/timeouts (upstream github/copilot-cli#2893) — soft deterrent, not containment; the writer-side save_scope proof and the auto-commit seam remain the primary protection"
           ]
