@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import warnings
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -140,6 +141,257 @@ class RetrievalTest(unittest.TestCase):
         self.assertIn("current_safe", ids)
         self.assertNotIn("other_private", ids)
         self.assertEqual(stat.S_IMODE(index.stat().st_mode), 0o600)
+
+
+class WorkspaceDiscoveryTest(unittest.TestCase):
+    """Workspace v2 issue #48: source-aware, canonically contained reads."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix="asha_ws_recall_"))
+        self.home = self.root / "home"
+        self.ws = self.home / "Code" / "ws"
+        self.child = self.ws / "child"
+        self.child_memory = self.child / "Memory"
+        self.workspace_memory = self.ws / "Memory"
+        self.learnings = self.root / "learnings"
+        for path in (self.child_memory, self.workspace_memory, self.learnings):
+            path.mkdir(parents=True)
+        (self.ws / ".asha").mkdir()
+        (self.ws / ".asha" / "workspace.json").write_text(json.dumps({
+            "version": 1,
+            "workspace_name": "ws",
+            "repositories": [{"path": "child"}],
+        }), encoding="utf-8")
+        self._entry(self.child_memory, "child_item", "child local signal")
+        self._entry(self.workspace_memory, "workspace_item", "workspace shared signal")
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    @staticmethod
+    def _entry(directory: Path, entry_id: str, description: str) -> None:
+        with (directory / "MEMORY.md").open("a", encoding="utf-8") as handle:
+            handle.write(f"- [{entry_id}]({entry_id}.md) - {description}\n")
+        (directory / f"{entry_id}.md").write_text(
+            f"---\ndescription: {description}\n---\nbody\n", encoding="utf-8"
+        )
+
+    def test_child_launch_classifies_both_planes_without_duplicates(self):
+        memory_dirs, workspace_dir = memory_retrieval.discover_retrieval_sources(
+            self.child, home=self.home
+        )
+        entries = memory_retrieval.build_entries(
+            memory_dirs, self.learnings, workspace_dir=workspace_dir
+        )
+        by_id = {entry.id: entry for entry in entries}
+        self.assertEqual(by_id["child_item"].source, "memory")
+        self.assertEqual(by_id["workspace_item"].source, "workspace")
+        self.assertEqual([entry.id for entry in entries].count("workspace_item"), 1)
+
+    def test_workspace_root_launch_loads_operational_plane_once_as_workspace(self):
+        memory_dirs, workspace_dir = memory_retrieval.discover_retrieval_sources(
+            self.ws, home=self.home
+        )
+        entries = memory_retrieval.build_entries(
+            memory_dirs, self.learnings, workspace_dir=workspace_dir
+        )
+        workspace = [entry for entry in entries if entry.id == "workspace_item"]
+        self.assertEqual(len(workspace), 1)
+        self.assertEqual(workspace[0].source, "workspace")
+
+    def test_operational_root_symlink_escape_disables_workspace_source(self):
+        outside = self.root / "outside"
+        outside.mkdir()
+        self._entry(outside, "foreign", "foreign secret signal")
+        shutil.rmtree(self.workspace_memory)
+        self.workspace_memory.symlink_to(outside, target_is_directory=True)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            memory_dirs, workspace_dir = memory_retrieval.discover_retrieval_sources(
+                self.child, home=self.home
+            )
+        self.assertIsNone(workspace_dir)
+        self.assertTrue(any("outside the workspace" in str(w.message) for w in caught))
+        entries = memory_retrieval.build_entries(memory_dirs, self.learnings)
+        self.assertNotIn("foreign", {entry.id for entry in entries})
+
+    def test_catalogue_and_glob_symlink_escapes_are_skipped(self):
+        outside = self.root / "secret.md"
+        outside.write_text("---\ndescription: foreign secret\n---\n", encoding="utf-8")
+        (self.workspace_memory / "escape.md").symlink_to(outside)
+        with (self.workspace_memory / "MEMORY.md").open("a", encoding="utf-8") as handle:
+            handle.write("- [catalogue_escape](../secret.md) - foreign catalogue\n")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            entries = memory_retrieval.memory_entries(
+                [self.workspace_memory], source="workspace",
+                containment_root=self.workspace_memory.resolve(),
+            )
+        self.assertNotIn("escape", {entry.id for entry in entries})
+        self.assertNotIn("secret", {entry.id for entry in entries})
+        self.assertGreaterEqual(len(caught), 1)
+
+    def test_contained_symlink_target_is_allowed(self):
+        actual = self.workspace_memory / "actual.md"
+        actual.write_text("---\ndescription: contained linked signal\n---\n", encoding="utf-8")
+        (self.workspace_memory / "linked.md").symlink_to(actual)
+        entries = memory_retrieval.memory_entries(
+            [self.workspace_memory], source="workspace",
+            containment_root=self.workspace_memory.resolve(),
+        )
+        self.assertIn(str(actual.resolve()), {entry.path for entry in entries})
+
+    def test_invalid_workspace_fails_closed_without_losing_project_or_learning(self):
+        (self.ws / ".asha" / "workspace.json").write_text(
+            '{"version":9,"workspace_name":"bad"}', encoding="utf-8"
+        )
+        (self.learnings / "stable.md").write_text(
+            "---\nid: stable\ndescription: stable learning\n---\n", encoding="utf-8"
+        )
+        memory_dirs, workspace_dir = memory_retrieval.discover_retrieval_sources(
+            self.child, home=self.home
+        )
+        self.assertIsNone(workspace_dir)
+        entries = memory_retrieval.build_entries(memory_dirs, self.learnings)
+        self.assertIn("child_item", {entry.id for entry in entries})
+        self.assertIn("stable", {entry.id for entry in entries})
+
+    def test_workspace_change_alters_cached_source_signature(self):
+        memory_dirs, workspace_dir = memory_retrieval.discover_retrieval_sources(
+            self.child, home=self.home
+        )
+        first = memory_retrieval.source_signature(
+            memory_dirs, self.learnings, workspace_dir=workspace_dir
+        )
+        self._entry(self.workspace_memory, "later", "later workspace signal")
+        second = memory_retrieval.source_signature(
+            memory_dirs, self.learnings, workspace_dir=workspace_dir
+        )
+        self.assertNotEqual(first, second)
+
+    def test_cache_rebuilds_when_same_directory_changes_source_classification(self):
+        manifest = self.ws / ".asha" / "workspace.json"
+        manifest_bytes = manifest.read_bytes()
+        manifest.unlink()
+        memory_dirs, workspace_dir = memory_retrieval.discover_retrieval_sources(
+            self.ws, home=self.home
+        )
+        self.assertIsNone(workspace_dir)
+        index = self.root / "retrieval-index.json"
+        first = memory_retrieval.dump_index(
+            index, memory_dirs, self.learnings, workspace_dir=workspace_dir
+        )
+        first_item = next(row for row in first["entries"] if row["id"] == "workspace_item")
+        self.assertEqual(first_item["source"], "memory")
+
+        manifest.write_bytes(manifest_bytes)
+        memory_dirs, workspace_dir = memory_retrieval.discover_retrieval_sources(
+            self.ws, home=self.home
+        )
+        second = memory_retrieval.dump_index(
+            index, memory_dirs, self.learnings, workspace_dir=workspace_dir
+        )
+        second_item = next(row for row in second["entries"] if row["id"] == "workspace_item")
+        self.assertEqual(second_item["source"], "workspace")
+
+
+class WorkspaceRankingOracleTest(unittest.TestCase):
+    """Issue #49 deterministic repository-side ranking oracle.
+
+    Pinned oracle (established 2026-08-08 because issue #49 omitted it):
+    query = ``workspace context retrieval ranking``; corpus IDs and source/
+    descriptions are exactly ORACLE_SPEC below (8 entries total, 7 competing
+    non-workspace entries); expected top-5 IDs are ORACLE_TOP5. Changing any
+    of these values is a contract change, not fixture cleanup.
+    """
+
+    QUERY = "workspace context retrieval ranking"
+    ORACLE_SPEC = (
+        ("l-bravo", "learning", "workspace context retrieval ranking"),
+        ("m-alpha", "memory", "workspace context retrieval ranking"),
+        ("w-target", "workspace", "workspace context retrieval ranking"),
+        ("m-charlie", "memory", "workspace context retrieval"),
+        ("m-delta", "memory", "workspace context ranking"),
+        ("m-echo", "memory", "workspace retrieval ranking"),
+        ("m-foxtrot", "memory", "context retrieval ranking"),
+        ("m-golf", "memory", "workspace context"),
+    )
+    ORACLE_TOP5 = ["l-bravo", "m-alpha", "w-target", "m-echo", "m-foxtrot"]
+
+    @classmethod
+    def _entries(cls, include_workspace=True):
+        return [memory_retrieval.Entry(
+            entry_id, description, f"/{source}/{entry_id}.md", source,
+            tuple(memory_retrieval.tokenize(description)),
+        ) for entry_id, source, description in cls.ORACLE_SPEC
+            if include_workspace or source != "workspace"]
+
+    def test_exact_competitive_top_five(self):
+        ranked = memory_retrieval.rank(self.QUERY, self._entries(), limit=5)
+        self.assertEqual([row["id"] for row in ranked], self.ORACLE_TOP5)
+
+    def test_equal_score_legacy_source_precedes_workspace(self):
+        description = "equal tie token"
+        entries = [
+            memory_retrieval.Entry("a-workspace", description, "/a", "workspace",
+                                   tuple(memory_retrieval.tokenize(description))),
+            memory_retrieval.Entry("z-memory", description, "/z", "memory",
+                                   tuple(memory_retrieval.tokenize(description))),
+        ]
+        self.assertEqual(
+            [r["id"] for r in memory_retrieval.rank(description, entries, 2)],
+            ["z-memory", "a-workspace"],
+        )
+
+    def test_memory_learning_and_unknown_source_keep_legacy_id_path_order(self):
+        description = "equal tie token"
+        entries = [memory_retrieval.Entry(
+            entry_id, description, path, source,
+            tuple(memory_retrieval.tokenize(description)),
+        ) for entry_id, source, path in (
+            ("b-memory", "memory", "/b"),
+            ("a-learning", "learning", "/a"),
+            ("c-future", "future", "/c"),
+        )]
+        self.assertEqual(
+            [r["id"] for r in memory_retrieval.rank(description, entries, 3)],
+            ["a-learning", "b-memory", "c-future"],
+        )
+
+    def test_no_workspace_results_are_byte_identical_to_legacy_sort(self):
+        entries = self._entries(include_workspace=False)
+        actual = memory_retrieval.rank(self.QUERY, entries, limit=5)
+        # Pre-v2 serialized result captured before adding source-rank. This
+        # pins scoring fields and existing memory/learning tie order as bytes.
+        expected_bytes = (
+            '[{"corpus_size":7,"description":"workspace context retrieval ranking",'
+            '"entry_tokens":4,"id":"l-bravo","max_overlap_idf":1.287682,'
+            '"min_overlap_df":5,"overlap":["context","ranking","retrieval",'
+            '"workspace"],"overlap_idf":4.842427,"path":"/learning/l-bravo.md",'
+            '"score":1.151639,"source":"learning"},{"corpus_size":7,'
+            '"description":"workspace context retrieval ranking","entry_tokens":4,'
+            '"id":"m-alpha","max_overlap_idf":1.287682,"min_overlap_df":5,'
+            '"overlap":["context","ranking","retrieval","workspace"],'
+            '"overlap_idf":4.842427,"path":"/memory/m-alpha.md","score":1.151639,'
+            '"source":"memory"},{"corpus_size":7,"description":"workspace '
+            'retrieval ranking","entry_tokens":3,"id":"m-echo",'
+            '"max_overlap_idf":1.287682,"min_overlap_df":5,"overlap":["ranking",'
+            '"retrieval","workspace"],"overlap_idf":3.708896,"path":"/memory/'
+            'm-echo.md","score":0.7801,"source":"memory"},{"corpus_size":7,'
+            '"description":"context retrieval ranking","entry_tokens":3,'
+            '"id":"m-foxtrot","max_overlap_idf":1.287682,"min_overlap_df":5,'
+            '"overlap":["context","ranking","retrieval"],"overlap_idf":3.708896,'
+            '"path":"/memory/m-foxtrot.md","score":0.7801,"source":"memory"},'
+            '{"corpus_size":7,"description":"workspace context retrieval",'
+            '"entry_tokens":3,"id":"m-charlie","max_overlap_idf":1.287682,'
+            '"min_overlap_df":5,"overlap":["context","retrieval","workspace"],'
+            '"overlap_idf":3.554745,"path":"/memory/m-charlie.md",'
+            '"score":0.747677,"source":"memory"}]'
+        )
+        self.assertEqual(
+            json.dumps(actual, sort_keys=True, separators=(",", ":")),
+            expected_bytes,
+        )
 
 
 class BroadEntryScrutinyTest(unittest.TestCase):

@@ -82,6 +82,20 @@ fi
 jq -e --arg root "$REPO_ROOT" '.asha_root == $root' "$SANDBOX/.asha/config.json" >/dev/null \
   && ok "identity config records asha_root" \
   || fail "identity config records asha_root"
+if jq -e '
+    (.hooks.sessionStart | length) == 1 and
+    (.hooks.sessionStart[0].bash | endswith("nudge-engine.sh SessionStart")) and
+    (.hooks.userPromptSubmitted | length) == 1 and
+    (.hooks.postToolUse | length) == 1
+  ' "$SANDBOX/.copilot/hooks/asha-nudges.json" >/dev/null 2>&1; then
+  ok "Copilot nudges register workspace context on sessionStart"
+else
+  fail "Copilot nudges register workspace context on sessionStart"
+fi
+jq -e '(.hooks.sessionStart | length) == 1 and (.hooks.sessionEnd | length) == 1' \
+  "$SANDBOX/.copilot/hooks/asha-lifecycle.json" >/dev/null 2>&1 \
+  && ok "Copilot lifecycle keeps its separate sessionStart side-effect hook" \
+  || fail "Copilot lifecycle keeps its separate sessionStart side-effect hook"
 
 # ---------------------------------------------------------------------------
 # Test 2: Claude hook ownership spans the six lifecycle events

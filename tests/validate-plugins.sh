@@ -110,6 +110,34 @@ else
     FAILED=$((FAILED + 1))
 fi
 
+# Test 2c: Review discovery must follow the target path, not a legacy book root.
+# This is an instruction-driven primitive, so textual regression checks are the
+# executable contract shared by Claude, Codex, and Copilot renderings.
+echo -n "Test 2c: Review paths are project-root relative... "
+REVIEW_COMMAND="$REPO_ROOT/plugins/write/commands/review-section.md"
+PROSE_AGENT="$REPO_ROOT/plugins/write/agents/prose-analysis.md"
+REVIEW_PATH_ERRORS=()
+if grep -Fq 'Vault/Books/[Project]' "$REVIEW_COMMAND"; then
+    REVIEW_PATH_ERRORS+=("review-section.md retains legacy Vault/Books project discovery")
+fi
+if grep -Fq 'Vault/Books/[Project]' "$PROSE_AGENT"; then
+    REVIEW_PATH_ERRORS+=("prose-analysis.md retains legacy Vault/Books project discovery")
+fi
+grep -Fq 'walk upward toward the repository root' "$REVIEW_COMMAND" \
+    || REVIEW_PATH_ERRORS+=("review-section.md does not require ancestor-based discovery")
+grep -Fq 'from the nearest discovered' "$PROSE_AGENT" \
+    || REVIEW_PATH_ERRORS+=("prose-analysis.md does not honor the discovered review config")
+grep -Fq 'Accept either one path or a list' "$PROSE_AGENT" \
+    || REVIEW_PATH_ERRORS+=("prose-analysis.md does not support multiple documentation authorities")
+if [[ ${#REVIEW_PATH_ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    for m in "${REVIEW_PATH_ERRORS[@]}"; do echo "  $m"; done
+    FAILED=$((FAILED + 1))
+fi
+
 # Test 3: Every plugin has README.md and LICENSE.
 echo -n "Test 3: Every plugin has README.md and LICENSE... "
 MISSING_DOCS=()

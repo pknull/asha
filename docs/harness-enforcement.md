@@ -36,10 +36,52 @@ separately from empirical verification. Codex documentation was refreshed
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | Lifecycle side effects (orphan recovery at start; automatic clean-exit save) | ✅ (SessionStart/SessionEnd hooks) | ✖ no wired path | ✅ **verified live 2026‑07‑27 on 1.0.75** (`hooks/asha-lifecycle.json`: sessionStart → session-start.sh side effects, sessionEnd → session-end.sh detached save; clean-exit reasons `complete`/`user_exit`; crash → orphan recovered from the native transcript at next start — see the Copilot lifecycle note below) |
 | **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✅ enforced for shell on 0.147** (live probe 2026‑08‑08 via `codex exec`: `save-commit-gate` deny blocked a `git commit` before execution — "Command blocked by PreToolUse hook"; overturns the 0.142 shell probe that did not fire, exactly the re-probe the version caveat below demanded). Still ⚠️ documented-partial as a boundary: `unified_exec` interception incomplete per upstream docs — see the workspace probe note below | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
-| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **UserPromptSubmit verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below). **PostToolUse fires but stdout is discarded — no injection channel for that event** (verified live 2026‑07‑27; see the PostToolUse note below); the `suggest-compact` row is harness-gated to claude+copilot accordingly | ✅ **verified live + wired 2026‑07‑26 on 1.0.68** (`hooks/asha-nudges.json`: userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; production RP probe answered INJECTED — see the Copilot hook contract note below) |
+| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **UserPromptSubmit verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below). **PostToolUse fires but stdout is discarded — no injection channel for that event** (verified live 2026‑07‑27; see the PostToolUse note below); the `suggest-compact` row is harness-gated to claude+copilot accordingly | ✅ **verified live + wired through 1.0.78** (`hooks/asha-nudges.json`: sessionStart + userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; `sessionStart` top-level `additionalContext` and the existing prompt control both passed live — see the Copilot hook contract note below) |
 | **Workspace v1 (detection, save scopes, commit gate, auto-save seam — 2026‑08‑08)** | ✅ **full**: shared tools + PreToolUse `save-commit-gate` plane enforcement (Test 9b/9c pins) + plane-aware `auto-commit-memory.sh` writer seam on the automatic path (Test 9d; the gate cannot see hook-context commits on ANY harness, so the writer seam is the auto path's protection) | ✅ **detection, writer-proof, staged-set isolation, and gate deny ALL verified under the real runtime** (`codex exec` probes 2026‑08‑08 on 0.147 — see the workspace probe note below; the gate consumed the proof on commit, proving gate participation live); ✖ no auto-save lifecycle (pre-existing) — manual save is the only path | ⚠️ **detection, writer-proof, and staged-set isolation verified under the real runtime** (`copilot -p` probes 2026‑08‑08 on 1.0.75); auto-save lifecycle wired and probed end-to-end; **commit gate chained 2026‑08‑08 (issue #40)** — `copilot-policy-adapter.sh` now carries the payload `cwd` and chains `save-commit-gate.sh` after policy-guard + block-secrets; deny/allow through the translated Copilot payload pinned in Test 105 and **verified live post-merge**: an equivalent commit attempt (same fixture, staged Memory, no proof) was **denied** ("Denied by preToolUse hook: BLOCKED by Asha policy [save-commit-gate]"); a valid-proof attempt was **allowed**; and the discriminating **stale-marker probe** (recorded provenance: CLI 1.0.78, installed adapter) was denied with the marker's own hash quoted against disk and the marker **deleted** — the gate demonstrably read and consumed the proof file, ruling out fail-open/bypass on the allow path. The writer-side save_scope proof and the auto-commit seam remain the primary protection (upstream concurrency caveat [#2893](https://github.com/github/copilot-cli/issues/2893)). |
+| **Workspace v2 read side (bounded start context + source-aware retrieval — 2026‑08‑08)** | ✅ **live verified on Claude Code 2.1.226**: installed direct SessionStart delivered the exact renderer sentinel and `active=child`; repository gates remain test-pinned. | ✅ **live verified on Codex 0.147**: SessionStart raw-fragment candidate, prompt-event control, and exact renderer block all reached model context; the installed direct registration returned `CODEX-WORKSPACE-PASS`. Prompt fallback removed. | ✅ **live verified on Copilot CLI 1.0.78**: native `sessionStart` top-level `additionalContext` candidate, `userPromptSubmitted` positive control, and exact renderer payload all reached model context. Production `ws-context` moved to sessionStart; prompt fallback/cooldown removed. Raw sessionStart stdout is not claimed. |
+| **Workspace v3-v6 CLI (knowledge, bootstrap, worktrees, work items — 2026‑08‑08)** | ✅ shared `asha workspace` dispatcher | ✅ shared `asha workspace` dispatcher | ✅ shared `asha workspace` dispatcher |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
 | Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
+
+**Workspace v2 live attestation (2026-08-08 UTC):** repository tests prove
+renderer bytes, UTF-8 caps/delimiter sanitization, canonical containment,
+no-workspace zero output/no renderer startup, gates, and native response shapes.
+Live probes then established model delivery rather than inferring it: Claude's
+installed SessionStart returned `CLAUDE-SEES WORKSPACE-V2-LIVE-SENTINEL-8AUG
+active=child`; Codex's candidate/control/exact checks were all `seen=yes`, and
+the installed direct registration returned `CODEX-WORKSPACE-PASS`; Copilot's
+sessionStart candidate, user-prompt control, and exact renderer checks were all
+`seen=yes`. Copilot evidence applies to top-level `additionalContext` only—not
+raw sessionStart stdout. Tested versions: Claude Code 2.1.226, Codex 0.147.0,
+Copilot CLI 1.0.78.
+
+Final repository provenance: `session-start.sh`
+`869d552703ebc02036e2b6ee03e4020da1e1886363776e59e12fd8c01eb1d9d4`;
+`nudge-engine.sh`
+`e5f9b4b8bd3b7ab427469d745cbfa34f63f4a303cf669097c763a9a23ae4f55a`;
+`nudge-builtins.sh`
+`e19aec4c7c836e6ed2bed2cdfd8d6ecf7e7c5d7ab021e681e00b6f2449de9ca7`;
+`workspace_status.py`
+`cc4ae04ce14aba6321fa5f28b1cd52be40a85628f9df39ef660c73a8b9c0819d`.
+The live probe preceded only the interpreter-source hardening in
+`nudge-builtins.sh`; renderer and output-shape behavior did not change.
+
+**Workspace v3-v6 execution boundary:** these are ordinary local CLI surfaces,
+not model-delivery or hook claims, so availability is identical across harnesses
+when the `asha` dispatcher is installed. The shell router passes native flags
+to the Python cores. Promotion planning writes a digest-bound review artifact
+with source/evidence/target preimages plus the reviewed Git root, base commit,
+and credential-free GitHub repository identity. Confirmed apply accepts only
+that artifact plus its digest, revalidates every preimage before writing, and
+performs no Git operation. Confirmed `promote publish` for `pull-request` mode
+creates a digest-named branch, verifies the exact staged and committed blobs,
+pushes the exact commit to the bound repository, and opens a draft PR. It never
+merges or updates the base branch. Repository commit/push hooks are disabled by
+default; `--run-git-hooks` is a separate explicit authorization for reviewed
+local hook programs. Remote CI remains the external governance boundary.
+Worktree mutation is available only through explicit `create`/`remove`
+commands. Work-item adapters remain offline, import requires scrubbed preview,
+and worktree seed output is data-only.
 
 **Codex hook gating (0.145, verified + fixed 2026‑07‑26):** codex runs a
 configured hook only when BOTH `[features] hooks = true` is set in
@@ -86,7 +128,8 @@ post-edit-lint registration does fire on codex file edits, though its
 Claude-style `tool_input.file_path` extraction sees a patch blob instead and
 fail-opens.
 
-**Copilot hook contract (1.0.68, verified live 2026‑07‑26):** hook files under
+**Copilot hook contract (1.0.68 through 1.0.78, verified live 2026‑07‑26 and
+2026‑08‑08):** hook files under
 `~/.copilot/hooks/*.json` fire without any feature flag or trust grant.
 Payloads are `{sessionId, timestamp, cwd, prompt|initialPrompt, …}` — **no
 `hook_event_name`** — so asha registrations pass the Claude event name as a
@@ -97,7 +140,10 @@ under bare launches, and project detection works unmodified. Injection: raw
 stdout is **discarded**; the only context channel is a top-level
 `{"additionalContext": "…"}` JSON response, which the nudge engine emits for
 copilot on every event. Advisory nudges are wired via
-`hooks/asha-nudges.json` (userPromptSubmitted + postToolUse).
+`hooks/asha-nudges.json` (sessionStart + userPromptSubmitted + postToolUse).
+On 1.0.78, sessionStart top-level `additionalContext` delivered the exact
+workspace renderer payload; raw sessionStart stdout remains discarded and is
+not the delivery mechanism.
 
 **Copilot lifecycle (1.0.75, verified live 2026‑07‑27 — issue #13, wired on
 operator opt-in):** `sessionEnd` fires on clean exit with `{sessionId,

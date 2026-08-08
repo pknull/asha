@@ -42,8 +42,8 @@
         },
         "workspace": {
           "support": "native",
-          "surface": "shared tools (project_root.py, save_scope.py, workspace_status.py) + PreToolUse save-commit-gate + auto-commit writer seam",
-          "verifier": "tests: Suite 15 (status/doctor), Test 9b (detection pins), 9c (gate corpus), 9d (auto-save seam), python test_save_scope/test_workspace_*",
+          "surface": "shared tools (project_root.py, save_scope.py, workspace_status.py) + PreToolUse save-commit-gate + auto-commit writer seam + live-verified bounded SessionStart workspace context + workspace v3-v6 management CLI (knowledge/bootstrap/worktree/work-item) via bin/asha",
+          "verifier": "tests: Suite 15 WS-1..16, Test 2a/2b, Test 9b/9c/9d, python test_save_scope/test_workspace_*/test_memory_retrieval + Suite 15 WS-17..24 + python test_workspace_init/test_workspace_knowledge/test_workspace_worktree/test_workspace_workitems; live: Claude Code 2.1.226 installed exact renderer delivery 2026-08-08 UTC",
           "limitations": []
         }
       }
@@ -102,8 +102,8 @@
         },
         "workspace": {
           "support": "partial",
-          "surface": "shared tools via rendered command-skills + PreToolUse save-commit-gate",
-          "verifier": "codex-exec runtime probes 2026-08-08 on 0.147: detection, save_scope proof round-trip, staged-set isolation, AND gate deny all verified live (gate consumed the proof on commit)",
+          "surface": "shared tools via rendered command-skills + PreToolUse save-commit-gate + live-verified direct SessionStart raw-fragment workspace context + workspace v3-v6 management CLI (knowledge/bootstrap/worktree/work-item) via bin/asha",
+          "verifier": "v1: codex-exec runtime probes 2026-08-08 on 0.147; v2 repository: Test 92g + Suite 15 + python test_workspace_status/test_memory_retrieval + Suite 15 WS-17..24 + python test_workspace_init/test_workspace_knowledge/test_workspace_worktree/test_workspace_workitems; live: Codex 0.147 candidate/control/exact seen=yes + installed CODEX-WORKSPACE-PASS 2026-08-08 UTC",
           "limitations": [
             "no automatic-save lifecycle (pre-existing) — manual /save (rendered session-save skill) is the only save path"
           ]
@@ -166,10 +166,11 @@
         },
         "workspace": {
           "support": "partial",
-          "surface": "shared tools via rendered command-skills; auto-save lifecycle wired through the plane-aware writer seam; save-commit-gate chained via copilot-policy-adapter",
-          "verifier": "copilot -p runtime probes 2026-08-08 (1.0.75 pre-fix baseline; chained-gate probes recorded on 1.0.78): detection, save_scope proof round-trip, staged-set isolation, sessionEnd auto-save verified live; chained gate (issue #40) verified live by deny + stale-marker probes — the gate quoted the marker hash against disk and deleted it, ruling out fail-open on the allow path",
+          "surface": "shared tools via rendered command-skills; auto-save lifecycle wired through the plane-aware writer seam; save-commit-gate chained via copilot-policy-adapter; live-verified native sessionStart top-level additionalContext workspace context + workspace v3-v6 management CLI (knowledge/bootstrap/worktree/work-item) via bin/asha",
+          "verifier": "v1: copilot -p runtime probes 2026-08-08 on 1.0.75/1.0.78; v2 repository: Test 92g + Suite 15 + python test_workspace_status/test_memory_retrieval + Suite 15 WS-17..24 + python test_workspace_init/test_workspace_knowledge/test_workspace_worktree/test_workspace_workitems; live: Copilot CLI 1.0.78 sessionStart candidate/userPrompt control/exact seen=yes 2026-08-08 UTC",
           "limitations": [
-            "copilot preToolUse can be bypassed under parallel tool calls/timeouts (upstream github/copilot-cli#2893) — soft deterrent, not containment; the writer-side save_scope proof and the auto-commit seam remain the primary protection"
+            "copilot preToolUse can be bypassed under parallel tool calls/timeouts (upstream github/copilot-cli#2893) — soft deterrent, not containment; the writer-side save_scope proof and the auto-commit seam remain the primary protection",
+            "workspace context uses sessionStart top-level additionalContext; raw sessionStart stdout is not used or claimed"
           ]
         }
       }

@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.19.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.20.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.19.0
+**Version**: 1.20.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -564,6 +564,13 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 ## Version History
 
+### Session v1.20.0 — workspace management and evidence brokerage (2026-08-08)
+
+Issues #23-#27 and #45-#50: bounded cross-harness workspace context,
+source-aware retrieval, workspace bootstrap/doctor, reviewed canonical
+knowledge promotion, coordinated multi-repository worktrees, private work-item
+registry/adapters, and evidence-backed context/process/capability brokerage.
+
 ### Session v1.19.0 — copilot commit gate chained (2026-08-08)
 
 Issue #40 (attended): `copilot-policy-adapter.sh` now carries the Copilot
@@ -631,6 +638,62 @@ denies as ambiguous; each plane's proof satisfies only itself. The
 Stop-hook net routes v2 locators to the plane's structural proof (the
 session-transcript gates stay project-scoped by design). 17 save_scope
 unit tests + Test 9c (19 gate pins), tests-first.
+
+### Workspace v2 read side — bounded context + retrieval source (2026-08-08)
+
+Sessions launched inside a valid workspace now receive one bounded background
+block naming the workspace/root/active child and the first `##` section of the
+workspace operational `Memory/activeContext.md`. The internal renderer is
+`workspace_status.py --context`: no git enrichment, strict UTF-8, canonical
+containment, delimiter sanitization, 2048-byte excerpt budget by default, and
+zero output outside workspaces. `ASHA_WS_CONTEXT_MAX` changes the excerpt cap
+(values below 256 or invalid values revert to 2048). `ASHA_WS_INJECT=0`,
+`Work/markers/nudge-ws-context-off`, and `Work/markers/silence` disable delivery.
+
+Claude and Codex are wired directly at SessionStart; installed end-to-end
+delivery passed on Claude Code 2.1.226 and Codex 0.147. Copilot CLI 1.0.78 uses
+the nudge engine upon native `sessionStart`, where its top-level
+`additionalContext` delivery passed with the exact renderer block. The former
+Codex/Copilot first-prompt fallback and 1 h cooldown are removed. Retrieval now
+discovers the contained workspace operational plane as source `workspace`,
+excludes it from ordinary project memory, and orders it after
+`memory`/`learning` only on exact ranking ties.
+The pinned issue-#49 oracle is in `test_memory_retrieval.py`; the user-owned
+live recall bench remains advisory.
+
+### Workspace v3-v6 management CLI — explicit writes, no implicit Git (2026-08-08)
+
+The harness-independent dispatcher exposes the remaining workspace cores:
+
+```text
+asha workspace init|discover|doctor
+asha workspace knowledge init|lint
+asha workspace promote plan|apply|publish
+asha workspace worktree create|status|remove
+asha workspace work-item create|list|show|link|import|preview|lint|index|promote-plan|worktree-seed
+```
+
+The shell layer only routes arguments; each Python core remains the authority
+for its exact flags (`--help`) and validation. Knowledge `plan` writes an
+explicit review artifact bound to source, evidence, target preimage, and
+digest. Pull-request plans also bind the shared Git root, base commit, and
+credential-free GitHub repository identity. `apply` accepts only that artifact plus its digest and explicit
+confirmation, then revalidates every preimage before writing. In
+`pull-request` mode, `publish` requires the same artifact, digest, and explicit
+confirmation; it refuses a dirty or ambiguous shared Git root, creates a
+digest-named branch, stages only the reviewed knowledge write-set, commits,
+pushes that branch, and opens a draft pull request. It never merges or
+direct-pushes the base branch.
+The shipped review adapter is GitHub CLI; other forges fail closed rather than
+being treated as equivalent review infrastructure.
+Repository commit/push hooks are disabled by default because they execute
+project-local programs. `publish --run-git-hooks` is the separate explicit
+authorization to run configured local governance hooks; the draft PR's remote
+CI remains the external review boundary either way.
+Worktree commands are explicit operations, branch deletion requires its
+dedicated flag, and squash-merge cleanup requires review evidence. Work-item
+import is offline and requires a scrubbed preview token; `worktree-seed` emits
+data only and performs no Git operation.
 
 ### Session v1.16.0 + `asha workspace status` — first workspace consumer (2026-08-08)
 
@@ -783,7 +846,7 @@ Fixes issue #12: `migrate-okf` relocated the learnings store to `~/.asha/learnin
 ### Session v1.6.0 — Copilot guidance-nudge parity (2026-07-26)
 
 - Live-probed Copilot CLI 1.0.68's hook contract: events fire with no feature flag or trust gate, payloads carry no `hook_event_name` (argv registration instead — Copilot shell-splits), hook processes receive `COPILOT_CLI=1` + `CLAUDE_PROJECT_DIR`, raw stdout is discarded, and the ONLY injection channel is a top-level `{"additionalContext": ...}` JSON response (isolated by key: `systemMessage` et al. do nothing).
-- Wired accordingly: `asha_harness()` detects Copilot via `COPILOT_CLI`; the nudge engine emits the additionalContext shape for copilot on every event; new `~/.copilot/hooks/asha-nudges.json` registers userPromptSubmitted + postToolUse (installed/uninstalled symmetrically). Production RP probe answered INJECTED. Full contract: `docs/harness-enforcement.md` "Copilot hook contract".
+- Wired accordingly: `asha_harness()` detects Copilot via `COPILOT_CLI`; the nudge engine emits the additionalContext shape for copilot on every event; new `~/.copilot/hooks/asha-nudges.json` initially registered userPromptSubmitted + postToolUse (installed/uninstalled symmetrically). Production RP probe answered INJECTED. Workspace v2 later added the now-live-verified sessionStart registration. Full contract: `docs/harness-enforcement.md` "Copilot hook contract".
 - Remaining Claude-parity gap, deliberately opt-in: sessionStart/sessionEnd side-effect wiring (orphan recovery + automatic clean-exit save).
 
 ### Codex hook enablement — feature gate, trust preservation, doctor coverage (2026-07-26)

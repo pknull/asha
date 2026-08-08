@@ -100,7 +100,13 @@ else
   ok "verified Copilot version does not warn"
 fi
 out="$(run_with_copilot_version 1.0.78 2>&1)"
-grep -q "outside the live-verified range 1.0.63-1.0.75" <<<"$out" \
+if grep -q "outside the live-verified range" <<<"$out"; then
+  fail "workspace-v2 verified Copilot version does not warn"
+else
+  ok "workspace-v2 verified Copilot version does not warn"
+fi
+out="$(run_with_copilot_version 1.0.79 2>&1)"
+grep -q "outside the live-verified range 1.0.63-1.0.78" <<<"$out" \
   && ok "newer Copilot version warns to run the live canary" \
   || fail "newer Copilot version warns to run the live canary"
 
@@ -177,6 +183,25 @@ if [[ $rc -eq 0 ]] && grep -q "1 asha hook entry registered" <<<"$out"; then
   ok "untagged asha hook with existing path passes and is counted"
 else
   fail "untagged asha hook with existing path passes and is counted (rc=$rc)"
+fi
+
+# ---------------------------------------------------------------------------
+echo "--- test 3b: codex hook audit resolves env-wrapped executables ---"
+mkdir -p "$SANDBOX/.codex"
+cat > "$SANDBOX/.codex/config.toml" <<EOF
+[features]
+hooks = true
+
+[[hooks.SessionStart]]
+[[hooks.SessionStart.hooks]]
+command = "env ASHA_HARNESS=codex $REPO_ROOT/plugins/session/hooks/handlers/session-start.sh"
+EOF
+out="$(run --target codex 2>&1 || true)"
+if grep -q "all hook command paths exist (codex: 1 command(s) enumerated)" <<<"$out" \
+    && ! grep -q "tagged hook paths missing" <<<"$out"; then
+  ok "env wrapper resolves to the actual hook executable"
+else
+  fail "env wrapper resolves to the actual hook executable (output: $(grep -E 'hook command|hook paths' <<<"$out"))"
 fi
 
 # ---------------------------------------------------------------------------
