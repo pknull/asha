@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.20.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.20.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops, workspace context + management CLI, evidence brokerage — 5 agents |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -351,7 +351,19 @@ Session coordination and memory persistence — the foundation layer other plugi
 
 *(The former `/asha:init` identity phase, `session:spawn`/`agents`/`stop-agents`, `session:note`, `session:prime`, `task-manager`, and `verify-app` were merged or removed in the 2026-07-10 audit — verify lives on as `/code:verify`.)*
 
-**Agent**: `loop-operator` — autonomous workflow management with safety guardrails (checkpoints, failure detection, intervention).
+**Agents** (5):
+
+| Agent | Purpose |
+|-------|---------|
+| `loop-operator` | Autonomous workflow management with safety guardrails (checkpoints, failure detection, intervention) |
+| `memory-steward` | Bounded, provenance-backed task context via the deterministic read-only context protocol |
+| `memory-curator` | Review-only durable-memory proposals — never writes, promotes, retires, or publishes |
+| `process-router` | Registry-backed process recommendation with prerequisites, risk, approvals, verification, fallback |
+| `capability-broker` | Matches tasks to verified registry capabilities; reports harness support, approvals, configuration, fallback |
+
+The last four are optional wrappers around the inline brokerage protocols (`asha context brief`, `asha process route`, `asha capabilities match`) — never required for correctness, and they never spawn another broker. Contract: [`docs/evidence-backed-brokerage.md`](docs/evidence-backed-brokerage.md).
+
+**Workspace surfaces**: `asha workspace status|init|discover|doctor`, `knowledge init|lint`, `promote plan|apply|publish`, `worktree …`, `work-item …`. Sessions inside a valid workspace also receive one bounded operational-context block at SessionStart on all three harnesses. See [plugins/session/README.md](plugins/session/README.md#workspace-read-side-context).
 
 **Skills**: `memory-maintenance` (Memory file structure guidance), `skill-creator` (portable SKILL.md authoring).
 

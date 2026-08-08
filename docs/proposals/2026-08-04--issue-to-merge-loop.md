@@ -1,12 +1,19 @@
 ---
 title: Overnight issue-to-merge loop
 type: proposal
-status: deferred — captured for a fresh session
+status: delivered — shipped in v2.5.0 (code plugin v1.5.0: `/code:issue-loop`, `engines/issue-loop.js`, preflight + publish rails)
 date: 2026-08-04
 origin: /insights on_the_horizon #3; deferral ruled by Keeper 2026-08-04
 ---
 
 # Overnight issue-to-merge loop — design spec
+
+> **Delivered.** Built in v2.5.0 as `/code:issue-loop` +
+> `plugins/code/engines/issue-loop.js`, with `tools/issue-loop-preflight.sh`
+> and `tools/issue-loop-publish.sh` as the safety rails. The historical spec
+> below is preserved as written; see the v2.5.0 entry in
+> [CLAUDE.md](../../CLAUDE.md#version-history) for what shipped and what was
+> deliberately held back (no tracker comments, no auto-merge).
 
 Deliberately **not built** in the session that wrote this: the build deserves a
 fresh context, and half its prerequisites shipped today. This spec is the warm
