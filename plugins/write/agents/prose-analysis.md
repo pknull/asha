@@ -114,6 +114,14 @@ Scope is controlled via mode flags. Default (no flags) runs all enabled checks.
 
 **Step 1: Parse mode flags** from invocation to determine which phases to run.
 
+Resolve the manuscript's project root from the target path before locating any
+supporting files. Start at the target's directory and walk upward toward the
+repository root. Prefer the nearest ancestor containing
+`Work/review-config.md` or `work/review-config.md`; otherwise use the nearest
+ancestor that contains the manuscript's established project structure. Never
+assume a fixed parent such as `Vault/Books` or `Lore/Books`, and never search
+outside the current repository to find a project by name.
+
 **Step 2: Discover voice documentation** (if --voice or no flags):
 
 ```
@@ -125,7 +133,11 @@ Glob: Work/novel/bible/voice.md
 Glob: **/*StyleGuide*.md
 ```
 
-This is a search over conventions, not a fixed path — a project's voice doc may be named anything. If the project declares its voice doc explicitly (a mode manifest's `slots.voiceSpec`, or a path the user gives you), that wins over every glob here.
+Run these globs within the discovered project root. This is a search over
+conventions, not a fixed path — a project's voice doc may be named anything.
+If the project declares its voice doc explicitly (a review config, a mode
+manifest's `slots.voiceSpec`, or a path the user gives you), that wins over
+every glob here.
 
 Also check for genre rules: `Work/novel/bible/rules.md` (or project equivalent) — any genre-specific constraints found there are enforced alongside the voice doc.
 
@@ -141,18 +153,25 @@ If voice doc found → read it. Extract:
 
 - **--continuity**: Extract character pronoun rules, identify timeline markers
 - **--character**: Load character sheets (`Work/novel/bible/characters/` or `Vault/World/Characters/`), current character states (`Work/novel/state/current/characters.md`), and knowledge tracking (`Work/novel/state/current/knowledge.md`) — build per-character profiles before analysis
-- **--coherence**: Load worldbuilding (Vault/World/*), identify central conflict
-- **--docs**: Locate story bible (Vault/Books/[Project]/work/*Documentation*.md)
+- **--coherence**: Load worldbuilding declared by the project, then check
+  repository-level canon directories such as `Lore/World/` or `Vault/World/`
+- **--docs**: Use every `documentation` entry from the nearest discovered
+  review config when present. Accept either one path or a list of file/directory
+  paths; do not silently discard later entries. Otherwise locate the story
+  bible beneath the discovered project root
+  (`Work/novel/bible/story_bible.md`, `Work/*Documentation*.md`, and lowercase
+  `work/` equivalents)
 
 **Information Sources:**
 
-- Target manuscripts (Vault/Books/*)
+- Target manuscript and adjacent sections beneath the discovered project root
 - Voice documentation (work/prose_voice.md, Work/novel/bible/voice.md)
 - Genre rules (Work/novel/bible/rules.md)
 - Character sheets and pronoun specifications (Vault/World/Characters/, Work/novel/bible/characters/)
 - Character/knowledge state (Work/novel/state/current/)
 - Worldbuilding canon (Vault/World/*)
-- Story bible/documentation (Vault/Books/[Project]/work/)
+- Story bible/documentation declared by config or found beneath the discovered
+  project root
 
 **Step 4: Read target prose** for analysis.
 
@@ -429,8 +448,12 @@ For each candidate escape hatch:
 
 **Story Bible Sources** (project-specific):
 
-- Per project: a story-bible / documentation file under `Vault/Books/[Project]/work/`
-- Other projects: Check `Vault/Books/[Project]/work/` for documentation
+- First choice: every path in `documentation` from the nearest discovered
+  `review-config.md` (a scalar or list is valid)
+- Fallback: search the discovered project root for
+  `Work/novel/bible/story_bible.md`, `Work/*Documentation*.md`, and lowercase
+  `work/` equivalents
+- Do not substitute documentation from another project with a matching name
 
 **Terminology Extraction**:
 
@@ -731,10 +754,12 @@ If server down → note "Technical verification pending" and continue.
 
 **Data Sources:**
 
-- Vault/Books/* - Chapter manuscripts
-- Vault/World/* - Worldbuilding canon
-- work/prose_voice.md - Voice documentation
-- Vault/Books/[Project]/work/ - Story bible/documentation
+- Target path and adjacent files under the discovered project root — chapter
+  manuscripts
+- Project-declared canon, plus repository-level `Lore/World/` or
+  `Vault/World/` when applicable — worldbuilding canon
+- Configured voice guide or project-root voice documentation
+- Configured documentation or project-root story bible
 
 # Quality Standards
 

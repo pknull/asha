@@ -14,8 +14,40 @@ nudge_dispatch() {
     case "${1:-}" in
         memory_lexical)  nudge_builtin_memory_lexical ;;
         suggest_compact) nudge_builtin_suggest_compact ;;
+        ws_context)      nudge_builtin_ws_context ;;
         *) return 0 ;;
     esac
+}
+
+# Workspace v2 prompt-event fallback for Codex/Copilot. Candidate native
+# session-start delivery remains unproven; this renderer rides each harness's
+# already verified prompt context channel. The engine owns init/silence/off,
+# env-disable, and hour-cooldown gates.
+nudge_builtin_ws_context() {
+    local pdir="$NUDGE_PROJECT_DIR"
+    [[ -n "$pdir" ]] || return 0
+    declare -F asha_find_workspace_manifest >/dev/null 2>&1 || return 0
+
+    # No workspace means no Python startup on the prompt hot path.
+    local manifest=""
+    manifest="$(asha_find_workspace_manifest "$pdir" 2>/dev/null || true)"
+    [[ -n "$manifest" ]] || return 0
+
+    local tool="$NUDGE_HANDLERS_DIR/../../tools/workspace_status.py"
+    [[ -f "$tool" ]] || return 0
+    # This runs automatically upon a prompt. PATH and repository content are
+    # untrusted at this boundary; select only a fixed system interpreter path.
+    local python=""
+    local candidate=""
+    for candidate in /usr/bin/python3 /bin/python3 /usr/local/bin/python3 /opt/homebrew/bin/python3; do
+        if [[ -x "$candidate" ]]; then
+            python="$candidate"
+            break
+        fi
+    done
+    [[ -n "$python" ]] || return 0
+    "$python" "$tool" --context --start "$pdir" 2>/dev/null || true
+    return 0
 }
 
 # Lexical memory-index nudge (row memory-lexical). Port of the retired

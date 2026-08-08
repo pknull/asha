@@ -14,9 +14,12 @@ import math
 import os
 import re
 import tempfile
+import warnings
 from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable, Optional
+
+import project_root
 
 
 _WORD_RE = re.compile(r"[a-z0-9][a-z0-9_+.-]*", re.IGNORECASE)
@@ -90,29 +93,73 @@ def _entry(entry_id: str, description: str, path: Path, source: str) -> Entry:
     return Entry(entry_id, clean, str(path), source, tuple(tokenize(clean)))
 
 
-def memory_entries(memory_dirs: Iterable[Path]) -> list[Entry]:
+def _contained_path(candidate: Path, root: Path) -> Optional[Path]:
+    try:
+        resolved = candidate.resolve()
+        canonical_root = root.resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if resolved == canonical_root or canonical_root in resolved.parents:
+        return resolved
+    return None
+
+
+def _workspace_warning(message: str) -> None:
+    warnings.warn(f"workspace memory discovery: {message}", RuntimeWarning,
+                  stacklevel=2)
+
+
+def memory_entries(memory_dirs: Iterable[Path], *, source: str = "memory",
+                   containment_root: Optional[Path] = None) -> list[Entry]:
     """Read MEMORY.md catalogue lines and target-file descriptions."""
     found: dict[tuple[str, str], Entry] = {}
     for memory_dir in memory_dirs:
         index = memory_dir / "MEMORY.md"
         indexed: dict[str, tuple[str, Path]] = {}
-        if index.is_file():
+        try:
+            safe_index: Optional[Path] = index.resolve()
+        except (OSError, RuntimeError, ValueError):
+            safe_index = None
+        if containment_root is not None:
+            safe_index = _contained_path(index, containment_root)  # type: ignore[assignment]
+            if safe_index is None:
+                _workspace_warning(f"skipping catalogue outside operational root: {index}")
+        if safe_index is not None and safe_index.is_file():
             try:
-                for line in index.read_text(encoding="utf-8").splitlines():
+                for line in safe_index.read_text(encoding="utf-8").splitlines():
                     match = _MEMORY_LINE_RE.match(line)
                     if not match:
                         continue
                     target = (memory_dir / match.group(2)).resolve()
+                    if containment_root is not None:
+                        target = _contained_path(target, containment_root)  # type: ignore[assignment]
+                        if target is None:
+                            _workspace_warning(
+                                f"skipping catalogue target outside operational root: "
+                                f"{match.group(2)}"
+                            )
+                            continue
                     indexed[target.stem] = (
                         " ".join(part for part in (match.group(1), match.group(3)) if part),
                         target,
                     )
-            except OSError:
+            except (OSError, UnicodeError):
                 pass
 
         targets = {path for _, path in indexed.values()}
         try:
-            targets.update(p.resolve() for p in memory_dir.glob("*.md") if p.name != "MEMORY.md")
+            for path in memory_dir.glob("*.md"):
+                if path.name == "MEMORY.md":
+                    continue
+                resolved = path.resolve()
+                if containment_root is not None:
+                    resolved = _contained_path(resolved, containment_root)  # type: ignore[assignment]
+                    if resolved is None:
+                        _workspace_warning(
+                            f"skipping target outside operational root: {path}"
+                        )
+                        continue
+                targets.add(resolved)
         except OSError:
             pass
         for path in sorted(targets):
@@ -120,11 +167,11 @@ def memory_entries(memory_dirs: Iterable[Path]) -> list[Entry]:
             description = ""
             try:
                 description = str(_frontmatter(path.read_text(encoding="utf-8")).get("description") or "")
-            except OSError:
+            except (OSError, UnicodeError):
                 pass
             text = " ".join(part for part in (catalogue, description) if part)
             if text:
-                found[(path.stem, str(path))] = _entry(path.stem, text, path, "memory")
+                found[(path.stem, str(path))] = _entry(path.stem, text, path, source)
     return list(found.values())
 
 
@@ -176,14 +223,67 @@ def discover_memory_dirs(project_dir: Optional[Path], *, all_projects: bool = Fa
     return sorted(unique.values())
 
 
-def build_entries(memory_dirs: Iterable[Path], learnings_dir: Optional[Path] = None) -> list[Entry]:
+def discover_retrieval_sources(
+    project_dir: Optional[Path], *, all_projects: bool = False,
+    home: Optional[Path] = None,
+) -> tuple[list[Path], Optional[Path]]:
+    """Return legacy memory dirs plus one contained workspace source.
+
+    The legacy directory discovery stays byte-identical outside workspaces.
+    A workspace operational plane is removed from that list and returned
+    separately so it is classified once as ``workspace``.
+    """
+    memory_dirs = discover_memory_dirs(
+        project_dir, all_projects=all_projects, home=home
+    )
+    if project_dir is None:
+        return memory_dirs, None
+    det = project_root.detect_workspace(start=project_dir)
+    if det.errors:
+        _workspace_warning(
+            "detection failed; workspace source disabled (" +
+            ", ".join(error.code for error in det.errors) + ")"
+        )
+        return memory_dirs, None
+    if det.root is None or det.manifest is None:
+        return memory_dirs, None
+
+    try:
+        canonical_root = det.root.resolve()
+        rel = str((det.manifest.get("memory") or {}).get(
+            "operational_root") or "Memory")
+        operational = (det.root / rel).resolve()
+    except (OSError, RuntimeError, ValueError) as exc:
+        _workspace_warning(f"cannot resolve operational root: {exc}")
+        return memory_dirs, None
+    if operational != canonical_root and canonical_root not in operational.parents:
+        _workspace_warning(
+            f"operational root resolves outside the workspace: {operational}"
+        )
+        return memory_dirs, None
+    if not operational.is_dir():
+        return memory_dirs, None
+
+    memory_dirs = [path for path in memory_dirs if path.resolve() != operational]
+    return memory_dirs, operational
+
+
+def build_entries(memory_dirs: Iterable[Path], learnings_dir: Optional[Path] = None,
+                  *, workspace_dir: Optional[Path] = None) -> list[Entry]:
     entries = memory_entries(memory_dirs)
+    if workspace_dir is not None:
+        entries.extend(memory_entries(
+            [workspace_dir], source="workspace",
+            containment_root=workspace_dir,
+        ))
     entries.extend(learning_entries(learnings_dir or (Path.home() / ".asha" / "learnings")))
     return entries
 
 
-def source_signature(memory_dirs: Iterable[Path], learnings_dir: Path) -> dict[str, int]:
+def source_signature(memory_dirs: Iterable[Path], learnings_dir: Path, *,
+                     workspace_dir: Optional[Path] = None) -> dict[str, int]:
     """Compact mtime/size signature used to skip unchanged SessionStart builds."""
+    memory_dirs = list(memory_dirs)
     paths: list[Path] = []
     for directory in memory_dirs:
         try:
@@ -192,7 +292,57 @@ def source_signature(memory_dirs: Iterable[Path], learnings_dir: Path) -> dict[s
             pass
     if learnings_dir.is_dir():
         paths.extend(learnings_dir.glob("*.md"))
+    if workspace_dir is not None:
+        try:
+            index = _contained_path(workspace_dir / "MEMORY.md", workspace_dir)
+            if index is not None and index.is_file():
+                paths.append(index)
+                try:
+                    for line in index.read_text(encoding="utf-8").splitlines():
+                        match = _MEMORY_LINE_RE.match(line)
+                        if not match:
+                            continue
+                        target = _contained_path(
+                            workspace_dir / match.group(2), workspace_dir
+                        )
+                        if target is None:
+                            _workspace_warning(
+                                "skipping signature catalogue target outside "
+                                f"operational root: {match.group(2)}"
+                            )
+                            continue
+                        paths.append(target)
+                except (OSError, UnicodeError):
+                    pass
+            for path in workspace_dir.glob("*.md"):
+                resolved = _contained_path(path, workspace_dir)
+                if resolved is None:
+                    _workspace_warning(
+                        f"skipping signature target outside operational root: {path}"
+                    )
+                    continue
+                paths.append(resolved)
+        except OSError:
+            pass
     signature: dict[str, int] = {}
+    # File metadata alone cannot distinguish the same directory changing from
+    # project memory to the workspace operational plane (or back). Cache the
+    # source topology as part of the signature so Entry.source never survives
+    # a manifest/classification transition stale.
+    for directory in memory_dirs:
+        try:
+            signature[f"@source:memory:{directory.resolve()}"] = 1
+        except (OSError, RuntimeError):
+            signature[f"@source:memory:{directory}"] = 1
+    try:
+        signature[f"@source:learning:{learnings_dir.resolve()}"] = 1
+    except (OSError, RuntimeError):
+        signature[f"@source:learning:{learnings_dir}"] = 1
+    if workspace_dir is not None:
+        try:
+            signature[f"@source:workspace:{workspace_dir.resolve()}"] = 1
+        except (OSError, RuntimeError):
+            signature[f"@source:workspace:{workspace_dir}"] = 1
     for path in paths:
         try:
             stat = path.stat()
@@ -259,11 +409,20 @@ def rank(query: str, entries: Iterable[Entry], limit: int = 5) -> list[dict]:
             "entry_tokens": len(item_set),
             "corpus_size": total,
         })
-    results.sort(key=lambda row: (-row["score"], -len(row["overlap"]), row["id"], row["path"]))
+    def source_rank(source: str) -> int:
+        # Existing and unknown sources keep the legacy tie behavior. Only the
+        # newly ratified workspace source sorts after them on an exact tie.
+        return 1 if source == "workspace" else 0
+
+    results.sort(key=lambda row: (
+        -row["score"], -len(row["overlap"]), source_rank(row["source"]),
+        row["id"], row["path"],
+    ))
     return results[:limit]
 
 
-def dump_index(path: Path, memory_dirs: list[Path], learnings_dir: Path) -> dict:
+def dump_index(path: Path, memory_dirs: list[Path], learnings_dir: Path, *,
+               workspace_dir: Optional[Path] = None) -> dict:
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_suffix(path.suffix + ".lock")
     flags = os.O_RDWR | os.O_CREAT
@@ -273,7 +432,9 @@ def dump_index(path: Path, memory_dirs: list[Path], learnings_dir: Path) -> dict
     os.fchmod(lock_fd, 0o600)
     with os.fdopen(lock_fd, "a+", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        signature = source_signature(memory_dirs, learnings_dir)
+        signature = source_signature(
+            memory_dirs, learnings_dir, workspace_dir=workspace_dir
+        )
         if path.is_file() and not path.is_symlink():
             try:
                 old = json.loads(path.read_text(encoding="utf-8"))
@@ -285,7 +446,9 @@ def dump_index(path: Path, memory_dirs: list[Path], learnings_dir: Path) -> dict
         payload = {
             "version": 1,
             "source_signature": signature,
-            "entries": [entry.json() for entry in build_entries(memory_dirs, learnings_dir)],
+            "entries": [entry.json() for entry in build_entries(
+                memory_dirs, learnings_dir, workspace_dir=workspace_dir
+            )],
         }
         fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
         tmp = Path(tmp_name)
