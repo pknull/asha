@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.18.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.19.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.18.0
+**Version**: 1.19.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -563,6 +563,20 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Session v1.19.0 — copilot commit gate chained (2026-08-08)
+
+Issue #40 (attended): `copilot-policy-adapter.sh` now carries the Copilot
+payload's `cwd` through the Claude-shape translation (previously dropped —
+the gate is cwd-sensitive, so without it the chain could not resolve the
+project) and chains `save-commit-gate.sh` after policy-guard +
+block-secrets. Deny (staged Memory, no proof), allow (hash-bound marker),
+and self-filter (non-commit git) pinned through the translated payload in
+Test 105. Live in-session deny probe deferred to the post-merge smoke —
+the auto-mode classifier correctly refused a temporary live-hook redirect,
+and the merged install needs no redirect at all. Copilot `workspace`
+capability entry updated; upstream concurrency caveat (#2893) retained:
+the gate is a deterrent layer, the writer-side proof remains primary.
 
 ### Workspace v1 complete — three-harness parity attested (2026-08-08, session v1.18.0)
 
