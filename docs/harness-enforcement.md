@@ -168,6 +168,15 @@ the session logs.
   produced "Session auto-save (workspace):" — plane resolved, proof written,
   verified and consumed, only `Memory/` staged, child untouched (Test 9d pins
   the full conduct matrix, including fail-closed on unvalidatable manifests).
+  **Full-chain smoke (same day):** a real copilot session in a PRISTINE
+  workspace fixture, clean exit, the installed unmodified sessionEnd hook,
+  the seam writer selected via `CLAUDE_PLUGIN_ROOT` — preflight passed on the
+  real transcript and the seam committed "Session auto-save (workspace):"
+  with only `Memory/` staged; a dirty non-Memory file and the child plane
+  (dirty Memory note included) stayed out; the proof was consumed. A first
+  smoke attempt in the RESIDUE fixture was correctly refused upstream by
+  `ac_wwa_provenance` (stale prior-session WWA) — the guard stack composes:
+  provenance gates the synthesis, the seam gates the plane.
 - **Claude:** reference harness — gate + seam pinned by Tests 9b/9c/9d and
   Suite 15; PreToolUse enforcement continuously exercised in production
   sessions.
