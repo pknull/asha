@@ -564,6 +564,22 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 ## Version History
 
+### Workspace v1 complete — three-harness parity attested (2026-08-08)
+
+Delivery issue 6 of 6 (issue #39) closes the ratified ship gate (decision 3,
+PR #28): live probes on all three harnesses, verdicts in
+`docs/harness-enforcement.md`, and a `workspace` capability entry per
+harness in `harnesses/capabilities.json` (schema unchanged — the four
+facets read as precise limitation strings; extending the closed value
+schema was ruled not warranted for v1). Verdicts: Claude full (gate
+enforced, live-pinned); Codex and Copilot detection + writer-proof verified
+by env-shaped probe, gate enforcement honestly `partial` (codex PreToolUse
+shell interception doesn't fire; copilot's adapter never chained the gate —
+pre-existing, follow-up filed) with the writer-side proof as the operative
+protection on both. The workspace-memory proposal's v1 scope is now fully
+shipped: manifest validator, detection consolidation + walk, status/doctor,
+save scopes + plane gate, destructive-git cross-repo arm, parity attestation.
+
 ### Session v1.17.0 — save scopes + state-based commit gate (2026-08-08)
 
 Workspace v1 delivery issue 4 (issue #36), design ratified via adversarial
