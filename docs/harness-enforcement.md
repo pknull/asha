@@ -35,8 +35,9 @@ separately from empirical verification. Codex documentation was refreshed
 | Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
 | Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
 | Lifecycle side effects (orphan recovery at start; automatic clean-exit save) | ✅ (SessionStart/SessionEnd hooks) | ✖ no wired path | ✅ **verified live 2026‑07‑27 on 1.0.75** (`hooks/asha-lifecycle.json`: sessionStart → session-start.sh side effects, sessionEnd → session-end.sh detached save; clean-exit reasons `complete`/`user_exit`; crash → orphan recovered from the native transcript at next start — see the Copilot lifecycle note below) |
-| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **⚠️ native but partial: documented for simple Bash, `apply_patch`, and MCP; `unified_exec` interception incomplete. Asha's 0.142 shell probe did not fire.** | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
+| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✅ enforced for shell on 0.147** (live probe 2026‑08‑08 via `codex exec`: `save-commit-gate` deny blocked a `git commit` before execution — "Command blocked by PreToolUse hook"; overturns the 0.142 shell probe that did not fire, exactly the re-probe the version caveat below demanded). Still ⚠️ documented-partial as a boundary: `unified_exec` interception incomplete per upstream docs — see the workspace probe note below | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
 | Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all three registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **UserPromptSubmit verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below). **PostToolUse fires but stdout is discarded — no injection channel for that event** (verified live 2026‑07‑27; see the PostToolUse note below); the `suggest-compact` row is harness-gated to claude+copilot accordingly | ✅ **verified live + wired 2026‑07‑26 on 1.0.68** (`hooks/asha-nudges.json`: userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; production RP probe answered INJECTED — see the Copilot hook contract note below) |
+| **Workspace v1 (detection, save scopes, commit gate, auto-save seam — 2026‑08‑08)** | ✅ **full**: shared tools + PreToolUse `save-commit-gate` plane enforcement (Test 9b/9c pins) + plane-aware `auto-commit-memory.sh` writer seam on the automatic path (Test 9d; the gate cannot see hook-context commits on ANY harness, so the writer seam is the auto path's protection) | ✅ **detection, writer-proof, staged-set isolation, and gate deny ALL verified under the real runtime** (`codex exec` probes 2026‑08‑08 on 0.147 — see the workspace probe note below; the gate consumed the proof on commit, proving gate participation live); ✖ no auto-save lifecycle (pre-existing) — manual save is the only path | ⚠️ **detection, writer-proof, and staged-set isolation verified under the real runtime** (`copilot -p` probes 2026‑08‑08 on 1.0.75); auto-save lifecycle wired and probed end-to-end; **commit gate NOT chained** — `copilot-policy-adapter.sh` chains policy-guard + block-secrets only (pre-existing since the gate's creation; issue #40, attended; confirmed live: an ungated Memory commit succeeded and a save proof survived a commit unconsumed). The writer-side save_scope proof and the auto-commit seam are the operative protection. |
 | Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
 | Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
 
@@ -124,7 +125,9 @@ single-call deny verified live on 1.0.63, 2026‑06‑24). Codex has a real nati
 hook system, not an absent one, but its coverage is incomplete. Official docs
 state that simple Bash, `apply_patch`, and MCP calls can be intercepted whilst
 some richer `unified_exec` shell calls and non-shell/non-MCP tools cannot. The
-Asha 0.142 shell probe landed in the uncovered case and did not fire. The
+Asha's 0.142 shell probe landed in the uncovered case and did not fire; the
+2026‑08‑08 re-probe on 0.147 fired and denied (see the workspace probe note
+below), so simple-Bash interception is now verified live there. The
 file-based layers — corpus, persona (all three; Copilot persona fixed
 2026‑06‑24), and the operational layer (operation.md + learnings; Copilot +
 Codex both wired 2026‑06‑24 — file-based, no working hook required) — work on all
@@ -134,6 +137,49 @@ custom command-file surface. The `output-styles` plugin was retired in the
 2026‑07‑10 ecosystem audit (Claude's native `/output-style` covers it). Codex
 also gets native execution-policy `prefix_rule()` prompts for a narrow subset of
 high-risk shell commands; these are not equivalent to Asha's regex guardrails.
+
+**Workspace probe note — v1 parity battery (2026‑08‑08, issue #39):** all
+probes ran under each harness's REAL runtime (the harness executing the
+commands through its own shell tool in a fixture workspace: shared root `ws`
+with a declared child repo), not env-shaped plain shells — the distinction the
+first attestation attempt failed on. Fixture and full transcripts preserved in
+the session logs.
+
+- **Codex 0.147 (`codex exec --sandbox workspace-write`):** `asha workspace
+  status` resolved `workspace: probews … active repository: child`;
+  `save_scope.py resolve --scope workspace` returned the full v2 mapping.
+  Save pipeline: write-proof → `verify` → `ok` → scoped commit staged ONLY
+  `Memory/probe-note.md` in the shared root; the dirty child repo and a dirty
+  non-Memory file were untouched; the proof marker was **consumed by the
+  gate** (present before the commit, gone after — live gate participation).
+  Deny probe: with staged Memory and no proof, `git commit` was **blocked
+  before execution** ("BLOCKED by Asha policy [save-commit-gate]").
+- **Copilot 1.0.75 (`copilot -p --allow-all-tools`):** same detection and
+  save-pipeline results (scoped commit `Memory/copilot-note.md` only; child
+  untouched) — but the proof marker **survived** the commit (nothing consumed
+  it), and the deny probe **succeeded** (`git commit` exit 0 on staged Memory
+  with no proof): the commit gate is not chained on Copilot (issue #40).
+- **Copilot auto-save, end-to-end:** a real `copilot -p` session at the
+  workspace root with `autoCommit: true` exited cleanly; sessionEnd → detached
+  save → preflight passed on the real transcript → the **pre-seam stanza
+  committed the workspace Memory plane ungated and unproven** ("Session
+  auto-save:" with no scope, no proof) — the #36-deferral hole demonstrated
+  live. The same fixture and session identity through the seam-fixed writer
+  produced "Session auto-save (workspace):" — plane resolved, proof written,
+  verified and consumed, only `Memory/` staged, child untouched (Test 9d pins
+  the full conduct matrix, including fail-closed on unvalidatable manifests).
+  **Full-chain smoke (same day):** a real copilot session in a PRISTINE
+  workspace fixture, clean exit, the installed unmodified sessionEnd hook,
+  the seam writer selected via `CLAUDE_PLUGIN_ROOT` — preflight passed on the
+  real transcript and the seam committed "Session auto-save (workspace):"
+  with only `Memory/` staged; a dirty non-Memory file and the child plane
+  (dirty Memory note included) stayed out; the proof was consumed. A first
+  smoke attempt in the RESIDUE fixture was correctly refused upstream by
+  `ac_wwa_provenance` (stale prior-session WWA) — the guard stack composes:
+  provenance gates the synthesis, the seam gates the plane.
+- **Claude:** reference harness — gate + seam pinned by Tests 9b/9c/9d and
+  Suite 15; PreToolUse enforcement continuously exercised in production
+  sessions.
 
 ## Per-harness findings
 
@@ -191,6 +237,16 @@ stdout injects (production-enabled); PostToolUse fires on shell and successful
 stdout** — advisory injection is impossible on that event (full verdict: "Codex
 PostToolUse" above). Matchers are honored, with `apply_patch` aliased into the
 `Edit|Write|MultiEdit` class.
+
+**0.147 live results (2026-08-08):** PreToolUse **fires and enforces deny for
+simple Bash** under `codex exec`: `save-commit-gate.sh` blocked a staged
+`git commit` before execution, the router logging "Command blocked by
+PreToolUse hook: BLOCKED by Asha policy [save-commit-gate]" and no commit
+landing (fixture `git log` unchanged). A subsequent proof-bearing commit was
+allowed and the gate consumed the proof marker — deny AND allow paths both
+participate. This supersedes the 0.142 no-fire verdict for simple Bash; the
+documented `unified_exec` incompleteness caveat stands (probe evidence in the
+workspace probe note above).
 
 **Asha implementation:** Persona plus required operational context are supplied
 through the wrapper's `model_instructions_file`. Asha also installs native hook

@@ -393,14 +393,20 @@ automatic_mode() {
         fi
     fi
 
-    # Git commit if configured AND the pre-flight gate passed. Push goes through
-    # the durable queue (push_retry) so a missing remote is queued, not silent.
+    # Git commit if configured AND the pre-flight gate passed. The commit goes
+    # through the plane-aware writer seam (auto-commit-memory.sh): the
+    # PreToolUse gate cannot see hook-context commits on any harness, so the
+    # writer must resolve the plane, bind the proof, and stage only its own
+    # scope. Push goes through the durable queue (push_retry) so a missing
+    # remote is queued, not silent — targeting the repo the commit landed in.
     if [[ -f "$PROJECT_DIR/.asha/config.json" ]]; then
         AUTO_COMMIT=$("$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('autoCommit', False))" < "$PROJECT_DIR/.asha/config.json" 2>/dev/null || echo "False")
         if [[ "$AUTO_COMMIT" == "True" && "$PREFLIGHT_OK" == "1" ]]; then
-            log "Auto-committing Memory changes..."
-            (cd "$PROJECT_DIR" && git add Memory/ && git commit -m "Session auto-save: $(date -u '+%Y-%m-%d %H:%M UTC')") 2>/dev/null || true
-            "$PYTHON_CMD" "$PLUGIN_ROOT/tools/push_retry.py" ensure --project-dir "$PROJECT_DIR" >/dev/null 2>&1 || true
+            log "Auto-committing Memory changes (plane-aware writer seam)..."
+            ACM_OUT="$("$PLUGIN_ROOT/tools/auto-commit-memory.sh" "$PROJECT_DIR" || true)"
+            log "auto-commit: ${ACM_OUT:-no output}"
+            ACM_REPO=$(printf '%s' "$ACM_OUT" | "$PYTHON_CMD" -c "import sys,json; print(json.load(sys.stdin).get('commit_repo',''))" 2>/dev/null || echo "")
+            "$PYTHON_CMD" "$PLUGIN_ROOT/tools/push_retry.py" ensure --project-dir "${ACM_REPO:-$PROJECT_DIR}" >/dev/null 2>&1 || true
         fi
     fi
 

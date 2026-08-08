@@ -121,7 +121,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.17.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Core** | `session` | v1.18.0 | Session memory, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -335,7 +335,7 @@ Create a ComfyUI workflow for: txt2img with upscaling
 
 **Plugin Name**: `session`
 **Commands**: `/session:init`, `/session:save`, `/session:status`, `/session:silence`, `/session:restore`, `/session:loop`
-**Version**: 1.17.0
+**Version**: 1.18.0
 **Domain**: Core
 
 Session coordination and memory persistence — the foundation layer other plugins build on. Learnings persist as an OKF concept bundle (`~/.asha/learnings/`, one file per learning) with auto-suggested `## Related` cross-links at `/save`; see [`docs/memory-architecture.md`](docs/memory-architecture.md).
@@ -563,6 +563,43 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+### Workspace v1 complete — three-harness parity attested (2026-08-08, session v1.18.0)
+
+Delivery issue 6 of 6 (issue #39) closes the ratified ship gate (decision 3,
+PR #28). The first attestation attempt was **held in pass-2 review** (14th
+consecutive batch): env-shaped probes are not harness-integration evidence,
+the rendered codex/copilot save skills predated `--scope`, and the copilot
+auto-save hole was unattested. The re-attestation runs everything under each
+harness's REAL runtime (`codex exec` / `copilot -p` executing the probe
+commands through their own shell tools in a fixture workspace):
+
+- **Codex 0.147**: detection, save_scope proof round-trip, staged-set
+  isolation, AND the commit-gate deny all verified live — the gate blocked an
+  unproven Memory commit and consumed the proof on the allowed one. This
+  **overturns the 0.142 "shell PreToolUse doesn't fire" verdict** (the
+  re-probe the enforcement doc's version caveat demanded).
+- **Copilot 1.0.75**: detection + proof + isolation verified live; the gate
+  confirmed absent (ungated commit succeeded; proof survived unconsumed) —
+  issue #40, attended.
+- **Copilot auto-save hole closed** (the #36 deferral): a real sessionEnd
+  auto-save was shown committing the workspace plane ungated; the automatic
+  path now routes through a plane-aware writer seam
+  (`tools/auto-commit-memory.sh`, Test 9d) — legacy no-manifest behavior
+  preserved, workspace commits proof-bound + scope-staged + consume-on-use,
+  manifest-present-but-unvalidatable fails closed. The gate cannot see
+  hook-context commits on ANY harness, so the writer seam is the auto path's
+  protection everywhere.
+- `asha doctor` now prints each harness's `workspace` capability limitations
+  inside its workspace section (Tests WS-12..14); `capabilities.json` entries
+  rewritten from the probe verdicts (schema stays v3 per the proposal
+  amendment recorded under issue #39); rendered codex/copilot `session-save`
+  skills regenerated so `--scope` is reachable on their surfaces.
+
+The workspace-memory proposal's v1 scope is now fully shipped: manifest
+validator, detection consolidation + walk, status/doctor, save scopes +
+plane gate, destructive-git cross-repo arm, auto-save writer seam, parity
+attestation.
 
 ### Session v1.17.0 — save scopes + state-based commit gate (2026-08-08)
 

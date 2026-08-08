@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.17.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
+| **Session** | v1.18.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -919,6 +919,23 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### Workspace v1 complete (2026-08-08) — parity attested, ship gate closed (session v1.18.0)
+
+Issue #39, second attempt — the first was HELD in pass-2 (env-shaped probes
+≠ harness-integration evidence). Re-attested under each harness's real
+runtime (`codex exec` / `copilot -p` running the probes through their own
+shell tools): Codex 0.147 verified detection + proof + isolation + **gate
+deny enforced** (overturns the 0.142 no-fire verdict); Copilot 1.0.75
+verified detection + proof + isolation with the gate confirmed absent
+(issue #40). The copilot auto-save hole (#36 deferral) was demonstrated
+end-to-end live, then closed: `tools/auto-commit-memory.sh` is the
+plane-aware writer seam for the automatic path (Test 9d) — the PreToolUse
+gate cannot see hook-context commits on any harness, so the writer seam is
+the auto path's only protection. Doctor surfaces per-harness workspace
+capability limitations (WS-12..14); proposal amended with the
+capabilities-schema ruling; rendered save skills regenerated for `--scope`.
+All six delivery issues of the ratified proposal are shipped.
 
 ### Session v1.17.0 (2026-08-08) — save scopes + state-based commit gate
 

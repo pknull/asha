@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-07-11",
+  "reviewed": "2026-08-08",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
@@ -39,6 +39,12 @@
           "limitations": [
             "SessionStart supplies additional runtime context"
           ]
+        },
+        "workspace": {
+          "support": "native",
+          "surface": "shared tools (project_root.py, save_scope.py, workspace_status.py) + PreToolUse save-commit-gate + auto-commit writer seam",
+          "verifier": "tests: Suite 15 (status/doctor), Test 9b (detection pins), 9c (gate corpus), 9d (auto-save seam), python test_save_scope/test_workspace_*",
+          "limitations": []
         }
       }
     },
@@ -93,6 +99,14 @@
           "surface": "model_instructions_file",
           "verifier": "launch-wrapper",
           "limitations": []
+        },
+        "workspace": {
+          "support": "partial",
+          "surface": "shared tools via rendered command-skills + PreToolUse save-commit-gate",
+          "verifier": "codex-exec runtime probes 2026-08-08 on 0.147: detection, save_scope proof round-trip, staged-set isolation, AND gate deny all verified live (gate consumed the proof on commit)",
+          "limitations": [
+            "no automatic-save lifecycle (pre-existing) — manual /save (rendered session-save skill) is the only save path"
+          ]
         },
         "plugins": {
           "support": "unsupported",
@@ -149,6 +163,14 @@
           "surface": "COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
           "verifier": "launch-wrapper",
           "limitations": []
+        },
+        "workspace": {
+          "support": "partial",
+          "surface": "shared tools via rendered command-skills; auto-save lifecycle wired through the plane-aware writer seam",
+          "verifier": "copilot -p runtime probes 2026-08-08 on 1.0.75: detection, save_scope proof round-trip, staged-set isolation verified live; ungated-commit probe confirmed the gate is absent; sessionEnd auto-save probed end-to-end",
+          "limitations": [
+            "save-commit-gate not chained into copilot-policy-adapter (it chains policy-guard + block-secrets only; pre-existing since the gate's creation, issue #40) — the writer-side save_scope proof and the auto-commit seam are the operative protection"
+          ]
         }
       }
     }
