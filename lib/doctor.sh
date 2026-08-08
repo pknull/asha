@@ -69,7 +69,7 @@ EOF
   local drift_rc=0
   bash "$MARKET_ROOT/bin/asha-drift-check.sh" "${args[@]}" || drift_rc=$?
   local ws_rc=0
-  _asha_doctor_workspace_section || ws_rc=$?
+  _asha_doctor_workspace_section "$target" || ws_rc=$?
   [[ $drift_rc -eq 0 && $ws_rc -eq 0 ]]
 }
 
@@ -94,5 +94,49 @@ _asha_doctor_workspace_section() {
   echo ""
   echo "── Workspace (asha workspace status) ──"
   printf '%s\n' "$out"
+  # A workspace is in play (valid or broken): surface what each harness can
+  # actually enforce for it (#39 acceptance criterion). Informational — the
+  # support level being `partial` is documented reality, not drift.
+  _asha_doctor_workspace_capabilities "${1:-all}"
   return $rc
+}
+
+# Print the per-harness `workspace` capability entry (support + limitations)
+# from harnesses/capabilities.json, scoped to the doctor target. Never fails
+# doctor: capability limitations are attested facts, and file validation is
+# owned by the schema tests, not this section.
+_asha_doctor_workspace_capabilities() {
+  local caps="$MARKET_ROOT/harnesses/capabilities.json" target="${1:-all}"
+  [[ -f "$caps" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  python3 - "$caps" "$target" <<'PYEOF' 2>/dev/null || true
+import json, sys
+
+path, target = sys.argv[1], sys.argv[2]
+try:
+    with open(path, encoding="utf-8") as fh:
+        data = json.load(fh)
+except (OSError, ValueError):
+    print("WARN: harnesses/capabilities.json unreadable — "
+          "workspace capability matrix not shown")
+    sys.exit(0)
+
+harnesses = data.get("harnesses", {})
+names = list(harnesses) if target == "all" else [target]
+print("workspace capability (harnesses/capabilities.json):")
+for name in names:
+    entry = (harnesses.get(name, {}).get("capabilities", {})
+             .get("workspace"))
+    if not isinstance(entry, dict):
+        print(f"  {name}: none declared")
+        continue
+    support = entry.get("support", "?")
+    limitations = entry.get("limitations") or []
+    if limitations:
+        print(f"  {name}: {support}")
+        for item in limitations:
+            print(f"    - {item}")
+    else:
+        print(f"  {name}: {support} — no limitations")
+PYEOF
 }

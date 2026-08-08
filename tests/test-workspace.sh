@@ -121,6 +121,26 @@ if [[ $rc -eq 0 && "$out" == *"skipped"* && "$out" == *"python3"* ]]; then
     pass
 else fail "rc=$rc out=$out"; fi
 
+echo -n "Test WS-12: doctor surfaces per-harness workspace capability limits... "
+out="$(cd "$WS/egregore" && MARKET_ROOT="$REPO_ROOT" bash -c "
+    source '$REPO_ROOT/lib/doctor.sh'; _asha_doctor_workspace_section" 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 0 && "$out" == *"workspace capability"* \
+      && "$out" == *"claude:"* && "$out" == *"codex:"* && "$out" == *"copilot:"* ]]; then
+    pass
+else fail "rc=$rc out=$out"; fi
+
+echo -n "Test WS-13: doctor capability lines respect the harness target... "
+out="$(cd "$WS/egregore" && MARKET_ROOT="$REPO_ROOT" bash -c "
+    source '$REPO_ROOT/lib/doctor.sh'; _asha_doctor_workspace_section codex" 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 0 && "$out" == *"codex:"* && "$out" != *"copilot:"* ]]; then
+    pass
+else fail "rc=$rc out=$out"; fi
+
+echo -n "Test WS-14: capability surfacing keeps non-workspace silence... "
+out="$(cd "$LONE" && MARKET_ROOT="$REPO_ROOT" bash -c "
+    source '$REPO_ROOT/lib/doctor.sh'; _asha_doctor_workspace_section" 2>&1)" && rc=0 || rc=$?
+if [[ $rc -eq 0 && -z "$out" ]]; then pass; else fail "rc=$rc out=$out"; fi
+
 echo ""
 echo -e "Passed: ${GREEN}${PASSED}${NC}  Failed: ${RED}${FAILED}${NC}"
 [[ $FAILED -eq 0 ]]
