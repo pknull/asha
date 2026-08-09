@@ -35,6 +35,10 @@ IGNORE_END = "# <<< asha workspace private roots <<<"
 IGNORE_ENTRIES = (
     "memory-local/",
     "Work/worktrees/",
+    "!.asha/",
+    ".asha/*",
+    "!.asha/workspace.json",
+    "!.asha/workspace-init.json",
     ".asha/cache/",
     ".asha/state/",
 )
@@ -379,6 +383,20 @@ def _remove_created_dirs(created: Iterable[Path]) -> None:
             pass
 
 
+def _directory_closure(root: Path, directories: Iterable[Path]) -> set[Path]:
+    """Include missing intermediate directories so creation stays rollback-safe."""
+    result: set[Path] = set()
+    for directory in directories:
+        result.add(directory)
+        if directory == root or root not in directory.parents:
+            continue
+        parent = directory.parent
+        while parent != root:
+            result.add(parent)
+            parent = parent.parent
+    return result
+
+
 def _confirm_ignore(root: Path, personal_root: str, no_git: bool) -> str:
     ignore_path = _generated_target(root, ".gitignore")
     if ignore_path is None:
@@ -688,11 +706,11 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
     if not metadata_path.exists() or metadata_path.read_bytes() != metadata_bytes:
         write_set[metadata_path] = metadata_bytes
 
-    directories = {
+    directories = _directory_closure(resolved, {
         resolved / ".asha", resolved / ".github", resolved / "Memory",
         resolved / "memory-local", resolved / knowledge_root_rel,
         *(resolved / rel for rel in knowledge_dirs),
-    }
+    })
     for directory in directories:
         try:
             rel_dir = directory.relative_to(resolved).as_posix()
@@ -934,11 +952,12 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
     directories = {path.parent for path in write_set}
     if recreate_full_knowledge:
         directories.update(root / rel for rel in knowledge_dirs)
+    directories = _directory_closure(root, directories)
     created_dirs: list[Path] = []
     try:
         for directory in sorted(directories, key=lambda item: len(item.parts)):
             if not directory.exists():
-                directory.mkdir(parents=True)
+                directory.mkdir()
                 created_dirs.append(directory)
     except OSError as exc:
         _remove_created_dirs(created_dirs)

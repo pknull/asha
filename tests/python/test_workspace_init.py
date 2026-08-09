@@ -92,6 +92,17 @@ class InitFixture(unittest.TestCase):
 
 
 class BootstrapCases(InitFixture):
+    def test_nested_child_repository_scaffolds_parent_knowledge_directories(self):
+        nested = self.repo("groups/service")
+
+        report = self.init(repositories=["groups/service"])
+
+        self.assertTrue(report["ok"], report)
+        self.assertTrue(
+            (self.ws / "knowledge" / "repos" / "groups" / "service" / "activeContext.md").is_file()
+        )
+        self.assertEqual(_git("status", "--porcelain", cwd=nested), "")
+
     def test_two_child_workspace_scaffolds_without_touching_children(self):
         frontend, service = self.repo("frontend"), self.repo("service")
         before = {
@@ -134,6 +145,25 @@ class BootstrapCases(InitFixture):
             ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", "memory-local/__probe__"]
         )
         self.assertEqual(ignored.returncode, 0)
+
+    def test_existing_asha_ignore_keeps_workspace_contract_files_trackable(self):
+        self.repo("frontend")
+        self.repo("service")
+        self.parent_git()
+        (self.ws / ".gitignore").write_text(".asha/\n", encoding="utf-8")
+
+        report = self.init(no_git=False)
+
+        self.assertTrue(report["ok"], report)
+        for rel in (".asha/workspace.json", ".asha/workspace-init.json"):
+            visible = subprocess.run(
+                ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", rel]
+            )
+            self.assertEqual(visible.returncode, 1, rel)
+        private = subprocess.run(
+            ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", ".asha/config.json"]
+        )
+        self.assertEqual(private.returncode, 0)
 
     def test_no_implicit_git_init_and_no_partial_writes(self):
         self.repo("frontend")
@@ -263,7 +293,7 @@ class BootstrapCases(InitFixture):
         text = (self.ws / ".gitignore").read_text()
         self.assertTrue(text.startswith("*.swp\ncustom-cache/\n"))
         for entry in wi.IGNORE_ENTRIES:
-            self.assertEqual(text.count(entry), 1)
+            self.assertEqual(text.splitlines().count(entry), 1)
 
 
 class DiscoveryCases(InitFixture):
