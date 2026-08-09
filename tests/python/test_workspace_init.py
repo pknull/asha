@@ -113,6 +113,10 @@ class BootstrapCases(InitFixture):
         self.assertTrue(report["ok"], report)
         self.assertTrue((self.ws / ".asha" / "workspace.json").is_file())
         self.assertTrue((self.ws / "Memory" / "activeContext.md").is_file())
+        self.assertEqual(
+            (self.ws / "Memory" / "MEMORY.md").read_bytes(),
+            b"# Workspace memory catalogue\n",
+        )
         self.assertTrue((self.ws / "memory-local").is_dir())
         self.assertTrue((self.ws / "knowledge" / "README.md").is_file())
         self.assertTrue((self.ws / "AGENTS.md").is_file())
@@ -150,7 +154,9 @@ class BootstrapCases(InitFixture):
         self.repo("frontend")
         self.repo("service")
         self.parent_git()
-        (self.ws / ".gitignore").write_text(".asha/\n", encoding="utf-8")
+        (self.ws / ".gitignore").write_text(
+            ".asha/\nMemory/\nknowledge/\nservice/\n", encoding="utf-8"
+        )
 
         report = self.init(no_git=False)
 
@@ -164,6 +170,15 @@ class BootstrapCases(InitFixture):
             ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", ".asha/config.json"]
         )
         self.assertEqual(private.returncode, 0)
+        for rel in ("Memory/activeContext.md", "knowledge/repos/service/activeContext.md"):
+            visible = subprocess.run(
+                ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", rel]
+            )
+            self.assertEqual(visible.returncode, 1, rel)
+        telemetry = subprocess.run(
+            ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", "Memory/events/private.jsonl"]
+        )
+        self.assertEqual(telemetry.returncode, 0)
 
     def test_no_implicit_git_init_and_no_partial_writes(self):
         self.repo("frontend")

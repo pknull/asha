@@ -295,13 +295,38 @@ def _operational_templates(name: str, manifest: dict[str, Any]) -> dict[str, byt
         f"{operational}/activeContext.md": (
             f"# {_inert_label(name)} workspace handoff\n\n## Current state\n\nNo cross-repository handoff recorded yet.\n"
         ).encode("utf-8"),
-        f"{operational}/MEMORY.md": b"# Workspace memory catalogue\n\n",
+        f"{operational}/MEMORY.md": b"# Workspace memory catalogue\n",
         f"{personal}/.gitkeep": b"",
     }
 
 
-def _ignore_entries(personal_root: str) -> tuple[str, ...]:
-    return (f"{personal_root.rstrip('/')}/", *IGNORE_ENTRIES[1:])
+def _tracked_tree_entries(root: str) -> tuple[str, ...]:
+    """Re-include a declared committed plane even under broad user ignores."""
+    parts = PurePosixPath(root).parts
+    prefixes = ["/".join(parts[:index]) for index in range(1, len(parts) + 1)]
+    return (*(f"!{prefix}/" for prefix in prefixes), f"!{root.rstrip('/')}/**")
+
+
+def _tracked_operational_entries(root: str) -> tuple[str, ...]:
+    """Expose operational Markdown without reopening ignored telemetry trees."""
+    parts = PurePosixPath(root).parts
+    prefixes = ["/".join(parts[:index]) for index in range(1, len(parts) + 1)]
+    normalized = root.rstrip("/")
+    return (
+        *(f"!{prefix}/" for prefix in prefixes),
+        f"{normalized}/*",
+        f"!{normalized}/*.md",
+    )
+
+
+def _ignore_entries(personal_root: str, operational_root: str = "Memory",
+                    shared_root: str = "knowledge") -> tuple[str, ...]:
+    return (
+        f"{personal_root.rstrip('/')}/",
+        *IGNORE_ENTRIES[1:],
+        *_tracked_operational_entries(operational_root),
+        *_tracked_tree_entries(shared_root),
+    )
 
 
 def _merge_ignore(existing: bytes, entries: Iterable[str] = IGNORE_ENTRIES) -> bytes:
@@ -681,7 +706,11 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
     if gitignore is None:
         report["errors"] = [_issue("path_escape", ".gitignore path escapes or traverses a symlink", path=".gitignore")]
         return report
-    ignore_entries = _ignore_entries(manifest["memory"]["personal_root"])
+    ignore_entries = _ignore_entries(
+        manifest["memory"]["personal_root"],
+        manifest["memory"]["operational_root"],
+        manifest["memory"]["shared_root"],
+    )
     try:
         ignore_bytes = _merge_ignore(gitignore.read_bytes() if gitignore.exists() else b"", ignore_entries)
     except (OSError, ValueError) as exc:
@@ -937,7 +966,11 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
     gitignore = _generated_target(root, ".gitignore")
     if gitignore is None:
         return False, [], _issue("fix_path_unsafe", ".gitignore path is no longer safe")
-    ignore_entries = _ignore_entries(manifest["memory"]["personal_root"])
+    ignore_entries = _ignore_entries(
+        manifest["memory"]["personal_root"],
+        manifest["memory"]["operational_root"],
+        manifest["memory"]["shared_root"],
+    )
     try:
         ignore = _merge_ignore(gitignore.read_bytes() if gitignore.exists() else b"", ignore_entries)
     except (OSError, ValueError) as exc:
