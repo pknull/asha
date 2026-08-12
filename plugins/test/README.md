@@ -1,55 +1,76 @@
-# test plugin — marketplace installer canary
+# Test Plugin — Installer Canary
 
-This plugin exists solely to validate the symlink-mount installer across platforms. Every primitive is minimal and emits a unique sentinel string when resolved.
+This plugin exists for Asha installer development. It verifies that commands,
+skills, agents, and a Claude Stop hook resolve from the installed topology. It
+is not an application testing framework.
 
-## Primitives
+## Surfaces
 
-| Primitive | File | Sentinel |
+| Surface | Source | Expected sentinel |
 |---|---|---|
-| Skill | `skills/ping/SKILL.md` | `TEST-PING-OK` |
-| Subagent | `agents/echo.md` | `TEST-ECHO-OK` |
-| Slash command | `commands/ping.md` (`/test:ping`) | `TEST-PING-CMD-OK` |
-| Stop hook | `hooks/stop.sh` | `touch /tmp/asha-marketplace-test-hook-fired` |
-| Output style | `styles/debug.md` | `[TEST-STYLE-OK]` prefix on every reply |
+| Claude command | `commands/ping.md` (`/test:ping`) | `TEST-PING-CMD-OK …` |
+| Skill | `skills/ping/SKILL.md` | `TEST-PING-OK …` |
+| Agent | `agents/echo.md` | `TEST-ECHO-OK …` |
+| Claude Stop hook | `hooks/stop.sh` | creates `/tmp/asha-marketplace-test-hook-fired` |
 
-## How to use
+The sentinel text retains the historical `marketplace` label for test
+compatibility. Installation itself now uses direct symlink mounts and generated
+harness artifacts; there is no plugin-marketplace registration flow.
 
+The legacy `styles/debug.md` fixture remains in the source corpus but output
+styles are retired from the supported installer surface. Do not use it as an
+installation test.
+
+## Install and verify
+
+### Claude Code
+
+```bash
+./install.sh --only test --target claude
 ```
-./install.sh --only test
-# restart Claude Code
-# then in a fresh session, verify each primitive:
 
-# 1. Slash command
-/test:ping                   → expect TEST-PING-CMD-OK
+Restart Claude Code, then:
 
-# 2. Skill
-"run the test-ping skill"     → expect TEST-PING-OK
+```text
+/test:ping
+Run the test-ping skill.
+Spawn the test-echo agent.
+```
 
-# 3. Subagent (via Task tool, spawned by Claude)
-"spawn the test-echo agent"   → expect TEST-ECHO-OK
+End the session and inspect the hook marker:
 
-# 4. Hook (fires on session end)
-# After ending the session:
-ls -la /tmp/asha-marketplace-test-hook-fired
+```bash
+test -f /tmp/asha-marketplace-test-hook-fired && echo TEST-HOOK-OK
+```
 
-# 5. Output style
-/output-styles:style test-debug
-# replies should now be prefixed with [TEST-STYLE-OK]
+### Codex or Copilot
+
+```bash
+./install.sh --only test --target codex
+./install.sh --only test --target copilot
+```
+
+Commands are rendered as skills and agents are rendered to each harness's
+native format. Request `test-ping` and `test-echo` by name. The Claude-specific
+Stop-hook marker is not the parity test for those harnesses; use `asha doctor`
+and the repository installer tests for their hook contracts.
+
+## Preferred verification
+
+The canary answers “did this primitive resolve?” It does not prove the whole
+installation is healthy. Run:
+
+```bash
+asha doctor
+./tests/run-tests.sh
+./bin/asha-drift-check.sh --target codex   # after Codex install changes
 ```
 
 ## Cleanup
 
-```
-./uninstall.sh                # removes all marketplace symlinks incl. this one
+```bash
+./uninstall.sh --target claude    # removes the complete Asha install for that target
 rm -f /tmp/asha-marketplace-test-hook-fired
 ```
 
-## Why it matters
-
-The install topology under `~/.claude/` has subtle edge cases:
-
-- user-level agent scanner may or may not descend into subdirectories
-- `~/.claude/agents` and `~/.claude/hooks` may themselves be symlinks into dotfiles
-- hook scripts often expect `$(dirname "$0")` to resolve to the source tree
-
-This plugin is small enough to install/uninstall in seconds while exercising all five primitive types, so install strategy changes can be validated empirically instead of guessed.
+Substitute the installed target as needed.

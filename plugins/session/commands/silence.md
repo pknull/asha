@@ -20,7 +20,7 @@ Additional context: $ARGUMENTS
 
 **When silence mode is DISABLED**:
 - Manual transcript synthesis resumes on every supported harness
-- Claude clean-exit automatic save resumes
+- Claude and Copilot clean-exit automatic save resumes
 
 ## Usage
 

@@ -12,10 +12,10 @@ Run unified code verification across your project. Automatically detects project
 ## Usage
 
 ```bash
-/verify                    # Standard verification (types, lint, tests)
-/verify --quick            # Fast checks only (types, format)
-/verify --full             # Full suite (+ security scans)
-/verify --file src/app.ts  # Check single file (quick mode)
+/code:verify                    # Standard verification (types, lint, tests)
+/code:verify --quick            # Fast checks only (types, format)
+/code:verify --full             # Full suite (+ security scans)
+/code:verify --file src/app.ts  # Check single file (quick mode)
 ```
 
 ## Verification Levels
@@ -101,7 +101,7 @@ thresholds:
 
 ## Tips
 
-- Run `/verify --quick` frequently during development
-- Run `/verify` before committing
-- Run `/verify --full` before opening PR
+- Run `/code:verify --quick` frequently during development
+- Run `/code:verify` before committing
+- Run `/code:verify --full` before opening PR
 - Post-edit hook runs quick checks automatically

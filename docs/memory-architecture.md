@@ -1,232 +1,318 @@
-# Memory architecture
+# Memory Architecture
 
-Asha's memory is the only thing that connects one session to the next — each
-session starts with a blank model, so whatever persists has to live on disk. This
-document maps what those stores are, how they're read and written, where the OKF
-format fits, and — because the system is genuinely complex — **how to judge
-whether it's earning its keep.**
+Asha uses separate stores for separate ownership boundaries. The number of
+directories is not accidental, but the distinction must remain legible:
 
-## The three scopes
+- global memory follows the user;
+- repository memory stays with one repository;
+- workspace memory coordinates several repositories;
+- private workspace material does not enter Git;
+- canonical knowledge is published only after review; and
+- harness-native memory remains outside Asha's control.
 
-Memory splits into three stores with different owners and lifespans:
+## The short version
+
+| Store | Location | Scope | Writer | Read path |
+|---|---|---|---|---|
+| Global operation, identity, and learnings | `~/.asha/` | User across all work | Session synthesis plus deliberate edits | Operational index at SessionStart; bodies on demand; persona only through the Asha wrapper |
+| Repository operational memory | `<repo>/Memory/` | One repository | `/session:save` synthesis and deliberate project updates | Project bootstrap, catalogue retrieval, and on demand |
+| Workspace operational memory | `<workspace>/Memory/` | Declared repository group | Deliberate edits; `/session:save --scope workspace` routes its commit | Bounded SessionStart handoff plus catalogue retrieval |
+| Private workspace memory | `<workspace>/memory-local/` | Local user within one workspace | Deliberate local work and work-item tooling | Explicit only; never injected wholesale |
+| Canonical workspace knowledge | `<workspace>/knowledge/` | Shared/team workspace | Reviewed promotion | Explicit lookup from its indexes and documents |
+| Harness-native memory | Harness-owned path | Harness-specific | The harness | The harness; Asha neither writes nor requires it |
+
+The first five are Asha-managed or Asha-governed planes. The sixth is listed
+only to prevent it being mistaken for another Asha store.
+
+## Ownership map
 
 ```mermaid
 flowchart TB
-    subgraph LIFECYCLE["Session lifecycle"]
-        START([SessionStart hook])
-        WORK([work happens])
-        SAVE([manual save on all harnesses; clean SessionEnd on Claude + Copilot])
+    subgraph GLOBAL["User-global"]
+        OP["~/.asha/operation.md"]
+        LR["~/.asha/learnings/ · OKF bundle"]
+        ID["~/.asha/soul · voice · keeper"]
     end
 
-    subgraph ASHA["~/.asha/ — cross-project, user-global, travels with you"]
-        OP["operation.md · type: operational · always · 4KB cap"]
-        LRN["learnings/ 🟢 OKF bundle · type: learning · 1 file/concept · deduped by id"]
-        PERS["soul · voice · keeper · keeper-voice · persona · only if ASHA_PERSONA=1"]
-        CFG["config.json · agent-coordination.md"]
+    subgraph WORKSPACE["Workspace root"]
+        WM["Memory/ · operational handoff"]
+        ML["memory-local/ · private, never commit"]
+        KN["knowledge/ · reviewed canonical docs"]
     end
 
-    subgraph MEMORY["Memory/ — per-project, git-committed, stays with the repo"]
-        AC["activeContext.md · current state (every session)"]
-        PB["projectbrief · techEnvironment · workflowProtocols · communicationStyle"]
-        IDEAS["ideas.md · scratchpad.md · free-form"]
-        EV["events/*.jsonl · patterns.json · telemetry"]
-        MK["Work/markers/ · silence, session-id, save-pending"]
+    subgraph REPOS["Declared child repositories"]
+        R1["child-a/Memory/"]
+        R2["child-b/Memory/"]
     end
 
-    subgraph NATIVE["~/.claude/projects/.../memory/ — harness-owned (NOT OKF)"]
-        AM["atomic facts + MEMORY.md index"]
+    subgraph NATIVE["Harness-owned"]
+        HM["auto-memory / native session memory"]
     end
 
-    START -->|inject| OP
-    START -->|render-index 1 line/concept| LRN
-    START -->|if persona| PERS
-    START -.->|harness injects| AM
-    WORK -->|native transcript, regenerated at save| EV
-    SAVE -->|synthesize from events| AC
-    SAVE -->|upsert + prune noise + validate| LRN
-    LRN -->|visualize.py / validate.py| TOOL["viz.html · graph.mmd · index.md"]
-
-    classDef okf fill:#d3f9d8,stroke:#2b8a3e;
-    class LRN okf;
+    LR -->|relevant index lines| START[Session start]
+    OP --> START
+    ID -->|only with Asha persona| START
+    WM -->|bounded operational excerpt| START
+    R1 -->|catalogue / on demand| TASK[Task context]
+    R2 -->|catalogue / on demand| TASK
+    KN -->|explicit lookup| TASK
+    ML -->|explicit local use| TASK
+    HM -.->|harness behavior| TASK
 ```
 
-Plain-text reference:
+## What belongs where
 
+### `~/.asha/`: global operation, identity, and learnings
+
+Use this for information that should follow the user into unrelated projects.
+
+| Path | Purpose |
+|---|---|
+| `operation.md` | Cross-project execution rules |
+| `learnings/` | Confidence-tracked reusable patterns, one concept per file |
+| `learnings-archive/` | Retired concepts removed from live retrieval |
+| `soul.md`, `voice.md`, `keeper.md`, `keeper-voice.md` | Optional persona and partnership context |
+| `config.json` | User-wide Asha configuration |
+
+Do not place one repository's current branch, unfinished implementation, or
+temporary paths here. Those belong to repository operational memory.
+
+### `<repo>/Memory/`: repository operational memory
+
+Use this for the cold-start handoff for one repository:
+
+```text
+Memory/
+├── MEMORY.md              bounded catalogue when present
+├── activeContext.md       current work and immediate next state
+├── projectbrief.md        stable project purpose and constraints
+├── techEnvironment.md     tools, commands, and platform facts
+├── workflowProtocols.md   repository-specific procedures
+└── events/                normalized synthesis input and telemetry
 ```
-MEMORY (3 scopes)
-│
-├─ ~/.asha/                 cross-project · read at SessionStart · follows you everywhere
-│   ├─ operation.md         always · operational rules (4KB inject cap)
-│   ├─ learnings/  ←──OKF── growing concept bundle, index injected, deduped by id
-│   ├─ learnings-archive/   retired (concluded) concepts — out of every live surface
-│   ├─ soul/voice/keeper    persona · only with ASHA_PERSONA=1
-│   └─ config.json
-│
-├─ Memory/                  per-project · git-committed · written at /save
-│   ├─ activeContext.md     synthesized from events each session
-│   ├─ projectbrief, techEnvironment, workflowProtocols, communicationStyle ...
-│   ├─ ideas.md / scratchpad.md
-│   └─ events/*.jsonl       telemetry the synthesis reads
-│
-└─ ~/.claude/projects/.../memory/   harness-owned · NOT OKF (we don't control its writer)
+
+This plane is committed with its repository. A repository save must not stage
+workspace-root memory or another child repository's files.
+
+### `<workspace>/Memory/`: workspace operational memory
+
+Use this for the small amount of current state that several child repositories
+must share: cross-repository sequencing, active handoff, integration status, and
+workspace-wide constraints.
+
+It is not a second copy of every child repository's `Memory/`. Child-specific
+implementation detail stays with the child.
+
+SessionStart injects only a bounded excerpt of the workspace operational
+handoff. The default renderer includes the workspace name, root, active child,
+and the first `##` section of `Memory/activeContext.md`, capped by
+`ASHA_WS_CONTEXT_MAX` (default 2,048 bytes; minimum 256).
+
+Workspace memory is authored deliberately. `/session:save --scope workspace`
+routes staging, commit, and optional push for that plane; it does not synthesize
+a fictional workspace transcript.
+
+### `<workspace>/memory-local/`: private workspace material
+
+Use this for local notes, work-item records, imported private material, and
+drafts that are not ready for shared review. Workspace initialization adds the
+root to `.gitignore` and generated workspace instructions mark it never-commit.
+
+This plane is not silently promoted, committed, or injected wholesale. A
+promotion or import workflow must name its source and pass its own review gates.
+
+### `<workspace>/knowledge/`: canonical shared knowledge
+
+Use this for stable documentation that should be shared across the workspace:
+repository indexes, cross-repository contracts, architecture facts, and
+reviewed operational knowledge.
+
+Canonical does not mean infallible. Live source, configuration, and runtime
+state remain higher authority than documentation. When they conflict, correct
+the document; do not alter live state merely to make an old note true.
+
+Knowledge changes use the workspace promotion workflow:
+
+```bash
+asha workspace knowledge lint --start .
+asha workspace promote plan --help
+asha workspace promote apply --help
+asha workspace promote publish --help
 ```
 
-## How the pieces work together
+`plan` creates a digest-bound review artifact. `apply` revalidates the artifact,
+source evidence, and target preimages before writing. In pull-request mode,
+`publish` creates a dedicated branch and draft PR. It never merges or updates
+the base branch.
 
-Two ideas do most of the work: **scope** and **rhythm**.
+### Harness-native memory
 
-**Scope.** `~/.asha/` is *who you are and what you've learned* — it rides with you
-into every project. `Memory/` is *this project's state* — it's committed to the
-repo and stays there. The native `~/.claude/...` store is a third, separate thing
-the Claude Code harness manages on its own; Asha neither writes nor depends on it.
+Claude and other harnesses may maintain their own memory stores. Those stores
+are not an Asha plane, are not OKF-managed, and are not an Asha dependency.
+Their contents and lifecycle are governed by the harness.
 
-**Rhythm.** Memory is **read at the top of a session and consolidated at the end**:
+## Launch point decides task ownership
 
-- **SessionStart reads.** The hook injects `operation.md` + the learnings index
-  (`render-index`: one capped line per concept across the whole bundle,
-  hot-first, byte-budgeted with an explicit truncation tail), plus the persona
-  files when `ASHA_PERSONA=1`. The line is a hook, not the content — bodies are
-  Read on demand, and the memory-lexical nudge points at them at tool-time.
-  `ASHA_LEARNINGS_INJECT=hot` reverts to the legacy top-10 full-body hot tier.
-- **The harness records.** Each harness owns its native transcript. At save time,
-  Asha regenerates `Memory/events/*.jsonl` from that transcript. Copilot capture
-  is partial for existing-file edits until a stable native schema is verified.
-- **Manual `/save` writes on every harness.** `pattern_analyzer.py` synthesizes
-  `activeContext.md` from the event log; `learnings_manager.py` upserts new
-  learnings into the bundle; `save_guardrail.py` prunes noise; `validate.py` checks
-  the bundle (warn-only); `Memory/` is committed.
-- **Automatic clean-exit save runs on Claude and Copilot.** Copilot's
-  sessionEnd lifecycle hook was wired + verified live 2026-07-27 (1.0.75),
-  including orphan recovery from the native transcript at the next session
-  start. Codex has no Asha SessionEnd lifecycle path and requires manual save. A silence marker suppresses both explicit synthesis and
-  automatic save, and persists until explicitly disabled.
-- **Global calibration is interactive policy.** Automatic save never writes
-  `~/.asha/keeper.md` or `~/.asha/voice.md`. Explicit save can do so only when
-  `capture_calibration` is true in `~/.asha/config.json`.
+For one repository:
 
-- **`/session:consolidate` compacts, periodically.** `/save` accumulates;
-  consolidation is the reverse stroke — merge drifted facts, resolve
-  contradictions against disk truth, `retire` concluded records to
-  `~/.asha/learnings-archive/`, fold keeper.md's calibration log into its
-  synthesis sections (interactive, confirmed), and bring the injected index
-  back under budget. Run it when the session-start index reports omitted
-  concepts, or roughly monthly.
+```bash
+cd /path/to/repository
+asha claude                    # or codex / copilot
+```
 
-So the event log is the input, and `activeContext` + `learnings/` are the refined
-outputs a future cold-start session actually reads.
+For a workspace, launch from a declared child repository when that repository
+owns the work:
 
-## Where OKF fits (it's baked in, not a separate skill)
+```bash
+cd /path/to/workspace/child-a
+asha codex
+```
 
-The [Open Knowledge Format](https://okf.md/spec/) applies to exactly one store —
-the **learnings bundle** — because it's the only memory that's a *growing
-collection of atomic concepts*, which is what the format is for. There is **no
-standalone `/okf` skill**; OKF lives in three baked-in places in the session
-plugin:
+Launch from the workspace root when the work is cross-repository or belongs to
+the shared planes:
 
-1. **Format** — `learnings_manager.py` writes OKF-conformant files directly
-   (top-level `type`, markdown links, reserved `index.md`). It produces the shape;
-   it has no dependency on the tooling below.
-2. **Tooling** — `validate.py` / `visualize.py` / `okf_common.py` are vendored
-   plain scripts in `plugins/session/tools/` (from `sniperunder123/okf-knowledge`,
-   MIT). Called by the save pipeline (validate, warn-only) and on demand
-   (visualize). Scripts, not skills.
-3. **Convention** — documented in the existing `memory-maintenance` skill.
+```bash
+cd /path/to/workspace
+asha codex
+```
 
-The bundle is also **cross-linked**: each learning may carry a `## Related` section
-pointing to related concepts. Links are **auto-suggested at interactive `/save`**
-(the session's Claude proposes genuine *semantic* links — never mere category
-overlap — and applies them, non-blocking), and can be curated by hand via
-`learnings_manager.py link` / `prune-links`. `visualize.py` renders the resulting
-graph; links live in the body, so they add zero session-start injection cost.
+The manifest at `.asha/workspace.json` defines the declared repositories,
+memory roots, shared Git root, and promotion mode. Detection walks upward from
+the launch directory but stops before `$HOME` and the filesystem root.
 
-Everything else (the Memory Bank files, the `~/.asha/` singletons, events/logs)
-is *tagged* with a `type` but is **not** OKF-bundled — those are fixed state
-documents or telemetry, not growing concept collections, so the format buys
-nothing there.
+## Save routing
 
-## Durability & backup
+```text
+/session:save
+/session:save --scope repo
+/session:save --scope workspace
+/session:save --scope none
+```
 
-The learnings bundle is **local-only by default**: nothing in the installer or
-save pipeline backs up `~/.asha/learnings/` (or `~/.asha/learnings-archive/`)
-anywhere. That is a deliberate posture — the bundle can contain sensitive
-project context — but it means durability is the user's arrangement to make.
+| Context | Behavior |
+|---|---|
+| No workspace manifest + bare save | Existing single-repository synthesis and save |
+| No workspace manifest + any `--scope` | Hard error; scope flags are workspace-only |
+| Inside a declared child + bare save | Same as `--scope repo` |
+| Inside a declared child + `--scope repo` | Synthesize and save only that child's repository memory |
+| Workspace root + `--scope repo` | Hard error; there is no implicit child |
+| Anywhere in workspace + `--scope workspace` | Save only the workspace operational plane |
+| `--scope none` | Synthesize without staging, committing, or pushing |
 
-- **If you back up `~/.asha` identity files** (the common pattern: symlinking
-  `keeper.md`, `soul.md`, `voice.md`, `config.json` into a version-controlled
-  dotfiles repo), **include the `learnings/` and `learnings-archive/`
-  directories too**. A symlinked directory works the same way as a symlinked
-  file; the bundle is plain markdown and diffs cleanly.
-- **The legacy flat files are frozen snapshots.** `migrate-okf` moved the store
-  from `~/.asha/learnings.md` to the bundle directory; the flat files are
-  retained verbatim as the rollback path, stamped with a supersession banner so
-  they cannot masquerade as a current store. A backup that still tracks only
-  the flat file stopped protecting anything at the migration date.
-- **Divergence is surfaced, warn-only.** `learnings_manager.py legacy-status`
-  (run automatically by `/save` and `/session:consolidate`) flags an unstamped
-  flat file sitting next to the live bundle — the stale-decoy state where a
-  restore would silently resurrect pre-migration data (issue #12).
+`--no-push` commits the selected plane without pushing. Plane-specific proofs
+and commit gates prevent a child save and workspace save being folded into one
+unattributable commit.
 
-## Is it providing value? (how to tell)
+Manual save works across Claude, Codex, Copilot, and OpenCode. Claude and
+Copilot have clean-exit lifecycle hooks. OpenCode has best-effort clean-exit
+save through plugin `dispose`; Codex requires manual save.
 
-The memory system has real cost — context spent on injection every session, plus
-maintenance — so it's fair to ask whether it pays for itself. It does **not**
-always; here's how to judge for a given project.
+## Read rhythm
 
-**Signals it's working:**
+At session start:
 
-- **Cold-start just works.** A fresh session reads `activeContext.md` + the hot
-  tier and acts immediately — no re-exploring what the last session already
-  figured out. This is the single biggest payoff. Test it: open a new session and
-  see whether it picks up where you left off or flails.
-- **Injected learnings change behavior.** A hot-tier learning fires and you avoid
-  a known failure. Each learning's evidence log (`confirm`/`contradict` history
-  across projects) shows whether it's actually being reinforced in practice.
-- **Cross-project transfer.** A pattern learned in one repo helps in another —
-  only the `~/.asha/` scope can do this.
+1. `operation.md` is injected with its byte cap.
+2. The learnings bundle is rendered index-first: one bounded line per concept,
+   hot-first, with bodies read only when relevant.
+3. Persona files are added only when launched through `asha <harness>`.
+4. A valid workspace contributes one bounded operational-context block.
+5. Repository and workspace catalogues remain available for targeted retrieval.
 
-**Signals it's waste (or worse, misleading):**
+`ASHA_LEARNINGS_INJECT=hot` restores the legacy top-ten full-body learning
+injection. `ASHA_WS_INJECT=0`, `Work/markers/nudge-ws-context-off`, or the
+silence marker suppresses workspace injection.
 
-- **Generic `activeContext`.** A lead block of `Created N files` or a Next Steps of
-  "Review and plan next session" actively misleads a cold-start. (The `/save`
-  verification gate fights this; if you see it, the synthesis didn't earn its keep
-  this session.)
-- **Noise in the hot tier.** Tautological `sequence-*` / `prefer-*` learnings crowd
-  the inject with content you'd never act on. (The guardrail prunes these; watch
-  for new shapes of noise.)
-- **You never read or act on what's injected.** If the hot tier scrolls past
-  unread every session, it's pure context tax.
+The optional evidence broker remains bounded and read-only:
 
-**Diagnostics you can run:**
+```bash
+asha context brief "task description"
+asha process route "task description"
+asha capabilities match "task description"
+```
+
+It reads catalogue metadata rather than recursively scanning memory bodies.
+See [Evidence-backed brokerage](evidence-backed-brokerage.md).
+
+## Write rhythm
+
+An explicit repository save:
+
+1. reads the active harness transcript;
+2. regenerates normalized `Memory/events/*.jsonl`;
+3. synthesizes repository `Memory/activeContext.md`;
+4. updates relevant `~/.asha/learnings/` concepts;
+5. runs noise pruning, validation, and recall diagnostics; and
+6. stages, commits, and pushes unless the selected flags say otherwise.
+
+Automatic saves never alter `~/.asha/voice.md` or `~/.asha/keeper.md`. An
+explicit save may capture calibration only when `capture_calibration` is true
+in `~/.asha/config.json`.
+
+`/session:consolidate` is the periodic reverse stroke: merge drifted concepts,
+resolve contradictions against disk truth, retire concluded records, fold
+approved calibration, and reduce index pressure. Run it when the injected index
+reports omitted concepts or roughly monthly during active use.
+
+## Where OKF fits
+
+The [Open Knowledge Format](https://okf.md/spec/) applies to the global
+`~/.asha/learnings/` bundle because it is the growing collection of atomic
+concepts. There is no separate `/okf` skill.
+
+1. `learnings_manager.py` writes the concept files and reserved index shape.
+2. `validate.py`, `visualize.py`, and `okf_common.py` provide local tooling.
+3. The `memory-maintenance` skill documents the conventions.
+
+Interactive save may suggest semantic `## Related` links between recently
+touched concepts. The links live in document bodies and therefore add no
+SessionStart injection cost. Fixed state documents, workspace knowledge, and
+telemetry may carry frontmatter but are not one OKF bundle by implication.
+
+## Durability and privacy
+
+- `~/.asha/learnings/` and `learnings-archive/` are local-only unless the user
+  arranges backup. Include both when backing up identity files.
+- Repository and workspace operational memory follow their respective Git
+  repositories.
+- `memory-local/` must remain ignored and uncommitted.
+- `knowledge/` follows the workspace's reviewed promotion policy.
+- Legacy flat `~/.asha/learnings.md` files are frozen migration snapshots, not
+  the live store. `learnings_manager.py legacy-status` reports divergence.
+
+## Is it earning its cost?
+
+Useful memory changes cold-start behavior. Waste merely consumes context.
+
+**Healthy signals:**
+
+- a fresh session resumes without rediscovering settled project facts;
+- a learning prevents a repeated failure in another repository;
+- workspace context gives the active child enough cross-repository state without
+  loading every sibling's notes;
+- canonical knowledge answers stable questions without turning private drafts
+  into shared truth.
+
+**Failure signals:**
+
+- `activeContext.md` contains generic activity logs rather than actionable state;
+- catalogue descriptions are broad enough to match unrelated tasks;
+- global learnings contain repository-specific noise;
+- workspace memory duplicates child repositories;
+- `memory-local/` is treated as automatically trusted or publishable.
+
+Diagnostics:
 
 ```bash
 T="$(jq -r .asha_root ~/.asha/config.json)/plugins/session/tools"
-python3 $T/learnings_manager.py render-index --max-bytes 3000 # exactly what gets injected — would you want a fresh you to know this?
-python3 $T/learnings_manager.py list                          # categories + counts + avg confidence
-python3 $T/learnings_manager.py query --min-confidence 0.7    # the hot set, ranked
-python3 $T/validate.py ~/.asha/learnings --strict             # structural health
-python3 $T/visualize.py ~/.asha/learnings                     # viz.html — see the shape
-# and just read it:
-sed -n '1,40p' Memory/activeContext.md                        # could a stranger act on this?
+python3 "$T/learnings_manager.py" render-index --max-bytes 3000
+python3 "$T/learnings_manager.py" list
+python3 "$T/validate.py" ~/.asha/learnings --strict
+python3 "$T/visualize.py" ~/.asha/learnings
+sed -n '1,60p' Memory/activeContext.md
+asha workspace status
+asha workspace doctor
 ```
 
-**When it's NOT worth it:** throwaway or pure-exploration work, one-off tasks, or
-tiny projects where you already hold all the context. In those cases the capture
-and synthesis are overhead with no cold-start to serve.
-
-## Controls / tuning
-
-| Lever | Effect |
-|---|---|
-| `/session:silence` (or `Work/markers/silence`) | Stop all capture + synthesis for throwaway work |
-| Index-first injection budget (3KB, `ASHA_LEARNINGS_INJECT=hot` reverts) | One line per concept, hot-first; over-budget tail names how many concepts were omitted |
-| `/session:consolidate` + `learnings_manager.py retire` | Periodic compaction: merge, contradict, retire concluded records out of every live surface |
-| Broad-entry scrutiny (rank length-normalization + nudge gates) | Sprawling catalogue lines are score-discounted and cannot fire on one rare token |
-| `save_guardrail.py` | Prunes `sequence-*`/`prefer-*` noise at save time |
-| `validate.py` (warn-only; `ASHA_LEARNINGS_VALIDATE=strict`) | Surfaces structural drift without blocking saves |
-| `learnings_manager.py link` / auto-suggest at `/save` | Cross-links related concepts (`## Related`); builds the graph over time, non-blocking, zero inject cost |
-| What's captured | Synthesis reads `Memory/events/*.jsonl`; less noise in → better signal out |
-
-The guiding principle: **the hot tier is a budget, not an archive.** Keep what a
-future session would genuinely act on; let confidence and the guardrail demote the
-rest. If the injected content consistently isn't worth reading, that's the signal
-to prune, raise the threshold, or silence the project — not to add more.
+For throwaway work, use `/session:silence` and later `/session:restore`. The
+criterion is plain: if a future cold session would not act differently because
+the information exists, it probably does not belong in durable memory.

@@ -11,15 +11,15 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 ## Usage
 
 ```
-/orchestrate feature "Add user authentication"
-/orchestrate bugfix "Fix race condition in cache"
-/orchestrate refactor "Extract payment module"
-/orchestrate security "Audit API endpoints"
-/orchestrate custom "codebase-historian,[tdd,reviewer],reviewer" "Redesign caching"  # final reviewer: security focus
+/code:orchestrate feature "Add user authentication"
+/code:orchestrate bugfix "Fix race condition in cache"
+/code:orchestrate refactor "Extract payment module"
+/code:orchestrate security "Audit API endpoints"
+/code:orchestrate custom "codebase-historian,[tdd,reviewer],reviewer" "Redesign caching"  # final reviewer: security focus
 
 # Tier override (skip Phase 0 inference):
-/orchestrate --tier=high feature "Refactor namespace registry"
-/orchestrate --tier=trivial bugfix "Fix typo in panel README"
+/code:orchestrate --tier=high feature "Refactor namespace registry"
+/code:orchestrate --tier=trivial bugfix "Fix typo in panel README"
 ```
 
 ## Workflow Types
@@ -40,7 +40,7 @@ Run multi-agent workflows with sequential and parallel phases. Routes by complex
 Example custom workflow:
 
 ```
-/orchestrate custom "codebase-historian,tdd,[reviewer,reviewer]" "Build dashboard"
+/code:orchestrate custom "codebase-historian,tdd,[reviewer,reviewer]" "Build dashboard"
 ```
 
 This runs:
@@ -55,7 +55,7 @@ Before any agent work, classify the task by complexity and select the implementa
 
 ### Routing Protocol
 
-1. Load `.claude/orchestrate-rules.json` from repo root if present
+1. Load `.claude/code:orchestrate-rules.json` from repo root if present
 2. Determine change scope:
    - Pre-implementation tasks: infer from task description
    - Tasks operating on an existing diff: read `git diff --name-only`
@@ -122,7 +122,9 @@ For agents in brackets `[a, b, c]`:
 
 ## Subagent Return Contract (REQUIRED)
 
-Every Task invocation in this workflow MUST instruct the subagent to use the return contract defined in [`~/.asha/agent-coordination.md`](../../../.asha/agent-coordination.md) (load it if you need the full spec). Append this verbatim to each agent's task prompt:
+Every Task invocation in this workflow MUST instruct the subagent to use the
+return contract defined in `~/.asha/agent-coordination.md` (load it if you need
+the full spec). Append this verbatim to each agent's task prompt:
 
 > End your response with a status line and envelope:
 > `STATUS: <DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED>`
@@ -141,7 +143,7 @@ This is the contract whose adoption **Phase Final** records. A run whose subagen
 
 ## Handoff Format
 
-Between phases, write the handoff to a **file** in the orchestration scratch dir (`Work/orchestrate/<run-id>/handoff.md`, or the panel dir if running under one) so handoff content stays out of caller context. Consumers read it by filename. The status token from the return contract MUST appear in the header:
+Between phases, write the handoff to a **file** in the orchestration scratch dir (`Work/code:orchestrate/<run-id>/handoff.md`, or the panel dir if running under one) so handoff content stays out of caller context. Consumers read it by filename. The status token from the return contract MUST appear in the header:
 
 ```markdown
 ## HANDOFF: [previous] → [next] [<STATUS>]
@@ -232,7 +234,7 @@ RECOMMENDATION
 
 ## Phase Final: Calibration Log
 
-After the review phase completes (pass or fail), append one JSONL row to `~/.asha/metrics/orchestrate.jsonl`:
+After the review phase completes (pass or fail), append one JSONL row to `~/.asha/metrics/code:orchestrate.jsonl`:
 
 ```json
 {"ts":"<ISO-8601 UTC>","workflow":"<feature|bugfix|...>","tier":"<trivial|low|medium|high>","model":"<haiku|sonnet|opus+sonnet>","claimed":"<ready|needs-work|blocked>","review":"pass|fail","gates_failed":["<gate>",...],"contract":{"statuses":["<returned STATUS per phase, in order>"],"artifacts":["<artifact basenames written, e.g. handoff.md, plan-summary.md>"]},"task":"<one-line task description>"}
@@ -243,7 +245,7 @@ Steps:
 1. `mkdir -p ~/.asha/metrics` (defensive)
 2. Compose the row from Phase 0 declaration + implementer's `claimed_status` + review outcome
 3. Populate `contract.statuses` with each phase's returned STATUS token (in phase order) and `contract.artifacts` with the artifact files written this run (`handoff.md`, `plan-summary.md`, `review-findings*.md`). A run whose subagents emitted no STATUS leaves `statuses` empty — that is the adoption-miss signal.
-4. Append (don't overwrite) to `~/.asha/metrics/orchestrate.jsonl`
+4. Append (don't overwrite) to `~/.asha/metrics/code:orchestrate.jsonl`
 5. If write fails, log to stderr and continue — calibration is observability, never a blocker
 
 Inspect over time:

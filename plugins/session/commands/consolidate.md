@@ -8,7 +8,7 @@ allowed-tools: ["Bash", "Read", "Edit", "Write", "Grep", "Glob"]
 # Session Consolidate
 
 A periodic maintenance pass over Asha's memory stores — the counterpart to
-`/save`. `/save` *accumulates* (each session appends what it learned);
+`/session:save`. `/session:save` *accumulates* (each session appends what it learned);
 consolidation *compacts* (merge drifted facts, resolve contradictions, retire
 concluded records, keep the injected index inside budget). Modeled on the
 four-phase background-consolidation pattern used by harness-native memory

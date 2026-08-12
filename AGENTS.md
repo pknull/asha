@@ -6,8 +6,8 @@ documentation, not as the active instruction surface.
 ## Project shape
 
 Asha is a multi-harness agent toolkit. The same source corpus under `plugins/`
-is rendered into native surfaces for Claude Code, OpenAI Codex, and GitHub
-Copilot CLI. Do not assume Claude primitives are portable.
+is rendered into native surfaces for Claude Code, OpenAI Codex, GitHub
+Copilot CLI, and OpenCode stable v1. Do not assume Claude primitives are portable.
 
 ## Harness rule
 
@@ -17,6 +17,8 @@ Implement harness support at the real seam for that harness:
 - Codex commands render as skills, and Codex agents render as TOML custom
   agents.
 - Copilot commands render as skills, and Copilot agents render as `.agent.md`.
+- OpenCode commands and agents render as native Markdown under plural
+  `commands/` and `agents/`; integration hooks live in `plugins/asha.js`.
 - Codex has native hooks and execution rules. `PreToolUse` can deny supported
   simple Bash, `apply_patch`, and MCP calls, but it does not cover every shell
   path (`unified_exec` interception remains incomplete) or every tool. Do not
@@ -38,4 +40,10 @@ For Codex-specific install changes, also check:
 
 ```bash
 ./bin/asha-drift-check.sh --target codex
+```
+
+For OpenCode-specific install changes, also check:
+
+```bash
+./bin/asha-drift-check.sh --target opencode
 ```

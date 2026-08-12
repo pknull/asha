@@ -14,10 +14,11 @@ Four harness branches:
   - claude:  ~/.claude/projects/<slug>/<sid>.jsonl
   - codex:   ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
   - copilot: ~/.copilot/session-state/<sid>/events.jsonl
+  - opencode: ${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db
 
-Three public functions:
+Core public functions:
   - locate_session_log(harness)  -> Path | None
-  - stream_events(path, harness) -> Iterator[Event]
+  - stream_events(path, harness, session_id=None) -> Iterator[Event]
   - to_synth_events(events, project_dir, session_id) -> list[dict]
 """
 
@@ -26,6 +27,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import sys
 import uuid
 from dataclasses import dataclass, field
@@ -121,7 +123,7 @@ def lead_wwa_session(text: str) -> Optional[str]:
     return match.group(1) if match else None
 
 
-HARNESS_CHOICES = {"claude", "codex", "copilot"}
+HARNESS_CHOICES = {"claude", "codex", "copilot", "opencode"}
 _CODEX_ROLLOUT_RE = re.compile(
     r"^rollout-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-"
     r"([0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})\.jsonl$",
@@ -130,6 +132,8 @@ _CODEX_ROLLOUT_RE = re.compile(
 
 
 def _read_first_json(path: Path) -> Optional[dict]:
+    if path.name == "opencode.db" or path.suffix in {".db", ".sqlite", ".sqlite3"}:
+        return None
     if path.suffix == ".json":
         try:
             data = json.loads(path.read_text(encoding="utf-8", errors="replace"))
@@ -151,6 +155,8 @@ def _read_first_json(path: Path) -> Optional[dict]:
 
 def sniff_harness(path: Path) -> Optional[str]:
     """Infer transcript harness from the first JSON object shape."""
+    if path.name == "opencode.db":
+        return "opencode"
     data = _read_first_json(path)
     if not data:
         return None
@@ -167,6 +173,10 @@ def sniff_harness(path: Path) -> Optional[str]:
 
 def transcript_session_id(path: Path, harness: str) -> Optional[str]:
     """Extract the native session id embedded in a transcript, if available."""
+    if harness == "opencode":
+        # One database contains every session; identity is a query parameter,
+        # never a property of the file itself.
+        return None
     try:
         with path.open("r", encoding="utf-8", errors="replace") as fh:
             for raw in fh:
@@ -210,6 +220,8 @@ def transcript_session_id(path: Path, harness: str) -> Optional[str]:
 
 def transcript_session_ids(path: Path, harness: str) -> set[str]:
     """Collect every explicit native session stamp present in a transcript."""
+    if harness == "opencode":
+        return set()
     found: set[str] = set()
     try:
         for _, data in stream_jsonl(path, label="session identity scan"):
@@ -248,6 +260,8 @@ def _native_session_id(harness: str) -> Optional[str]:
         return os.environ.get("CODEX_THREAD_ID")
     if harness == "copilot":
         return os.environ.get("COPILOT_SESSION_ID")
+    if harness == "opencode":
+        return os.environ.get("OPENCODE_SESSION_ID")
     return None
 
 
@@ -271,12 +285,89 @@ def detect_harness_from_env() -> Optional[str]:
         markers.append("codex")
     if os.environ.get("COPILOT_CLI") or os.environ.get("COPILOT_SESSION_ID"):
         markers.append("copilot")
+    if os.environ.get("OPENCODE") or os.environ.get("OPENCODE_SESSION_ID"):
+        markers.append("opencode")
     unique = sorted(set(markers))
     if len(unique) > 1:
         raise IdentityError(
             "ambiguous harness markers present without ASHA_HARNESS: " + ", ".join(unique)
         )
     return unique[0] if unique else None
+
+
+_OPENCODE_REQUIRED_COLUMNS = {
+    "session": {"id", "parent_id", "directory"},
+    "message": {"id", "session_id", "time_created", "data"},
+    "part": {"id", "message_id", "session_id", "time_created", "data"},
+}
+
+
+def _opencode_db_path() -> Path:
+    data_home = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
+    return data_home / "opencode" / "opencode.db"
+
+
+def _open_opencode_db(path: Path) -> sqlite3.Connection:
+    """Open OpenCode's transcript store without creating or mutating it."""
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA query_only = ON")
+    except sqlite3.Error as exc:
+        raise IdentityError(f"OpenCode database unreadable: {path}: {exc}") from exc
+
+    try:
+        for table, required in _OPENCODE_REQUIRED_COLUMNS.items():
+            columns = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+            missing = required - columns
+            if missing:
+                raise IdentityError(
+                    f"OpenCode database schema incompatible: table {table} missing "
+                    + ", ".join(sorted(missing))
+                )
+    except Exception:
+        conn.close()
+        raise
+    return conn
+
+
+def _same_directory(left: str, right: Path) -> bool:
+    try:
+        return Path(left).expanduser().resolve() == right.expanduser().resolve()
+    except OSError:
+        return os.path.abspath(os.path.expanduser(left)) == os.path.abspath(str(right))
+
+
+def _opencode_root_session(path: Path, session_id: str, project_dir: Path) -> str:
+    """Resolve a child OpenCode session to its project-matching root session."""
+    conn = _open_opencode_db(path)
+    try:
+        seen: set[str] = set()
+        current = session_id
+        while current:
+            if current in seen:
+                raise IdentityError(f"OpenCode session parent cycle detected at {current}")
+            seen.add(current)
+            row = conn.execute(
+                "SELECT id, parent_id, directory FROM session WHERE id = ?", (current,)
+            ).fetchone()
+            if row is None:
+                raise IdentityError(f"OpenCode session not found: {session_id}")
+            parent = row["parent_id"]
+            if not parent:
+                directory = str(row["directory"] or "")
+                if not directory or not _same_directory(directory, project_dir):
+                    raise IdentityError(
+                        f"OpenCode session/project mismatch: session {row['id']} belongs to "
+                        f"{directory or '<unknown>'}, expected {project_dir}"
+                    )
+                return str(row["id"])
+            current = str(parent)
+        raise IdentityError(f"OpenCode session has no root: {session_id}")
+    except sqlite3.Error as exc:
+        raise IdentityError(f"OpenCode database query failed: {exc}") from exc
+    finally:
+        conn.close()
 
 
 def resolve_identity(
@@ -332,6 +423,12 @@ def resolve_identity(
     if not resolved_sid:
         raise IdentityError(f"cannot resolve session id for harness={resolved_harness}")
 
+    if resolved_harness == "opencode":
+        env_project = os.environ.get("CLAUDE_PROJECT_DIR")
+        resolved_project = (project_dir or (Path(env_project) if env_project else Path.cwd())).resolve()
+        root_sid = _opencode_root_session(transcript_path, str(resolved_sid), resolved_project)
+        return SessionIdentity(resolved_harness, root_sid, transcript_path)
+
     embedded_sid = transcript_session_id(transcript_path, resolved_harness)
     if embedded_sid and embedded_sid != resolved_sid:
         # An authoritative session id outranks a stale/foreign transcript
@@ -386,6 +483,9 @@ def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Opti
       copilot : scan ~/.copilot/session-state/*/inuse.<pid>.lock matching
                 the parent process chain. Fallback: newest session whose
                 workspace.yaml.cwd == project_dir.
+      opencode: exact $ASHA_SESSION_ID in opencode.db. There is deliberately no
+                newest-session fallback; resolve_identity validates the row and
+                project directory before parsing.
     """
     # Authoritative override: when the caller knows the exact transcript (e.g. a
     # Stop/SessionEnd hook payload's transcript_path), honor it verbatim and skip
@@ -408,6 +508,9 @@ def locate_session_log(harness: str, project_dir: Optional[Path] = None) -> Opti
         return _locate_codex(project_dir)
     if harness == "copilot":
         return _locate_copilot(project_dir)
+    if harness == "opencode":
+        candidate = _opencode_db_path()
+        return candidate if candidate.exists() else None
     return None
 
 
@@ -465,6 +568,15 @@ def locate_session_log_for_id(
     if harness == "copilot":
         candidate = Path.home() / ".copilot" / "session-state" / session_id / "events.jsonl"
         return candidate if candidate.exists() else None
+    if harness == "opencode":
+        candidate = _opencode_db_path()
+        if not candidate.exists():
+            return None
+        try:
+            _opencode_root_session(candidate, session_id, project_dir)
+        except IdentityError:
+            return None
+        return candidate
     return None
 
 
@@ -562,15 +674,30 @@ def _locate_copilot(project_dir: Path) -> Optional[Path]:
 
 
 # ---------------------------------------------------------------------------
-# stream_events — three harness-specific parsers, one common Event shape
+# stream_events — harness-specific parsers, one common Event shape
 # ---------------------------------------------------------------------------
 
-def stream_events(path: Path, harness: str) -> Iterator[Event]:
+def stream_events(
+    path: Path,
+    harness: str,
+    session_id: Optional[str] = None,
+) -> Iterator[Event]:
     """Stream normalized Events from a transcript.
 
     Unknown line types degrade to kind="meta" with a stderr warning;
     they preserve `raw` for audit. Never crashes, never silently drops.
     """
+    if harness == "opencode":
+        resolved_sid = (
+            session_id
+            or os.environ.get("ASHA_SESSION_ID")
+            or os.environ.get("OPENCODE_SESSION_ID")
+        )
+        if not resolved_sid:
+            raise IdentityError("OpenCode transcript parsing requires an exact session id")
+        yield from _stream_opencode_db(path, resolved_sid)
+        return
+
     if harness == "claude":
         parser = _parse_claude_line
     elif harness == "codex":
@@ -596,6 +723,118 @@ def stream_events(path: Path, harness: str) -> Iterator[Event]:
                 raw=line,
                 detail=f"parser error: {exc}",
             )
+
+
+def _opencode_timestamp(value: object) -> str:
+    """Convert OpenCode's millisecond timestamps to canonical UTC strings."""
+    try:
+        milliseconds = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return ""
+    try:
+        return datetime.fromtimestamp(milliseconds / 1000, timezone.utc).isoformat().replace(
+            "+00:00", "Z"
+        )
+    except (OverflowError, OSError, ValueError):
+        return ""
+
+
+def _stream_opencode_db(path: Path, session_id: str) -> Iterator[Event]:
+    """Stream one exact OpenCode session from the shared SQLite transcript store."""
+    conn = _open_opencode_db(path)
+    try:
+        messages = conn.execute(
+            "SELECT id, time_created, data FROM message "
+            "WHERE session_id = ? ORDER BY time_created, id",
+            (session_id,),
+        )
+        for message in messages:
+            try:
+                message_data = json.loads(str(message["data"]))
+            except (TypeError, json.JSONDecodeError) as exc:
+                print(
+                    f"  WARNING: opencode message {message['id']}: invalid JSON ({exc})",
+                    file=sys.stderr,
+                )
+                continue
+            if not isinstance(message_data, dict):
+                continue
+            role = str(message_data.get("role") or "")
+            message_ts = _opencode_timestamp(message["time_created"])
+
+            parts = conn.execute(
+                "SELECT id, time_created, data FROM part "
+                "WHERE session_id = ? AND message_id = ? ORDER BY time_created, id",
+                (session_id, message["id"]),
+            )
+            for part in parts:
+                try:
+                    part_data = json.loads(str(part["data"]))
+                except (TypeError, json.JSONDecodeError) as exc:
+                    print(
+                        f"  WARNING: opencode part {part['id']}: invalid JSON ({exc})",
+                        file=sys.stderr,
+                    )
+                    continue
+                if not isinstance(part_data, dict):
+                    continue
+
+                part_type = str(part_data.get("type") or "")
+                ts = _opencode_timestamp(part["time_created"]) or message_ts
+                if part_type == "text":
+                    if part_data.get("synthetic"):
+                        continue
+                    value = str(part_data.get("text") or "").strip()
+                    if not value:
+                        continue
+                    if role == "user":
+                        yield Event(
+                            timestamp=ts,
+                            kind="prompt",
+                            actor="user",
+                            text=value,
+                            raw=part_data,
+                        )
+                    elif role == "assistant":
+                        yield Event(
+                            timestamp=ts,
+                            kind="assistant_text",
+                            actor="assistant",
+                            text=value,
+                            raw=part_data,
+                        )
+                    continue
+
+                if part_type == "tool":
+                    tool = str(part_data.get("tool") or "")
+                    state = part_data.get("state") or {}
+                    if not isinstance(state, dict):
+                        state = {}
+                    tool_input = state.get("input") or {}
+                    raw = dict(part_data)
+                    raw["input"] = tool_input
+                    yield Event(
+                        timestamp=ts,
+                        kind="tool_use",
+                        actor="assistant",
+                        tool=tool,
+                        detail=json.dumps(tool_input, default=str)[:1000],
+                        raw=raw,
+                    )
+                    error = state.get("error")
+                    if state.get("status") == "error" or error:
+                        yield Event(
+                            timestamp=ts,
+                            kind="tool_result",
+                            actor="tool",
+                            tool=tool,
+                            detail=str(error or state.get("output") or "tool failed"),
+                            raw=part_data,
+                        )
+    except sqlite3.Error as exc:
+        raise IdentityError(f"OpenCode database query failed: {exc}") from exc
+    finally:
+        conn.close()
 
 
 # Claude Code transcript shape:
@@ -1006,7 +1245,7 @@ def _map_tool_use(
             "detail": f"Created: {rel}",
         }, tool)
 
-    # ---- OpenCode vocabulary (1.0.78 directory storage) ----
+    # ---- OpenCode vocabulary (stable v1 SQLite storage) ----
     if tool in ("edit", "patch") and isinstance(args, dict):
         fp = args.get("filePath") or args.get("file_path") or ""
         if not fp:
@@ -1015,6 +1254,25 @@ def _map_tool_use(
         return ("event", "file_modified", {
             "file_path": rel,
             "detail": f"Modified: {rel}",
+        }, tool)
+
+    if tool == "apply_patch" and isinstance(args, dict):
+        patch_text = args.get("patchText") or args.get("patch_text") or args.get("patch") or ""
+        if not isinstance(patch_text, str) or not patch_text:
+            return None
+        updated = _APPLY_PATCH_UPDATE_RE.findall(patch_text)
+        deleted = _APPLY_PATCH_DELETE_RE.findall(patch_text)
+        added = _APPLY_PATCH_ADD_RE.findall(patch_text)
+        changed = updated + deleted
+        selected = changed[0] if changed else (added[0] if added else "")
+        if not selected:
+            return None
+        rel = _rel(selected.strip(), project_dir)
+        subtype = "file_modified" if changed else "file_created"
+        verb = "Modified" if changed else "Created"
+        return ("event", subtype, {
+            "file_path": rel,
+            "detail": f"{verb}: {rel}",
         }, tool)
 
     if tool == "write" and isinstance(args, dict):
@@ -1037,7 +1295,7 @@ def _map_tool_use(
             "detail": f"Modified notebook: {rel}",
         }, tool)
 
-    if tool in ("Task", "Agent") and isinstance(args, dict):
+    if tool in ("Task", "Agent", "task") and isinstance(args, dict):
         agent = args.get("subagent_type") or args.get("agent_type") or ""
         desc = args.get("description") or args.get("prompt") or ""
         if not agent:
@@ -1048,7 +1306,7 @@ def _map_tool_use(
             "detail": f"Agent: {agent} → {desc}",
         }, tool)
 
-    if tool == "AskUserQuestion" and isinstance(args, dict):
+    if tool in ("AskUserQuestion", "question") and isinstance(args, dict):
         questions_blocks = args.get("questions") or []
         headers: list[str] = []
         if isinstance(questions_blocks, list):
@@ -1065,7 +1323,7 @@ def _map_tool_use(
             "detail": f"Decision Point: {questions_str}",
         }, tool)
 
-    if tool == "Skill" and isinstance(args, dict):
+    if tool in ("Skill", "skill") and isinstance(args, dict):
         cmd = args.get("skill") or args.get("name") or ""
         if not (str(cmd).startswith("panel") or str(cmd).startswith("save") or ":" in str(cmd)):
             return None
@@ -1172,13 +1430,13 @@ def _main(argv: list[str]) -> int:
 
     print(f"# transcript: {path}", file=sys.stderr)
     if args.raw:
-        for ev in stream_events(path, args.harness):
+        for ev in stream_events(path, args.harness, identity.session_id):
             print(json.dumps({
                 "ts": ev.timestamp, "kind": ev.kind, "actor": ev.actor,
                 "tool": ev.tool, "text": ev.text[:80], "detail": ev.detail[:80],
             }))
     else:
-        events = list(stream_events(path, args.harness))
+        events = list(stream_events(path, args.harness, identity.session_id))
         synth = to_synth_events(events, project_dir, identity.session_id)
         for s in synth:
             print(json.dumps(s))

@@ -21,11 +21,11 @@ Manage autonomous agent loops with checkpoint tracking and safety guardrails.
 ## Usage
 
 ```
-/asha:loop start <objective> [--max=N] [--checkpoint=N]
-/asha:loop resume <loop-id>
-/asha:loop status [loop-id]
-/asha:loop stop <loop-id>
-/asha:loop list
+/session:loop start <objective> [--max=N] [--checkpoint=N]
+/session:loop resume <loop-id>
+/session:loop status [loop-id]
+/session:loop stop <loop-id>
+/session:loop list
 ```
 
 ## Commands
@@ -35,7 +35,7 @@ Manage autonomous agent loops with checkpoint tracking and safety guardrails.
 Initialize a new autonomous loop.
 
 ```
-/asha:loop start "Migrate API handlers to async/await" --max=20 --checkpoint=3
+/session:loop start "Migrate API handlers to async/await" --max=20 --checkpoint=3
 ```
 
 **Required:**
@@ -58,7 +58,7 @@ Initialize a new autonomous loop.
 Continue an interrupted loop from last checkpoint.
 
 ```
-/asha:loop resume silent-thunder
+/session:loop resume silent-thunder
 ```
 
 Reads state from `Work/loops/<loop-id>/state.json` and continues.
@@ -68,8 +68,8 @@ Reads state from `Work/loops/<loop-id>/state.json` and continues.
 Show current state of loop(s).
 
 ```
-/asha:loop status                 # All active loops
-/asha:loop status silent-thunder  # Specific loop
+/session:loop status                 # All active loops
+/session:loop status silent-thunder  # Specific loop
 ```
 
 ### stop
@@ -77,7 +77,7 @@ Show current state of loop(s).
 Gracefully stop a running loop, saving final checkpoint.
 
 ```
-/asha:loop stop silent-thunder
+/session:loop stop silent-thunder
 ```
 
 ### list
@@ -85,7 +85,7 @@ Gracefully stop a running loop, saving final checkpoint.
 Show all loops with their status.
 
 ```
-/asha:loop list
+/session:loop list
 ```
 
 ## Behavior
@@ -177,7 +177,7 @@ Loop automatically pauses and notifies when:
 ### Start a migration loop
 
 ```
-/asha:loop start "Convert all callbacks to async/await in src/api/"
+/session:loop start "Convert all callbacks to async/await in src/api/"
 
 > Define success criteria:
 All files in src/api/ use async/await, tests pass
@@ -195,7 +195,7 @@ Starting iteration 1...
 ### Check on running loop
 
 ```
-/asha:loop status bright-falcon
+/session:loop status bright-falcon
 
 Loop: bright-falcon
 Status: running
@@ -207,7 +207,7 @@ Next checkpoint in: 2 iterations
 ### Resume after interruption
 
 ```
-/asha:loop resume bright-falcon
+/session:loop resume bright-falcon
 
 Resuming from checkpoint-2
 Last state: 6 files completed

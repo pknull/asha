@@ -110,7 +110,7 @@ def _validate_registry(data: dict[str, Any], path: Path) -> dict[str, dict[str, 
         if raw.get("risk") not in RISK_RANK:
             raise BrokerError("invalid_registry", f"{cap_id}.risk is invalid", path=path)
         support = raw.get("harness_support")
-        if not isinstance(support, dict) or set(support) != {"claude", "codex", "copilot"}:
+        if not isinstance(support, dict) or set(support) != {"claude", "codex", "copilot", "opencode"}:
             raise BrokerError("invalid_registry", f"{cap_id}.harness_support must name all harnesses", path=path)
         for harness, ref in support.items():
             if not isinstance(ref, dict) or set(ref) != {"capability_ref", "fallback"}:
@@ -708,7 +708,7 @@ def _parser() -> argparse.ArgumentParser:
         child.add_argument("task", nargs="+")
         child.add_argument("--json", action="store_true", dest="as_json")
         child.add_argument("--project-root")
-        child.add_argument("--harness", choices=("claude", "codex", "copilot"), default=os.environ.get("ASHA_HARNESS", "claude"))
+        child.add_argument("--harness", choices=("claude", "codex", "copilot", "opencode"), default=os.environ.get("ASHA_HARNESS", "claude"))
         child.add_argument("--override", action="append", default=[])
     # Keep environment defaults as strings until main's guarded validation.
     # argparse does not apply ``type`` to defaults; converting here would let a

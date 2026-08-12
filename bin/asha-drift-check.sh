@@ -5,7 +5,7 @@
 # `asha doctor` is the front door for this script (lib/doctor.sh).
 #
 # Usage:
-#   asha-drift-check.sh [--target {claude,codex,copilot,all}] [--fix]
+#   asha-drift-check.sh [--target {claude,codex,copilot,opencode,all}] [--fix]
 #
 # Default target is 'all'. Per-target flags scope the checks.
 # --fix self-heals stale codex/copilot command-skills (regenerates SKILL.md
@@ -30,6 +30,7 @@ source "$ASHA/harnesses/generated-artifacts.sh"
 CLAUDE="$(asha_harness_home claude)"
 CODEX="$(asha_harness_home codex)"
 COPILOT="$(asha_harness_home copilot)"
+OPENCODE="$(asha_harness_home opencode)"
 HOME_LABEL="~"
 TARGET="all"
 FIX=0          # --fix: self-heal stale codex command-skills (audit-only otherwise)
@@ -70,6 +71,11 @@ version_in_range() {
     }
     BEGIN { exit !(compare(version, min) >= 0 && compare(version, max) <= 0) }
   '
+}
+
+version_at_least() {
+  local version="$1" min="$2"
+  version_in_range "$version" "$min" "999999.999999.999999"
 }
 
 # --fix self-heal: regenerate a stale codex command-skill SKILL.md from its
@@ -325,7 +331,7 @@ section "repo state"
 
 # Installer scripts present
 gone=0
-for f in install.sh uninstall.sh namespaces.json INSTALLER.md harnesses/claude.sh; do
+for f in install.sh uninstall.sh namespaces.json INSTALLER.md harnesses/claude.sh harnesses/opencode.sh; do
   if [[ ! -f "$ASHA/$f" ]]; then
     [[ $gone -eq 0 ]] && nope "installer scripts missing:"
     echo "  $f"
@@ -673,6 +679,62 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
     fi
     [[ -f "$COPILOT/copilot-instructions.md" ]] \
       && info_line "user-managed $COPILOT/copilot-instructions.md present (not asha-owned; auto-loads globally)"
+  fi
+fi
+
+# ===========================================================================
+# OpenCode harness checks
+# ===========================================================================
+
+if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
+  section "opencode harness"
+  opencode_manifest="$(asha_artifact_manifest_path opencode)"
+  opencode_link="$(find "$OPENCODE/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null || true)"
+  if [[ ! -f "$opencode_manifest" && -z "$opencode_link" ]]; then
+    pass "opencode not configured by Asha (skipping opencode checks)"
+  else
+    check_dangling "$OPENCODE" opencode skills:1
+    manifest_out="$(asha_artifact_doctor opencode 2>&1)"; manifest_rc=$?
+    if [[ $manifest_rc -eq 0 ]]; then
+      pass "generated-artifact ownership manifest clean (opencode)"
+    elif [[ $manifest_rc -eq 2 ]]; then
+      nope "generated-artifact ownership manifest missing (opencode; reinstall required)"
+    else
+      nope "generated-artifact ownership drift (opencode):"
+      printf '%s\n' "$manifest_out" | sed 's/^/  /'
+    fi
+    adapter="$ASHA/plugins/session/hooks/handlers/opencode-policy-adapter.sh"
+    [[ -x "$adapter" ]] \
+      && pass "OpenCode policy adapter is executable" \
+      || nope "OpenCode policy adapter missing or not executable: $adapter"
+    plugin="$OPENCODE/plugins/asha.js"
+    if [[ ! -f "$plugin" ]]; then
+      nope "OpenCode integration plugin missing: $plugin"
+    elif grep -q 'tool.execute.before' "$plugin" \
+      && grep -q 'shell.env' "$plugin" \
+      && grep -q 'dispose' "$plugin"; then
+      pass "OpenCode integration plugin carries guardrail, session-env, and clean-exit hooks"
+    else
+      nope "OpenCode integration plugin is stale or incomplete: $plugin"
+    fi
+    opencode_cmd="$(asha_harness_executable opencode)"
+    if command -v "$opencode_cmd" >/dev/null 2>&1; then
+      opencode_version_output="$("$opencode_cmd" --version 2>/dev/null | head -1 || true)"
+      opencode_version="$(printf '%s\n' "$opencode_version_output" | awk '
+        match($0, /[0-9]+\.[0-9]+\.[0-9]+/) { print substr($0, RSTART, RLENGTH); exit }')"
+      opencode_min="$(asha_opencode_min_version)"
+      if [[ -z "$opencode_version" ]]; then
+        nope "could not parse OpenCode CLI version: ${opencode_version_output:-<empty>}"
+      elif version_at_least "$opencode_version" "$opencode_min"; then
+        pass "OpenCode CLI $opencode_version satisfies >=$opencode_min"
+      else
+        nope "OpenCode CLI $opencode_version is unsupported; requires >=$opencode_min"
+      fi
+    else
+      warn "OpenCode CLI not on PATH (offline install state audited only)"
+    fi
+    info_line "persona loads via 'asha opencode' wrapper only; plain 'opencode' is persona-free"
+    info_line "dispose auto-save is clean-exit best effort; persistent servers and crashes require manual /session:save"
   fi
 fi
 

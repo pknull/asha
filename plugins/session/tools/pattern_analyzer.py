@@ -584,40 +584,61 @@ def classify_drift(project_dir: Path, session_id: Optional[str] = None) -> Drift
             f"UNCLASSIFIABLE: no candidate transcript for {harness} session {current_sid}"
         )
 
-    candidate_sid = jsonl_reader.transcript_session_id(candidate, harness)
-    candidate_path_sid = jsonl_reader.transcript_path_session_id(candidate, harness)
     classification = "CLEAN"
-    detail = f"transcript {candidate} matches session {current_sid}"
     selected = candidate
-    if candidate_sid != current_sid or candidate_path_sid != current_sid:
-        correct = jsonl_reader.locate_session_log_for_id(harness, project_dir, current_sid)
-        if correct is None:
-            raise RuntimeError(
-                "UNCLASSIFIABLE: candidate transcript belongs to "
-                f"{candidate_sid or 'unknown'} at path id {candidate_path_sid or 'unknown'}, "
-                f"expected {current_sid}, and no exact transcript exists"
+    identity = None
+    if harness == "opencode":
+        # OpenCode stores every project and child-agent session in one SQLite
+        # database. Resolve the exact row (and child -> root lineage) instead of
+        # applying file-path identity checks designed for JSONL transcripts.
+        try:
+            identity = jsonl_reader.resolve_identity(
+                project_dir,
+                harness=harness,
+                session_id=current_sid,
+                transcript=selected,
             )
-        selected = correct
-        classification = "WRONG_TRANSCRIPT"
-        detail = f"candidate {candidate} belonged to {candidate_sid}; auto-pinned {correct}"
+        except Exception as exc:  # noqa: BLE001
+            raise RuntimeError(f"UNCLASSIFIABLE: {exc}") from exc
+        current_sid = identity.session_id
+        selected = identity.transcript_path
+        detail = f"OpenCode database row matches root session {current_sid}"
+    else:
+        candidate_sid = jsonl_reader.transcript_session_id(candidate, harness)
+        candidate_path_sid = jsonl_reader.transcript_path_session_id(candidate, harness)
+        detail = f"transcript {candidate} matches session {current_sid}"
+        if candidate_sid != current_sid or candidate_path_sid != current_sid:
+            correct = jsonl_reader.locate_session_log_for_id(harness, project_dir, current_sid)
+            if correct is None:
+                raise RuntimeError(
+                    "UNCLASSIFIABLE: candidate transcript belongs to "
+                    f"{candidate_sid or 'unknown'} at path id {candidate_path_sid or 'unknown'}, "
+                    f"expected {current_sid}, and no exact transcript exists"
+                )
+            selected = correct
+            classification = "WRONG_TRANSCRIPT"
+            detail = f"candidate {candidate} belonged to {candidate_sid}; auto-pinned {correct}"
 
-    selected_sids = jsonl_reader.transcript_session_ids(selected, harness)
-    selected_path_sid = jsonl_reader.transcript_path_session_id(selected, harness)
-    if selected_sids != {current_sid} or selected_path_sid != current_sid:
-        raise RuntimeError(
-            "UNCLASSIFIABLE: selected transcript identity is not wholly current: "
-            f"event stamps={sorted(selected_sids)}, path id={selected_path_sid or 'unknown'}, "
-            f"expected only {current_sid}"
-        )
+        selected_sids = jsonl_reader.transcript_session_ids(selected, harness)
+        selected_path_sid = jsonl_reader.transcript_path_session_id(selected, harness)
+        if selected_sids != {current_sid} or selected_path_sid != current_sid:
+            raise RuntimeError(
+                "UNCLASSIFIABLE: selected transcript identity is not wholly current: "
+                f"event stamps={sorted(selected_sids)}, path id={selected_path_sid or 'unknown'}, "
+                f"expected only {current_sid}"
+            )
 
     try:
-        identity = jsonl_reader.resolve_identity(
-            project_dir,
-            harness=harness,
-            session_id=current_sid,
-            transcript=selected,
+        if identity is None:
+            identity = jsonl_reader.resolve_identity(
+                project_dir,
+                harness=harness,
+                session_id=current_sid,
+                transcript=selected,
+            )
+        transcript_events = list(
+            jsonl_reader.stream_events(selected, harness, identity.session_id)
         )
-        transcript_events = list(jsonl_reader.stream_events(selected, harness))
         synth_events = jsonl_reader.to_synth_events(transcript_events, project_dir, identity.session_id)
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError(f"UNCLASSIFIABLE: transcript parse failed: {exc}") from exc

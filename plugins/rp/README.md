@@ -6,6 +6,46 @@ Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon 
 
 Complements the `write` plugin, which owns the shared craft layer (`craft/craft-core-universal.md`, `craft/director-rubric.md`), the `rp-draft-loop` engine, and the `continuity-reviewer` agent this plugin's turn loop spawns.
 
+## When to use it
+
+Use RP for live, turn-by-turn play where continuity must be checked before each
+response and session events must pass an explicit canon gate afterward. Use the
+Write plugin instead for offline manuscript drafting or editorial review.
+
+## Invocation by harness
+
+| Harness | Invocation |
+|---|---|
+| Claude Code | `/rp:start`, `/rp:turn`, `/rp:end`, `/rp:extract-invariants` |
+| OpenAI Codex | Request or name the rendered `rp-start`, `rp-turn`, `rp-end`, or `rp-extract-invariants` skill |
+| GitHub Copilot CLI | Request or name the same rendered skills |
+
+## First-time project setup
+
+1. Install both `rp` and `write`.
+2. Copy `templates/canon-layout.md` to the project's `Memory/canon-layout.md`.
+3. Edit the register so every canon kind resolves to the project's real paths.
+4. Run `/rp:extract-invariants` after the canon sources exist.
+5. Start the session with `/rp:start`.
+
+Do not begin live play with an inherited path layout that does not match the
+project. Empty lookups then masquerade as absent canon, which is a particularly
+tedious species of error.
+
+## Session lifecycle
+
+```text
+/rp:start Garret 1889-10-03       open markers, retrieve continuity, build Day Plan
+/rp:turn I open the cellar door.  run one GM draft through the continuity gate
+/rp:turn I ask her what changed.  repeat for each Keeper turn
+/rp:end                            summarize, update character state, ratify canon
+```
+
+`/rp:turn` may rewrite a failed draft up to three times. If the draft still
+violates the invariants or source provenance, it surrenders rather than shipping
+known-bad continuity. `/rp:end` presents proposed canon additions individually;
+only accepted items are promoted.
+
 ## Agents
 
 | Agent | Role |
@@ -52,3 +92,17 @@ The same rule covers shipped hook rules: a `match_regex` must not contain proper
 ## Design note — projection vs source
 
 `Memory/invariants.md` is a **generated projection**, not a bible: it is compiled for read-speed at turn time and is therefore lossy by construction. A claim that falls outside it is invisible to the gate rather than wrong. Treat it as a cache over authored canon — never as the only authority consulted.
+
+## Installation
+
+```bash
+./install.sh --only write --target claude
+./install.sh --only rp --target claude
+```
+
+Substitute `codex` or `copilot` for the target harness. The RP workflow depends
+upon shared Write-plugin craft and continuity surfaces, so install both.
+
+## License
+
+MIT

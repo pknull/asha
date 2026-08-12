@@ -116,6 +116,7 @@ detect_harness() {
     elif [[ -n "${CLAUDECODE:-}" ]];     then echo "claude"
     elif [[ -n "${COPILOT_CLI:-}" ]];    then echo "copilot"
     elif [[ -n "${CODEX_THREAD_ID:-}" || -n "${CODEX_MANAGED_BY_NPM:-}" ]]; then echo "codex"
+    elif [[ -n "${OPENCODE:-}" || -n "${OPENCODE_SESSION_ID:-}" ]]; then echo "opencode"
     else echo "unknown"
     fi
 }
@@ -125,6 +126,7 @@ detect_session_id() {
         claude)   echo "${ASHA_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-}}" ;;
         copilot)  echo "${ASHA_SESSION_ID:-${COPILOT_SESSION_ID:-}}" ;;
         codex)    echo "${ASHA_SESSION_ID:-${CODEX_THREAD_ID:-}}" ;;
+        opencode) echo "${ASHA_SESSION_ID:-${OPENCODE_SESSION_ID:-}}" ;;
         *)        echo "${ASHA_SESSION_ID:-}" ;;
     esac
 }

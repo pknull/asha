@@ -118,5 +118,5 @@ Output the status:
 
 - Event counts describe the last transcript regeneration, not live hook capture
 - Run `/session:save` to regenerate events and synthesize Memory on any harness
-- Claude can also synthesize automatically at clean exit; other harnesses cannot
+- Claude and Copilot can also synthesize automatically at clean exit; Codex requires manual save
 - Copilot existing-file edit capture remains partial pending a stable native schema

@@ -4,6 +4,7 @@
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -25,6 +26,7 @@ class SaveDriftClassifierTests(unittest.TestCase):
         self.saved_env = {key: os.environ.get(key) for key in (
             "HOME", "CLAUDE_PROJECT_DIR", "ASHA_HARNESS", "ASHA_SESSION_ID",
             "ASHA_TRANSCRIPT_PATH", "CLAUDE_CODE_SESSION_ID", "ASHA_EVENTS_FILE",
+            "OPENCODE", "OPENCODE_SESSION_ID", "XDG_DATA_HOME",
         )}
         os.environ.update({
             "HOME": str(self.tmp),
@@ -123,6 +125,62 @@ class SaveDriftClassifierTests(unittest.TestCase):
 
         self.assertEqual(decision.classification, "CLEAN")
         self.assertFalse(decision.needs_minimal_wwa)
+
+    def test_opencode_sqlite_child_resolves_and_classifies_clean(self):
+        data_home = self.tmp / ".local" / "share"
+        db = data_home / "opencode" / "opencode.db"
+        db.parent.mkdir(parents=True)
+        conn = sqlite3.connect(db)
+        conn.executescript("""
+            CREATE TABLE session (id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT);
+            CREATE TABLE message (id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT);
+            CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT);
+        """)
+        conn.executemany(
+            "INSERT INTO session(id, parent_id, directory) VALUES (?, ?, ?)",
+            [
+                ("oc-root", None, str(self.project)),
+                ("oc-child", "oc-root", str(self.project)),
+            ],
+        )
+        now_ms = int(time.time() * 1000)
+        conn.executemany(
+            "INSERT INTO message(id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            [
+                ("oc-user", "oc-root", now_ms, json.dumps({"role": "user"})),
+                ("oc-assistant", "oc-root", now_ms + 1, json.dumps({"role": "assistant"})),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO part(id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("oc-prompt", "oc-user", "oc-root", now_ms,
+                 json.dumps({"type": "text", "text": "Implement the OpenCode harness"})),
+                ("oc-edit", "oc-assistant", "oc-root", now_ms + 1,
+                 json.dumps({
+                     "type": "tool", "tool": "edit",
+                     "state": {"status": "completed", "input": {"filePath": str(self.project / "src/app.py")}},
+                 })),
+            ],
+        )
+        conn.commit()
+        conn.close()
+        os.environ.update({
+            "ASHA_HARNESS": "opencode",
+            "ASHA_SESSION_ID": "oc-child",
+            "OPENCODE": "1",
+            "OPENCODE_SESSION_ID": "oc-child",
+            "XDG_DATA_HOME": str(data_home),
+            "ASHA_TRANSCRIPT_PATH": str(db),
+        })
+
+        decision = self.pa.classify_drift(self.project)
+
+        self.assertEqual(decision.classification, "CLEAN")
+        self.assertEqual(decision.identity.session_id, "oc-root")
+        edits = [event for event in decision.synth_events if event["subtype"] == "file_modified"]
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["payload"]["file_path"], "src/app.py")
 
     def test_bash_only_session_gets_stamped_minimal_lead_wwa(self):
         transcript = self._transcript(

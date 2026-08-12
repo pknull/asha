@@ -33,7 +33,9 @@ fi
 INPUT=""
 [[ -t 0 ]] || INPUT=$(cat 2>/dev/null || true)
 
-# Generate new session ID. Under copilot (COPILOT_CLI=1 stamped on its own
+# Generate new session ID. Under Copilot/OpenCode use the harness's native
+# session id, which is also the transcript identity.
+# Under copilot (COPILOT_CLI=1 stamped on its own
 # hook processes; payload verified live 2026-07-27 on 1.0.75:
 # {sessionId, timestamp, cwd, source, initialPrompt}) use the harness's own
 # session uuid — it is the id transcript-derived events are stamped with, so
@@ -49,6 +51,15 @@ if [[ "${COPILOT_CLI:-}" == "1" ]]; then
         COPILOT_SID=$(echo "$INPUT" | jq -r '.sessionId // empty' 2>/dev/null || true)
         if [[ -n "$COPILOT_SID" ]]; then
             NEW_SESSION_ID="$COPILOT_SID"
+        fi
+    fi
+elif [[ "${ASHA_HARNESS:-}" == "opencode" || "${OPENCODE:-}" == "1" ]]; then
+    export ASHA_HARNESS="opencode"
+    if command -v jq >/dev/null 2>&1; then
+        OPENCODE_SID=$(echo "$INPUT" | jq -r '.session_id // .sessionID // empty' 2>/dev/null || true)
+        if [[ -n "$OPENCODE_SID" ]]; then
+            NEW_SESSION_ID="$OPENCODE_SID"
+            export ASHA_SESSION_ID="$OPENCODE_SID" OPENCODE_SESSION_ID="$OPENCODE_SID"
         fi
     fi
 fi
@@ -111,7 +122,7 @@ fi
 # Store current session ID
 echo "$NEW_SESSION_ID" > "$SESSION_MARKER"
 
-# Copilot has no per-tool event capture (retired 2026-05-10; save derives
+# Copilot and OpenCode have no per-tool event persistence (save derives
 # events from the native transcript on demand), so a crashed copilot session
 # would leave NO trace in Memory/events/events.jsonl and orphan detection
 # could never see it. Append one identity breadcrumb stamped with the harness
@@ -119,14 +130,17 @@ echo "$NEW_SESSION_ID" > "$SESSION_MARKER"
 # flags it, and recovery re-synthesizes from the surviving native transcript
 # (~/.copilot/session-state/<sid>/events.jsonl). Clean saves replace the
 # events file wholesale, so the breadcrumb never accumulates.
-if [[ "${COPILOT_CLI:-}" == "1" ]] && command -v jq >/dev/null 2>&1; then
+if [[ "${COPILOT_CLI:-}" == "1" || "${ASHA_HARNESS:-}" == "opencode" ]] \
+    && command -v jq >/dev/null 2>&1; then
+    BREADCRUMB_HARNESS="copilot"
+    [[ "${ASHA_HARNESS:-}" == "opencode" ]] && BREADCRUMB_HARNESS="opencode"
     mkdir -p "$PROJECT_DIR/Memory/events"
-    jq -nc --arg sid "$NEW_SESSION_ID" --arg pd "$PROJECT_DIR" \
+    jq -nc --arg sid "$NEW_SESSION_ID" --arg pd "$PROJECT_DIR" --arg harness "$BREADCRUMB_HARNESS" \
         --arg ts "$(date -u '+%Y-%m-%dT%H:%M:%S.000Z')" \
         --arg id "evt_$(date -u '+%Y%m%d_%H%M%S')_sessionstart" '{
           id: $id, timestamp: $ts, session_id: $sid,
           type: "event", subtype: "session_started",
-          payload: {detail: "copilot session started (identity breadcrumb)"},
+          payload: {detail: ($harness + " session started (identity breadcrumb)")},
           metadata: {source: "session-start-hook", project_dir: $pd, tool_name: null}
         }' >> "$PROJECT_DIR/Memory/events/events.jsonl" 2>/dev/null || true
 fi

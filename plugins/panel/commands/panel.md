@@ -18,20 +18,20 @@ Decompose → Clarify → Deliberate
 
 ```bash
 # Full pipeline (default) - decompose, clarify unclear steps, then deliberate
-/panel "Build a microservices auth system"
-/panel "Should we implement GraphQL or REST for the new API"
+/panel-system:panel "Build a microservices auth system"
+/panel-system:panel "Should we implement GraphQL or REST for the new API"
 
 # With options
-/panel --format=github "Topic here"     # Output as GitHub PR comment
-/panel --format=json "Topic here"       # Output as structured JSON
-/panel --context=docs/RFC.md "Topic"    # Inject reference material
+/panel-system:panel --format=github "Topic here"     # Output as GitHub PR comment
+/panel-system:panel --format=json "Topic here"       # Output as structured JSON
+/panel-system:panel --context=docs/RFC.md "Topic"    # Inject reference material
 ```
 
 ### Quick Mode (Skip Decomposition)
 
 ```bash
-/panel --quick "Should we use tabs or spaces"
-/panel --quick "Evaluate Chapter 9's effectiveness"
+/panel-system:panel --quick "Should we use tabs or spaces"
+/panel-system:panel --quick "Evaluate Chapter 9's effectiveness"
 ```
 
 For simple, well-defined topics that don't need decomposition. Jumps straight to deliberation (Phases -1 through 8).
@@ -39,8 +39,8 @@ For simple, well-defined topics that don't need decomposition. Jumps straight to
 ### Think Mode (Decomposition Only)
 
 ```bash
-/panel --think "Break down this architecture"
-/panel --think "What are all the pieces of building a CLI tool"
+/panel-system:panel --think "Break down this architecture"
+/panel-system:panel --think "What are all the pieces of building a CLI tool"
 ```
 
 Just runs The Thinker for problem decomposition. No interview, no deliberation. Output: `Work/thinking/<id>/summary.md`
@@ -48,8 +48,8 @@ Just runs The Thinker for problem decomposition. No interview, no deliberation. 
 ### Interview Mode (Requirements Only)
 
 ```bash
-/panel --interview "Build a task management CLI"
-/panel --interview "Create a REST API for user management"
+/panel-system:panel --interview "Build a task management CLI"
+/panel-system:panel --interview "Create a REST API for user management"
 ```
 
 Just runs Socratic Q&A workflow for requirements crystallization. No decomposition, no deliberation. Output: `Work/panels/<id>/seed.yaml`
@@ -57,13 +57,13 @@ Just runs Socratic Q&A workflow for requirements crystallization. No decompositi
 ### Panel Management
 
 ```bash
-/panel --list                    # List all panels (active and completed)
-/panel --list --status=active    # List only active/interrupted panels
-/panel --list --status=completed # List only completed panels
-/panel --list --status=abandoned # List abandoned panels
-/panel --show <id>               # Display panel summary by ID
-/panel --resume <id>             # Resume interrupted panel from last phase
-/panel --abandon <id>            # Mark panel as abandoned
+/panel-system:panel --list                    # List all panels (active and completed)
+/panel-system:panel --list --status=active    # List only active/interrupted panels
+/panel-system:panel --list --status=completed # List only completed panels
+/panel-system:panel --list --status=abandoned # List abandoned panels
+/panel-system:panel --show <id>               # Display panel summary by ID
+/panel-system:panel --resume <id>             # Resume interrupted panel from last phase
+/panel-system:panel --abandon <id>            # Mark panel as abandoned
 ```
 
 ### Flags Reference
@@ -164,7 +164,7 @@ State which mode each role ran in within the phase files (one word: spawned/inli
 
 ## Full Pipeline Protocol (Default)
 
-The default `/panel` command runs 3 stages:
+The default `/panel-system:panel` command runs 3 stages:
 
 1. **Decomposition** (Phase -2): The Thinker breaks problem into steps
 2. **Clarification** (Phase -1.5): Interview for LOW/MEDIUM clarity steps
@@ -257,7 +257,7 @@ Standard panel protocol with decomposition context injected.
 
 - Compare proposals against existing assets to avoid duplication:
   - Memory files (workflowProtocols.md, activeContext.md)
-  - Commands (/panel, /save, /notes, /validate-vault)
+  - Commands (/panel-system:panel, /save, /notes, /validate-vault)
   - Installed agents and skills relevant to the topic
 - Output "Existing Infrastructure Comparison"
 - Redirect to enhancement if duplicative
@@ -520,8 +520,8 @@ Structured data for programmatic consumption:
 The `--context` flag pre-loads reference material before panel deliberation:
 
 ```bash
-/panel --context=docs/RFC-001.md "Should we adopt this RFC?"
-/panel --context=Memory/techEnvironment.md "Evaluate caching strategy"
+/panel-system:panel --context=docs/RFC-001.md "Should we adopt this RFC?"
+/panel-system:panel --context=Memory/techEnvironment.md "Evaluate caching strategy"
 ```
 
 **Behavior**:
@@ -534,13 +534,13 @@ The `--context` flag pre-loads reference material before panel deliberation:
 **Multiple contexts**:
 
 ```bash
-/panel --context=spec.md --context=constraints.md "Evaluate feasibility"
+/panel-system:panel --context=spec.md --context=constraints.md "Evaluate feasibility"
 ```
 
 **URL context** (if WebFetch available):
 
 ```bash
-/panel --context=https://example.com/api-docs "Design integration approach"
+/panel-system:panel --context=https://example.com/api-docs "Design integration approach"
 ```
 
 ## Dynamic Agent Recruitment Architecture
@@ -773,4 +773,4 @@ Based on CSIRO Agent Design Patterns (Liu et al. 2025):
 
 ---
 
-**ARGUMENTS**: Free-form topic text (everything after `/panel` is the topic)
+**ARGUMENTS**: Free-form topic text (everything after `/panel-system:panel` is the topic)

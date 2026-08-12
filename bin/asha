@@ -4,14 +4,14 @@
 # Grammar:  asha [VERB] [HARNESS] [PASSTHROUGH...]
 #   VERB     install | uninstall | build | doctor | init-repo | calibration
 #                                            (optional; absent => launch)
-#   HARNESS  claude | codex | copilot     (launch) ; also both|all for verbs
+#   HARNESS  claude | codex | copilot | opencode (launch); also both|all for verbs
 #            (absent on launch => default_harness from ~/.asha/config.json, else claude)
 #   PASSTHROUGH  forwarded to the harness CLI (launch) or to the engine (verb)
 #
 # Positional by construction, so `asha install claude` (verb+target) and
 # `asha claude install` (launch claude, forward `install`) never collide.
 #
-# Shim form: invoked as asha-claude|asha-codex|asha-copilot => launch that
+# Shim form: invoked as asha-claude|asha-codex|asha-copilot|asha-opencode => launch that
 # harness with all args passed through.
 #
 # On launch, if Asha isn't configured for the harness (or is stale), prompt
@@ -92,6 +92,7 @@ harness_configured() {
     foreign=1
   fi
   local scan_dirs="skills agents commands output-styles"
+  [[ "$h" == opencode ]] && scan_dirs="skills agents commands plugins"
   for sub in $scan_dirs; do
     dir="$home/$sub"
     [[ -d "$dir" ]] || continue
@@ -240,6 +241,36 @@ launch() {
     copilot)
       exec_copilot "$@"
       ;;
+    opencode)
+      command -v "$executable" >/dev/null 2>&1 || die "OpenCode executable not found: $executable"
+      # shellcheck source=../harnesses/opencode.sh
+      source "$ASHA_ROOT/harnesses/opencode.sh"
+      opencode_check_version
+      local base instr op_merge op_tmp cfg raw_cfg
+      base="${ASHA_OPENCODE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-opencode.md}"
+      instr="$base"
+      export ASHA_PERSONA=1
+      if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
+        op_merge="$IDENTITY_DIR/operational-merge.sh"
+        if [[ -x "$op_merge" ]]; then
+          op_tmp="$(mktemp)"
+          if "$op_merge" "$op_tmp" 2>/dev/null; then
+            instr="$HOME/.cache/asha/instructions-opencode-combined.md"
+            { cat "$base"; printf '\n\n'; cat "$op_tmp"; } >"$instr"
+          fi
+          rm -f "$op_tmp"
+        fi
+        raw_cfg="${OPENCODE_CONFIG_CONTENT:-}"
+        [[ -n "$raw_cfg" ]] || raw_cfg='{}'
+        cfg="$(jq -cn --argjson base "$raw_cfg" --arg f "$instr" \
+          '$base * {instructions: (($base.instructions // []) + [$f] | unique)}')" \
+          || die "OPENCODE_CONFIG_CONTENT is not valid OpenCode JSON"
+        export OPENCODE_CONFIG_CONTENT="$cfg"
+        exec "$executable" "$@"
+      fi
+      info "warn: identity merge failed; launching plain opencode"
+      exec "$executable" "$@"
+      ;;
     *) die "unknown harness: $h" ;;
   esac
 }
@@ -250,11 +281,11 @@ asha — cross-agent dispatcher
 
 Usage:
   asha [HARNESS] [args...]         launch a harness (default: configured default, else claude)
-  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|both|all)
+  asha install   <target> [...]    provision Asha for a harness (claude|codex|copilot|opencode|both|all)
   asha uninstall <target> [...]    remove Asha from a harness
   asha build copilot [...]         package plugins for Copilot-native distribution
                                    (--only ns,.. --out DIR --version X.Y.Z --dry-run --force)
-  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|all)
+  asha doctor [target] [--fix]     audit install health (claude|codex|copilot|opencode|all)
                                    (Claude Code's native doctor: asha claude doctor)
   asha workspace status [...]      inspect workspace state and active repository
   asha workspace init|discover|doctor [...]
@@ -264,14 +295,14 @@ Usage:
   asha context brief <task>        bounded, provenance-backed memory briefing
   asha process route <task>        advisory process route with risks and fallback
   asha capabilities match <task>   registry-backed harness capability match
-                                   (all three accept --json)
+                                   (all four accept --json)
   asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
                                    (--dry-run | --check for CI | --force)
   asha calibration [args...]       inspect orchestration calibration metrics
                                    (--tier=T --workflow=W --tail=N --all)
   asha-<harness> [args...]         shim form (launch that harness)
 
-Harnesses: claude | codex | copilot
+Harnesses: claude | codex | copilot | opencode
 Flags:
   --yes, -y        skip the first-run configure prompt (or set ASHA_YES=1)
 

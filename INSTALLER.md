@@ -6,7 +6,7 @@ symlinks plus generated harness-native artifacts. Codex itself supports native
 plugins and marketplaces, which remain a separate future distribution path.
 
 The installer supports four first-class harnesses: Claude Code, OpenAI Codex
-CLI, and GitHub Copilot CLI. All launch through one `asha` dispatcher.
+CLI, GitHub Copilot CLI, and OpenCode stable v1. All launch through one `asha` dispatcher.
 Source skills, agents, and commands remain shared Markdown; adapters render each
 harness's native form.
 
@@ -25,12 +25,13 @@ harness's native form.
 │   ├── claude.sh         # Claude Code install/uninstall logic
 │   ├── codex.sh          # Codex CLI install/uninstall logic
 │   ├── copilot.sh        # Copilot CLI install/uninstall logic
+│   ├── opencode.sh       # OpenCode stable-v1 install/uninstall + plugin renderer
 │   ├── registry.sh       # canonical harness catalogue
 │   └── generated-artifacts.sh # ownership manifests + collision safety
 ├── bin/                  # installed via --bin
 │   └── asha              # unified dispatcher + launcher
 │                         #   grammar: asha [install|uninstall] [harness] [args…]
-│                         #   shims ~/.local/bin/asha-{claude,codex,copilot} → asha
+│                         #   shims ~/.local/bin/asha-{claude,codex,copilot,opencode} → asha
 ├── identity/             # persona content (single source of truth)
 │   ├── asha-identity-system-prompt.md
 │   └── identity-merge.sh # concatenates identity → ~/.cache/asha/instructions.md
@@ -45,20 +46,20 @@ harness's native form.
 
 ```bash
 # Primitives (skills/agents/commands/hooks)
-./install.sh   --target {claude,codex,copilot,both,all} [--only ns1,ns2] [--dry-run] [--force] [--verbose]
-./uninstall.sh --target {claude,codex,copilot,both,all}                   [--dry-run] [--verbose]
+./install.sh   --target {claude,codex,copilot,opencode,both,all} [--only ns1,ns2] [--dry-run] [--force] [--verbose]
+./uninstall.sh --target {claude,codex,copilot,opencode,both,all}                   [--dry-run] [--verbose]
 
 # Dispatcher + per-harness shims (the `asha` shell command)
-./install.sh --bin {claude,codex,copilot,all} [--default {claude,codex,copilot}]
+./install.sh --bin {claude,codex,copilot,opencode,all} [--default {claude,codex,copilot,opencode}]
 
 # Equivalent through the dispatcher itself (positional grammar):
-asha install   {claude,codex,copilot,both,all} [flags]
-asha uninstall {claude,codex,copilot,both,all} [flags]
+asha install   {claude,codex,copilot,opencode,both,all} [flags]
+asha uninstall {claude,codex,copilot,opencode,both,all} [flags]
 ```
 
 `--target` defaults to `claude` (single-harness back-compat). `--bin all`
 installs the `asha` dispatcher plus per-harness shims (`asha-claude`, `asha-codex`,
-`asha-copilot`, each a relative symlink to `asha`) and records the bare-`asha` default
+`asha-copilot`, `asha-opencode`, each a relative symlink to `asha`) and records the bare-`asha` default
 harness (`--default`, default `claude`) in `~/.asha/config.json`. The bin installer detects a
 legacy `~/bin/asha` and tells you how to retire it — it never touches
 your dotfiles repo.
@@ -69,14 +70,15 @@ idempotent.
 
 ### One-time migration from pre-manifest installs
 
-This release adds ownership manifests for generated Codex and Copilot
-files. Existing Codex/Copilot generated files cannot be distinguished
+Generated Codex, Copilot, and OpenCode files use ownership manifests. Existing
+generated files cannot be distinguished
 from foreign files safely until adopted. Run the relevant install once with
 `--force`:
 
 ```bash
 asha install codex --force
 asha install copilot --force
+asha install opencode --force
 ```
 
 The renderer then records deterministic hashes under
@@ -180,14 +182,34 @@ and missed the user-level instructions dir (no repo files are touched).
 | `drift-check` | **Copilot-aware** | `asha doctor [copilot]` (front door for `bin/asha-drift-check.sh`) audits symlinks, command-skill freshness, and guardrails content; `--fix` self-heals. |
 | Team distribution | **Additive path** | `asha build copilot` packages namespaces as native Copilot plugins (marketplace + `enabledPlugins` pinning); see [docs/distribution-copilot.md](docs/distribution-copilot.md). Repo onboarding: `asha init-repo`. |
 
-### OpenCode — support dropped (2026-07-27)
+### OpenCode stable v1 (`--target opencode`)
 
-OpenCode ≥1.18 moved session transcripts to sqlite, breaking Asha's memory
-capture; support was removed rather than maintained (see
-[docs/harness-enforcement.md](docs/harness-enforcement.md) for the retirement
-record and final survey verdicts). Machines with older Asha opencode artifacts:
-check out a pre-2.3.0 tag and run `./uninstall.sh --target opencode`, or delete
-the `asha-*` entries under `~/.config/opencode/` manually.
+Requires OpenCode `>=1.15.11`. The home resolves in this order:
+`ASHA_OPENCODE_HOME`, `OPENCODE_CONFIG_DIR`, then
+`${XDG_CONFIG_HOME:-~/.config}/opencode`.
+
+```
+~/.config/opencode/
+├── skills/<declared-name>/              → plugins/<ns>/skills/<skill>/
+├── commands/<name>.md                   # generated clean command Markdown
+├── agents/<ns>-<agent>.md               # generated with mode: subagent
+└── plugins/asha.js                      # generated lifecycle/policy/context bridge
+```
+
+The plugin bridges `tool.execute.before` to the shared policy, secret, and
+save-commit guards; injects session identity into `shell.env`; buffers guidance
+for `experimental.chat.system.transform`; invokes session-start side effects;
+and spawns best-effort detached save from `dispose`. An `ask` policy result is
+treated as deny because no interactive ask response is verified at this hook
+seam. The policy layer is fail-open on adapter failure and is not containment.
+
+Manual save reads exact session rows from
+`${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`. Child session ids are
+resolved to the project-matching root before synthesis. There is no newest-row
+fallback and no idle checkpointing.
+
+`asha opencode` appends the merged identity and operational file to
+`OPENCODE_CONFIG_CONTENT.instructions`; plain `opencode` remains persona-free.
 
 ## Namespaces
 
@@ -204,9 +226,9 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 
 ## Persona model
 
-| Layer | Claude | Codex | Copilot |
+| Layer | Claude | Codex | Copilot | OpenCode |
 |---|---|---|---|---|
-| Identity assertion | `--append-system-prompt-file` | `model_instructions_file` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` |
+| Identity assertion | `--append-system-prompt-file` | `model_instructions_file` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | `OPENCODE_CONFIG_CONTENT.instructions` |
 | Scope | wrapper only | wrapper only | wrapper only | wrapper only |
 | Identity merge | SessionStart + launch file | launch-time combined file | launch-time instruction directory | launch-time combined file |
 
@@ -224,8 +246,8 @@ overlay; both `codex` and `asha codex` use the same `~/.codex/`.
 path for cron/systemd users. Exits 0 if clean, 1 on drift, 2 on usage error.
 
 ```bash
-asha doctor [claude|codex|copilot|all] [--fix]     # default: all
-asha-drift-check.sh --target {claude,codex,copilot,all} # same engine
+asha doctor [claude|codex|copilot|opencode|all] [--fix]     # default: all
+asha-drift-check.sh --target {claude,codex,copilot,opencode,all} # same engine
 ```
 
 (`asha claude doctor` still reaches Claude Code's own native doctor —
@@ -236,6 +258,7 @@ Checks (paraphrased):
 - **Repo:** installer scripts present, no `CLAUDE_PLUGIN_ROOT` placeholders in markdown
 - **Claude:** no legacy enabledPlugins / installed_plugins.json / marketplaces; no dangling symlinks; tagged hook command paths exist
 - **Codex:** no dangling symlinks; `config.toml` parses as TOML; tagged hook paths exist; native `rules/asha.rules` installed; overlay `instructions.md` fresher than its sources; inherit symlinks intact
+- **OpenCode:** no dangling skills; generated-artifact manifest matches; plugin carries policy/session/dispose hooks; CLI version satisfies the stable-v1 floor
 
 Optionally schedule it via a systemd user timer or cron; append output to a
 log of your choice (e.g. `drift-check.log`).
