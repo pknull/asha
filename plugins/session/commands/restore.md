@@ -18,7 +18,7 @@ echo "Memory synthesis enabled"
 ```
 
 Manual transcript synthesis is then available on Claude, Codex, Copilot, and
-OpenCode. Claude also regains clean-exit automatic save. Other harnesses require
-an explicit `/session:save` because Asha has no SessionEnd lifecycle hook there.
+OpenCode. Claude and Copilot regain clean-exit automatic save; OpenCode regains
+best-effort `dispose` save. Codex requires an explicit `/session:save`.
 
 ARGUMENTS: {command_args}

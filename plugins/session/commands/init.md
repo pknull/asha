@@ -9,6 +9,10 @@ allowed-tools: ["Bash", "Read", "Write"]
 
 Sets up session management framework for the current project.
 
+This initializes one repository. It does not infer or create a multi-repository
+workspace. For that, run `asha workspace init` at the common parent, then run
+this command in each declared child that needs repository operational memory.
+
 Arguments: $ARGUMENTS
 
 ## What This Creates
@@ -22,7 +26,7 @@ Arguments: $ARGUMENTS
 └── config.json
 ```
 
-**Project Layer** (per-project):
+**Repository Layer** (per repository):
 
 ```
 ${CLAUDE_PROJECT_DIR}/
@@ -101,7 +105,7 @@ fi
 # managed by learnings_manager.py; index.md is auto-generated on first write).
 if [[ ! -d "$ASHA_HOME/learnings" ]]; then
     mkdir -p "$ASHA_HOME/learnings"
-    echo "Created ~/.asha/learnings/ (OKF bundle; populated via /save reflections)"
+    echo "Created ~/.asha/learnings/ (OKF bundle; populated via /session:save reflections)"
 fi
 
 # config.json
@@ -145,7 +149,7 @@ for f in soul.md voice.md; do
 done
 ```
 
-Notes: keeper.md and config.json are created by the installer's identity bootstrap. Persona launch is via the `asha` dispatcher (`asha claude|codex|copilot`), which injects `identity/asha-identity-system-prompt.md` — no wrapper script is created here (the old `~/bin/asha` wrapper is legacy; the installer warns if one is present).
+Notes: keeper.md and config.json are created by the installer's identity bootstrap. Persona launch is via the `asha` dispatcher (`asha claude|codex|copilot|opencode`), which injects `identity/asha-identity-system-prompt.md` — no wrapper script is created here (the old `~/bin/asha` wrapper is legacy; the installer warns if one is present).
 
 ### Step 2: Check Existing Project Installation
 

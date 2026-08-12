@@ -34,7 +34,7 @@ LOCK_FILE="${3:?lock file path required}"
 mkdir -p "$(dirname "$LOG_FILE")" "$(dirname "$LOCK_FILE")"
 
 {
-  echo "=== $(date -u +%FT%TZ) auto-save START sid=${CLAUDE_CODE_SESSION_ID:-?} transcript=${ASHA_TRANSCRIPT_PATH:-?} ==="
+  echo "=== $(date -u +%FT%TZ) auto-save START sid=${ASHA_SESSION_ID:-${CLAUDE_CODE_SESSION_ID:-?}} transcript=${ASHA_TRANSCRIPT_PATH:-?} ==="
   (
     # Wait up to 10 min for a concurrent save to release; skip rather than
     # corrupt if it never does.

@@ -16,7 +16,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Run asha context brief inline."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Run asha context brief inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run asha context brief inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run asha context brief inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Run asha context brief inline."}
       },
       "fallback": "Run the deterministic context protocol inline.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"}
@@ -30,7 +31,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Prepare the proposal inline; do not write."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Prepare the proposal inline; do not write."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Prepare the proposal inline; do not write."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Prepare the proposal inline; do not write."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Prepare the proposal inline; do not write."}
       },
       "fallback": "Prepare a review-only curation proposal inline.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"}
@@ -44,7 +46,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Run asha process route inline."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Run asha process route inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run asha process route inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run asha process route inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Run asha process route inline."}
       },
       "fallback": "Run the deterministic routing protocol inline.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"}
@@ -58,7 +61,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Run asha capabilities match inline."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Run asha capabilities match inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run asha capabilities match inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run asha capabilities match inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Run asha capabilities match inline."}
       },
       "fallback": "Run the deterministic matching protocol inline.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"}
@@ -72,7 +76,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Apply the review checklist inline."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Apply the review checklist inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Apply the review checklist inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Apply the review checklist inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Apply the review checklist inline."}
       },
       "fallback": "Review inline and report findings; make no edits unless separately requested.",
       "ownership": {"owner": "asha/code", "version": "1.0.0"},
@@ -87,7 +92,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Run the debugging protocol inline."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Run the debugging protocol inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run the debugging protocol inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run the debugging protocol inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Run the debugging protocol inline."}
       },
       "fallback": "Reproduce, isolate, patch, and regression-test inline.",
       "ownership": {"owner": "asha/code", "version": "1.0.0"},
@@ -102,7 +108,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Run red-green-refactor inline."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Run red-green-refactor inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run red-green-refactor inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run red-green-refactor inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Run red-green-refactor inline."}
       },
       "fallback": "Run red-green-refactor inline.",
       "ownership": {"owner": "asha/code", "version": "1.0.0"},
@@ -117,7 +124,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Research inline with citations."},
         "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Research inline with citations."},
-        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Research inline with citations."}
+        "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Research inline with citations."},
+        "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Research inline with citations."}
       },
       "fallback": "Use codebase-historian for local prior art only; with network approval, research authoritative current sources inline and cite each external claim.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"},
@@ -132,7 +140,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.workspace", "fallback": "Coordinate declared repositories inline."},
         "codex": {"capability_ref": "codex.capabilities.workspace", "fallback": "Coordinate declared repositories inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.workspace", "fallback": "Coordinate declared repositories inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.workspace", "fallback": "Coordinate declared repositories inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.workspace", "fallback": "Coordinate declared repositories inline."}
       },
       "fallback": "Plan repository order and verification inline; do not create worktrees.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"},
@@ -147,7 +156,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.workspace", "fallback": "Describe manual isolation steps."},
         "codex": {"capability_ref": "codex.capabilities.workspace", "fallback": "Describe manual isolation steps."},
-        "copilot": {"capability_ref": "copilot.capabilities.workspace", "fallback": "Describe manual isolation steps."}
+        "copilot": {"capability_ref": "copilot.capabilities.workspace", "fallback": "Describe manual isolation steps."},
+        "opencode": {"capability_ref": "opencode.capabilities.workspace", "fallback": "Describe manual isolation steps."}
       },
       "fallback": "Report manual isolation steps; do not create a worktree.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"},
@@ -162,7 +172,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.commands", "fallback": "Prepare the consolidation plan inline."},
         "codex": {"capability_ref": "codex.capabilities.commands", "fallback": "Prepare the consolidation plan inline."},
-        "copilot": {"capability_ref": "copilot.capabilities.commands", "fallback": "Prepare the consolidation plan inline."}
+        "copilot": {"capability_ref": "copilot.capabilities.commands", "fallback": "Prepare the consolidation plan inline."},
+        "opencode": {"capability_ref": "opencode.capabilities.commands", "fallback": "Prepare the consolidation plan inline."}
       },
       "fallback": "Prepare a consolidation plan and await explicit approval.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"},
@@ -177,7 +188,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.commands", "fallback": "Prepare a candidate inline; do not publish."},
         "codex": {"capability_ref": "codex.capabilities.commands", "fallback": "Prepare a candidate inline; do not publish."},
-        "copilot": {"capability_ref": "copilot.capabilities.commands", "fallback": "Prepare a candidate inline; do not publish."}
+        "copilot": {"capability_ref": "copilot.capabilities.commands", "fallback": "Prepare a candidate inline; do not publish."},
+        "opencode": {"capability_ref": "opencode.capabilities.commands", "fallback": "Prepare a candidate inline; do not publish."}
       },
       "fallback": "Prepare a reviewable candidate inline; no canonical write or publication.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"},
@@ -192,7 +204,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.skills", "fallback": "Implement inline with targeted verification."},
         "codex": {"capability_ref": "codex.capabilities.skills", "fallback": "Implement inline with targeted verification."},
-        "copilot": {"capability_ref": "copilot.capabilities.skills", "fallback": "Implement inline with targeted verification."}
+        "copilot": {"capability_ref": "copilot.capabilities.skills", "fallback": "Implement inline with targeted verification."},
+        "opencode": {"capability_ref": "opencode.capabilities.skills", "fallback": "Implement inline with targeted verification."}
       },
       "fallback": "Implement inline; do not publish or run destructive actions.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"},
@@ -207,7 +220,8 @@
       "harness_support": {
         "claude": {"capability_ref": "claude.capabilities.skills", "fallback": "Handle directly."},
         "codex": {"capability_ref": "codex.capabilities.skills", "fallback": "Handle directly."},
-        "copilot": {"capability_ref": "copilot.capabilities.skills", "fallback": "Handle directly."}
+        "copilot": {"capability_ref": "copilot.capabilities.skills", "fallback": "Handle directly."},
+        "opencode": {"capability_ref": "opencode.capabilities.skills", "fallback": "Handle directly."}
       },
       "fallback": "Handle directly; invoke no broker or autonomous workflow.",
       "ownership": {"owner": "asha/session", "version": "1.0.0"},
@@ -216,31 +230,31 @@
     {
       "id": "code-review", "kind": "agent", "description": "Read-only correctness, security, and regression review.",
       "categories": ["code-review"], "task_patterns": ["review", "audit"], "prerequisites": ["defined-review-scope"], "required_config": [], "risk": "low", "approval": [], "output_contract": "asha.code-review-findings.v1", "permissions": ["read", "propose"],
-      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Review inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Review inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Review inline."}},
+      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Review inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Review inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Review inline."}, "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Review inline."}},
       "fallback": "Apply the review checklist inline.", "ownership": {"owner": "asha/code", "version": "1.0.0"}
     },
     {
       "id": "debugger", "kind": "agent", "description": "Systematic failure diagnosis and root-cause isolation.",
       "categories": ["debugging"], "task_patterns": ["debug", "bug", "failure"], "prerequisites": ["observable-failure"], "required_config": [], "risk": "medium", "approval": [], "output_contract": "asha.debug-diagnosis.v1", "permissions": ["read", "propose"],
-      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Debug inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Debug inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Debug inline."}},
+      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Debug inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Debug inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Debug inline."}, "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Debug inline."}},
       "fallback": "Run the debugging protocol inline.", "ownership": {"owner": "asha/code", "version": "1.0.0"}
     },
     {
       "id": "tdd", "kind": "agent", "description": "London-school red-green-refactor implementation.",
       "categories": ["tdd"], "task_patterns": ["tdd", "test-driven"], "prerequisites": ["test-runner"], "required_config": [], "risk": "medium", "approval": [], "output_contract": "asha.tdd-result.v1", "permissions": ["read", "propose"],
-      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Run red-green-refactor inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Run red-green-refactor inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run red-green-refactor inline."}},
+      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Run red-green-refactor inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Run red-green-refactor inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Run red-green-refactor inline."}, "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Run red-green-refactor inline."}},
       "fallback": "Run red-green-refactor inline.", "ownership": {"owner": "asha/code", "version": "1.0.0"}
     },
     {
       "id": "codebase-historian", "kind": "agent", "description": "Search prior code and documented history before design.",
       "categories": ["research", "history"], "task_patterns": ["prior", "history", "precedent"], "prerequisites": [], "required_config": [], "risk": "low", "approval": [], "output_contract": "asha.prior-art.v1", "permissions": ["read", "propose"],
-      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Inspect history inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Inspect history inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Inspect history inline."}},
+      "harness_support": {"claude": {"capability_ref": "claude.capabilities.agents", "fallback": "Inspect history inline."}, "codex": {"capability_ref": "codex.capabilities.agents", "fallback": "Inspect history inline."}, "copilot": {"capability_ref": "copilot.capabilities.agents", "fallback": "Inspect history inline."}, "opencode": {"capability_ref": "opencode.capabilities.agents", "fallback": "Inspect history inline."}},
       "fallback": "Inspect scoped history inline.", "ownership": {"owner": "asha/code", "version": "1.0.0"}
     },
     {
       "id": "code-verify", "kind": "skill", "description": "Run scoped type, lint, test, and security verification.",
       "categories": ["verification"], "task_patterns": ["verify", "test", "lint"], "prerequisites": ["project-verification-commands"], "required_config": [], "risk": "low", "approval": [], "output_contract": "asha.code-verification.v1", "permissions": ["read", "propose"],
-      "harness_support": {"claude": {"capability_ref": "claude.capabilities.skills", "fallback": "Run declared checks inline."}, "codex": {"capability_ref": "codex.capabilities.skills", "fallback": "Run declared checks inline."}, "copilot": {"capability_ref": "copilot.capabilities.skills", "fallback": "Run declared checks inline."}},
+      "harness_support": {"claude": {"capability_ref": "claude.capabilities.skills", "fallback": "Run declared checks inline."}, "codex": {"capability_ref": "codex.capabilities.skills", "fallback": "Run declared checks inline."}, "copilot": {"capability_ref": "copilot.capabilities.skills", "fallback": "Run declared checks inline."}, "opencode": {"capability_ref": "opencode.capabilities.skills", "fallback": "Run declared checks inline."}},
       "fallback": "Run project-declared verification commands inline.", "ownership": {"owner": "asha/code", "version": "1.0.0"}
     }
   ]

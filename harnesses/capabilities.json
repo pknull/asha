@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-08-08",
+  "reviewed": "2026-08-11",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
@@ -171,6 +171,67 @@
           "limitations": [
             "copilot preToolUse can be bypassed under parallel tool calls/timeouts (upstream github/copilot-cli#2893) — soft deterrent, not containment; the writer-side save_scope proof and the auto-commit seam remain the primary protection",
             "workspace context uses sessionStart top-level additionalContext; raw sessionStart stdout is not used or claimed"
+          ]
+        }
+      }
+    },
+    "opencode": {
+      "executable": "opencode",
+      "home_env": "ASHA_OPENCODE_HOME",
+      "capabilities": {
+        "commands": {
+          "support": "rendered",
+          "surface": "commands/<namespace>-<command>.md",
+          "verifier": "doctor:artifacts",
+          "limitations": [
+            "Shared command sources retain some Claude vocabulary and are adapted by instruction"
+          ]
+        },
+        "skills": {
+          "support": "native",
+          "surface": "skills/<skill>/SKILL.md",
+          "verifier": "doctor:symlinks",
+          "limitations": []
+        },
+        "agents": {
+          "support": "rendered",
+          "surface": "agents/<namespace>-<agent>.md",
+          "verifier": "doctor:artifacts",
+          "limitations": [
+            "Claude-only frontmatter and tool names are removed or mapped by instruction"
+          ]
+        },
+        "hooks": {
+          "support": "native",
+          "surface": "plugins/asha.js",
+          "verifier": "doctor:opencode-plugin",
+          "limitations": [
+            "Requires OpenCode >=1.15.11 for the plugin dispose lifecycle hook"
+          ]
+        },
+        "guardrails": {
+          "support": "partial",
+          "surface": "plugins/asha.js tool.execute.before",
+          "verifier": "doctor:opencode-plugin",
+          "limitations": [
+            "OpenCode has no verified interactive ask response at this hook seam; ask decisions are conservatively denied",
+            "Plugin failures are fail-open except explicit policy denials"
+          ]
+        },
+        "persona": {
+          "support": "native",
+          "surface": "OPENCODE_CONFIG_CONTENT.instructions",
+          "verifier": "launch-wrapper",
+          "limitations": []
+        },
+        "workspace": {
+          "support": "partial",
+          "surface": "shared tools via rendered commands and skills; save-commit-gate through the OpenCode policy adapter; SQLite transcript synthesis; best-effort clean-exit save through plugin dispose; workspace management CLI via bin/asha",
+          "verifier": "tests:test-opencode + python test_jsonl_reader; doctor:opencode-plugin",
+          "limitations": [
+            "No idle checkpoint lifecycle",
+            "Clean-exit save is best-effort and cannot recover a killed process without a later orphan-recovery session",
+            "Runtime workspace context uses plugin system-prompt transformation rather than a dedicated SessionStart context field"
           ]
         }
       }

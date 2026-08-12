@@ -1,8 +1,9 @@
 # Harness enforcement — capabilities & known failures
 
-asha augments the native agent CLIs (Claude Code, OpenAI Codex, and GitHub
-Copilot) at *their own seams*. (OpenCode support was dropped 2026-07-27 — see
-the retirement record below.) Its features split cleanly by the seam they need:
+asha augments four native agent CLIs (Claude Code, OpenAI Codex, GitHub
+Copilot, and OpenCode stable v1) at *their own seams*. OpenCode was retired in
+v2.3.0 and reinstated in v2.6.0 after its SQLite memory backend landed. Its
+features split cleanly by the seam they need:
 
 - **File-based / post-hoc** (read a config/instructions file; post-process an
   on-disk transcript) → port to every harness, because every CLI does both.
@@ -21,27 +22,28 @@ separately from empirical verification. Codex documentation was refreshed
 > (Claude/Codex style) and missed that Copilot CLI auto-loads user-level
 > instructions. Persona now injects automatically and is verified live (see the
 > Copilot section). And the follow-on re-test (2026‑06‑24) went further: Copilot's
-> **PreToolUse guardrails also work** on 1.0.63. The lone remaining divergence is
-> **Codex's shell**, which bypasses the hook (`unified_exec`).
+> **PreToolUse guardrails also work** on 1.0.63. Codex remains the principal
+> interception divergence: its hooks are meaningful but do not cover every
+> `unified_exec` path or tool class.
 
 ## Capability matrix
 
-| Capability | Claude Code | OpenAI Codex (installed 0.144.1; docs current 2026‑07‑11; live hook probe 0.142) | GitHub Copilot CLI (1.0.63 baseline; later per-row probe versions noted inline) |
-|---|---|---|---|
-| Corpus mount (skills/agents) | ✅ native Markdown | ✅ skills + generated TOML custom agents | ✅ skills + generated `.agent.md` |
-| Reusable command workflows | ✅ native user commands | ✅ Asha renders as skills; Codex slash commands themselves are built-in | ⚠️ converted to skills |
-| Output styles | ✅ retired from asha (2026‑07‑10 audit) — Claude's native `/output-style` covers switching; the test canary style still mounts | ✖ n/a | ✖ n/a |
-| Persona injection | ✅ (`--append-system-prompt-file`) | ✅ (`-c model_instructions_file`) | ✅ (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch) |
-| Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) |
-| Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ |
-| Lifecycle side effects (orphan recovery at start; automatic clean-exit save) | ✅ (SessionStart/SessionEnd hooks) | ✖ no wired path | ✅ **verified live 2026‑07‑27 on 1.0.75** (`hooks/asha-lifecycle.json`: sessionStart → session-start.sh side effects, sessionEnd → session-end.sh detached save; clean-exit reasons `complete`/`user_exit`; crash → orphan recovered from the native transcript at next start — see the Copilot lifecycle note below) |
-| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✅ enforced for shell on 0.147** (live probe 2026‑08‑08 via `codex exec`: `save-commit-gate` deny blocked a `git commit` before execution — "Command blocked by PreToolUse hook"; overturns the 0.142 shell probe that did not fire, exactly the re-probe the version caveat below demanded). Still ⚠️ documented-partial as a boundary: `unified_exec` interception incomplete per upstream docs — see the workspace probe note below | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** |
-| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **UserPromptSubmit verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below). **PostToolUse fires but stdout is discarded — no injection channel for that event** (verified live 2026‑07‑27; see the PostToolUse note below); the `suggest-compact` row is harness-gated to claude+copilot accordingly | ✅ **verified live + wired through 1.0.78** (`hooks/asha-nudges.json`: sessionStart + userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; `sessionStart` top-level `additionalContext` and the existing prompt control both passed live — see the Copilot hook contract note below) |
-| **Workspace v1 (detection, save scopes, commit gate, auto-save seam — 2026‑08‑08)** | ✅ **full**: shared tools + PreToolUse `save-commit-gate` plane enforcement (Test 9b/9c pins) + plane-aware `auto-commit-memory.sh` writer seam on the automatic path (Test 9d; the gate cannot see hook-context commits on ANY harness, so the writer seam is the auto path's protection) | ✅ **detection, writer-proof, staged-set isolation, and gate deny ALL verified under the real runtime** (`codex exec` probes 2026‑08‑08 on 0.147 — see the workspace probe note below; the gate consumed the proof on commit, proving gate participation live); ✖ no auto-save lifecycle (pre-existing) — manual save is the only path | ⚠️ **detection, writer-proof, and staged-set isolation verified under the real runtime** (`copilot -p` probes 2026‑08‑08 on 1.0.75); auto-save lifecycle wired and probed end-to-end; **commit gate chained 2026‑08‑08 (issue #40)** — `copilot-policy-adapter.sh` now carries the payload `cwd` and chains `save-commit-gate.sh` after policy-guard + block-secrets; deny/allow through the translated Copilot payload pinned in Test 105 and **verified live post-merge**: an equivalent commit attempt (same fixture, staged Memory, no proof) was **denied** ("Denied by preToolUse hook: BLOCKED by Asha policy [save-commit-gate]"); a valid-proof attempt was **allowed**; and the discriminating **stale-marker probe** (recorded provenance: CLI 1.0.78, installed adapter) was denied with the marker's own hash quoted against disk and the marker **deleted** — the gate demonstrably read and consumed the proof file, ruling out fail-open/bypass on the allow path. The writer-side save_scope proof and the auto-commit seam remain the primary protection (upstream concurrency caveat [#2893](https://github.com/github/copilot-cli/issues/2893)). |
-| **Workspace v2 read side (bounded start context + source-aware retrieval — 2026‑08‑08)** | ✅ **live verified on Claude Code 2.1.226**: installed direct SessionStart delivered the exact renderer sentinel and `active=child`; repository gates remain test-pinned. | ✅ **live verified on Codex 0.147**: SessionStart raw-fragment candidate, prompt-event control, and exact renderer block all reached model context; the installed direct registration returned `CODEX-WORKSPACE-PASS`. Prompt fallback removed. | ✅ **live verified on Copilot CLI 1.0.78**: native `sessionStart` top-level `additionalContext` candidate, `userPromptSubmitted` positive control, and exact renderer payload all reached model context. Production `ws-context` moved to sessionStart; prompt fallback/cooldown removed. Raw sessionStart stdout is not claimed. |
-| **Workspace v3-v6 CLI (knowledge, bootstrap, worktrees, work items — 2026‑08‑08)** | ✅ shared `asha workspace` dispatcher | ✅ shared `asha workspace` dispatcher | ✅ shared `asha workspace` dispatcher |
-| Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a |
-| Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately |
+| Capability | Claude Code | OpenAI Codex (installed 0.144.1; docs current 2026‑07‑11; live hook probe 0.142) | GitHub Copilot CLI (1.0.63 baseline; later per-row probe versions noted inline) | OpenCode stable v1 (>=1.15.11; repository verified on installed 1.17.18) |
+|---|---|---|---|---|
+| Corpus mount (skills/agents) | ✅ native Markdown | ✅ skills + generated TOML custom agents | ✅ skills + generated `.agent.md` | ✅ native skills + generated Markdown subagents |
+| Reusable command workflows | ✅ native user commands | ✅ Asha renders as skills; Codex slash commands themselves are built-in | ⚠️ converted to skills | ✅ generated native command Markdown |
+| Output styles | ✅ retired from asha (2026‑07‑10 audit) — Claude's native `/output-style` covers switching; the test canary style still mounts | ✖ n/a | ✖ n/a | ✖ n/a |
+| Persona injection | ✅ (`--append-system-prompt-file`) | ✅ (`-c model_instructions_file`) | ✅ (`COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch) | ✅ (`OPENCODE_CONFIG_CONTENT.instructions`, per-launch) |
+| Operational context (operation.md + learnings hot tier) | ✅ (SessionStart hook) | ✅ (folded into `model_instructions_file`, 2026‑06‑24) | ✅ (instructions file, 2026‑06‑24) | ✅ wrapper instructions + plugin system transform |
+| Memory capture (`/save` from native transcript) | ✅ | ✅ | ✅ | ✅ exact-session SQLite backend (`opencode.db`) |
+| Lifecycle side effects (orphan recovery at start; automatic clean-exit save) | ✅ (SessionStart/SessionEnd hooks) | ✖ no wired path | ✅ **verified live 2026‑07‑27 on 1.0.75** (`hooks/asha-lifecycle.json`: sessionStart → session-start.sh side effects, sessionEnd → session-end.sh detached save; clean-exit reasons `complete`/`user_exit`; crash → orphan recovered from the native transcript at next start — see the Copilot lifecycle note below) | ⚠️ session-start side effects + best-effort detached save from plugin `dispose`; no idle checkpointing |
+| **PreToolUse guardrails (deny/ask)** | **✅ enforced** | **✅ enforced for shell on 0.147** (live probe 2026‑08‑08 via `codex exec`: `save-commit-gate` deny blocked a `git commit` before execution — "Command blocked by PreToolUse hook"; overturns the 0.142 shell probe that did not fire, exactly the re-probe the version caveat below demanded). Still ⚠️ documented-partial as a boundary: `unified_exec` interception incomplete per upstream docs — see the workspace probe note below | **✅ wired + enforced (1.0.63, via adapter; concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested)** | ⚠️ `tool.execute.before` bridges policy/secrets/commit gate; `ask` degrades to deny; fail-open on adapter failure |
+| Guidance nudges (advisory context injection via `nudge-engine.sh`, 2026‑07‑25) | ✅ all registry rows verified in tests (the PreToolUse `memory-lexical` row is Claude-only by design) | ⚠️ **UserPromptSubmit verified live + production-enabled 2026‑07‑26 on 0.145** (isolated `CODEX_HOME` replay of the real fence: UserPromptSubmit fired, RP fragment reached the model — probe answered INJECTED; `hook_event_name` present; argv shell-splitting confirmed; `[features] hooks = true` now installer-managed, trust store preserved across reinstalls — see the hook-gating note below). **PostToolUse fires but stdout is discarded — no injection channel for that event** (verified live 2026‑07‑27; see the PostToolUse note below); the `suggest-compact` row is harness-gated to claude+copilot accordingly | ✅ **verified live + wired through 1.0.78** (`hooks/asha-nudges.json`: sessionStart + userPromptSubmitted + postToolUse → nudge-engine with the Claude event name as argv; `sessionStart` top-level `additionalContext` and the existing prompt control both passed live — see the Copilot hook contract note below) | ⚠️ buffered into `experimental.chat.system.transform`; repository-tested, current production renderer not live-attested |
+| **Workspace v1 (detection, save scopes, commit gate, auto-save seam — 2026‑08‑08)** | ✅ **full**: shared tools + PreToolUse `save-commit-gate` plane enforcement (Test 9b/9c pins) + plane-aware `auto-commit-memory.sh` writer seam on the automatic path (Test 9d; the gate cannot see hook-context commits on ANY harness, so the writer seam is the auto path's protection) | ✅ **detection, writer-proof, staged-set isolation, and gate deny ALL verified under the real runtime** (`codex exec` probes 2026‑08‑08 on 0.147 — see the workspace probe note below; the gate consumed the proof on commit, proving gate participation live); ✖ no auto-save lifecycle (pre-existing) — manual save is the only path | ⚠️ **detection, writer-proof, and staged-set isolation verified under the real runtime** (`copilot -p` probes 2026‑08‑08 on 1.0.75); auto-save lifecycle wired and probed end-to-end; **commit gate chained 2026‑08‑08 (issue #40)** — `copilot-policy-adapter.sh` now carries the payload `cwd` and chains `save-commit-gate.sh` after policy-guard + block-secrets; deny/allow through the translated Copilot payload pinned in Test 105 and **verified live post-merge**: an equivalent commit attempt (same fixture, staged Memory, no proof) was **denied** ("Denied by preToolUse hook: BLOCKED by Asha policy [save-commit-gate]"); a valid-proof attempt was **allowed**; and the discriminating **stale-marker probe** (recorded provenance: CLI 1.0.78, installed adapter) was denied with the marker's own hash quoted against disk and the marker **deleted** — the gate demonstrably read and consumed the proof file, ruling out fail-open/bypass on the allow path. The writer-side save_scope proof and the auto-commit seam remain the primary protection (upstream concurrency caveat [#2893](https://github.com/github/copilot-cli/issues/2893)). | ⚠️ shared tools + translated commit gate + best-effort auto-save; repository-tested, not live-attested |
+| **Workspace v2 read side (bounded start context + source-aware retrieval — 2026‑08‑08)** | ✅ **live verified on Claude Code 2.1.226**: installed direct SessionStart delivered the exact renderer sentinel and `active=child`; repository gates remain test-pinned. | ✅ **live verified on Codex 0.147**: SessionStart raw-fragment candidate, prompt-event control, and exact renderer block all reached model context; the installed direct registration returned `CODEX-WORKSPACE-PASS`. Prompt fallback removed. | ✅ **live verified on Copilot CLI 1.0.78**: native `sessionStart` top-level `additionalContext` candidate, `userPromptSubmitted` positive control, and exact renderer payload all reached model context. Production `ws-context` moved to sessionStart; prompt fallback/cooldown removed. Raw sessionStart stdout is not claimed. | ⚠️ `ws-context` delivered through system transform; repository-tested, not live-attested |
+| **Workspace v3-v6 CLI (knowledge, bootstrap, worktrees, work items — 2026‑08‑08)** | ✅ shared `asha workspace` dispatcher | ✅ shared `asha workspace` dispatcher | ✅ shared `asha workspace` dispatcher | ✅ shared `asha workspace` dispatcher |
+| Native command approval rules | n/a | ⚠️ `~/.codex/rules/asha.rules`; prefix-based, outside-sandbox execution policy | n/a | n/a; Asha policy plugin only |
+| Native plugin packaging | Claude plugin model | ✅ `.codex-plugin/plugin.json` can bundle skills, hooks, MCP, apps, and assets; Asha direct installer does not yet use it | Copilot plugin build path implemented separately | ✅ user plugin `plugins/asha.js`; no Asha distribution package |
 
 **Workspace v2 live attestation (2026-08-08 UTC):** repository tests prove
 renderer bytes, UTF-8 caps/delimiter sanitization, canonical containment,
@@ -118,7 +120,8 @@ gates work. (3) **Hook stdout is discarded entirely**: neither raw text, the
 legacy raw+`{}` shape, nor anything else reaches the model or even the session
 transcript (zero sentinel occurrences); there is no PostToolUse injection
 channel to emit for, so the correct adjustment was gating the `suggest-compact`
-row (`harnesses: [claude, copilot]`) rather than changing the emission — an
+row (`harnesses: [claude, copilot, opencode]`; OpenCode uses a separate buffered
+injection channel) rather than changing the emission — an
 ungated row burned the shared tool-count and stamped the 2h cooldown for output
 codex discards, suppressing the nudge for a later Claude session. Bonus
 findings: codex **honors `matcher`** (a `Edit|Write|MultiEdit` matcher filtered
@@ -174,11 +177,11 @@ some richer `unified_exec` shell calls and non-shell/non-MCP tools cannot. The
 Asha's 0.142 shell probe landed in the uncovered case and did not fire; the
 2026‑08‑08 re-probe on 0.147 fired and denied (see the workspace probe note
 below), so simple-Bash interception is now verified live there. The
-file-based layers — corpus, persona (all three; Copilot persona fixed
+file-based layers — corpus and persona (all four; Copilot persona fixed
 2026‑06‑24), and the operational layer (operation.md + learnings; Copilot +
-Codex both wired 2026‑06‑24 — file-based, no working hook required) — work on all
-three CLIs. Note: Asha's user-defined command workflows are remapped to skills
-on Codex/Copilot. Codex does have built-in slash commands, but no documented
+Codex both wired 2026‑06‑24; OpenCode wired in v2.6.0) — work on all four CLIs.
+Note: Asha's user-defined command workflows are remapped to skills on
+Codex/Copilot and native command Markdown on OpenCode. Codex does have built-in slash commands, but no documented
 custom command-file surface. The `output-styles` plugin was retired in the
 2026‑07‑10 ecosystem audit (Claude's native `/output-style` covers it). Codex
 also gets native execution-policy `prefix_rule()` prompts for a narrow subset of
@@ -380,35 +383,46 @@ is no longer the only path. Native plugin distribution is mechanism, not
 enforcement — its verification table lives in
 [distribution-copilot.md](distribution-copilot.md).
 
-### OpenCode — SUPPORT DROPPED 2026-07-27 (retirement record)
+### OpenCode stable v1 — reinstated 2026-08-11
 
-Operator decision following the #14 plugin-API survey: OpenCode ≥1.18 moved
-session transcripts to sqlite, breaking Asha's memory capture — the system's
-value core — and the fix (a new sqlite reader backend, #17) was judged not
-worth carrying for the least-used harness. All opencode code paths were
-removed (adapter, policy plugin, jsonl_reader backend, dispatcher/doctor
-wiring, tests); live artifacts were uninstalled first. Reinstating support
-means reverting the removal commit and building the #17 backend. The
-pre-removal capability notes and final survey verdicts are preserved below
-as the historical record.
+Asha v2.6.0 reinstates OpenCode against the stable-v1 contract, with a minimum
+version of 1.15.11 (the release that added plugin `dispose`). The native user
+layout is plural: `skills/`, `commands/`, `agents/`, and `plugins/` under
+`ASHA_OPENCODE_HOME`, `OPENCODE_CONFIG_DIR`, or the XDG config default.
 
-OpenCode exposed native user skills, slash commands, Markdown agents, config
-instructions, and JavaScript/TypeScript plugins. The installed 1.0.78 CLI was
-plant-tested against the rendered Asha tree. Its accepted user-config layout is
-`skills/`, `command/`, `agent/`, and `plugin/`; the latter three are singular.
+`asha install opencode` symlinks native skills, renders cleaned command
+Markdown and `mode: subagent` agent Markdown, and emits `plugins/asha.js`.
+The plugin:
 
-`asha install opencode` mounts skills, renders commands and subagents, and emits
-an `asha-guardrails.js` plugin using `tool.execute.before`. The plugin calls the
-shared policy and secret handlers through `opencode-policy-adapter.sh`. A deny
-throws before execution. Asha's `ask` action degrades to deny because no
-portable permission-prompt response has been verified for that hook. This is a
-fail-open policy layer, not containment.
+- translates `tool.execute.before` into the shared policy, secret, and
+  save-commit guards; `ask` conservatively degrades to deny;
+- stamps `ASHA_HARNESS`, exact session identity, and project directory through
+  `shell.env` and every spawned handler;
+- collects prompt/post-tool guidance and injects it through
+  `experimental.chat.system.transform`;
+- runs root-session start side effects and writes the orphan breadcrumb; and
+- spawns a detached best-effort clean-exit save from `dispose`.
 
-`asha opencode` appends the merged identity and operational context through
-`OPENCODE_CONFIG_CONTENT.instructions`, preserving the user's normal config and
-custom config directory. Manual save parses OpenCode's directory storage under
-`~/.local/share/opencode/storage/{session,message,part}`. Automatic SessionEnd
-persistence is not implemented.
+Manual and clean-exit save read OpenCode's shared SQLite store at
+`${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`. The reader requires an
+exact session id, resolves child sessions to their root, verifies that root's
+project directory, validates the required table columns, and reads only that
+session's messages and parts. There is no mtime/newest fallback and no idle
+checkpointing.
+
+Repository verification covers install/uninstall ownership, collision safety,
+the version floor, JavaScript syntax, doctor, policy denial, wrapper persona,
+SQLite parsing, root resolution, project mismatch, and event synthesis. The
+installed 1.17.18 CLI satisfies the version contract; current production
+plugin delivery and dispose behavior are not yet live-attested, hence the
+matrix's warning markers rather than fabricated certainty.
+
+#### Historical retirement and plugin survey (2026-07-27)
+
+OpenCode support was removed in v2.3.0 after the transcript store moved from
+legacy JSON files to SQLite. The survey below is retained as the evidence that
+identified the missing backend. Its singular directory-layout and broken-save
+statements describe the retired 1.0.78 adapter, not the v2.6.0 implementation.
 
 **Plugin API survey (1.18.7 / plugin SDK 1.1.4, live-probed 2026‑07‑27 —
 issue #14, isolated `XDG_CONFIG_HOME`/`XDG_DATA_HOME` rig, local ollama
@@ -438,19 +452,17 @@ model, all four questions answered empirically):**
    through (same nesting hazard verified on copilot/codex) — adapters must
    stamp `ASHA_HARNESS=opencode` explicitly when spawning shell handlers, as
    `asha-guardrails.js` already does.
-4. **Transcript — MOVED to sqlite; jsonl_reader is stale.** A fresh 1.18.7
+4. **Transcript — MOVED to sqlite; jsonl_reader was stale.** A fresh 1.18.7
    state writes NO `storage/{session,message,part}` JSON tree; sessions,
    messages, and parts persist in `~/.local/share/opencode/opencode.db`
    (tables `session`/`message`/`part`, JSON `data` columns). jsonl_reader's
-   opencode backend reads the legacy JSON layout only, so **`/save` synthesis
-   from opencode-native transcripts is broken for sessions created by current
-   versions** until a sqlite backend lands. Existing legacy JSON storage
-   remains on disk and readable.
+   opencode backend read the legacy JSON layout only, so `/save` synthesis was
+   broken at the time of this survey. The stable-v1 SQLite backend landed in
+   Asha v2.6.0. Existing legacy JSON storage remained on disk and readable.
 
-Follow-ups are filed as their own scoped issues: guidance nudges via the
-verified `system.transform` channel, and the sqlite transcript backend that
-gates any save automation (`session.idle`-triggered, opt-in per the #13
-stance).
+The two follow-ups named here—guidance through `system.transform` and SQLite
+transcript parsing—are implemented in v2.6.0. The lifecycle decision uses
+clean-exit `dispose`, not idle checkpointing.
 
 ## Verdict — can / can't / won't fix
 
@@ -461,7 +473,7 @@ stance).
 | Copilot persona | **Works** (fixed + verified 2026‑06‑24, CLI 1.0.63) — `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`, per-launch. |
 | Copilot operational layer | **Works** (wired + verified 2026‑06‑24) — `operation.md` + learnings hot tier via a second instructions file. |
 | Copilot guardrails | **Wired + enforced (built + verified 2026‑06‑24)** — `asha install copilot` writes `~/.copilot/hooks/asha-guardrails.json` → `copilot-policy-adapter.sh` → the existing policy-guard + block-secrets. Live deny + ask + block-secrets confirmed on 1.0.63. Soft deterrent (concurrency [#2893](https://github.com/github/copilot-cli/issues/2893) untested; adapter fails open). |
-| OpenCode (all layers) | **Dropped 2026-07-27** — ≥1.18 sqlite transcript store broke memory capture; support removed (see retirement record above). |
+| OpenCode (all layers) | **Reinstated in v2.6.0** — stable-v1 native surfaces, SQLite transcript memory, policy/context plugin, manual save, and best-effort clean-exit save. Repository verified; runtime plugin delivery not yet live-attested. |
 
 **Bottom line:** the file-based layers — corpus, persona, operational context,
 and memory/capture — are cross-harness. Claude and Copilot policy behavior has

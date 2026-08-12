@@ -4,6 +4,24 @@
 
 Direct integrations for personal administration, grounded search, computation, and knowledge management.
 
+## How to use it
+
+Admin contains skills, not slash commands or agents. Ask for the operation
+directly; the harness selects the matching skill. Name the skill when the task
+could route to more than one integration.
+
+```text
+Use todoist to create a task due tomorrow.
+Use gemini to find current primary sources for this claim.
+Use wolfram to verify this calculation.
+Use bookstack to find the deployment runbook.
+Use proton-mail to search for the invoice, but do not send anything.
+```
+
+The same request form works on Claude, Codex, Copilot, and OpenCode. Skill names may be
+prefixed by the installer in the target catalogue, but their trigger descriptions
+remain available to natural-language routing.
+
 ## Skills
 
 | Skill | Purpose | Requirement |
@@ -16,14 +34,20 @@ Direct integrations for personal administration, grounded search, computation, a
 
 Each skill is self-contained under `skills/<name>/SKILL.md`. Invoke it by name or describe a matching task and allow the harness to select it.
 
-## Usage
+## Read and write boundaries
 
-Request the administrative operation directly. The matching skill owns API authentication, request construction, and result formatting.
+The matching skill owns authentication, request construction, and result
+formatting. Read requests may execute immediately. Creating, sending, editing,
+moving, completing, or deleting external data follows the skill's confirmation
+and preview rules. Credentials remain in environment/configuration channels and
+must not be copied into prompts, reports, or repository files.
 
 ## Installation
 
 ```bash
-./install.sh --only admin
+./install.sh --only admin --target claude
+./install.sh --only admin --target codex
+./install.sh --only admin --target copilot
 ```
 
 ## License

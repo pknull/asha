@@ -15,6 +15,8 @@ asha_harness() {
         echo "$ASHA_HARNESS"
     elif [[ "${COPILOT_CLI:-}" == "1" ]]; then
         echo "copilot"
+    elif [[ "${OPENCODE:-}" == "1" ]]; then
+        echo "opencode"
     else
         echo "claude"
     fi
@@ -51,8 +53,9 @@ user_prompt_submit_final_prompt() {
 pretooluse_ask() {
     local reason="$1"
     case "$(asha_harness)" in
-        codex)
-            # Codex has no hook-mediated ask channel here. Preserve safety by
+        codex|opencode)
+            # These harnesses have no verified hook-mediated ask response.
+            # Preserve safety by
             # degrading ask -> deny with the same message on stderr.
             printf '%s\n' "$reason" >&2
             return 2
@@ -80,7 +83,7 @@ pretooluse_policy_ask() {
     local reason="$2"
     local override_hint="${3:-}"
     case "$(asha_harness)" in
-        codex)
+        codex|opencode)
             pretooluse_deny "BLOCKED by Asha policy [$policy_id]: ${reason}${override_hint}"
             ;;
         *)

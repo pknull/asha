@@ -107,8 +107,10 @@ bundle at `~/.asha/learnings/` — one file per learning (`<slug>.md`, frontmatt
 `type: learning`), managed exclusively by `learnings_manager.py`. Recording a
 learning is an upsert keyed by id (create-or-update), so the same insight cannot
 accumulate duplicate copies. Do not hand-edit these files during a session; use
-the manager (`add`/`confirm`/`contradict`). The hot tier injected at session start
-is rendered by `learnings_manager.py render-hot`; `index.md` is auto-generated.
+the manager (`add`/`confirm`/`contradict`). SessionStart uses
+`learnings_manager.py render-index` by default: one capped line per concept,
+hot-first, with bodies read on demand. `ASHA_LEARNINGS_INJECT=hot` restores the
+legacy `render-hot` path. `index.md` is auto-generated.
 
 `Memory/ideas.md` and `Memory/scratchpad.md` remain free-form, model-maintained
 prose (no code touches them). When an idea matures into a durable, reusable item,

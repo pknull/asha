@@ -1,14 +1,14 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 2.5.0
-**Last Updated**: 2026-08-08
+**Version**: 2.6.0
+**Last Updated**: 2026-08-11
 **Repository**: pknull/asha
 
 ---
 
 > ### ⚠ Install model
 >
-> This repo is **not** a Claude plugin marketplace (that flow — `marketplace.json`/`plugin.json` registration — was retired). Primitives install via direct symlinks by **`./install.sh`**; engines live in `lib/`, and the top-level `install.sh`/`uninstall.sh` are thin shims. Launch through the unified **`asha`** dispatcher — `asha <harness>` (claude|codex|copilot), auto-configuring on first use; `asha-claude`/`asha-codex`/`asha-copilot` remain back-compat shims. Authoritative: **[INSTALLER.md](INSTALLER.md)**.
+> This repo is **not** a Claude plugin marketplace (that flow — `marketplace.json`/`plugin.json` registration — was retired). Primitives install via direct symlinks and generated native artifacts by **`./install.sh`**; engines live in `lib/`, and the top-level `install.sh`/`uninstall.sh` are thin shims. Launch through the unified **`asha`** dispatcher — `asha <harness>` (claude|codex|copilot|opencode), auto-configuring on first use; `asha-claude`/`asha-codex`/`asha-copilot`/`asha-opencode` remain back-compat shims. Authoritative: **[INSTALLER.md](INSTALLER.md)**.
 
 ---
 
@@ -35,13 +35,13 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 ## Project Overview
 
-**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot) providing tools for multi-perspective analysis, code review, creative writing, and session coordination. It installs via direct symlink-mount (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md).
+**asha** is a multi-harness agent toolkit (Claude Code, Codex, Copilot, OpenCode) providing tools for multi-perspective analysis, code review, creative writing, and session coordination. It installs via direct symlink-mount plus native rendering (`./install.sh`), **not** as a plugin marketplace — see [INSTALLER.md](INSTALLER.md).
 
 ### Current Plugins
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.20.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops, workspace context + management CLI, evidence brokerage — 5 agents |
+| **Session** | v1.21.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops, workspace context + management CLI, evidence brokerage — 5 agents |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -209,6 +209,22 @@ Every plugin follows this structure:
 ```
 
 There is no per-plugin metadata file: the installer discovers `commands/`, `agents/`, `skills/`, and `hooks/hooks.json` by convention, and the plugin's version lives in its README's `**Version**:` header. The directory → namespace mapping lives in top-level `namespaces.json`.
+
+### Plugin README contract
+
+Every plugin README is a user guide, not merely an inventory. It must state:
+
+1. when to use the plugin and when a neighboring plugin is the better fit;
+2. how invocation differs across Claude slash commands and rendered
+   Codex/Copilot skills;
+3. every shipped command, agent, and skill, with the role of each;
+4. at least one copyable end-to-end example;
+5. required configuration, project layout, write boundaries, and safety gates;
+6. whether recipes/engines are direct entry points or internal orchestration.
+
+The root README remains the map and links to these guides. Do not duplicate full
+agent tables there; duplicated catalogues drift. When a primitive changes,
+update its owning plugin README in the same change.
 
 ---
 
@@ -412,7 +428,7 @@ mkdir -p "$PROJECT_DIR/Work/markers"
 
 ### Documentation: single source of truth for harness verdicts
 
-Cross-harness capability and enforcement **verdicts** — what works on Claude, Codex, and Copilot — live in **one** place: [`docs/harness-enforcement.md`](docs/harness-enforcement.md). Every other doc describes mechanism and links to that document for current status.
+Cross-harness capability and enforcement **verdicts** — what works on Claude, Codex, Copilot, and OpenCode — live in **one** place: [`docs/harness-enforcement.md`](docs/harness-enforcement.md). Every other doc describes mechanism and links to that document for current status.
 
 This is the `feedback_no_duplication` rule applied to prose: the same status fact lived in five docs and drifted three times in a single session. When a capability changes, edit `harness-enforcement.md` and add a README Version History line — do not hand-propagate the claim across satellite docs.
 
@@ -420,91 +436,48 @@ This is the `feedback_no_duplication` rule applied to prose: the same status fac
 
 ## Memory System Integration
 
-### Memory Directory Structure (User Projects)
+The authoritative user-facing model is
+[`docs/memory-architecture.md`](docs/memory-architecture.md). Do not recreate a
+second memory taxonomy in this file.
 
-Plugins document but don't create this structure (users create per-project):
+### Asha-managed planes
 
-```
-Memory/
-├── activeContext.md          # Required: Current session state
-├── projectbrief.md           # Required: Project foundation
-├── communicationStyle.md     # Required: Voice/persona
-├── workflowProtocols.md      # Optional: Project patterns
-├── techEnvironment.md        # Optional: Stack conventions
-├── productContext.md         # Optional: Product details
-├── sessions/                 # Auto-created by hooks
-│   ├── current-session.md    # Auto-appended during session
-│   └── archive/              # Historical sessions (git-tracked)
-├── markers/                  # Auto-created by hooks
-│   ├── silence              # Disable logging
-│   ├── rp-active            # RP mode active
-│   └── prompt-refine        # Enable LanguageTool
-└── [custom].md              # Project-specific files
-```
+| Plane | Default path | Rule |
+|---|---|---|
+| User-global operation, identity, and learnings | `~/.asha/` | Cross-project only; learning index is injected first and bodies are read on demand |
+| Repository operational memory | `<repo>/Memory/` | One repository's cold-start handoff; repository save owns it |
+| Workspace operational memory | `<workspace>/Memory/` | Cross-repository handoff; explicit workspace scope owns its commit |
+| Private workspace memory | `<workspace>/memory-local/` | Never commit or inject wholesale |
+| Canonical workspace knowledge | `<workspace>/knowledge/` | Promote only through the reviewed workspace workflow |
 
-### Frontmatter Schema (All Memory Files)
+Harness-native memory is separate and must not be described as an Asha writer
+or dependency.
 
-```yaml
----
-version: "X.Y"
-lastUpdated: "YYYY-MM-DD HH:MM UTC"
-lifecycle: "initiation|planning|execution|maintenance"
-stakeholder: "technical|business|regulatory|all"
-changeTrigger: "≥25% code impact|pattern discovery|user request|context ambiguity"
-validatedBy: "human|ai|system"
-dependencies: ["file1.md", "file2.md"]  # Optional
----
-```
+### Save and launch rules
 
-### Marker Files
+- In a single repository, bare `/session:save` preserves existing behavior.
+- In a workspace child, bare save is `--scope repo`.
+- From a workspace root, repository save fails because no child is implicit;
+  use `--scope workspace` for the workspace operational plane.
+- `--scope none` synthesizes without staging, commit, or push.
+- Claude and Copilot have clean-exit automatic save; Codex is manual-save only.
+- Launch from a child repository for child-owned work and from the workspace
+  root for cross-repository coordination or shared-plane work.
 
-| Marker | Effect | Created By | Removed By |
-|--------|--------|-----------|-----------|
-| `Work/markers/silence` | Disable all Memory persistence | `/session:silence on` | `/session:silence off` |
-| `Work/markers/rp-active` | Enable RP routing and suppress ordinary watching | Manual | session-end hook |
-| `Work/markers/prompt-refine` | Enable LanguageTool API | Manual | Manual |
+### Markers
 
-### Hook Behavior with Markers
+| Marker | Effect |
+|---|---|
+| `Work/markers/silence` | Disable persistence until explicitly restored |
+| `Work/markers/rp-active` | Enable RP routing |
+| `Work/markers/prompt-refine` | Enable configured prompt refinement |
+| `Work/markers/nudge-ws-context-off` | Disable workspace context injection for the active project |
 
-**All hooks check markers first**:
-
-```bash
-# Exit silently if silence marker exists
-if [ -f "$PROJECT_DIR/Work/markers/silence" ]; then
-    echo "{}" >&2
-    exit 0
-fi
-
-# Exit silently if RP mode active (session watching only)
-if [ -f "$PROJECT_DIR/Work/markers/rp-active" ]; then
-    echo "{}" >&2
-    exit 0
-fi
-```
-
-### Project Directory Detection (Multi-Layer Fallback)
-
-```bash
-# 1. Environment variable (hook invocation)
-if [ -n "${CLAUDE_PROJECT_DIR:-}" ]; then
-    PROJECT_DIR="$CLAUDE_PROJECT_DIR"
-
-# 2. Git root with Memory/ directory (manual invocation)
-elif GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) && [ -d "$GIT_ROOT/Memory" ]; then
-    PROJECT_DIR="$GIT_ROOT"
-
-# 3. Upward search from current directory
-else
-    CURRENT_DIR="$(pwd)"
-    while [ "$CURRENT_DIR" != "/" ]; do
-        if [ -d "$CURRENT_DIR/Memory" ]; then
-            PROJECT_DIR="$CURRENT_DIR"
-            break
-        fi
-        CURRENT_DIR="$(dirname "$CURRENT_DIR")"
-    done
-fi
-```
+Project/workspace detection and save routing live in the shared tools under
+`plugins/session/tools/`. Do not introduce another ad-hoc upward-search chain.
+The workspace contract is `.asha/workspace.json`; validate it through
+`asha workspace status` or `asha workspace doctor` rather than guessing from
+folder names.
 
 ---
 
@@ -930,6 +903,19 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+### v2.6.0 / Session v1.21.0 (2026-08-11) — OpenCode stable-v1 harness
+
+- Reinstated OpenCode as the fourth harness with native plural config surfaces,
+  generated command/subagent Markdown, plugin policy/context/lifecycle wiring,
+  wrapper-scoped persona, dispatcher/install/uninstall/doctor coverage, and a
+  minimum CLI version of 1.15.11.
+- Added exact-session SQLite transcript parsing from `opencode.db`, child to
+  root resolution, project validation, and OpenCode branches throughout the
+  save/preflight pipeline.
+- Lifecycle claim is deliberately bounded: manual save plus best-effort clean
+  exit from plugin `dispose`; no idle checkpointing. Repository tests cover the
+  renderer and backend; production plugin delivery remains un-attested.
 
 ### Session v1.20.0 (2026-08-08) — workspace v2–v6 + evidence brokerage
 

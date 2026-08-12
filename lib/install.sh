@@ -159,14 +159,14 @@ install.sh / `asha install` — symlink-mount installer (multi-harness).
 
 Usage:
   ./install.sh [--target T] [--bin B] [--default D] [--only ns,...] [--dry-run] [--force] [--verbose]
-  asha install <claude|codex|copilot|both|all> [--bin B] [--default D] [--only ...] [--dry-run] [--force]
+  asha install <claude|codex|copilot|opencode|both|all> [--bin B] [--default D] [--only ...] [--dry-run] [--force]
 
 Targets (--target or positional after `asha install`):
-  claude | codex | copilot | both (claude+codex) | all (claude+codex+copilot)
+  claude | codex | copilot | opencode | both (claude+codex) | all (all four)
 
 Bin:
-  --bin <claude|codex|copilot|all> install ~/.local/bin/asha dispatcher + harness shims
-  --default <claude|codex|copilot> default harness for bare `asha` (persisted to ~/.asha/config.json)
+  --bin <claude|codex|copilot|opencode|all> install ~/.local/bin/asha dispatcher + harness shims
+  --default <claude|codex|copilot|opencode> default harness for bare `asha` (persisted to ~/.asha/config.json)
 
 Other:
   --only ns1,ns2   limit to named plugin dirs
@@ -219,6 +219,7 @@ parse_args() {
 #   ~/.local/bin/asha-claude   -> asha   (relative shim; basename routing)
 #   ~/.local/bin/asha-codex    -> asha
 #   ~/.local/bin/asha-copilot  -> asha
+#   ~/.local/bin/asha-opencode -> asha
 #
 # `--default <h>` persists the bare-`asha` default harness to
 # ~/.asha/config.json (.default_harness); absent => bin/asha falls back to claude.
@@ -313,7 +314,7 @@ _write_default_harness() {
 
 # Persist .asha_root into ~/.asha/config.json so commands and hooks can resolve
 # the repo without the `asha` wrapper's exported ASHA_ROOT (bare `claude`/`codex`/
-# `copilot` launches). Same write-through-symlink discipline as _write_default_harness.
+# `copilot`/`opencode` launches). Same write-through-symlink discipline as _write_default_harness.
 _write_asha_root() {
   local cfg="${ASHA_CONFIG:-$HOME/.asha/config.json}"
 

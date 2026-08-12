@@ -6,7 +6,7 @@ host format changes (Claude/Codex/Copilot) fail loudly here instead
 of silently losing memory at /save time.
 
 Coverage:
-  - All three harness parsers extract expected event kinds + counts.
+  - All four harness parsers extract expected event kinds + counts.
   - to_synth_events maps to the event_store.py dict schema.
   - Prompt dedup: repeated last-prompt entries collapse to one synth event.
   - Schema drift: unknown line types degrade to kind="meta", no crash.
@@ -16,6 +16,7 @@ Coverage:
 import io
 import json
 import os
+import sqlite3
 import tempfile
 import sys
 import unittest
@@ -197,6 +198,120 @@ class CopilotParserTests(unittest.TestCase):
             self.assertNotEqual(s["metadata"]["tool_name"], "report_intent")
 
 
+class OpenCodeParserTests(unittest.TestCase):
+    """Read one exact OpenCode session from its shared SQLite store."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix="asha_opencode_db_")
+        root = Path(self.tmp.name)
+        self.project = root / "project"
+        self.project.mkdir()
+        self.db = root / "opencode.db"
+        conn = sqlite3.connect(self.db)
+        conn.executescript("""
+            CREATE TABLE session (
+                id TEXT PRIMARY KEY, parent_id TEXT, directory TEXT
+            );
+            CREATE TABLE message (
+                id TEXT PRIMARY KEY, session_id TEXT, time_created INTEGER, data TEXT
+            );
+            CREATE TABLE part (
+                id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT,
+                time_created INTEGER, data TEXT
+            );
+        """)
+        conn.executemany(
+            "INSERT INTO session(id, parent_id, directory) VALUES (?, ?, ?)",
+            [
+                ("ses-root", None, str(self.project)),
+                ("ses-child", "ses-root", str(self.project)),
+                ("ses-foreign", None, str(root / "other")),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO message(id, session_id, time_created, data) VALUES (?, ?, ?, ?)",
+            [
+                ("msg-user", "ses-root", 1_770_000_000_000, json.dumps({"role": "user"})),
+                ("msg-assistant", "ses-root", 1_770_000_000_100, json.dumps({"role": "assistant"})),
+                ("msg-child", "ses-child", 1_770_000_000_200, json.dumps({"role": "user"})),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO part(id, message_id, session_id, time_created, data) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("part-user", "msg-user", "ses-root", 1_770_000_000_001,
+                 json.dumps({"type": "text", "text": "Update the OpenCode adapter safely"})),
+                ("part-synthetic", "msg-user", "ses-root", 1_770_000_000_002,
+                 json.dumps({"type": "text", "text": "hidden", "synthetic": True})),
+                ("part-tool", "msg-assistant", "ses-root", 1_770_000_000_101,
+                 json.dumps({
+                     "type": "tool", "tool": "apply_patch",
+                     "state": {
+                         "status": "completed",
+                         "input": {"patchText": "*** Begin Patch\n*** Update File: src/app.py\n*** End Patch"},
+                     },
+                 })),
+                ("part-error", "msg-assistant", "ses-root", 1_770_000_000_102,
+                 json.dumps({
+                     "type": "tool", "tool": "bash",
+                     "state": {"status": "error", "input": {"command": "false"}, "error": "exit 1"},
+                 })),
+                ("part-child", "msg-child", "ses-child", 1_770_000_000_201,
+                 json.dumps({"type": "text", "text": "child-only text"})),
+            ],
+        )
+        conn.commit()
+        conn.close()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_child_identity_canonicalizes_to_project_root(self):
+        ident = jsonl_reader.resolve_identity(
+            self.project,
+            harness="opencode",
+            session_id="ses-child",
+            transcript=self.db,
+        )
+        self.assertEqual(ident.session_id, "ses-root")
+        self.assertEqual(ident.transcript_path, self.db)
+
+    def test_streams_only_the_exact_root_session(self):
+        events = list(jsonl_reader.stream_events(self.db, "opencode", "ses-root"))
+        self.assertEqual([event.text for event in events if event.kind == "prompt"], [
+            "Update the OpenCode adapter safely"
+        ])
+        self.assertNotIn("child-only text", [event.text for event in events])
+        self.assertEqual(
+            [event.tool for event in events if event.kind == "tool_use"],
+            ["apply_patch", "bash"],
+        )
+        errors = [event for event in events if event.kind == "tool_result"]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0].detail, "exit 1")
+
+    def test_opencode_apply_patch_maps_to_file_modified(self):
+        events = list(jsonl_reader.stream_events(self.db, "opencode", "ses-root"))
+        synth = jsonl_reader.to_synth_events(events, self.project, "ses-root")
+        edits = [event for event in synth if event["subtype"] == "file_modified"]
+        self.assertEqual(len(edits), 1)
+        self.assertEqual(edits[0]["payload"]["file_path"], "src/app.py")
+
+    def test_stream_requires_exact_session_id(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(jsonl_reader.IdentityError):
+                list(jsonl_reader.stream_events(self.db, "opencode"))
+
+    def test_project_mismatch_is_refused(self):
+        with self.assertRaises(jsonl_reader.IdentityError):
+            jsonl_reader.resolve_identity(
+                self.project,
+                harness="opencode",
+                session_id="ses-foreign",
+                transcript=self.db,
+            )
+
+
 class SchemaDriftTests(unittest.TestCase):
     """Garbage / unknown lines must degrade safely, never crash."""
 
@@ -341,6 +456,7 @@ class IdentityResolutionTests(unittest.TestCase):
             "ASHA_HARNESS", "ASHA_SESSION_ID", "ASHA_TRANSCRIPT_PATH",
             "CLAUDECODE", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID",
             "CODEX_MANAGED_BY_NPM", "COPILOT_CLI", "COPILOT_SESSION_ID",
+            "OPENCODE", "OPENCODE_SESSION_ID", "XDG_DATA_HOME",
         )}
         for k in self.saved_env:
             os.environ.pop(k, None)

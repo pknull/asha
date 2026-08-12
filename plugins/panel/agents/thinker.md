@@ -280,7 +280,7 @@ This agent can be:
 
 - Invoked directly for any decomposition task
 - Recruited by panel's Analyst as "The Thinker" for complex topics
-- Used before `/panel --interview` to pre-structure questions
+- Used before `/panel-system:panel --interview` to pre-structure questions
 - Resumed across sessions via state.json
 
 ## Example Invocation

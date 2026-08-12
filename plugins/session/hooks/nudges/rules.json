@@ -29,25 +29,27 @@
       "id": "ws-context",
       "event": "SessionStart",
       "harnesses": [
-        "copilot"
+        "copilot",
+        "opencode"
       ],
       "disable_env": "ASHA_WS_INJECT",
       "marker_off": "nudge-ws-context-off",
       "priority": 5,
       "handler": "ws_context",
-      "_comment": "Workspace v2 context on Copilot's native sessionStart additionalContext channel, verified live on Copilot CLI 1.0.78 (2026-08-08 UTC), including exact renderer payload. Codex uses its direct SessionStart raw-fragment registration instead; neither harness retains the prompt fallback. The builtin performs a bash manifest precheck before Python. Standard engine gates provide active-project init, silence, and nudge-ws-context-off. SessionStart is once per session, so no cooldown marker is used."
+      "_comment": "Workspace v2 context on proven start channels: Copilot's native sessionStart additionalContext (verified live on CLI 1.0.78, 2026-08-08 UTC) and OpenCode's plugin system-prompt transform. Codex uses its direct SessionStart raw-fragment registration; none retain the prompt fallback. The builtin performs a bash manifest precheck before Python. Standard engine gates provide active-project init, silence, and nudge-ws-context-off. SessionStart is once per session, so no cooldown marker is used."
     },
     {
       "id": "suggest-compact",
       "event": "PostToolUse",
       "harnesses": [
         "claude",
-        "copilot"
+        "copilot",
+        "opencode"
       ],
       "cooldown_hours": 2,
       "priority": 50,
       "handler": "suggest_compact",
-      "_comment": "Session-activity compaction suggestion, formerly handlers/suggest-compact.sh. The tool-call counter lives in the builtin; the 2h cooldown is engine-managed (marker nudge-suggest-compact-cooldown replaces the legacy compact-suggested marker — one cooldown reset at migration is accepted). Harness-gated off codex (verified live 2026-07-27, codex 0.145): codex fires PostToolUse but discards hook stdout entirely, so an ungated row would burn the shared tool-count and stamp the 2h cooldown for an emission the model never sees — suppressing the nudge for a later Claude session where it works. Bare codex launches (no ASHA_HARNESS) still detect as claude and degrade to the old discard behavior; see docs/harness-enforcement.md 'Codex PostToolUse'."
+      "_comment": "Session-activity compaction suggestion, formerly handlers/suggest-compact.sh. The tool-call counter lives in the builtin; the 2h cooldown is engine-managed (marker nudge-suggest-compact-cooldown replaces the legacy compact-suggested marker — one cooldown reset at migration is accepted). Enabled on Claude, Copilot, and OpenCode's buffered system-transform channel. Harness-gated off codex (verified live 2026-07-27, codex 0.145): codex fires PostToolUse but discards hook stdout entirely, so an ungated row would burn the shared tool-count and stamp the 2h cooldown for an emission the model never sees — suppressing the nudge for a later session where it works. Bare codex launches (no ASHA_HARNESS) still detect as claude and degrade to the old discard behavior; see docs/harness-enforcement.md 'Codex PostToolUse'."
     }
   ]
 }

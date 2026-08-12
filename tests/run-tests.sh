@@ -132,6 +132,17 @@ else
 fi
 echo ""
 
+# Test Suite 9: OpenCode Harness Tests
+echo -e "${BLUE}--- Test Suite 9: OpenCode Harness Tests ---${NC}"
+if "$SCRIPT_DIR/test-opencode.sh"; then
+    echo -e "${GREEN}✓ OpenCode harness tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ OpenCode harness tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Test Suite 10: Install Round-Trip Tests
 echo -e "${BLUE}--- Test Suite 10: Install Round-Trip Tests ---${NC}"
 if "$SCRIPT_DIR/test-install.sh"; then

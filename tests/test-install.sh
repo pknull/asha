@@ -37,7 +37,14 @@ seed_native_configs() {
 }
 
 run_install() {
+  local fake_opencode="$SANDBOX/fake-opencode"
+  cat >"$fake_opencode" <<'EOF'
+#!/usr/bin/env bash
+echo 1.17.18
+EOF
+  chmod +x "$fake_opencode"
   env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$SANDBOX" \
+    ASHA_OPENCODE_CMD="$fake_opencode" \
     PYTHONPATH="$PYTHON_USER_SITE${PYTHONPATH:+:$PYTHONPATH}" \
     bash "$REPO_ROOT/install.sh" "$@"
 }
@@ -79,6 +86,12 @@ fi
 [[ -f "$SANDBOX/.codex/rules/asha.rules" ]] \
   && ok "Codex native rules file exists" \
   || fail "Codex native rules file exists"
+[[ -f "$SANDBOX/.config/opencode/plugins/asha.js" ]] \
+  && ok "OpenCode native integration plugin exists" \
+  || fail "OpenCode native integration plugin exists"
+[[ -f "$SANDBOX/.config/opencode/commands/session-save.md" ]] \
+  && ok "OpenCode rendered commands are non-empty" \
+  || fail "OpenCode rendered commands are non-empty"
 jq -e --arg root "$REPO_ROOT" '.asha_root == $root' "$SANDBOX/.asha/config.json" >/dev/null \
   && ok "identity config records asha_root" \
   || fail "identity config records asha_root"
@@ -123,6 +136,9 @@ fi
 [[ -n "$(find "$SANDBOX/.claude/skills" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null)" ]] \
   && ok "Claude mounts survive Codex failure" \
   || fail "Claude mounts survive Codex failure"
+[[ -f "$SANDBOX/.config/opencode/plugins/asha.js" ]] \
+  && ok "OpenCode install survives Codex failure" \
+  || fail "OpenCode install survives Codex failure"
 grep -q '^install summary:$' <<<"$isolation_out" && grep -q '^  codex: FAILED$' <<<"$isolation_out" \
   && ok "per-harness summary names the Codex failure" \
   || fail "per-harness summary names the Codex failure"

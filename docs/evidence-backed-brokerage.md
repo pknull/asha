@@ -6,8 +6,8 @@ Brokerage is opt-in. Existing sessions do not invoke it automatically.
 
 ```text
 asha context brief <task> [--json] [--budget-bytes N] [--timeout-ms N]
-asha process route <task> [--json] [--harness claude|codex|copilot]
-asha capabilities match <task> [--json] [--harness claude|codex|copilot]
+asha process route <task> [--json] [--harness claude|codex|copilot|opencode]
+asha capabilities match <task> [--json] [--harness claude|codex|copilot|opencode]
 ```
 
 All three commands run deterministic inline protocols. The specialist agents

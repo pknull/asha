@@ -1,21 +1,56 @@
 # Session
 
-**Version**: 1.20.0
+**Version**: 1.21.0
 
-Session management with memory persistence, pattern extraction, and operational quality.
+Session continuity, memory synthesis, workspace coordination, guarded loops,
+and evidence-backed context routing.
 
 ## What It Does
 
-- Captures session events automatically via hooks
-- Synthesizes events into persistent project context (`Memory/activeContext.md`)
+- Reads the active harness's native transcript when a save runs and normalizes it
+- Synthesizes transcript events into repository context (`Memory/activeContext.md`)
 - Extracts cross-project learnings with confidence tracking (`~/.asha/learnings/` OKF bundle)
 - Loads operational quality rules (`~/.asha/operation.md`) on every session
-- Maintains calibration logs for persona files if they exist (voice.md, keeper.md)
+- Injects bounded workspace operational context when a valid manifest is present
+- Separates repository, workspace, private-local, and canonical knowledge planes
+- Provides guarded autonomous loops and optional evidence brokerage
+
+Manual save works on Claude, Codex, Copilot, and OpenCode. Clean-exit automatic
+save is wired on Claude and Copilot; OpenCode uses best-effort plugin `dispose`;
+Codex requires an explicit save.
+
+## Choose the right surface
+
+| Need | Use |
+|---|---|
+| Start session support in one repository | `/session:init` |
+| Checkpoint current work | `/session:save` |
+| Inspect capture and workspace state | `/session:status` and `asha workspace status` |
+| Temporarily suppress all memory persistence | `/session:silence`; later `/session:restore` |
+| Compact accumulated global learnings | `/session:consolidate` |
+| Run a guarded autonomous workflow | `/session:loop` |
+| Initialize or manage a multi-repository workspace | `asha workspace …` |
+| Retrieve a bounded context catalogue | `asha context brief TASK` |
+| Match a process or capability without executing it | `asha process route TASK` / `asha capabilities match TASK` |
+
+## Invocation by harness
+
+| Harness | Invocation |
+|---|---|
+| Claude Code | Native slash commands such as `/session:save --no-push` |
+| OpenAI Codex | Rendered skills such as `session-save`; request them by name or task |
+| GitHub Copilot CLI | Rendered skills such as `session-save`; request them by name or task |
+| OpenCode | Native rendered commands such as `/session-save`, plus native skills |
+
+The `asha workspace`, `asha context`, `asha process`, and `asha capabilities`
+surfaces are ordinary CLI commands and are identical across harnesses.
 
 ## Installation
 
 ```bash
-./install.sh
+./install.sh --only session --target claude
+./install.sh --only session --target codex
+./install.sh --only session --target copilot
 ```
 
 Then initialize in your project:
@@ -24,17 +59,81 @@ Then initialize in your project:
 /session:init
 ```
 
+On Codex or Copilot, request the rendered `session-init` skill instead.
+
 ## Commands
 
 | Command | Purpose |
 |---------|---------|
 | `/session:init` | Initialize session management + identity in current project |
-| `/session:save` | Save session context to Memory Bank |
+| `/session:save [--scope repo|workspace|none] [--no-push]` | Synthesize the transcript and route persistence to the selected plane |
 | `/session:status` | Show current session status |
 | `/session:silence` | Toggle silence mode (disable logging) |
 | `/session:restore` | Re-enable logging after silence |
 | `/session:loop` | Autonomous agent loop with guardrails |
 | `/session:consolidate` | Periodic memory compaction: merge drift, resolve contradictions, retire concluded records, enforce index budgets |
+
+### Save scope
+
+Outside a workspace, use bare `/session:save`; workspace-only `--scope` flags
+are rejected. Inside a workspace:
+
+| Invocation | Effect |
+|---|---|
+| bare `/session:save` or `--scope repo` | Save only the active declared child repository's `Memory/`; run from inside that child |
+| `--scope workspace` | Save only the workspace operational `Memory/` in `shared_git_root` |
+| `--scope none` | Run synthesis without staging, committing, or pushing |
+| `--no-push` | Commit the selected plane but do not push it |
+
+The workspace root has no implicit active child. A repository save from the
+root fails rather than guessing ownership.
+
+## Memory planes
+
+| Plane | Location | Owner and behavior |
+|---|---|---|
+| Global operation, identity, and learnings | `~/.asha/` | User scope across every project; index-first learning injection |
+| Repository operational memory | `<repo>/Memory/` | Repository-owned state synthesized and committed by repository save |
+| Workspace operational memory | `<workspace>/Memory/` | Cross-repository handoff, explicitly saved with `--scope workspace` |
+| Private workspace memory | `<workspace>/memory-local/` | Local-only material; generated workspace instructions mark it never-commit |
+| Canonical workspace knowledge | `<workspace>/knowledge/` | Shared stable documentation; changed only through explicit reviewed promotion |
+
+Harness-native memory is outside these planes. Asha neither writes nor depends
+upon it. See [Memory architecture](../../docs/memory-architecture.md) for the
+read, write, authority, and promotion model.
+
+## Common workflows
+
+### One repository
+
+```text
+cd /path/to/repository
+asha claude
+/session:init                  # once
+/session:status
+/session:save --no-push        # explicit checkpoint
+```
+
+### Multi-repository workspace
+
+```bash
+cd /path/to/workspace
+asha workspace discover --root .
+asha workspace init --root . --name example --repo child-a --repo child-b
+asha workspace doctor --root .
+```
+
+Launch from a declared child for work owned by that repository. Launch from
+the workspace root for cross-repository coordination, workspace memory,
+knowledge promotion, or coordinated worktrees.
+
+```bash
+asha workspace status
+asha workspace knowledge lint --start .
+asha workspace promote plan --help
+asha workspace worktree create --help
+asha workspace work-item create --help
+```
 
 ## Loading Architecture
 
@@ -57,9 +156,10 @@ When `ASHA_PERSONA=1` is set (by a persona wrapper like `~/bin/asha`), the hook 
 | `~/.asha/voice.md` | Voice constraints (if exists) |
 | `~/.asha/keeper.md` | User profile (if exists) |
 
-This plugin does not create persona files — install a persona plugin (e.g., `asha-persona`) for that.
+This plugin owns initialization. When the `asha` identity plugin is installed,
+`/session:init` uses its templates to provision missing persona files.
 
-## Directory Structure
+## Directory structure
 
 ### Cross-project (`~/.asha/`)
 
@@ -70,15 +170,19 @@ This plugin does not create persona files — install a persona plugin (e.g., `a
 | `config.json` | Settings | When config changes |
 | `recall_fixtures.yaml` | Cross-project question -> memory retrieval checks | With diagnosed-failure memories |
 
-### Per-project (`Memory/`)
+### Repository or workspace operational (`Memory/`)
 
 | File | Purpose |
 |------|---------|
-| `activeContext.md` | Current project state |
+| `activeContext.md` | Current repository or workspace handoff |
 | `projectbrief.md` | Scope, objectives, constraints |
 | `workflowProtocols.md` | Validated patterns |
 | `techEnvironment.md` | Tools, paths, platform |
 | `events/events.jsonl` | Session event log |
+
+At a workspace root, `Memory/` is the workspace operational plane rather than
+a child repository's project memory. The manifest at `.asha/workspace.json`
+defines all plane roots and declared repositories.
 
 ## Modules
 
@@ -123,7 +227,7 @@ is review-only by allowlist, not merely by instruction.
 |------|---------|
 | SessionStart | Load operation.md + the learnings index (index-first; `ASHA_LEARNINGS_INJECT=hot` reverts); conditionally load persona files; build Claude's compact memory-nudge index; inject bounded workspace operational context directly on Claude/Codex and through Copilot's top-level `additionalContext` nudge response |
 | PreToolUse | Guardrails (policy-guard) plus guidance nudges — the Claude-only lexical memory nudge for Grep/Bash/WebSearch is now registry row `memory-lexical` (indexes catalogue descriptions only, deduplicates per session, caps at five, fails open, disable with `ASHA_NUDGE=0`). Per-harness enforcement reach → [docs/harness-enforcement.md](../../docs/harness-enforcement.md) |
-| PostToolUse | Claude-only memory-nudge acted-tracking on Read; background violation check for Write/Edit/Bash; guidance nudge row `suggest-compact` — capture moved to `/save` jsonl_reader |
+| PostToolUse | Claude-only memory-nudge acted-tracking on Read; background violation check for Write/Edit/Bash; guidance nudge row `suggest-compact` — capture moved to `/session:save` jsonl_reader |
 | UserPromptSubmit | Guidance row `rp-routing` (per-turn RP routing while `rp-active`); harness-appropriate prompt passthrough. Workspace context no longer uses this event. |
 | Stop | Save-preflight cleanup |
 | SessionEnd | Synthesize session on clean exit; clear this session's session_state |
@@ -200,13 +304,17 @@ Work-item
 import requires a matching scrubbed preview token, and its worktree seed is
 data-only.
 
-## Persona Plugins
+## Persona plugin
 
-This plugin provides the infrastructure. Persona plugins provide identity:
+The session plugin provides infrastructure; the `asha` plugin provides the
+identity templates consumed during initialization.
 
-- **asha-persona** — Asha, threshold guardian and knowledge custodian
+- **asha** — Asha, threshold guardian and knowledge custodian
 
-Persona plugins create identity files in `~/.asha/` and provide a wrapper script that sets `ASHA_PERSONA=1`. The session plugin's save process automatically maintains any persona files that exist (voice calibration, keeper signals).
+The `asha <harness>` dispatcher sets `ASHA_PERSONA=1` and injects the merged
+identity. Automatic saves never alter `voice.md` or `keeper.md`; an explicit
+save may capture calibration only when `capture_calibration` is enabled in
+`~/.asha/config.json`.
 
 ## License
 

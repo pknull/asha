@@ -4,17 +4,34 @@
 
 Security review patterns, OWASP guidelines, and defensive coding practices for web applications.
 
+## How to use it
+
+This plugin contains one skill and no slash command or agent. It activates from
+security-sensitive work, or you can name it explicitly on any harness:
+
+```text
+Use security-review to examine this authentication change.
+Apply security-review while implementing this upload endpoint.
+Run the pre-deployment security checklist against the current diff.
+```
+
+Use `/code:review` when you need a multi-lens review of a local diff. Use
+`security-review` when the task needs the security checklist throughout design
+or implementation. They can be combined; they are not duplicates.
+
 ## Installation
 
 ```bash
-./install.sh
+./install.sh --only security --target claude
+./install.sh --only security --target codex
+./install.sh --only security --target copilot
 ```
 
 ## Skills
 
 ### security-review
 
-Comprehensive security checklist and patterns for web applications.
+Security checklist and defensive patterns for web applications.
 
 **Triggers**: Authentication implementation, handling user input, API endpoint creation, payment/sensitive features, working with secrets
 

@@ -71,25 +71,25 @@ report_path: "Work/reports/"
 Review a section (all configured modes):
 
 ```
-/review-section path/to/Example_Novel/03_Chapter/01_Scene.md
+/write:review-section path/to/Example_Novel/03_Chapter/01_Scene.md
 ```
 
 Voice/craft review only:
 
 ```
-/review-section path/to/Example_Novel/03_Chapter/01_Scene.md --voice
+/write:review-section path/to/Example_Novel/03_Chapter/01_Scene.md --voice
 ```
 
 Facts-only review (continuity + docs):
 
 ```
-/review-section path/to/Example_Novel/03_Chapter/01_Scene.md --continuity --docs
+/write:review-section path/to/Example_Novel/03_Chapter/01_Scene.md --continuity --docs
 ```
 
 Full review (adds project-configured specialist reviews):
 
 ```
-/review-section path/to/Example_Novel/03_Chapter/01_Scene.md --full
+/write:review-section path/to/Example_Novel/03_Chapter/01_Scene.md --full
 ```
 
 The skill:
@@ -123,7 +123,7 @@ Generates combined report at configured `report_path` containing:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    /review-section                       │
+│                    /write:review-section                       │
 │                           │                              │
 │                    Read config from                      │
 │              nearest ancestor project root              │

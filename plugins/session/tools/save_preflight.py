@@ -438,7 +438,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Pre-flight verification gate for /session:save")
     ap.add_argument("--mode", choices=["enforce", "guard", "report"], default="report")
     ap.add_argument("--project-dir", "-p", help="Project root (default $CLAUDE_PROJECT_DIR/cwd)")
-    ap.add_argument("--harness", choices=["claude", "codex", "copilot"], help="Authoritative harness for this session")
+    ap.add_argument("--harness", choices=["claude", "codex", "copilot", "opencode"], help="Authoritative harness for this session")
     ap.add_argument("--transcript", "-t", help="Authoritative transcript path for this session")
     ap.add_argument("--session-id", "-s", help="Current session id")
     ap.add_argument("--save-start", help="ISO ts the save began (freshness check)")

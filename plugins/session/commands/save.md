@@ -10,13 +10,14 @@ allowed-tools: ["Bash", "Read", "Edit"]
 Trigger synthesis now. Use when you want to checkpoint mid-session or ensure state is captured before exiting.
 
 **Lifecycle:** Manual transcript synthesis works on Claude, Codex, Copilot, and
-OpenCode. Claude also runs it automatically on clean exit. Other harnesses
-currently require this explicit command because Asha has no SessionEnd hook there.
+OpenCode. Claude and Copilot run it automatically on clean exit. OpenCode runs
+a best-effort clean-exit save from plugin `dispose`. Codex requires this
+explicit command because Asha has no SessionEnd persistence path there.
 
 ## What It Does
 
 1. **Runs pattern analyzer** — synthesizes activeContext.md from events
-2. **Extracts patterns** — updates learnings.md with discovered patterns
+2. **Extracts patterns** — updates the `~/.asha/learnings/` OKF bundle
 3. **Captures calibration when enabled** — explicit saves may write voice.md and
    keeper.md only when `~/.asha/config.json` sets `capture_calibration: true`;
    automatic saves never write either file
@@ -27,16 +28,16 @@ currently require this explicit command because Asha has no SessionEnd hook ther
 ## Usage
 
 ```bash
-/save                           # Synthesize + commit + push
-/save --no-push                 # Synthesize + commit only
-/save "Completed auth feature"  # Custom commit message
-/save --scope workspace         # Commit the WORKSPACE memory plane (see below)
-/save --scope none              # Synthesis only: no staging, commit, or push
+/session:save                           # Synthesize + commit + push
+/session:save --no-push                 # Synthesize + commit only
+/session:save "Completed auth feature"  # Custom commit message
+/session:save --scope workspace         # Commit the workspace operational plane
+/session:save --scope none              # Synthesis only: no staging, commit, or push
 ```
 
 ## Save scopes (workspace v1, issue #36)
 
-Bare `/save` (or `--scope repo`) is the project save documented below —
+Bare `/session:save` (or `--scope repo`) is the project save documented below —
 inside a workspace that is the active CHILD repository, which is exactly
 today's behavior. Passing `--scope` in a project with NO workspace manifest
 is a hard error (the single carved-out deviation from byte-identical, pinned
@@ -177,7 +178,7 @@ still reported but does not need repeated narration.
 "$ASHA_ROOT/plugins/session/tools/memory_nudge.py" stats --days 7
 ```
 
-Then **suggest cross-links** for recently-touched learnings. This is the model — you — proposing links; it runs only on interactive `/save` (the automatic session-end path has no model and skips it). Best-effort and **non-blocking**: skip silently if the bundle is absent or this was a read-only/throwaway session.
+Then **suggest cross-links** for recently-touched learnings. This is the model — you — proposing links; it runs only on interactive `/session:save` (the automatic session-end path has no model and skips it). Best-effort and **non-blocking**: skip silently if the bundle is absent or this was a read-only/throwaway session.
 
 1. Get the bounded candidate set + a summary of the whole bundle:
 
@@ -209,7 +210,8 @@ ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 
 
 ```
 
-Report links added in chat. `## Related` sections live in the concept-file bodies, not the injected hot tier, so they add zero session-start cost.
+Report links added in chat. `## Related` sections live in the concept-file
+bodies, not the injected index lines, so they add zero SessionStart cost.
 
 Then capture a baseline sample (best-effort, non-blocking — only runs if the Asha baseline tooling is present).
 
@@ -217,7 +219,7 @@ Then capture a baseline sample (best-effort, non-blocking — only runs if the A
 
 | Archetype | Signal |
 |---|---|
-| `panel-orchestration` | `/panel` invoked this session OR ≥2 distinct subagents spawned |
+| `panel-orchestration` | `/panel-system:panel` invoked this session OR ≥2 distinct subagents spawned |
 | `daily-brief` | `/daily-brief` invoked this session |
 | `research-synthesis` | ≥3 web research calls OR the `gemini` grounded-search skill invoked |
 | `email-triage` | Any `gws` CLI calls OR `mcp__gemini`/email-related MCP tools used |
@@ -385,11 +387,11 @@ confirm the validate step above reported no errors.
 <!-- RED-FLAGS:START -->
 ## Red Flags — Stop and Reconsider
 
-If you catch yourself thinking any of the following while running `/save`, stop. The thought itself is the warning. Do the action in the right column instead.
+If you catch yourself thinking any of the following while running `/session:save`, stop. The thought itself is the warning. Do the action in the right column instead.
 
 | Rationalization (the thought) | What it actually means | Do this instead |
 |---|---|---|
-| "Synthesis is slow and the events look thin — I'll skip pattern_analyzer and just commit Memory/." | The synthesis step IS the value of `/save`. Skipping it commits stale activeContext and silently breaks future cold-starts. | Run synthesis. If it is genuinely too slow for this checkpoint, raise that as a separate issue — do not bypass it silently. |
+| "Synthesis is slow and the events look thin — I'll skip pattern_analyzer and just commit Memory/." | The synthesis step IS the value of `/session:save`. Skipping it commits stale activeContext and silently breaks future cold-starts. | Run synthesis. If it is genuinely too slow for this checkpoint, raise that as a separate issue — do not bypass it silently. |
 | "Next Steps in activeContext came out generic ('Review and plan next session') — that's good enough, the user can fill it in." | This is the exact failure mode the project CLAUDE.md "Session Handoff Quality" rule calls out by name. A cold-start session reading this cannot act. | Replace generic Next Steps with concrete file paths, tool names, blocked decisions, and the first thing next session should pick up — per CLAUDE.md rule. |
 | "I captured signals to keeper.md/voice.md but the user didn't ask to see them — I'll just commit." | Calibration is two-way. Writing to keeper without surfacing the signal lets miscalibration compound silently across sessions. | Surface the captured signals in chat before committing. Let the user confirm or correct the read. |
 | "Ratchet check found a repeated pattern but proposing a skill/hook feels like scope creep — I'll skip it just this once." | The Ratchet on Save rule exists precisely because "just this once" is how guardrails never get built. The pattern will repeat. | Run the ratchet check and surface the proposal. The user decides whether to act — your job is to flag, not to filter. |

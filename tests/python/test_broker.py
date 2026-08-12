@@ -146,7 +146,7 @@ class BrokerFixture(unittest.TestCase):
         self.assertEqual(match["execution_mode"], "inline")
         self.assertTrue(match["selected"])
         self.assertTrue(all(item["support"]["status"] in broker.SUPPORT_VALUES for item in match["selected"]))
-        for harness in ("claude", "codex", "copilot"):
+        for harness in ("claude", "codex", "copilot", "opencode"):
             support = registry.support(registry.entries["memory-steward"], harness)
             self.assertIn(support["status"], broker.SUPPORT_VALUES)
             self.assertTrue(support["capability_ref"].startswith(harness + ".capabilities."))
@@ -225,8 +225,14 @@ class BrokerRenderingContract(unittest.TestCase):
             (home / ".claude" / "settings.json").write_text("{}\n")
             (home / ".codex").mkdir()
             (home / ".codex" / "config.toml").write_text("# fixture\n")
+            fake_opencode = home / "opencode"
+            fake_opencode.write_text("#!/bin/sh\necho 1.17.18\n")
+            fake_opencode.chmod(0o755)
             env = os.environ.copy()
             env["HOME"] = str(home)
+            env["XDG_CONFIG_HOME"] = str(home / ".config")
+            env["XDG_DATA_HOME"] = str(home / ".local" / "share")
+            env["ASHA_OPENCODE_CMD"] = str(fake_opencode)
             result = subprocess.run(
                 ["bash", str(ROOT / "install.sh"), "--target", "all", "--only", "session"],
                 text=True, capture_output=True, env=env, check=False,
@@ -236,10 +242,13 @@ class BrokerRenderingContract(unittest.TestCase):
                 self.assertTrue((home / ".claude" / "agents" / "session" / f"{name}.md").is_symlink())
                 codex = home / ".codex" / "agents" / f"session-{name}.toml"
                 copilot = home / ".copilot" / "agents" / f"session-{name}.agent.md"
+                opencode = home / ".config" / "opencode" / "agents" / f"session-{name}.md"
                 self.assertTrue(codex.is_file(), codex)
                 self.assertTrue(copilot.is_file(), copilot)
+                self.assertTrue(opencode.is_file(), opencode)
                 self.assertIn(f'name = "{name}"', codex.read_text())
                 self.assertIn(f"name: {name}", copilot.read_text())
+                self.assertIn("mode: subagent", opencode.read_text())
 
 
 if __name__ == "__main__":

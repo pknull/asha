@@ -38,7 +38,7 @@
       "additionalProperties": false,
       "required": ["capability_ref", "fallback"],
       "properties": {
-        "capability_ref": {"type": "string", "pattern": "^(claude|codex|copilot)\\.capabilities\\.[a-z-]+$"},
+        "capability_ref": {"type": "string", "pattern": "^(claude|codex|copilot|opencode)\\.capabilities\\.[a-z-]+$"},
         "fallback": {"type": "string", "minLength": 1}
       }
     },
@@ -61,11 +61,12 @@
         "harness_support": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["claude", "codex", "copilot"],
+          "required": ["claude", "codex", "copilot", "opencode"],
           "properties": {
             "claude": {"$ref": "#/$defs/supportRef"},
             "codex": {"$ref": "#/$defs/supportRef"},
-            "copilot": {"$ref": "#/$defs/supportRef"}
+            "copilot": {"$ref": "#/$defs/supportRef"},
+            "opencode": {"$ref": "#/$defs/supportRef"}
           }
         },
         "fallback": {"type": "string", "minLength": 1},
