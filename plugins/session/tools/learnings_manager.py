@@ -79,11 +79,27 @@ def _path(learning: Learning) -> Path:
     return _secure_learning_child(f"{learning.state}/{_storage_name(learning.id)}")
 
 
+def _learning_root() -> Path:
+    """Return a stable root, allowing an intentional top-level dotfiles link."""
+    root = LEARNINGS_DIR
+    if not root.is_symlink():
+        return root
+    try:
+        resolved = root.resolve(strict=True)
+    except OSError as exc:
+        raise ValueError("broken symlinked learning bundle rejected") from exc
+    if not resolved.is_dir():
+        raise ValueError("symlinked learning bundle target must be a directory")
+    if resolved.stat().st_uid != os.getuid():
+        raise ValueError("symlinked learning bundle target must be owned by the current user")
+    return resolved
+
+
 def _secure_learning_child(relative: str, *, create_parents: bool = False) -> Path:
     relative_path = Path(relative)
     if relative_path.is_absolute() or ".." in relative_path.parts:
         raise ValueError("learning path escapes global bundle")
-    cursor = LEARNINGS_DIR
+    cursor = _learning_root()
     if cursor.is_symlink():
         raise ValueError("symlinked learning bundle rejected")
     for part in relative_path.parts:
@@ -189,7 +205,8 @@ def _global_lock(*, recover: bool = True):
     # Keep the coordination inode outside the legacy root OKF corpus. A
     # read-only render before reviewed migration must not alter that bundle.
     LEARNINGS_DIR.parent.mkdir(parents=True, exist_ok=True)
-    lock = LEARNINGS_DIR.parent / ".asha-learnings-v2.lock"
+    lock_parent = LEARNINGS_DIR.parent.resolve(strict=True)
+    lock = lock_parent / ".asha-learnings-v2.lock"
     if lock.is_symlink():
         raise ValueError(f"symlinked learning lock rejected: {lock}")
     fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_NOFOLLOW", 0), 0o600)
@@ -800,7 +817,7 @@ def _recover_migration_transactions_unlocked() -> int:
                 raise ValueError
             parsed_learning: list[tuple[Path, dict[str, Any]]] = []
             seen_learning_paths: set[Path] = set()
-            learning_root = LEARNINGS_DIR.absolute()
+            learning_root = _learning_root().absolute()
             for item in learning_records:
                 supplied = Path(str(item["path"]))
                 relative = supplied.absolute().relative_to(learning_root)
@@ -1108,8 +1125,6 @@ def migrate_apply(review: dict[str, Any], *, session_id: str, project_dir: Path,
                 elif kind != "create" or authorized != target:
                     raise ValueError(f"absent publication target requires an explicit create mapping: {target}")
 
-        if LEARNINGS_DIR.is_symlink():
-            raise ValueError("symlinked learning bundle rejected")
         _secure_learning_roots()
         old_ignore = gitignore.read_bytes() if gitignore.exists() else b""
         try:

@@ -753,6 +753,20 @@ class LearningLifecycleTests(unittest.TestCase):
                 lm.expire_candidates(project_dir=self.project)
             self.assertFalse((outside / "replay.md").exists())
 
+    def test_owned_symlinked_bundle_root_is_supported(self):
+        target = Path(self.tmp.name) / "dotfiles-learnings"
+        target.mkdir()
+        self.bundle.symlink_to(target, target_is_directory=True)
+
+        learning = lm.propose(
+            "dotfiles-root", "t", "a", project_dir=self.project,
+            session_id="s", reason="r",
+        )
+
+        self.assertEqual("candidate", learning.state)
+        self.assertTrue((target / "candidate/dotfiles-root.md").is_file())
+        self.assertTrue((target / ".transactions").is_dir())
+
     def test_amended_plan_is_atomically_staged_with_bound_drafts(self):
         source = Path(self.tmp.name) / "amend-source.md"
         source.write_text("legacy")
