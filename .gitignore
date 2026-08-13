@@ -48,3 +48,6 @@ Work/
 # Claude Code local settings atomic-write staging files (the settings file
 # itself is covered by the global gitignore; these transient siblings are not)
 .claude/settings.local.json.tmp.*
+# Asha Memory v2 recovery (managed)
+/Work/memory-migration/
+/Work/session-state/
