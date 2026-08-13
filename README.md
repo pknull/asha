@@ -1,9 +1,9 @@
 # asha
 
-**Version**: 2.6.0
+**Version**: 2.7.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, GitHub Copilot CLI, and OpenCode.
 
-Asha renders or mounts skills, agents, commands, and hooks into each harness's native or compatible surfaces, ships a single `asha` dispatcher that injects a shared persona, and normalizes session activity from all four CLIs into one synthesis pipeline.
+Asha renders or mounts skills, agents, commands, and hooks into each harness's native surfaces, ships a single `asha` dispatcher that injects a shared persona, and maintains one explicit compact Memory contract across all four CLIs.
 
 ---
 
@@ -90,7 +90,7 @@ Asha drives four agent CLIs from **one source corpus** (`plugins/<ns>/`). They d
 
 > **The full per-capability matrix — current status, mounting method, live-test findings, and caveats — is the single source of truth in [docs/harness-enforcement.md](docs/harness-enforcement.md).** This section explains *why* the behaviors differ (the mechanics, which rarely change); for current *status*, defer to that doc.
 
-At a glance: skills, agents, persona, the operational layer, and manual `/session:save` capture work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot and native command Markdown on OpenCode. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated Markdown subagents, and Claude agents retain the source Markdown. Automatic clean-exit save and orphan recovery run on Claude and Copilot; OpenCode adds best-effort clean-exit save through plugin `dispose`. Codex remains manual-save only.
+At a glance: skills, agents, persona, the operational layer, explicit `/session:save`, and bounded recovery work across all four harnesses, but through different forms. Asha command workflows are rendered as skills on Codex/Copilot and native command Markdown on OpenCode. Codex agents are generated TOML, Copilot agents are generated `.agent.md`, OpenCode agents are generated Markdown subagents, and Claude agents retain the source Markdown. Every harness requires explicit semantic publication; clean exit only seals unpublished recovery.
 
 ### Why the behaviors differ
 
@@ -100,66 +100,48 @@ At a glance: skills, agents, persona, the operational layer, and manual `/sessio
 
 **Persona is injected at each harness's real seam.** Claude uses `--append-system-prompt-file`; Codex uses `model_instructions_file`; Copilot uses `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`; OpenCode uses `OPENCODE_CONFIG_CONTENT.instructions`. Every mechanism is wrapper-scoped, so the plain harness remains persona-free.
 
-**The operational layer reaches all four.** `~/.asha/operation.md` + a capped,
-index-first view of `~/.asha/learnings/` load at session start. Learning bodies
-are read on demand; `ASHA_LEARNINGS_INJECT=hot` restores the legacy full-body
-hot-tier mode. Claude receives the layer through SessionStart, Codex through
+**The operational layer reaches all four.** `~/.asha/operation.md` plus a
+capped rendering of active `~/.asha/learnings/` records load at session start.
+Candidates and retired records are never injected as instructions. Claude receives the layer through SessionStart, Codex through
 `model_instructions_file`, Copilot through its custom instructions directory,
 and OpenCode through the wrapper-scoped instructions array. Files are generated
 by `identity/operational-merge.sh` with the same budgets.
 
-**Hook surfaces are harness-native.** Claude uses JSON in `settings.json`; Codex uses nested TOML hook tables; Copilot uses dedicated hook JSON; OpenCode uses `plugins/asha.js`. Transcript capture is post-hoc, while policy adapters bridge each real-time hook contract to the shared rules.
+**Hook surfaces are harness-native.** Claude uses JSON in `settings.json`; Codex uses nested TOML hook tables; Copilot uses dedicated hook JSON; OpenCode uses `plugins/asha.js`. Prompt/tool hooks update bounded recovery state, whilst policy adapters bridge each real-time hook contract to the shared rules.
 
 **First launch requires the harness's own config to already exist** for Claude and Codex. Their installers deliberately refuse to fabricate `settings.json` / `config.toml` (the harness owns that file's format). Copilot and OpenCode use additive Asha-owned files and have no such precondition.
 
 ### Policy guardrails (PreToolUse deny/ask)
 
-Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool + a command/path regex and applies `deny`, `ask`, or a `max_per_session` rate limit (counted in session_state — see [State model](#state-model-guardrails-session_state-and-memory)), with an optional `override_env` escape hatch. The seed rule blocks broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home` (rotational disk with background sync I/O — Asha learning `no-broad-home-scans`, conf 0.95; override `ASHA_ALLOW_BROAD_SCAN=1`). Rules are user-tunable, and this one is an example rather than a universal: adjust or drop it in `~/.asha/policies.json` if your `/home` is on SSD.
+Beyond persona, Asha enforces **declarative tool-call policies** through a PreToolUse hook (`plugins/session/hooks/handlers/policy-guard.sh`). Rules live in `plugins/session/hooks/policies/rules.json` (+ an optional user layer `~/.asha/policies.json`, merged by `id` — user wins). Each rule matches a tool plus a command/path regex and applies `deny`, `ask`, or advisory `warn`, with an optional `override_env` escape hatch. The seed rule blocks broad `find`/`grep -r`/`bfs`/`fd`/`rg` scans over `/home`; override it with `ASHA_ALLOW_BROAD_SCAN=1` when the operation is deliberate. Rules are user-tunable.
 
 **Prefer `deny` over `ask` for rules that must bite.** An `ask` decision is auto-approved without surfacing a prompt in any session running an auto-accept permission mode, which makes the rule silently inert. `deny` (exit 2) blocks regardless of mode. The shipped rules use `deny` with `override_env` escape hatches for exactly this reason; `ask` remains in the schema for rules whose value is the prompt itself.
 
-**Cross-harness enforcement status and caveats are in [docs/harness-enforcement.md](docs/harness-enforcement.md) (the single source of truth).** Claude and Copilot run Asha's policy hooks across their tested tool paths. OpenCode routes `tool.execute.before` through the shared policy, secret, and save-commit guards; an `ask` decision degrades to deny because no interactive permission response is verified at that seam. Codex can run the same hooks for supported simple Bash, `apply_patch`, and MCP calls, but official documentation explicitly says `unified_exec` shell interception is incomplete and hooks are not a complete enforcement boundary. Codex also gets `~/.codex/rules/asha.rules` as a native, prefix-based approval fallback for a narrow command subset.
+**Cross-harness enforcement status and caveats are in [docs/harness-enforcement.md](docs/harness-enforcement.md) (the single source of truth).** Claude and Copilot run Asha's policy hooks across their tested tool paths. OpenCode routes `tool.execute.before` through the shared policy and secret guards; an `ask` decision degrades to deny because no interactive permission response is verified at that seam. Codex can run the same hooks for supported simple Bash, `apply_patch`, and MCP calls, but `unified_exec` shell interception is incomplete and hooks are not a complete enforcement boundary. Codex also gets `~/.codex/rules/asha.rules` as a native, prefix-based approval fallback for a narrow command subset.
 
-The engine is **fail-open** by design — any rule/parse error allows the call, because a guardrail must never brick tool use. And it is a **soft deterrent, not a sandbox**: it regex-matches the command string, so an agent can evade it deliberately (`cd /home && find .`, long flags, indirection), and on Copilot it can be bypassed under parallel tool calls. Pair it with the harness's own permission/sandbox controls for hard containment. This is the enforced form of the "Failure-to-Guardrail" idea: a high-confidence learning becomes a rule instead of prose a model can skip past.
+The engine is **fail-open** by design — any rule/parse error allows the call, because a guardrail must never brick tool use. And it is a **soft deterrent, not a sandbox**: it regex-matches the command string, so an agent can evade it deliberately (`cd /home && find .`, long flags, indirection), and on Copilot it can be bypassed under parallel tool calls. Pair it with the harness's own permission/sandbox controls for hard containment. A reviewed learning can become a mechanical rule instead of prose a model can skip past.
 
 See **[INSTALLER.md](INSTALLER.md)** for the per-harness layout diagrams and the full rationale.
 
 ---
 
-## Capture pipeline: read native session transcripts on `/session:save`
+## Memory v2: publication and recovery
 
-Each harness writes its own session transcript to disk:
+Asha does not read host transcripts. Semantic memory is published only when the
+user explicitly invokes `/session:save`. The live model authors and validates
+`Memory/activeContext.md` (Objective, State, Next, Blockers; at most 4 KiB) and
+`Memory/decisions.md` (current binding decisions), then commits and pushes by
+default. Shipped readers use the publication lock through `memory_v2.py read`;
+hooks never publish semantic Memory or invoke Git.
 
-- Claude: `~/.claude/projects/<slug>/<sid>.jsonl`
-- Codex: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
-- Copilot: `~/.copilot/session-state/<sid>/events.jsonl`
+Prompt/tool hooks atomically maintain ignored, mode-0600 recovery snapshots in
+`Work/session-state/`. Each is at most 2 KiB, expires after seven days, and is
+lower authority than published Memory. SessionEnd only seals and prunes.
 
-- OpenCode: `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` (exact session rows from `session`/`message`/`part`)
-
-The session plugin no longer captures tool calls through hooks. `/session:save` reads the active session's native transcript via `plugins/session/tools/jsonl_reader.py`, normalizes events into the synthesizer's schema, and pattern_analyzer.py synthesizes `Memory/activeContext.md` and `~/.asha/learnings/` updates. Hooks remain only for *intervention* (block-secrets, policy guardrails, post-edit-lint, prompt refinement, session-start context injection).
-
-This gives all four harnesses a shared normalized event model.
-
----
-
-## State model: guardrails, session_state, and memory
-
-Asha keeps three *distinct* kinds of state. They're easy to conflate but deliberately separate — the test that tells them apart: **session_state is meant to be thrown away at session end; Memory's whole purpose is to survive it.**
-
-| Layer | Lifespan | Holds | Written by | Read by |
-|---|---|---|---|---|
-| **Policy guardrails** | static (rules) | `deny`/`ask`/limit rules (`plugins/session/hooks/policies/rules.json`) | you (edit rules) | `policy-guard` hook, per tool call |
-| **session_state** | ephemeral (one session) | mechanical counters/flags (`~/.asha/session-state/<sid>.json`) | hooks, automatically | hooks, mid-session |
-| **Asha Memory** | durable (cross-session) | repository/workspace context, private workspace notes, canonical knowledge, and global learnings | `/session:save`, deliberate edits, reviewed promotion | session start, brokerage, on-demand |
-
-- **Guardrails** decide allow/deny/ask from the *current* tool call (a pattern match) — stateless on their own.
-- **session_state** gives guardrails *memory within a single run*: e.g. a rule's `max_per_session` rate limit, or "you've done X N times this session." Volatile by design — cleared at session end (and TTL-swept), because a counter from yesterday must not affect today. It is **not** Memory: different lifespan, content, writer, and cadence (written every tool call by hooks, never at `/session:save`). It is working RAM, not the notebook.
-- **Memory** is durable knowledge meant to *outlive* the session.
-
-Harness-native memory, such as Claude's auto-memory, is separate. Asha neither
-writes it nor depends upon it.
-
-They form a pipeline, not an overlap: guardrails read session_state for in-flight decisions; when an ephemeral signal turns out to be a *recurring* pattern across sessions, `/session:save` can graduate it into a durable **learning** (Memory) — the "Failure-to-Guardrail" loop. session_state sits *below* Memory, feeding it, never duplicating it.
+Cross-project learnings use candidate, active, and retired states. Activation
+uses a user-controlled save-evidence heuristic requiring three distinct
+session ids across two stable project identities; only active learnings load at
+SessionStart.
 
 ---
 
@@ -167,7 +149,7 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
-| **Core** | `session` | v1.21.0 | Session memory, `/session:save` synthesis, `/session:consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops, workspace context + management CLI, evidence brokerage — 5 agents |
+| **Core** | `session` | v2.0.0 | Explicit compact publication, bounded recovery, learning lifecycle, guardrails, loops, and workspace management — 3 agents |
 | **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
@@ -180,12 +162,12 @@ They form a pipeline, not an overlap: guardrails read session_state for in-fligh
 
 ## Plugin guides
 
-Current source inventory: **33 agents, 19 command workflows, and 15 skills**.
+Current source inventory: **31 agents, 19 command workflows, and 15 skills**.
 The owning guide below is the catalogue for each batch.
 
 | Plugin | Primary entry point | Use it for | Detailed instructions |
 |---|---|---|---|
-| `session` | `/session:*` or rendered `session-*` skills; `asha workspace …` | Memory lifecycle, workspace management, guarded loops, context brokerage | [Session guide](plugins/session/README.md) |
+| `session` | `/session:*` or rendered `session-*` skills; `asha workspace …` | Memory v2 lifecycle, workspace management, guarded loops, process routing | [Session guide](plugins/session/README.md) |
 | `panel-system` | `/panel-system:panel` or `panel-system-panel` | Decomposition, interviews, adversarial analysis, recorded decisions | [Panel guide](plugins/panel/README.md) |
 | `code` | `/code:*` or rendered `code-*` skills | Implementation orchestration, debugging, review, verification, PostgreSQL work | [Code guide](plugins/code/README.md) |
 | `write` | `/write:*` or rendered `write-*` skills | Fiction state, drafting workflows, editorial review, style analysis, export | [Write guide](plugins/write/README.md) |
@@ -209,9 +191,9 @@ rules. They are not interchangeable:
 
 | Store | Scope | Default location | Commit policy | Typical content |
 |---|---|---|---|---|
-| **Global identity and learnings** | User, all projects | `~/.asha/` | Separate user-managed store | Identity, operation rules, preferences, confidence-tracked learnings |
-| **Repository operational memory** | One repository | `<repo>/Memory/` | Committed with that repository | Current state, project brief, environment, repository workflow |
-| **Workspace operational memory** | A group of repositories | `<workspace>/Memory/` | Committed in the manifest's `shared_git_root` | Cross-repository handoff, shared status, coordination decisions |
+| **Global identity and learnings** | User, all projects | `~/.asha/` | Separate user-managed store | Identity, operation rules, preferences, candidate/active/retired learnings |
+| **Repository operational memory** | One repository | `<repo>/Memory/` | Explicit save commit | Four-section handoff and current binding decisions |
+| **Workspace operational memory** | A group of repositories | `<workspace>/Memory/` | Explicit workspace-scope save | Cross-repository handoff and binding decisions |
 | **Private workspace memory** | User-local workspace material | `<workspace>/memory-local/` | Never commit | Private notes, work-item state, material not ready for shared review |
 | **Canonical workspace knowledge** | Shared/team workspace knowledge | `<workspace>/knowledge/` | Explicit reviewed promotion; pull request by default | Stable cross-repository documentation and repository knowledge indexes |
 
@@ -258,7 +240,7 @@ Within a workspace:
 /session:save --scope repo    save only the active child repository's Memory/
 /session:save --scope workspace
                               save only the workspace operational Memory/
-/session:save --scope none    synthesize without staging, committing, or pushing
+/session:save --scope none    publish validated Memory without Git
 ```
 
 The workspace root has no implicit active child. A repository-scoped save from
@@ -349,7 +331,7 @@ asha/
 │   ├── panel/                    # agents/ (6), commands/ (panel.md), docs/characters/, templates/
 │   ├── rp/                       # agents/ (6), commands/ (4), live-roleplay lifecycle
 │   ├── security/                 # skills/ (security-review)
-│   ├── session/                  # commands/ (7), agents/ (5), skills/ (2), workspace tools
+│   ├── session/                  # commands/ (7), agents/ (3), skills/ (2), workspace tools
 │   ├── test/                     # installer canary (ping command/skill/agent, stop hook)
 │   └── write/                    # agents/ (10), commands/ (2), skills/ (4), recipes/ (4)
 ├── docs/                         # harness-enforcement.md, memory-architecture.md, …
@@ -376,14 +358,10 @@ python3 -m pip install -r requirements.txt
 | Suite | Description |
 |-------|-------------|
 | Plugin + version validation | Frontmatter, namespace, structure, and version contracts |
-| Python unit tests | Transcript parsing, memory policy, learnings, synthesis, and save preflight |
-| Hook handlers | Lifecycle hooks, policy adapters, output contracts, and repository hygiene |
+| Python unit tests | Memory v2 schemas, recovery, learnings, workspace, and save scope |
+| Hook handlers | Recovery callbacks, policy adapters, output contracts, and repository hygiene |
 | Harness integration | OpenCode install/runtime bridge, Copilot build, doctor, uninstall, and init-repo |
 | Shell + JavaScript | shellcheck and writing-engine behavior |
-
-`jsonl_reader` tests pin the supported Claude, Codex, Copilot, and OpenCode transcript
-contracts so host format changes fail loudly rather than producing silently
-degraded synthesis.
 
 Individual test suites:
 
@@ -438,6 +416,21 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 ---
 
 ## Version History
+
+Entries below v2.7.0 describe the mechanisms shipped by those historical
+releases. Where they name transcript synthesis, retrieval, generic nudges,
+operational catalogues, or curator/steward agents, v2.7.0 has retired those
+surfaces; they are not current usage instructions.
+
+### v2.7.0 / Session v2.0.0 — Memory System v2 (2026-08-13)
+
+- Made explicit `/session:save` the sole semantic publisher, with a validated
+  four-section 4 KiB handoff and current-decisions file.
+- Replaced transcript/event/automatic-save machinery with ignored, atomic,
+  per-session 2 KiB recovery snapshots and seal-only SessionEnd behavior.
+- Added candidate/active/retired learnings with three-session/two-project
+  activation; removed confidence tiers, retrieval/nudges, context brokerage,
+  operational catalogues, and the memory curator/steward agents.
 
 ### v2.6.0 / Session v1.21.0 — OpenCode stable-v1 support (2026-08-11)
 
@@ -546,18 +539,14 @@ workspace operational `Memory/activeContext.md`. The internal renderer is
 containment, delimiter sanitization, 2048-byte excerpt budget by default, and
 zero output outside workspaces. `ASHA_WS_CONTEXT_MAX` changes the excerpt cap
 (values below 256 or invalid values revert to 2048). `ASHA_WS_INJECT=0`,
-`Work/markers/nudge-ws-context-off`, and `Work/markers/silence` disable delivery.
+`Work/markers/workspace-context-off`, and `Work/markers/silence` disable delivery.
 
-Claude and Codex are wired directly at SessionStart; installed end-to-end
-delivery passed on Claude Code 2.1.226 and Codex 0.147. Copilot CLI 1.0.78 uses
-the nudge engine upon native `sessionStart`, where its top-level
-`additionalContext` delivery passed with the exact renderer block. The former
-Codex/Copilot first-prompt fallback and 1 h cooldown are removed. Retrieval now
-discovers the contained workspace operational plane as source `workspace`,
-excludes it from ordinary project memory, and orders it after
-`memory`/`learning` only on exact ranking ties.
-The pinned issue-#49 oracle is in `test_memory_retrieval.py`; the user-owned
-live recall bench remains advisory.
+The shared SessionStart handler delivers this block directly at the native hook
+seam for Claude, Codex, Copilot, and OpenCode; Copilot receives its verified
+top-level `additionalContext` response. The former first-prompt fallback and
+cooldown are removed. Canonical workspace `knowledge/` indexes remain intact,
+but the v1 retrieval service and operational catalogue were retired by Memory
+v2.
 
 ### Workspace v3-v6 management CLI — explicit writes, no implicit Git (2026-08-08)
 

@@ -1,14 +1,5 @@
 #!/usr/bin/env python3
-"""
-Tests for save_scope (workspace v1, delivery issue 4 — issue #36).
-
-The writer-side enforcement seam from the ratified design memo: resolve a
-save scope into its plane mapping — plane_base (markers/logs), memory_root
-(staged pathspec), commit_repo (git target) as THREE distinct values —
-write a versioned structured proof at the plane base, and verify it
-immediately before any commit. The PreToolUse gate is defense-in-depth;
-THIS is the primary contract.
-"""
+"""Scope resolution for explicit Memory v2 publication."""
 
 import json
 import os
@@ -115,58 +106,6 @@ class ResolveCases(ScopeFixture):
         self.assertEqual({e["code"] for e in errors}, {"no_active_repo"})
 
 
-class ProofCases(ScopeFixture):
-    def test_proof_roundtrip(self):
-        mapping, _ = ss.resolve_plane("workspace", start=self.child)
-        path = ss.write_proof(mapping)
-        self.assertTrue(Path(path).is_file())
-        ok, reason = ss.verify_proof(mapping)
-        self.assertTrue(ok, reason)
-
-    def test_proof_is_versioned_structured(self):
-        mapping, _ = ss.resolve_plane("workspace", start=self.child)
-        path = ss.write_proof(mapping)
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        self.assertEqual(data["version"], 2)
-        self.assertEqual(data["scope"], "workspace")
-        self.assertEqual(data["plane_base"], str(self.ws))
-        self.assertEqual(data["commit_repo"], str(self.ws))
-        self.assertTrue(data["ac_sha256"])
-
-    def test_stale_activecontext_fails_verification(self):
-        mapping, _ = ss.resolve_plane("workspace", start=self.child)
-        ss.write_proof(mapping)
-        (self.ws / "Memory" / "activeContext.md").write_text(
-            "# mutated after proof\n", encoding="utf-8")
-        ok, reason = ss.verify_proof(mapping)
-        self.assertFalse(ok)
-        self.assertIn("activeContext", reason)
-
-    def test_wrong_plane_proof_rejected(self):
-        # A proof written for the CHILD plane must not satisfy the
-        # workspace plane (cross-plane laundering, memo failure table).
-        child_map, _ = ss.resolve_plane("repo", start=self.child)
-        ws_map, _ = ss.resolve_plane("workspace", start=self.child)
-        ss.write_proof(child_map)
-        ok, _ = ss.verify_proof(ws_map)
-        self.assertFalse(ok)
-
-    def test_missing_proof_fails(self):
-        mapping, _ = ss.resolve_plane("workspace", start=self.child)
-        ok, reason = ss.verify_proof(mapping)
-        self.assertFalse(ok)
-        self.assertIn("no proof", reason)
-
-    def test_tampered_mapping_fails(self):
-        mapping, _ = ss.resolve_plane("workspace", start=self.child)
-        path = ss.write_proof(mapping)
-        data = json.loads(Path(path).read_text(encoding="utf-8"))
-        data["commit_repo"] = str(self.child)   # redirect the commit target
-        Path(path).write_text(json.dumps(data), encoding="utf-8")
-        ok, reason = ss.verify_proof(mapping)
-        self.assertFalse(ok)
-
-
 class CliCases(ScopeFixture):
     def _run(self, argv):
         import contextlib
@@ -195,25 +134,16 @@ class CliCases(ScopeFixture):
         verdict = json.loads(out)
         self.assertEqual(verdict["errors"][0]["code"], "no_workspace")
 
-    def test_proof_write_and_verify_cli(self):
-        rc, out, _ = self._run(["save_scope.py", "write-proof",
+    def test_legacy_proof_verbs_are_rejected(self):
+        rc, _, err = self._run(["save_scope.py", "write-proof",
                                 "--scope", "workspace",
                                 "--start", str(self.child)])
-        self.assertEqual(rc, 0)
-        rc, _, _ = self._run(["save_scope.py", "verify",
-                              "--scope", "workspace",
-                              "--start", str(self.child)])
-        self.assertEqual(rc, 0)
+        self.assertEqual(rc, 2)
+        self.assertIn("usage", err)
 
-    def test_verify_cli_fails_after_mutation(self):
-        self._run(["save_scope.py", "write-proof", "--scope", "workspace",
-                   "--start", str(self.child)])
-        (self.ws / "Memory" / "activeContext.md").write_text(
-            "# mutated\n", encoding="utf-8")
-        rc, _, _ = self._run(["save_scope.py", "verify",
-                              "--scope", "workspace",
-                              "--start", str(self.child)])
-        self.assertEqual(rc, 1)
+    def test_proof_api_is_removed(self):
+        self.assertFalse(hasattr(ss, "write_proof"))
+        self.assertFalse(hasattr(ss, "verify_proof"))
 
     def test_usage_error(self):
         rc, _, err = self._run(["save_scope.py", "bogus"])

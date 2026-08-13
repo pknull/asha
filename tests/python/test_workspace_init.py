@@ -92,6 +92,42 @@ class InitFixture(unittest.TestCase):
 
 
 class BootstrapCases(InitFixture):
+    def test_silence_marker_blocks_workspace_init_before_any_write(self):
+        self.repo("frontend")
+        self.repo("service")
+        (self.ws / "Work/markers").mkdir(parents=True)
+        marker = self.ws / "Work/markers/silence"
+        marker.touch()
+        before = self.generated_snapshot()
+        report = self.init()
+        self.assertFalse(report["ok"])
+        self.assertIn("persistence_silenced", {item["code"] for item in report["errors"]})
+        self.assertEqual(before, self.generated_snapshot())
+
+    def test_legacy_operational_handoff_routes_to_review_before_any_v2_write(self):
+        self.repo("frontend")
+        self.repo("service")
+        (self.ws / "Memory").mkdir()
+        legacy = self.ws / "Memory/activeContext.md"
+        legacy.write_text("## Current\nlegacy workspace handoff\n")
+        report = self.init()
+        self.assertFalse(report["ok"])
+        self.assertIn("legacy_memory_requires_migration",
+                      {item["code"] for item in report["errors"]})
+        self.assertEqual("## Current\nlegacy workspace handoff\n", legacy.read_text())
+        self.assertFalse((self.ws / ".asha/config.json").exists())
+
+    def test_blank_existing_workspace_project_id_fails_without_replacement(self):
+        self.repo("frontend")
+        self.repo("service")
+        (self.ws / ".asha").mkdir()
+        config = self.ws / ".asha/config.json"
+        config.write_text('{"project_id":"   "}\n')
+        report = self.init()
+        self.assertFalse(report["ok"])
+        self.assertIn("project_id_invalid", {item["code"] for item in report["errors"]})
+        self.assertEqual('{"project_id":"   "}\n', config.read_text())
+
     def test_nested_child_repository_scaffolds_parent_knowledge_directories(self):
         nested = self.repo("groups/service")
 
@@ -112,11 +148,12 @@ class BootstrapCases(InitFixture):
         report = self.init()
         self.assertTrue(report["ok"], report)
         self.assertTrue((self.ws / ".asha" / "workspace.json").is_file())
+        config = json.loads((self.ws / ".asha" / "config.json").read_text())
+        self.assertEqual(2, config["memory_version"])
+        self.assertTrue(config["project_id"])
         self.assertTrue((self.ws / "Memory" / "activeContext.md").is_file())
-        self.assertEqual(
-            (self.ws / "Memory" / "MEMORY.md").read_bytes(),
-            b"# Workspace memory catalogue\n",
-        )
+        self.assertTrue((self.ws / "Memory" / "decisions.md").is_file())
+        self.assertFalse((self.ws / "Memory" / "MEMORY.md").exists())
         self.assertTrue((self.ws / "memory-local").is_dir())
         self.assertTrue((self.ws / "knowledge" / "README.md").is_file())
         self.assertTrue((self.ws / "AGENTS.md").is_file())
@@ -127,16 +164,21 @@ class BootstrapCases(InitFixture):
             "service": (_git("rev-parse", "HEAD", cwd=service), _git("status", "--porcelain", cwd=service)),
         }
         self.assertEqual(before, after)
+        self.assertIn("/Work/session-state/", (self.ws / ".gitignore").read_text())
+        self.assertIn("/Work/memory-migration/", (self.ws / ".gitignore").read_text())
 
     def test_rerun_is_byte_idempotent(self):
         self.repo("frontend")
         self.repo("service")
         first = self.init()
+        project_id = json.loads((self.ws / ".asha/config.json").read_text())["project_id"]
         before = self.generated_snapshot()
         second = self.init()
         self.assertTrue(first["ok"] and second["ok"])
         self.assertEqual(second["changed"], [])
         self.assertEqual(before, self.generated_snapshot())
+        self.assertEqual(project_id, json.loads(
+            (self.ws / ".asha/config.json").read_text())["project_id"])
 
     def test_git_mode_confirms_private_root_is_ignored(self):
         self.repo("frontend")
@@ -149,6 +191,22 @@ class BootstrapCases(InitFixture):
             ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", "memory-local/__probe__"]
         )
         self.assertEqual(ignored.returncode, 0)
+
+    def test_doctor_detects_recovery_reincluded_by_later_negation(self):
+        self.repo("frontend")
+        self.repo("service")
+        self.parent_git()
+        report = self.init(no_git=False)
+        self.assertTrue(report["ok"], report)
+        ignore = self.ws / ".gitignore"
+        ignore.write_text(ignore.read_text() +
+                          "!/Work/session-state/\n!/Work/session-state/*.json\n",
+                          encoding="utf-8")
+        drift = wi.doctor_workspace(self.ws)
+        self.assertIn("recovery_ignore_missing",
+                      {item["code"] for item in drift["errors"]})
+        fixed = wi.doctor_workspace(self.ws, fix=True)
+        self.assertTrue(fixed["ok"], fixed)
 
     def test_existing_asha_ignore_keeps_workspace_contract_files_trackable(self):
         self.repo("frontend")
@@ -365,6 +423,30 @@ class DoctorCases(InitFixture):
         self.assertFalse(report["promotion_available"])
         self.assertEqual(len(report["repositories"]), 2)
         self.assertEqual(report["private_ignore"], "configured-no-git")
+
+    def test_doctor_verifies_memory_v2_project_identity_and_private_ignores(self):
+        (self.ws / ".asha/config.json").unlink()
+        ignore = self.ws / ".gitignore"
+        ignore.write_text(ignore.read_text().replace("/Work/session-state/\n", ""))
+        ignore.write_text(ignore.read_text().replace("/Work/memory-migration/\n", ""))
+        report = wi.doctor_workspace(self.ws)
+        codes = {item["code"] for item in report["errors"]}
+        self.assertIn("memory_v2_config_missing", codes)
+        self.assertIn("recovery_ignore_missing", codes)
+        self.assertIn("migration_ignore_missing", codes)
+        self.assertFalse(report["ok"])
+
+    def test_doctor_rejects_invalid_v2_publication_despite_valid_config(self):
+        (self.ws / "Memory/activeContext.md").write_text("## Current\nlegacy\n")
+        report = wi.doctor_workspace(self.ws)
+        self.assertIn("memory_v2_publication_invalid",
+                      {item["code"] for item in report["errors"]})
+        self.assertFalse(report["ok"])
+
+    def test_doctor_validates_silenced_workspace_without_replaying_journal(self):
+        (self.ws / "Work/markers").mkdir(parents=True, exist_ok=True)
+        (self.ws / "Work/markers/silence").touch()
+        self.assertTrue(wi.doctor_workspace(self.ws)["ok"])
 
     def test_doctor_detects_missing_repo_drift_and_missing_shared_root(self):
         shutil.rmtree(self.ws / "service")

@@ -1,7 +1,7 @@
 # CLAUDE.md - AI Assistant Guide for asha
 
-**Version**: 2.6.0
-**Last Updated**: 2026-08-11
+**Version**: 2.7.0
+**Last Updated**: 2026-08-13
 **Repository**: pknull/asha
 
 ---
@@ -41,7 +41,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
-| **Session** | v1.21.0 | Core | Memory persistence, `/save` synthesis, `/consolidate` compaction, guardrail + guidance-nudge hooks, autonomous loops, workspace context + management CLI, evidence brokerage — 5 agents |
+| **Session** | v2.0.0 | Core | Explicit compact publication, bounded recovery, learning lifecycle, guardrails, loops, workspace context + management CLI — 3 agents |
 | **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
@@ -57,7 +57,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 - **Primary Format**: Markdown (commands, agents, documentation)
 - **Scripting**: Bash (hooks, automation), Python (session tools)
 - **Configuration**: JSON, YAML frontmatter
-- **Platforms**: Claude Code, OpenAI Codex, GitHub Copilot CLI
+- **Platforms**: Claude Code, OpenAI Codex, GitHub Copilot CLI, OpenCode
 - **Version Control**: Git
 
 ---
@@ -95,16 +95,15 @@ asha/
 │   ├── security/                     # skills/security-review/
 │   ├── session/                      # core scaffold
 │   │   ├── commands/                 # init, save, status, silence, restore, loop, consolidate
-│   │   ├── agents/                   # 5 agents (loop-operator, memory-steward,
-│   │   │                             #   memory-curator, process-router, capability-broker)
+│   │   ├── agents/                   # 3 agents (loop-operator, process-router,
+│   │   │                             #   capability-broker)
 │   │   ├── broker/                   # capabilities.json + capabilities.schema.json
 │   │   ├── skills/                   # memory-maintenance, skill-creator
-│   │   ├── hooks/                    # hooks.json, handlers/, policies/rules.json,
-│   │   │                             #   nudges/rules.json (+ fragments/)
-│   │   ├── modules/                  # CORE, cognitive, research, memory-ops,
+│   │   ├── hooks/                    # hooks.json, handlers/, policies/rules.json
+│   │   ├── modules/                  # CORE, cognitive, research,
 │   │   │                             #   high-stakes, verbalized-sampling
-│   │   ├── templates/                # Memory Bank + loop templates
-│   │   └── tools/                    # save pipeline, jsonl_reader, learnings, event_store,
+│   │   ├── templates/                # activeContext.md + decisions.md
+│   │   └── tools/                    # Memory v2 publication/recovery/learnings,
 │   │                                 #   broker.py, workspace_{manifest,status,init,
 │   │                                 #   knowledge,worktree,workitems}.py …
 │   ├── test/                         # installer canary (ping command/skill/agent, stop hook)
@@ -142,7 +141,7 @@ asha/
 | `plugins/[name]/skills/*/SKILL.md` | On-demand skills |
 | `plugins/[name]/hooks/hooks.json` | Lifecycle hook configuration |
 | `docs/harness-enforcement.md` | Single source of truth for cross-harness capability verdicts |
-| `docs/evidence-backed-brokerage.md` | Contract for the opt-in `context brief` / `process route` / `capabilities match` protocols |
+| `docs/evidence-backed-brokerage.md` | Contract for opt-in `process route` / `capabilities match` protocols |
 | `plugins/session/broker/capabilities.json` | Verified capability registry consumed by `broker.py` (schema alongside it) |
 
 ---
@@ -152,8 +151,9 @@ asha/
 ### Core Principles
 
 1. **Separation of Concerns**
-   - Framework (AGENTS.md) tells Claude to READ Memory
-   - Plugins tell Claude HOW TO MAINTAIN Memory
+   - Framework instructions define authority and verification
+   - The explicit save command owns semantic Memory publication
+   - Hooks own bounded mechanical recovery only
    - Character files are narrative personas, not technical roles
 
 2. **Portability First**
@@ -163,10 +163,10 @@ asha/
    - Enables framework reuse across projects
 
 3. **Multi-Session Continuity**
-   - Each session begins fresh (Claude context resets)
-   - Memory is the ONLY connection to previous work
-   - Session watching captures operations automatically
-   - Synthesis transforms operations into persistent context
+   - Each session begins fresh
+   - Published Memory is compact and explicitly authored from live context
+   - Ignored recovery snapshots provide low-authority crash orientation
+   - No transcript parser or lifecycle hook publishes semantic state
 
 4. **Character-Based Design**
    - Separate narrative personas from technical implementation
@@ -287,11 +287,11 @@ update its owning plugin README in the same change.
 
 | Element | Convention | Example |
 |---------|-----------|---------|
-| Memory files | camelCase | `activeContext.md`, `projectbrief.md` |
+| Memory files | fixed contract | `activeContext.md`, `decisions.md` |
 | Commands | kebab-case | `save`, `silence`, `panel` |
 | Agents | kebab-case | `recruiter`, `prose-analysis` |
 | Characters | Title Case | `The Moderator`, `The Analyst`, `The Challenger` |
-| Scripts | kebab-case.sh | `save-session.sh`, `common.sh` |
+| Scripts | kebab-case.sh | `session-start.sh`, `common.sh` |
 | Session IDs | dictionary-words or hex | `silent-thunder`, `a3f8c2d1` |
 
 ### File Format Conventions
@@ -395,12 +395,10 @@ Three tiers (v2.2.0 classification — see tests/run-tests.sh shellcheck suite):
 set -euo pipefail  # Exit on error, undefined vars, pipe failures
 ```
 
-1. **Hook handlers** — `set -uo pipefail` only, with the annotation
+2. **Hook handlers** — `set -uo pipefail` only, with the annotation
    `# fail-open by design: no set -e — a handler crash must never block the session`.
-   A file may document a stronger local reason (e.g. `detached-save.sh` keeps
-   non-errexit so its footer log line survives a failed stage) — in-file
-   contracts outrank this default.
-2. **Sourced libraries** (lib/, harnesses/, handlers' helpers) — no flags at
+   In-file contracts outrank this default.
+3. **Sourced libraries** (lib/, harnesses/, handlers' helpers) — no flags at
    file scope (they would mutate the caller's shell); annotate with
    `# source-scoped library: no set flags at file scope (runs in the caller's shell)`.
 
@@ -422,7 +420,7 @@ if ! command -v jq &>/dev/null; then
 fi
 
 # Defensive directory creation
-mkdir -p "$PROJECT_DIR/Memory/sessions"
+mkdir -p "$PROJECT_DIR/Work/session-state"
 mkdir -p "$PROJECT_DIR/Work/markers"
 ```
 
@@ -444,9 +442,9 @@ second memory taxonomy in this file.
 
 | Plane | Default path | Rule |
 |---|---|---|
-| User-global operation, identity, and learnings | `~/.asha/` | Cross-project only; learning index is injected first and bodies are read on demand |
-| Repository operational memory | `<repo>/Memory/` | One repository's cold-start handoff; repository save owns it |
-| Workspace operational memory | `<workspace>/Memory/` | Cross-repository handoff; explicit workspace scope owns its commit |
+| User-global operation, identity, and learnings | `~/.asha/` | Cross-project; only active learnings are injected |
+| Repository operational memory | `<repo>/Memory/` | Four-section handoff + current decisions; explicit save owns it |
+| Workspace operational memory | `<workspace>/Memory/` | Same two-file contract; explicit workspace scope owns it |
 | Private workspace memory | `<workspace>/memory-local/` | Never commit or inject wholesale |
 | Canonical workspace knowledge | `<workspace>/knowledge/` | Promote only through the reviewed workspace workflow |
 
@@ -455,12 +453,12 @@ or dependency.
 
 ### Save and launch rules
 
-- In a single repository, bare `/session:save` preserves existing behavior.
+- In a single repository, bare `/session:save` publishes, validates, commits, and pushes.
 - In a workspace child, bare save is `--scope repo`.
 - From a workspace root, repository save fails because no child is implicit;
   use `--scope workspace` for the workspace operational plane.
-- `--scope none` synthesizes without staging, commit, or push.
-- Claude and Copilot have clean-exit automatic save; Codex is manual-save only.
+- `--scope none` publishes validated Memory without staging, commit, or push.
+- Every harness requires explicit save for semantic publication. SessionEnd only seals recovery.
 - Launch from a child repository for child-owned work and from the workspace
   root for cross-repository coordination or shared-plane work.
 
@@ -470,8 +468,7 @@ or dependency.
 |---|---|
 | `Work/markers/silence` | Disable persistence until explicitly restored |
 | `Work/markers/rp-active` | Enable RP routing |
-| `Work/markers/prompt-refine` | Enable configured prompt refinement |
-| `Work/markers/nudge-ws-context-off` | Disable workspace context injection for the active project |
+| `Work/markers/workspace-context-off` | Disable workspace context injection for the active project |
 
 Project/workspace detection and save routing live in the shared tools under
 `plugins/session/tools/`. Do not introduce another ad-hoc upward-search chain.
@@ -825,13 +822,13 @@ git push -u origin <branch-name>
    - Panel system: `/panel` command, 6 agents, character profiles, recruitment (Research domain)
    - Code: `/code:review`/`verify`/`orchestrate`, 5 agents, postgres skill (Development domain)
    - Write: 10 writing agents, recipes, prose craft (Creative domain)
-   - Session: `/session:*` commands, Memory Bank, core modules, hooks (Core scaffold)
+   - Session: `/session:*` commands, Memory v2, core modules, hooks (Core scaffold)
    - Asha: identity templates only (`soul.md`, `voice.md`)
    - Admin / Security / Image: skill-only plugins (integrations, review checklist, image generation)
 
 2. **Check for Memory file references**
-   - Memory files live in user projects, not this repo
-   - This repo only documents Memory structure
+   - Published Memory files live in user projects, not this repo
+   - This repo ships only templates and validators
    - Don't create Memory files in asha
 
 3. **Distinguish character from implementation**
@@ -840,9 +837,9 @@ git push -u origin <branch-name>
    - Character files describe voice/role, not technical details
 
 4. **Respect portability constraints**
-   - Memory files MUST be self-contained
+   - Published Memory files MUST be self-contained and satisfy the v2 schema
    - No circular references between framework and Memory
-   - Plugins guide Memory maintenance, don't control it
+   - Semantic publication remains explicit on every harness
 
 ### Common Pitfalls to Avoid
 
@@ -866,7 +863,7 @@ git push -u origin <branch-name>
 
 5. **Don't ignore marker files**
    - Silence marker = no Memory logging
-   - RP-active marker = no session watching
+   - RP-active marker = direct prompt routing through the RP handler
    - Hooks exit silently if markers present
 
 ---
@@ -879,7 +876,7 @@ git push -u origin <branch-name>
 - `INSTALLER.md`: Install model, per-harness layouts
 - `docs/harness-enforcement.md`: Cross-harness capability verdicts (single source of truth)
 - `docs/memory-architecture.md`: Memory scopes and lifecycle
-- `docs/evidence-backed-brokerage.md`: Opt-in context/process/capability brokerage protocols
+- `docs/evidence-backed-brokerage.md`: Opt-in process/capability brokerage protocols
 - `docs/proposals/`: Ratified design proposals (workspace v1, workspace read side, issue-to-merge loop)
 - `plugins/panel/README.md`: Panel system documentation
 
@@ -889,7 +886,6 @@ git push -u origin <branch-name>
 - `lib/install.sh` / `lib/uninstall.sh`: Install/uninstall engines
 - `plugins/session/hooks/hooks.json`: Session lifecycle hook wiring
 - `plugins/session/hooks/policies/rules.json`: PreToolUse policy guardrails
-- `plugins/session/hooks/nudges/rules.json`: Declarative guidance nudges (advisory context injection; user layer `~/.asha/nudges.json`)
 - `plugins/session/broker/capabilities.json`: Verified capability registry (validated by `capabilities.schema.json`)
 - `<shared-git-root>/.asha/workspace.json`: Workspace manifest (parsed by `workspace_manifest.py`, consumed by detection/status)
 - `~/.asha/config.json`: Cross-project settings (incl. `asha_root` for bare launches)
@@ -903,6 +899,20 @@ git push -u origin <branch-name>
 ---
 
 ## Version History
+
+Entries below v2.7.0 are release records, not current instructions. Memory v2
+supersedes their transcript synthesis, automatic save, retrieval, generic nudge,
+operational catalogue/context-brief, and memory curator/steward mechanisms.
+
+### v2.7.0 / Session v2.0.0 (2026-08-13) — Memory System v2
+
+- Semantic publication is explicit-only and validates the two-file compact
+  schema before commit/push.
+- Cross-harness hooks now maintain bounded project-local recovery snapshots;
+  SessionEnd only seals and prunes.
+- Learnings use candidate/active/retired states with stable session/project
+  evidence. Transcript synthesis, auto-save, retrieval/nudges, operational
+  catalogues/context brief, and memory curator/steward surfaces were removed.
 
 ### v2.6.0 / Session v1.21.0 (2026-08-11) — OpenCode stable-v1 harness
 
@@ -930,8 +940,8 @@ importing foreign content, and no manifest means no output and no renderer
 startup. Excerpt budget 2048 bytes (`ASHA_WS_CONTEXT_MAX`; below 256 or invalid
 reverts). Kill switches: `ASHA_WS_INJECT=0`, `Work/markers/nudge-ws-context-off`,
 `Work/markers/silence`. Claude and Codex deliver directly at SessionStart;
-Copilot uses nudge row `ws-context` on native `sessionStart` returning top-level
-`additionalContext` (its raw sessionStart stdout is neither used nor claimed).
+Copilot uses the direct SessionStart handler on native `sessionStart`, returning
+top-level `additionalContext` (raw unshaped stdout is neither used nor claimed).
 Live-verified on Claude Code 2.1.226, Codex 0.147, Copilot CLI 1.0.78. The old
 first-prompt fallback and its 1 h cooldown are gone. Retrieval discovers the
 contained workspace operational plane as source `workspace`, excludes it from
@@ -957,11 +967,10 @@ preview token; `worktree-seed` emits data only.
 `plugins/session/broker/capabilities.json`. `context brief` reads catalogue
 metadata only (never recursive scans, transcripts, or indexed bodies), bounds
 work with `--budget-bytes`/`--timeout-ms`, reports exhaustion instead of
-broadening, and emits a `source_signature` for reuse. The four new agents
-(`memory-steward`, `memory-curator`, `process-router`, `capability-broker`) are
-optional harness wrappers around those protocols — never required for
-correctness, never spawning another broker; `memory-curator` is review-only by
-allowlist. Contract: [docs/evidence-backed-brokerage.md](docs/evidence-backed-brokerage.md).
+broadening, and emits a `source_signature` for reuse. This historical release
+also shipped memory-steward/curator wrappers, which v2.7.0 later retired;
+process-router and capability-broker remain available. Contract:
+[docs/evidence-backed-brokerage.md](docs/evidence-backed-brokerage.md).
 
 Seven new Python suites landed with it (broker, memory_retrieval, workspace
 init/knowledge/status/workitems/worktree). **Process note**: this arrived as a

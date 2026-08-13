@@ -1,91 +1,65 @@
-# Manual Save Pipeline
+# Explicit Memory v2 Save Pipeline
 
-**Audience**: any session where the save plugin is absent, partial, or unmountable
-(fresh machine, moved checkout, broken symlink mount). This is the documented
-fallback that `save-preflight-env.sh` points at when its plugin-verification
-phase fails (exit code 3).
+This page is the manual fallback when the rendered `session-save` workflow is
+unavailable. It is never called by hooks.
 
-The automated pipeline (synthesis, guardrails, engine-backed gates) is always
-preferred. Use this document only when it is unavailable, and record in the
-commit message that the save was manual.
-
----
-
-## 0. Confirm you are actually in the fallback case
+## 1. Resolve the publication plane
 
 ```bash
-"$ASHA_ROOT/plugins/session/tools/save-preflight-env.sh" --report
+ASHA_ROOT=/path/to/asha
+TOOLS="$ASHA_ROOT/plugins/session/tools"
+python3 "$TOOLS/save_scope.py" resolve --scope repo --start "$PWD"
 ```
 
-- Exit `2` — environment problem, not a missing plugin. Fix `ASHA_ROOT`
-  (`~/.asha/config.json` → `asha_root`) or run `./install.sh`; do not fall back.
-- Exit `3` — plugin genuinely missing/partial. Continue below.
-- Exit `0`/`1` — the plugin is present; use the normal `/session:save` flow.
+For a workspace-owned handoff use `--scope workspace`. The JSON result supplies
+`plane_base`, `memory_root`, `memory_rel`, and `commit_repo`. Use `--scope none`
+semantics by resolving the repository plane but skipping Git below.
 
-## 1. Write the handoff by hand
+## 2. Author from live context
 
-Edit `Memory/activeContext.md` directly:
+Verify current repository state, then draft two temporary files:
 
-- **Lead section** must be `## What Was Accomplished (YYYY-MM-DD — topic)` with
-  the session stamp as its first body line:
+- `activeContext.md`: exactly `Objective`, `State`, `Next`, `Blockers`, at most
+  4,096 UTF-8 bytes, with at most five Next items and five Blockers.
+- `decisions.md`: one `Decisions` heading and current binding decisions only.
 
-  ```markdown
-  ## What Was Accomplished (2026-07-17 — <topic>)
-  <!-- wwa-session: <your session id> -->
+Do not read a harness transcript or derive semantic state from recovery JSON.
 
-  Concrete narrative: file paths touched, decisions made, blockers hit.
-  ```
-
-- **Next Steps** must be actionable cold-start items — file paths, commands,
-  blocked decisions. Never `Review and plan next session`.
-- Update frontmatter `lastUpdated` to the current UTC time
-  (`YYYY-MM-DD HH:MM UTC`). Never a future time.
-
-## 2. Verify against disk — disk is ground truth
-
-Every claim in the notes must survive contact with the filesystem. The notes
-are flagged and corrected, never the reverse.
+## 3. Validate and publish atomically
 
 ```bash
-# Every path the notes reference must exist:
-grep -oE '`[A-Za-z0-9_./~-]+/[A-Za-z0-9_./-]+`' Memory/activeContext.md \
-  | tr -d '`' | while read -r p; do [ -e "$p" ] || echo "CONTRADICTION: $p missing on disk"; done
-
-# Claims of "committed/pushed/clean" must match git:
-git status --short
-git log --oneline -3
+python3 "$TOOLS/memory_v2.py" publish \
+  --project-dir "$PLANE_BASE" \
+  --active-file "$ACTIVE_DRAFT" \
+  --decisions-file "$DECISIONS_DRAFT"
 ```
 
-Remove or correct any contradicted claim before proceeding.
+The validator checks both drafts before replacing either published file.
+After publication, resolve `SAVE_SESSION_ID` only when proposing optional
+learning evidence. Missing identity skips that optional step; it never blocks
+publication, commit, or push.
 
-## 3. Continuity gate checklist (manual equivalent of the engine gates)
+## 4. Review and verify
 
-| Gate | Manual check | Blocks commit? |
-|---|---|---|
-| memory_substrate | `Memory/` and `Memory/events/` exist (`mkdir -p` them) | yes |
-| session_integrity | The notes describe THIS session, not a stale/foreign one | yes |
-| ac_clobber | No `Created N file(s)` / `Modified N file(s)` / `No significant changes recorded` stub lines | yes |
-| ac_wwa_provenance | Lead WWA carries `<!-- wwa-session: … -->` for this session | yes |
-| ac_handoff | Next Steps is actionable, not the generic stub | no (fix anyway) |
-| disk_truth | Step 2 found zero contradictions | no (fix anyway) |
+Inspect the exact Memory diff and run the repository's required verification.
+Correct stale or unverifiable claims by changing the drafts and publishing
+again. Recovery state remains unpublished and ignored.
 
-Do not commit past a "yes" row that fails.
+## 5. Commit and push
 
-## 4. Commit and push
+Unless the requested scope is `none`:
 
 ```bash
-git add Memory/
-ASHA_ALLOW_UNGATED_MEMORY_COMMIT=1 git commit -m "Session save (manual): <summary>"
-git push || echo "UNPUSHED — record this in next session's notes"
+git -C "$COMMIT_REPO" add -- \
+  "$MEMORY_REL/activeContext.md" "$MEMORY_REL/decisions.md"
+git -C "$COMMIT_REPO" commit -m "Session save: $(date -u '+%Y-%m-%d %H:%M UTC')"
 ```
 
-The override env is required because the `save-commit-gate` PreToolUse hook
-(when the plugin IS mounted) refuses Memory commits without the gates-ok
-marker; in the true fallback case (plugin absent) no hook fires and plain
-`git commit` works. Using the override while the plugin is healthy defeats the
-gate — don't.
+Unless `--no-push` was requested:
 
-## 5. Aftermath
+```bash
+python3 "$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"
+```
 
-On the next healthy session, run `/session:save` so the engine-backed pipeline
-re-synthesizes and the manual entry is absorbed into the normal history.
+If `Work/markers/silence` exists, stop before all publication, learning, Git,
+or push operations.

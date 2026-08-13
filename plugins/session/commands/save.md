@@ -1,405 +1,87 @@
 ---
 name: session-save
-description: "Manually trigger session synthesis and git commit"
+description: "Publish compact Memory v2 from live context, validate, commit, and push"
 argument-hint: "[--scope repo|workspace|none] [--no-push] [commit message]"
-allowed-tools: ["Bash", "Read", "Edit"]
+allowed-tools: ["Bash", "Read", "Write"]
 ---
 
 # Save Session
 
-Trigger synthesis now. Use when you want to checkpoint mid-session or ensure state is captured before exiting.
+This explicit command is the **only semantic publication path**. Never call it
+from a lifecycle hook, timer, background process, or transcript parser.
 
-**Lifecycle:** Manual transcript synthesis works on Claude, Codex, Copilot, and
-OpenCode. Claude and Copilot run it automatically on clean exit. OpenCode runs
-a best-effort clean-exit save from plugin `dispose`. Codex requires this
-explicit command because Asha has no SessionEnd persistence path there.
+## Contract
 
-## What It Does
-
-1. **Runs pattern analyzer** — synthesizes activeContext.md from events
-2. **Extracts patterns** — updates the `~/.asha/learnings/` OKF bundle
-3. **Captures calibration when enabled** — explicit saves may write voice.md and
-   keeper.md only when `~/.asha/config.json` sets `capture_calibration: true`;
-   automatic saves never write either file
-4. **Archives events** — rotates old events to archive
-5. **Captures baseline sample** — if Asha baseline tooling is present, records a metrics sample for the session (best-effort, non-blocking)
-6. **Git commit + push** — commits Memory/ changes
-
-## Usage
-
-```bash
-/session:save                           # Synthesize + commit + push
-/session:save --no-push                 # Synthesize + commit only
-/session:save "Completed auth feature"  # Custom commit message
-/session:save --scope workspace         # Commit the workspace operational plane
-/session:save --scope none              # Synthesis only: no staging, commit, or push
-```
-
-## Save scopes (workspace v1, issue #36)
-
-Bare `/session:save` (or `--scope repo`) is the project save documented below —
-inside a workspace that is the active CHILD repository, which is exactly
-today's behavior. Passing `--scope` in a project with NO workspace manifest
-is a hard error (the single carved-out deviation from byte-identical, pinned
-in the ratified proposal).
-
-**`--scope none`**: run the preflight report and synthesis steps below, then
-STOP — no queue drain, no staging, no commit, no push, no `save-pending`
-marker.
-
-**`--scope workspace`**: commits the workspace operational plane instead of
-the project. The plane's content is authored (v1 does not synthesize
-workspace memory); this flow routes ONLY the staging/commit/push, through
-the plane mapping and proof — never stage child-repo paths into it:
-
-```bash
-TOOLS="$ASHA_ROOT/plugins/session/tools"
-MAPPING="$(python3 "$TOOLS/save_scope.py" resolve --scope workspace)" || { echo "$MAPPING"; exit 1; }
-COMMIT_REPO="$(printf '%s' "$MAPPING" | jq -r .commit_repo)"
-PLANE_BASE="$(printf '%s' "$MAPPING" | jq -r .plane_base)"
-REL_MEM="$(printf '%s' "$MAPPING" | jq -r .memory_rel)"   # "" = whole repo
-
-python3 "$TOOLS/save_scope.py" write-proof --scope workspace
-python3 "$TOOLS/save_scope.py" verify --scope workspace || exit 1
-
-# Arm the Stop-hook net with a v2 locator carrying the plane (at the CHILD
-# project root, where the Stop hook looks; routing fields are load-bearing).
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-mkdir -p "$PROJECT_DIR/Work/markers"
-jq -n --arg c "$(date -u +%FT%TZ)" --arg p "$PLANE_BASE" \
-    '{created:$c, attempts:0, scope:"workspace", plane_base:$p}' \
-    > "$PROJECT_DIR/Work/markers/save-pending"
-
-git -C "$COMMIT_REPO" add "${REL_MEM:-.}/"
-git -C "$COMMIT_REPO" commit -m "Workspace save: ${ARGUMENTS:-checkpoint}"
-# The gate CONSUMES the proof on this commit (one proof = one commit); a
-# failed commit needs a fresh write-proof before retrying.
-"$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"   # unless --no-push
-```
-
-Then STOP — the project-scope pipeline below does not run for a workspace
-save. If any step fails, report the failure verbatim; never fall through to
-the project flow.
-
-## Execution
-
-First enforce silence before any queue drain, synthesis, archive, commit, or
-push. Silence means no persistence, including previously queued pushes:
-
-```bash
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
-    echo "Memory persistence skipped: Work/markers/silence is active"
-    exit 0
-fi
-```
-
-Then resolve the environment and verify the save plugin — fail fast, BEFORE any
-synthesis. `save-preflight-env.sh` auto-detects and validates `ASHA_ROOT` (a
-stale `config.json` pointing at a moved repo is caught here, not five steps
-later), resolves `PROJECT_DIR`/harness/session id, and verifies every required
-save tool exists on disk. Exit 2 = environment unresolved (fix and retry);
-exit 3 = plugin missing/partial → follow `docs/save-manual-pipeline.md` (the
-script prints the path, or an embedded copy when even the doc is unreachable):
-
-```bash
-PREFLIGHT=""
-for cand in "${ASHA_ROOT:-}" "$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)"; do
-    [[ -n "$cand" && -x "$cand/plugins/session/tools/save-preflight-env.sh" ]] \
-        && { PREFLIGHT="$cand/plugins/session/tools/save-preflight-env.sh"; break; }
-done
-[[ -n "$PREFLIGHT" ]] || { echo "ERROR: save plugin unmounted — follow docs/save-manual-pipeline.md in the asha repo" >&2; exit 1; }
-ENV_EXPORTS="$("$PREFLIGHT" --report --print-env)" || exit $?
-eval "$ENV_EXPORTS"
-```
-
-The `--report` run also evaluates the continuity gates read-only, so disk-truth
-contradictions (Memory notes referencing paths that no longer exist — disk is
-ground truth, the notes get corrected) surface before synthesis, not after.
-
-Next, opportunistically drain any queued (previously unpushed) commits. If a push destination exists they go out now; if not, this is a no-op that reports the backlog instead of failing silently:
-
-```bash
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/push_retry.py" drain --project-dir "$PROJECT_DIR"
-```
-
-Run the synthesis pipeline:
-
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/pattern_analyzer.py" synthesize --project-dir "$PROJECT_DIR" --days 7 --capture-calibration
-```
-
-Then archive and rotate events:
-
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/save-session.sh" --archive-only
-```
-
-Then run the boundary guardrail to strip auto-fallback stub blocks the synthesizer re-appends and dedup re-emitted calibration signals against the existing keeper log. This treats `pattern_analyzer.py`'s output as untrusted input — durable fix at the boundary, no upstream chase required.
-
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/save_guardrail.py" all "$PROJECT_DIR"
-```
-
-Surface any non-zero counts in chat output so the user sees what was cleaned. If the guardrail itself errors (missing file, parse failure), report it and continue — the gate must not block save on a guardrail bug.
-
-Then validate the learnings OKF bundle. This is **warn-only** — it never blocks the save. It checks the three OKF hard rules (parseable frontmatter, non-empty `type`, reserved-file structure) over `~/.asha/learnings/`. Set `ASHA_LEARNINGS_VALIDATE=strict` to also surface producer-quality lints (missing title/description, broken links, orphans):
-
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-LEARNINGS_DIR="$HOME/.asha/learnings"
-if [[ -d "$LEARNINGS_DIR" ]]; then
-    VFLAG=""; [[ "${ASHA_LEARNINGS_VALIDATE:-warn}" == "strict" ]] && VFLAG="--strict"
-    "$ASHA_ROOT/plugins/session/tools/validate.py" "$LEARNINGS_DIR" $VFLAG \
-        || echo "warn: learnings bundle validation reported issues (non-fatal)" >&2
-fi
-"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" legacy-status
-```
-
-Surface any `ERROR` lines in chat (a malformed concept file), but do not block the commit on them. Likewise surface any `warnings` from `legacy-status` — a legacy flat `learnings.md` sitting unstamped next to the live bundle means an old backup arrangement is silently tracking a stale decoy instead of the bundle (issue #12); tell the user, never block.
-
-Then run the fixture-based recall benchmark against the real memory catalogue
-and learnings bundle. This is **warn-only** and always exits zero. Surface the
-aggregate `hit@5` and any rows marked `NEW` in chat; an existing known miss is
-still reported but does not need repeated narration.
-
-```bash
-"$ASHA_ROOT/plugins/session/tools/recall_bench.py" --project-dir "$PROJECT_DIR" --format human
-"$ASHA_ROOT/plugins/session/tools/memory_nudge.py" stats --days 7
-```
-
-Then **suggest cross-links** for recently-touched learnings. This is the model — you — proposing links; it runs only on interactive `/session:save` (the automatic session-end path has no model and skips it). Best-effort and **non-blocking**: skip silently if the bundle is absent or this was a read-only/throwaway session.
-
-1. Get the bounded candidate set + a summary of the whole bundle:
+1. Resolve the requested plane (`repo` by default; `workspace` uses
+   `tools/save_scope.py resolve`; `none` publishes the repo plane without Git).
+2. Read the live conversation and verify every state claim against current
+   disk. A recovery snapshot is low-authority orientation only.
+3. Draft, from live model context:
+   - `activeContext.md`, at most 4,096 UTF-8 bytes, with exactly the level-one
+     headings `Objective`, `State`, `Next`, and `Blockers` in that order;
+   - `decisions.md`, headed only `Decisions`, containing current binding
+     decisions—not a history. Remove decisions that no longer bind.
+   `Next` and `Blockers` each contain at most five items.
+4. Write both drafts outside `Memory/`, then publish through the validator:
 
    ```bash
+   TOOLS="$ASHA_ROOT/plugins/session/tools"
+   python3 "$TOOLS/memory_v2.py" publish --project-dir "$PLANE_BASE" \
+     --active-file "$ACTIVE_DRAFT" --decisions-file "$DECISIONS_DRAFT" || exit
+   ```
 
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link-candidates --days 7
-
-```
-
-2. For each candidate, decide whether it has a **genuine semantic relationship** to any other learning in the returned `bundle` list — e.g. "preflight → cutover", "both build PreToolUse guardrails", "filesystem caution before a risky op". **Do NOT link two learnings merely because they share a `category`** — category overlap is not a relationship. Most candidates get zero or one good link; skip a candidate entirely if nothing genuinely relates (forced links are worse than none).
-
-3. Apply each chosen link (idempotent, reciprocal, skips dangling targets):
-
-   ```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" link --id <source> --to <target>[,<target2>] --reason "<short why>" --bidirectional
-```
-
-1. Drop any links orphaned by deletions:
+   The validator checks both drafts before either replacement and writes by
+   same-directory `fsync` + `os.replace`. Never bypass it with direct edits.
+5. Inspect and show the resulting diff. Run the relevant verification for
+   code/config changed during the session. Correct the drafts and republish if
+   the diff contains stale, vague, or unverifiable claims.
+6. Propose at most three cross-project learning candidates when the evidence
+   warrants it. Resolve the save identity from `ASHA_SESSION_ID`, then
+   `CLAUDE_CODE_SESSION_ID`, then `CODEX_THREAD_ID`; Copilot may fall back to
+   its current/latest validated recovery snapshot. The manager obtains the
+   stable project id from `.asha/config.json`:
 
    ```bash
+   if SAVE_SESSION_ID="$(python3 "$TOOLS/save_identity.py" \
+       --project-dir "$PLANE_BASE" --harness "${ASHA_HARNESS:-}")"; then
+     python3 "$TOOLS/learnings_manager.py" propose \
+       --id ID --trigger TRIGGER --action ACTION --reason REASON \
+       --project-dir "$PLANE_BASE" --session-id "$SAVE_SESSION_ID" || true
+     python3 "$TOOLS/learnings_manager.py" activate-if-eligible --id ID \
+       --project-dir "$PLANE_BASE" || true
+   else
+     echo "learning evidence skipped: session identity unavailable" >&2
+   fi
+   ```
 
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/learnings_manager.py" prune-links
+   A learning activates only after three distinct session ids across two
+   project ids. This is a user-controlled corroboration heuristic over local
+   save evidence, not a security boundary. Candidates are not SessionStart
+   instructions. A learning proposal failure is non-fatal after publication:
+   report it and continue to diff, commit, and push.
+7. Unless `--scope none`, stage only the selected plane's
+   `Memory/activeContext.md` and `Memory/decisions.md`, then commit. Do not
+   stage unrelated work:
 
-```
+   ```bash
+   git -C "$COMMIT_REPO" add -- "$MEMORY_REL/activeContext.md" "$MEMORY_REL/decisions.md"
+   git -C "$COMMIT_REPO" commit -m "Session save: ${MESSAGE:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
+   ```
 
-Report links added in chat. `## Related` sections live in the concept-file
-bodies, not the injected index lines, so they add zero SessionStart cost.
+8. Unless `--scope none` or `--no-push`, publish the commit through the durable
+   push path:
 
-Then capture a baseline sample (best-effort, non-blocking — only runs if the Asha baseline tooling is present).
+   ```bash
+   python3 "$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"
+   ```
 
-**Step 5a — Determine archetype** from this session's activity. Apply this heuristic in order, pick the FIRST match:
+## Hard exclusions
 
-| Archetype | Signal |
-|---|---|
-| `panel-orchestration` | `/panel-system:panel` invoked this session OR ≥2 distinct subagents spawned |
-| `daily-brief` | `/daily-brief` invoked this session |
-| `research-synthesis` | ≥3 web research calls OR the `gemini` grounded-search skill invoked |
-| `email-triage` | Any `gws` CLI calls OR `mcp__gemini`/email-related MCP tools used |
-| `code-implementation` | ≥10 `Edit`/`Write`/`MultiEdit` on non-`Memory/` paths |
-| `unclassified` | None of the above (fallback) |
+Do not read Claude/Codex/Copilot/OpenCode transcript stores. Do not derive or
+archive events. Do not run a pattern analyzer, recall index, nudge metric,
+calibration extractor, or automatic save. Do not modify identity files.
 
-**Step 5b — Invoke capture.sh** with the archetype:
+## Silence
 
-```bash
-# Resolved from env or ~/.asha/config.json — never hardcoded to one machine's layout
-CAPTURE="${ASHA_BASELINE_CAPTURE:-$(jq -r '.baseline_capture // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-if [[ -n "$CAPTURE" && -x "$CAPTURE" ]]; then
-    # ARCHETYPE set per heuristic above; SAVE_DURATION left empty for v1
-    "$CAPTURE" "$ARCHETYPE" "" --notes "auto-captured from /session:save" || {
-        echo "warn: capture.sh failed (non-fatal); continuing with commit" >&2
-    }
-fi
-```
-
-**Failures are non-fatal.** If no capture script is configured (`ASHA_BASELINE_CAPTURE` env var or `baseline_capture` key in `~/.asha/config.json`) or the configured path is missing, skip silently. If it exits non-zero, log a one-line warning and continue — baseline accumulation is best-effort, not a gate on save.
-
-Then run the pre-flight verification gate (engine-backed — the enforced version of the manual Verification Gate below). It self-heals `Memory/`, confirms synthesis ran on THIS session's transcript (not a concurrent session's), blocks a clobbered or foreign-sourced `activeContext.md`, and — via `ac_wwa_provenance` — hard-fails when the session did real work but the lead "What Was Accomplished" still belongs to a foreign/prior session (the bg 0-Edit/Write handoff gap). Run Verification-Gate Check 1 BEFORE this so the lead WWA is already current and stamped:
-
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/save-preflight-env.sh" --guard
-```
-
-If it exits non-zero (a HARD gate failed), STOP — fix the flagged issue (re-run synthesis with the correct transcript, regenerate the affected activeContext section, or prepend the current-session WWA the `ac_wwa_provenance` message names) before committing. Do not commit over a hard failure. The same gates re-run post-commit via the Stop hook as a final net.
-
-On pass, the script writes `Work/markers/save-gates-ok` bound to the sha256 of
-`Memory/activeContext.md`. The `save-commit-gate` PreToolUse hook REFUSES any
-`git commit` touching `Memory/` without that marker — and if activeContext.md
-changes after the gates passed, the hash no longer matches and the commit is
-refused again until the preflight re-runs. Passing the gates and then editing
-the handoff is not a loophole. Do not edit `Memory/activeContext.md` between
-this step and the commit.
-
-Then commit Memory changes. Dropping the `save-pending` marker first arms the Stop hook to run the post-commit verification gate for this turn:
-
-```bash
-cd "$PROJECT_DIR"
-mkdir -p "$PROJECT_DIR/Work/markers"
-printf '{"created":"%s","attempts":0}\n' "$(date -u +%FT%TZ)" > "$PROJECT_DIR/Work/markers/save-pending"
-git add Memory/
-git commit -m "Session save: ${ARGUMENTS:-$(date -u '+%Y-%m-%d %H:%M UTC')}"
-```
-
-Push unless `--no-push` specified. This uses the durable push path: if a remote/upstream exists the commit is pushed; otherwise HEAD is recorded to the backoff retry queue (inspect with `push_retry.py status`) instead of failing silently:
-
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
-"$ASHA_ROOT/plugins/session/tools/push_retry.py" ensure --project-dir "$PROJECT_DIR"
-```
-
-## Verification Gate (run BEFORE commit)
-
-After synthesis writes activeContext.md and BEFORE staging it, verify the file is a usable handoff. Cold-start sessions depend on it. If any of these checks fail, stop and surface the issue to the user — do not paper over it with a commit.
-
-**Check 1 — "What Was Accomplished" is concrete, current, and provenance-stamped.**
-
-The synthesizer will write a generic block like `Created N file(s): ...` / `Modified N file(s): ...` when it has nothing better. That block is useless to a future session. The LEAD `## What Was Accomplished*` section MUST describe **this** session (file paths, tool names, decisions, blockers) — by the convention, prepend a dated heading `## What Was Accomplished (YYYY-MM-DD — topic)`.
-
-When you write or replace that lead section, stamp it with this session's id as the first body line so the `ac_wwa_provenance` gate can confirm it is current:
-
-```
-## What Was Accomplished (2026-06-22 — <topic>)
-<!-- wwa-session: $CLAUDE_CODE_SESSION_ID -->
-
-<concrete narrative…>
-```
-
-This matters most for **read-only / RCON / Bash-edit sessions that emit no Edit/Write events**: the synthesizer produces no WWA and the curated merge leaves the *previous* session's WWA as the lead. If you skip this, `ac_wwa_provenance` HARD-fails the save (active session + stale lead) until you prepend the stamped current WWA. (A session that genuinely did nothing has no events and is not blocked.) Use the literal session id from `$CLAUDE_CODE_SESSION_ID`; the synthesizer auto-stamps the lead only on a first-synth where its own WWA survives the merge.
-
-```bash
-# Quick grep — if this matches and it's near the top, you have the auto-fallback
-grep -n "Created [0-9]* file(s)\|Modified [0-9]* file(s)" "$PROJECT_DIR/Memory/activeContext.md" | head -3
-```
-
-**Check 2 — "Next Steps" is actionable.**
-
-Per CLAUDE.md "Session Handoff Quality": if Next Steps contains only `Review and plan next session` or similar generic text, replace it with concrete pickups before commit.
-
-**Check 3 — No duplicate "What Was Accomplished" headers.**
-
-After the merge fix landed, this should not happen, but verify defensively. A bare `## What Was Accomplished` co-existing with a `## What Was Accomplished (date — note)` is the synthesizer-clobber bug; report it as a regression.
-
-```bash
-grep -c "^## What Was Accomplished" "$PROJECT_DIR/Memory/activeContext.md"
-# Expect: 1 (or N matching parenthetical user variants). NOT N+1.
-```
-
-**Check 4 — Show me the green for any code/config you wrote this session.**
-
-If this session edited code, hook scripts, or config under version control, run the relevant verification (tests, type check, lint, smoke invocation) and paste the result inline. If you cannot verify, say "unverified" explicitly and list what would need to be checked. Never commit-then-claim-done.
-
-## When to Use
-
-- **Mid-session checkpoint** — long session, want progress saved
-- **Before risky operation** — about to do something destructive
-- **Custom commit message** — want descriptive message instead of auto-generated
-- **Explicit calibration** — want to manually review what gets captured
-
-## Output
-
-Shows synthesis results:
-
-- Events processed
-- Patterns found
-- Calibration signals captured
-- Files updated
-
-<!-- CONSOLIDATION-PASS:START -->
-## B1 Consolidation Pass (Appendix)
-
-Run this pass **after** pattern_analyzer synthesis and **before** the git commit step. It is non-destructive — it flags via `superseded_by:` rather than deleting.
-
-### When to run
-
-Always run if any memory files were written or updated this session. Skip only if the session was read-only (no Memory/ writes, no learnings updates).
-
-### Step C1 — Dedup scan
-
-Scan all `~/.asha/*.md` and `Memory/*.md` for near-identical facts (same subject, same conclusion):
-
-1. For each pair of files with overlapping `type:` (e.g., two `type: feedback` files about the same tool), compare their body text.
-2. If bodies are >80% similar (same core claim, minor wording difference), mark the **older** file with `superseded_by: <newer-filename>` in its frontmatter.
-3. Do not delete. Log the flagged pair in the commit message.
-
-```yaml
-# Example: older file gets this added to frontmatter
-superseded_by: feedback_gws_over_mcp_v2.md
-```
-
-### Step C2 — Contradiction flag
-
-If a session event or new memory directly contradicts an older memory:
-
-1. Add `superseded_by: <new-file>` to the **older** file's frontmatter.
-2. Add a `# Superseded` comment at the top of the older file's body (after frontmatter).
-3. Never delete the older file — it is the audit trail.
-
-```markdown
-# Superseded
-
-Superseded by: feedback_gws_over_mcp.md (2026-04-18)
-Reason: Updated policy — gws CLI now preferred over MCP.
-
-[original content below]
-```
-
-### Step C3 — Learnings tiering (now automatic)
-
-Tiering is derived from confidence at read time — no manual promotion/demotion or
-char-budget bookkeeping. `learnings_manager.py render-hot` selects the top ≤10
-entries with Confidence ≥ 0.7 for session-start injection (byte-budgeted); the
-rest remain in the bundle as cold concept files. Each learning is its own file in
-`~/.asha/learnings/`, deduped by id, so there is no monolith to compact. Just
-confirm the validate step above reported no errors.
-
-<!-- CONSOLIDATION-PASS:END -->
-
-<!-- RED-FLAGS:START -->
-## Red Flags — Stop and Reconsider
-
-If you catch yourself thinking any of the following while running `/session:save`, stop. The thought itself is the warning. Do the action in the right column instead.
-
-| Rationalization (the thought) | What it actually means | Do this instead |
-|---|---|---|
-| "Synthesis is slow and the events look thin — I'll skip pattern_analyzer and just commit Memory/." | The synthesis step IS the value of `/session:save`. Skipping it commits stale activeContext and silently breaks future cold-starts. | Run synthesis. If it is genuinely too slow for this checkpoint, raise that as a separate issue — do not bypass it silently. |
-| "Next Steps in activeContext came out generic ('Review and plan next session') — that's good enough, the user can fill it in." | This is the exact failure mode the project CLAUDE.md "Session Handoff Quality" rule calls out by name. A cold-start session reading this cannot act. | Replace generic Next Steps with concrete file paths, tool names, blocked decisions, and the first thing next session should pick up — per CLAUDE.md rule. |
-| "I captured signals to keeper.md/voice.md but the user didn't ask to see them — I'll just commit." | Calibration is two-way. Writing to keeper without surfacing the signal lets miscalibration compound silently across sessions. | Surface the captured signals in chat before committing. Let the user confirm or correct the read. |
-| "Ratchet check found a repeated pattern but proposing a skill/hook feels like scope creep — I'll skip it just this once." | The Ratchet on Save rule exists precisely because "just this once" is how guardrails never get built. The pattern will repeat. | Run the ratchet check and surface the proposal. The user decides whether to act — your job is to flag, not to filter. |
-| "User said save, push is the default, I'll go ahead even though they mentioned not wanting to push earlier." | You are about to push on autopilot against a `--no-push` intent the user already signaled. Memory commits are remote-visible. | Honor `--no-push`. If intent is ambiguous, ask one line before pushing. |
-| "Event log is empty — nothing happened this session, nothing to save." | An empty event log during a real session is itself a signal (silence marker on, hook misfire, watcher dead). Treating it as "no-op" hides the failure. | Investigate why the log is empty before committing. Note the cause in the commit message or activeContext. |
-| "Auto-generated commit message is fine, this session was routine." | If the session crossed a milestone or made a load-bearing decision, the auto-message buries it under a timestamp and the next reviewer can't find it. | Ask one line: "Anything specific to flag in the commit message?" — takes seconds, prevents history archaeology later. |
-| "The 'What Was Accomplished' block in activeContext is just a generic file count, but the user can fix it later — committing now." | Cold-start sessions read activeContext as authoritative. A `Created N file(s)` lead block teaches the next instance that this is acceptable handoff. The clobber bug recurs through laziness, not through the merge code. | Replace the auto-fallback block with a concrete session narrative BEFORE commit. See Verification Gate Check 1. |
-| "I made code changes but ran out of time — I'll skip the test/type-check and let CI catch it." | "Show me the green" exists because completion claims without verification recur 3+ times in this user's history. Skipping is how the pattern stays alive. | Run the verification. If you cannot, mark it `unverified` in activeContext Next Steps with the specific command that needs to be run. |
-
-**General rule**: rationalization that *sounds* reasonable in the moment is the strongest signal. Genuine exceptions are rare; rationalized shortcuts are common.
-<!-- RED-FLAGS:END -->
+If `Work/markers/silence` exists, stop before publication, learning mutation,
+Git commit, or push.

@@ -132,23 +132,31 @@ all_plugin_dirs() {
 # tree. Full installs use this to reconcile primitives removed or renamed since
 # the previous install; foreign broken links are preserved.
 prune_retired_asha_symlinks() {
-  local home="$1" link raw n=0
+  local home="$1" root link raw n=0
   [[ -d "$home" ]] || return 0
-  while IFS= read -r -d '' link; do
-    [[ ! -e "$link" ]] || continue
-    raw="$(readlink "$link" 2>/dev/null || true)"
-    case "$raw" in
-      "$MARKET_ROOT"/plugins/*|"${ABS_MARKET_ROOT:-$MARKET_ROOT}"/plugins/*)
-        if [[ ${DRY_RUN:-0} -eq 1 ]]; then
-          say "  RM [retired-link]  $link -> $raw"
-        else
-          rm -f "$link"
-          log "removed retired Asha symlink: $link -> $raw"
-        fi
-        n=$((n + 1))
-        ;;
-    esac
-  done < <(find "$home" -mindepth 1 -maxdepth 4 -type l -print0 2>/dev/null)
+  # The harness's primitive roots may themselves be user-managed symlinks
+  # (for example ~/.claude/agents -> a dotfiles checkout). Plain `find` does
+  # not descend through those nested roots, leaving retired Asha links behind.
+  # Follow only the known primitive roots as command-line symlinks (`-H`), not
+  # arbitrary links below the harness home.
+  for root in "$home" "$home/agents" "$home/commands" "$home/skills"; do
+    [[ -d "$root" ]] || continue
+    while IFS= read -r -d '' link; do
+      [[ ! -e "$link" ]] || continue
+      raw="$(readlink "$link" 2>/dev/null || true)"
+      case "$raw" in
+        "$MARKET_ROOT"/plugins/*|"${ABS_MARKET_ROOT:-$MARKET_ROOT}"/plugins/*)
+          if [[ ${DRY_RUN:-0} -eq 1 ]]; then
+            say "  RM [retired-link]  $link -> $raw"
+          else
+            rm -f "$link"
+            log "removed retired Asha symlink: $link -> $raw"
+          fi
+          n=$((n + 1))
+          ;;
+      esac
+    done < <(find -H "$root" -mindepth 1 -maxdepth 4 -type l -print0 2>/dev/null)
+  done
   [[ $n -gt 0 ]] && say "[$(basename "$home")] removed $n retired symlink(s)"
   return 0
 }
@@ -361,24 +369,29 @@ _detect_legacy_asha() {
   say "        git rm bin/asha && git commit -m 'retire bin/asha (replaced by asha installer)'"
 }
 
-# Detect a legacy flat ~/.asha/learnings.md with no OKF bundle yet and prompt the
-# user to run the one-time, non-destructive migration. Does NOT migrate
-# automatically (file conversion at install time is least-surprise-violating).
+# Detect every shipped legacy learning store. Installation never migrates
+# authority: root OKF concepts, the old archive, and the flat file must be
+# reviewed item by item through /session:consolidate.
 _detect_legacy_learnings() {
   local flat="$HOME/.asha/learnings.md"
   local bundle="$HOME/.asha/learnings"
-  [[ -f "$flat" ]] || return 0
-  # Already migrated if the bundle dir holds any concept files.
-  if [[ -d "$bundle" ]] && compgen -G "$bundle/*.md" >/dev/null 2>&1; then
-    return 0
+  local archive="$HOME/.asha/learnings-archive"
+  local found=0
+  [[ -f "$flat" ]] && found=1
+  if [[ -d "$bundle" ]]; then
+    local concept
+    for concept in "$bundle"/*.md; do
+      [[ -f "$concept" && "$(basename "$concept")" != "index.md" ]] || continue
+      found=1
+      break
+    done
   fi
-  local migrator="$PLUGINS_DIR/session/tools/migrate_learnings_to_okf.py"
+  [[ -d "$archive" ]] && compgen -G "$archive/*.md" >/dev/null 2>&1 && found=1
+  [[ $found -eq 1 ]] || return 0
   say ""
-  say "NOTE: legacy flat learnings detected at $flat"
-  say "      This version stores learnings as an OKF concept bundle in ~/.asha/learnings/."
-  say "      Run the one-time migration (non-destructive — the flat file is kept):"
-  say "        python3 $migrator --dry-run   # preview"
-  say "        python3 $migrator             # apply"
+  say "NOTE: legacy learning records detected (root OKF bundle, archive, or flat store)."
+  say "      They remain untouched and do not acquire v2 authority automatically."
+  say "      Run /session:consolidate to inventory and review each item before migration."
 }
 
 # ---------------------------------------------------------------------------
@@ -577,7 +590,6 @@ bootstrap_identity() {
     [[ -f "$asha_home/communicationStyle.md" ]] || [[ ! -f "$tmpl_dir/communicationStyle.md" ]] || say "  IDENTITY  would create $asha_home/communicationStyle.md"
     [[ -f "$asha_home/keeper.md" ]]   || say "  IDENTITY  would create $asha_home/keeper.md"
     [[ -f "$asha_home/config.json" ]] || say "  IDENTITY  would create $asha_home/config.json"
-    [[ -f "$asha_home/recall_fixtures.yaml" ]] || [[ ! -f "$tmpl_dir/recall_fixtures.yaml" ]] || say "  IDENTITY  would create $asha_home/recall_fixtures.yaml"
     return 0
   fi
 
@@ -653,11 +665,6 @@ CONFIG_EOF
     say "Created ~/.asha/config.json"
   fi
 
-  # recall_fixtures.yaml — seed once; fixture curation is user-owned thereafter.
-  if [[ ! -f "$asha_home/recall_fixtures.yaml" ]] && [[ -f "$tmpl_dir/recall_fixtures.yaml" ]]; then
-    cp "$tmpl_dir/recall_fixtures.yaml" "$asha_home/recall_fixtures.yaml"
-    say "Created ~/.asha/recall_fixtures.yaml"
-  fi
 }
 
 # ---------------------------------------------------------------------------

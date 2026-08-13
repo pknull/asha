@@ -30,11 +30,8 @@ user_prompt_submit_noop() {
     hook_noop
 }
 
-# The per-turn RP routing directive formerly defined here now lives in
-# hooks/nudges/fragments/rp-routing.md, injected by nudge-engine.sh (row
-# rp-routing). Codex note kept with the passthrough below: Codex accepts raw
-# prompt fragments for UserPromptSubmit but rejects the Claude-only
-# {prompt: ...} passthrough as invalid JSON.
+# RP prompt routing is read directly by user-prompt-submit.sh. Codex rejects
+# Claude's {prompt: ...} passthrough, so it uses the portable empty response.
 
 user_prompt_submit_final_prompt() {
     local prompt="$1"

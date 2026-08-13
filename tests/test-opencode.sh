@@ -45,11 +45,11 @@ assert "rendered command has OpenCode frontmatter" 'head -3 "$OC1/commands/sessi
 assert "rendered agent declares subagent mode" 'grep -q "^mode: subagent$" "$OC1/agents/code-reviewer.md"'
 assert "ownership manifest records generated files" '[[ $(jq -r ".artifacts | length" "$H1/.asha/install-manifests/opencode.json") -gt 20 ]]'
 assert "plugin bridges tool policy" 'grep -q "tool.execute.before" "$OC1/plugins/asha.js"'
+assert "plugin surfaces status-0 policy warnings at the native seam" 'grep -q "result.status === 0.*process.stderr.write" "$OC1/plugins/asha.js"'
 assert "plugin injects shell identity" 'grep -q "shell.env" "$OC1/plugins/asha.js"'
-assert "plugin has independent SessionStart nudge tracking" 'grep -q "nudgeStarted" "$OC1/plugins/asha.js"'
+assert "plugin routes prompt recovery directly" 'grep -q "user-prompt-submit.sh" "$OC1/plugins/asha.js"'
 assert "plugin avoids root lifecycle side effects for known child sessions" 'grep -q "childSessions" "$OC1/plugins/asha.js"'
-assert "plugin implements best-effort clean-exit save" 'grep -q "dispose:" "$OC1/plugins/asha.js"'
-assert "OpenCode guidance rows include the system-transform harness" 'jq -e '\''[.rules[] | select(.id == "ws-context" or .id == "suggest-compact") | (.harnesses | index("opencode"))] | all(. != null)'\'' "$REPO_ROOT/plugins/session/hooks/nudges/rules.json" >/dev/null'
+assert "plugin seals recovery on dispose without semantic save" 'grep -q "session-end.sh" "$OC1/plugins/asha.js" && ! grep -Eq "detached-save|save-session|setsid" "$OC1/plugins/asha.js"'
 if command -v node >/dev/null 2>&1 && node --check "$OC1/plugins/asha.js" >/dev/null 2>&1; then
   ok "generated plugin parses as JavaScript"
 elif command -v node >/dev/null 2>&1; then

@@ -82,39 +82,16 @@ ownership:
 
 ---
 
-## File Claims (Dynamic Locks)
+## File Ownership During a Run
 
-For runtime coordination, agents can claim files before editing.
+Assign concrete path ownership in each worker's task before parallel edits
+begin. Ownership is carried by the orchestration contract and agent messages,
+not a global event store. Workers must state that they are not alone in the
+codebase, avoid reverting other edits, and report every modified path at handoff.
 
-### Claim Commands
-
-```bash
-# Check if file is claimed
-event_store.py claims --file "src/utils.py"
-
-# Claim before editing
-event_store.py claim "src/utils.py" --agent general-purpose --reason "Refactoring"
-
-# Release when done
-event_store.py release "src/utils.py" --agent general-purpose
-```
-
-### Claim Semantics
-
-Claims are **advisory locks** — soft coordination signals, not enforced. jj handles actual conflicts if two agents edit anyway.
-
-| Command | Effect |
-|---------|--------|
-| `event_store.py claims` | List all active claims |
-| `event_store.py claims --file X` | Check specific file |
-| `event_store.py claim FILE --agent NAME` | Claim file |
-| `event_store.py release FILE --agent NAME` | Release claim |
-
-### If File is Claimed
-
-1. Check if your work can wait
-2. If urgent, proceed with jj (conflicts resolve async)
-3. Coordinate via events or ask user
+Before touching a shared path, inspect live state (`git status --short -- PATH`)
+and coordinate with the owning agent. If concurrent editing is unavoidable,
+use isolated worktrees or jj changes and merge deliberately.
 
 ---
 

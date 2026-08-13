@@ -6,7 +6,7 @@
 #   skills/<declared-name>/       native agent skills
 #   commands/<name>.md            native slash commands
 #   agents/<namespace>-<name>.md native Markdown subagents
-#   plugins/asha.js               hooks, policy bridge, context, save lifecycle
+#   plugins/asha.js               hooks, policy bridge, context, recovery lifecycle
 #
 # Identity is launch-scoped in bin/asha. The installed plugin is persona-free.
 
@@ -184,22 +184,21 @@ opencode_install_agents() {
 opencode_install_plugin() {
   local handlers="$PLUGINS_DIR/session/hooks/handlers"
   local adapter="$handlers/opencode-policy-adapter.sh"
-  local nudge="$handlers/nudge-engine.sh"
   local start="$handlers/session-start.sh"
-  local detached="$PLUGINS_DIR/session/tools/detached-save.sh"
-  local save="$PLUGINS_DIR/session/tools/save-session.sh"
+  local prompt="$handlers/user-prompt-submit.sh"
+  local post="$handlers/post-tool-use.sh"
+  local end="$handlers/session-end.sh"
   [[ -x "$adapter" ]] || { echo "WARN: OpenCode policy adapter missing: $adapter" >&2; return 0; }
 
   local content prepared
-  content="$(python3 - "$adapter" "$nudge" "$start" "$detached" "$save" <<'PYEOF'
+  content="$(python3 - "$adapter" "$start" "$prompt" "$post" "$end" <<'PYEOF'
 import json, sys
-adapter, nudge, start, detached, save = map(json.dumps, sys.argv[1:])
-print('import { spawn, spawnSync } from "node:child_process"')
+adapter, start, prompt, post, end = map(json.dumps, sys.argv[1:])
+print('import { spawnSync } from "node:child_process"')
 print('')
 print('export const AshaPlugin = async ({ directory }) => {')
 print('  let latestSessionID = ""')
 print('  const started = new Set()')
-print('  const nudgeStarted = new Set()')
 print('  const childSessions = new Set()')
 print('  const pending = new Map()')
 print('  const envFor = (sid) => ({ ...process.env, OPENCODE: "1", OPENCODE_SESSION_ID: sid || "", ASHA_HARNESS: "opencode", ASHA_SESSION_ID: sid || "", CLAUDE_PROJECT_DIR: directory })')
@@ -220,13 +219,13 @@ print('  }')
 print('  const ensureStarted = (sid) => {')
 print('    if (!sid || childSessions.has(sid) || started.has(sid)) return')
 print('    started.add(sid)')
-print(f'    run({start}, "", {{ session_id: sid, cwd: directory, reason: "opencode-session-created" }}, sid)')
+print(f'    append(sid, run({start}, "", {{ session_id: sid, cwd: directory, reason: "opencode-session-created" }}, sid).stdout)')
 print('  }')
 print('  return {')
 print('    "chat.message": async (input, output) => {')
 print('      const sid = input.sessionID || ""; remember(sid); ensureStarted(sid)')
 print('      const prompt = (output.parts || []).filter((p) => p && p.type === "text").map((p) => p.text || "").join("\\n")')
-print(f'      append(sid, run({nudge}, "UserPromptSubmit", {{ hook_event_name: "UserPromptSubmit", prompt, session_id: sid, cwd: directory }}, sid).stdout)')
+print(f'      append(sid, run({prompt}, "", {{ prompt, session_id: sid, cwd: directory }}, sid).stdout)')
 print('    },')
 print('    "shell.env": async (input, output) => {')
 print('      const sid = input.sessionID || latestSessionID || ""; remember(sid); ensureStarted(sid)')
@@ -239,19 +238,16 @@ print('    "tool.execute.before": async (input, output) => {')
 print('      const sid = input.sessionID || ""; remember(sid); ensureStarted(sid)')
 print('      const payload = { session_id: sid, cwd: directory, tool_name: input.tool || "", tool_input: output.args || {} }')
 print(f'      const result = run({adapter}, "", payload, sid)')
+print('      if (result.status === 0 && result.stderr.trim()) { append(sid, result.stderr.trim()); process.stderr.write(result.stderr) }')
 print('      if (result.status === 2) throw new Error((result.stderr || "Blocked by Asha policy").trim())')
 print('    },')
 print('    "tool.execute.after": async (input) => {')
 print('      const sid = input.sessionID || ""; remember(sid)')
 print('      const payload = { hook_event_name: "PostToolUse", session_id: sid, cwd: directory, tool_name: input.tool || "", tool_input: input.args || {} }')
-print(f'      append(sid, run({nudge}, "PostToolUse", payload, sid).stdout)')
+print(f'      run({post}, "", payload, sid)')
 print('    },')
 print('    "experimental.chat.system.transform": async (input, output) => {')
 print('      const sid = input.sessionID || latestSessionID || ""; remember(sid); ensureStarted(sid)')
-print('      if (sid && !nudgeStarted.has(sid)) {')
-print('        nudgeStarted.add(sid)')
-print(f'        append(sid, run({nudge}, "SessionStart", {{ hook_event_name: "SessionStart", session_id: sid, cwd: directory }}, sid).stdout)')
-print('      }')
 print('      const text = pending.get(sid) || ""')
 print('      if (text) { output.system.push(text); pending.delete(sid) }')
 print('    },')
@@ -265,12 +261,7 @@ print('      }')
 print('    },')
 print('    dispose: async () => {')
 print('      if (!latestSessionID) return')
-print('      const log = `${directory}/Work/logs/session-end-save.log`')
-print('      const lock = `${directory}/Work/markers/.save.lock`')
-print('      try {')
-print(f'        const child = spawn("setsid", [{detached}, {save}, log, lock], {{ detached: true, stdio: "ignore", env: envFor(latestSessionID) }})')
-print('        child.unref()')
-print('      } catch (_) {}')
+print(f'      run({end}, "", {{ session_id: latestSessionID, cwd: directory, reason: "dispose" }}, latestSessionID)')
 print('    },')
 print('  }')
 print('}')

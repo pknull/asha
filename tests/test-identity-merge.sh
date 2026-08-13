@@ -99,9 +99,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 4: operational content honors its 4000 + 3000 byte budgets
+# Test 4: operation content honors its 4000-byte budget and legacy learning
+# stores do not regain authority.
 # ---------------------------------------------------------------------------
-echo "--- test 4: operational merge enforces byte caps ---"
+echo "--- test 4: operational merge enforces v2 authority and byte caps ---"
 reset_sandbox
 mkdir -p "$SANDBOX/.asha"
 awk 'BEGIN { for (i = 0; i < 5000; i++) printf "A"; print "OPERATION_TAIL" }' \
@@ -114,16 +115,39 @@ else
   fail "oversized operational inputs merge successfully"
 fi
 if ! grep -q 'OPERATION_TAIL\|LEARNINGS_TAIL' "$SANDBOX/.cache/asha/operational.md" && \
-   grep -q 'operation.md exceeded 4000 chars' "$SANDBOX/.cache/asha/operational.md" && \
-   grep -q 'learnings.md exceeded 3000 chars' "$SANDBOX/.cache/asha/operational.md"; then
-  ok "content beyond both documented caps is excluded"
+   grep -q 'operation.md exceeded 4000 chars' "$SANDBOX/.cache/asha/operational.md"; then
+  ok "operation cap holds and legacy flat learnings remain uninjected"
 else
-  fail "content beyond both documented caps is excluded"
+  fail "operation cap holds and legacy flat learnings remain uninjected"
 fi
 merged_bytes="$(wc -c < "$SANDBOX/.cache/asha/operational.md" | tr -d '[:space:]')"
 [[ "$merged_bytes" -le 8000 ]] \
   && ok "merged operational cache stays within sane overhead ($merged_bytes bytes)" \
   || fail "merged operational cache stays within sane overhead (got $merged_bytes bytes)"
+
+# ---------------------------------------------------------------------------
+# Test 5: only active v2 learnings are rendered
+# ---------------------------------------------------------------------------
+echo "--- test 5: only active learnings are injected ---"
+reset_sandbox
+mkdir -p "$SANDBOX/.asha/learnings/active" "$SANDBOX/.asha/learnings/candidate"
+cat > "$SANDBOX/.asha/learnings/active/active-rule.md" <<'EOF'
+---
+{"type":"learning","id":"active-rule","trigger":"ACTIVE_SENTINEL","action":"do active","state":"active","created":"2026-08-13","updated":"2026-08-13","retirement_reason":"","evidence":[]}
+---
+EOF
+cat > "$SANDBOX/.asha/learnings/candidate/candidate-rule.md" <<'EOF'
+---
+{"type":"learning","id":"candidate-rule","trigger":"CANDIDATE_SENTINEL","action":"do candidate","state":"candidate","created":"2026-08-13","updated":"2026-08-13","retirement_reason":"","evidence":[]}
+---
+EOF
+run_operational_merge >/dev/null 2>&1
+if grep -q 'ACTIVE_SENTINEL' "$SANDBOX/.cache/asha/operational.md" \
+    && ! grep -q 'CANDIDATE_SENTINEL' "$SANDBOX/.cache/asha/operational.md"; then
+  ok "active learning renders and candidate remains non-authoritative"
+else
+  fail "active learning renders and candidate remains non-authoritative"
+fi
 
 echo ""
 echo "=== Identity Merge Test Summary ==="

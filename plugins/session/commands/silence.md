@@ -1,76 +1,29 @@
 ---
 name: session-silence
-description: "Toggle silence mode to disable Memory logging"
-argument-hint: "Optional: 'on' or 'off' to set explicitly"
+description: "Toggle the master Memory v2 persistence override"
+argument-hint: "[on|off|status]"
 allowed-tools: ["Bash"]
 ---
 
-# Silence Mode Toggle
+# Silence Mode
 
-Controls the silence marker (`Work/markers/silence`) that disables transcript synthesis and Memory persistence.
+`Work/markers/silence` is the master persistence override. Whilst present,
+prompt/tool/end hooks do not update recovery snapshots and `/session:save`
+does not publish Memory, mutate learnings, commit, or push.
 
-Additional context: $ARGUMENTS
-
-## Behavior
-
-**When silence mode is ENABLED**:
-- Explicit and automatic synthesis are skipped
-- Clean session exit does not launch automatic save
-- Marker persists across sessions until explicitly disabled
-
-**When silence mode is DISABLED**:
-- Manual transcript synthesis resumes on every supported harness
-- Claude and Copilot clean-exit automatic save resumes
-
-## Usage
-
-**Toggle current state** (if on → off, if off → on):
 ```bash
-if [[ -f "Work/markers/silence" ]]; then
-    rm Work/markers/silence
-    echo "🔊 Silence mode DISABLED - Memory logging active"
-else
-    mkdir -p Work/markers
-    touch Work/markers/silence
-    echo "🔇 Silence mode ENABLED - Memory logging disabled"
-fi
+PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+case "${ARGUMENTS:-toggle}" in
+  on|enable) mkdir -p "$PROJECT_DIR/Work/markers"; touch "$PROJECT_DIR/Work/markers/silence" ;;
+  off|disable) rm -f "$PROJECT_DIR/Work/markers/silence" ;;
+  status) ;;
+  toggle)
+    if [[ -f "$PROJECT_DIR/Work/markers/silence" ]]; then
+      rm -f "$PROJECT_DIR/Work/markers/silence"
+    else
+      mkdir -p "$PROJECT_DIR/Work/markers"; touch "$PROJECT_DIR/Work/markers/silence"
+    fi ;;
+  *) echo "usage: /session:silence [on|off|status]"; exit 2 ;;
+esac
+[[ -f "$PROJECT_DIR/Work/markers/silence" ]] && echo "Memory persistence: OFF" || echo "Memory persistence: ON"
 ```
-
-**Explicit enable** (if argument is "on"):
-```bash
-mkdir -p Work/markers
-touch Work/markers/silence
-echo "🔇 Silence mode ENABLED - Memory logging disabled"
-```
-
-**Explicit disable** (if argument is "off"):
-```bash
-rm -f Work/markers/silence
-echo "🔊 Silence mode DISABLED - Memory logging active"
-```
-
-**Check current status**:
-```bash
-if [[ -f "Work/markers/silence" ]]; then
-    echo "Current status: 🔇 ENABLED (Memory logging disabled)"
-else
-    echo "Current status: 🔊 DISABLED (Memory logging active)"
-fi
-```
-
-## Implementation
-
-Determine action based on $ARGUMENTS:
-
-- **No arguments or "toggle"**: Toggle current state
-- **"on" or "enable"**: Explicitly enable silence mode
-- **"off" or "disable"**: Explicitly disable silence mode
-- **"status"**: Show current state only
-
-Execute appropriate bash commands above based on the argument.
-
-## Notes
-
-- Silence marker persists until explicitly disabled (`/session:silence off`)
-- Use for experimental sessions, debugging, or when Memory logging unwanted
-- Related marker: `Work/markers/rp-active` (RP mode, disables session watching only, auto-removed at session-end)

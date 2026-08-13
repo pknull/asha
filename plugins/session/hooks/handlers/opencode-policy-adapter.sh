@@ -44,10 +44,10 @@ run_guard() {
     [[ -n "$err" ]] && printf '%s\n' "$err" >&2
     return 2
   fi
+  [[ -z "$err" ]] || printf '%s\n' "$err" >&2
   return 0
 }
 
 run_guard "$SELF_DIR/policy-guard.sh" || exit $?
 run_guard "$SELF_DIR/block-secrets.sh" || exit $?
-run_guard "$SELF_DIR/save-commit-gate.sh" || exit $?
 exit 0

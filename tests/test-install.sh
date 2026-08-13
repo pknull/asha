@@ -92,34 +92,97 @@ fi
 [[ -f "$SANDBOX/.config/opencode/commands/session-save.md" ]] \
   && ok "OpenCode rendered commands are non-empty" \
   || fail "OpenCode rendered commands are non-empty"
+for save_workflow in \
+  "$SANDBOX/.claude/commands/session/save.md" \
+  "$SANDBOX/.codex/skills/session-save/SKILL.md" \
+  "$SANDBOX/.copilot/skills/session-save/SKILL.md" \
+  "$SANDBOX/.config/opencode/commands/session-save.md"; do
+	  if [[ -f "$save_workflow" || -L "$save_workflow" ]] \
+	     && grep -q 'save_identity.py' "$save_workflow" \
+	     && grep -q 'SAVE_SESSION_ID' "$save_workflow" \
+	     && awk '/memory_v2.py" publish/{p=NR} /save_identity.py/{i=NR} END{exit !(p && i && p < i)}' "$save_workflow" \
+	     && ! grep -q -- '--capability\|learning_capability' "$save_workflow"; then
+	    ok "rendered explicit save publishes before optional identity without capability: $save_workflow"
+  else
+    fail "rendered explicit save identity workflow missing or stale: $save_workflow"
+  fi
+done
 jq -e --arg root "$REPO_ROOT" '.asha_root == $root' "$SANDBOX/.asha/config.json" >/dev/null \
   && ok "identity config records asha_root" \
   || fail "identity config records asha_root"
 if jq -e '
-    (.hooks.sessionStart | length) == 1 and
-    (.hooks.sessionStart[0].bash | endswith("nudge-engine.sh SessionStart")) and
-    (.hooks.userPromptSubmitted | length) == 1 and
-    (.hooks.postToolUse | length) == 1
-  ' "$SANDBOX/.copilot/hooks/asha-nudges.json" >/dev/null 2>&1; then
-  ok "Copilot nudges register workspace context on sessionStart"
+    (.hooks.sessionStart[0].bash | endswith("session-start.sh")) and
+    (.hooks.userPromptSubmitted[0].bash | endswith("user-prompt-submit.sh")) and
+    (.hooks.postToolUse[0].bash | endswith("post-tool-use.sh")) and
+    (.hooks.sessionEnd[0].bash | endswith("session-end.sh"))
+  ' "$SANDBOX/.copilot/hooks/asha-recovery.json" >/dev/null 2>&1; then
+  ok "Copilot installs Memory v2 recovery callbacks"
 else
-  fail "Copilot nudges register workspace context on sessionStart"
+  fail "Copilot installs Memory v2 recovery callbacks"
 fi
-jq -e '(.hooks.sessionStart | length) == 1 and (.hooks.sessionEnd | length) == 1' \
-  "$SANDBOX/.copilot/hooks/asha-lifecycle.json" >/dev/null 2>&1 \
-  && ok "Copilot lifecycle keeps its separate sessionStart side-effect hook" \
-  || fail "Copilot lifecycle keeps its separate sessionStart side-effect hook"
+[[ ! -e "$SANDBOX/.copilot/hooks/asha-nudges.json" && ! -e "$SANDBOX/.copilot/hooks/asha-lifecycle.json" ]] \
+  && ok "Copilot legacy nudge/lifecycle files are pruned" \
+  || fail "Copilot legacy nudge/lifecycle files are pruned"
+
+# Reconciliation must run even when the current recovery artifact is already
+# byte-identical. Retired generated files are removed only when their bytes are
+# recognized; a modified legacy file remains for review.
+RECOVERY_BEFORE="$(sha256sum "$SANDBOX/.copilot/hooks/asha-recovery.json")"
+jq -nc --arg e "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" '{
+  version:1, hooks:{
+    sessionStart:[{type:"command",bash:($e + " SessionStart"),timeoutSec:10}],
+    userPromptSubmitted:[{type:"command",bash:($e + " UserPromptSubmit"),timeoutSec:10}],
+    postToolUse:[{type:"command",bash:($e + " PostToolUse"),timeoutSec:10}]
+  }
+}' > "$SANDBOX/.copilot/hooks/asha-nudges.json"
+jq -nc --arg s "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" \
+       --arg e "$REPO_ROOT/plugins/session/hooks/handlers/session-end.sh" '{
+  version:1, hooks:{
+    sessionStart:[{type:"command",bash:$s,timeoutSec:60}],
+    sessionEnd:[{type:"command",bash:$e,timeoutSec:30}]
+  }
+}' > "$SANDBOX/.copilot/hooks/asha-lifecycle.json"
+if noop_reconcile="$(run_install --target copilot 2>&1)" \
+   && [[ ! -e "$SANDBOX/.copilot/hooks/asha-nudges.json" \
+      && ! -e "$SANDBOX/.copilot/hooks/asha-lifecycle.json" \
+      && "$RECOVERY_BEFORE" == "$(sha256sum "$SANDBOX/.copilot/hooks/asha-recovery.json")" ]]; then
+  ok "Copilot no-op reinstall still reconciles byte-matching retired hooks"
+else
+  fail "Copilot no-op reinstall still reconciles byte-matching retired hooks"
+fi
+
+printf '{"user_modified":true}\n' > "$SANDBOX/.copilot/hooks/asha-nudges.json"
+run_install --target copilot >/dev/null 2>&1 || true
+jq -e '.user_modified == true' "$SANDBOX/.copilot/hooks/asha-nudges.json" >/dev/null 2>&1 \
+  && ok "Copilot reconciliation preserves modified retired hooks" \
+  || fail "Copilot reconciliation preserves modified retired hooks"
+rm -f "$SANDBOX/.copilot/hooks/asha-nudges.json"
+
+printf '{"user_modified":true}\n' > "$SANDBOX/.copilot/hooks/asha-recovery.json"
+modified_recovery_out="$(run_install --target copilot 2>&1 || printf '__EXPECTED_FAILURE__')"
+if [[ "$modified_recovery_out" != *'__EXPECTED_FAILURE__'* ]]; then
+  fail "Copilot install refuses to overwrite a modified managed recovery hook"
+else
+  jq -e '.user_modified == true' "$SANDBOX/.copilot/hooks/asha-recovery.json" >/dev/null 2>&1 \
+    && ok "Copilot install refuses to overwrite a modified managed recovery hook" \
+    || fail "Copilot install refuses to overwrite a modified managed recovery hook"
+fi
+if run_install --target copilot --force >/dev/null 2>&1; then
+  ok "Copilot --force restores modified managed hook fixture"
+else
+  fail "Copilot --force restores modified managed hook fixture"
+fi
 
 # ---------------------------------------------------------------------------
-# Test 2: Claude hook ownership spans the six lifecycle events
+# Test 2: Claude hook ownership spans the five v2 lifecycle events
 # ---------------------------------------------------------------------------
 echo "--- test 2: hook registration covers lifecycle events ---"
 hook_count="$(asha_hook_count)"
 event_count="$(asha_hook_event_count)"
-[[ "$hook_count" -ge 10 ]] \
-  && ok "at least 10 asha-tagged hook entries registered ($hook_count)" \
-  || fail "at least 10 asha-tagged hook entries registered (got $hook_count)"
-assert_eq "asha hooks span all six events" "6" "$event_count"
+[[ "$hook_count" -ge 7 ]] \
+  && ok "at least 7 asha-tagged hook entries registered ($hook_count)" \
+  || fail "at least 7 asha-tagged hook entries registered (got $hook_count)"
+assert_eq "asha hooks span all five v2 events" "5" "$event_count"
 
 # ---------------------------------------------------------------------------
 # Test 3: a Codex failure does not abort Claude, Copilot, or OpenCode
@@ -188,12 +251,34 @@ if ! run_install --target all >/dev/null 2>&1; then
   fail "first idempotency install exits 0"
 else
   hooks_first="$(asha_hook_count)"
+  # Simulate a link left by a retired Session agent. Full reconciliation owns
+  # broken links into this Asha source tree and must remove it.
+  mkdir -p "$SANDBOX/.claude/agents/session"
+  ln -s "$REPO_ROOT/plugins/session/agents/memory-curator.md" \
+    "$SANDBOX/.claude/agents/session/memory-curator.md"
   if run_install --target all >/dev/null 2>&1; then
     ok "second install exits 0"
   else
     fail "second install exits 0"
   fi
   assert_eq "second install keeps the same hook count" "$hooks_first" "$(asha_hook_count)"
+  [[ ! -L "$SANDBOX/.claude/agents/session/memory-curator.md" ]] \
+    && ok "full install prunes retired Claude agent links" \
+    || fail "full install prunes retired Claude agent links"
+  # Real installations may keep the primitive root itself in a dotfiles
+  # checkout. Reconciliation must follow that one declared root without
+  # following arbitrary symlinks elsewhere under ~/.claude.
+  rm -rf "$SANDBOX/.claude/agents"
+  mkdir -p "$SANDBOX/dotfiles/claude-agents/session"
+  ln -s "$SANDBOX/dotfiles/claude-agents" "$SANDBOX/.claude/agents"
+  ln -s "$REPO_ROOT/plugins/session/agents/memory-steward.md" \
+    "$SANDBOX/dotfiles/claude-agents/session/memory-steward.md"
+  if run_install --target claude >/dev/null 2>&1 \
+    && [[ ! -L "$SANDBOX/dotfiles/claude-agents/session/memory-steward.md" ]]; then
+    ok "full install prunes retired links below a symlinked Claude primitive root"
+  else
+    fail "full install prunes retired links below a symlinked Claude primitive root"
+  fi
   if jq -e '
       [.hooks // {} | to_entries[] as $event | $event.value[]?
        | select([.hooks[]? | select((.source // "") | startswith("asha:"))] | length > 0)
@@ -204,6 +289,22 @@ else
   else
     fail "no duplicate asha hook groups"
   fi
+fi
+
+# ---------------------------------------------------------------------------
+# Test 6: legacy learning stores point to the reviewed v2 migration path
+# ---------------------------------------------------------------------------
+echo "--- test 6: legacy learning migration guidance is current ---"
+mkdir -p "$SANDBOX/.asha/learnings" "$SANDBOX/.asha/learnings-archive"
+printf '%s\n' '---' 'id: root-concept' '---' > "$SANDBOX/.asha/learnings/root-concept.md"
+printf '%s\n' '---' 'id: old-concept' '---' > "$SANDBOX/.asha/learnings-archive/old-concept.md"
+printf '# Legacy flat learning\n' > "$SANDBOX/.asha/learnings.md"
+legacy_out="$(run_install --target copilot 2>&1)"
+if [[ "$legacy_out" == *"/session:consolidate"* \
+   && "$legacy_out" != *"migrate_learnings_to_okf.py"* ]]; then
+  ok "installer inventories legacy learning stores through reviewed consolidation"
+else
+  fail "installer inventories legacy learning stores through reviewed consolidation"
 fi
 
 echo ""

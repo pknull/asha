@@ -93,9 +93,9 @@ Show all loops with their status.
 ### On Start
 
 1. **Generate loop ID** (dictionary words: `silent-thunder`, `bright-falcon`)
-2. **Create loop directory**: `Memory/loops/<loop-id>/`
+2. **Create loop directory**: `Work/loops/<loop-id>/`
 3. **Verify safety gates**:
-   - Tests configured in `Memory/techEnvironment.md`
+   - Verification commands established from repository instructions/config
    - Git branch or worktree for isolation
    - Rollback command defined
 4. **Initialize state file**: `state.json`
@@ -111,7 +111,7 @@ Each iteration:
 
 ### On Checkpoint
 
-Write to `Memory/loops/<loop-id>/checkpoint-N.md`:
+Write to `Work/loops/<loop-id>/checkpoint-N.md`:
 
 - Iterations completed
 - Files modified
@@ -120,7 +120,7 @@ Write to `Memory/loops/<loop-id>/checkpoint-N.md`:
 
 ### On Completion
 
-Write to `Memory/loops/<loop-id>/completion.md`:
+Write to `Work/loops/<loop-id>/completion.md`:
 
 - Final status (SUCCESS / PARTIAL / FAILED)
 - Accomplishments

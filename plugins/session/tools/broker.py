@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-"""Deterministic inline memory, process, and capability brokerage.
+"""Deterministic inline process and capability brokerage.
 
-The broker is advisory. It reads catalogues and registries, never invokes a
-selected capability, mutates memory, creates isolation, or publishes work.
+The broker is advisory. It reads registries, never invokes a selected
+capability, mutates memory, creates isolation, or publishes work.
 Optional agent surfaces are wrappers around these same protocols.
 """
 
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import re
@@ -32,17 +31,6 @@ HARNESS_REGISTRY_PATH = ASHA_ROOT / "harnesses" / "capabilities.json"
 SUPPORT_VALUES = {"native", "rendered", "partial", "unsupported"}
 RISK_RANK = {"low": 0, "medium": 1, "high": 2}
 WORD_RE = re.compile(r"[a-z0-9][a-z0-9_.+-]*", re.IGNORECASE)
-MARKDOWN_LINK_RE = re.compile(r"\[([^]]+)]\(([^)]+\.md)\)")
-MEMORY_LINE_RE = re.compile(
-    r"^\s*-\s*\[([^]]+)]\(([^)]+\.md)\)\s*(?:[-–—:]\s*)?(.*)$"
-)
-LEARNING_ROW_RE = re.compile(
-    r"^\|\s*\[([^]]+)]\(([^)]+\.md)\)\s*\|\s*([^|]*)\|\s*([0-9.]+)\s*\|\s*([^|]*)\|"
-)
-SENSITIVE_RE = re.compile(
-    r"(?:BEGIN (?:RSA |OPENSSH )?PRIVATE KEY|(?:password|passwd|secret|api[_-]?key|access[_-]?token)\s*[:=])",
-    re.IGNORECASE,
-)
 PROHIBITED_OVERRIDE_KEYS = {
     "command", "commands", "shell", "exec", "executable", "action", "actions",
     "permissions", "harness_support", "output_contract", "kind", "ownership", "process",
@@ -310,225 +298,6 @@ def _workspace(project_root: Path) -> tuple[Optional[Path], Optional[dict[str, A
     return root, {"manifest_path": manifest_path, "operational_root": resolved, "manifest": manifest}, warnings
 
 
-@dataclass
-class Budget:
-    total: int
-    timeout_ms: int
-    used: int = 0
-    exhausted: bool = False
-    timed_out: bool = False
-
-    def __post_init__(self) -> None:
-        self.started = time.monotonic()
-
-    def read(self, path: Path) -> Optional[bytes]:
-        if self.timeout_ms <= 0 or (time.monotonic() - self.started) * 1000 >= self.timeout_ms:
-            self.timed_out = True
-            return None
-        remaining = self.total - self.used
-        if remaining <= 0:
-            self.exhausted = True
-            return None
-        try:
-            with path.open("rb") as handle:
-                value = handle.read(remaining + 1)
-        except (OSError, ValueError):
-            return None
-        if len(value) > remaining:
-            self.exhausted = True
-            value = value[:remaining]
-        self.used += len(value)
-        return value
-
-
-def _safe_target(root: Path, relative: str) -> Optional[Path]:
-    if Path(relative).is_absolute() or ".." in Path(relative).parts:
-        return None
-    try:
-        target = (root / relative).resolve()
-        canonical = root.resolve()
-    except (OSError, RuntimeError, ValueError):
-        return None
-    if target == canonical or canonical not in target.parents:
-        return None
-    return target
-
-
-def _memory_catalogue(root: Path, authority: str, scope: str, budget: Budget, signature: "hashlib._Hash") -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    index = root / "MEMORY.md"
-    status = {"path": str(index), "authority": authority, "scope": scope, "available": index.is_file()}
-    if not index.is_file():
-        status["reason"] = "catalogue_unavailable"
-        return [], status
-    raw = budget.read(index)
-    if raw is None:
-        status["reason"] = "budget_or_timeout"
-        return [], status
-    signature.update(str(index.resolve()).encode())
-    signature.update(raw)
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeError:
-        status["reason"] = "invalid_utf8"
-        return [], status
-    entries: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        match = MEMORY_LINE_RE.match(line)
-        if not match:
-            continue
-        target = _safe_target(root, match.group(2))
-        if target is None:
-            continue
-        description = " ".join(part.strip() for part in (match.group(1), match.group(3)) if part.strip())
-        if not description or SENSITIVE_RE.search(description):
-            continue
-        entries.append({
-            "id": target.stem,
-            "description": description,
-            "path": str(target),
-            "catalogue_path": str(index.resolve()),
-            "authority": authority,
-            "scope": scope,
-        })
-    status["entries"] = len(entries)
-    return entries, status
-
-
-def _learning_catalogue(root: Path, budget: Budget, signature: "hashlib._Hash") -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    index = root / "index.md"
-    status = {"path": str(index), "authority": "evaluated-local", "scope": "user", "available": index.is_file()}
-    if not index.is_file():
-        status["reason"] = "catalogue_unavailable"
-        return [], status
-    raw = budget.read(index)
-    if raw is None:
-        status["reason"] = "budget_or_timeout"
-        return [], status
-    signature.update(str(index.resolve()).encode())
-    signature.update(raw)
-    try:
-        text = raw.decode("utf-8")
-    except UnicodeError:
-        status["reason"] = "invalid_utf8"
-        return [], status
-    entries: list[dict[str, Any]] = []
-    for line in text.splitlines():
-        match = LEARNING_ROW_RE.match(line)
-        if not match:
-            continue
-        target = _safe_target(root, match.group(2))
-        if target is None:
-            continue
-        description = " ".join((match.group(1), match.group(3).strip(), match.group(5).strip()))
-        if SENSITIVE_RE.search(description):
-            continue
-        try:
-            confidence = float(match.group(4))
-        except ValueError:
-            continue
-        entries.append({
-            "id": match.group(1), "description": description, "path": str(target),
-            "catalogue_path": str(index.resolve()), "authority": "evaluated-local",
-            "scope": "user", "confidence": confidence,
-        })
-    status["entries"] = len(entries)
-    return entries, status
-
-
-def context_brief(task: str, project_root: Path, *, byte_budget: int, timeout_ms: int, limit: int) -> dict[str, Any]:
-    if byte_budget < 1:
-        raise BrokerError("invalid_budget", "--budget-bytes must be positive")
-    if timeout_ms < 0:
-        raise BrokerError("invalid_timeout", "--timeout-ms cannot be negative")
-    budget = Budget(byte_budget, timeout_ms)
-    signature = hashlib.sha256()
-    entries: list[dict[str, Any]] = []
-    source_status: list[dict[str, Any]] = []
-    workspace_root, workspace, warnings = _workspace(project_root)
-
-    source_roots: list[tuple[Path, str, str]] = []
-    configured = os.environ.get("ASHA_MEMORY_DIR")
-    if configured:
-        source_roots.append((Path(configured).expanduser(), "project-operational", "project"))
-    source_roots.append((project_root / "Memory", "project-operational", "project"))
-    if workspace:
-        source_roots.append((workspace["operational_root"], "workspace-operational", "workspace"))
-    seen: set[str] = set()
-    for root, authority, scope in source_roots:
-        try:
-            key = str(root.resolve())
-        except (OSError, RuntimeError, ValueError):
-            key = str(root)
-        if key in seen:
-            continue
-        seen.add(key)
-        found, status = _memory_catalogue(root, authority, scope, budget, signature)
-        entries.extend(found)
-        source_status.append(status)
-
-    learnings_root = Path(os.environ.get("ASHA_LEARNINGS_DIR", str(Path.home() / ".asha" / "learnings"))).expanduser()
-    found, status = _learning_catalogue(learnings_root, budget, signature)
-    entries.extend(found)
-    source_status.append(status)
-
-    ranked: list[dict[str, Any]] = []
-    query = _tokens(task)
-    for item in entries:
-        overlap = sorted(query & _tokens(item["description"] + " " + item["id"]))
-        if not overlap:
-            continue
-        row = dict(item)
-        row["score"] = round(len(overlap) / max(len(query), 1), 6)
-        row["reason"] = f"Catalogue match on: {', '.join(overlap)}"
-        row["reason_status"] = "inference"
-        row["claim_status"] = "catalogue-backed"
-        ranked.append(row)
-    authority_order = {"workspace-operational": 0, "project-operational": 1, "evaluated-local": 2}
-    ranked.sort(key=lambda row: (-row["score"], authority_order.get(row["authority"], 9), row["id"], row["path"]))
-    relevant = ranked[:limit]
-
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for item in relevant:
-        grouped.setdefault(item["id"], []).append(item)
-    contradictions = []
-    for item_id, values in sorted(grouped.items()):
-        descriptions = {value["description"] for value in values}
-        if len(descriptions) > 1:
-            contradictions.append({
-                "id": item_id,
-                "status": "requires-review",
-                "source_paths": sorted(value["catalogue_path"] for value in values),
-                "reason": "The same catalogue identifier has differing descriptions across memory planes.",
-            })
-    open_questions = [
-        {"question": f"Is unavailable configured context required from {item['path']}?", "source_path": item["path"]}
-        for item in source_status if not item.get("available")
-    ]
-    if warnings:
-        open_questions.extend({"question": warning["message"], "source_path": warning["path"]} for warning in warnings)
-
-    return {
-        "contract": "asha.context-brief.v1",
-        "task": task,
-        "workspace": str(workspace_root) if workspace_root else None,
-        "active_repository": str(project_root),
-        "execution_mode": "inline",
-        "read_only": True,
-        "budget": {
-            "configured_bytes": byte_budget, "bytes_read": budget.used,
-            "timeout_ms": timeout_ms, "budget_exhausted": budget.exhausted,
-            "timed_out": budget.timed_out,
-        },
-        "source_signature": signature.hexdigest(),
-        "source_status": source_status,
-        "relevant_sources": relevant,
-        "no_relevant_context": len(relevant) == 0,
-        "contradictions": contradictions,
-        "open_questions": open_questions,
-        "warnings": warnings,
-    }
-
-
 def process_route(task: str, registry: Registry, harness: str) -> dict[str, Any]:
     candidates: list[tuple[int, int, str, list[str], dict[str, Any]]] = []
     for cap_id, cap in registry.entries.items():
@@ -658,23 +427,6 @@ def _telemetry(command: str, result: dict[str, Any], project_root: Path, harness
         pass
 
 
-def _human_context(result: dict[str, Any]) -> str:
-    lines = [f"Context brief: {len(result['relevant_sources'])} relevant source(s) [inline]"]
-    if result["no_relevant_context"]:
-        lines.append("no_relevant_context")
-    for item in result["relevant_sources"]:
-        confidence = f" confidence={item['confidence']:.2f}" if "confidence" in item else ""
-        lines.append(f"- {item['id']} [{item['authority']}/{item['scope']}{confidence}] {item['path']}")
-        lines.append(f"  {item['reason']}")
-    if result["contradictions"]:
-        lines.append(f"Contradictions: {len(result['contradictions'])} (review required)")
-    if result["open_questions"]:
-        lines.append(f"Open questions: {len(result['open_questions'])}")
-    budget = result["budget"]
-    lines.append(f"Budget: {budget['bytes_read']}/{budget['configured_bytes']} bytes; timeout={budget['timed_out']}")
-    return "\n".join(lines)
-
-
 def _human_route(result: dict[str, Any]) -> str:
     lines = [f"Process: {result['recommended']} [inline, {result['risk']} risk]", result["reason"]]
     if result["prerequisites"]:
@@ -701,22 +453,14 @@ def _human_capabilities(result: dict[str, Any]) -> str:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="asha broker", add_help=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    context = sub.add_parser("context-brief")
     route = sub.add_parser("process-route")
     match = sub.add_parser("capabilities-match")
-    for child in (context, route, match):
+    for child in (route, match):
         child.add_argument("task", nargs="+")
         child.add_argument("--json", action="store_true", dest="as_json")
         child.add_argument("--project-root")
         child.add_argument("--harness", choices=("claude", "codex", "copilot", "opencode"), default=os.environ.get("ASHA_HARNESS", "claude"))
         child.add_argument("--override", action="append", default=[])
-    # Keep environment defaults as strings until main's guarded validation.
-    # argparse does not apply ``type`` to defaults; converting here would let a
-    # malformed environment variable escape the BrokerError boundary with a
-    # traceback before argument parsing even starts.
-    context.add_argument("--budget-bytes", default=os.environ.get("ASHA_BROKER_CONTEXT_BYTES", "16384"))
-    context.add_argument("--timeout-ms", default=os.environ.get("ASHA_BROKER_TIMEOUT_MS", "250"))
-    context.add_argument("--limit", type=int, default=5)
     return parser
 
 
@@ -728,27 +472,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         if not task:
             raise BrokerError("empty_task", "task must be non-empty")
         project = _project_root(args.project_root)
-        if args.command == "context-brief":
-            try:
-                args.budget_bytes = int(args.budget_bytes)
-                args.timeout_ms = int(args.timeout_ms)
-            except (TypeError, ValueError) as exc:
-                raise BrokerError(
-                    "invalid_environment",
-                    "ASHA_BROKER_CONTEXT_BYTES and ASHA_BROKER_TIMEOUT_MS must be integers",
-                ) from exc
-            if args.limit < 1:
-                raise BrokerError("invalid_limit", "--limit must be positive")
-            result = context_brief(task, project, byte_budget=args.budget_bytes, timeout_ms=args.timeout_ms, limit=args.limit)
-            human = _human_context(result)
+        registry = load_registry(project, args.override)
+        if args.command == "process-route":
+            result = process_route(task, registry, args.harness)
+            human = _human_route(result)
         else:
-            registry = load_registry(project, args.override)
-            if args.command == "process-route":
-                result = process_route(task, registry, args.harness)
-                human = _human_route(result)
-            else:
-                result = capability_match(task, registry, args.harness)
-                human = _human_capabilities(result)
+            result = capability_match(task, registry, args.harness)
+            human = _human_capabilities(result)
         _telemetry(args.command, result, project, args.harness)
         print(json.dumps(result, indent=2, sort_keys=True) if as_json else human)
         return 0

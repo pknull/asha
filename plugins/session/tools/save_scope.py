@@ -1,15 +1,9 @@
 #!/usr/bin/env python3
-"""
-save_scope.py — scope resolution + versioned save proof (v1, issue #36).
-
-The writer-side enforcement seam from the ratified design memo: the entity
-that COMMITS memory knows its full plane mapping and must carry the proof —
-the PreToolUse gate is defense-in-depth for ad-hoc shell git, not the
-primary mechanism.
+"""Resolve explicit Memory v2 publication scopes.
 
 A plane mapping keeps THREE distinct values (conflating them is how the
 cross-plane bypass happens):
-  plane_base   — where markers, logs, and this plane's Memory/ live
+  plane_base   — where this plane's Memory/ and Work/ live
   memory_root  — the ONLY pathspec a save for this scope may stage
   commit_repo  — the git worktree the commit lands in
 
@@ -22,15 +16,10 @@ Scopes (per the ratified proposal):
                valid manifest and a real git worktree at shared_git_root —
                fail closed otherwise.
 
-Proof: Work/markers/save-gates-ok at plane_base, version 2 — a JSON record
-binding the mapping AND the sha256 of the plane's Memory/activeContext.md.
-Any post-proof mutation, or any attempt to satisfy one plane's commit with
-another plane's proof, fails verification. (Version 1 is the legacy marker
-written by save-preflight-env.sh for the no-workspace path; the commit gate
-accepts both, each only for its own plane.)
+This module resolves paths only. Memory validation and atomic publication live
+in memory_v2.py; the explicit save command owns Git staging and publication.
 """
 
-import hashlib
 import json
 import subprocess
 import sys
@@ -42,8 +31,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 import project_root  # noqa: E402
 
-PROOF_VERSION = 2
-_MARKER_REL = Path("Work") / "markers" / "save-gates-ok"
+SCHEMA_VERSION = 2
 
 
 def _err(code: str, message: str) -> dict:
@@ -113,7 +101,7 @@ def resolve_plane(scope: str, start: Optional[Path] = None
         if memory_rel == ".":
             memory_rel = ""
         return {
-            "version": PROOF_VERSION,
+            "version": SCHEMA_VERSION,
             "scope": "workspace",
             "plane_base": str(ws_root),
             "memory_root": str(mem_root),
@@ -171,7 +159,7 @@ def resolve_plane(scope: str, start: Optional[Path] = None
         base = top
 
     return {
-        "version": PROOF_VERSION,
+        "version": SCHEMA_VERSION,
         "scope": "repo",
         "plane_base": str(base),
         "memory_root": str(base / "Memory"),
@@ -180,79 +168,16 @@ def resolve_plane(scope: str, start: Optional[Path] = None
     }, []
 
 
-def _ac_sha(mapping: dict) -> Optional[str]:
-    ac = Path(mapping["memory_root"]) / "activeContext.md"
-    try:
-        return hashlib.sha256(ac.read_bytes()).hexdigest()
-    except OSError:
-        return None
-
-
-def _marker_path(mapping: dict) -> Path:
-    return Path(mapping["plane_base"]) / _MARKER_REL
-
-
-def write_proof(mapping: dict) -> str:
-    """Write the versioned proof at the plane base. Returns the path.
-
-    Raises nothing: filesystem failures surface as a typed exception-free
-    empty return via the CLI wrapper; library callers get ValueError with a
-    typed message (kept simple — the CLI is the shipped surface).
-    """
-    sha = _ac_sha(mapping)
-    record = {
-        "version": PROOF_VERSION,
-        "scope": mapping["scope"],
-        "plane_base": mapping["plane_base"],
-        "memory_root": mapping["memory_root"],
-        "commit_repo": mapping["commit_repo"],
-        "ac_sha256": sha or "",
-    }
-    marker = _marker_path(mapping)
-    marker.parent.mkdir(parents=True, exist_ok=True)
-    marker.write_text(json.dumps(record, indent=2, sort_keys=True),
-                      encoding="utf-8")
-    return str(marker)
-
-
-def verify_proof(mapping: dict) -> Tuple[bool, str]:
-    """Verify the plane's proof against the mapping and disk state."""
-    marker = _marker_path(mapping)
-    try:
-        data = json.loads(marker.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return False, f"no proof (or unreadable) at {marker}"
-    if data.get("version") != PROOF_VERSION:
-        return False, f"proof version {data.get('version')!r} != {PROOF_VERSION}"
-    for key in ("scope", "plane_base", "memory_root", "commit_repo"):
-        if data.get(key) != mapping.get(key):
-            return False, (f"proof {key} mismatch: proof has "
-                           f"{data.get(key)!r}, mapping requires "
-                           f"{mapping.get(key)!r} — a proof satisfies only "
-                           f"its own plane")
-    disk = _ac_sha(mapping)
-    if not data.get("ac_sha256") or disk is None \
-            or data["ac_sha256"] != disk:
-        return False, ("activeContext.md changed after the proof was "
-                       "written (or is unreadable) — the proof is stale")
-    return True, "ok"
-
-
 def _resolve_from_args(scope: str, start: Optional[str]
                        ) -> Tuple[Optional[dict], List[dict]]:
     return resolve_plane(scope, Path(start) if start else None)
 
 
 def main(argv: List[str]) -> int:
-    """CLI: resolve | write-proof | verify, each --scope S [--start D].
-
-    resolve prints the mapping JSON (rc 0) or {errors} (rc 1).
-    write-proof resolves then writes the proof (prints marker path).
-    verify resolves then verifies (rc 0 ok / 1 fail, reason on stdout).
-    """
+    """CLI: resolve --scope S [--start D]."""
     args = argv[1:]
-    if not args or args[0] not in ("resolve", "write-proof", "verify"):
-        print("usage: save_scope.py resolve|write-proof|verify "
+    if not args or args[0] != "resolve":
+        print("usage: save_scope.py resolve "
               "--scope repo|workspace [--start DIR]", file=sys.stderr)
         return 2
     verb, rest = args[0], args[1:]
@@ -264,7 +189,7 @@ def main(argv: List[str]) -> int:
         elif rest[i] == "--start" and i + 1 < len(rest):
             start = rest[i + 1]; i += 1
         else:
-            print("usage: save_scope.py resolve|write-proof|verify "
+            print("usage: save_scope.py resolve "
                   "--scope repo|workspace [--start DIR]", file=sys.stderr)
             return 2
         i += 1
@@ -276,22 +201,8 @@ def main(argv: List[str]) -> int:
     if mapping is None:
         print(json.dumps({"errors": errors}, indent=2))
         return 1
-    if verb == "resolve":
-        print(json.dumps(mapping, indent=2, sort_keys=True))
-        return 0
-    # Totality at the CLI boundary (pass-2): filesystem failures and
-    # malformed mappings are typed verdicts, never tracebacks.
-    try:
-        if verb == "write-proof":
-            print(write_proof(mapping))
-            return 0
-        ok, reason = verify_proof(mapping)
-        print(reason)
-        return 0 if ok else 1
-    except (OSError, KeyError, ValueError) as exc:
-        print(json.dumps({"errors": [
-            _err("proof_io_failed", f"{type(exc).__name__}: {exc}")]}))
-        return 1
+    print(json.dumps(mapping, indent=2, sort_keys=True))
+    return 0
 
 
 if __name__ == "__main__":

@@ -1,21 +1,16 @@
 #!/usr/bin/env python3
 """
-project_root.py — the ONE Python project-root resolver, plus the workspace
-walk (workspace v1, delivery issue 2 — issue #33).
+project_root.py — shared Python project-root resolver plus workspace walk.
 
-Before this module existed, the layered Memory-root algorithm lived in three
-divergent Python copies (pattern_analyzer, event_store, learnings_manager) —
-different layer sets, different walk bases, different failure modes. Each
-historical caller now delegates here, declaring its exact historical
-parameters, so behavior stays byte-identical while the algorithm exists
-once. Do not add a new independent fallback chain anywhere — extend this.
+Memory v2 tools delegate project and workspace detection here. Do not add an
+independent fallback chain elsewhere.
 
 Python detectors differ from the bash ones deliberately (and historically):
 the CLAUDE_PROJECT_DIR layer is VALIDATED against Memory/ here, verbatim in
 bash. That divergence is pinned, not fixed.
 
-detect_workspace() is NEW and — in this increment — consumed by nothing:
-it walks upward from a start directory for .asha/workspace.json, stopping
+detect_workspace() walks upward from a start directory for
+.asha/workspace.json, stopping
 BEFORE $HOME and BEFORE the filesystem root (both exclusive, canonical
 comparison), and validates a found manifest via workspace_manifest. An
 invalid manifest is a typed verdict, never a silent keep-walking fallback —
@@ -47,8 +42,7 @@ _FAIL_MESSAGE = "Cannot detect project root. Ensure Memory/ directory exists."
 
 
 def _argv_explicit(args: List[str]) -> Optional[Path]:
-    """The historical pattern_analyzer argv scan, preserved verbatim:
-    runs before argparse (import time), validates against Memory/."""
+    """Scan --project-dir/-p before argparse; validate against Memory/."""
     for index, argument in enumerate(args):
         explicit = None
         if argument in {"--project-dir", "-p"} and index + 2 <= len(args):
