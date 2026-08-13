@@ -1,239 +1,71 @@
 ---
 name: memory-maintenance
-description: Provide Memory file structure guidance when Claude updates Memory files. Covers frontmatter schema, update triggers, file interdependencies, and validation.
-license: MIT
+description: "Validate or deliberately maintain Asha Memory v2 publication and recovery files. Use for activeContext.md, decisions.md, project_id, recovery snapshots, learning lifecycle, and reviewed legacy migration."
 ---
 
-# Memory Maintenance Skill
+# Memory v2 Maintenance
 
-**Purpose**: Provide Memory file structure guidance when Claude updates Memory files
+## Authority
 
-**Invocation**: Claude autonomously uses this skill when updating Memory/*.md files
+Live state and verified disk outrank published Memory. Published Memory outranks
+unpublished recovery. Candidate learnings have no SessionStart authority.
 
----
+## Published semantic memory
 
-## When to Use This Skill
+`Memory/activeContext.md` is at most 4,096 UTF-8 bytes and has exactly:
 
-This skill provides guidance for:
-
-- Creating new Memory files
-- Updating existing Memory files
-- Maintaining frontmatter schema
-- Understanding file interdependencies
-- Determining update triggers
-
-## Memory File Structure
-
-### Required Files
-
-**Memory/activeContext.md**:
-
-- Current project status
-- Recent activities (last 2-3 sessions)
-- Critical reference information
-- Next steps
-- Update: Every session
-
-**Memory/projectbrief.md**:
-
-- Project overview
-- Scope (in/out)
-- Objectives
-- Constraints
-- Update: Rarely (major scope changes)
-
-**Memory/communicationStyle.md**:
-
-- Persona
-- Communication patterns
-- Audience
-- Voice examples
-- Update: Occasionally (persona refinements)
-
-### Optional Files
-
-**Memory/workflowProtocols.md**:
-
-- Project-specific patterns
-- Tool usage conventions
-- Process documentation
-- Create when: Patterns emerge across multiple sessions
-
-**Memory/techEnvironment.md**:
-
-- Stack (languages, frameworks, tools)
-- Code conventions (naming, imports, style)
-- Build system
-- Discovered patterns from codebase
-- Create when: Software development projects
-
-**Custom Files**:
-
-- Create project-specific Memory files as needed
-- Examples: agentCoverageTest.md, wireframeReference.md
-
-## Frontmatter Schema
-
-All Memory files MUST include:
-
-```yaml
----
-type: "context|brief|environment|reference|learning"   # OKF top-level concept type
-version: "X.Y"
-lastUpdated: "YYYY-MM-DD HH:MM UTC"
-lifecycle: "initiation|planning|execution|maintenance"
-stakeholder: "technical|business|regulatory|all"
-changeTrigger: "≥25% code impact|pattern discovery|user request|context ambiguity"
-validatedBy: "human|ai|system"
-dependencies: ["file1.md", "file2.md"]
----
+```markdown
+# Objective
+# State
+# Next
+# Blockers
 ```
 
-**Field Requirements**:
+`Next` and `Blockers` contain at most five items each.
 
-- **type**: OKF top-level concept type. Lets the bundle be checked/graphed by `validate.py`/`visualize.py`. Add it going forward; the existing rich fields ride along as custom keys (OKF preserves unknown keys). Not back-filled in bulk, and validation is warn-only — legacy files without it are not blocked.
-- **version**: Increment minor (X.Y+1) for content, major (X+1.0) for structure
-- **lastUpdated**: Update on every modification
-- **lifecycle**: Current project phase
-- **stakeholder**: Who cares about this content
-- **changeTrigger**: What triggers updates
-- **validatedBy**: Who last verified accuracy
-- **dependencies**: Related Memory files (optional)
+`Memory/decisions.md` has only `# Decisions` and current binding decisions. It
+is not a log or archive.
 
-## Learnings & Ideas (OKF concept bundles)
+Only explicit `/session:save` publishes either file. Draft outside `Memory/`
+and call `tools/memory_v2.py publish`; never write around the validator. The
+publisher holds a project lock and uses a private recovery journal so the pair
+cannot interleave or remain partially replaced. Shipped readers use
+`memory_v2.py read --project-dir PROJECT` and acquire the same lock; direct
+unlocked reads of one file at a time are not a coherent pair read.
 
-Cross-project **learnings** are NOT a single flat file. They live as an OKF concept
-bundle at `~/.asha/learnings/` — one file per learning (`<slug>.md`, frontmatter
-`type: learning`), managed exclusively by `learnings_manager.py`. Recording a
-learning is an upsert keyed by id (create-or-update), so the same insight cannot
-accumulate duplicate copies. Do not hand-edit these files during a session; use
-the manager (`add`/`confirm`/`contradict`). SessionStart uses
-`learnings_manager.py render-index` by default: one capped line per concept,
-hot-first, with bodies read on demand. `ASHA_LEARNINGS_INJECT=hot` restores the
-legacy `render-hot` path. `index.md` is auto-generated.
+## Recovery
 
-`Memory/ideas.md` and `Memory/scratchpad.md` remain free-form, model-maintained
-prose (no code touches them). When an idea matures into a durable, reusable item,
-prefer giving it its own one-concept file following the same convention rather than
-growing an ever-longer flat list.
+`Work/session-state/<harness>-<session>.json` is ignored, mode `0600`, at most
+2,048 bytes, and expires after seven days. It stores bounded prompt hints,
+touched paths, the last mechanical action, and a blocker indicator. It is not
+semantic memory and must be verified before use. `Work/markers/silence`
+disables persistence.
 
-## Update Triggers
+## Learnings
 
-Update Memory when:
+Learnings live under `~/.asha/learnings/{candidate,active,retired}/`. Explicit
+save resolves `ASHA_SESSION_ID`, `CLAUDE_CODE_SESSION_ID`, or `CODEX_THREAD_ID`
+in that order; Copilot may use its current/latest validated recovery snapshot.
+The manager reads the actual project `project_id` from config.
+Activation requires three distinct sessions across two projects. Propose at
+most three candidates per explicit save. This is a user-controlled heuristic
+over local evidence, not a security authority. Contradiction and retirement are
+visible state transitions; neither silently deletes a record.
 
-- **≥25% code impact**: Major refactoring, architectural changes
-- **Pattern discovery**: New insights about project/domain
-- **User request**: Explicit instruction to document
-- **Context ambiguity**: Gaps causing confusion
+## Legacy migration
 
-Do NOT update for:
+Use `/session:consolidate`. Inventory first, present `accept`/`reject`/`defer`
+per item, wait for review, apply the typed whole review idempotently, and
+use `migrate-amend` to atomically stage decisions plus both exact publication
+digests. Existing publication targets must be accepted hash-bound sources;
+absent targets require explicit create mappings. Preserve the captured reviewed
+bytes in timestamped private backup. Recovery conflicts change nothing and keep
+the global transaction journal and private backups for repair. Canonical
+workspace `knowledge/` is outside the removed operational-memory catalogue.
 
-- Trivial changes (typos, formatting)
-- Temporary context (single-session)
-- Redundant information
-
-## Recall Fixture Convention
-
-When a durable memory records a diagnosed failure or a reusable runbook, add a
-natural-language recall fixture in the same change. Prefer the project's
-`Memory/recall_fixtures.yaml`; use `~/.asha/recall_fixtures.yaml` for memories
-that should be tested across projects.
-
-```yaml
-- q: "root disk full, service healthy, shell output disappeared"
-  expect: reference_disk_full_log_flood_triage
-```
-
-`expect` is the target memory filename stem or learning id, and it must name a
-memory that exists in *this* bundle — a fixture pointing at a memory you do not
-have can never hit, so it drags the baseline down permanently and masks real
-regressions in the fixtures that do work. Keep the question phrased as a future
-user/task symptom, not as a copy of the description. Run:
+## Validation
 
 ```bash
-recall_bench.py --project-dir "$PWD" --format human
+python3 "$ASHA_ROOT/plugins/session/tools/memory_v2.py" validate --project-dir "$PROJECT_DIR"
+python3 "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" list --state active
 ```
-
-The metric is hit@5. Misses warn but never block `/session:save`; a new miss
-means a previously passing fixture stopped retrieving and should be corrected
-by repairing the catalogue or description rather than keyword-stuffing bodies.
-
-## File Interdependencies
-
-**Foundation Files** (always read first):
-
-1. activeContext.md
-2. projectbrief.md
-3. communicationStyle.md
-
-**Conditional Files** (read when triggered):
-
-- workflowProtocols.md
-- techEnvironment.md
-
-Document dependencies in frontmatter.
-
-## Self-Contained Principle
-
-**CRITICAL RULE**:
-
-- Memory files MUST be self-contained
-- Memory files MUST NOT reference framework (AGENTS.md)
-- Framework MAY reference Memory files
-
-This enables framework portability.
-
-## Archive Strategy
-
-**activeContext.md**:
-
-- Archive when >500 lines
-- Keep last 2-3 sessions
-- Move older activities to git history
-
-**Session Files**:
-
-- Archive to Work/sessions/archive/
-- Named: session-[timestamp].md
-- Git-ignored (ephemeral)
-
-## Convention Discovery Protocol
-
-When reading code files:
-
-1. Note conventions (naming, imports, style)
-2. Document in Memory/techEnvironment.md
-3. Check Memory before writing code
-4. Apply documented conventions
-5. Update as new patterns discovered
-
-This prevents re-discovery overhead and ensures consistency.
-
-## Validation Checklist
-
-Before updating Memory:
-
-- [ ] Frontmatter complete and valid
-- [ ] Version incremented
-- [ ] lastUpdated timestamp current
-- [ ] No references to framework (AGENTS.md)
-- [ ] Dependencies declared
-- [ ] Update trigger appropriate
-- [ ] Content serves file purpose
-- [ ] Size reasonable (activeContext <500 lines)
-
-## Examples
-
-See reference implementation:
-
-- Your project's `Memory/` directory
-- Foundation files show minimal structure
-- Optional files show when to extend
-
-## Documentation
-
-For complete specifications, see plugin documentation:
-
-- `docs/MEMORY-STRUCTURE.md` - Detailed file specifications
-- `docs/SESSION-CAPTURE.md` - Session watching protocol
-- `docs/SESSION-SAVE.md` - Synthesis workflow

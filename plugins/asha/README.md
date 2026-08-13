@@ -62,10 +62,9 @@ asha    →  all of the above + soul + voice + keeper (full Asha)
 - **voice.md** — Set tone, prohibited words, required patterns. Tune as needed.
 - **keeper.md** — User profile and accumulated working preferences.
 
-Automatic saves never alter `voice.md` or `keeper.md`. An explicit
-`/session:save` may capture calibration only when `capture_calibration` is true
-in `~/.asha/config.json`; this keeps ordinary transcript synthesis from silently
-rewriting identity files.
+Recovery hooks never alter `voice.md` or `keeper.md`. Semantic publication is
+explicit, and identity-layer edits require their own reviewed workflow; host
+transcripts are not an input to Memory v2.
 
 ## How It Works
 

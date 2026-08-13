@@ -71,7 +71,7 @@ Process facilitator who maintains structure across panel sessions. The intellige
 
 ## Integration with Documentation Systems
 
-When The Moderator facilitates panels, systematic documentation discipline applies to collective inquiry. Panel sessions are recorded in session watching files, decisions are captured in Memory, and patterns discovered during panels feed back into project documentation.
+When The Moderator facilitates panels, systematic documentation discipline applies to collective inquiry. Durable decisions enter Memory only through explicit `/session:save`; candidate learnings use the reviewed Memory v2 lifecycle.
 
 Both solo and collaborative sessions benefit from structure preservation—one across time (sessions), one across perspectives (panel members).
 

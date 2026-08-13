@@ -3,8 +3,7 @@
 #
 # Copilot's preToolUse contract differs from Claude's, so this shim translates in
 # both directions and lets the policy logic stay in ONE place (policy-guard.sh +
-# policies/rules.json, block-secrets.sh, and save-commit-gate.sh — the latter
-# chained 2026-08-08, issue #40):
+# policies/rules.json, and block-secrets.sh):
 #
 #   Copilot stdin : {sessionId, timestamp, cwd, toolName, toolArgs}
 #                   - toolArgs may be a JSON-ENCODED STRING, not an object
@@ -50,7 +49,9 @@ CLAUDE_JSON="$(printf '%s' "$INPUT" | jq -c '
       ),
       tool_input: {
         command:   ($a.command // ""),
-        file_path: ($a.path // $a.file_path // "")
+        file_path: ($a.path // $a.file_path // $a.filePath // ""),
+        path:      ($a.path // $a.file_path // $a.filePath // ""),
+        patch:     ($a.patch // "")
       },
       session_id: (.sessionId // ""),
       cwd:        (.cwd // "")
@@ -81,6 +82,10 @@ consult() {
     return 1
   fi
 
+  # Warn-only policies exit 0 and use stderr as the portable advisory channel.
+  # Preserve the warning instead of swallowing it inside the adapter.
+  [[ -z "$err" ]] || printf '%s\n' "$err" >&2
+
   local pd
   pd="$(printf '%s' "$out" | jq -r '.hookSpecificOutput.permissionDecision // .permissionDecision // empty' 2>/dev/null || true)"
   if [[ "$pd" == "ask" || "$pd" == "deny" ]]; then
@@ -91,7 +96,7 @@ consult() {
   return 0
 }
 
-for handler in policy-guard.sh block-secrets.sh save-commit-gate.sh; do
+for handler in policy-guard.sh block-secrets.sh; do
   consult "$SELF_DIR/$handler" || break
 done
 

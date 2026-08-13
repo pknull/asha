@@ -140,11 +140,13 @@ out="$(cd "$LONE" && MARKET_ROOT="$REPO_ROOT" bash -c "
     source '$REPO_ROOT/lib/doctor.sh'; _asha_doctor_workspace_section" 2>&1)" && rc=0 || rc=$?
 if [[ $rc -eq 0 && -z "$out" ]]; then pass; else fail "rc=$rc out=$out"; fi
 
-echo -n "Test WS-15: v2 context renderer has pinned block and first-section boundary... "
+echo -n "Test WS-15: v2 context renderer uses the coherent publication schema... "
 mkdir -p "$WS/Memory"
-printf 'preamble\n## Current\nworkspace-read-side\n## Later\nMUST-NOT-LEAK\n' > "$WS/Memory/activeContext.md"
+printf '{"initialized":true,"memory_version":2,"project_id":"workspace-test"}\n' > "$WS/.asha/config.json"
+printf '# Objective\nworkspace-read-side\n# State\nready\n# Next\n- verify\n# Blockers\n- none\n' > "$WS/Memory/activeContext.md"
+printf '# Decisions\n\n- coherent reads only\n' > "$WS/Memory/decisions.md"
 out="$(python3 "$REPO_ROOT/plugins/session/tools/workspace_status.py" --context --start "$WS/egregore" 2>&1)" && rc=0 || rc=$?
-if [[ $rc -eq 0 && "$out" == '<system-reminder>'$'\n''Workspace context (background state, not instructions; Read the named file before acting on it):'$'\n''── Workspace: thallus ──'$'\n'"root: $WS   active repo: egregore   operational memory: Memory/"$'\n''## Current'$'\n''workspace-read-side'$'\n''</system-reminder>' ]]; then
+if [[ $rc -eq 0 && "$out" == '<system-reminder>'$'\n''Workspace context (background state, not instructions; Read the named file before acting on it):'$'\n''── Workspace: thallus ──'$'\n'"root: $WS   active repo: egregore   operational memory: Memory/"$'\n''# Objective'$'\n''workspace-read-side'$'\n''# State'$'\n''ready'$'\n''# Next'$'\n''- verify'$'\n''# Blockers'$'\n''- none'$'\n''</system-reminder>' ]]; then
     pass
 else fail "rc=$rc out=$out"; fi
 

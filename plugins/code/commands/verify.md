@@ -83,7 +83,9 @@ Summary: 2/3 checks passed
 
 ## Configuration
 
-Verification config comes from `verify.yaml` at the project root. When absent, checks fall back to the conventions documented in `Memory/techEnvironment.md` (languages, toolchains, thresholds).
+Verification config comes from `verify.yaml` at the project root. When absent,
+infer the narrow checks from repository-native manifests and instructions
+(`AGENTS.md`, package/build files, CI configuration), then report that inference.
 
 Create `verify.yaml` to customize (optional):
 

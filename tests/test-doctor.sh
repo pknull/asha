@@ -79,6 +79,36 @@ grep -q "persona loads via 'asha copilot' wrapper only" <<<"$out" \
   && ok "wrapper-scoped persona reported as INFO (by design, not failure)" \
   || fail "wrapper-scoped persona reported as INFO (by design, not failure)"
 
+# Already-current recovery must not short-circuit cleanup of retired exact
+# artifacts. Doctor --fix uses the same ownership-aware reconciliation.
+jq -nc --arg e "$REPO_ROOT/plugins/session/hooks/handlers/nudge-engine.sh" '{
+  version:1, hooks:{
+    sessionStart:[{type:"command",bash:($e + " SessionStart"),timeoutSec:10}],
+    userPromptSubmitted:[{type:"command",bash:($e + " UserPromptSubmit"),timeoutSec:10}],
+    postToolUse:[{type:"command",bash:($e + " PostToolUse"),timeoutSec:10}]
+  }
+}' > "$SANDBOX/.copilot/hooks/asha-nudges.json"
+out="$(run --target copilot --fix 2>&1 || true)"
+[[ ! -e "$SANDBOX/.copilot/hooks/asha-nudges.json" ]] \
+  && ok "doctor --fix reconciles retired hook beside current recovery artifact" \
+  || fail "doctor --fix reconciles retired hook beside current recovery artifact"
+
+IGNORE_PROJECT="$SANDBOX/ignore-project"
+mkdir -p "$IGNORE_PROJECT/.asha"
+printf '{"initialized":true,"memory_version":2,"project_id":"ignore-test"}\n' > "$IGNORE_PROJECT/.asha/config.json"
+printf '/Work/session-state/\n!/Work/session-state/\n!/Work/session-state/*.json\n' > "$IGNORE_PROJECT/.gitignore"
+git -C "$IGNORE_PROJECT" init -q
+out="$(cd "$IGNORE_PROJECT" && run --target copilot 2>&1 || true)"
+grep -q 'leaves Work/session-state JSON trackable' <<<"$out" \
+  && ok "doctor verifies Git ignore semantics rather than a literal line" \
+  || fail "doctor verifies Git ignore semantics rather than a literal line"
+
+printf '{"initialized":true,"memory_version":2,"project_id":"   "}\n' > "$IGNORE_PROJECT/.asha/config.json"
+out="$(cd "$IGNORE_PROJECT" && run --target copilot 2>&1 || true)"
+grep -q 'config lacks memory_version=2 or project_id' <<<"$out" \
+  && ok "doctor rejects a whitespace-only Memory v2 project_id" \
+  || fail "doctor rejects a whitespace-only Memory v2 project_id"
+
 # ---------------------------------------------------------------------------
 echo "--- test 1b: Copilot version outside the live-verified range warns ---"
 VERSION_BIN="$SANDBOX/version-bin"
@@ -142,7 +172,10 @@ grep -q "FIXED  regenerated drifted command-skill" <<<"$out" \
   || fail "--fix regenerates the content-drifted command-skill"
 grep -q "FIXED  rewrote guardrails file" <<<"$out" \
   && ok "--fix rewrites drifted guardrails" \
-  || fail "--fix rewrites drifted guardrails"
+  || { jq -e '.hooks.preToolUse[0].bash | endswith("copilot-policy-adapter.sh")' \
+        "$SANDBOX/.copilot/hooks/asha-guardrails.json" >/dev/null 2>&1 \
+       && ok "--fix rewrites drifted guardrails through artifact ownership" \
+       || fail "--fix rewrites drifted guardrails"; }
 # remove the dangler (not --fix territory: deleting user files is uninstall's job)
 rm "$SANDBOX/.copilot/skills/dangler"
 if run --target copilot >/dev/null 2>&1; then

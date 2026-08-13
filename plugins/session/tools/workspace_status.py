@@ -34,6 +34,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import project_root  # noqa: E402
+import memory_v2  # noqa: E402
 
 
 _CONTEXT_LABEL = (
@@ -177,12 +178,12 @@ def render_context(start: Optional[Path] = None) -> str:
 
     section: Optional[str] = None
     try:
-        if resolved_context.is_file():
-            decoded = resolved_context.read_bytes().decode("utf-8", errors="strict")
-            sanitized = _sanitize(decoded, preserve_lf=True)
-            section = _first_h2_section(sanitized)
-    except (OSError, UnicodeDecodeError):
-        section = None
+        if operational_rel != "Memory":
+            return _wrapped_warning(["unsupported_v2_operational_root"])
+        decoded, _decisions = memory_v2.read_published(root)
+        section = _sanitize(decoded, preserve_lf=True).rstrip("\n")
+    except (OSError, UnicodeDecodeError, ValueError):
+        return _wrapped_warning(["memory_v2_publication_invalid"])
 
     if not section:
         return header + f"no operational context yet \u2014 see {context_text}\n</system-reminder>\n"

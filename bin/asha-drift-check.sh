@@ -180,6 +180,24 @@ fix_regen_copilot_agent() {
   fi
 }
 
+_FIX_COPILOT_HOOKS_DONE=0
+fix_reconcile_copilot_hooks() {
+  [[ $_FIX_COPILOT_HOOKS_DONE -eq 0 ]] || return 0
+  # Consumed by lazily sourced installer/harness functions.
+  # shellcheck disable=SC2034
+  DRY_RUN=0 VERBOSE=0 FORCE=1
+  # shellcheck source=../lib/install.sh
+  source "$ASHA/lib/install.sh"
+  # shellcheck source=../harnesses/copilot.sh
+  source "$ASHA/harnesses/copilot.sh"
+  asha_artifact_begin copilot
+  copilot_install_hooks
+  copilot_install_recovery_hooks
+  copilot_reconcile_retired_hooks
+  asha_artifact_finalize copilot 0
+  _FIX_COPILOT_HOOKS_DONE=1
+}
+
 check_generated_agents() { # agents_dir label ext fix_fn
   local agents_dir="$1" label="$2" ext="$3" fix_fn="$4"
   local issues=0 agent plugin_dir ns base name dest expected
@@ -560,6 +578,11 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
     # Generated `.agent.md` coverage + freshness
     check_generated_agents "$COPILOT/agents" copilot ".agent.md" fix_regen_copilot_agent
 
+    # Dedicated hooks are generated artifacts too. Reconcile them before the
+    # ownership audit so --fix also handles an already-current recovery file
+    # coexisting with retired exact nudge/lifecycle output.
+    [[ $FIX -eq 0 ]] || fix_reconcile_copilot_hooks
+
     manifest_out="$(asha_artifact_doctor copilot 2>&1)"; manifest_rc=$?
     if [[ $manifest_rc -eq 0 ]]; then
       pass "generated-artifact ownership manifest clean (copilot)"
@@ -596,62 +619,41 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
       fi
     fi
 
-    # ───── Guidance nudges file matches what the installer emits ─────
-    nudges="$COPILOT/hooks/asha-nudges.json"
-    nudge_engine="$ASHA/plugins/session/hooks/handlers/nudge-engine.sh"
-    if [[ ! -x "$nudge_engine" ]]; then
-      nope "nudge engine missing or not executable: $nudge_engine"
-    elif [[ ! -f "$nudges" ]]; then
-      nope "nudges file missing: $nudges (run ./install.sh --target copilot)"
-    elif ! jq empty "$nudges" 2>/dev/null; then
-      nope "nudges file is invalid JSON: $nudges"
+    # ───── Memory v2 recovery hooks match what the installer emits ─────
+    recovery="$COPILOT/hooks/asha-recovery.json"
+    start_handler="$ASHA/plugins/session/hooks/handlers/session-start.sh"
+    prompt_handler="$ASHA/plugins/session/hooks/handlers/user-prompt-submit.sh"
+    post_handler="$ASHA/plugins/session/hooks/handlers/post-tool-use.sh"
+    end_handler="$ASHA/plugins/session/hooks/handlers/session-end.sh"
+    if [[ ! -x "$start_handler" || ! -x "$prompt_handler" || ! -x "$post_handler" || ! -x "$end_handler" ]]; then
+      nope "Memory v2 recovery handler missing or not executable"
+    elif [[ ! -f "$recovery" ]]; then
+      nope "recovery hooks file missing: $recovery (run ./install.sh --target copilot)"
+    elif ! jq empty "$recovery" 2>/dev/null; then
+      nope "recovery hooks file is invalid JSON: $recovery"
     else
-      expected="$(jq -nc --arg e "$nudge_engine" '{
+      expected="$(jq -nc --arg s "$start_handler" --arg p "$prompt_handler" --arg t "$post_handler" --arg e "$end_handler" '{
         version: 1,
         hooks: {
-          sessionStart:        [{type:"command", bash:($e + " SessionStart"),      timeoutSec:10}],
-          userPromptSubmitted: [{type:"command", bash:($e + " UserPromptSubmit"), timeoutSec:10}],
-          postToolUse:         [{type:"command", bash:($e + " PostToolUse"),      timeoutSec:10}]
+          sessionStart:        [{type:"command", bash:$s, timeoutSec:15}],
+          userPromptSubmitted: [{type:"command", bash:$p, timeoutSec:10}],
+          postToolUse:         [{type:"command", bash:$t, timeoutSec:10}],
+          sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}]
         }
       }')"
-      if [[ "$(jq -S . "$nudges")" == "$(jq -S . <<<"$expected")" ]]; then
-        pass "nudges file matches installer-expected content"
+      if [[ "$(jq -S . "$recovery")" == "$(jq -S . <<<"$expected")" ]]; then
+        pass "Memory v2 recovery hooks match installer-expected content"
       elif [[ $FIX -eq 1 ]]; then
-        printf '%s\n' "$expected" > "$nudges"
-        echo "FIXED  rewrote nudges file: $nudges"
+        fix_reconcile_copilot_hooks
+        echo "FIXED  rewrote recovery hooks file: $recovery"
       else
-        nope "nudges file content drifted from installer-expected (pass --fix or rerun ./install.sh --target copilot)"
+        nope "recovery hooks content drifted from installer-expected (pass --fix or rerun ./install.sh --target copilot)"
       fi
     fi
 
-    # ───── Lifecycle hooks file matches what the installer emits ─────
-    lifecycle="$COPILOT/hooks/asha-lifecycle.json"
-    start_handler="$ASHA/plugins/session/hooks/handlers/session-start.sh"
-    end_handler="$ASHA/plugins/session/hooks/handlers/session-end.sh"
-    if [[ ! -x "$start_handler" || ! -x "$end_handler" ]]; then
-      nope "lifecycle handlers missing or not executable: $start_handler / $end_handler"
-    elif [[ ! -f "$lifecycle" ]]; then
-      nope "lifecycle file missing: $lifecycle (run ./install.sh --target copilot)"
-    elif ! jq empty "$lifecycle" 2>/dev/null; then
-      nope "lifecycle file is invalid JSON: $lifecycle"
-    else
-      expected="$(jq -nc --arg s "$start_handler" --arg e "$end_handler" '{
-        version: 1,
-        hooks: {
-          sessionStart: [{type:"command", bash:$s, timeoutSec:60}],
-          sessionEnd:   [{type:"command", bash:$e, timeoutSec:30}]
-        }
-      }')"
-      if [[ "$(jq -S . "$lifecycle")" == "$(jq -S . <<<"$expected")" ]]; then
-        pass "lifecycle file matches installer-expected content"
-        info_line "sessionEnd auto-save verified live on 1.0.75 (reasons: complete/user_exit); silence marker disables per-project"
-      elif [[ $FIX -eq 1 ]]; then
-        printf '%s\n' "$expected" > "$lifecycle"
-        echo "FIXED  rewrote lifecycle file: $lifecycle"
-      else
-        nope "lifecycle file content drifted from installer-expected (pass --fix or rerun ./install.sh --target copilot)"
-      fi
-    fi
+    [[ ! -e "$COPILOT/hooks/asha-nudges.json" && ! -e "$COPILOT/hooks/asha-lifecycle.json" ]] \
+      && pass "legacy Copilot nudge/lifecycle artifacts absent" \
+      || nope "legacy Copilot nudge/lifecycle artifacts remain (rerun installer)"
 
     # ───── Context (never failures) ─────
     info_line "persona loads via 'asha copilot' wrapper only (by design); plain 'copilot' is persona-free"
@@ -734,8 +736,91 @@ if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
       warn "OpenCode CLI not on PATH (offline install state audited only)"
     fi
     info_line "persona loads via 'asha opencode' wrapper only; plain 'opencode' is persona-free"
-    info_line "dispose auto-save is clean-exit best effort; persistent servers and crashes require manual /session:save"
+    info_line "dispose seals unpublished recovery only; semantic publication requires explicit /session:save"
   fi
+fi
+
+# ===========================================================================
+# Memory v2 source and project checks (always run)
+# ===========================================================================
+
+section "Memory v2 contract"
+
+memory_tool="$ASHA/plugins/session/tools/memory_v2.py"
+recovery_tool="$ASHA/plugins/session/tools/recovery_state.py"
+save_identity_tool="$ASHA/plugins/session/tools/save_identity.py"
+learnings_tool="$ASHA/plugins/session/tools/learnings_manager.py"
+active_template="$ASHA/plugins/session/templates/activeContext.md"
+decisions_template="$ASHA/plugins/session/templates/decisions.md"
+hooks_registry="$ASHA/plugins/session/hooks/hooks.json"
+
+[[ -x "$memory_tool" && -x "$recovery_tool" && -x "$save_identity_tool" \
+    && -x "$learnings_tool" ]] \
+  && pass "Memory v2 publication, recovery, identity, and learning tools are executable" \
+  || nope "Memory v2 publication, recovery, identity, or learning tool missing/not executable"
+
+if [[ -f "$active_template" && -f "$decisions_template" ]] \
+    && python3 - "$memory_tool" "$active_template" "$decisions_template" <<'PY' >/dev/null 2>&1
+import importlib.util, pathlib, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]).resolve().parent))
+spec = importlib.util.spec_from_file_location("memory_v2_doctor", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+module.validate_active_context(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+module.validate_decisions(pathlib.Path(sys.argv[3]).read_text(encoding="utf-8"))
+PY
+then
+  pass "Memory v2 templates satisfy published schemas"
+else
+  nope "Memory v2 templates are missing or invalid"
+fi
+
+legacy_source_count=0
+for legacy in \
+  agents/memory-curator.md agents/memory-steward.md \
+  hooks/handlers/nudge-engine.sh hooks/handlers/save-commit-gate.sh \
+  tools/jsonl_reader.py tools/event_store.py tools/pattern_analyzer.py \
+  tools/detached-save.sh tools/auto-commit-memory.sh \
+  tools/memory_retrieval.py tools/memory_nudge.py tools/recall_bench.py; do
+  [[ ! -e "$ASHA/plugins/session/$legacy" ]] || legacy_source_count=$((legacy_source_count + 1))
+done
+[[ $legacy_source_count -eq 0 ]] \
+  && pass "retired Memory v1 source artifacts absent" \
+  || nope "$legacy_source_count retired Memory v1 source artifact(s) remain"
+
+if [[ -f "$hooks_registry" ]] && jq -e '
+    ([.hooks.Stop[]?, .hooks.SessionEnd[]?]
+      | map(.hooks[]?.command // "")
+      | all(test("save-session|detached-save|auto-commit|pattern_analyzer") | not))
+  ' "$hooks_registry" >/dev/null 2>&1; then
+  pass "hook registry contains no automatic semantic save"
+else
+  nope "hook registry is invalid or retains an automatic semantic save"
+fi
+
+if [[ -f "$PWD/.asha/config.json" ]]; then
+  jq -e '.memory_version == 2 and (.project_id | type == "string" and test("\\S"))' \
+    "$PWD/.asha/config.json" >/dev/null 2>&1 \
+    && pass "current project has stable Memory v2 project_id" \
+    || nope "current project config lacks memory_version=2 or project_id (run /session:init)"
+  if command -v git >/dev/null 2>&1 \
+      && git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    git -C "$PWD" check-ignore --no-index -q -- 'Work/session-state/.asha-ignore-probe.json' \
+      && pass "current project actually ignores Work/session-state snapshots" \
+      || nope "current project leaves Work/session-state JSON trackable (later negation? run /session:init)"
+    git -C "$PWD" check-ignore --no-index -q -- 'Work/memory-migration/.asha-ignore-probe.json' \
+      && pass "current project actually ignores Work/memory-migration reviews" \
+      || nope "current project leaves Work/memory-migration reviews trackable (run /session:init)"
+  else
+    grep -Fxq '/Work/session-state/' "$PWD/.gitignore" 2>/dev/null \
+      && pass "current non-Git project declares /Work/session-state/ ignored" \
+      || nope "current project does not declare /Work/session-state/ ignored (run /session:init)"
+    grep -Fxq '/Work/memory-migration/' "$PWD/.gitignore" 2>/dev/null \
+      && pass "current non-Git project declares /Work/memory-migration/ ignored" \
+      || nope "current project does not declare /Work/memory-migration/ ignored (run /session:init)"
+  fi
+else
+  info_line "current directory is not an initialized Asha project; project_id/ignore checks skipped"
 fi
 
 # ===========================================================================

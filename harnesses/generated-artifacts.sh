@@ -104,6 +104,35 @@ asha_artifact_install_prepared() {
   asha_artifact_record "$source" "$destination" "$type" "$expected"
 }
 
+# Retire a generated artifact without erasing local modifications. The
+# prepared file supplies the last known pre-ledger bytes for upgrades from
+# releases that did not record dedicated hook files. Modified files are added
+# to the ledger with the expected hash so doctor/uninstall surface and preserve
+# them rather than treating them as disposable foreign noise.
+asha_artifact_retire_prepared() {
+  local harness="$1" source="$2" destination="$3" type="$4" prepared="$5"
+  local expected recorded="" current=""
+  [[ -e "$destination" || -L "$destination" ]] || return 0
+  expected="$(asha_artifact_hash "$prepared")"
+  recorded="$(asha_artifact_manifest_hash_for "$harness" "$destination" 2>/dev/null || true)"
+
+  if [[ -f "$destination" && ! -L "$destination" ]]; then
+    current="$(asha_artifact_hash "$destination")"
+    if [[ "$current" == "$expected" || ( -n "$recorded" && "$current" == "$recorded" ) ]]; then
+      if [[ ${DRY_RUN:-0} -eq 1 ]]; then
+        say "  RETIRE [$type]  $destination"
+      else
+        rm -f "$destination"
+        log "retired byte-matching managed artifact: $destination"
+      fi
+      return 0
+    fi
+  fi
+
+  say "WARN: preserving modified retired artifact for review: $destination"
+  [[ ${DRY_RUN:-0} -eq 1 ]] || asha_artifact_record "$source" "$destination" "$type" "${recorded:-$expected}"
+}
+
 asha_artifact_finalize() {
   local harness="$1" full="${2:-1}" manifest stage tmp
   manifest="$(asha_artifact_manifest_path "$harness")"

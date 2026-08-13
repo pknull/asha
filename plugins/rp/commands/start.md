@@ -11,7 +11,7 @@ Initiates an interactive roleplay session by deploying the multi-agent `roleplay
 
 ## What This Does
 
-1. **Disables session logging** via `rp-active` marker (no Memory capture during RP)
+1. **Marks RP mode active** via `rp-active` for RP routing and safeguards
 2. **Retrieves session continuity** via timeline-search subagent
 3. **Builds initial scene state** in session file
 4. **Deploys roleplay-gm orchestrator** with subagent coordination
@@ -32,13 +32,13 @@ This command carries no campaign of its own. The consuming project supplies:
 
 ## Session Initiation Protocol
 
-### Step 1: Disable Session Watching
+### Step 1: Mark RP Mode Active
 
 ```bash
 mkdir -p Work/markers && touch Work/markers/rp-active
 ```
 
-Creates marker that tells hooks to skip logging during RP.
+Creates the RP routing/safeguard marker. Mechanical recovery remains independent.
 
 ### Step 2: Check for Existing Session
 

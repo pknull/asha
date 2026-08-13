@@ -11,7 +11,7 @@ Ends an active roleplay session with canon synthesis and state management.
 
 ## What This Does
 
-1. **Removes rp-active marker** — Re-enables session logging
+1. **Removes rp-active marker** — Ends RP routing and safeguards
 2. **Saves session file** — Ensures all content written to disk
 3. **Generates session summary** — Creates `Work/rp/summaries/` entry
 4. **Updates character states** — Writes `Work/rp/characters/*.md` with current stats
@@ -27,7 +27,7 @@ Ends an active roleplay session with canon synthesis and state management.
 rm -f Work/markers/rp-active
 ```
 
-This re-enables session watching for subsequent work.
+This ends RP-specific routing for subsequent work.
 
 ### Step 2: Save Session File
 

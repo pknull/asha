@@ -15,6 +15,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from collections import deque
 from pathlib import Path, PurePosixPath
 from typing import Any, Iterable, Optional
@@ -25,6 +26,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 
 import workspace_knowledge as wk  # noqa: E402
 import workspace_manifest as wm  # noqa: E402
+import memory_v2  # noqa: E402
 
 
 SCHEMA_VERSION = 1
@@ -35,6 +37,8 @@ IGNORE_END = "# <<< asha workspace private roots <<<"
 IGNORE_ENTRIES = (
     "memory-local/",
     "Work/worktrees/",
+    "/Work/session-state/",
+    "/Work/memory-migration/",
     "!.asha/",
     ".asha/*",
     "!.asha/workspace.json",
@@ -293,9 +297,11 @@ def _operational_templates(name: str, manifest: dict[str, Any]) -> dict[str, byt
     personal = manifest["memory"]["personal_root"]
     return {
         f"{operational}/activeContext.md": (
-            f"# {_inert_label(name)} workspace handoff\n\n## Current state\n\nNo cross-repository handoff recorded yet.\n"
+            "# Objective\n\nNot yet recorded.\n\n"
+            "# State\n\nNo cross-repository handoff recorded yet.\n\n"
+            "# Next\n\n- None.\n\n# Blockers\n\n- None.\n"
         ).encode("utf-8"),
-        f"{operational}/MEMORY.md": b"# Workspace memory catalogue\n",
+        f"{operational}/decisions.md": b"# Decisions\n\n- None.\n",
         f"{personal}/.gitkeep": b"",
     }
 
@@ -458,6 +464,14 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
     }
     if resolved is None:
         return report
+    silence = _generated_target(resolved, "Work/markers/silence")
+    if silence is None or silence.exists():
+        report["errors"] = [_issue(
+            "persistence_silenced",
+            "workspace initialization is disabled by Work/markers/silence",
+            path="Work/markers/silence",
+        )]
+        return report
     if discover:
         discovery = discover_repositories(resolved, max_depth=discover_depth)
         report["proposals"] = discovery["proposals"]
@@ -571,6 +585,28 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
     mutable = set(_operational_templates(name, manifest))
     mutable.add(MANIFEST_PATH.as_posix())
     instruction_paths = {"AGENTS.md", "CLAUDE.md", ".github/copilot-instructions.md"}
+
+    # Existing operational publications are user data. Validate before any
+    # bootstrap write; legacy H2 handoffs must take reviewed migration rather
+    # than being silently relabelled as Memory v2.
+    operational_root = manifest["memory"]["operational_root"]
+    for filename, validator in (("activeContext.md", memory_v2.validate_active_context),
+                                ("decisions.md", memory_v2.validate_decisions)):
+        rel = f"{operational_root}/{filename}"
+        path = _generated_target(resolved, rel)
+        if path is None:
+            report["errors"] = [_issue("path_escape", "operational publication path escapes workspace", path=rel)]
+            return report
+        if path.exists():
+            try:
+                validator(path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeDecodeError, ValueError) as exc:
+                report["errors"] = [_issue(
+                    "legacy_memory_requires_migration",
+                    f"existing {filename} is not Memory v2; run /session:consolidate: {exc}",
+                    path=rel,
+                )]
+                return report
 
     # Knowledge ownership is separate so promotion can update its index without
     # making workspace-init metadata stale.
@@ -719,6 +755,34 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
     if not gitignore.exists() or gitignore.read_bytes() != ignore_bytes:
         write_set[gitignore] = ignore_bytes
 
+    # Workspace roots are also Memory v2 publication planes. Give the plane a
+    # stable identity without tracking its user-local config file.
+    config_path = _generated_target(resolved, ".asha/config.json")
+    if config_path is None:
+        report["errors"] = [_issue("path_escape", "project config path escapes workspace", path=".asha/config.json")]
+        return report
+    config: dict[str, Any] = {}
+    if config_path.exists():
+        loaded, why = wk._read_json(config_path)
+        if why or loaded is None:
+            report["errors"] = [_issue("config_invalid", f"existing project config is invalid: {why}", path=".asha/config.json")]
+            return report
+        config = loaded
+    if "project_id" in config:
+        project_id = config["project_id"]
+        if not isinstance(project_id, str) or not project_id.strip():
+            report["errors"] = [_issue("project_id_invalid",
+                                       "existing project_id must be a nonblank string",
+                                       path=".asha/config.json")]
+            return report
+        project_id = project_id.strip()
+    else:
+        project_id = str(uuid.uuid4())
+    config.update({"initialized": True, "memory_version": 2, "project_id": project_id})
+    config_bytes = _json_bytes(config)
+    if not config_path.exists() or config_path.read_bytes() != config_bytes:
+        write_set[config_path] = config_bytes
+
     metadata.update({
         "version": SCHEMA_VERSION,
         "owner": "asha-workspace-init",
@@ -820,6 +884,71 @@ def _doctor_once(root: Path) -> dict[str, Any]:
     if metadata_error or metadata is None:
         report["errors"].append(metadata_error or _issue("ownership_missing", "workspace init ownership metadata is missing", path=OWNERSHIP_PATH.as_posix()))
         return report
+
+    config_path = _generated_target(root, ".asha/config.json")
+    config = None
+    if config_path is not None and config_path.is_file():
+        config, config_why = wk._read_json(config_path)
+    else:
+        config_why = "missing"
+    if config_why or config is None \
+            or config.get("memory_version") != 2 \
+            or not isinstance(config.get("project_id"), str) \
+            or not config["project_id"].strip():
+        report["errors"].append(_issue(
+            "memory_v2_config_missing",
+            "workspace .asha/config.json lacks memory_version=2 and a stable project_id",
+            path=".asha/config.json",
+        ))
+    else:
+        try:
+            memory_v2.status(root)
+        except (OSError, ValueError) as exc:
+            report["errors"].append(_issue(
+                "memory_v2_publication_invalid",
+                f"workspace operational publication is invalid or incoherent: {exc}",
+                path=manifest["memory"]["operational_root"],
+            ))
+
+    ignore_path = _generated_target(root, ".gitignore")
+    try:
+        ignore_lines = ignore_path.read_text(encoding="utf-8").splitlines() if ignore_path else []
+    except (OSError, UnicodeDecodeError):
+        ignore_lines = []
+    recovery_ignored = "/Work/session-state/" in ignore_lines
+    if recovery_ignored and _is_git_root(root):
+        try:
+            probe = subprocess.run(
+                ["git", "-C", str(root), "check-ignore", "--no-index", "-q",
+                 "Work/session-state/.asha-doctor-probe.json"],
+                capture_output=True, timeout=20,
+            )
+            recovery_ignored = probe.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            recovery_ignored = False
+    if not recovery_ignored:
+        report["errors"].append(_issue(
+            "recovery_ignore_missing",
+            "workspace recovery directory is not narrowly ignored",
+            path=".gitignore",
+        ))
+    migration_ignored = "/Work/memory-migration/" in ignore_lines
+    if migration_ignored and _is_git_root(root):
+        try:
+            probe = subprocess.run(
+                ["git", "-C", str(root), "check-ignore", "--no-index", "-q",
+                 "Work/memory-migration/.asha-doctor-probe.json"],
+                capture_output=True, timeout=20,
+            )
+            migration_ignored = probe.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            migration_ignored = False
+    if not migration_ignored:
+        report["errors"].append(_issue(
+            "migration_ignore_missing",
+            "workspace migration review directory is not narrowly ignored",
+            path=".gitignore",
+        ))
     git_mode = metadata.get("git_mode", manifest.get("bootstrap", {}).get("git_mode", "existing"))
     report["git_mode"] = git_mode
     report["promotion_mode"] = manifest["memory"]["promotion_mode"]

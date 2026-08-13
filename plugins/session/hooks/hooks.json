@@ -10,31 +10,7 @@
         ]
       }
     ],
-    "Stop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/save-preflight-stop.sh"
-          }
-        ]
-      }
-    ],
     "PreToolUse": [
-      {
-        "matcher": "Grep|Bash|WebSearch",
-        "_asha_harnesses": [
-          "claude"
-        ],
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/nudge-engine.sh",
-            "timeout": 1
-          }
-        ],
-        "description": "Claude-only advisory nudges (nudges/rules.json row memory-lexical)"
-      },
       {
         "matcher": "Read|Edit|Write|MultiEdit",
         "hooks": [
@@ -52,30 +28,18 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/policy-guard.sh"
           }
         ],
-        "description": "Declarative policy guardrails (deny/ask) from hooks/policies/rules.json + ~/.asha/policies.json"
+        "description": "Declarative command policy guardrails"
       },
       {
-        "matcher": "Edit|Write|MultiEdit",
-        "_asha_harnesses": [
-          "claude"
-        ],
+        "matcher": "Edit|Write|MultiEdit|apply_patch",
+        "_asha_harnesses": ["claude", "codex"],
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/policy-guard.sh"
           }
         ],
-        "description": "Same engine, file-path rules (memory-protection, vault-structure). Without this entry those rules are unreachable: the Bash-only registration above never receives an Edit/Write payload. Claude-only by necessity: on Codex pretooluse_policy_ask degrades to a hard deny."
-      },
-      {
-        "matcher": "Bash",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/save-commit-gate.sh"
-          }
-        ],
-        "description": "Refuse git commits touching Memory/ until save-preflight-env.sh gates pass (hash-bound save-gates-ok marker)"
+        "description": "Claude file-path policy guardrails"
       }
     ],
     "PostToolUse": [
@@ -87,28 +51,9 @@
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/post-tool-use.sh"
           }
         ]
-      },
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/nudge-engine.sh"
-          }
-        ],
-        "description": "Advisory nudges (nudges/rules.json row suggest-compact)"
       }
     ],
     "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/nudge-engine.sh"
-          }
-        ],
-        "description": "Advisory nudges (nudges/rules.json row rp-routing); runs before the passthrough handler"
-      },
       {
         "hooks": [
           {

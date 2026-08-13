@@ -169,7 +169,7 @@ exec_copilot() {
   mkdir -p "$(dirname "$instr_file")"
   { printf -- '---\napplyTo: "**"\n---\n'; cat "$instr"; } > "$instr_file"
 
-  # Operational layer (operation.md + learnings hot tier) — file-based, so it
+  # Operational layer (operation.md + active learnings) — file-based, so it
   # rides the same custom-instructions dir as a second *.instructions.md. On
   # Claude this content loads via the SessionStart hook; Copilot has no usable
   # hook, so inject it here for behavioral parity. Regenerated every launch;
@@ -180,7 +180,7 @@ exec_copilot() {
   op_tmp="$(mktemp)"
   if [[ -x "$op_merge" ]] && "$op_merge" "$op_tmp" 2>/dev/null; then
     { printf -- '---\napplyTo: "**"\n---\n'; cat "$op_tmp"; } > "$op_file"
-    info "[asha copilot] operational layer: operation.md + learnings hot tier wired"
+    info "[asha copilot] operational layer: operation.md + active learnings wired"
   else
     rm -f "$op_file"
   fi
@@ -292,10 +292,9 @@ Usage:
                                    bootstrap, discover, or validate a workspace
   asha workspace knowledge|promote|worktree|work-item [...]
                                    manage shared knowledge and optional coordination
-  asha context brief <task>        bounded, provenance-backed memory briefing
   asha process route <task>        advisory process route with risks and fallback
   asha capabilities match <task>   registry-backed harness capability match
-                                   (all four accept --json)
+                                   (both accept --json)
   asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
                                    (--dry-run | --check for CI | --force)
   asha calibration [args...]       inspect orchestration calibration metrics
@@ -360,9 +359,9 @@ if [[ "${1:-}" == "workspace" ]]; then
   exit $?
 fi
 
-# Evidence-backed context/process/capability brokerage (issue #27). These are
+# Process/capability brokerage. These are
 # deterministic inline protocols; rendered agents only wrap these commands.
-if [[ "${1:-}" == "context" || "${1:-}" == "process" || "${1:-}" == "capabilities" ]]; then
+if [[ "${1:-}" == "process" || "${1:-}" == "capabilities" ]]; then
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/broker.sh"
   ( set -euo pipefail; asha_broker_main "$@" )

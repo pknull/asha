@@ -3,8 +3,8 @@
 # Asha → GitHub Copilot harness adapter.
 #
 # Copilot uses native skill and agent directories, rendered command-skills,
-# and three dedicated hook files: guardrails, advisory nudges, and lifecycle
-# side effects. The active hook schema is emitted by the dedicated installers
+# and two dedicated hook files: guardrails and Memory v2 recovery callbacks.
+# The active hook schema is emitted by the dedicated installers
 # below; user-owned hooks.json is never modified.
 #
 # Sourced by ../install.sh and ../uninstall.sh. Expects globals from the
@@ -22,6 +22,8 @@ COPILOT_HOOKS_FILE="$COPILOT_HOME/hooks/hooks.json"
 # Asha's own guardrail hooks live in a dedicated file so user hooks.json is
 # untouched (Copilot loads every ~/.copilot/hooks/*.json).
 COPILOT_GUARDRAILS_FILE="$COPILOT_HOME/hooks/asha-guardrails.json"
+COPILOT_RECOVERY_FILE="$COPILOT_HOME/hooks/asha-recovery.json"
+# Removed v1 artifacts, pruned on install/uninstall.
 COPILOT_NUDGES_FILE="$COPILOT_HOME/hooks/asha-nudges.json"
 COPILOT_LIFECYCLE_FILE="$COPILOT_HOME/hooks/asha-lifecycle.json"
 
@@ -190,16 +192,7 @@ _copilot_strip_asha_entries() {
   '
 }
 
-# RETIRED 2026-05-10: Asha capture (events.jsonl) now derived on-demand at
-# /save time from the host's native session log
-# (~/.copilot/session-state/<sid>/events.jsonl), via jsonl_reader. Hooks are
-# no longer the data source for synthesis. The previous Copilot-specific
-# blocker (v1.0.44 hooks fire but don't pipe payload data) is moot — we
-# don't need their payloads when the data is already on disk in events.jsonl.
-#
-# Capture no longer needs hooks (events.jsonl is read at /save). But the
-# PreToolUse GUARDRAILS (policy-guard + block-secrets) DO work on Copilot 1.0.63
-# (verified 2026-06-24: a preToolUse hook fires and can deny a tool call).
+# PreToolUse guardrails (policy-guard + block-secrets) use a dedicated adapter.
 #
 # Copilot's hook contract differs from Claude's — flat schema with a `bash`
 # field + top-level `{version:1}`, decision via stdout `permissionDecision` JSON,
@@ -221,114 +214,83 @@ copilot_install_hooks() {
     '{version:1, hooks:{preToolUse:[{type:"command", bash:$cmd, timeoutSec:15}]}}')" \
     || { log "[copilot] failed to build guardrails json; skipping"; return 0; }
 
-  if [[ $DRY_RUN -eq 1 ]]; then
-    say "[copilot] would write $COPILOT_GUARDRAILS_FILE (PreToolUse guardrails -> adapter)"
-    return 0
-  fi
-
-  ensure_dir "$(dirname "$COPILOT_GUARDRAILS_FILE")"
-  if [[ -f "$COPILOT_GUARDRAILS_FILE" ]] \
-     && [[ "$(jq -S . "$COPILOT_GUARDRAILS_FILE" 2>/dev/null)" == "$(printf '%s' "$content" | jq -S .)" ]]; then
-    log "[copilot] guardrails unchanged"
-    return 0
-  fi
-  local tmp="$COPILOT_GUARDRAILS_FILE.tmp.$$"
-  printf '%s\n' "$content" > "$tmp" && mv "$tmp" "$COPILOT_GUARDRAILS_FILE"
+  local prepared
+  prepared="$(mktemp)"
+  printf '%s\n' "$content" > "$prepared"
+  asha_artifact_install_prepared copilot "$adapter" "$COPILOT_GUARDRAILS_FILE" copilot-guardrails "$prepared"
+  rm -f "$prepared"
   say "[copilot] installed PreToolUse guardrails -> $COPILOT_GUARDRAILS_FILE"
 }
 
-# Advisory guidance nudges (session plugin nudge-engine). Verified live on
-# 1.0.78 (2026-08-08): Copilot fires sessionStart/userPromptSubmitted/
-# postToolUse hooks,
-# shell-splits the command string (the engine takes the Claude event name as
-# argv — Copilot payloads carry no hook_event_name), and injects ONLY via a
-# top-level {"additionalContext": ...} JSON response (raw sessionStart stdout
-# was not claimed or used). Workspace v2 exact context delivery passed on
-# sessionStart; userPromptSubmitted remains for other nudge rows only.
-# The engine detects Copilot via the COPILOT_CLI=1 env it stamps on hook
-# processes and emits that shape. preToolUse is not registered here: the only
-# PreToolUse nudge row (memory-lexical) is Claude-only by design.
-copilot_install_nudge_hooks() {
-  local engine="$PLUGINS_DIR/session/hooks/handlers/nudge-engine.sh"
-  if [[ ! -x "$engine" ]]; then
-    log "[copilot] nudge engine missing/not executable ($engine); skipping nudge hooks"
-    return 0
-  fi
-  local abs_engine content
-  abs_engine="$(resolve_path "$engine")"
-
-  content="$(jq -nc --arg e "$abs_engine" '{
-    version: 1,
-    hooks: {
-      sessionStart:        [{type:"command", bash:($e + " SessionStart"),        timeoutSec:10}],
-      userPromptSubmitted: [{type:"command", bash:($e + " UserPromptSubmit"), timeoutSec:10}],
-      postToolUse:         [{type:"command", bash:($e + " PostToolUse"),      timeoutSec:10}]
-    }
-  }')" || { log "[copilot] failed to build nudges json; skipping"; return 0; }
-
-  if [[ $DRY_RUN -eq 1 ]]; then
-    say "[copilot] would write $COPILOT_NUDGES_FILE (guidance nudges -> nudge-engine)"
-    return 0
-  fi
-
-  ensure_dir "$(dirname "$COPILOT_NUDGES_FILE")"
-  if [[ -f "$COPILOT_NUDGES_FILE" ]] \
-     && [[ "$(jq -S . "$COPILOT_NUDGES_FILE" 2>/dev/null)" == "$(printf '%s' "$content" | jq -S .)" ]]; then
-    log "[copilot] nudges unchanged"
-    return 0
-  fi
-  local tmp="$COPILOT_NUDGES_FILE.tmp.$$"
-  printf '%s\n' "$content" > "$tmp" && mv "$tmp" "$COPILOT_NUDGES_FILE"
-  say "[copilot] installed guidance nudges -> $COPILOT_NUDGES_FILE"
-}
-
-# Lifecycle side-effect hooks (Claude parity; issue #13). Verified live on
-# 1.0.75 (2026-07-27): sessionStart fires with {sessionId, timestamp, cwd,
-# source, initialPrompt}; sessionEnd fires on clean exit with {sessionId,
-# timestamp, cwd, reason} — reason "complete" (-p runs) / "user_exit"
-# (interactive /exit). Handlers are the same event-specific scripts Claude
-# registers:
-#   sessionStart -> session-start.sh  (orphan recovery + marker cleanup; its
-#                   raw-stdout context injection is DISCARDED by copilot —
-#                   deliberate: the custom-instructions layer already injects
-#                   the operational context at launch, so side effects only;
-#                   workspace context is delivered separately by the nudge
-#                   hook's top-level additionalContext response)
-#   sessionEnd   -> session-end.sh    (detached automatic save; copilot's
-#                   camelCase payload + clean-exit reasons handled there)
-copilot_install_lifecycle_hooks() {
+# Memory v2 recovery callbacks plus direct SessionStart/RP context delivery.
+copilot_install_recovery_hooks() {
   local start_h="$PLUGINS_DIR/session/hooks/handlers/session-start.sh"
+  local prompt_h="$PLUGINS_DIR/session/hooks/handlers/user-prompt-submit.sh"
+  local post_h="$PLUGINS_DIR/session/hooks/handlers/post-tool-use.sh"
   local end_h="$PLUGINS_DIR/session/hooks/handlers/session-end.sh"
-  if [[ ! -x "$start_h" || ! -x "$end_h" ]]; then
-    log "[copilot] lifecycle handlers missing/not executable; skipping lifecycle hooks"
+  if [[ ! -x "$start_h" || ! -x "$prompt_h" || ! -x "$post_h" || ! -x "$end_h" ]]; then
+    log "[copilot] recovery handlers missing/not executable; skipping recovery hooks"
     return 0
   fi
-  local abs_start abs_end content
+  local abs_start abs_prompt abs_post abs_end content
   abs_start="$(resolve_path "$start_h")"
+  abs_prompt="$(resolve_path "$prompt_h")"
+  abs_post="$(resolve_path "$post_h")"
   abs_end="$(resolve_path "$end_h")"
 
-  content="$(jq -nc --arg s "$abs_start" --arg e "$abs_end" '{
+  content="$(jq -nc --arg s "$abs_start" --arg p "$abs_prompt" --arg t "$abs_post" --arg e "$abs_end" '{
+    version: 1,
+    hooks: {
+      sessionStart:        [{type:"command", bash:$s, timeoutSec:15}],
+      userPromptSubmitted: [{type:"command", bash:$p, timeoutSec:10}],
+      postToolUse:         [{type:"command", bash:$t, timeoutSec:10}],
+      sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}]
+    }
+  }')" || { log "[copilot] failed to build recovery json; skipping"; return 0; }
+
+  local prepared
+  prepared="$(mktemp)"
+  printf '%s\n' "$content" > "$prepared"
+  asha_artifact_install_prepared copilot "$start_h" "$COPILOT_RECOVERY_FILE" copilot-recovery "$prepared"
+  rm -f "$prepared"
+  say "[copilot] installed Memory v2 recovery hooks -> $COPILOT_RECOVERY_FILE"
+}
+
+# Reconcile the two retired, pre-ledger dedicated hook files independently of
+# whether the replacement recovery file changed. Exact installer output is
+# removable; modified bytes become reviewable managed drift.
+copilot_reconcile_retired_hooks() {
+  local nudge_engine="$PLUGINS_DIR/session/hooks/handlers/nudge-engine.sh"
+  local start_h="$PLUGINS_DIR/session/hooks/handlers/session-start.sh"
+  local end_h="$PLUGINS_DIR/session/hooks/handlers/session-end.sh"
+  local content prepared
+
+  content="$(jq -nc --arg e "$(resolve_path "$nudge_engine")" '{
+    version: 1,
+    hooks: {
+      sessionStart:        [{type:"command", bash:($e + " SessionStart"), timeoutSec:10}],
+      userPromptSubmitted: [{type:"command", bash:($e + " UserPromptSubmit"), timeoutSec:10}],
+      postToolUse:         [{type:"command", bash:($e + " PostToolUse"), timeoutSec:10}]
+    }
+  }')" || content=""
+  if [[ -n "$content" ]]; then
+    prepared="$(mktemp)"; printf '%s\n' "$content" > "$prepared"
+    asha_artifact_retire_prepared copilot "$nudge_engine" "$COPILOT_NUDGES_FILE" copilot-retired-nudges "$prepared"
+    rm -f "$prepared"
+  fi
+
+  content="$(jq -nc --arg s "$(resolve_path "$start_h")" --arg e "$(resolve_path "$end_h")" '{
     version: 1,
     hooks: {
       sessionStart: [{type:"command", bash:$s, timeoutSec:60}],
       sessionEnd:   [{type:"command", bash:$e, timeoutSec:30}]
     }
-  }')" || { log "[copilot] failed to build lifecycle json; skipping"; return 0; }
-
-  if [[ $DRY_RUN -eq 1 ]]; then
-    say "[copilot] would write $COPILOT_LIFECYCLE_FILE (lifecycle side effects -> session-start/end)"
-    return 0
+  }')" || content=""
+  if [[ -n "$content" ]]; then
+    prepared="$(mktemp)"; printf '%s\n' "$content" > "$prepared"
+    asha_artifact_retire_prepared copilot "$start_h" "$COPILOT_LIFECYCLE_FILE" copilot-retired-lifecycle "$prepared"
+    rm -f "$prepared"
   fi
-
-  ensure_dir "$(dirname "$COPILOT_LIFECYCLE_FILE")"
-  if [[ -f "$COPILOT_LIFECYCLE_FILE" ]] \
-     && [[ "$(jq -S . "$COPILOT_LIFECYCLE_FILE" 2>/dev/null)" == "$(printf '%s' "$content" | jq -S .)" ]]; then
-    log "[copilot] lifecycle hooks unchanged"
-    return 0
-  fi
-  local tmp="$COPILOT_LIFECYCLE_FILE.tmp.$$"
-  printf '%s\n' "$content" > "$tmp" && mv "$tmp" "$COPILOT_LIFECYCLE_FILE"
-  say "[copilot] installed lifecycle hooks -> $COPILOT_LIFECYCLE_FILE"
 }
 
 # ---------------------------------------------------------------------------
@@ -343,8 +305,7 @@ copilot_install() {
 
   ensure_dir "$COPILOT_SKILLS_DIR"
 
-  # Hook install retired (capture now derived on-demand at /save time).
-  # No longer bootstrap COPILOT_HOOKS_FILE — would orphan the file.
+  # Legacy aggregate hooks.json remains user-owned and is never bootstrapped.
 
   say "[copilot] target = $COPILOT_HOME"
   asha_artifact_begin copilot
@@ -369,8 +330,8 @@ copilot_install() {
   say ""
   say "== [copilot] hooks =="
   copilot_install_hooks
-  copilot_install_nudge_hooks
-  copilot_install_lifecycle_hooks
+  copilot_install_recovery_hooks
+  copilot_reconcile_retired_hooks
   asha_artifact_finalize copilot "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)"
 }
 
@@ -428,34 +389,6 @@ copilot_uninstall() {
     [[ "$n" -gt 0 ]] && say "[copilot] removed $n agent symlink(s) from $COPILOT_AGENTS_DIR"
     total=$((total + n))
 
-  fi
-
-  # Asha's dedicated guardrails file (the current install path).
-  if [[ -f "$COPILOT_GUARDRAILS_FILE" ]]; then
-    if [[ $DRY_RUN -eq 1 ]]; then
-      say "[copilot] would remove $COPILOT_GUARDRAILS_FILE"
-    else
-      rm -f "$COPILOT_GUARDRAILS_FILE"
-      say "[copilot] removed PreToolUse guardrails ($COPILOT_GUARDRAILS_FILE)"
-    fi
-  fi
-
-  if [[ -f "$COPILOT_NUDGES_FILE" ]]; then
-    if [[ $DRY_RUN -eq 1 ]]; then
-      say "[copilot] would remove $COPILOT_NUDGES_FILE"
-    else
-      rm -f "$COPILOT_NUDGES_FILE"
-      say "[copilot] removed guidance nudges ($COPILOT_NUDGES_FILE)"
-    fi
-  fi
-
-  if [[ -f "$COPILOT_LIFECYCLE_FILE" ]]; then
-    if [[ $DRY_RUN -eq 1 ]]; then
-      say "[copilot] would remove $COPILOT_LIFECYCLE_FILE"
-    else
-      rm -f "$COPILOT_LIFECYCLE_FILE"
-      say "[copilot] removed lifecycle hooks ($COPILOT_LIFECYCLE_FILE)"
-    fi
   fi
 
   # Strip Asha-tagged hooks from hooks.json (legacy path; harmless if absent).

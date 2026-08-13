@@ -8,10 +8,10 @@
 
 ## Convention Matching Protocol (Before Writing Code)
 
-- Check Memory/techEnvironment.md for documented code conventions
+- Check `AGENTS.md`, repository documentation, and native tool configuration for documented code conventions
 - If conventions exist, follow them (naming, libraries, patterns, style)
 - If conventions unclear, read example files to understand patterns
-- Update Memory/techEnvironment.md with discovered conventions for future sessions
+- Update the repository's owning documentation only when that documentation change is requested
 - Verify library availability in codebase before using (don't assume dependencies exist)
 
 ---

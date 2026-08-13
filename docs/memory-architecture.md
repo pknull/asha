@@ -1,318 +1,112 @@
-# Memory Architecture
+# Memory System v2
 
-Asha uses separate stores for separate ownership boundaries. The number of
-directories is not accidental, but the distinction must remain legible:
+Memory v2 separates deliberate semantic publication from bounded mechanical
+crash recovery. Nothing infers meaning from host transcripts or hook telemetry.
 
-- global memory follows the user;
-- repository memory stays with one repository;
-- workspace memory coordinates several repositories;
-- private workspace material does not enter Git;
-- canonical knowledge is published only after review; and
-- harness-native memory remains outside Asha's control.
+## Authority order
 
-## The short version
+1. Live system state and verified disk
+2. Current explicit publication in `Memory/`
+3. Unpublished recovery snapshot
+4. Candidate or retired learning evidence
 
-| Store | Location | Scope | Writer | Read path |
-|---|---|---|---|---|
-| Global operation, identity, and learnings | `~/.asha/` | User across all work | Session synthesis plus deliberate edits | Operational index at SessionStart; bodies on demand; persona only through the Asha wrapper |
-| Repository operational memory | `<repo>/Memory/` | One repository | `/session:save` synthesis and deliberate project updates | Project bootstrap, catalogue retrieval, and on demand |
-| Workspace operational memory | `<workspace>/Memory/` | Declared repository group | Deliberate edits; `/session:save --scope workspace` routes its commit | Bounded SessionStart handoff plus catalogue retrieval |
-| Private workspace memory | `<workspace>/memory-local/` | Local user within one workspace | Deliberate local work and work-item tooling | Explicit only; never injected wholesale |
-| Canonical workspace knowledge | `<workspace>/knowledge/` | Shared/team workspace | Reviewed promotion | Explicit lookup from its indexes and documents |
-| Harness-native memory | Harness-owned path | Harness-specific | The harness | The harness; Asha neither writes nor requires it |
+Lower tiers never overwrite higher tiers merely to make notes agree.
 
-The first five are Asha-managed or Asha-governed planes. The sixth is listed
-only to prevent it being mistaken for another Asha store.
+## Published semantic memory
 
-## Ownership map
-
-```mermaid
-flowchart TB
-    subgraph GLOBAL["User-global"]
-        OP["~/.asha/operation.md"]
-        LR["~/.asha/learnings/ · OKF bundle"]
-        ID["~/.asha/soul · voice · keeper"]
-    end
-
-    subgraph WORKSPACE["Workspace root"]
-        WM["Memory/ · operational handoff"]
-        ML["memory-local/ · private, never commit"]
-        KN["knowledge/ · reviewed canonical docs"]
-    end
-
-    subgraph REPOS["Declared child repositories"]
-        R1["child-a/Memory/"]
-        R2["child-b/Memory/"]
-    end
-
-    subgraph NATIVE["Harness-owned"]
-        HM["auto-memory / native session memory"]
-    end
-
-    LR -->|relevant index lines| START[Session start]
-    OP --> START
-    ID -->|only with Asha persona| START
-    WM -->|bounded operational excerpt| START
-    R1 -->|catalogue / on demand| TASK[Task context]
-    R2 -->|catalogue / on demand| TASK
-    KN -->|explicit lookup| TASK
-    ML -->|explicit local use| TASK
-    HM -.->|harness behavior| TASK
-```
-
-## What belongs where
-
-### `~/.asha/`: global operation, identity, and learnings
-
-Use this for information that should follow the user into unrelated projects.
-
-| Path | Purpose |
-|---|---|
-| `operation.md` | Cross-project execution rules |
-| `learnings/` | Confidence-tracked reusable patterns, one concept per file |
-| `learnings-archive/` | Retired concepts removed from live retrieval |
-| `soul.md`, `voice.md`, `keeper.md`, `keeper-voice.md` | Optional persona and partnership context |
-| `config.json` | User-wide Asha configuration |
-
-Do not place one repository's current branch, unfinished implementation, or
-temporary paths here. Those belong to repository operational memory.
-
-### `<repo>/Memory/`: repository operational memory
-
-Use this for the cold-start handoff for one repository:
+Every repository or workspace operational plane has only:
 
 ```text
-Memory/
-├── MEMORY.md              bounded catalogue when present
-├── activeContext.md       current work and immediate next state
-├── projectbrief.md        stable project purpose and constraints
-├── techEnvironment.md     tools, commands, and platform facts
-├── workflowProtocols.md   repository-specific procedures
-└── events/                normalized synthesis input and telemetry
+Memory/activeContext.md
+Memory/decisions.md
 ```
 
-This plane is committed with its repository. A repository save must not stage
-workspace-root memory or another child repository's files.
+`activeContext.md` is no more than 4,096 UTF-8 bytes and has exactly four
+level-one headings, in order: Objective, State, Next, Blockers. The latter two
+hold at most five items each. `decisions.md` contains only current binding
+decisions; resolved/superseded decisions leave the publication rather than
+forming a history.
 
-### `<workspace>/Memory/`: workspace operational memory
+`/session:save` is the sole semantic writer. The live model drafts both files,
+checks claims against disk, and calls `memory_v2.py publish`. Both drafts are
+validated before publication. A project lock serializes publishers; a private,
+ignored recovery journal rolls both files back after a partial replacement and
+is replayed before the next validation/publication. The explicit command then
+commits and pushes unless `--scope none` or `--no-push` says otherwise.
+Every shipped reader acquires the same lock through `memory_v2.py read`, so it
+cannot observe a mixed pair during the two sequential file replacements.
 
-Use this for the small amount of current state that several child repositories
-must share: cross-repository sequencing, active handoff, integration status, and
-workspace-wide constraints.
+No hook, SessionEnd, OpenCode `dispose`, timer, or background process publishes
+semantic memory or invokes Git.
 
-It is not a second copy of every child repository's `Memory/`. Child-specific
-implementation detail stays with the child.
+## Unpublished recovery
 
-SessionStart injects only a bounded excerpt of the workspace operational
-handoff. The default renderer includes the workspace name, root, active child,
-and the first `##` section of `Memory/activeContext.md`, capped by
-`ASHA_WS_CONTEXT_MAX` (default 2,048 bytes; minimum 256).
-
-Workspace memory is authored deliberately. `/session:save --scope workspace`
-routes staging, commit, and optional push for that plane; it does not synthesize
-a fictional workspace transcript.
-
-### `<workspace>/memory-local/`: private workspace material
-
-Use this for local notes, work-item records, imported private material, and
-drafts that are not ready for shared review. Workspace initialization adds the
-root to `.gitignore` and generated workspace instructions mark it never-commit.
-
-This plane is not silently promoted, committed, or injected wholesale. A
-promotion or import workflow must name its source and pass its own review gates.
-
-### `<workspace>/knowledge/`: canonical shared knowledge
-
-Use this for stable documentation that should be shared across the workspace:
-repository indexes, cross-repository contracts, architecture facts, and
-reviewed operational knowledge.
-
-Canonical does not mean infallible. Live source, configuration, and runtime
-state remain higher authority than documentation. When they conflict, correct
-the document; do not alter live state merely to make an old note true.
-
-Knowledge changes use the workspace promotion workflow:
-
-```bash
-asha workspace knowledge lint --start .
-asha workspace promote plan --help
-asha workspace promote apply --help
-asha workspace promote publish --help
-```
-
-`plan` creates a digest-bound review artifact. `apply` revalidates the artifact,
-source evidence, and target preimages before writing. In pull-request mode,
-`publish` creates a dedicated branch and draft PR. It never merges or updates
-the base branch.
-
-### Harness-native memory
-
-Claude and other harnesses may maintain their own memory stores. Those stores
-are not an Asha plane, are not OKF-managed, and are not an Asha dependency.
-Their contents and lifecycle are governed by the harness.
-
-## Launch point decides task ownership
-
-For one repository:
-
-```bash
-cd /path/to/repository
-asha claude                    # or codex / copilot
-```
-
-For a workspace, launch from a declared child repository when that repository
-owns the work:
-
-```bash
-cd /path/to/workspace/child-a
-asha codex
-```
-
-Launch from the workspace root when the work is cross-repository or belongs to
-the shared planes:
-
-```bash
-cd /path/to/workspace
-asha codex
-```
-
-The manifest at `.asha/workspace.json` defines the declared repositories,
-memory roots, shared Git root, and promotion mode. Detection walks upward from
-the launch directory but stops before `$HOME` and the filesystem root.
-
-## Save routing
+Prompt and post-tool callbacks atomically replace:
 
 ```text
-/session:save
-/session:save --scope repo
-/session:save --scope workspace
-/session:save --scope none
+Work/session-state/<harness>-<session>.json
 ```
 
-| Context | Behavior |
-|---|---|
-| No workspace manifest + bare save | Existing single-repository synthesis and save |
-| No workspace manifest + any `--scope` | Hard error; scope flags are workspace-only |
-| Inside a declared child + bare save | Same as `--scope repo` |
-| Inside a declared child + `--scope repo` | Synthesize and save only that child's repository memory |
-| Workspace root + `--scope repo` | Hard error; there is no implicit child |
-| Anywhere in workspace + `--scope workspace` | Save only the workspace operational plane |
-| `--scope none` | Synthesize without staging, committing, or pushing |
+Each file is mode `0600`, no more than 2,048 bytes, project-local, path-safe,
+secret-scrubbed, and isolated by session. Touched paths are deduplicated and
+capped at ten. SessionStart removes snapshots older than seven days and may
+surface the newest one with an explicit unpublished/verify-first label.
+SessionEnd only adds its seal timestamp and prunes. `Work/markers/silence`
+disables these writes.
 
-`--no-push` commits the selected plane without pushing. Plane-specific proofs
-and commit gates prevent a child save and workspace save being folded into one
-unattributable commit.
+## Learnings
 
-Manual save works across Claude, Codex, Copilot, and OpenCode. Claude and
-Copilot have clean-exit lifecycle hooks. OpenCode has best-effort clean-exit
-save through plugin `dispose`; Codex requires manual save.
+One learning per file lives under:
 
-## Read rhythm
-
-At session start:
-
-1. `operation.md` is injected with its byte cap.
-2. The learnings bundle is rendered index-first: one bounded line per concept,
-   hot-first, with bodies read only when relevant.
-3. Persona files are added only when launched through `asha <harness>`.
-4. A valid workspace contributes one bounded operational-context block.
-5. Repository and workspace catalogues remain available for targeted retrieval.
-
-`ASHA_LEARNINGS_INJECT=hot` restores the legacy top-ten full-body learning
-injection. `ASHA_WS_INJECT=0`, `Work/markers/nudge-ws-context-off`, or the
-silence marker suppresses workspace injection.
-
-The optional evidence broker remains bounded and read-only:
-
-```bash
-asha context brief "task description"
-asha process route "task description"
-asha capabilities match "task description"
+```text
+~/.asha/learnings/candidate/
+~/.asha/learnings/active/
+~/.asha/learnings/retired/
 ```
 
-It reads catalogue metadata rather than recursively scanning memory bodies.
-See [Evidence-backed brokerage](evidence-backed-brokerage.md).
+Evidence records date, harness session identity when available, stable project identity
+from `.asha/config.json`, kind, and reviewed reason. Explicit save resolves
+available native environment seams, with Copilot recovery as a fallback. Duplicate
+`(session_id, project_id)` evidence does not count twice. Activation requires
+three distinct positive sessions across two projects. This automatic gate is a
+user-controlled corroboration heuristic, not a security boundary. Only active learnings are
+rendered at SessionStart. SessionStart runs candidate expiry, moving records
+older than 90 days to retired; no record
+is silently deleted. Contradiction is an explicit transition back to candidate;
+retirement is explicit and keeps the record.
 
-## Write rhythm
+## Migration
 
-An explicit repository save:
+`/session:consolidate` inventories legacy inputs and presents an itemized
+accept/reject/defer plan. It inventories the live root OKF bundle, legacy
+archive, and flat files per learning; every item is bound to its source hash.
+The private plan persists at `Work/memory-migration/review.json` for later
+review and is never replaced without explicit authorization. One typed
+whole-review apply preflights the complete batch, publishes project state,
+applies learning rows, and binds both exact publication draft digests plus both
+typed publication roles into review and receipt identity. Failure recovery uses
+a global, durable per-record journal with preimage hashes and
+compare-before-rollback. Existing publication targets must themselves be
+accepted hash-bound sources; absent targets require explicit create mappings.
+Recovery preflights the project pair/config/ignore, learning records, backups,
+receipt, silence state, and journal as one unit. A conflict changes nothing and
+preserves repair evidence. Migration never snapshots or replaces the global
+learning tree. Accepted sources receive exact-byte, hash-bound timestamped private backups;
+original, rejected, and deferred material remains in place.
 
-1. reads the active harness transcript;
-2. regenerates normalized `Memory/events/*.jsonl`;
-3. synthesizes repository `Memory/activeContext.md`;
-4. updates relevant `~/.asha/learnings/` concepts;
-5. runs noise pruning, validation, and recall diagnostics; and
-6. stages, commits, and pushes unless the selected flags say otherwise.
+## Separate workspace planes
 
-Automatic saves never alter `~/.asha/voice.md` or `~/.asha/keeper.md`. An
-explicit save may capture calibration only when `capture_calibration` is true
-in `~/.asha/config.json`.
+Canonical workspace `knowledge/` indexes, reviewed promotion infrastructure,
+private `memory-local/`, and harness-native memory remain independent. Removing
+the operational Memory catalogue does not remove or weaken those systems.
 
-`/session:consolidate` is the periodic reverse stroke: merge drifted concepts,
-resolve contradictions against disk truth, retire concluded records, fold
-approved calibration, and reduce index pressure. Run it when the injected index
-reports omitted concepts or roughly monthly during active use.
+## Harness seams
 
-## Where OKF fits
+- Claude reads `hooks.json` directly.
+- Codex renders the supported shared hooks to native TOML.
+- Copilot installs one `asha-recovery.json` plus its independent guardrails.
+- OpenCode generates `plugins/asha.js`, calling the same recovery handlers and
+  sealing on dispose.
 
-The [Open Knowledge Format](https://okf.md/spec/) applies to the global
-`~/.asha/learnings/` bundle because it is the growing collection of atomic
-concepts. There is no separate `/okf` skill.
-
-1. `learnings_manager.py` writes the concept files and reserved index shape.
-2. `validate.py`, `visualize.py`, and `okf_common.py` provide local tooling.
-3. The `memory-maintenance` skill documents the conventions.
-
-Interactive save may suggest semantic `## Related` links between recently
-touched concepts. The links live in document bodies and therefore add no
-SessionStart injection cost. Fixed state documents, workspace knowledge, and
-telemetry may carry frontmatter but are not one OKF bundle by implication.
-
-## Durability and privacy
-
-- `~/.asha/learnings/` and `learnings-archive/` are local-only unless the user
-  arranges backup. Include both when backing up identity files.
-- Repository and workspace operational memory follow their respective Git
-  repositories.
-- `memory-local/` must remain ignored and uncommitted.
-- `knowledge/` follows the workspace's reviewed promotion policy.
-- Legacy flat `~/.asha/learnings.md` files are frozen migration snapshots, not
-  the live store. `learnings_manager.py legacy-status` reports divergence.
-
-## Is it earning its cost?
-
-Useful memory changes cold-start behavior. Waste merely consumes context.
-
-**Healthy signals:**
-
-- a fresh session resumes without rediscovering settled project facts;
-- a learning prevents a repeated failure in another repository;
-- workspace context gives the active child enough cross-repository state without
-  loading every sibling's notes;
-- canonical knowledge answers stable questions without turning private drafts
-  into shared truth.
-
-**Failure signals:**
-
-- `activeContext.md` contains generic activity logs rather than actionable state;
-- catalogue descriptions are broad enough to match unrelated tasks;
-- global learnings contain repository-specific noise;
-- workspace memory duplicates child repositories;
-- `memory-local/` is treated as automatically trusted or publishable.
-
-Diagnostics:
-
-```bash
-T="$(jq -r .asha_root ~/.asha/config.json)/plugins/session/tools"
-python3 "$T/learnings_manager.py" render-index --max-bytes 3000
-python3 "$T/learnings_manager.py" list
-python3 "$T/validate.py" ~/.asha/learnings --strict
-python3 "$T/visualize.py" ~/.asha/learnings
-sed -n '1,60p' Memory/activeContext.md
-asha workspace status
-asha workspace doctor
-```
-
-For throwaway work, use `/session:silence` and later `/session:restore`. The
-criterion is plain: if a future cold session would not act differently because
-the information exists, it probably does not belong in durable memory.
+All four use the same publication validator, recovery writer, and learning
+manager.

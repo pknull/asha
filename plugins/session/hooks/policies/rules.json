@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "Asha declarative PreToolUse policy rules. Evaluated by hooks/handlers/policy-guard.sh. User overrides/additions: ~/.asha/policies.json (merged by id, user wins). Schema per rule: {id, tool (anchored ERE on tool_name), command_regex|file_path_regex (ERE matched against the Bash command / file path), action: deny|ask|warn (warn = log-only via violation-checker, never blocks), command_regex|file_path_regex, exclude_regex? (ERE; suppresses a matched rule when the command/path ALSO matches it — e.g. 'Memory/ but NOT the mutable subset'), reason, override_env?}. NOTE: this is a soft string-pattern DETERRENT, not containment — command_regex matches short -r/-R only (long flags like --recursive and indirection like 'cd /home && find .' slip through), and an agent can evade deliberately. Pair with the harness's own permission/sandbox controls for hard limits.",
+  "_comment": "Asha declarative PreToolUse policy rules. Evaluated by hooks/handlers/policy-guard.sh. User overrides/additions: ~/.asha/policies.json (merged by id, user wins). Schema per rule: {id, tool (anchored ERE on tool_name), command_regex|file_path_regex, action: deny|ask|warn (warn is awareness-only), exclude_regex?, reason, override_env?}. This is a soft string-pattern deterrent, not containment; pair it with the harness's permission and sandbox controls.",
   "rules": [
     {
       "id": "no-broad-home-scans",
@@ -8,7 +8,7 @@
       "command_regex": "\\b(bfs|fd|find|rg|grep([[:space:]]+-[^[:space:]]+)*[[:space:]]+-[a-zA-Z]*[rR][a-zA-Z]*)\\b[^|;&]*[[:space:]][\"']?(/home(/+[^/[:space:]\"']+)?/*|~[A-Za-z0-9_.-]*/*|\\$HOME/*)[\"']?([[:space:]]|$)",
       "action": "deny",
       "_comment": "v3 after the 2026-08-04 adversarial review: targets now include ~, $HOME, quoted and doubled-slash forms (the most natural accidental phrasings all bypassed v2 — grep -r pattern ~ was ALLOWED); grep arm tolerates flags before the recursive flag (--include=*.md -R); [^|;&] stops the tool arm crossing && into an unrelated path (v2 denied 'find ./src -name x && cd /home/alice'). Scoped forms (~/Code, $HOME/Code, /home/user/dir) stay allowed. Round 2 added ~user (find ~alice scans another account's whole home and was allowed). Known residuals: an expanded-at-runtime variable other than $HOME still passes (the guard sees the unexpanded string), and 'grep -- -r ~' / 'grep -e -r ~' deny despite -r being a pattern argument there — rare enough to accept as safe-side noise.",
-      "reason": "Blocked broad scan over /home — unscoped find/grep/bfs/fd/rg across a whole home directory causes severe disk pressure, badly so on rotational storage or alongside a background sync client (Asha learning no-broad-home-scans, conf 0.95). Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to allow. Tune or remove this rule in ~/.asha/policies.json if it does not fit your machine.",
+      "reason": "Blocked broad scan over /home — unscoped find/grep/bfs/fd/rg across a whole home directory can cause severe disk pressure. Scope to a subdirectory, or set ASHA_ALLOW_BROAD_SCAN=1 to allow. Tune or remove this rule in ~/.asha/policies.json if it does not fit your machine.",
       "override_env": "ASHA_ALLOW_BROAD_SCAN"
     },
     {
@@ -43,11 +43,10 @@
     },
     {
       "id": "memory-protection",
-      "tool": "Write|Edit",
-      "file_path_regex": "/Memory/",
-      "exclude_regex": "/sessions/|/vector_db/|activeContext\\.md|techEnvironment\\.md|workflowProtocols\\.md|scratchpad\\.md|ideas\\.md",
+      "tool": "Write|Edit|MultiEdit|apply_patch",
+      "file_path_regex": "(^|/|[[:space:]])Memory/(activeContext\\.md|decisions\\.md)([^A-Za-z0-9_.-]|$)",
       "action": "deny",
-      "reason": "Blocked edit to an immutable Memory/ file (identity/config). Mutable files (sessions/, activeContext, techEnvironment, workflowProtocols, scratchpad, ideas, vector_db) are exempt. Set ASHA_ALLOW_MEMORY_EDIT=1 to allow.",
+      "reason": "Blocked direct edit to published Memory. Use the explicit save publisher or set ASHA_ALLOW_MEMORY_EDIT=1 for reviewed migration.",
       "override_env": "ASHA_ALLOW_MEMORY_EDIT"
     },
     {
@@ -57,7 +56,7 @@
       "exclude_regex": "/(Vault|Lore|Wiki|Codex|Compendium|Archive)/(World|Books|Sessions|Characters|Templates|Resources)/",
       "action": "warn",
       "reason": "File written into a content root (Vault/Lore/Wiki/Codex/Compendium/Archive) outside its expected top-level buckets (World/Books/Sessions/Characters/Templates/Resources). Warn-only: this is a scatter check, not a block.",
-      "_comment": "The content root must stay a NAMED anchor, not a wildcard. It is what scopes the rule: with a wildcard root the trigger degenerates to 'every write not in a bucket', which measured 129/129 markdown files in this repo — CLAUDE.md, AGENTS.md, every doc. The root list is the portable part and is meant to be extended; the taxonomy is the project-specific part. A project whose content lives elsewhere (docs/setting/, notes/) redefines this whole row in ~/.asha/policies.json, merged by id. Warn-only by design: violation-checker logs it, the guard never blocks, so a wrong root list costs a log line rather than a failed write."
+      "_comment": "The content root must stay a named anchor, not a wildcard. The root list is portable and extensible; the taxonomy is project-specific. Warn-only by design: a wrong root list never blocks a write."
     }
   ]
 }

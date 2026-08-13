@@ -1,37 +1,15 @@
----
-version: "1.0"
-lastUpdated: "YYYY-MM-DD UTC"
-lifecycle: "initiation"
-stakeholder: "all"
-changeTrigger: "Initial setup"
-validatedBy: "user"
-dependencies: ["communicationStyle.md"]
----
+# Objective
 
-# activeContext
+Not yet recorded.
 
-## Current Project Status
+# State
 
-**Primary Focus**: [Describe your project's main focus]
+Not yet recorded.
 
-**Active Work**:
-- [Current task or feature]
-- [Secondary priorities]
+# Next
 
-**Recent Activities** (last 7 days):
-- **YYYY-MM-DD**: [Session summary]
+- None.
 
-## Critical Reference Information
+# Blockers
 
-[Add important project-specific references here]
-
-## Next Steps
-
-**Immediate**:
-- [ ] [Next task]
-
-**Blocked**:
-- [Items waiting on external input]
-
-**Deferred**:
-- [Items postponed with rationale]
+- None.

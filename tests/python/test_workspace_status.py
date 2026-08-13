@@ -320,13 +320,20 @@ class ContextRendererCases(StatusFixture):
         self._manifest()
         self.child = self._child("egregore", git=False)
         (self.ws / "Memory").mkdir()
+        (self.ws / ".asha" / "config.json").write_text(json.dumps({
+            "initialized": True, "memory_version": 2, "project_id": "workspace-1"
+        }))
+        (self.ws / "Memory" / "decisions.md").write_text("# Decisions\n\n- None.\n")
 
     def _write_context(self, value: str) -> None:
+        body = "\n".join(line.lstrip("#").strip() if line.startswith("#") else line
+                         for line in value.splitlines()).strip() or "Not yet recorded."
         (self.ws / "Memory" / "activeContext.md").write_text(
-            value, encoding="utf-8"
+            f"# Objective\n{body}\n# State\nReady.\n# Next\n- None.\n# Blockers\n- None.\n",
+            encoding="utf-8",
         )
 
-    def test_exact_rendered_shape_and_first_section_only(self):
+    def test_exact_rendered_shape_uses_coherent_v2_publication(self):
         self._write_context(
             "preamble\n## Current\nFirst line\nsecond line\n\n"
             "## Later\nMUST NOT LEAK\n"
@@ -341,7 +348,8 @@ class ContextRendererCases(StatusFixture):
             "file before acting on it):\n"
             "── Workspace: thallus ──\n"
             f"root: {self.ws}   active repo: egregore   operational memory: Memory/\n"
-            "## Current\nFirst line\nsecond line\n"
+            "# Objective\npreamble\nCurrent\nFirst line\nsecond line\n\nLater\nMUST NOT LEAK\n"
+            "# State\nReady.\n# Next\n- None.\n# Blockers\n- None.\n"
             "</system-reminder>\n"
         ))
 
@@ -404,9 +412,9 @@ class ContextRendererCases(StatusFixture):
                 rc, _ = _run_cli(argv)
                 self.assertEqual(rc, 2)
 
-    def test_all_no_context_states_use_exact_replacement_line(self):
+    def test_all_invalid_context_states_emit_typed_warning(self):
         path = self.ws / "Memory" / "activeContext.md"
-        expected = f"no operational context yet — see {path}"
+        expected = "Workspace context warning: memory_v2_publication_invalid"
         states = {
             "missing": None,
             "empty": b"",
@@ -435,7 +443,7 @@ class ContextRendererCases(StatusFixture):
         path.rmdir()
 
         self._write_context("## Current\nsecret\n")
-        with mock.patch.object(Path, "read_bytes", side_effect=PermissionError):
+        with mock.patch.object(ws.memory_v2, "read_published", side_effect=PermissionError):
             rendered = ws.render_context(start=self.child)
         self.assertIn(expected, rendered)
         self.assertNotIn("secret", rendered)
@@ -517,7 +525,7 @@ class ContextRendererCases(StatusFixture):
         rendered = ws.render_context(start=self.child)
         self.assertNotIn("<Current>", rendered)
         self.assertNotIn("<close>", rendered)
-        self.assertIn("‹Current›", rendered)
+        self.assertIn("Current", rendered)
         self.assertIn("line‹close›\nkeep\nline", rendered)
         self.assertNotIn("\x00", rendered)
         self.assertNotIn("\x7f", rendered)

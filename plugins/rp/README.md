@@ -87,7 +87,11 @@ Agents (`world-lookup`, `canon-writer`, `timeline-search`, `character-template`)
 
 **Why this is enforced rather than suggested.** Until v0.2.0 these agents addressed one vault's tree directly (`Lore/World/Places/`, `Lore/World/Magic/Artefacts/`, …). In any project that did not share that layout, every lookup resolved nothing — and an empty result is indistinguishable from "no such canon exists". The plugin did not fail loudly; it quietly reported absence. Three separate path vocabularies had also drifted apart inside the plugin itself (`Places/` vs `Locations/`, `Magic/Artefacts/` vs `Items/`), which is what an unowned convention looks like after a few edits.
 
-The same rule covers shipped hook rules: a `match_regex` must not contain proper nouns from one campaign. A rule keyed to one setting's vocabulary fires there and stays silent everywhere else. Projects extend `rp-priced-stakes` by redefining the row in `~/.asha/nudges.json` (merged by id).
+The same rule covers the direct `rp-priced-stakes` prompt safeguard: its match
+language must not contain proper nouns from one campaign. The safeguard is
+marker-gated by `rp-active`, uses a 1 h project-local cooldown, and can be
+disabled with `Work/markers/rp-priced-stakes-off` (the historical
+`nudge-rp-priced-stakes-off` alias remains honored).
 
 ## Design note — projection vs source
 

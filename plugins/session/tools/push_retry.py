@@ -23,8 +23,9 @@ Deliberately local repos opt out of queueing entirely:
   git config asha.localOnly true
 makes ``ensure`` return ``skipped_local_only`` instead of enqueueing.
 
-The queue lives at ``<project>/Memory/events/push-queue.jsonl`` (gitignored, and
-never staged — /save only ``git add Memory/`` of tracked files). Each line:
+The queue lives under Git's private administrative directory at
+``$(git rev-parse --git-path asha/push-queue.jsonl)``. It is never part of the
+published Memory plane or a staging path. Each line:
   {"head", "branch", "reason", "attempts", "first_seen", "last_attempt",
    "next_retry_after", "error"}
 """
@@ -62,7 +63,11 @@ def _git(repo: Path, *args: str, check: bool = False) -> tuple[int, str, str]:
 
 
 def _queue_path(project_dir: Path) -> Path:
-    return project_dir / "Memory" / "events" / "push-queue.jsonl"
+    rc, value, _ = _git(project_dir, "rev-parse", "--git-path", "asha/push-queue.jsonl")
+    if rc != 0 or not value:
+        raise RuntimeError("cannot resolve Git-private push queue path")
+    path = Path(value)
+    return path if path.is_absolute() else (project_dir / path).resolve()
 
 
 def _read_queue(qfile: Path) -> list[dict]:

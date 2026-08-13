@@ -70,14 +70,14 @@ git log --format=format: --name-only --since="3 months ago" -- "path/" | sort | 
 
 ### Memory Bank (project-local, if present)
 
-- `Memory/activeContext.md` — current state, recent decisions
-- `Memory/workflowProtocols.md` — documented patterns
-- `Memory/sessions/archive/` — past session summaries; Grep by keyword, then Read matches
+- Read the current Memory v2 publication coherently with
+  `memory_v2.py read --project-dir "$PROJECT_DIR"`; it contains active context
+  and current binding decisions only.
 
 ### Learnings bundle (`~/.asha/learnings/`, if present)
 
-- Read `~/.asha/learnings/index.md` first to scan learning titles
-- One file per learning (`type: learning` frontmatter); Grep the directory for topic keywords, Read matching files, follow `## Related` links
+- Read `~/.asha/learnings/active/index.md` first; only active records carry
+  instructional authority. Candidate and retired records are evidence, not guidance.
 
 ## Phase 3: Synthesis
 

@@ -1,114 +1,93 @@
 ---
 name: session-consolidate
-description: "Periodic memory consolidation: merge drift, resolve contradictions, retire concluded records, enforce index budgets"
-argument-hint: "[--days N]  (signal window, default 14)"
-allowed-tools: ["Bash", "Read", "Edit", "Write", "Grep", "Glob"]
+description: "Review and migrate legacy memory into explicit Memory v2 state"
+argument-hint: "[legacy paths...]"
+allowed-tools: ["Bash", "Read", "Write"]
 ---
 
-# Session Consolidate
+# Consolidate Memory
 
-A periodic maintenance pass over Asha's memory stores — the counterpart to
-`/session:save`. `/session:save` *accumulates* (each session appends what it learned);
-consolidation *compacts* (merge drifted facts, resolve contradictions, retire
-concluded records, keep the injected index inside budget). Modeled on the
-four-phase background-consolidation pattern used by harness-native memory
-systems, mapped onto Asha's stores.
+This is the sole legacy migration path. It is reviewed, non-destructive, and
+idempotent.
 
-**When to run:** the session-start learnings index reports omitted concepts
-(`[N more concept(s) omitted for budget…]`), `activeContext.md` has drifted
-from disk truth, keeper.md's calibration log has grown past its synthesis, or
-roughly monthly.
+1. Inventory legacy operational files, events/session archives, old learning
+   stores, and operational catalogues without changing them:
 
-**Scope guard:** operate only on Asha-owned stores — `~/.asha/learnings/`,
-`~/.asha/operation.md`, `Memory/` in the current project, and (interactive,
-persona sessions only) `~/.asha/keeper.md` + `~/.asha/voice.md`. NEVER write
-the harness-native store (`~/.claude/projects/*/memory/`) — it has its own
-consolidation and its own writer.
+   Use the durable ignored/private review path. The plan must survive the
+   inventory shell so review and apply can occur in later tool calls:
 
-## Protocol
+   ```bash
+   umask 077
+   python3 "$ASHA_ROOT/plugins/session/tools/memory_v2.py" \
+     ensure-private-ignores --project-dir "$PROJECT_DIR" || exit
+   MIGRATION_DIR="$PROJECT_DIR/Work/memory-migration"
+   MIGRATION_PLAN="$MIGRATION_DIR/review.json"
+   python3 "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" migrate-plan \
+     --project-dir "$PROJECT_DIR" \
+     --output "$MIGRATION_PLAN" \
+     "$PROJECT_DIR/Memory/activeContext.md" \
+     "$PROJECT_DIR/Memory/decisions.md" \
+     "$PROJECT_DIR/Memory/projectbrief.md" \
+     "$PROJECT_DIR/Memory/workflowProtocols.md" \
+     "$PROJECT_DIR/Memory/techEnvironment.md" \
+     "$PROJECT_DIR/Memory/events" "$PROJECT_DIR/Memory/sessions/archive" \
+     "$HOME/.asha/learnings" "$HOME/.asha/learnings-archive" \
+     "$HOME/.asha/learnings.md" "$HOME/.asha/learnings-archive.md" || exit
+   printf 'Migration review plan: %s\n' "$MIGRATION_PLAN"
+   ```
 
-### Phase 1 — Orient
+2. For each item, propose `accept`, `reject`, or `defer` plus an explicit
+   mapping. Nothing defaults to acceptance. Give every accepted row an
+   `item_type`: `project-publication`, `learning`, or `legacy-evidence`.
+   A publication change requires two accepted typed rows, one with
+   `publication_role: activeContext` and one with `publication_role: decisions`.
+   When a target already exists, that row's hash-bound `source` must be the
+   target itself; an unrelated legacy source cannot authorize overwriting it.
+   An absent target requires an explicit `create: true` row whose `target` is
+   the exact publication path.
+3. Draft both v2 publication files. Add a `publication` object to the plan
+   containing `active_context_sha256` and `decisions_sha256` for the exact UTF-8
+   draft bytes. Stage decisions in a separate private amended-plan file, then
+   bind both drafts and atomically replace the durable review:
 
-Build the current picture without deep reads:
+   ```bash
+   python3 "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" migrate-amend \
+     --project-dir "$PROJECT_DIR" --review "$AMENDED_PLAN" \
+     --output "$MIGRATION_PLAN" --active-file "$ACTIVE_DRAFT" \
+     --decisions-file "$DECISIONS_DRAFT" || exit
+   ```
 
-```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
-[[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved" >&2; exit 1; }
-T="$ASHA_ROOT/plugins/session/tools"
-PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
+   Show the complete staged plan—including both output digests—and wait for
+   review. Do not change either draft after approval.
+4. Resolve the explicit save identity with `save_identity.py`, then run the
+   single whole-review command:
 
-python3 "$T/learnings_manager.py" list                       # categories, counts, avg confidence
-python3 "$T/learnings_manager.py" render-index --max-bytes 3000 | tail -3   # is the injection truncating?
-python3 "$T/learnings_manager.py" legacy-status              # stale flat-file decoys / backup-coverage drift
-ls "$PROJECT_DIR/Memory/sessions/archive/" 2>/dev/null | tail -5
-```
+   ```bash
+   SAVE_SESSION_ID="$(python3 "$ASHA_ROOT/plugins/session/tools/save_identity.py" \
+     --project-dir "$PROJECT_DIR" --harness "${ASHA_HARNESS:-}")" || exit
+   python3 "$ASHA_ROOT/plugins/session/tools/learnings_manager.py" migrate-apply \
+     --project-dir "$PROJECT_DIR" --review "$MIGRATION_PLAN" \
+     --session-id "$SAVE_SESSION_ID" --active-file "$ACTIVE_DRAFT" \
+     --decisions-file "$DECISIONS_DRAFT"
+   ```
 
-Surface any `legacy-status` warnings to the user (warn-only): an unstamped
-legacy `learnings.md` next to the live bundle is a stale decoy that can
-silently break an existing backup arrangement.
+   It verifies both approved draft digests, preflights the entire hash-bound
+   batch before mutation, initializes the stable project id when absent,
+   publishes the pair, and applies learning rows. A global per-record journal
+   uses preimage hashes and compare-before-rollback recovery; it never snapshots
+   or replaces the whole learning corpus.
+5. Rejected/deferred sources remain in place. Accepted non-publication sources
+   also remain. Publication sources are replaced by the reviewed v2 pair, with
+   their original hash-bound bytes retained beneath the ignored timestamped
+   `Work/memory-migration/backups/` directory.
+6. Re-run the same reviewed plan to verify idempotence, validate published
+   files, and report every applied/deferred/rejected item.
+7. The plan writer refuses to replace an existing review by default. After
+   explicit confirmation, `--replace-plan` permits a new defer-only inventory;
+   `migrate-amend` is the only path that atomically replaces it with reviewed
+   decisions and bound output digests. Remove the private migration plan only
+   after review/application is finished.
+   Deferred plans remain at `Work/memory-migration/review.json` for later review.
 
-Read `~/.asha/learnings/index.md`, `Memory/activeContext.md`, and — persona
-sessions only — the `## Calibration Log` tail of `~/.asha/keeper.md`.
-
-### Phase 2 — Gather signal
-
-Recent window first (default 14 days; `--days N` overrides):
-
-```bash
-python3 "$T/learnings_manager.py" link-candidates --days "${DAYS:-14}"      # recently-touched concepts
-python3 "$T/memory_nudge.py" stats --days "${DAYS:-14}"                     # which nudges fired / were acted on
-```
-
-Then classify, reading concept files only where the index line is ambiguous:
-
-- **Concluded records** — acceptance records for shipped phases, one-time
-  migrations, anything whose trigger can never recur. Candidates for `retire`.
-- **Contradicted facts** — a learning or activeContext claim the recent
-  sessions disproved. Verify against disk truth before acting (Read the code
-  or config it describes; the record is not its own evidence).
-- **Near-duplicates** — two concepts one pattern apart. Candidates for merge.
-- **Drift** — activeContext references to paths/commands that no longer
-  exist, relative dates ("last week"), Next Steps already done.
-
-### Phase 3 — Consolidate
-
-Apply, narrowest tool first — each change individually, not as a bulk sweep:
-
-- Retire concluded records (keeps full text in `~/.asha/learnings-archive/`):
-
-  ```bash
-  python3 "$T/learnings_manager.py" retire --id <id> --reason "<why it is concluded>"
-  ```
-
-- Contradict disproven-but-live patterns (drops confidence, keeps the record):
-
-  ```bash
-  python3 "$T/learnings_manager.py" contradict --id <id> --project <proj> --reason "<evidence>"
-  ```
-
-- Merge near-duplicates: fold the weaker concept's unique evidence into the
-  stronger via `add` (upsert by id), then `retire` the husk with reason
-  "merged into <id>".
-- Rewrite drifted `activeContext.md` sections to current truth; convert all
-  relative dates to absolute (`YYYY-MM-DD`).
-- **keeper.md calibration log** (interactive + `ASHA_PERSONA=1` only): back up
-  first (`cp ~/.asha/keeper.md ~/.asha/keeper.md.bak-$(date -u +%Y%m%dT%H%M%SZ)`),
-  synthesize log rows into the profile sections above, then truncate the raw
-  log to entries newer than the window. Identity files get a confirmation
-  before the write — state what will be folded and wait for the Keeper's yes.
-
-### Phase 4 — Prune and index
-
-```bash
-python3 "$T/learnings_manager.py" prune-links                # drop links to retired/merged ids
-python3 "$T/learnings_manager.py" rebuild-index
-python3 "$T/validate.py" ~/.asha/learnings --strict          # structural health (warn-only)
-python3 "$T/learnings_manager.py" render-index --max-bytes 3000 | tail -3   # budget check: no omission tail = done
-```
-
-### Report
-
-End with a compact accounting: retired (id + reason), contradicted, merged,
-activeContext sections rewritten, calibration rows folded, and the
-session-start injection size before → after. Synthesis over transcription —
-if a store needed nothing, say so and touch nothing.
+Canonical workspace `knowledge/` indexes and promotion infrastructure are not
+legacy operational memory and must remain untouched.

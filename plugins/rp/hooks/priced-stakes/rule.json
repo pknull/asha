@@ -1,0 +1,7 @@
+{
+  "id": "rp-priced-stakes",
+  "event": "UserPromptSubmit",
+  "match_regex": "\\bescap(e|es|ed|ing)\\b|\\bget(ting)? out\\b|\\bway out\\b|\\bleav(e|ing) the\\b|\\b(the|an|no|any) (exit|entrance)\\b|\\bentry point\\b|\\bbreak in\\b|\\bsever(s|ed|ing)?\\b|\\bclose off\\b|\\bcut off\\b|\\bpermanent(ly)?\\b|\\bforever\\b|\\birreversib|\\bundone\\b|\\bresurrect|\\breviv(e|es|ed|ing|al)\\b|\\braise the dead\\b|\\bbring(ing)? [^.!?]{0,40}\\bback\\b|\\bbrought [^.!?]{0,40}\\bback\\b|never come(s)? back|come back from|\\bbanish|\\bdispel|\\bwhat price\\b|\\ba price\\b|what it costs|what does it cost|at what cost|\\bbargain|\\bpact(s)?\\b|\\bpay(ing|s)?[^.!?]{0,16}\\btoll\\b|\\b(world|time|loop|day) reset\\b|reset the (world|loop|day|timeline)|\\bdoom(ed)?\\b",
+  "match_ci": true,
+  "cooldown_hours": 1
+}

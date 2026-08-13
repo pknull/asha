@@ -92,7 +92,9 @@ When seeking specific information (dates, names, facts, preferences):
 2. Read the source file from search results to get full context
 3. Only ask user if search yields no relevant results
 
-**Vector DB maintenance**: Run ingest command after significant Memory/Vault updates (see techEnvironment.md).
+**Search-index maintenance**: Use the repository's documented ingest command
+after significant authored-knowledge updates. If none is documented, do not
+invent one.
 
 ---
 

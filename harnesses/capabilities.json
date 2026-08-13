@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-08-11",
+  "reviewed": "2026-08-13",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
@@ -42,8 +42,8 @@
         },
         "workspace": {
           "support": "native",
-          "surface": "shared tools (project_root.py, save_scope.py, workspace_status.py) + PreToolUse save-commit-gate + auto-commit writer seam + live-verified bounded SessionStart workspace context + workspace v3-v6 management CLI (knowledge/bootstrap/worktree/work-item) via bin/asha",
-          "verifier": "tests: Suite 15 WS-1..16, Test 2a/2b, Test 9b/9c/9d, python test_save_scope/test_workspace_*/test_memory_retrieval + Suite 15 WS-17..24 + python test_workspace_init/test_workspace_knowledge/test_workspace_worktree/test_workspace_workitems; live: Claude Code 2.1.226 installed exact renderer delivery 2026-08-08 UTC",
+          "surface": "shared Memory v2 publication/recovery tools, bounded SessionStart workspace context, and workspace management CLI",
+          "verifier": "tests:test-hooks/test-install/test-opencode + python test_memory_v2/test_recovery_state/test_workspace_*",
           "limitations": []
         }
       }
@@ -102,10 +102,10 @@
         },
         "workspace": {
           "support": "partial",
-          "surface": "shared tools via rendered command-skills + PreToolUse save-commit-gate + live-verified direct SessionStart raw-fragment workspace context + workspace v3-v6 management CLI (knowledge/bootstrap/worktree/work-item) via bin/asha",
-          "verifier": "v1: codex-exec runtime probes 2026-08-08 on 0.147; v2 repository: Test 92g + Suite 15 + python test_workspace_status/test_memory_retrieval + Suite 15 WS-17..24 + python test_workspace_init/test_workspace_knowledge/test_workspace_worktree/test_workspace_workitems; live: Codex 0.147 candidate/control/exact seen=yes + installed CODEX-WORKSPACE-PASS 2026-08-08 UTC",
+          "surface": "shared Memory v2 publication/recovery tools, bounded SessionStart workspace context, and workspace management CLI",
+          "verifier": "tests:test-hooks/test-install/test-opencode + python test_memory_v2/test_recovery_state/test_workspace_*",
           "limitations": [
-            "no automatic-save lifecycle (pre-existing) — manual /save (rendered session-save skill) is the only save path"
+            "semantic publication requires explicit rendered session-save skill"
           ]
         },
         "plugins": {
@@ -144,7 +144,7 @@
         },
         "hooks": {
           "support": "partial",
-          "surface": "hooks/asha-guardrails.json",
+          "surface": "hooks/asha-guardrails.json + hooks/asha-recovery.json",
           "verifier": "doctor:guardrails",
           "limitations": [
             "Parallel tool calls can bypass PreToolUse"
@@ -166,11 +166,11 @@
         },
         "workspace": {
           "support": "partial",
-          "surface": "shared tools via rendered command-skills; auto-save lifecycle wired through the plane-aware writer seam; save-commit-gate chained via copilot-policy-adapter; live-verified native sessionStart top-level additionalContext workspace context + workspace v3-v6 management CLI (knowledge/bootstrap/worktree/work-item) via bin/asha",
-          "verifier": "v1: copilot -p runtime probes 2026-08-08 on 1.0.75/1.0.78; v2 repository: Test 92g + Suite 15 + python test_workspace_status/test_memory_retrieval + Suite 15 WS-17..24 + python test_workspace_init/test_workspace_knowledge/test_workspace_worktree/test_workspace_workitems; live: Copilot CLI 1.0.78 sessionStart candidate/userPrompt control/exact seen=yes 2026-08-08 UTC",
+          "surface": "shared Memory v2 publication/recovery tools, bounded SessionStart workspace context, and workspace management CLI",
+          "verifier": "tests:test-hooks/test-install/test-opencode + python test_memory_v2/test_recovery_state/test_workspace_*",
           "limitations": [
-            "copilot preToolUse can be bypassed under parallel tool calls/timeouts (upstream github/copilot-cli#2893) — soft deterrent, not containment; the writer-side save_scope proof and the auto-commit seam remain the primary protection",
-            "workspace context uses sessionStart top-level additionalContext; raw sessionStart stdout is not used or claimed"
+            "workspace context uses sessionStart top-level additionalContext; raw sessionStart stdout is not used or claimed",
+            "PreToolUse remains a soft deterrent; recovery callbacks are not an enforcement boundary"
           ]
         }
       }
@@ -206,7 +206,7 @@
           "surface": "plugins/asha.js",
           "verifier": "doctor:opencode-plugin",
           "limitations": [
-            "Requires OpenCode >=1.15.11 for the plugin dispose lifecycle hook"
+            "dispose seals recovery state only; it never publishes semantic memory"
           ]
         },
         "guardrails": {
@@ -226,12 +226,10 @@
         },
         "workspace": {
           "support": "partial",
-          "surface": "shared tools via rendered commands and skills; save-commit-gate through the OpenCode policy adapter; SQLite transcript synthesis; best-effort clean-exit save through plugin dispose; workspace management CLI via bin/asha",
-          "verifier": "tests:test-opencode + python test_jsonl_reader; doctor:opencode-plugin",
+          "surface": "shared Memory v2 publication/recovery tools, bounded SessionStart workspace context, and workspace management CLI",
+          "verifier": "tests:test-hooks/test-install/test-opencode + python test_memory_v2/test_recovery_state/test_workspace_*",
           "limitations": [
-            "No idle checkpoint lifecycle",
-            "Clean-exit save is best-effort and cannot recover a killed process without a later orphan-recovery session",
-            "Runtime workspace context uses plugin system-prompt transformation rather than a dedicated SessionStart context field"
+            "Runtime workspace context uses plugin system-prompt transformation"
           ]
         }
       }

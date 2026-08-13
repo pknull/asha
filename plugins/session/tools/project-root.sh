@@ -2,13 +2,8 @@
 # project-root.sh — the ONE project-root resolver (workspace v1, issue #33).
 # source-scoped library: no set flags at file scope (runs in the caller's shell)
 #
-# Before this file existed, the layered Memory-root algorithm lived in three
-# divergent bash copies (hooks/handlers/common.sh, tools/save-session.sh,
-# tools/save-preflight-env.sh) — no two byte-identical. Workspace detection
-# added to one copy would not have propagated. Each caller now declares its
-# HISTORICAL layer set, so per-consumer behavior stays byte-identical
-# (pinned by tests/test-hooks.sh Test 9b) while the algorithm exists exactly
-# once. Do not add a new independent fallback chain anywhere — extend this.
+# Hook and command callers share this resolver so workspace detection remains
+# consistent. Do not add an independent fallback chain elsewhere.
 #
 # asha_detect_project_root LAYERS HOME_GUARD [EXPLICIT]
 #   LAYERS      comma-joined subset of: env,git,walk

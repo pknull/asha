@@ -256,7 +256,7 @@ Standard panel protocol with decomposition context injected.
 **Phase 2: Infrastructure Check** (The Moderator)
 
 - Compare proposals against existing assets to avoid duplication:
-  - Memory files (workflowProtocols.md, activeContext.md)
+  - the coherent Memory v2 publication (active context and binding decisions)
   - Commands (/panel-system:panel, /save, /notes, /validate-vault)
   - Installed agents and skills relevant to the topic
 - Output "Existing Infrastructure Comparison"
@@ -521,7 +521,7 @@ The `--context` flag pre-loads reference material before panel deliberation:
 
 ```bash
 /panel-system:panel --context=docs/RFC-001.md "Should we adopt this RFC?"
-/panel-system:panel --context=Memory/techEnvironment.md "Evaluate caching strategy"
+/panel-system:panel --context=AGENTS.md "Evaluate caching strategy"
 ```
 
 **Behavior**:

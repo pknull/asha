@@ -140,19 +140,6 @@ class LocalOnlyTests(unittest.TestCase):
         self.assertEqual(result["status"], "queued", "invalid value must fail open")
         self.assertIn("invalid boolean", err.getvalue())
 
-    def test_gate_push_passes_on_local_only(self):
-        # Consumer contract: save_preflight's push gate must treat the
-        # opt-out as the correct durable state, not an unexpected result
-        # (review finding: the Stop hook hard-failed every save otherwise).
-        import save_preflight
-        gate = save_preflight.gate_push(self.repo, dry_run=False)
-        self.assertEqual(gate.status, "pass",
-                         f"skipped_local_only must pass the push gate: {gate.detail}")
-        gate_dry = save_preflight.gate_push(self.repo, dry_run=True)
-        self.assertEqual(gate_dry.status, "pass")
-        self.assertIn("local-only", gate_dry.detail)
-
-
 class ClearTests(unittest.TestCase):
     """Defect 3: a cleanup affordance must exist."""
 

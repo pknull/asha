@@ -144,6 +144,7 @@ MCP configuration, projects, and sessions are single-instance.
 ├── agents/                          # generated Copilot agent files
 │   └── <plugin>-<agent>.agent.md    # from plugins/<plugin>/agents/<agent>.md
 ├── hooks/asha-guardrails.json       # PreToolUse guardrails → copilot-policy-adapter.sh (dedicated; user's hooks.json untouched)
+├── hooks/asha-recovery.json         # Memory v2 recovery + direct context/RP callbacks
 └── mcp-config.json                  # NOT managed by Asha (Copilot reads it directly)
 ```
 
@@ -158,7 +159,7 @@ Claude's `--append-system-prompt-file` and Codex's `model_instructions_file`):
 # bin/asha (copilot branch)
 identity-merge.sh ~/.cache/asha/instructions-copilot.md   # merged persona (soul/voice/keeper/identity)
 #  → wrapped as ~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md   (applyTo:"**")
-operational-merge.sh → asha-operational.instructions.md   # operation.md + learnings hot tier (same dir)
+operational-merge.sh → asha-operational.instructions.md   # operation.md + active learnings (same dir)
 export COPILOT_CUSTOM_INSTRUCTIONS_DIRS=~/.cache/asha/copilot-instr   # Copilot auto-loads both files
 exec copilot "$@"
 ```
@@ -173,10 +174,10 @@ and missed the user-level instructions dir (no repo files are touched).
 | Item | Status | Notes |
 |---|---|---|
 | Skills install | Working | `~/.copilot/skills/` confirmed scan path; verified by plant-and-probe 2026-05-09 |
-| Custom agents | Working | `~/.copilot/agents/` confirmed; both `.md` and `.agent.md` extensions work; using bare `.md` |
-| Capture hooks | **Not needed** | Asha capture (events.jsonl) was retired 2026-05-10. `/save` reads the host's native session log (`~/.copilot/session-state/<sid>/events.jsonl`) directly via `plugins/session/tools/jsonl_reader.py`, so no capture hooks. The `ASHA_COPILOT_HOOKS_FORCE=1` escape hatch was removed. |
-| PreToolUse guardrails | **Installed** | `copilot_install_hooks()` writes a dedicated `~/.copilot/hooks/asha-guardrails.json` (Copilot loads every `*.json` there, so a user's own `hooks.json` is untouched) pointing at `plugins/session/hooks/handlers/copilot-policy-adapter.sh`, which bridges Copilot's hook contract to the shared `policy-guard.sh` + `block-secrets.sh`. PostToolUse/Stop hooks not wired on Copilot yet. **Enforcement verdict + live-test findings + the #2893 caveat: [docs/harness-enforcement.md](docs/harness-enforcement.md).** |
-| Hook payload translator | Not needed | Same architecture change — synthesis reads native logs, not hook payloads. The `{toolName, toolArgs, toolResult}` → `{tool_name, tool_input, tool_response}` translator from the v1 plan is obsolete; `jsonl_reader.py` parses Copilot's `events.jsonl` directly into Asha's normalized event schema. |
+| Custom agents | Working | Generated `.agent.md` files under `~/.copilot/agents/` |
+| Recovery hooks | **Installed** | `asha-recovery.json` records only bounded, secret-scrubbed mechanical recovery state under the initialized project's ignored `Work/session-state/`. It never reads host transcripts or publishes semantic Memory; `/session:save` remains explicit. |
+| PreToolUse guardrails | **Installed** | `copilot_install_hooks()` writes a dedicated `~/.copilot/hooks/asha-guardrails.json` (Copilot loads every `*.json` there, so a user's own `hooks.json` is untouched) pointing at `plugins/session/hooks/handlers/copilot-policy-adapter.sh`, which bridges Copilot's hook contract to the shared `policy-guard.sh` + `block-secrets.sh`. Recovery uses separate prompt/PostToolUse/SessionEnd callbacks; no Stop auto-save exists. **Enforcement verdict + live-test findings + the #2893 caveat: [docs/harness-enforcement.md](docs/harness-enforcement.md).** |
+| Hook payload normalization | **Installed** | Native camelCase session/tool payloads are normalized at the recovery and policy seams, including string/object `toolArgs`, touched paths, results, and error fields. |
 | MCP config | Not managed | `~/.copilot/mcp-config.json` is read directly by Copilot; not touched by this installer (matches Claude/Codex which also don't manage MCP) |
 | Persona auto-injection | **Automatic — per-launch** | Copilot CLI has no `--instructions-file` flag, but auto-loads user-level instructions. The `asha copilot` launch path regenerates `~/.cache/asha/instructions-copilot.md` (~47 KB merged identity), wraps it as `~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md` (`applyTo: "**"`), and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` so Copilot loads it — scoped to the launch, so plain `copilot` stays persona-free (parity with Claude/Codex). Status/verification: [docs/harness-enforcement.md](docs/harness-enforcement.md). |
 | `drift-check` | **Copilot-aware** | `asha doctor [copilot]` (front door for `bin/asha-drift-check.sh`) audits symlinks, command-skill freshness, and guardrails content; `--fix` self-heals. |
@@ -196,17 +197,15 @@ Requires OpenCode `>=1.15.11`. The home resolves in this order:
 └── plugins/asha.js                      # generated lifecycle/policy/context bridge
 ```
 
-The plugin bridges `tool.execute.before` to the shared policy, secret, and
-save-commit guards; injects session identity into `shell.env`; buffers guidance
-for `experimental.chat.system.transform`; invokes session-start side effects;
-and spawns best-effort detached save from `dispose`. An `ask` policy result is
+The plugin bridges `tool.execute.before` to the shared policy and secret guards;
+injects session identity into `shell.env`; buffers guidance and visible policy
+warnings for `experimental.chat.system.transform`; invokes SessionStart recovery
+maintenance; and seals mechanical recovery state from `dispose`. An `ask` policy result is
 treated as deny because no interactive ask response is verified at this hook
 seam. The policy layer is fail-open on adapter failure and is not containment.
 
-Manual save reads exact session rows from
-`${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`. Child session ids are
-resolved to the project-matching root before synthesis. There is no newest-row
-fallback and no idle checkpointing.
+Manual save uses live model context through `/session:save`; no OpenCode SQLite
+transcript is read. There is no automatic semantic save or idle checkpointing.
 
 `asha opencode` appends the merged identity and operational file to
 `OPENCODE_CONFIG_CONTENT.instructions`; plain `opencode` remains persona-free.

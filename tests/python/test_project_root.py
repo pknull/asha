@@ -3,9 +3,7 @@
 Tests for project_root (workspace v1, delivery issue 2 — issue #33).
 
 Two surfaces:
-1. detect_project_root — the ONE shared Python resolver the historical
-   detectors (pattern_analyzer, event_store, learnings_manager) now delegate
-   to, parameterized so each keeps its exact historical layer set.
+1. detect_project_root — the shared Python resolver used by Memory v2 tools.
 2. detect_workspace — the NEW workspace walk: upward from a start dir for
    .asha/workspace.json, stopping BEFORE $HOME and BEFORE the filesystem
    root (both exclusive, canonical comparison); a found manifest is parsed
@@ -36,18 +34,18 @@ def _write_manifest(root: Path, data=None) -> None:
 
 
 class SiblingImportTests(unittest.TestCase):
-    """Pass-2: the rewired detectors must import their sibling resolver even
-    when tools/ is not already on sys.path (importlib/embedded loaders)."""
+    """Memory v2 tools import siblings without tools/ already on sys.path."""
 
-    def test_pattern_analyzer_imports_without_tools_on_syspath(self):
+    def test_memory_tools_import_without_tools_on_syspath(self):
         import subprocess as sp
-        for module in ("pattern_analyzer", "event_store", "learnings_manager"):
+        for module in ("memory_v2", "recovery_state", "learnings_manager"):
             path = TOOLS_DIR / f"{module}.py"
             code = (
                 "import importlib.util,sys;"
                 f"spec=importlib.util.spec_from_file_location('probe_{module}',"
                 f" r'{path}');"
                 "m=importlib.util.module_from_spec(spec);"
+                f"sys.modules['probe_{module}']=m;"
                 "spec.loader.exec_module(m);"
                 "print('ok')"
             )
@@ -60,7 +58,7 @@ class SiblingImportTests(unittest.TestCase):
     def _project(self) -> Path:
         tmp = Path(tempfile.mkdtemp(prefix="asha_sib_"))
         self.addCleanup(lambda: __import__("shutil").rmtree(tmp, True))
-        (tmp / "Memory" / "events").mkdir(parents=True)
+        (tmp / "Memory").mkdir(parents=True)
         return tmp
 
 
