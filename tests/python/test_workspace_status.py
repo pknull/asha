@@ -361,6 +361,17 @@ class ContextRendererCases(StatusFixture):
         self.assertEqual(rc, 0)
         self.assertIn("active repo: (workspace root)", out)
 
+    def test_metadata_context_keeps_workspace_header_without_repeating_publication(self):
+        self._write_context("workspace-publication-sentinel")
+        rc, out = _run_cli([
+            "workspace_status.py", "--context-metadata", "--start", str(self.ws)
+        ])
+        self.assertEqual(rc, 0)
+        self.assertIn("Workspace: thallus", out)
+        self.assertIn("active repo: (workspace root)", out)
+        self.assertNotIn("workspace-publication-sentinel", out)
+        self.assertEqual(out.count("<system-reminder>"), 1)
+
     def test_no_workspace_is_zero_output_and_exit_zero(self):
         lone = self.tmp / "home" / "solo"
         lone.mkdir(parents=True)
@@ -405,6 +416,7 @@ class ContextRendererCases(StatusFixture):
     def test_context_json_and_malformed_flags_are_usage_errors(self):
         for argv in (
             ["workspace_status.py", "--context", "--json"],
+            ["workspace_status.py", "--context-metadata", "--json"],
             ["workspace_status.py", "--context", "--start"],
             ["workspace_status.py", "--context", "--bogus"],
         ):

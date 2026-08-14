@@ -34,7 +34,7 @@ uninstall_from() {
 
 echo "--- OpenCode stable-v1 native install ---"
 H1="$WORK/h1"; mkdir -p "$H1"
-if install_into "$H1" >/dev/null 2>&1; then ok "install exits 0"; else fail "install exits 0"; fi
+if install_into "$H1" >"$WORK/install.out" 2>"$WORK/install.err"; then ok "install exits 0"; else fail "install exits 0"; fi
 OC1="$H1/config/opencode"
 assert "uses native plural commands directory" '[[ -f "$OC1/commands/session-save.md" ]]'
 assert "uses native plural agents directory" '[[ -f "$OC1/agents/code-reviewer.md" ]]'
@@ -43,6 +43,9 @@ assert "does not emit obsolete singular directories" '[[ ! -e "$OC1/command" && 
 assert "skill destination follows declared frontmatter name" '[[ -L "$OC1/skills/test-ping" ]]'
 assert "rendered command has OpenCode frontmatter" 'head -3 "$OC1/commands/session-save.md" | grep -q "description:"'
 assert "rendered agent declares subagent mode" 'grep -q "^mode: subagent$" "$OC1/agents/code-reviewer.md"'
+assert "colon-family source agent receives a valid OpenCode name" '[[ -f "$OC1/agents/rp-character-template.md" ]]'
+assert "rendered RP orchestrator uses the installed OpenCode agent name" 'grep -q '\''subagent_type: "rp-character-template"'\'' "$OC1/agents/rp-roleplay-gm.md"'
+assert "valid colon-family rendering emits no skipped-agent warning" '! grep -q "invalid OpenCode agent name.*character" "$WORK/install.err"'
 assert "ownership manifest records generated files" '[[ $(jq -r ".artifacts | length" "$H1/.asha/install-manifests/opencode.json") -gt 20 ]]'
 assert "plugin bridges tool policy" 'grep -q "tool.execute.before" "$OC1/plugins/asha.js"'
 assert "plugin surfaces status-0 policy warnings at the native seam" 'grep -q "result.status === 0.*process.stderr.write" "$OC1/plugins/asha.js"'

@@ -134,10 +134,11 @@ opencode_install_commands() {
 }
 
 _opencode_emit_agent() {
-  local src="$1" dest="$2" content prepared
-  content="$(python3 - "$src" <<'PYEOF'
-import json, re, sys
-text = open(sys.argv[1], encoding="utf-8").read()
+  local src="$1" dest="$2" src_dir="$3" ns="$4" content prepared
+  content="$(python3 - "$src" "$src_dir" "$ns" <<'PYEOF'
+import json, pathlib, re, sys
+src, src_dir, namespace = sys.argv[1:]
+text = open(src, encoding="utf-8").read()
 description = "Asha subagent"
 body = text
 if text.startswith("---\n"):
@@ -147,6 +148,19 @@ if text.startswith("---\n"):
         m = re.search(r"^description\s*:\s*(.+)$", fm, re.M)
         if m:
             description = m.group(1).strip().strip("\"'")
+
+# OpenCode agent identifiers are hyphen-only, whilst some Claude-native source
+# agents use a colon family (for example character:template). Render exact
+# references to sibling agents through the same namespace/name mapping so the
+# generated orchestrator invokes an agent that actually exists.
+for sibling in pathlib.Path(src_dir).glob("*.md"):
+    sibling_text = sibling.read_text(encoding="utf-8")
+    match = re.search(r"^name\s*:\s*(.+)$", sibling_text, re.M)
+    declared = match.group(1).strip().strip("\"'") if match else sibling.stem
+    rendered = f"{namespace}-{declared.replace(':', '-')}"
+    if re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", rendered):
+        body = body.replace(f'"{declared}"', f'"{rendered}"')
+        body = body.replace(f'`{declared}`', f'`{rendered}`')
 print("---")
 print("description: " + json.dumps(description))
 print("mode: subagent")
@@ -172,12 +186,13 @@ opencode_install_agents() {
   for agent in "$src_dir"/*.md; do
     [[ -f "$agent" ]] || continue
     declared="$(_opencode_field "$agent" name)"
+    declared="${declared//:/-}"
     dest_name="${ns}-${declared:-$(basename "$agent" .md)}"
     if ! _opencode_valid_name "$dest_name"; then
       echo "WARN: invalid OpenCode agent name '$dest_name' in $agent; skipping" >&2
       continue
     fi
-    _opencode_emit_agent "$agent" "$OPENCODE_AGENTS_DIR/$dest_name.md"
+    _opencode_emit_agent "$agent" "$OPENCODE_AGENTS_DIR/$dest_name.md" "$src_dir" "$ns"
   done
 }
 

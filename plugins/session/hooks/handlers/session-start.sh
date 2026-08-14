@@ -38,6 +38,30 @@ fi
 CONTEXT=""
 append_context() { [[ -z "$1" ]] || CONTEXT="${CONTEXT:+$CONTEXT$'\n\n'}$1"; }
 
+# Every initialized project reads the last explicit publication through the
+# shared lock. This is orientation only: the block is labelled background
+# state and the model must verify it against live disk before acting.
+WORKSPACE_ROOT=""
+if [[ -n "$PYTHON_CMD" && -f "$PLUGIN_ROOT/tools/project_root.py" ]]; then
+  WORKSPACE_VERDICT="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/project_root.py" workspace \
+    --start "$PROJECT_DIR" 2>/dev/null || true)"
+  if printf '%s' "$WORKSPACE_VERDICT" | jq -e '.ok == true' >/dev/null 2>&1; then
+    WORKSPACE_ROOT="$(printf '%s' "$WORKSPACE_VERDICT" | jq -r '.workspace_root // empty' 2>/dev/null || true)"
+  fi
+fi
+
+PUBLICATION_SCOPE="repository"
+[[ -n "$WORKSPACE_ROOT" && "$WORKSPACE_ROOT" == "$PROJECT_DIR" ]] && PUBLICATION_SCOPE="workspace"
+if [[ -n "$PYTHON_CMD" && -f "$PLUGIN_ROOT/tools/memory_v2.py" ]]; then
+  PUBLICATION_CONTEXT="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/memory_v2.py" startup-context \
+    --project-dir "$PROJECT_DIR" --scope "$PUBLICATION_SCOPE" 2>/dev/null || true)"
+  if [[ -n "$PUBLICATION_CONTEXT" ]]; then
+    append_context "$PUBLICATION_CONTEXT"
+  else
+    append_context "<system-reminder>Published $PUBLICATION_SCOPE Memory v2 is unavailable or invalid; run /session:status before relying on prior state.</system-reminder>"
+  fi
+fi
+
 # Canonical workspace knowledge is independent of the removed Memory catalogue.
 if [[ "${ASHA_WS_INJECT:-1}" != "0" \
       && ! -f "$PROJECT_DIR/Work/markers/workspace-context-off" \
@@ -47,7 +71,13 @@ if [[ "${ASHA_WS_INJECT:-1}" != "0" \
   WS_MANIFEST=""
   declare -F asha_find_workspace_manifest >/dev/null 2>&1 \
     && WS_MANIFEST="$(asha_find_workspace_manifest "$PROJECT_DIR" 2>/dev/null || true)"
-  [[ -z "$WS_MANIFEST" ]] || append_context "$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/workspace_status.py" --context --start "$PROJECT_DIR" 2>/dev/null || true)"
+  if [[ -n "$WS_MANIFEST" ]]; then
+    WS_CONTEXT_FLAG="--context"
+    [[ -n "$WORKSPACE_ROOT" && "$WORKSPACE_ROOT" == "$PROJECT_DIR" ]] \
+      && WS_CONTEXT_FLAG="--context-metadata"
+    append_context "$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/workspace_status.py" \
+      "$WS_CONTEXT_FLAG" --start "$PROJECT_DIR" 2>/dev/null || true)"
+  fi
 fi
 
 # Claude's SessionStart is its canonical operational-instruction seam. Codex,

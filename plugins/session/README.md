@@ -49,8 +49,9 @@ Global learnings are explicit files under
 stable `(session_id, project_id)`. A candidate activates only after three
 distinct sessions across two projects. Evidence uses a local session-id
 heuristic resolved by explicit save; it is not a security authority.
-Only active learnings load at start;
-SessionStart retires candidates older than 90 days.
+Only active learnings load at start. SessionStart also reads the initialized
+project's published pair through the shared lock and retires candidates older
+than 90 days.
 
 ## Commands
 
@@ -85,7 +86,7 @@ migration review is owned by `/session:consolidate`.
 
 | Event | Behavior |
 |---|---|
-| `SessionStart` | Sweep recovery, expire old candidates, create start snapshot, inject operation/workspace context and active learnings |
+| `SessionStart` | Coherently inject the project's published pair, operation rules, active learnings, workspace context, and any verify-first recovery hint; then expire stale private state |
 | `UserPromptSubmit` | Update prompt recovery; directly deliver RP routing when active |
 | `PostToolUse` | Update bounded paths/action/blocker recovery |
 | `SessionEnd` | Seal timestamp and prune only |
@@ -102,6 +103,12 @@ Workspace operational publication uses the same two v2 files. Canonical
 and work items remain separate infrastructure. The removed operational Memory
 catalogue does not remove canonical knowledge indexes.
 
+A session launched at a workspace root receives that workspace publication
+once plus workspace metadata. A session launched in a declared child receives
+the child's project publication and the workspace publication. This is two
+intentional planes, not a duplicated copy: project state answers what is true
+for the repository; workspace state answers what coordinates the repositories.
+
 ## End-to-end example
 
 ```text
@@ -117,6 +124,8 @@ catalogue does not remove canonical knowledge indexes.
 - `.asha/config.json` must carry a stable `project_id` and `memory_version: 2`.
 - Publication is limited to the selected plane's two files.
 - Legacy sources are never deleted by init or migration apply.
+- A successful reviewed migration writes a private global completion marker so
+  preserved legacy evidence does not produce a warning upon every reinstall.
 - Generated installers prune removed Copilot/OpenCode artifacts; uninstall
   preserves modified generated files for review.
 - Run `./tests/run-tests.sh`; for harness work also run Codex/OpenCode drift

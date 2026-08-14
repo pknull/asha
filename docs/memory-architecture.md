@@ -39,6 +39,13 @@ cannot observe a mixed pair during the two sequential file replacements.
 No hook, SessionEnd, OpenCode `dispose`, timer, or background process publishes
 semantic memory or invokes Git.
 
+At SessionStart, every initialized project reads the pair through
+`memory_v2.py startup-context`, which acquires the same publication lock and
+labels the result as background state requiring verification. The active
+handoff is included in full; decisions are bounded in the injected context and
+the exact file path is given when the remainder must be read from disk. This is
+orientation, not a lifecycle save.
+
 ## Unpublished recovery
 
 Prompt and post-tool callbacks atomically replace:
@@ -52,7 +59,9 @@ secret-scrubbed, and isolated by session. Touched paths are deduplicated and
 capped at ten. SessionStart removes snapshots older than seven days and may
 surface the newest one with an explicit unpublished/verify-first label.
 SessionEnd only adds its seal timestamp and prunes. `Work/markers/silence`
-disables these writes.
+disables these writes. Silence does not hide an already-clean publication from
+SessionStart; if a recovery journal is pending, the read fails closed rather
+than repairing state behind the override.
 
 ## Learnings
 
@@ -94,19 +103,36 @@ preserves repair evidence. Migration never snapshots or replaces the global
 learning tree. Accepted sources receive exact-byte, hash-bound timestamped private backups;
 original, rejected, and deferred material remains in place.
 
+After a reviewed migration commits, the learning manager writes
+`~/.asha/learnings/.migration-v2.json`. The marker is informational rather
+than migration authority: a valid marker only tells the installer to stop
+warning about deliberately preserved legacy sources. The hash-bound receipt
+and timestamped backups remain the recovery evidence.
+
 ## Separate workspace planes
 
 Canonical workspace `knowledge/` indexes, reviewed promotion infrastructure,
 private `memory-local/`, and harness-native memory remain independent. Removing
 the operational Memory catalogue does not remove or weaken those systems.
 
+Repository and workspace publications are distinct planes. A workspace-root
+session receives the workspace pair once plus metadata. A session in a
+declared child repository receives the child pair and the workspace pair. The
+SessionStart handler suppresses the workspace publication body only at the
+root, preventing accidental duplicate injection without hiding either plane
+from a child session.
+
 ## Harness seams
 
-- Claude reads `hooks.json` directly.
-- Codex renders the supported shared hooks to native TOML.
-- Copilot installs one `asha-recovery.json` plus its independent guardrails.
-- OpenCode generates `plugins/asha.js`, calling the same recovery handlers and
-  sealing on dispose.
+- Claude reads `hooks.json` directly and receives context in native
+  `SessionStart` output.
+- Codex renders the supported shared hooks to native TOML and receives the same
+  startup context from the shared handler.
+- Copilot installs one `asha-recovery.json`; its SessionStart wrapper carries
+  the shared handler output in `additionalContext`.
+- OpenCode generates `plugins/asha.js`, calling the same startup/recovery
+  handlers through system-prompt transformation and sealing on dispose.
 
-All four use the same publication validator, recovery writer, and learning
-manager.
+All four use the same coherent publication reader, validator, recovery writer,
+and learning manager. The hook transports differ; the authority model does
+not.

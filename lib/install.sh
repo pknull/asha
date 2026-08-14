@@ -376,6 +376,16 @@ _detect_legacy_learnings() {
   local flat="$HOME/.asha/learnings.md"
   local bundle="$HOME/.asha/learnings"
   local archive="$HOME/.asha/learnings-archive"
+  local marker="$bundle/.migration-v2.json"
+  # Reviewed migration is deliberately source-preserving. Once the migration
+  # manager has committed its global marker, the remaining root/archive files
+  # are evidence and rollback material—not an unfinished upgrade.
+  if [[ -f "$marker" ]] && jq -e '
+      .version == 2 and .status == "reviewed-migration-complete" and
+      (.review_sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+    ' "$marker" >/dev/null 2>&1; then
+    return 0
+  fi
   local found=0
   [[ -f "$flat" ]] && found=1
   if [[ -d "$bundle" ]]; then

@@ -68,6 +68,12 @@ your dotfiles repo.
 refuses mismatched symlinks unless `--force`. `uninstall.sh` is also
 idempotent.
 
+If an installer finds pre-v2 global learning sources, it points to the
+reviewed `/session:consolidate` path rather than interpreting them. Migration
+preserves those sources and writes `~/.asha/learnings/.migration-v2.json` only
+after the hash-bound review commits; a valid marker suppresses repeat upgrade
+warnings without deleting the evidence or backups.
+
 ### One-time migration from pre-manifest installs
 
 Generated Codex, Copilot, and OpenCode files use ownership manifests. Existing

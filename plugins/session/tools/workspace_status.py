@@ -135,7 +135,7 @@ def _first_h2_section(value: str) -> Optional[str]:
     return section or None
 
 
-def render_context(start: Optional[Path] = None) -> str:
+def render_context(start: Optional[Path] = None, *, include_publication: bool = True) -> str:
     """Render the bounded workspace block without git enrichment.
 
     Detection outcomes are hook-safe: no workspace is silent and all typed
@@ -175,6 +175,9 @@ def render_context(start: Optional[Path] = None) -> str:
         f"root: {root_text}   active repo: {active_text}   "
         f"operational memory: {operational_text}\n"
     )
+
+    if not include_publication:
+        return header + "</system-reminder>\n"
 
     section: Optional[str] = None
     try:
@@ -476,6 +479,7 @@ def main(argv: List[str]) -> int:
     args = argv[1:]
     as_json = False
     as_context = False
+    context_metadata_only = False
     start: Optional[Path] = None
     i = 0
     while i < len(args):
@@ -483,11 +487,14 @@ def main(argv: List[str]) -> int:
             as_json = True
         elif args[i] == "--context":
             as_context = True
+        elif args[i] == "--context-metadata":
+            as_context = True
+            context_metadata_only = True
         elif args[i] == "--start":
             # The value must exist and must not be another flag — silently
             # consuming "--json" as a directory was a pass-2 finding.
             if i + 1 >= len(args) or args[i + 1].startswith("--"):
-                print("usage: workspace_status.py [--json | --context] [--start DIR]",
+                print("usage: workspace_status.py [--json | --context | --context-metadata] [--start DIR]",
                       file=sys.stderr)
                 return 2
             start = Path(args[i + 1])
@@ -495,23 +502,23 @@ def main(argv: List[str]) -> int:
         elif args[i].startswith("--start="):
             value = args[i].split("=", 1)[1]
             if not value:
-                print("usage: workspace_status.py [--json | --context] [--start DIR]",
+                print("usage: workspace_status.py [--json | --context | --context-metadata] [--start DIR]",
                       file=sys.stderr)
                 return 2
             start = Path(value)
         else:
-            print("usage: workspace_status.py [--json | --context] [--start DIR]",
+            print("usage: workspace_status.py [--json | --context | --context-metadata] [--start DIR]",
                   file=sys.stderr)
             return 2
         i += 1
 
     if as_json and as_context:
-        print("usage: workspace_status.py [--json | --context] [--start DIR]",
+        print("usage: workspace_status.py [--json | --context | --context-metadata] [--start DIR]",
               file=sys.stderr)
         return 2
 
     if as_context:
-        sys.stdout.write(render_context(start=start))
+        sys.stdout.write(render_context(start=start, include_publication=not context_metadata_only))
         return 0
 
     report = build_status(start=start)
