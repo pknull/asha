@@ -1,280 +1,171 @@
 ---
 name: code-orchestrate
-description: "Multi-agent workflow with sequential and parallel phases"
-argument-hint: "[--tier=trivial|low|medium|high] [feature|bugfix|refactor|security|custom] <description>"
+description: "Run a bounded feature, bugfix, refactor, security, or custom workflow"
+argument-hint: "[feature|bugfix|refactor|security|custom] <description>"
 ---
 
 # Orchestrate Command
 
-Run multi-agent workflows with sequential and parallel phases. Routes by complexity (Phase 0) and records self-review calibration data per run.
+Coordinate specialist phases for a non-trivial code change. Select the workflow
+from the task type, then add historical or review gates only when the change's
+risk warrants them. This command is self-contained across all harnesses.
 
 ## Usage
 
-```
+```text
 /code:orchestrate feature "Add user authentication"
-/code:orchestrate bugfix "Fix race condition in cache"
-/code:orchestrate refactor "Extract payment module"
-/code:orchestrate security "Audit API endpoints"
-/code:orchestrate custom "codebase-historian,[tdd,reviewer],reviewer" "Redesign caching"  # final reviewer: security focus
-
-# Tier override (skip Phase 0 inference):
-/code:orchestrate --tier=high feature "Refactor namespace registry"
-/code:orchestrate --tier=trivial bugfix "Fix typo in panel README"
+/code:orchestrate bugfix "Fix the cache race"
+/code:orchestrate refactor "Extract the payment module"
+/code:orchestrate security "Audit API authorization"
+/code:orchestrate custom "codebase-historian,tdd,[reviewer,reviewer]" "Redesign caching"
 ```
 
-## Workflow Types
+The workflow name is required. For `custom`, the first quoted argument is the
+phase expression and the second is the task.
 
-| Type | Phases | Notes |
-|------|--------|-------|
-| `feature` | `codebase-historian` (design-evidence charge) → `tdd` → `[reviewer, reviewer (security focus)]` | Design, test, parallel review |
-| `bugfix` | `debugger` → `tdd` → `reviewer` | Investigate, test fix, review |
-| `refactor` | `codebase-historian` (design-evidence charge) → `refactor-cleaner` → `[reviewer, reviewer (security focus)]` | Plan, clean, parallel review |
-| `security` | `[reviewer (security focus), reviewer]` → `tdd` (remediation charge) | Parallel audit, then remediation plan |
-| `custom` | User-specified | Use brackets for parallel groups |
+## Workflow Shapes
+
+| Type | Core phases |
+|---|---|
+| `feature` | `tdd` |
+| `bugfix` | `debugger` -> `tdd` |
+| `refactor` | `refactor-cleaner` |
+| `security` | `[reviewer (security), reviewer (correctness)]` -> `tdd` |
+| `custom` | User-specified sequence; brackets denote a parallel group |
+
+Apply the risk preflight before execution:
+
+- Prepend `codebase-historian` when the task changes architecture, lifecycle,
+  harness integration, public interfaces, schemas, migrations, a new plugin,
+  multiple plugin directories, registry/namespace behavior, or established
+  cross-file patterns.
+- Append `reviewer` after changes to logic, security boundaries, public
+  interfaces, installers, uninstallers, doctors, hooks, migrations, generated
+  artifacts, or more than one plugin. Also append it after a repeated failed
+  implementation attempt.
+- Use a distinct security-focused reviewer when authentication, authorization,
+  cryptography, secrets, untrusted input, or dependency trust is involved.
+- A documentation-only or wholly mechanical edit may omit both gates. State
+  that decision; do not silently treat uncertain work as low risk.
+
+This yields common paths such as:
+
+```text
+feature:  [historian when indicated] -> tdd -> [reviewer when indicated]
+bugfix:   debugger -> tdd -> reviewer
+refactor: [historian when indicated] -> refactor-cleaner -> reviewer
+security: [security reviewer, correctness reviewer] -> tdd -> reviewer
+```
 
 ## Phase Notation
 
-- **Sequential**: `agent1` → `agent2` — run one after the other, pass handoff
-- **Parallel**: `[agent1, agent2]` — run simultaneously, merge results
+- `a,b,c` runs phases sequentially and passes a handoff between them.
+- `[a,b]` runs independent phases concurrently when the harness supports it.
+- On a harness without subagent spawning, perform the same charges inline and
+  preserve their order. Parallel groups may run sequentially inline.
 
-Example custom workflow:
+Do not parallelize agents that edit the same files. Give every writing agent
+explicit file ownership and tell it not to revert concurrent changes.
 
-```
-/code:orchestrate custom "codebase-historian,tdd,[reviewer,reviewer]" "Build dashboard"
-```
+## Execution
 
-This runs:
+### 1. Preflight
 
-1. `codebase-historian` (sequential, design-evidence charge)
-2. `tdd` (implementation charge)
-3. `reviewer` + `reviewer` (parallel — charge one with security focus)
+1. Parse and validate the workflow name and custom expression.
+2. Read repository instructions and inspect the relevant files or current diff.
+3. Classify risk using the rules above. Repository-local orchestration rules
+   may add gates but may not suppress a required historian or reviewer.
+4. Resolve the exact phase sequence and report it in one line:
 
-## Phase 0: Routing (always runs first)
-
-Before any agent work, classify the task by complexity and select the implementation model. Full rules in [`../modules/complexity-routing.md`](../modules/complexity-routing.md).
-
-### Routing Protocol
-
-1. Load `.claude/code:orchestrate-rules.json` from repo root if present
-2. Determine change scope:
-   - Pre-implementation tasks: infer from task description
-   - Tasks operating on an existing diff: read `git diff --name-only`
-3. Apply tier rules:
-   - **Trivial** → Haiku
-   - **Low / Medium** → Sonnet
-   - **High** → design-evidence review (`codebase-historian`) prepended before implementation
-4. Honor `--tier=X` user override; skip inference and note `(user override)` in declaration
-
-### Tier escalation triggers (any one promotes to High)
-
-- Path match in `high_complexity_paths` (project rules)
-- New plugin directory created
-- Cross-plugin scope (≥2 plugin dirs touched)
-- Self-edit risk: installer, hooks, namespace registry, session-load code
-- User override `--tier=high`
-
-### Tier declaration
-
-Emit before Phase 1:
-
-```
-[ROUTING]
-Tier:   {Trivial|Low|Medium|High}
-Model:  {Haiku|Sonnet|Opus+Sonnet}
-Reason: {one-line justification — cite path matches, scope, or override}
+```text
+WORKFLOW: bugfix | debugger -> tdd -> reviewer | review: logic change
 ```
 
-For **High** tier: prepend `codebase-historian` with a design-evidence charge. It identifies repository constraints and prior art; the implementer produces the actual plan and code.
+If the task lacks a concrete success condition, ask for that condition before
+starting. Do not turn a bounded implementation request into a requirements
+interview merely because several files are involved.
 
-## Execution Protocol
+### 2. Run phases
 
-> **Harness note**: On Claude, phases MAY spawn subagents in parallel via the Agent tool. On harnesses without subagent spawning, execute each phase sequentially inline (same prompts, same charges). Output contracts are identical either way.
+For each sequential phase:
 
-### Sequential Phase
+1. Give the agent the task, repository constraints, owned paths, acceptance
+   criteria, verification commands, and the previous handoff path.
+2. Collect its result and branch on its returned status.
+3. Write the normalized handoff beneath
+   `Work/code-orchestrate/<run-id>/` and pass the path to the next phase.
 
-For each agent in sequence:
+For a parallel group, start every independent charge together where supported,
+wait for all results, then merge them into one handoff. Label findings by
+reviewer focus so disagreement remains visible.
 
-1. **Invoke** agent with task + context from previous phase
-2. **Collect** output as handoff document
-3. **Pass** handoff to next phase
+### 3. Status contract
 
-### Parallel Phase
+Every spawned phase must end with:
 
-For agents in brackets `[a, b, c]`:
-
-1. **Invoke all agents simultaneously** using multiple Task tool calls in single message
-2. **Wait** for all to complete
-3. **Merge** outputs into combined handoff for next phase
-
-**IMPORTANT**: To run agents in parallel, you MUST send multiple Task tool calls in a single message. Do not wait for one to finish before starting another.
-
-```
-// CORRECT - parallel execution
-<message>
-  <Task agent="reviewer" .../>            // code-quality charge
-  <Task agent="reviewer" .../>            // security-focus charge
-</message>
-
-// WRONG - sequential execution
-<message><Task agent="reviewer" .../></message>
-<message><Task agent="reviewer" .../></message>
+```text
+STATUS: <DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED>
+summary: <1-3 sentences>
+files_modified: <absolute paths or []>
+open_questions: <items or []>
+recommendations: <items or []>
 ```
 
-## Subagent Return Contract (REQUIRED)
+Handle the status rather than merely recording it:
 
-Every Task invocation in this workflow MUST instruct the subagent to use the
-return contract defined in `~/.asha/agent-coordination.md` (load it if you need
-the full spec). Append this verbatim to each agent's task prompt:
-
-> End your response with a status line and envelope:
-> `STATUS: <DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED>`
-> then `summary` (1-3 sentences), `files_modified` (absolute paths; `[]` if read-only), `open_questions` (`[]` if none), `recommendations` (`[]` if none). All four fields always present, even when empty.
-
-The orchestrator MUST branch on the returned STATUS - never ignore it:
-
-| STATUS | Orchestrator action |
+| Status | Action |
 |---|---|
-| `DONE` | Proceed to next phase. |
-| `DONE_WITH_CONCERNS` | Proceed, but carry `open_questions` + `recommendations` into the next phase's context AND the final report. Never silently swallow. |
-| `NEEDS_CONTEXT` | Do NOT re-invoke blindly. Gather the context named in `open_questions`, then re-invoke the same phase. |
-| `BLOCKED` | HALT the phase chain. Report the blocker to the user. Do not downgrade to `DONE_WITH_CONCERNS` to keep the chain moving. |
+| `DONE` | Continue. |
+| `DONE_WITH_CONCERNS` | Continue and carry concerns into later phases and the final report. |
+| `NEEDS_CONTEXT` | Gather the named context, then retry the same phase once informed. |
+| `BLOCKED` | Stop and report the blocker. |
 
-This is the contract whose adoption **Phase Final** records. A run whose subagents emit no STATUS line is a contract miss - log it as such (see Calibration Log).
+A missing status is a malformed handoff. Ask the phase to restate its result in
+the contract; do not infer success from prose.
 
-## Handoff Format
+### 4. Handoffs
 
-Between phases, write the handoff to a **file** in the orchestration scratch dir (`Work/code:orchestrate/<run-id>/handoff.md`, or the panel dir if running under one) so handoff content stays out of caller context. Consumers read it by filename. The status token from the return contract MUST appear in the header:
+Use one file per phase or parallel group:
 
 ```markdown
-## HANDOFF: [previous] → [next] [<STATUS>]
+## HANDOFF: debugger -> tdd [DONE]
 
 ### Context
-[What was done]
+What was examined or changed.
 
 ### Findings
-[Key discoveries/decisions]
+Root cause, decisions, and evidence.
 
 ### Files Modified
-[List of files]
+Paths, or `None`.
 
 ### Open Questions
-[Unresolved items]
+Unresolved items, or `None`.
 
 ### Recommendations
-[Suggested next steps]
+Checks or follow-up for the next phase.
 ```
 
-**Richer phases write named artifacts** (per the contract), also in the scratch dir:
+Use filenames that preserve order, for example `01-debugger.md`,
+`02-tdd.md`, and `03-review.md`. Handoffs are scratch coordination artifacts,
+not project documentation and not durable metrics.
 
-- Design-evidence phases (`codebase-historian`) -> `plan-summary.md` (Goal, Approach, Interfaces, Open decisions, Out of scope).
-- `reviewer` (code-quality and security-focus runs) -> `review-findings.md` (Verdict `SHIP|NEEDS WORK|BLOCKED`, Critical issues w/ file:line, Concerns, Nits, False-positive log). Parallel reviewers each write their own (`review-findings-code.md`, `review-findings-security.md`); orchestrator merges.
+### 5. Verification and report
 
-### Implementer self-review (REQUIRED before review phase)
+The implementing phase runs the narrow relevant checks. The final reviewer
+reads the actual diff and test output rather than trusting the handoff. Do not
+commit, push, merge, deploy, or perform destructive cleanup unless the user
+explicitly requested it.
 
-The implementing agent (whichever produces code in this workflow) MUST end its handoff with a `claimed_status` declaration:
+Return:
 
-```markdown
-### claimed_status
-ready | needs-work | blocked
-
-[If needs-work or blocked: bullet list of known issues or blockers]
-```
-
-- **ready** — implementer believes all gates will pass
-- **needs-work** — known issues remain (must list them)
-- **blocked** — cannot proceed without external input (must say what)
-
-This declaration is the calibration signal — the review phase compares it against actual gate outcomes and records the delta.
-
-`claimed_status` is the implementer's pre-review self-assessment (it feeds the calibration log); the return-contract `STATUS` (see Subagent Return Contract) is the phase's actual return token. Map them 1:1 — `ready` <-> `DONE`, `needs-work` <-> `DONE_WITH_CONCERNS`, `blocked` <-> `BLOCKED` — and emit both consistently.
-
-For parallel phase outputs, merge into single handoff:
-
-```markdown
-## HANDOFF: [reviewer (code) + reviewer (security)] → next
-
-### reviewer (code) Findings
-[Summary]
-
-### reviewer (security) Findings
-[Summary]
-
-### Combined Recommendations
-[Merged next steps]
-```
-
-## Final Report
-
-```
+```text
 ORCHESTRATION REPORT
-====================
-Workflow: feature
-Task: Add user authentication
-Phases: codebase-historian (design evidence) → tdd → [reviewer, reviewer (security)]
-
-PHASE RESULTS
-1. codebase-historian (design evidence): [summary]
-2. tdd: [summary]
-3. reviewer (code): [summary] (parallel)
-   reviewer (security): [summary] (parallel)
-
-FILES CHANGED
-[List]
-
-TEST RESULTS
-[Pass/fail, coverage]
-
-ISSUES FOUND
-- [reviewer/code] Issue 1
-- [reviewer/security] Issue 2
-
-RECOMMENDATION
-[SHIP | NEEDS WORK | BLOCKED]
+Workflow: <type>
+Phases: <resolved sequence>
+Phase results: <one line each>
+Files changed: <paths>
+Verification: <commands and results>
+Review: <SHIP | NEEDS WORK | BLOCKED, with findings>
+Open questions: <items or None>
 ```
-
-## Phase Final: Calibration Log
-
-After the review phase completes (pass or fail), append one JSONL row to `~/.asha/metrics/code:orchestrate.jsonl`:
-
-```json
-{"ts":"<ISO-8601 UTC>","workflow":"<feature|bugfix|...>","tier":"<trivial|low|medium|high>","model":"<haiku|sonnet|opus+sonnet>","claimed":"<ready|needs-work|blocked>","review":"pass|fail","gates_failed":["<gate>",...],"contract":{"statuses":["<returned STATUS per phase, in order>"],"artifacts":["<artifact basenames written, e.g. handoff.md, plan-summary.md>"]},"task":"<one-line task description>"}
-```
-
-Steps:
-
-1. `mkdir -p ~/.asha/metrics` (defensive)
-2. Compose the row from Phase 0 declaration + implementer's `claimed_status` + review outcome
-3. Populate `contract.statuses` with each phase's returned STATUS token (in phase order) and `contract.artifacts` with the artifact files written this run (`handoff.md`, `plan-summary.md`, `review-findings*.md`). A run whose subagents emitted no STATUS leaves `statuses` empty — that is the adoption-miss signal.
-4. Append (don't overwrite) to `~/.asha/metrics/code:orchestrate.jsonl`
-5. If write fails, log to stderr and continue — calibration is observability, never a blocker
-
-Inspect over time:
-
-```
-asha calibration              # last 30 runs summary
-asha calibration --tier=high  # filter by tier
-asha calibration --tail=10    # last 10 runs detail
-```
-
-Sustained false-positive rate (claimed=ready AND review=fail) above ~25% means the implementer agent's self-review is miscalibrated.
-
-**Return-contract adoption** is measured directly from this log: the fraction of runs with a non-empty `contract.statuses`. This replaces transcript-grepping for A3 acceptance — query `orchestrate.jsonl` instead.
-
-## Available Agents
-
-| Agent | Purpose |
-|-------|---------|
-| `codebase-historian` | Repository prior art and design constraints |
-| `thinker` | Requirements breakdown, approach planning |
-| `tdd` | Test-driven development |
-| `reviewer` | Code quality review; security analysis when charged with security focus |
-| `debugger` | Bug investigation |
-| `refactor-cleaner` | Code cleanup and refactoring |
-
-## Tips
-
-1. **Start with design evidence** (`codebase-historian`) for complex features, then require the implementer to state the plan before editing
-2. **End with parallel review** — `[reviewer, reviewer (security focus)]` catches more issues
-3. **Use `tdd` early** — tests define the contract before implementation
-4. **Keep handoffs concise** — focus on what next phase needs, not full output
-5. **Custom for flexibility** — mix agents as needed for your specific task

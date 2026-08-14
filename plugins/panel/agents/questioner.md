@@ -104,4 +104,4 @@ User: JWT tokens
 
 ## Output
 
-Your output is the Q&A transcript in conversation context. The Examiner will validate the problem framing. The Codifier will crystallize it into a seed specification.
+Your output is the saved Q&A record. The Examiner validates the problem framing, and the Codifier crystallizes a SOUND result into a seed specification.

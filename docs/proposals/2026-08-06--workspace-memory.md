@@ -8,6 +8,11 @@ origin: issues #23–#26 (workspace RFC cluster); scope decisions ruled by Keepe
 
 # Workspace-aware multi-repository memory — design spec
 
+> **Historical record — delivered and superseded as operating guidance.** The
+> design below is preserved as written. Use
+> [Memory architecture](../memory-architecture.md) and the
+> [Session plugin guide](../../plugins/session/README.md) for current behavior.
+
 Distilled from the #23–#26 RFC cluster after the 2026-08-06 issue-loop run
 rejected all four as undispatchable design work. This document pins the
 decisions those rejections named as open, so the work can be decomposed into

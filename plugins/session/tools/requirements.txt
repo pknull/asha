@@ -1,7 +1,0 @@
-# Asha Python Dependencies
-# Install with: pip install -r requirements.txt
-#
-# Most tools use only standard library.
-# This file kept for potential future dependencies.
-
-# No external dependencies currently required

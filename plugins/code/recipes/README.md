@@ -22,7 +22,6 @@ complexity: quick | standard | full  # Maps to Scale-Adaptive Planning
 agents:
   - name: agent-name
     role: what they do
-    model: haiku | sonnet | opus
     trigger: "@state-that-activates"
     output: "@state-when-done"
     checkpoint: true | false  # Human approval required after this agent?
@@ -113,7 +112,7 @@ Copy a recipe and modify:
 - Swap agents for project-specific alternatives
 - Add/remove checkpoints based on risk tolerance
 - Adjust failure policies
-- Change model assignments (opus for critical steps, haiku for simple)
+- Add, remove, or reorder specialist phases when repository constraints require it
 
 ## Integration with Orchestration Module
 

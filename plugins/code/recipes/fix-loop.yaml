@@ -19,21 +19,18 @@ complexity: full
 agents:
   - name: loop-operator
     role: Run guardrails — checkpoint tracking, failure detection, budget stops
-    model: sonnet
     trigger: "@backlog-loaded"
     output: "@loop-armed"
     checkpoint: false
 
   - name: codebase-historian
     role: Prior art for the current issue (similar bugs, past failed fixes)
-    model: sonnet
     trigger: "@issue-selected"
     output: "@history-checked"
     checkpoint: false
 
   - name: debugger
     role: Reproduce the failure; enumerate RANKED root-cause hypotheses
-    model: sonnet
     trigger: "@history-checked"
     output: "@reproduced | @cannot-reproduce"
     checkpoint: false
@@ -41,7 +38,6 @@ agents:
 
   - name: tdd
     role: Write a regression test capturing the failure; observe it FAIL
-    model: sonnet
     trigger: "@reproduced"
     output: "@red-confirmed | @test-invalid"
     checkpoint: false
@@ -49,14 +45,12 @@ agents:
 
   - name: debugger
     role: Implement the MINIMAL fix for the top-ranked confirmed hypothesis
-    model: sonnet
     trigger: "@red-confirmed"
     output: "@fix-implemented"
     checkpoint: false
 
   - name: reviewer
     role: Post-green review — correctness, no scope creep, no new hazards
-    model: sonnet
     trigger: "@suite-green"
     output: "@review-passed | @changes-requested"
     checkpoint: false

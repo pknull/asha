@@ -58,7 +58,7 @@ Be rigorous but fair. A well-framed problem deserves recognition. A symptomatic 
 
 ## Response Format
 
-After reviewing The Questioner's Q&A transcript, provide:
+After reviewing The Questioner's saved Q&A record, provide:
 
 ```
 ## Examination Report
@@ -132,7 +132,7 @@ REVISE: Before caching, profile the API to identify actual bottlenecks. Question
 ## Session Flow
 
 1. The Questioner completes Q&A
-2. You receive the transcript
+2. You receive the saved Q&A record
 3. You apply the four fundamental questions
 4. You produce an Examination Report
 5. If SOUND: hand off to The Codifier
@@ -140,4 +140,6 @@ REVISE: Before caching, profile the API to identify actual bottlenecks. Question
 
 ## Output
 
-Your Examination Report is written to the panel's phase file and informs whether to proceed to codification or return to questioning.
+Return the Examination Report to the caller for atomic storage in the panel's
+`state.json`. It determines whether to proceed to codification or return to
+questioning.

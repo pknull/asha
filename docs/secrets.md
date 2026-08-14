@@ -17,7 +17,9 @@ Asha uses **dotenv with wrapper-scoped sourcing**:
 
 (The example file omits the `.env` suffix on purpose — Asha's `block-secrets` hook treats `*.env` as restricted. The committed template needs to slip past that guard since it carries no real values.)
 
-The wrappers (`asha-claude`, `asha-codex`) source `bin/asha-env-bootstrap.sh` before exec'ing their underlying harness. The bootstrap reads `~/.asha/secrets.env` if present and exports its contents into the launched process's environment.
+The `asha <harness>` dispatcher sources `bin/asha-env-bootstrap.sh` before
+executing the selected harness. The bootstrap reads `~/.asha/secrets.env` if
+present and exports its contents into the launched process's environment.
 
 This is the pattern the broader Claude Code / MCP ecosystem is converging on (see [issue #28942](https://github.com/anthropics/claude-code/issues/28942), [issue #2065](https://github.com/anthropics/claude-code/issues/2065)). It's not novel; it's the lowest-friction option that doesn't lose to the obvious anti-patterns.
 
@@ -39,7 +41,8 @@ Sourcing from the user's shell rc would put every Asha token into every subproce
 
 2. Fill in the values in `~/.asha/secrets.env`. The example file documents what each token is for and where to obtain it.
 
-3. Launch sessions via `asha-claude` / `asha-codex` (or just `asha` if you've installed the symlinked launcher).
+3. Launch sessions via `asha claude`, `asha codex`, `asha copilot`, or
+   `asha opencode`.
 
 ## Adding a new integration
 
@@ -90,7 +93,7 @@ If you ever want a particular MCP server to NOT see (say) the Bookstack token, t
 | `secrets.example` | asha repo | Committed template documenting which vars exist (no `.env` suffix to dodge the secrets-block hook) |
 | `bin/asha-env-bootstrap.sh` | asha repo | Sourced by both wrappers; reads `$ASHA_SECRETS_FILE` |
 | `~/.asha/secrets.env` | local user dir | Real values, gitignored, mode 0600 |
-| `bin/asha-claude` / `asha-codex` | asha repo | Source the bootstrap before exec'ing the harness |
+| `bin/asha` | asha repo | Sources the bootstrap before executing the selected harness |
 
 ## See also
 

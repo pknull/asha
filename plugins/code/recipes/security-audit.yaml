@@ -6,14 +6,12 @@ complexity: full
 agents:
   - name: codebase-historian
     role: Check past security issues and resolutions
-    model: sonnet
     trigger: "@audit-requested"
     output: "@history-reviewed"
     checkpoint: false
 
   - name: reviewer
     role: Comprehensive security scan (security focus)
-    model: opus  # High reasoning for security
     trigger: "@history-reviewed"
     output: "@vulnerabilities-found | @no-issues"
     checkpoint: true  # Review findings before remediation
@@ -21,21 +19,18 @@ agents:
 
   - name: reviewer
     role: Prioritize and classify findings (security focus)
-    model: sonnet
     trigger: "@findings-reviewed"
     output: "@remediation-plan-ready"
     checkpoint: true  # Approve remediation approach
 
   - name: general-purpose  # implementation charge
     role: Implement security fixes
-    model: sonnet
     trigger: "@remediation-approved"
     output: "@fixes-implemented"
     checkpoint: false
 
   - name: reviewer
     role: Verify fixes and no regressions (security focus)
-    model: opus
     trigger: "@fixes-implemented"
     output: "@verification-passed | @issues-remain"
     checkpoint: false
@@ -43,7 +38,6 @@ agents:
 
   - name: reviewer
     role: Final review of security changes
-    model: sonnet
     trigger: "@verification-passed"
     output: "@review-passed"
     checkpoint: false
@@ -155,7 +149,7 @@ gates:
 
 notes:
   - "general-purpose phases: on harnesses without subagent spawning, execute the phase inline"
-  - "Opus used for security analysis (high stakes)"
+  - "Security analysis receives independent audit and verification phases"
   - "TWO checkpoints: findings review AND remediation approval"
   - "No bypasses allowed for security gates"
   - "All findings recorded to ~/.asha/learnings for future reference"

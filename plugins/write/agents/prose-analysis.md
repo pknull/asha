@@ -878,7 +878,3 @@ Output:
 None mandatory - author may review parallel construction choice
 ---
 ```
-
----
-
-**Note**: Remove this note before deployment. See `.claude/docs/agent-template-migration.md` for migration guidance.

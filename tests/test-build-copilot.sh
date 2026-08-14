@@ -41,6 +41,18 @@ done
 for p in asha-code asha-security; do
   [[ -f "$OUT/plugins/$p/plugin.json" ]] && ok "emits plugins/$p/plugin.json" || fail "emits plugins/$p/plugin.json"
 done
+retired_code_templates="$(find "$OUT/plugins/asha-code/templates" -type f \
+  \( -name copilot.md -o -name cursor.md -o -name devin.md \) -print 2>/dev/null | wc -l | tr -d '[:space:]' || true)"
+assert_eq "retired code prompt templates are absent from dist" "0" "$retired_code_templates"
+SESSION_OUT="$WORK/session-dist"
+if bash "$REPO_ROOT/bin/asha" build copilot --only session --out "$SESSION_OUT" >/dev/null 2>&1; then
+  retired_session_files="$(find "$SESSION_OUT/plugins/asha-session" -type f \
+    \( -name 'loop-checkpoint.md' -o -name 'loop-completion.md' -o -name 'loop-state.json' -o -name requirements.txt \) \
+    -print | wc -l | tr -d '[:space:]' || true)"
+  assert_eq "retired session loop/dependency files are absent from dist" "0" "$retired_session_files"
+else
+  fail "session-only build for retired-file check exits 0"
+fi
 
 # ---------------------------------------------------------------------------
 echo "--- test 2: manifests are valid and versions match source READMEs ---"
@@ -83,12 +95,13 @@ if grep -q 'python3 "\.\./\.\./tools/verify.py"' "$OUT/plugins/asha-code/skills/
 else
   fail "code-verify tool path rewritten and target exists in plugin"
 fi
-# relative md links gained one level and resolve
-if [[ -f "$OUT/plugins/asha-code/modules/complexity-routing.md" ]] \
-   && grep -q '](\.\./\.\./modules/complexity-routing.md)' "$OUT/plugins/asha-code/skills/code-orchestrate/SKILL.md"; then
-  ok "orchestrate module link rewritten and target exists"
+# Orchestration is self-contained because local harness installs do not mount
+# support modules beside generated command skills.
+if [[ ! -e "$OUT/plugins/asha-code/modules/complexity-routing.md" ]] \
+   && ! grep -q 'complexity-routing\.md' "$OUT/plugins/asha-code/skills/code-orchestrate/SKILL.md"; then
+  ok "orchestrate skill is self-contained"
 else
-  fail "orchestrate module link rewritten and target exists"
+  fail "orchestrate skill is self-contained"
 fi
 
 # ---------------------------------------------------------------------------

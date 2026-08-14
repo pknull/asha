@@ -47,7 +47,7 @@ Agents that resolve canon MUST:
 
 1. Read `Memory/canon-layout.md` if it exists and use its globs.
 2. Fall back to the defaults in this template when it does not.
-3. **Report which globs were searched** when a lookup returns nothing. A negative canon result without a searched-paths list is not a finding — it is an unchecked guess, and it is indistinguishable from a misconfigured layout. See the session plugin's `modules/research.md`, "Negative Claims Require an Evidence Trail".
+3. **Report which globs were searched** when a lookup returns nothing. A negative canon result without a searched-paths list is not a finding — it is an unchecked guess, and it is indistinguishable from a misconfigured layout.
 4. Never invent a path that is not in the register. If a needed kind has no row, say so and ask.
 
 ## Promotion targets

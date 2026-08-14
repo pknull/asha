@@ -247,6 +247,17 @@ else
 fi
 echo ""
 
+# Test Suite 16: Workflow Contract Tests
+echo -e "${BLUE}--- Test Suite 16: Workflow Contract Tests ---${NC}"
+if "$SCRIPT_DIR/test-workflow-contracts.sh"; then
+    echo -e "${GREEN}✓ Workflow contract tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Workflow contract tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"

@@ -8,6 +8,11 @@ origin: epic #23, the "v2 read-side" row of the ratified workspace-memory propos
 
 # Workspace read-side context injection (v2) — design spec
 
+> **Historical record — delivered and superseded as operating guidance.** The
+> design below is preserved as written. Use
+> [Memory architecture](../memory-architecture.md) and the
+> [Session plugin guide](../../plugins/session/README.md) for current behavior.
+
 v1 gave sessions a *write* contract: detection, save scopes, plane-bound
 proofs, gates, and the auto-save seam. A session inside a workspace can now
 commit memory to the right plane — but it still *starts blind*: nothing

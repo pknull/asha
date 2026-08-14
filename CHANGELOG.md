@@ -10,7 +10,19 @@ the active instruction surface loses no release detail.
 
 ## Public release history
 
-### Asha v3.0.0 — Compact identity split (2026-08-13)
+### Unreleased — Instruction and workflow cleanup
+
+- Collapsed the repository guide to project-specific invariants and made each
+  plugin README the sole authority for that plugin's version.
+- Removed unreachable session guidance, unused loop and harness templates, the
+  retired Claude output-style mount, and a duplicate Claude hook installer.
+- Replaced model-tiered code orchestration with harness-neutral risk gates and
+  removed its unused append-only calibration log.
+- Reduced panel persistence to one resumable state file plus its final decision
+  artifact; panel transcripts, per-phase files, and the separate index are no
+  longer produced.
+
+### Asha identity v3.0.0 — Compact identity split (2026-08-13)
 
 - Reduced the automatic persona corpus to compact `soul.md`, `voice.md`, and
   `keeper.md` files behind a 24 KiB fail-closed merge budget.

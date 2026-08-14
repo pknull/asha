@@ -190,7 +190,7 @@ fi
 # ---------------------------------------------------------------------------
 echo "--- test 3: claude untagged (tag-stripped) hooks are audited by path-prefix ---"
 mkdir -p "$SANDBOX/.claude/skills" "$SANDBOX/.claude/agents" \
-         "$SANDBOX/.claude/commands" "$SANDBOX/.claude/output-styles"
+         "$SANDBOX/.claude/commands"
 jq -n --arg repo "$REPO_ROOT" '{
   hooks: {
     PostToolUse: [
