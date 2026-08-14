@@ -73,15 +73,15 @@ than roughly 1,000 lines when possible so findings remain attributable.
 The verifier detects TypeScript, Python, Go, Java, and Rust projects. A
 repository may override the detected checks with `verify.yaml`.
 
-### `/code:orchestrate [--tier=…] TYPE DESCRIPTION`
+### `/code:orchestrate TYPE DESCRIPTION`
 
 Supported workflow types:
 
 | Type | Default phases |
 |---|---|
-| `feature` | prior art → test-first implementation → code and security review |
+| `feature` | test-first implementation with risk-triggered prior art and review |
 | `bugfix` | root-cause investigation → regression test and fix → review |
-| `refactor` | prior art → bounded cleanup → code and security review |
+| `refactor` | bounded cleanup with risk-triggered prior art and review |
 | `security` | parallel audit → test-first remediation plan |
 | `custom` | User-specified sequential and parallel agent groups |
 
@@ -89,14 +89,14 @@ Examples:
 
 ```text
 /code:orchestrate feature "Add token rotation"
-/code:orchestrate --tier=high refactor "Replace the namespace registry"
+/code:orchestrate refactor "Replace the namespace registry"
 /code:orchestrate custom "codebase-historian,tdd,[reviewer,reviewer]" "Build dashboard"
 ```
 
-The orchestrator writes handoffs under `Work/orchestrate/<run-id>/` and records
-self-review calibration under `~/.asha/metrics/orchestrate.jsonl`. High-risk
-paths and cross-plugin changes are promoted to the high tier unless explicitly
-overridden.
+The orchestrator writes scratch handoffs under
+`Work/code-orchestrate/<run-id>/`. Architecture, lifecycle, public-interface,
+and cross-plugin changes receive prior-art and independent-review gates. It
+does not write telemetry or durable self-assessment records.
 
 ### `/code:issue-loop [--dry-run]`
 

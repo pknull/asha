@@ -6,7 +6,6 @@ complexity: full
 agents:
   - name: codebase-historian
     role: Research prior art and patterns
-    model: sonnet
     trigger: "@needs-research"
     output: "@research-complete"
     checkpoint: false
@@ -14,14 +13,12 @@ agents:
 
   - name: thinker
     role: Break down requirements, identify approach
-    model: sonnet
     trigger: "@research-complete"
     output: "@needs-design"
     checkpoint: false
 
   - name: general-purpose
     role: Design solution architecture (design charge)
-    model: opus
     trigger: "@needs-design"
     output: "@design-ready"
     checkpoint: true  # Human must approve design
@@ -29,21 +26,18 @@ agents:
 
   - name: tdd
     role: Write failing tests first
-    model: sonnet
     trigger: "@design-approved"
     output: "@tests-written"
     checkpoint: false
 
   - name: general-purpose  # language-specific implementation charge
     role: Implement to pass tests
-    model: sonnet
     trigger: "@tests-written"
     output: "@implementation-ready"
     checkpoint: false
 
   - name: reviewer
     role: Stage 1 - Spec compliance review
-    model: sonnet
     trigger: "@implementation-ready"
     output: "@spec-reviewed"
     checkpoint: false
@@ -51,7 +45,6 @@ agents:
 
   - name: reviewer
     role: Stage 2 - Code quality review
-    model: sonnet
     trigger: "@spec-reviewed"
     output: "@review-passed | @changes-requested"
     checkpoint: false
@@ -60,7 +53,6 @@ agents:
 
   - name: reviewer
     role: Security scan (security focus; if auth/crypto/input)
-    model: sonnet
     trigger: "@review-passed"
     output: "@security-passed"
     checkpoint: false
@@ -167,7 +159,7 @@ gates:
 
 notes:
   - "general-purpose phases: on harnesses without subagent spawning, execute the phase inline"
-  - "Opus used for architecture decisions (high reasoning)"
+  - "Architecture decisions receive a dedicated design phase"
   - "Two-stage review: spec compliance then code quality"
   - "Security gate conditional on code touched"
   - "TDD enforced: tests written before implementation"

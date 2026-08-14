@@ -6,28 +6,24 @@ complexity: standard
 agents:
   - name: codebase-historian
     role: Check what refactoring patterns worked before
-    model: sonnet
     trigger: "@refactor-requested"
     output: "@patterns-checked"
     checkpoint: false
 
   - name: refactor-cleaner
     role: Identify dead code, consolidate duplicates
-    model: sonnet
     trigger: "@patterns-checked"
     output: "@refactor-plan-ready"
     checkpoint: true  # Approve deletion list before executing
 
   - name: refactor-cleaner
     role: Execute refactoring transformations
-    model: sonnet
     trigger: "@refactor-approved"
     output: "@refactor-complete"
     checkpoint: false
 
   - name: reviewer
     role: Verify behavior preserved
-    model: sonnet
     trigger: "@refactor-complete"
     output: "@review-passed | @changes-requested"
     checkpoint: false
@@ -35,7 +31,6 @@ agents:
 
   - name: reviewer
     role: Check no security regressions (security focus)
-    model: haiku
     trigger: "@review-passed"
     output: "@security-passed"
     checkpoint: false

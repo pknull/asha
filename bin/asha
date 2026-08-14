@@ -2,7 +2,7 @@
 # bin/asha — Asha cross-agent dispatcher + launcher.
 #
 # Grammar:  asha [VERB] [HARNESS] [PASSTHROUGH...]
-#   VERB     install | uninstall | build | doctor | init-repo | calibration
+#   VERB     install | uninstall | build | doctor | init-repo
 #                                            (optional; absent => launch)
 #   HARNESS  claude | codex | copilot | opencode (launch); also both|all for verbs
 #            (absent on launch => default_harness from ~/.asha/config.json, else claude)
@@ -72,7 +72,7 @@ default_harness() {
 }
 
 # Probe: is Asha configured for harness $1?  rc 0 = fresh, 1 = none, 2 = stale.
-# Signal = a symlink under ~/.<h>/{skills,agents,commands,output-styles} that
+# Signal = a symlink under ~/.<h>/{skills,agents,commands} that
 # resolves into $ASHA_ROOT/plugins/. A link into a *different* .../asha/plugins/
 # tree means configured-for-another-checkout (stale).
 harness_configured() {
@@ -91,7 +91,7 @@ harness_configured() {
     fi
     foreign=1
   fi
-  local scan_dirs="skills agents commands output-styles"
+  local scan_dirs="skills agents commands"
   [[ "$h" == opencode ]] && scan_dirs="skills agents commands plugins"
   for sub in $scan_dirs; do
     dir="$home/$sub"
@@ -297,8 +297,6 @@ Usage:
                                    (both accept --json)
   asha init-repo [--dir D] [...]   scaffold agent/Copilot standards files into a repo
                                    (--dry-run | --check for CI | --force)
-  asha calibration [args...]       inspect orchestration calibration metrics
-                                   (--tier=T --workflow=W --tail=N --all)
   asha-<harness> [args...]         shim form (launch that harness)
 
 Harnesses: claude | codex | copilot | opencode
@@ -329,12 +327,6 @@ ASHA_FLAG_YES=0
 case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;
 esac
-
-# Orchestration self-review calibration report.
-if [[ "${1:-}" == "calibration" ]]; then
-  shift
-  exec "$ASHA_ROOT/bin/calibration" "$@"
-fi
 
 # asha's own install-health audit. Verb-first — `asha claude doctor` still
 # reaches Claude Code's native doctor via launch forwarding.

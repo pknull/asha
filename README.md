@@ -1,6 +1,5 @@
 # asha
 
-**Version**: 2.7.0
 **Description**: A multi-harness agent toolkit. Persistent identity, session memory, and domain-focused plugins for Claude Code, OpenAI Codex, GitHub Copilot CLI, and OpenCode.
 
 Asha renders or mounts skills, agents, commands, and hooks into each harness's native surfaces, ships a single `asha` dispatcher that injects a shared persona, and maintains one explicit compact Memory contract across all four CLIs.
@@ -30,8 +29,9 @@ Asha exposes four kinds of reusable surface:
 | **Skill** | On-demand instructions and tools selected from task intent | Ask for the task naturally or name the skill. |
 | **Recipe/engine** | A longer orchestration pattern behind a command | Start through the owning plugin's documented command; do not invoke internal files directly unless developing Asha. |
 
-The root README is the map. Each plugin README owns its detailed usage,
-examples, agents, skills, prerequisites, and safety boundaries:
+The root README is the map. Each plugin README is the authority for that
+plugin's version, detailed usage, inventory, prerequisites, and safety
+boundaries:
 [Session](plugins/session/README.md), [Code](plugins/code/README.md),
 [Write](plugins/write/README.md), [Panel](plugins/panel/README.md),
 [RP](plugins/rp/README.md), [Image](plugins/image/README.md),
@@ -46,10 +46,10 @@ Plugins live in `plugins/<name>/`. The installer symlinks byte-compatible primit
 
 | Harness | Mount root | Persona injection |
 |---|---|---|
-| **Claude Code** | `~/.claude/*` (skills, agents, hooks, settings.json entries) | `asha claude` injects via `--append-system-prompt-file` at launch |
-| **OpenAI Codex** | `~/.codex/*` (skill directories, TOML custom agents, hooks, rules) | `asha codex` injects via `-c model_instructions_file=<merged-identity>` at launch |
-| **GitHub Copilot CLI** | `~/.copilot/*` (skills, agents) | `asha copilot` writes the merged identity and wires it per-launch via `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` (Copilot auto-loads `<dir>/.github/instructions/*.instructions.md`); plain `copilot` stays persona-free |
-| **OpenCode** | `${XDG_CONFIG_HOME:-~/.config}/opencode/*` (skills, commands, agents, plugin) | `asha opencode` appends a merged instruction file through `OPENCODE_CONFIG_CONTENT`; plain `opencode` stays persona-free |
+| **Claude Code** | `~/.claude/*` (skills, agents, hooks, settings.json entries) | `asha claude` injects the hot identity via `--append-system-prompt-file`; SessionStart supplies the operational layer |
+| **OpenAI Codex** | `~/.codex/*` (skill directories, TOML custom agents, hooks, rules) | `asha codex` supplies one launch-time `model_instructions_file` containing hot identity plus the operational layer |
+| **GitHub Copilot CLI** | `~/.copilot/*` (skills, agents, hook JSON) | `asha copilot` wires separate identity and operational instruction files through `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` |
+| **OpenCode** | `${XDG_CONFIG_HOME:-~/.config}/opencode/*` (skills, commands, agents, plugin) | `asha opencode` appends a combined identity and operational file through `OPENCODE_CONFIG_CONTENT` |
 
 Install commands:
 
@@ -68,19 +68,27 @@ After `./install.sh --bin all` you'll have:
 | Command | Effect |
 |---|---|
 | `asha` | launch the default harness (set via `--default`; else claude) |
-| `asha <harness>` | launch `claude`/`codex`/`copilot`/`opencode` — auto-configures that harness on first use |
+| `asha <harness>` | launch `claude`/`codex`/`copilot`/`opencode`; interactive first use offers to configure a missing or stale target |
 | `asha install <target>` | provision a harness (`claude`/`codex`/`copilot`/`opencode`/`both`/`all`) |
 | `asha uninstall <target>` | remove Asha from a harness |
 | `asha-claude` · `asha-codex` · `asha-copilot` · `asha-opencode` | harness shims (each ≡ `asha <harness>`) |
 
-Grammar is positional — `asha [install|uninstall] [harness] [args…]`. A verb *after* the harness is passed through, so `asha claude install` runs `claude install` (not the Asha installer).
+Grammar is positional: launch as `asha [--yes] [harness] [args…]`, and put an
+Asha management verb before its target (`asha install codex`, `asha doctor
+codex`). A verb *after* the harness is passed through, so `asha claude install`
+runs `claude install` rather than the Asha installer.
+
+Non-interactive first use cannot answer the configuration prompt; pass `--yes`
+before the harness (or set `ASHA_YES=1`). Claude and Codex must first be run
+plain once so their harness-owned `settings.json` or `config.toml` exists. Asha
+does not fabricate either file.
 
 See **[INSTALLER.md](INSTALLER.md)** for the full install model, per-harness limitations, and the bin/wrapper details.
 
-**Upgrading an existing Codex, Copilot, or OpenCode install:** generated-file ownership is
-new in this release. Run `asha install <harness> --force` once to adopt the
-existing generated files into the ownership manifest before uninstalling or
-using ordinary collision-safe updates.
+**Adopting a pre-manifest Codex, Copilot, or OpenCode install:** run
+`asha install <harness> --force` once to record existing generated files in the
+ownership manifest before uninstalling or using ordinary collision-safe
+updates.
 
 ---
 
@@ -99,6 +107,13 @@ At a glance: skills, agents, persona, the operational layer, explicit `/session:
 **Output styles are retired.** The former `output-styles` plugin (`/style` + 8 style files) was Claude-only by design and was retired in the 2026-07-10 ecosystem audit — Claude's native output-style switching covers the need, and the other harnesses never had an equivalent Asha seam.
 
 **Persona is injected at each harness's real seam.** Claude uses `--append-system-prompt-file`; Codex uses `model_instructions_file`; Copilot uses `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`; OpenCode uses `OPENCODE_CONFIG_CONTENT.instructions`. Every mechanism is wrapper-scoped, so the plain harness remains persona-free.
+
+The hot identity is the repository assertion in
+`identity/asha-identity-system-prompt.md` plus three user-owned files:
+`~/.asha/soul.md`, `~/.asha/voice.md`, and `~/.asha/keeper.md`. Extended Asha
+and Keeper material under `~/.asha/reference/` remains cold until the
+`asha-reference` skill selects a task-relevant file. Cold reference material is
+private and is never copied into project or workspace Memory.
 
 **The operational layer reaches all four.** `~/.asha/operation.md` plus a
 capped rendering of active `~/.asha/learnings/` records load at session start.
@@ -200,23 +215,22 @@ lifecycle callback into a semantic save.
 
 ## Plugin Domains
 
-| Domain | Plugin | Version | Purpose |
-|--------|--------|---------|---------|
-| **Core** | `session` | v2.0.0 | Explicit compact publication, bounded recovery, learning lifecycle, guardrails, loops, and workspace management — 3 agents |
-| **Identity** | `asha` | v3.0.0 | Compact hot identity plus task-selected cold references |
-| **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
-| **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
-| **Creative** | `write` | v1.9.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
-| **Creative** | `rp` | v0.2.0 | Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification — 6 agents |
-| **Image** | `image` | v2.0.0 | Stable Diffusion prompts, ComfyUI workflows (skill, no agents) |
-| **Integrations** | `admin` | v0.3.0 | Direct skills: Todoist, Gemini search, Wolfram, BookStack, Proton Mail Bridge |
-| **Security** | `security` | v1.0.0 | Web-app security review checklist skill |
-| **Tooling** | `test` | — | Installer canary (`/test:ping` command/skill/agent) |
+| Domain | Plugin | Purpose |
+|--------|--------|---------|
+| **Core** | `session` | Explicit compact publication, bounded recovery, learning lifecycle, guardrails, loops, and workspace management |
+| **Identity** | `asha` | Capped hot identity plus task-selected cold references |
+| **Research** | `panel-system` | Multi-perspective analysis, expert panels, and decision-making |
+| **Development** | `code` | Code review, orchestration patterns, TDD, and guarded issue processing |
+| **Creative** | `write` | Fiction writing, prose craft, continuity, and style analysis |
+| **Creative** | `rp` | Live roleplay lifecycle, continuity gating, and canon ratification |
+| **Image** | `image` | Stable Diffusion prompts and ComfyUI workflows |
+| **Integrations** | `admin` | Todoist, grounded search, computation, knowledge, and mail integrations |
+| **Security** | `security` | Web-application security review patterns |
+| **Tooling** | `test` | Installer canary primitives |
 
 ## Plugin guides
 
-Current source inventory: **31 agents, 19 command workflows, and 16 skills**.
-The owning guide below is the catalogue for each batch.
+The owning guide below is the catalogue for each plugin.
 
 | Plugin | Primary entry point | Use it for | Detailed instructions |
 |---|---|---|---|
@@ -358,12 +372,18 @@ asha doctor                               # install-health audit (drift-check fr
 
 ```bash
 asha                       # default harness (set via --default; else claude)
-asha codex                 # Codex with Asha persona (auto-configures on first run)
-asha claude                # Claude Code with Asha persona
-asha copilot               # Copilot with Asha persona (auto-injected per-launch)
-asha opencode              # OpenCode with Asha persona (requires OpenCode >=1.15.11)
+asha codex                 # Codex with wrapper-scoped hot identity
+asha claude                # Claude Code with wrapper-scoped hot identity
+asha copilot               # Copilot with wrapper-scoped hot identity
+asha opencode              # OpenCode with wrapper-scoped hot identity (requires >=1.15.11)
 asha-codex                 # back-compat shim (== asha codex)
 ```
+
+These launchers offer interactive configuration when the target is absent or
+stale. Use `asha --yes <harness>` for an unattended first launch. Plain harness
+commands remain persona-free but still see any installed skills and hooks.
+Claude's native management subcommands are forwarded without persona injection
+so their own TUI or one-shot behavior remains intact.
 
 ---
 
@@ -379,14 +399,14 @@ asha/
 ├── plugins/
 │   ├── admin/                    # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
 │   ├── asha/                     # compact identity templates + on-demand reference skill
-│   ├── code/                     # agents/ (5), commands/ (4), skills/ (1), recipes/ (5)
+│   ├── code/                     # development workflows and specialists
 │   ├── image/                    # skills/ (generation)
-│   ├── panel/                    # agents/ (6), commands/ (panel.md), docs/characters/, templates/
-│   ├── rp/                       # agents/ (6), commands/ (4), live-roleplay lifecycle
+│   ├── panel/                    # panel workflows, characters, and templates
+│   ├── rp/                       # live-roleplay lifecycle and continuity gates
 │   ├── security/                 # skills/ (security-review)
-│   ├── session/                  # commands/ (7), agents/ (3), skills/ (2), workspace tools
+│   ├── session/                  # Memory, policy, loop, and workspace tools
 │   ├── test/                     # installer canary (ping command/skill/agent, stop hook)
-│   └── write/                    # agents/ (10), commands/ (2), skills/ (4), recipes/ (4)
+│   └── write/                    # fiction, editorial, and style workflows
 ├── docs/                         # harness-enforcement.md, memory-architecture.md, …
 ├── tests/                        # validation suites + python unit tests
 ├── install.sh / uninstall.sh     # thin shims over lib/
@@ -410,7 +430,7 @@ python3 -m pip install -r requirements.txt
 
 | Suite | Description |
 |-------|-------------|
-| Plugin + version validation | Frontmatter, namespace, structure, and version contracts |
+| Plugin validation | Frontmatter, namespace, structure, and plugin-README version contracts |
 | Python unit tests | Memory v2 schemas, recovery, learnings, workspace, and save scope |
 | Hook handlers | Recovery callbacks, policy adapters, output contracts, and repository hygiene |
 | Harness integration | OpenCode install/runtime bridge, Copilot build, doctor, uninstall, and init-repo |
@@ -420,7 +440,7 @@ Individual test suites:
 
 ```bash
 ./tests/validate-plugins.sh    # Plugin configuration
-./tests/validate-versions.sh   # Version consistency
+./tests/validate-versions.sh   # Plugin README semver and namespace coverage
 ./tests/test-hooks.sh          # Hook handlers
 python3 -m unittest discover -s tests/python -v  # Python tests
 ```
@@ -449,7 +469,7 @@ To propose new plugins or improvements:
 
 ## License
 
-Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, image, panel, security, session, test, write).
+Individual plugins licensed separately. See each plugin's LICENSE file (MIT throughout: admin, asha, code, image, panel, rp, security, session, test, write).
 
 ---
 
@@ -468,8 +488,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 ---
 
-## Version History
+## Release history
 
-Current release: **v2.7.0 / Session v2.0.0 — Memory System v2**.
-The complete historical record now lives in [CHANGELOG.md](CHANGELOG.md); old
-release mechanics are archival, not current usage instructions.
+The historical release record lives in [CHANGELOG.md](CHANGELOG.md). Plugin
+versions live only in their owning plugin README files.

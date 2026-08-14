@@ -32,9 +32,10 @@ harness's native form.
 │   └── asha              # unified dispatcher + launcher
 │                         #   grammar: asha [install|uninstall] [harness] [args…]
 │                         #   shims ~/.local/bin/asha-{claude,codex,copilot,opencode} → asha
-├── identity/             # persona content (single source of truth)
+├── identity/             # repo-owned identity assertion + merge scripts
 │   ├── asha-identity-system-prompt.md
-│   └── identity-merge.sh # concatenates identity → ~/.cache/asha/instructions.md
+│   ├── identity-merge.sh # assertion + three hot user files → cached instructions
+│   └── operational-merge.sh # operation.md + active learnings
 └── plugins/<ns>/         # UNCHANGED, harness-agnostic
     ├── skills/<skill>/SKILL.md
     ├── agents/*.md
@@ -67,6 +68,12 @@ your dotfiles repo.
 `install.sh` is idempotent. Re-running skips already-correct state and
 refuses mismatched symlinks unless `--force`. `uninstall.sh` is also
 idempotent.
+
+Launching with `asha <harness>` checks whether that target is installed and
+fresh. Interactive first use offers to configure it; non-interactive first use
+requires `asha --yes <harness>` or `ASHA_YES=1`. Claude and Codex must already
+have their harness-owned native config files, created by running the plain
+harness once. Asha will not fabricate those files.
 
 If an installer finds pre-v2 global learning sources, it points to the
 reviewed `/session:consolidate` path rather than interpreting them. Migration
@@ -101,7 +108,6 @@ successful removal whilst leaving live workflows behind.
 ├── skills/<ns>-<skill>/             → plugins/<ns>/skills/<skill>/
 ├── agents/<ns>/<agent>.md           → plugins/<ns>/agents/<agent>.md
 ├── commands/<ns>/<cmd>.md           → plugins/<ns>/commands/<cmd>.md
-├── output-styles/<ns>-<style>.md    → plugins/<ns>/styles/<style>.md
 └── settings.json
     └── hooks.<Lifecycle>[].hooks[]  # tagged "source": "asha:<ns>"
                                      # command = abs path into plugins/<ns>/hooks/
@@ -127,13 +133,16 @@ successful removal whilst leaving live workflows behind.
         #   each tagged "# asha:<ns>"
 ```
 
-**No persona overlay.** The `asha codex` launch path injects persona via Codex's
-CLI override, regenerating identity on the fly:
+**No persona overlay.** The `asha codex` launch path regenerates the capped hot
+identity, renders the operational layer separately, combines them for Codex's
+single-file instruction seam, and injects the result through a CLI override:
 
 ```bash
 # bin/asha (codex branch)
-identity-merge.sh ~/.cache/asha/instructions.md      # idempotent, ~50ms
-exec codex -c "model_instructions_file=\"...\"" "$@"
+identity-merge.sh ~/.cache/asha/instructions.md
+operational-merge.sh <temporary-file>
+# combined output: ~/.cache/asha/instructions-codex.md
+exec codex -c "model_instructions_file=\"<combined-or-identity-file>\"" "$@"
 ```
 
 Plain `codex` and `asha codex` share `~/.codex/`. The only behavioral
@@ -163,7 +172,7 @@ Claude's `--append-system-prompt-file` and Codex's `model_instructions_file`):
 
 ```bash
 # bin/asha (copilot branch)
-identity-merge.sh ~/.cache/asha/instructions-copilot.md   # merged persona (soul/voice/keeper/identity)
+identity-merge.sh ~/.cache/asha/instructions-copilot.md   # assertion + soul/voice/keeper
 #  → wrapped as ~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md   (applyTo:"**")
 operational-merge.sh → asha-operational.instructions.md   # operation.md + active learnings (same dir)
 export COPILOT_CUSTOM_INSTRUCTIONS_DIRS=~/.cache/asha/copilot-instr   # Copilot auto-loads both files
@@ -185,7 +194,7 @@ and missed the user-level instructions dir (no repo files are touched).
 | PreToolUse guardrails | **Installed** | `copilot_install_hooks()` writes a dedicated `~/.copilot/hooks/asha-guardrails.json` (Copilot loads every `*.json` there, so a user's own `hooks.json` is untouched) pointing at `plugins/session/hooks/handlers/copilot-policy-adapter.sh`, which bridges Copilot's hook contract to the shared `policy-guard.sh` + `block-secrets.sh`. Recovery uses separate prompt/PostToolUse/SessionEnd callbacks; no Stop auto-save exists. **Enforcement verdict + live-test findings + the #2893 caveat: [docs/harness-enforcement.md](docs/harness-enforcement.md).** |
 | Hook payload normalization | **Installed** | Native camelCase session/tool payloads are normalized at the recovery and policy seams, including string/object `toolArgs`, touched paths, results, and error fields. |
 | MCP config | Not managed | `~/.copilot/mcp-config.json` is read directly by Copilot; not touched by this installer (matches Claude/Codex which also don't manage MCP) |
-| Persona auto-injection | **Automatic — per-launch** | Copilot CLI has no `--instructions-file` flag, but auto-loads user-level instructions. The `asha copilot` launch path regenerates `~/.cache/asha/instructions-copilot.md` (~47 KB merged identity), wraps it as `~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md` (`applyTo: "**"`), and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` so Copilot loads it — scoped to the launch, so plain `copilot` stays persona-free (parity with Claude/Codex). Status/verification: [docs/harness-enforcement.md](docs/harness-enforcement.md). |
+| Persona auto-injection | **Automatic — per-launch** | `asha copilot` regenerates the capped hot identity, wraps it as `~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md` (`applyTo: "**"`), writes the operational layer as a separate instruction file, and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Plain `copilot` stays persona-free. Status/verification: [docs/harness-enforcement.md](docs/harness-enforcement.md). |
 | `drift-check` | **Copilot-aware** | `asha doctor [copilot]` (front door for `bin/asha-drift-check.sh`) audits symlinks, command-skill freshness, and guardrails content; `--fix` self-heals. |
 | Team distribution | **Additive path** | `asha build copilot` packages namespaces as native Copilot plugins (marketplace + `enabledPlugins` pinning); see [docs/distribution-copilot.md](docs/distribution-copilot.md). Repo onboarding: `asha init-repo`. |
 
@@ -213,14 +222,14 @@ seam. The policy layer is fail-open on adapter failure and is not containment.
 Manual save uses live model context through `/session:save`; no OpenCode SQLite
 transcript is read. There is no automatic semantic save or idle checkpointing.
 
-`asha opencode` appends the merged identity and operational file to
+`asha opencode` appends a combined hot-identity and operational file to
 `OPENCODE_CONFIG_CONTENT.instructions`; plain `opencode` remains persona-free.
 
 ## Namespaces
 
 `namespaces.json` maps each plugin directory to the namespace used for
-slash commands and primitive prefixes. Almost all entries are 1:1; two
-exceptions preserve legacy plugin names:
+slash commands and primitive prefixes. Almost all entries are 1:1; one
+exception preserves a legacy plugin name:
 
 | Directory | Namespace |
 |---|---|
@@ -235,17 +244,19 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 |---|---|---|---|---|
 | Identity assertion | `--append-system-prompt-file` | `model_instructions_file` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | `OPENCODE_CONFIG_CONTENT.instructions` |
 | Scope | wrapper only | wrapper only | wrapper only | wrapper only |
-| Identity merge | launch-time merged file | launch-time combined file | launch-time instruction directory | launch-time combined file |
+| Delivery | launch-time identity file; operation via SessionStart | launch-time combined file | launch-time instruction directory with separate files | launch-time combined file |
 
 Codex has no `--append-system-prompt-file` equivalent at the CLI, and
 its `model_instructions_file` config field accepts only a single file
 path (no `[include]` directive). The dispatcher handles both gaps:
-identity-merge.sh concatenates only `~/.asha/{soul,voice,keeper}.md` plus
-`identity/asha-identity-system-prompt.md` into a capped hot file, and
+identity-merge.sh concatenates the repository assertion
+`identity/asha-identity-system-prompt.md` plus the three user-owned hot files
+`~/.asha/{soul,voice,keeper}.md` into a capped file. It never includes the
+cold reference corpus or `keeper-voice.md`. The dispatcher then
 `-c model_instructions_file=...` injects it at launch. No on-disk
 overlay; both `codex` and `asha codex` use the same `~/.codex/`. Extended
 identity and Keeper calibration under `~/.asha/reference/` load only through
-the `asha-reference` skill.
+the `asha-reference` skill and remain private task context.
 
 ## Drift check / doctor
 
@@ -264,7 +275,7 @@ Checks (paraphrased):
 
 - **Repo:** installer scripts present, no `CLAUDE_PLUGIN_ROOT` placeholders in markdown
 - **Claude:** no legacy enabledPlugins / installed_plugins.json / marketplaces; no dangling symlinks; tagged hook command paths exist
-- **Codex:** no dangling symlinks; `config.toml` parses as TOML; tagged hook paths exist; native `rules/asha.rules` installed; overlay `instructions.md` fresher than its sources; inherit symlinks intact
+- **Codex:** no dangling symlinks; `config.toml` parses as TOML; tagged hook paths exist; native `rules/asha.rules` installed; cached identity instructions are fresh; inherit symlinks intact
 - **OpenCode:** no dangling skills; generated-artifact manifest matches; plugin carries policy/session/dispose hooks; CLI version satisfies the stable-v1 floor
 
 Optionally schedule it via a systemd user timer or cron; append output to a
@@ -354,12 +365,6 @@ the same components directly because this repository is the local source of
 truth. Plugin packaging is a distribution option, not a missing Codex
 capability.
 
-### Output styles plugin — retired
-
-The `output-styles` plugin was retired in the 2026-07-10 ecosystem audit
-(Claude's native `/output-style` covers switching). The codex/copilot
-skip-list machinery remains for any future Claude-only plugin.
-
 ### Persona overlay was eliminated in Step 7-revised
 
 Earlier versions used `~/.codex-asha/` as a parallel CODEX_HOME, with a
@@ -392,10 +397,3 @@ subdirectories there (`~/.claude/agents/<ns>/`). Either add
 `claude/.claude/agents/*/` to the dotfiles `.gitignore`, or break the
 dotfiles symlink and let `~/.claude/agents` be a real directory with
 per-file symlinks into dotfiles for the user's curated list.
-
-### Output styles are mounted, not scanned
-
-Style files (e.g. the test plugin's canary) mount into
-`~/.claude/output-styles/` and are selectable via Claude's native
-`/output-style`. The custom `/style` switcher was retired with the
-output-styles plugin (2026-07-10 audit).

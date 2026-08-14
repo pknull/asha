@@ -39,14 +39,20 @@ trap 'rm -rf "$SANDBOX"' EXIT
 # ---------------------------------------------------------------------------
 build_sandbox() {
   rm -rf "$SANDBOX"/.claude "$SANDBOX"/.codex "$SANDBOX"/.copilot \
-         "$SANDBOX"/.local "$SANDBOX"/.cache
+         "$SANDBOX"/.local "$SANDBOX"/.cache "$SANDBOX"/claude-styles-target
   mkdir -p "$SANDBOX/.claude/skills" "$SANDBOX/.claude/commands/session" \
-           "$SANDBOX/.claude/agents/session" "$SANDBOX/.claude/output-styles" \
-           "$SANDBOX/.claude/hooks" \
+           "$SANDBOX/.claude/agents/session" "$SANDBOX/.claude/hooks" \
            "$SANDBOX/.codex/skills" "$SANDBOX/.codex/agents" \
            "$SANDBOX/.copilot/skills" "$SANDBOX/.copilot/agents" \
            "$SANDBOX/.local/bin" \
-           "$SANDBOX/.cache/asha/leftover-dir"
+           "$SANDBOX/.cache/asha/leftover-dir" \
+           "$SANDBOX/claude-styles-target"
+
+  # Previous releases installed this canary. The destination root is itself a
+  # symlink to cover dotfiles-backed Claude directories during retirement.
+  ln -s "$SANDBOX/claude-styles-target" "$SANDBOX/.claude/output-styles"
+  ln -s "$REPO_ROOT/plugins/test/styles/debug.md" \
+        "$SANDBOX/claude-styles-target/test-debug.md"
 
   # Symlink mounts into the real repo (targets must resolve inside the market
   # root for remove_symlinks_under to claim them).
@@ -128,6 +134,9 @@ else
   fail "dry-run exits 0 (got $?)"
 fi
 assert_eq "dry-run leaves symlinks in place" "$before_links" "$(repo_links)"
+[[ -L "$SANDBOX/claude-styles-target/test-debug.md" ]] \
+  && ok "dry-run preserves the retired output-style link" \
+  || fail "dry-run preserves the retired output-style link"
 assert_eq "dry-run leaves settings.json hooks in place" "4" "$(asha_hooks_left)"
 
 # ---------------------------------------------------------------------------
@@ -145,6 +154,10 @@ grep -q "total symlinks removed" <<<"$out" \
   && ok "run reached the final summary (did not die mid-chain)" \
   || fail "run reached the final summary (did not die mid-chain)"
 assert_eq "all repo-pointing symlinks removed (incl. copilot)" "0" "$(repo_links)"
+[[ ! -e "$SANDBOX/claude-styles-target/test-debug.md" \
+   && ! -L "$SANDBOX/claude-styles-target/test-debug.md" ]] \
+  && ok "legacy output-style link is retired through a symlinked root" \
+  || fail "legacy output-style link is retired through a symlinked root"
 [[ -L "$SANDBOX/.copilot/skills/foreign-tool" ]] \
   && ok "foreign symlink preserved" \
   || fail "foreign symlink preserved"

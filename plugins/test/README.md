@@ -17,10 +17,6 @@ The sentinel text retains the historical `marketplace` label for test
 compatibility. Installation itself now uses direct symlink mounts and generated
 harness artifacts; there is no plugin-marketplace registration flow.
 
-The legacy `styles/debug.md` fixture remains in the source corpus but output
-styles are retired from the supported installer surface. Do not use it as an
-installation test.
-
 ## Install and verify
 
 ### Claude Code

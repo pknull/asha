@@ -6,35 +6,30 @@ complexity: standard
 agents:
   - name: codebase-historian
     role: Check for similar bugs in history
-    model: sonnet
     trigger: "@bug-reported"
     output: "@history-checked"
     checkpoint: false
 
   - name: debugger
     role: Reproduce and isolate root cause
-    model: sonnet
     trigger: "@history-checked"
     output: "@root-cause-found"
     checkpoint: true  # Confirm root cause before fixing
 
   - name: tdd
     role: Write regression test that fails
-    model: sonnet
     trigger: "@root-cause-confirmed"
     output: "@regression-test-written"
     checkpoint: false
 
   - name: debugger
     role: Implement fix
-    model: sonnet
     trigger: "@regression-test-written"
     output: "@fix-implemented"
     checkpoint: false
 
   - name: reviewer
     role: Verify fix doesn't introduce new issues
-    model: sonnet
     trigger: "@fix-implemented"
     output: "@review-passed | @changes-requested"
     checkpoint: false

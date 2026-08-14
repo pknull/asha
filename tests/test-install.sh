@@ -80,6 +80,9 @@ fi
 [[ -n "$(find "$SANDBOX/.claude/commands/session" -mindepth 1 -maxdepth 1 -type l -print -quit 2>/dev/null)" ]] \
   && ok "Claude session commands include a symlink mount" \
   || fail "Claude session commands include a symlink mount"
+[[ ! -e "$SANDBOX/.claude/output-styles" ]] \
+  && ok "Claude install does not create the retired output-styles mount" \
+  || fail "Claude install does not create the retired output-styles mount"
 [[ -n "$(find "$SANDBOX/.codex/agents" -mindepth 1 -maxdepth 1 -type f -print -quit 2>/dev/null)" ]] \
   && ok "Codex generated agents are non-empty" \
   || fail "Codex generated agents are non-empty"
@@ -237,9 +240,9 @@ if ! run_install --target claude >/dev/null 2>&1; then
   fail "scoping fixture full Claude install exits 0"
 else
   rm -rf "$SANDBOX/.claude/skills" "$SANDBOX/.claude/agents" \
-         "$SANDBOX/.claude/commands" "$SANDBOX/.claude/output-styles"
+         "$SANDBOX/.claude/commands"
   mkdir -p "$SANDBOX/.claude/skills" "$SANDBOX/.claude/agents" \
-           "$SANDBOX/.claude/commands" "$SANDBOX/.claude/output-styles"
+           "$SANDBOX/.claude/commands"
   hooks_before="$(asha_hook_count)"
   if run_install --target claude --only admin >/dev/null 2>&1; then
     ok "scoped Claude install exits 0"

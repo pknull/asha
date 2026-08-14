@@ -15,9 +15,10 @@ Single-purpose skill: ask Gemini a question, get back an answer plus the web sou
 
 ## Setup
 
-The `asha-claude` / `asha-codex` wrappers source `~/.asha/secrets.env` and export `GEMINI_API_KEY` into the session. If the variable is unset:
+The `asha <harness>` dispatcher sources `~/.asha/secrets.env` and exports
+`GEMINI_API_KEY` into the session. If the variable is unset:
 
-> `GEMINI_API_KEY not set. Add it to ~/.asha/secrets.env (see secrets.example in the asha repo) and relaunch via asha-claude.`
+> `GEMINI_API_KEY not set. Add it to ~/.asha/secrets.env (see secrets.example in the asha repo) and relaunch via asha <harness>.`
 
 Tokens come from [Google AI Studio](https://aistudio.google.com/app/apikey).
 

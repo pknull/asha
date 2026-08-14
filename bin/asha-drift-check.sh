@@ -242,7 +242,7 @@ check_generated_agents() { # agents_dir label ext fix_fn
 }
 
 # ── Shared command-skill coverage check (codex + copilot) ──
-# Every plugin command MD (except output-styles) should have a SKILL.md under
+# Every plugin command MD should have a SKILL.md under
 # <skills_dir>/<name>/. Generated files are checked against deterministic
 # rendered bytes (--fix regenerates from source); legacy symlinked SKILL.md must resolve to
 # the source; a whole-dir symlink collision (plugin skill claims the name) is
@@ -252,7 +252,6 @@ check_command_skills() { # skills_dir label fix_fn
   local missing_cmd_skills=0 cmd name skill_md target expected
   for cmd in "$ASHA"/plugins/*/commands/*.md; do
     [[ -f "$cmd" ]] || continue
-    case "$cmd" in *output-styles*) continue ;; esac
 
     name=$(awk '/^---$/{if (++c==2) exit} c==1 && /^name:/ {print $2; exit}' "$cmd")
     [[ -z "$name" ]] && {
@@ -416,7 +415,7 @@ if [[ "$TARGET" == "claude" || "$TARGET" == "all" ]]; then
   fi
 
   # No dangling asha symlinks under Claude scan dirs
-  check_dangling "$CLAUDE" claude skills:2 agents:2 commands:2 output-styles:2
+  check_dangling "$CLAUDE" claude skills:2 agents:2 commands:2
 
   # Every asha hook command path exists on disk. Match by command path-prefix
   # OR source tag (mirrors register_hooks in lib/install.sh): Claude Code

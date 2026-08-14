@@ -16,7 +16,8 @@ Self-hosted BookStack wiki at `$BOOKSTACK_BASE_URL`. This skill covers the opera
 
 ## Setup
 
-The `asha-claude` / `asha-codex` wrappers export these env vars from `~/.asha/secrets.env`:
+The `asha <harness>` dispatcher exports these variables from
+`~/.asha/secrets.env`:
 
 - `BOOKSTACK_BASE_URL` — full base, including `/api` (e.g. `https://wiki.example.com/bookstack/api`)
 - `BOOKSTACK_API_TOKEN` — combined `id:secret` from BookStack → Edit Profile → API Tokens

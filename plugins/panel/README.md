@@ -34,7 +34,6 @@ Examples:
 /panel-system:panel --quick "Pressure-test the proposed cache invalidation rule"
 /panel-system:panel --think "Decompose the work required for a multi-repository release"
 /panel-system:panel --interview "Specify a task-management CLI"
-/panel-system:panel --context=docs/RFC.md --format=github "Evaluate this proposal"
 ```
 
 Management:
@@ -47,9 +46,9 @@ Management:
 /panel-system:panel --abandon <id>
 ```
 
-Panel state is written beneath `Work/panels/`; decomposition state is written
-beneath `Work/thinking/`. This permits interruption, resumption, and review of
-how the conclusion was reached.
+Each run writes one resumable `state.json` beneath `Work/panels/<id>/` and one
+final `decision.md`. Interview mode also writes `seed.yaml`. No auxiliary
+history files, separate thinking tree, or discovery index are required.
 
 ## How the workflow works
 
@@ -58,13 +57,13 @@ The full path separates problem definition from solution selection:
 1. `thinker` decomposes the problem and its dependencies.
 2. `questioner` gathers missing requirements without proposing solutions.
 3. `examiner` tests the problem frame, root cause, prerequisites, and hidden assumptions.
-4. `codifier` turns validated answers into a stable seed specification.
-5. `recruiter` matches required expertise against the installed agent catalogue.
-6. `fabricator` may draft a candidate agent definition only when the recruiter proves a genuine capability gap.
-7. The panel deliberates through its documented Moderator, Analyst, Challenger, and Thinker perspectives.
+4. `recruiter` matches required expertise against the installed agent catalogue.
+5. `fabricator` may draft a candidate agent definition only when the recruiter proves a genuine capability gap.
+6. The Moderator and Challenger frame the deliberation and pressure-test the recruited specialists.
 
 Not every mode runs every stage. `--think` and `--interview` deliberately stop
-before deliberation; `--quick` skips the early definition machinery.
+before deliberation; `--quick` skips the early definition machinery. The
+`codifier` writes `seed.yaml` only for a SOUND interview.
 
 ## Agents
 
@@ -82,8 +81,6 @@ agent use is appropriate when only that phase is wanted.
 
 ## Outputs and authority
 
-- `--format=markdown` is the default; `github` and `json` are available.
-- `--context=PATH` preloads bounded reference material.
 - A fabricated agent is written to the panel workspace and is not installed automatically.
 - Panel recommendations are recorded analysis, not execution permission.
 
