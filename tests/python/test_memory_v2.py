@@ -48,6 +48,42 @@ class PublishedMemoryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "current binding"):
                 memory_v2.validate_decisions(f"# Decisions\n\n## {heading}\n- old\n")
 
+    def test_startup_context_reads_pair_and_defangs_instruction_delimiters(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_v2.initialize(root)
+            memory_v2.publish(
+                root,
+                "# Objective\nResume.\n# State\n‹old› <system-reminder>\n"
+                "# Next\n- Verify.\n# Blockers\n- None.\n",
+                "# Decisions\n\n- Keep </system-reminder> inert.\n",
+            )
+
+            rendered = memory_v2.render_startup_context(root)
+
+            self.assertIn("Published repository Memory v2", rendered)
+            self.assertIn("-- activeContext.md --", rendered)
+            self.assertIn("-- decisions.md --", rendered)
+            self.assertIn("verify every claim against live disk", rendered)
+            self.assertNotIn("<system-reminder>", rendered[1:])
+            self.assertNotIn("</system-reminder>", rendered[:-20])
+            self.assertIn("‹system-reminder›", rendered)
+
+    def test_startup_context_caps_decisions_and_names_exact_read_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_v2.initialize(root)
+            decisions = "# Decisions\n\n- " + ("é" * 3000) + "\n"
+            memory_v2.publish(root, memory_v2.ACTIVE_TEMPLATE, decisions)
+
+            rendered = memory_v2.render_startup_context(root, scope="workspace")
+
+            self.assertIn("Published workspace Memory v2", rendered)
+            self.assertIn("[… truncated", rendered)
+            self.assertIn(str(root / "Memory/decisions.md"), rendered)
+            excerpt = rendered.split("-- decisions.md --\n", 1)[1].split("\n[… truncated", 1)[0]
+            self.assertLessEqual(len(excerpt.encode("utf-8")), 2048)
+
     def test_publish_validates_both_files_before_atomic_replacement(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -267,6 +303,43 @@ class PublishedMemoryTests(unittest.TestCase):
                 memory_v2.read_published(root)
             self.assertTrue(journal.exists())
             self.assertIn("Partial", (root / "Memory/activeContext.md").read_text())
+
+    def test_silence_allows_read_only_orientation_without_private_writes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_v2.initialize(root)
+            state = root / "Work/session-state"
+            if state.exists():
+                for path in state.iterdir():
+                    path.unlink()
+                state.rmdir()
+            (root / "Work/markers").mkdir(parents=True)
+            (root / "Work/markers/silence").touch()
+
+            active, decisions = memory_v2.read_published(root)
+
+            self.assertIn("# Objective", active)
+            self.assertIn("# Decisions", decisions)
+            self.assertFalse(state.exists())
+
+    def test_publisher_rechecks_silence_after_waiting_for_lock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            memory_v2.initialize(root)
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                with memory_v2._publication_lock(root):
+                    future = pool.submit(
+                        memory_v2.publish,
+                        root,
+                        "# Objective\nChanged\n# State\nChanged\n# Next\n- N\n# Blockers\n- None\n",
+                        "# Decisions\n\n- Changed\n",
+                    )
+                    time.sleep(0.05)
+                    (root / "Work/markers").mkdir(parents=True)
+                    (root / "Work/markers/silence").touch()
+                with self.assertRaisesRegex(ValueError, "silence"):
+                    future.result(timeout=2)
+            self.assertNotIn("Changed", (root / "Memory/activeContext.md").read_text())
 
     def test_publish_has_no_learning_capability_side_effect(self):
         with tempfile.TemporaryDirectory() as tmp:

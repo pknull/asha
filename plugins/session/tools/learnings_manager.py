@@ -32,6 +32,7 @@ ACTIVATION_SESSIONS = 3
 ACTIVATION_PROJECTS = 2
 MAX_PROPOSALS_PER_SAVE = 3
 CANDIDATE_TTL_DAYS = 90
+MIGRATION_MARKER = ".migration-v2.json"
 
 
 @dataclass
@@ -988,6 +989,40 @@ def _final_snapshot_record(snapshot: tuple[bool, bytes], final: bytes | None) ->
     return _snapshot_record(snapshot, expected=(final,))
 
 
+def _ensure_migration_marker(result: dict[str, Any]) -> Path:
+    """Write a stable informational marker after a reviewed migration commits."""
+    review_digest = str(result.get("review_sha256", ""))
+    if not re.fullmatch(r"[0-9a-f]{64}", review_digest):
+        raise ValueError("migration result lacks a valid review digest")
+    sources = result.get("sources")
+    if not isinstance(sources, list):
+        raise ValueError("migration result lacks reviewed sources")
+    marker = _secure_learning_child(MIGRATION_MARKER)
+    payload = {
+        "version": 2,
+        "status": "reviewed-migration-complete",
+        "review_sha256": review_digest,
+        "project_id": str(result.get("project_id", "")),
+        "applied_learning_ids": sorted(str(value) for value in result.get("applied_learnings", [])),
+        "reviewed_source_sha256": sorted(
+            str(item.get("source_sha256")) for item in sources
+            if isinstance(item, dict) and item.get("source_sha256")
+        ),
+    }
+    _atomic(marker, json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    os.chmod(marker, 0o600)
+    return marker
+
+
+def _repair_migration_marker(result: dict[str, Any]) -> bool:
+    """Best-effort installer hint; migration authority stays in the receipt."""
+    try:
+        _ensure_migration_marker(result)
+    except (OSError, ValueError):
+        return False
+    return True
+
+
 def migrate_apply(review: dict[str, Any], *, session_id: str, project_dir: Path,
                   active_context: str, decisions: str) -> dict[str, Any]:
     """Apply one typed, hash-bound review as a rollback-safe transaction."""
@@ -1023,6 +1058,7 @@ def migrate_apply(review: dict[str, Any], *, session_id: str, project_dir: Path,
                 raise ValueError("migration receipt failed closed") from exc
             _validate_receipt_effects(root, value, review_digest=review_digest,
                                       expected_publication=expected_publication)
+            _repair_migration_marker(value)
             return value
 
         config_path = secure_path(root, ".asha/config.json")
@@ -1270,6 +1306,8 @@ def migrate_apply(review: dict[str, Any], *, session_id: str, project_dir: Path,
             _atomic(receipt, receipt_bytes.decode("utf-8"))
             os.chmod(receipt, 0o600)
             _unlink_durable(journal, missing_ok=False)
+            transaction_ready = False
+            _repair_migration_marker(result)
             return result
         except Exception as original:
             if transaction_ready:

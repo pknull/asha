@@ -30,6 +30,22 @@ echo "--- Memory v2 hooks ---"
 
 OUT="$(run_hook session-start.sh '{"session_id":"start-1","cwd":"'"$PROJECT"'"}')"
 [[ "$OUT" == *operation-v2-sentinel* ]] && ok "SessionStart injects operational context" || fail "SessionStart injects operational context"
+[[ "$OUT" == *"Published repository Memory v2"* && "$OUT" == *"-- activeContext.md --"* \
+   && "$OUT" == *"-- decisions.md --"* && "$OUT" == *"- D"* ]] \
+  && ok "SessionStart injects the coherent repository publication" \
+  || fail "SessionStart injects the coherent repository publication"
+CODEX_START="$(run_hook session-start.sh '{"session_id":"codex-start","cwd":"'"$PROJECT"'"}' codex)"
+OPENCODE_START="$(run_hook session-start.sh '{"session_id":"opencode-start","cwd":"'"$PROJECT"'"}' opencode)"
+COPILOT_START="$(run_hook session-start.sh '{"sessionId":"copilot-start","cwd":"'"$PROJECT"'"}' copilot)"
+[[ "$CODEX_START" == *"Published repository Memory v2"* \
+   && "$OPENCODE_START" == *"Published repository Memory v2"* ]] \
+  && ok "Codex and OpenCode receive the shared project publication" \
+  || fail "Codex and OpenCode receive the shared project publication"
+printf '%s' "$COPILOT_START" | jq -e \
+  '.additionalContext | contains("Published repository Memory v2") and contains("-- decisions.md --")' \
+  >/dev/null 2>&1 \
+  && ok "Copilot receives project publication through additionalContext" \
+  || fail "Copilot receives project publication through additionalContext"
 if [[ "$OUT" == *'\n'* ]]; then
   fail "SessionStart renders real newlines rather than literal backslash-n delimiters"
 else
@@ -111,6 +127,47 @@ PRICED_AGAIN="$(run_hook user-prompt-submit.sh '{"session_id":"priced","cwd":"'"
   && ok "RP priced-stakes direct safeguard preserves its cooldown" \
   || fail "RP priced-stakes direct safeguard preserves its cooldown"
 rm -f "$PROJECT/Work/markers/rp-active"
+
+# A workspace child receives its repository publication plus the workspace
+# publication. A launch at the workspace root receives the pair once and keeps
+# only the workspace metadata wrapper beside it.
+cat > "$PROJECT/.asha/workspace.json" <<'JSON'
+{
+  "version": 1,
+  "workspace_name": "hook-workspace",
+  "repositories": [{"path": "child", "docs": "knowledge/repos/child"}],
+  "memory": {
+    "operational_root": "Memory",
+    "personal_root": "memory-local",
+    "shared_root": "knowledge",
+    "shared_git_root": ".",
+    "promotion_mode": "pull-request"
+  }
+}
+JSON
+CHILD="$PROJECT/child"
+mkdir -p "$CHILD/.asha" "$CHILD/Memory" "$CHILD/Work/markers"
+printf '{"initialized":true,"memory_version":2,"project_id":"child-test"}\n' > "$CHILD/.asha/config.json"
+printf '# Objective\nchild-publication-sentinel\n# State\nReady\n# Next\n- N\n# Blockers\n- None\n' > "$CHILD/Memory/activeContext.md"
+printf '# Decisions\n- child-decision-sentinel\n' > "$CHILD/Memory/decisions.md"
+printf '# Objective\nworkspace-publication-sentinel\n# State\nReady\n# Next\n- N\n# Blockers\n- None\n' > "$PROJECT/Memory/activeContext.md"
+CHILD_OUT="$(run_hook session-start.sh '{"session_id":"ws-child","cwd":"'"$CHILD"'"}')"
+[[ "$CHILD_OUT" == *"Published repository Memory v2"* \
+   && "$CHILD_OUT" == *child-publication-sentinel* \
+   && "$CHILD_OUT" == *workspace-publication-sentinel* \
+   && "$CHILD_OUT" == *"active repo: child"* ]] \
+  && ok "workspace child receives distinct project and workspace context" \
+  || fail "workspace child receives distinct project and workspace context"
+ROOT_OUT="$(run_hook session-start.sh '{"session_id":"ws-root","cwd":"'"$PROJECT"'"}')"
+ROOT_SENTINELS="$(printf '%s' "$ROOT_OUT" | grep -o 'workspace-publication-sentinel' | wc -l)"
+[[ "$ROOT_OUT" == *"Published workspace Memory v2"* \
+   && "$ROOT_OUT" == *"Workspace: hook-workspace"* \
+   && "$ROOT_SENTINELS" -eq 1 ]] \
+  && ok "workspace root publication is injected once with workspace metadata" \
+  || fail "workspace root publication is injected once with workspace metadata"
+rm -rf "$CHILD"
+rm -f "$PROJECT/.asha/workspace.json"
+printf '# Objective\nO\n# State\nS\n# Next\n- N\n# Blockers\n- None\n' > "$PROJECT/Memory/activeContext.md"
 
 # Compatibility alias: an existing opt-out must not silently resume workspace
 # injection after upgrading from the nudge engine.

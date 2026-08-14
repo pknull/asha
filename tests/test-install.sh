@@ -306,6 +306,19 @@ if [[ "$legacy_out" == *"/session:consolidate"* \
 else
   fail "installer inventories legacy learning stores through reviewed consolidation"
 fi
+cat > "$SANDBOX/.asha/learnings/.migration-v2.json" <<'JSON'
+{"version":2,"status":"reviewed-migration-complete","review_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}
+JSON
+migrated_out="$(run_install --target copilot 2>&1)"
+[[ "$migrated_out" != *"legacy learning records detected"* \
+   && "$migrated_out" != *"/session:consolidate"* ]] \
+  && ok "reviewed migration marker silences preserved legacy-source guidance" \
+  || fail "reviewed migration marker silences preserved legacy-source guidance"
+printf '{malformed}\n' > "$SANDBOX/.asha/learnings/.migration-v2.json"
+malformed_marker_out="$(run_install --target copilot 2>&1)"
+[[ "$malformed_marker_out" == *"/session:consolidate"* ]] \
+  && ok "malformed migration marker cannot suppress legacy guidance" \
+  || fail "malformed migration marker cannot suppress legacy guidance"
 
 echo ""
 echo "=== Install Test Summary ==="

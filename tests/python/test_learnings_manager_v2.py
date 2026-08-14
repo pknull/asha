@@ -339,6 +339,44 @@ class LearningLifecycleTests(unittest.TestCase):
         self.assertEqual("old evidence\n", legacy.read_text(encoding="utf-8"))
         backups = list(Path(first["backup_dir"]).glob("*-one.md"))
         self.assertEqual([b"old evidence\n"], [path.read_bytes() for path in backups])
+        marker = self.bundle / lm.MIGRATION_MARKER
+        marker_data = json.loads(marker.read_text(encoding="utf-8"))
+        self.assertEqual("reviewed-migration-complete", marker_data["status"])
+        self.assertEqual(first["review_sha256"], marker_data["review_sha256"])
+        marker.unlink()
+        third = lm.migrate_apply(
+            review, session_id="s1", project_dir=self.project,
+            active_context=memory_v2.ACTIVE_TEMPLATE, decisions=memory_v2.DECISIONS_TEMPLATE)
+        self.assertEqual(first, third)
+        self.assertTrue(marker.is_file())
+
+    def test_informational_marker_failure_does_not_report_committed_migration_failed(self):
+        legacy = Path(self.tmp.name) / "marker-failure.md"
+        legacy.write_text("legacy evidence\n", encoding="utf-8")
+        review = self.bind_review(lm.migrate_plan([legacy], project_dir=self.project))
+        review["items"][0].update({
+            "decision": "accept",
+            "item_type": "learning",
+            "proposal": {
+                "id": "marker-failure",
+                "trigger": "t",
+                "action": "a",
+                "reason": "reviewed",
+            },
+        })
+
+        with mock.patch.object(lm, "_ensure_migration_marker", side_effect=PermissionError):
+            result = lm.migrate_apply(
+                review,
+                session_id="migration-session",
+                project_dir=self.project,
+                active_context=memory_v2.ACTIVE_TEMPLATE,
+                decisions=memory_v2.DECISIONS_TEMPLATE,
+            )
+
+        self.assertEqual(["marker-failure"], result["applied_learnings"])
+        self.assertTrue(list((self.project / "Work/memory-migration/applied").glob("*.json")))
+        self.assertEqual("candidate", lm.load("marker-failure").state)
 
     def test_migration_rejects_stale_review_and_honors_reviewed_state(self):
         archive = Path(self.tmp.name) / "learnings-archive"
