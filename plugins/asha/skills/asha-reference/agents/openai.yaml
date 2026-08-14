@@ -1,0 +1,4 @@
+interface:
+  display_name: "Asha Reference"
+  short_description: "Load cold Asha and Keeper reference material only when needed"
+  default_prompt: "Load only the Asha reference file required for this task, then apply it without modifying the reference corpus."

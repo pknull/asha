@@ -584,21 +584,20 @@ register_hooks() {
 # Identity bootstrap — ~/.asha/ (folded in from the retired session setup.sh)
 # ---------------------------------------------------------------------------
 #
-# Creates the cross-project identity layer under ~/.asha/. Idempotent: each
-# file is guarded by [[ ! -f ]] so existing user data is never clobbered (the
-# directory itself, and each of communicationStyle.md / keeper.md / config.json,
-# is only created when absent). This is the install-time half of what the old
-# plugins/session/hooks/handlers/setup.sh did as a (never-firing) "Setup" hook;
-# the per-project Memory/venv init it also carried belongs to /session:init and
-# is intentionally NOT reproduced here.
+# Creates the compact cross-project identity layer under ~/.asha/. Idempotent:
+# existing user files are never clobbered. Extended identity material belongs
+# under ~/.asha/reference/ and is loaded only through the asha-reference skill.
 bootstrap_identity() {
   local asha_home="$HOME/.asha"
-  local tmpl_dir="$PLUGINS_DIR/session/templates"
+  local tmpl_dir="$PLUGINS_DIR/asha/templates"
 
   if [[ $DRY_RUN -eq 1 ]]; then
     [[ -d "$asha_home" ]] || say "  IDENTITY  would create $asha_home"
-    [[ -f "$asha_home/communicationStyle.md" ]] || [[ ! -f "$tmpl_dir/communicationStyle.md" ]] || say "  IDENTITY  would create $asha_home/communicationStyle.md"
-    [[ -f "$asha_home/keeper.md" ]]   || say "  IDENTITY  would create $asha_home/keeper.md"
+    local identity_name
+    for identity_name in soul voice keeper; do
+      [[ -f "$asha_home/$identity_name.md" ]] \
+        || say "  IDENTITY  would create $asha_home/$identity_name.md"
+    done
     [[ -f "$asha_home/config.json" ]] || say "  IDENTITY  would create $asha_home/config.json"
     return 0
   fi
@@ -607,69 +606,22 @@ bootstrap_identity() {
     mkdir -p "$asha_home"
     say "Created ~/.asha/"
   fi
-
-  # communicationStyle.md — copied from the session plugin template if present.
-  if [[ ! -f "$asha_home/communicationStyle.md" ]] && [[ -f "$tmpl_dir/communicationStyle.md" ]]; then
-    cp "$tmpl_dir/communicationStyle.md" "$asha_home/communicationStyle.md"
-    say "Created ~/.asha/communicationStyle.md"
-  fi
-
-  # keeper.md
-  if [[ ! -f "$asha_home/keeper.md" ]]; then
-    cat > "$asha_home/keeper.md" << 'KEEPER_EOF'
-# Keeper Profile
-
-Cross-project user profile. Additive only — signals accumulate with timestamps.
-
----
-
-## Identity
-
-- **Expertise**: (discovered organically)
-- **Context**: (populated via /save)
-
----
-
-## Voice Calibration
-
-Accumulated signals about communication preferences.
-
-| Date | Signal | Context | Source Project |
-|------|--------|---------|----------------|
-
----
-
-## Working Style
-
-- (populated organically via /save)
-
----
-
-## Notes
-
-Persistent observations across projects.
-
----
-
-## Calibration Log
-
-Raw signals captured via `/save`. Synthesis updates sections above.
-
-```
-```
-KEEPER_EOF
-    say "Created ~/.asha/keeper.md"
-  fi
+  local identity_name
+  for identity_name in soul voice keeper; do
+    if [[ ! -f "$asha_home/$identity_name.md" ]]; then
+      [[ -f "$tmpl_dir/$identity_name.md" ]] \
+        || die "identity template missing: $tmpl_dir/$identity_name.md"
+      cp "$tmpl_dir/$identity_name.md" "$asha_home/$identity_name.md"
+      say "Created ~/.asha/$identity_name.md"
+    fi
+  done
 
   # ~/.asha/config.json
   if [[ ! -f "$asha_home/config.json" ]]; then
     cat > "$asha_home/config.json" << 'CONFIG_EOF'
 {
-  "version": "1.0",
-  "description": "Asha cross-project configuration",
-  "capture_calibration": true,
-  "keeper_profile": "keeper.md",
-  "identity_file": "communicationStyle.md"
+  "version": "2.0",
+  "description": "Asha user configuration"
 }
 CONFIG_EOF
     say "Created ~/.asha/config.json"

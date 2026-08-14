@@ -204,14 +204,14 @@ launch() {
         agents|auth|auto-mode|doctor|install|mcp|plugin|plugins|project|setup-token|ultrareview|update|upgrade)
           exec "$executable" "$@" ;;
       esac
-      local id="$IDENTITY_DIR/asha-identity-system-prompt.md"
+      local id
+      id="${ASHA_CLAUDE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
       export ASHA_PERSONA=1
-      if [[ -f "$id" ]]; then
+      if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$id"; then
         exec "$executable" --append-system-prompt-file "$id" "$@"
-      else
-        info "warn: identity file not found at $id; persona will load via hook only"
-        exec "$executable" "$@"
       fi
+      info "warn: identity merge failed; launching plain Claude"
+      exec "$executable" "$@"
       ;;
     codex)
       local base instr op_merge op_tmp

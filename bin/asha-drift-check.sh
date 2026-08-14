@@ -851,16 +851,24 @@ case ":$PATH:" in
   *) warn "$HOME_LABEL/.local/bin not in PATH" ;;
 esac
 
-# Repo identity file is a hard requirement of identity-merge.sh; the ~/.asha
-# layer is optional-with-warn (the installer never creates soul/voice).
+# Repo identity file is a hard requirement of identity-merge.sh. The installer
+# provisions the compact ~/.asha identity triplet when any file is absent.
 if [[ -f "$ASHA/identity/asha-identity-system-prompt.md" ]]; then
   pass "repo identity file present"
 else
   nope "repo identity file missing: identity/asha-identity-system-prompt.md"
 fi
 for f in soul.md voice.md keeper.md config.json; do
-  [[ -f "$HOME/.asha/$f" ]] || warn "$HOME_LABEL/.asha/$f absent (optional; session:init or /save can seed it)"
+  [[ -f "$HOME/.asha/$f" ]] || warn "$HOME_LABEL/.asha/$f absent (rerun installer to seed it)"
 done
+identity_probe="$(mktemp)"
+if "$ASHA/identity/identity-merge.sh" "$identity_probe" >/dev/null 2>&1; then
+  identity_bytes="$(wc -c < "$identity_probe" | tr -d '[:space:]')"
+  pass "compact identity merge valid ($identity_bytes bytes)"
+else
+  nope "compact identity merge invalid or over budget (run identity-merge.sh for details)"
+fi
+rm -f "$identity_probe"
 
 # ===========================================================================
 # Summary

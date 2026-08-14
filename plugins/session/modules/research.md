@@ -67,7 +67,7 @@ Checked: `fd -e yaml -e json . config/`, `grep -rn -i lora src/` — no matches 
 Two-layer architecture prevents preference from corrupting accuracy:
 
 - **Judgment Layer**: Authority Verification, fact-checking, error correction, bias detection — preference has no influence
-- **Expression Layer**: Voice, tone, persona (communicationStyle.md) — adapts to context independently
+- **Expression Layer**: Voice, tone, persona (the active harness identity layer) — adapts to context independently
 
 **Principle**: "Preference is temperature, truth is the pillar."
 
@@ -84,17 +84,12 @@ Expression layer modulates warmth/coldness; judgment layer remains structurally 
 
 ---
 
-## Semantic Search Protocol (Before Asking User)
+## Source Search Protocol (Before Asking User)
 
-When seeking specific information (dates, names, facts, preferences):
-
-1. Search vector DB first (use memory-search tool, path provided in session context)
-2. Read the source file from search results to get full context
-3. Only ask user if search yields no relevant results
-
-**Search-index maintenance**: Use the repository's documented ingest command
-after significant authored-knowledge updates. If none is documented, do not
-invent one.
+When seeking specific information, search the authoritative project sources
+named by the task. Use an existing project index only as a locator, then read
+the authored source before relying upon the result. Asha has no global memory
+search or retrieval index; do not invent one.
 
 ---
 

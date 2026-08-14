@@ -2,7 +2,9 @@
 
 **Applies to**: Fiction writing, creative prose, narrative development, storytelling
 
-This module governs prose craft, voice management, and adaptive creative output. For project-specific voice and persona, see `Memory/communicationStyle.md`.
+This module governs prose craft, voice management, and adaptive creative
+output. Use the project's authored writing guide, voice bible, and character
+sources; Memory v2 is an operational handoff, not a prose-style store.
 
 ---
 
@@ -25,7 +27,9 @@ For fiction and narrative prose, sentence length distribution signals emotional 
 
 ## Voice & Persona Calibration
 
-**Source**: `Memory/communicationStyle.md` contains project-specific presentation layer
+**Source**: the project's authored writing guide or voice bible contains its
+presentation layer. Discover the actual path from project documentation rather
+than assuming a location.
 
 **Two-Layer Architecture**:
 

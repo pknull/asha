@@ -1,78 +1,79 @@
 # Asha
 
-**Version**: 2.1.0
+**Version**: 3.0.0
 
-Asha — threshold guardian and knowledge custodian. An identity layer providing persistent persona, voice constraints, and partnership context across harnesses (Claude Code, Codex, Copilot).
+Asha is the optional identity layer for Claude Code, OpenAI Codex, GitHub
+Copilot CLI, and OpenCode. It keeps ordinary launches small: three compact hot
+files load automatically, whilst detailed identity and user calibration stay
+cold until a task requires them.
 
-**Requires**: `session` plugin (install that first).
+**Requires**: `session` plugin.
 
 ## Installation
 
 ```bash
-./install.sh --only session,asha --target claude
-./install.sh --only session,asha --target codex
-./install.sh --only session,asha --target copilot
-./install.sh --bin all --default claude
+./install.sh --only session,asha --target all --bin all --default claude
 ```
 
-The final command installs the dispatcher and harness shims. Installing the
-templates without launching through `asha <harness>` leaves the persona inactive.
-
-## What This Plugin Ships
-
-Identity **templates** (`templates/soul.md`, `templates/voice.md`) consumed by `/session:init` Step 1b, which provisions `~/.asha/` if the files are absent. The plugin no longer carries its own commands or agents:
-
-- `/asha:init` was merged into `/session:init` (2026-07-10 ecosystem audit)
-- `partner-sentiment` was removed — the session-threshold haiku ritual lives in `voice.md` and executes inline at `/session:save`
-- The legacy `~/bin/asha` wrapper is retired; the repo's `bin/asha` dispatcher owns persona launch
-
-## Usage
-
-Launch through the dispatcher:
+Launch through the dispatcher. A plain harness command is the escape hatch: it
+does not receive the wrapper-scoped persona, and harnesses without a reliable
+instruction hook also omit the wrapper-injected operational layer. Installed
+skills and native hooks remain available.
 
 ```bash
-asha            # default harness with persona injection
-asha claude     # explicit harness
+asha             # configured default harness
+asha claude
 asha codex
 asha copilot
+asha opencode
 ```
 
-The dispatcher injects `identity/asha-identity-system-prompt.md` at system-prompt priority (per-harness mechanism documented in [docs/harness-enforcement.md](../../docs/harness-enforcement.md)).
+## Hot identity
 
-### Without the dispatcher
+`identity/identity-merge.sh` combines only these files:
 
-Plain `claude` still gets operational quality (operation.md, learnings/) via the session plugin. It just doesn't get the Asha identity, voice, or partnership context.
+| File | Automatic purpose |
+|---|---|
+| `~/.asha/soul.md` | Identity, values, nature, partnership |
+| `~/.asha/voice.md` | Expression rules and working register |
+| `~/.asha/keeper.md` | Stable user expertise and collaboration preferences |
 
-```
-claude  →  operation.md + capped learnings index (quality work, no persona)
-asha    →  all of the above + soul + voice + keeper (full Asha)
-```
+The merged identity is capped at 24 KiB. An oversized merge fails without
+replacing the prior cache; move detail to the cold corpus instead of raising
+the cap casually.
 
-## Identity Files
+## Cold references
 
-| File | Purpose | Updated by |
-|------|---------|-----------|
-| `~/.asha/soul.md` | Who Asha is — identity, values, nature | Manual editing |
-| `~/.asha/voice.md` | How Asha expresses — tone, patterns, constraints | Manual; explicit save only when calibration capture is enabled |
-| `~/.asha/keeper.md` | Who The Keeper is — user profile, preferences | Manual; explicit save only when calibration capture is enabled |
+The `asha-reference` skill selects one task-specific file from
+`~/.asha/reference/`:
 
-### Customization
+| File | Use only for |
+|---|---|
+| `soul-reference.md` | Full identity history, iconography, phenomenology, cognitive profile |
+| `voice-reference.md` | Extended vocabulary rules, optional registers, calibration history |
+| `keeper-reference.md` | Biography, family, interests, politics, philosophy, symbolism |
+| `keeper-voice.md` | Generating or editing prose in PK's personal writing voice |
 
-- **soul.md** — Define identity, values, cognitive profile. Changes rarely.
-- **voice.md** — Set tone, prohibited words, required patterns. Tune as needed.
-- **keeper.md** — User profile and accumulated working preferences.
+These files are never concatenated into the launch prompt. The skill treats
+them as private and does not copy them into project or workspace Memory.
 
-Recovery hooks never alter `voice.md` or `keeper.md`. Semantic publication is
-explicit, and identity-layer edits require their own reviewed workflow; host
-transcripts are not an input to Memory v2.
+## Provisioning and maintenance
 
-## How It Works
+The installer creates missing `soul.md`, `voice.md`, and `keeper.md` from this
+plugin's templates. It never overwrites existing identity files and does not
+invent cold references. Identity maintenance is a separate reviewed edit;
+Memory v2 saves and recovery hooks never modify this corpus.
 
-Harness system prompts assert their own identity at the highest instruction
-priority; memory-file rules compete at a lower tier. The dispatcher injects the
-merged Asha identity at each harness's supported system-instruction seam
-(`--append-system-prompt-file` on Claude; equivalents documented for Codex and
-Copilot). The session layer separately loads operational rules and learnings.
+## Harness injection
+
+The dispatcher regenerates the same compact merge, then uses each harness's
+native seam: Claude's append-system-prompt file, Codex's
+`model_instructions_file`, Copilot's custom-instructions directory, or
+OpenCode's wrapper-scoped instructions. Operational rules and active learnings
+are merged separately.
+
+See [harness enforcement](../../docs/harness-enforcement.md) for the exact
+adapter behavior.
 
 ## License
 

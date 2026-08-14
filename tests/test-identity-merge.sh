@@ -6,6 +6,7 @@ SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 IDENTITY_MERGE="$REPO_ROOT/identity/identity-merge.sh"
 OPERATIONAL_MERGE="$REPO_ROOT/identity/operational-merge.sh"
+DISPATCHER="$REPO_ROOT/bin/asha"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -36,7 +37,7 @@ run_operational_merge() {
 }
 
 # ---------------------------------------------------------------------------
-# Test 1: every user identity source is merged
+# Test 1: only the compact hot identity sources are merged
 # ---------------------------------------------------------------------------
 echo "--- test 1: identity sources are merged ---"
 reset_sandbox
@@ -44,6 +45,7 @@ mkdir -p "$SANDBOX/.asha"
 printf 'SOUL_SENTINEL\n' > "$SANDBOX/.asha/soul.md"
 printf 'VOICE_SENTINEL\n' > "$SANDBOX/.asha/voice.md"
 printf 'KEEPER_SENTINEL\n' > "$SANDBOX/.asha/keeper.md"
+printf 'KEEPER_VOICE_COLD_SENTINEL\n' > "$SANDBOX/.asha/keeper-voice.md"
 if run_identity_merge >/dev/null 2>&1; then
   ok "identity merge exits 0 with user sources"
 else
@@ -54,21 +56,25 @@ for sentinel in SOUL_SENTINEL VOICE_SENTINEL KEEPER_SENTINEL; do
     && ok "merged identity contains $sentinel" \
     || fail "merged identity contains $sentinel"
 done
+if ! grep -q 'KEEPER_VOICE_COLD_SENTINEL' "$SANDBOX/.cache/asha/instructions.md"; then
+  ok "cold keeper voice stays out of automatic identity"
+else
+  fail "cold keeper voice stays out of automatic identity"
+fi
 
 # ---------------------------------------------------------------------------
-# Test 2: missing ~/.asha inputs are benign for both builders
+# Test 2: missing hot identity fails closed; operational fallback stays benign
 # ---------------------------------------------------------------------------
-echo "--- test 2: absent user inputs are benign ---"
+echo "--- test 2: absent identity fails closed ---"
 reset_sandbox
 if run_identity_merge >/dev/null 2>&1; then
-  ok "identity merge exits 0 without ~/.asha files"
+  fail "identity merge rejects absent hot files"
 else
-  fail "identity merge exits 0 without ~/.asha files"
+  ok "identity merge rejects absent hot files"
 fi
-[[ -s "$SANDBOX/.cache/asha/instructions.md" ]] && \
-  grep -q '^# Asha Identity Layer (merged)$' "$SANDBOX/.cache/asha/instructions.md" \
-  && ok "identity merge emits sane fallback output" \
-  || fail "identity merge emits sane fallback output"
+[[ ! -e "$SANDBOX/.cache/asha/instructions.md" ]] \
+  && ok "failed identity merge emits no partial cache" \
+  || fail "failed identity merge emits no partial cache"
 if run_operational_merge >/dev/null 2>&1; then
   ok "operational merge exits 0 without ~/.asha files"
 else
@@ -83,6 +89,11 @@ fi
 # Test 3: repeated runs preserve identical cache bytes
 # ---------------------------------------------------------------------------
 echo "--- test 3: repeated merges are byte-idempotent ---"
+mkdir -p "$SANDBOX/.asha"
+printf 'SOUL\n' > "$SANDBOX/.asha/soul.md"
+printf 'VOICE\n' > "$SANDBOX/.asha/voice.md"
+printf 'KEEPER\n' > "$SANDBOX/.asha/keeper.md"
+run_identity_merge >/dev/null 2>&1
 cp "$SANDBOX/.cache/asha/instructions.md" "$SANDBOX/identity.before"
 cp "$SANDBOX/.cache/asha/operational.md" "$SANDBOX/operational.before"
 if run_identity_merge >/dev/null 2>&1 && \
@@ -99,10 +110,30 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 4: operation content honors its 4000-byte budget and legacy learning
+# Test 4: the hot identity budget fails closed without replacing prior output
+# ---------------------------------------------------------------------------
+echo "--- test 4: identity merge enforces its byte budget ---"
+reset_sandbox
+mkdir -p "$SANDBOX/.asha"
+printf 'PRIOR_IDENTITY\n' > "$SANDBOX/.cache/asha/instructions.md"
+awk 'BEGIN { for (i = 0; i < 12000; i++) printf "X"; print "IDENTITY_TAIL" }' \
+  > "$SANDBOX/.asha/soul.md"
+if ASHA_IDENTITY_MAX_BYTES=4096 run_identity_merge >/dev/null 2>&1; then
+  fail "oversized hot identity is rejected"
+else
+  ok "oversized hot identity is rejected"
+fi
+if grep -qx 'PRIOR_IDENTITY' "$SANDBOX/.cache/asha/instructions.md"; then
+  ok "rejected merge preserves the prior cache"
+else
+  fail "rejected merge preserves the prior cache"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 5: operation content honors its 4000-byte budget and legacy learning
 # stores do not regain authority.
 # ---------------------------------------------------------------------------
-echo "--- test 4: operational merge enforces v2 authority and byte caps ---"
+echo "--- test 5: operational merge enforces v2 authority and byte caps ---"
 reset_sandbox
 mkdir -p "$SANDBOX/.asha"
 awk 'BEGIN { for (i = 0; i < 5000; i++) printf "A"; print "OPERATION_TAIL" }' \
@@ -126,9 +157,9 @@ merged_bytes="$(wc -c < "$SANDBOX/.cache/asha/operational.md" | tr -d '[:space:]
   || fail "merged operational cache stays within sane overhead (got $merged_bytes bytes)"
 
 # ---------------------------------------------------------------------------
-# Test 5: only active v2 learnings are rendered
+# Test 6: only active v2 learnings are rendered
 # ---------------------------------------------------------------------------
-echo "--- test 5: only active learnings are injected ---"
+echo "--- test 6: only active learnings are injected ---"
 reset_sandbox
 mkdir -p "$SANDBOX/.asha/learnings/active" "$SANDBOX/.asha/learnings/candidate"
 cat > "$SANDBOX/.asha/learnings/active/active-rule.md" <<'EOF'
@@ -147,6 +178,38 @@ if grep -q 'ACTIVE_SENTINEL' "$SANDBOX/.cache/asha/operational.md" \
   ok "active learning renders and candidate remains non-authoritative"
 else
   fail "active learning renders and candidate remains non-authoritative"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 7: Claude receives the same merged hot identity as other harnesses
+# ---------------------------------------------------------------------------
+echo "--- test 7: Claude launch uses the compact merge ---"
+reset_sandbox
+mkdir -p "$SANDBOX/.asha" "$SANDBOX/.claude/skills" "$SANDBOX/bin"
+printf 'CLAUDE_SOUL_SENTINEL\n' > "$SANDBOX/.asha/soul.md"
+printf 'CLAUDE_VOICE_SENTINEL\n' > "$SANDBOX/.asha/voice.md"
+printf 'CLAUDE_KEEPER_SENTINEL\n' > "$SANDBOX/.asha/keeper.md"
+printf 'CLAUDE_COLD_SENTINEL\n' > "$SANDBOX/.asha/keeper-voice.md"
+printf '{}\n' > "$SANDBOX/.claude/settings.json"
+ln -s "$REPO_ROOT/plugins/test" "$SANDBOX/.claude/skills/test-fixture"
+cat > "$SANDBOX/bin/fake-claude" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$@"
+EOF
+chmod +x "$SANDBOX/bin/fake-claude"
+claude_cache="$SANDBOX/.cache/asha/claude-instructions.md"
+if claude_args="$(HOME="$SANDBOX" ASHA_CLAUDE_CMD="$SANDBOX/bin/fake-claude" \
+    ASHA_CLAUDE_INSTRUCTIONS_FILE="$claude_cache" bash "$DISPATCHER" claude PAYLOAD 2>/dev/null)" \
+    && grep -q 'CLAUDE_SOUL_SENTINEL' "$claude_cache" \
+    && grep -q 'CLAUDE_VOICE_SENTINEL' "$claude_cache" \
+    && grep -q 'CLAUDE_KEEPER_SENTINEL' "$claude_cache" \
+    && ! grep -q 'CLAUDE_COLD_SENTINEL' "$claude_cache" \
+    && grep -q -- '--append-system-prompt-file' <<<"$claude_args" \
+    && grep -q -- "$claude_cache" <<<"$claude_args" \
+    && grep -q -- 'PAYLOAD' <<<"$claude_args"; then
+  ok "Claude launch injects the same compact identity contract"
+else
+  fail "Claude launch injects the same compact identity contract"
 fi
 
 echo ""

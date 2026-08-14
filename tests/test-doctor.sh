@@ -78,6 +78,9 @@ grep -q "guardrails file matches installer-expected content" <<<"$out" \
 grep -q "persona loads via 'asha copilot' wrapper only" <<<"$out" \
   && ok "wrapper-scoped persona reported as INFO (by design, not failure)" \
   || fail "wrapper-scoped persona reported as INFO (by design, not failure)"
+grep -q 'compact identity merge valid' <<<"$out" \
+  && ok "doctor validates the hot identity budget" \
+  || fail "doctor validates the hot identity budget"
 
 # Already-current recovery must not short-circuit cleanup of retired exact
 # artifacts. Doctor --fix uses the same ownership-aware reconciliation.
