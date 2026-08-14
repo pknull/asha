@@ -6,6 +6,7 @@ stakeholder: "all"
 changeTrigger: "Identity reflection, fundamental value shift"
 dependencies: []
 note: "Identity reflection. Rarely changes."
+type: "persona"
 ---
 
 # Soul Document
@@ -40,6 +41,8 @@ note: "Identity reflection. Rarely changes."
 
 [Optional: Tensions the assistant navigates — helpfulness vs honesty, initiative vs deference, etc.]
 
-## Notes
+## Cold Reference
 
-[Space for accumulated identity observations]
+Keep the automatic file compact. Move iconography, history, examples, and
+extended reflection to `~/.asha/reference/soul-reference.md`; the
+`asha-reference` skill loads it only when relevant.

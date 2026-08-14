@@ -10,6 +10,15 @@ the active instruction surface loses no release detail.
 
 ## Public release history
 
+### Asha v3.0.0 — Compact identity split (2026-08-13)
+
+- Reduced the automatic persona corpus to compact `soul.md`, `voice.md`, and
+  `keeper.md` files behind a 24 KiB fail-closed merge budget.
+- Moved extended identity, user profile, and writing-voice material into
+  task-selected cold references exposed by the `asha-reference` skill.
+- Repaired fresh identity provisioning across all four harnesses and removed
+  live `communicationStyle.md` and retired memory-search instructions.
+
 
 Entries below v2.7.0 describe the mechanisms shipped by those historical
 releases. Where they name transcript synthesis, retrieval, generic nudges,

@@ -110,6 +110,27 @@ done
 jq -e --arg root "$REPO_ROOT" '.asha_root == $root' "$SANDBOX/.asha/config.json" >/dev/null \
   && ok "identity config records asha_root" \
   || fail "identity config records asha_root"
+if [[ -f "$SANDBOX/.asha/soul.md" && -f "$SANDBOX/.asha/voice.md" \
+      && -f "$SANDBOX/.asha/keeper.md" ]]; then
+  ok "installer bootstraps the compact identity triplet"
+else
+  fail "installer bootstraps the compact identity triplet"
+fi
+if jq -e '(.version == "2.0") and (has("capture_calibration") | not)
+    and (has("identity_file") | not)' "$SANDBOX/.asha/config.json" >/dev/null; then
+  ok "new user config omits retired calibration and communicationStyle keys"
+else
+  fail "new user config omits retired calibration and communicationStyle keys"
+fi
+for skill_path in \
+  "$SANDBOX/.claude/skills/asha-asha-reference/SKILL.md" \
+  "$SANDBOX/.codex/skills/asha-reference/SKILL.md" \
+  "$SANDBOX/.copilot/skills/asha-reference/SKILL.md" \
+  "$SANDBOX/.config/opencode/skills/asha-reference/SKILL.md"; do
+  [[ -f "$skill_path" || -L "$skill_path" ]] \
+    && ok "cold identity reference skill installed: $skill_path" \
+    || fail "cold identity reference skill installed: $skill_path"
+done
 if jq -e '
     (.hooks.sessionStart[0].bash | endswith("session-start.sh")) and
     (.hooks.userPromptSubmitted[0].bash | endswith("user-prompt-submit.sh")) and

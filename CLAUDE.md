@@ -42,7 +42,7 @@ This guide helps AI assistants (like Claude) understand the asha codebase struct
 | Plugin | Version | Domain | Description |
 |--------|---------|--------|-------------|
 | **Session** | v2.0.0 | Core | Explicit compact publication, bounded recovery, learning lifecycle, guardrails, loops, workspace context + management CLI — 3 agents |
-| **Asha** | v2.1.0 | Identity | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
+| **Asha** | v3.0.0 | Identity | Compact hot identity plus task-selected cold references |
 | **Panel System** | v5.0.0 | Research | Multi-perspective analysis with persistence and resumption — 6 agents |
 | **Code** | v1.5.0 | Development | Code review, orchestration patterns, TDD, issue-to-merge loop — 5 agents, postgres skill |
 | **Write** | v1.9.0 | Creative | Prose craft, continuity, and style analysis — 10 agents, 4 skills |

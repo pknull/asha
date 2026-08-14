@@ -203,7 +203,7 @@ lifecycle callback into a semantic save.
 | Domain | Plugin | Version | Purpose |
 |--------|--------|---------|---------|
 | **Core** | `session` | v2.0.0 | Explicit compact publication, bounded recovery, learning lifecycle, guardrails, loops, and workspace management — 3 agents |
-| **Identity** | `asha` | v2.1.0 | Persona templates (`soul.md`, `voice.md`) consumed by `/session:init` |
+| **Identity** | `asha` | v3.0.0 | Compact hot identity plus task-selected cold references |
 | **Research** | `panel-system` | v5.0.0 | Multi-perspective analysis, expert panels, decision-making — 6 agents |
 | **Development** | `code` | v1.5.0 | Code review, orchestration patterns, TDD, overnight issue-to-merge loop — 5 agents |
 | **Creative** | `write` | v1.9.0 | Fiction writing, prose craft, continuity, and style analysis — 10 agents |
@@ -215,7 +215,7 @@ lifecycle callback into a semantic save.
 
 ## Plugin guides
 
-Current source inventory: **31 agents, 19 command workflows, and 15 skills**.
+Current source inventory: **31 agents, 19 command workflows, and 16 skills**.
 The owning guide below is the catalogue for each batch.
 
 | Plugin | Primary entry point | Use it for | Detailed instructions |
@@ -228,7 +228,7 @@ The owning guide below is the catalogue for each batch.
 | `image` | `image-generation` skill | Stable Diffusion prompts and ComfyUI workflows | [Image guide](plugins/image/README.md) |
 | `admin` | Name the required skill | Todoist, Gemini, Wolfram, BookStack, and Proton Mail operations | [Admin guide](plugins/admin/README.md) |
 | `security` | `security-review` skill | Security-sensitive implementation and review | [Security guide](plugins/security/README.md) |
-| `asha` | `asha <harness>` | Optional identity/persona layer | [Identity guide](plugins/asha/README.md) |
+| `asha` | `asha <harness>`; `asha-reference` when needed | Compact identity and task-selected private reference material | [Identity guide](plugins/asha/README.md) |
 | `test` | `/test:ping` or rendered canary skills | Installer verification only | [Test guide](plugins/test/README.md) |
 
 Commands are the user-facing workflows. Agents are their specialist parts;
@@ -378,7 +378,7 @@ asha/
 ├── namespaces.json               # plugin dir → command namespace map (panel → panel-system)
 ├── plugins/
 │   ├── admin/                    # skills/ (bookstack, gemini, proton-mail, todoist, wolfram)
-│   ├── asha/                     # templates/ (soul.md, voice.md) — identity only
+│   ├── asha/                     # compact identity templates + on-demand reference skill
 │   ├── code/                     # agents/ (5), commands/ (4), skills/ (1), recipes/ (5)
 │   ├── image/                    # skills/ (generation)
 │   ├── panel/                    # agents/ (6), commands/ (panel.md), docs/characters/, templates/

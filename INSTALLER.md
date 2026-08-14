@@ -235,15 +235,17 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 |---|---|---|---|---|
 | Identity assertion | `--append-system-prompt-file` | `model_instructions_file` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | `OPENCODE_CONFIG_CONTENT.instructions` |
 | Scope | wrapper only | wrapper only | wrapper only | wrapper only |
-| Identity merge | SessionStart + launch file | launch-time combined file | launch-time instruction directory | launch-time combined file |
+| Identity merge | launch-time merged file | launch-time combined file | launch-time instruction directory | launch-time combined file |
 
 Codex has no `--append-system-prompt-file` equivalent at the CLI, and
 its `model_instructions_file` config field accepts only a single file
 path (no `[include]` directive). The dispatcher handles both gaps:
-identity-merge.sh concatenates `~/.asha/{soul,voice,keeper,keeper-voice}.md`
-plus `identity/asha-identity-system-prompt.md` into a single file, and
+identity-merge.sh concatenates only `~/.asha/{soul,voice,keeper}.md` plus
+`identity/asha-identity-system-prompt.md` into a capped hot file, and
 `-c model_instructions_file=...` injects it at launch. No on-disk
-overlay; both `codex` and `asha codex` use the same `~/.codex/`.
+overlay; both `codex` and `asha codex` use the same `~/.codex/`. Extended
+identity and Keeper calibration under `~/.asha/reference/` load only through
+the `asha-reference` skill.
 
 ## Drift check / doctor
 
