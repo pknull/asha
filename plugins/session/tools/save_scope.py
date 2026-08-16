@@ -23,6 +23,8 @@ in memory_v2.py; the explicit save command owns Git staging and publication.
 import json
 import subprocess
 import sys
+import os
+import stat
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -30,8 +32,10 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import project_root  # noqa: E402
+from control_task_marker import MarkerError, find_marker  # noqa: E402
 
 SCHEMA_VERSION = 2
+CONFIG_LIMIT = 64 * 1024
 
 
 def _err(code: str, message: str) -> dict:
@@ -52,6 +56,100 @@ def _is_repo_root(path: Path) -> bool:
         return Path(res.stdout.strip()).resolve() == path.resolve()
     except (OSError, RuntimeError, ValueError):
         return False
+
+
+def _none_plane(root: Path, marker: dict | None = None) -> dict:
+    return {
+        "version": SCHEMA_VERSION,
+        "scope": "none",
+        "plane_base": str(root),
+        "memory_root": str(root / "Memory"),
+        "memory_rel": "Memory",
+        "commit_repo": None,
+        "managed_task": marker,
+    }
+
+
+def _find_initialized_project(start: Path) -> Tuple[Optional[Path], List[dict]]:
+    """Resolve a no-Git publication plane from Memory v2 facts only."""
+    try:
+        current = start.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        return None, [_err("invalid_start", f"cannot resolve save start path: {exc}")]
+    if not current.is_dir():
+        current = current.parent
+    for root in (current, *current.parents):
+        path = root / ".asha" / "config.json"
+        try:
+            (root / ".asha").lstat()
+        except FileNotFoundError:
+            continue
+        if (root / ".asha").is_symlink() or not (root / ".asha").is_dir():
+            return None, [_err("invalid_memory_config", f"invalid Memory v2 config root: {root / '.asha'}")]
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        if path.is_symlink() or not path.is_file():
+            return None, [_err("invalid_memory_config", f"invalid Memory v2 config: {path}")]
+        try:
+            fd = os.open(
+                path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) |
+                getattr(os, "O_NONBLOCK", 0),
+            )
+            try:
+                metadata = os.fstat(fd)
+                if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > CONFIG_LIMIT:
+                    raise ValueError("config is not one bounded regular file")
+                remaining = CONFIG_LIMIT + 1
+                chunks = []
+                while remaining:
+                    chunk = os.read(fd, min(65536, remaining))
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                raw = b"".join(chunks)
+                if len(raw) > CONFIG_LIMIT:
+                    raise ValueError("config exceeds bounded limit")
+            finally:
+                os.close(fd)
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
+            return None, [_err("invalid_memory_config", f"invalid Memory v2 config: {path}")]
+        if (not isinstance(data, dict) or data.get("memory_version") != 2 or
+                not isinstance(data.get("project_id"), str) or not data["project_id"].strip()):
+            return None, [_err("invalid_memory_config", f"invalid Memory v2 config: {path}")]
+        return root, []
+    return None, [_err("no_memory_project", "no initialized Memory v2 project in any ancestor")]
+
+
+def resolve_effective_plane(scope: Optional[str], start: Optional[Path] = None
+                            ) -> Tuple[Optional[dict], List[dict]]:
+    """Resolve bare/explicit save scope, checking Control ownership first.
+
+    ``None`` is the bare command default. A valid managed marker changes only
+    that default to ``none``. Explicit repo/workspace retain their contracts;
+    explicit none remains a Git-free path.
+    """
+    if scope not in (None, "repo", "workspace", "none"):
+        return None, [_err("invalid_scope", f"scope must be repo|workspace|none, got {scope!r}")]
+    start_path = Path(start if start is not None else Path.cwd())
+    try:
+        managed = find_marker(start_path)
+    except MarkerError as exc:
+        return None, [_err("invalid_control_task_marker", str(exc))]
+    if scope is None and managed is not None:
+        root, marker = managed
+        return _none_plane(root, marker), []
+    effective = "repo" if scope is None else scope
+    if effective == "none":
+        if managed is not None:
+            root, marker = managed
+            return _none_plane(root, marker), []
+        root, errors = _find_initialized_project(start_path)
+        return (_none_plane(root) if root is not None else None), errors
+    return resolve_plane(effective, start=start_path)
 
 
 def resolve_plane(scope: str, start: Optional[Path] = None
@@ -170,7 +268,8 @@ def resolve_plane(scope: str, start: Optional[Path] = None
 
 def _resolve_from_args(scope: str, start: Optional[str]
                        ) -> Tuple[Optional[dict], List[dict]]:
-    return resolve_plane(scope, Path(start) if start else None)
+    effective = None if scope == "auto" else scope
+    return resolve_effective_plane(effective, Path(start) if start else None)
 
 
 def main(argv: List[str]) -> int:
@@ -178,7 +277,7 @@ def main(argv: List[str]) -> int:
     args = argv[1:]
     if not args or args[0] != "resolve":
         print("usage: save_scope.py resolve "
-              "--scope repo|workspace [--start DIR]", file=sys.stderr)
+              "[--scope repo|workspace|none] [--start DIR]", file=sys.stderr)
         return 2
     verb, rest = args[0], args[1:]
     scope, start = None, None
@@ -190,14 +289,10 @@ def main(argv: List[str]) -> int:
             start = rest[i + 1]; i += 1
         else:
             print("usage: save_scope.py resolve "
-                  "--scope repo|workspace [--start DIR]", file=sys.stderr)
+                  "[--scope repo|workspace|none] [--start DIR]", file=sys.stderr)
             return 2
         i += 1
-    if not scope:
-        print("usage: --scope is required", file=sys.stderr)
-        return 2
-
-    mapping, errors = _resolve_from_args(scope, start)
+    mapping, errors = _resolve_from_args(scope or "auto", start)
     if mapping is None:
         print(json.dumps({"errors": errors}, indent=2))
         return 1

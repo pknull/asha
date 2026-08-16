@@ -22,7 +22,7 @@ import tempfile
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, NamedTuple
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -31,6 +31,11 @@ from path_safety import secure_path, secure_project_root
 
 
 ACTIVE_LIMIT = 4096
+# decisions.md is current binding state rather than an archive. 64 KiB leaves
+# ample room for real project decisions while bounding task-context copying,
+# registry evidence, and startup reads at an external-input boundary.
+DECISIONS_LIMIT = 64 * 1024
+CONFIG_LIMIT = 64 * 1024
 ACTIVE_HEADINGS = ("Objective", "State", "Next", "Blockers")
 ACTIVE_TEMPLATE = """# Objective
 
@@ -53,6 +58,19 @@ STARTUP_DECISIONS_MAX_BYTES = 2048
 IGNORE_RULE = "/Work/session-state/"
 MIGRATION_IGNORE_RULE = "/Work/memory-migration/"
 IGNORE_MARKER = "# Asha Memory v2 recovery (managed)"
+
+
+class _DuplicateJsonKey(ValueError):
+    pass
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _DuplicateJsonKey(key)
+        result[key] = value
+    return result
 
 
 def _assert_persistence_enabled(root: Path) -> None:
@@ -134,9 +152,131 @@ def validate_active_context(text: str) -> None:
 def validate_decisions(text: str) -> None:
     if not isinstance(text, str):
         raise ValueError("decisions must be UTF-8 text")
+    size = len(text.encode("utf-8"))
+    if size > DECISIONS_LIMIT:
+        raise ValueError(f"decisions exceeds {DECISIONS_LIMIT} UTF-8 bytes ({size})")
     headings = _headings(text)
     if headings != ["Decisions"]:
         raise ValueError("decisions must contain current binding decisions only; history/archive sections are forbidden")
+
+
+class PublishedSnapshot(NamedTuple):
+    """Byte-exact, validated Memory v2 task-creation snapshot."""
+
+    project_id: str
+    config: bytes
+    active_context: bytes
+    decisions: bytes
+    modes: dict[str, int]
+
+
+def _read_regular_bytes(path: Path, maximum: int, label: str) -> tuple[bytes, int]:
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(path, flags)
+    except OSError as exc:
+        raise ValueError(f"cannot open {label} read-only: {exc}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError(f"{label} must be one regular file")
+        if metadata.st_uid != os.geteuid():
+            raise ValueError(f"{label} is not owned by the effective user")
+        if metadata.st_size > maximum:
+            raise ValueError(f"{label} exceeds {maximum} UTF-8 bytes")
+        chunks: list[bytes] = []
+        remaining = maximum + 1
+        while remaining:
+            chunk = os.read(fd, min(65536, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        raw = b"".join(chunks)
+        if len(raw) > maximum:
+            raise ValueError(f"{label} exceeds {maximum} UTF-8 bytes")
+        return raw, stat.S_IMODE(metadata.st_mode)
+    finally:
+        os.close(fd)
+
+
+def _pending_snapshot_remediation(root: Path) -> ValueError:
+    command = f"python3 {Path(__file__).resolve()} recover --project-dir {root}"
+    return ValueError(f"publication recovery is pending; run: {command}")
+
+
+def _read_published_snapshot_unlocked(root: Path) -> PublishedSnapshot:
+    journal = secure_path(root, "Work/session-state/.memory-publication-transaction.json")
+    if journal.exists():
+        raise _pending_snapshot_remediation(root)
+    config_path = secure_path(root, ".asha/config.json")
+    active_path = secure_path(root, "Memory/activeContext.md")
+    decisions_path = secure_path(root, "Memory/decisions.md")
+    config_raw, config_mode = _read_regular_bytes(config_path, CONFIG_LIMIT, "project config")
+    active_raw, active_mode = _read_regular_bytes(active_path, ACTIVE_LIMIT, "activeContext")
+    decisions_raw, decisions_mode = _read_regular_bytes(decisions_path, DECISIONS_LIMIT, "decisions")
+    try:
+        config = json.loads(config_raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
+        active = active_raw.decode("utf-8")
+        decisions = decisions_raw.decode("utf-8")
+    except (_DuplicateJsonKey, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("Memory v2 snapshot contains malformed UTF-8 or JSON") from exc
+    if (not isinstance(config, dict) or config.get("memory_version") != 2 or
+            not isinstance(config.get("project_id"), str) or not config["project_id"].strip()):
+        raise ValueError("valid Memory v2 project config with stable project_id required")
+    validate_active_context(active)
+    validate_decisions(decisions)
+    if journal.exists():
+        raise _pending_snapshot_remediation(root)
+    return PublishedSnapshot(
+        project_id=config["project_id"].strip(),
+        config=config_raw,
+        active_context=active_raw,
+        decisions=decisions_raw,
+        modes={
+            ".asha/config.json": config_mode,
+            "Memory/activeContext.md": active_mode,
+            "Memory/decisions.md": decisions_mode,
+        },
+    )
+
+
+def read_published_snapshot(project_dir: Path) -> PublishedSnapshot:
+    """Read a coherent creation snapshot without creating or recovering state.
+
+    Existing publishers serialize through their lock. If an old initialized
+    project has no lock yet, a final lock-existence check proves no publisher
+    began during the read; if one appeared, the read is retried under it.
+    """
+    root = secure_project_root(project_dir)
+    lock = secure_path(root, "Work/session-state/.memory-publication.lock")
+    journal = secure_path(root, "Work/session-state/.memory-publication-transaction.json")
+    if journal.exists():
+        raise _pending_snapshot_remediation(root)
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    try:
+        fd = os.open(lock, flags)
+    except FileNotFoundError:
+        snapshot = _read_published_snapshot_unlocked(root)
+        try:
+            fd = os.open(lock, flags)
+        except FileNotFoundError:
+            return snapshot
+        except OSError as exc:
+            raise ValueError(f"cannot open Memory publication lock read-only: {exc}") from exc
+    except OSError as exc:
+        raise ValueError(f"cannot open Memory publication lock read-only: {exc}") from exc
+    try:
+        metadata = os.fstat(fd)
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ValueError("Memory publication lock must be one regular file")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        return _read_published_snapshot_unlocked(root)
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
 def _sanitize_context(value: str) -> str:
@@ -274,10 +414,15 @@ def read_project_config(project_dir: Path) -> dict[str, Any]:
     root = secure_project_root(project_dir)
     path = secure_path(root, ".asha/config.json")
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
+        path.lstat()
     except FileNotFoundError:
         return {}
-    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+    try:
+        raw, _ = _read_regular_bytes(path, CONFIG_LIMIT, "project config")
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_json_object)
+    except FileNotFoundError:
+        return {}
+    except (_DuplicateJsonKey, json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise ValueError(f"existing project config is unreadable or malformed: {path}") from exc
     if not isinstance(data, dict):
         raise ValueError(f"existing project config must be a JSON object: {path}")
@@ -506,6 +651,8 @@ def main(argv: list[str] | None = None) -> int:
     context_cmd = sub.add_parser("startup-context")
     context_cmd.add_argument("--project-dir", required=True, type=Path)
     context_cmd.add_argument("--scope", choices=("repository", "workspace"), default="repository")
+    recover_cmd = sub.add_parser("recover")
+    recover_cmd.add_argument("--project-dir", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "init":
@@ -524,6 +671,8 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(status(args.project_dir), sort_keys=True))
         elif args.command == "startup-context":
             print(render_startup_context(args.project_dir, scope=args.scope), end="")
+        elif args.command == "recover":
+            print(json.dumps({"recovered": recover_publication(args.project_dir)}))
         else:
             active_text, decisions_text = read_published(args.project_dir)
             if args.format == "json":
