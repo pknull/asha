@@ -22,6 +22,17 @@ the active instruction surface loses no release detail.
   artifact; panel transcripts, per-phase files, and the separate index are no
   longer produced.
 
+### Asha Control — Persistent jj and tmux task supervision (2026-08-15)
+
+- Added persistent task records, explicit-base jj workspaces, isolated tmux
+  sessions, process-safe stop/archive operations, live reconciliation, and the
+  terminal Control TUI.
+- Added bounded Claude/Codex status events with process-liveness fallback for
+  Copilot and OpenCode.
+- Added read-only GitHub PR and issue sources: transient bounded metadata,
+  non-checkout PR-head fetches, and no GitHub write path.
+- Published the current operating contract in `docs/control.md`.
+
 ### Asha identity v3.0.0 — Compact identity split (2026-08-13)
 
 - Reduced the automatic persona corpus to compact `soul.md`, `voice.md`, and

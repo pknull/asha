@@ -10,6 +10,10 @@ CLI, GitHub Copilot CLI, and OpenCode stable v1. All launch through one `asha` d
 Source skills, agents, and commands remain shared Markdown; adapters render each
 harness's native form.
 
+Asha Control adds no install target. The existing dispatcher exposes `asha
+task` and `asha control`; using them requires local `jj` and `tmux`. The `gh`
+CLI is required only for the optional `--pr` and `--issue` source modes.
+
 ## Architecture
 
 ```
