@@ -92,6 +92,34 @@ updates.
 
 ---
 
+## Control
+
+Asha Control gives agent work a persistent local container: one task record,
+one jj workspace and change, one detached tmux session, and one or more harness
+runs. The source repository stays in place while the task remains attachable
+from `asha control` or the non-interactive `asha task` commands.
+
+| Command | Purpose |
+|---|---|
+| `asha task start [--repo PATH] (--pr N \| --issue N \| [--base REVSET]) …` | Create the task, explicit-base jj workspace, tmux session, and primary harness run. |
+| `asha task list` / `asha task show` | Inspect registered tasks and reconciled live evidence. |
+| `asha task attach` | Attach to the owned task session or open it in a tmux popup. |
+| `asha task reconcile` | Refresh registry facts from jj, tmux, process identity, and supported harness events. |
+| `asha task stop` | Signal the verified run process without deleting its session, workspace, or change. |
+| `asha task archive` | Hide an ended task while preserving all task data; archive is reversible. |
+| `asha task doctor` | Report local prerequisites and optional capability limits. |
+| `asha control` | Open the terminal Control TUI. |
+| `asha control tmux` | Print the optional tmux-format integration snippet; it never edits `.tmux.conf`. |
+
+Control requires a Git-backed jj 0.38 repository, tmux with popup support, an
+installed harness, and an initialized Asha project whose private Control paths
+are ignored. `gh` must be installed and authenticated only for `--pr` and
+`--issue`; ad-hoc tasks do not use it. See the focused
+[Asha Control guide](docs/control.md) for the operating contract, state paths,
+status evidence, and preservation rules.
+
+---
+
 ## Harness support & behavior
 
 Asha drives four agent CLIs from **one source corpus** (`plugins/<ns>/`). They don't support the same things, and each mounts the same primitive differently. First-class support means native rendering at each harness seam, not fake parity: see `harnesses/capabilities.json` for the machine-readable contract.
@@ -479,6 +507,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 **Documentation**:
 
+- Asha Control: [docs/control.md](docs/control.md)
 - Panel system: `plugins/panel/README.md`
 - Code workflows: `plugins/code/README.md`
 - Writing workflows: `plugins/write/README.md`

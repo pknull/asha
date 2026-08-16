@@ -103,6 +103,8 @@ asha [HARNESS] [args...]         launch a harness
 asha install <target> [...]      provision primitives and wrappers
 asha uninstall <target> [...]    remove owned installation state
 asha doctor [target] [--fix]     audit installation drift
+asha task <subcommand> [...]     manage persistent jj/tmux tasks
+asha control [...]               open or integrate the Control TUI
 ```
 
 `asha claude install` launches Claude and forwards `install`; it is not the
