@@ -210,15 +210,15 @@ jq -n --arg repo "$REPO_ROOT" '{
   hooks: {
     PostToolUse: [
       { matcher: "*",
-        hooks: [ { type: "command", command: ($repo + "/plugins/session/hooks/hooks.json") } ] }
+        hooks: [ { type: "command", command: ($repo + "/plugins/session/hooks/hooks.json SessionStart") } ] }
     ]
   }
 }' > "$SANDBOX/.claude/settings.json"
 out="$(run --target claude 2>&1)"; rc=$?
 if [[ $rc -eq 0 ]] && grep -q "1 asha hook entry registered" <<<"$out"; then
-  ok "untagged asha hook with existing path passes and is counted"
+  ok "untagged asha hook with existing path plus argv passes and is counted"
 else
-  fail "untagged asha hook with existing path passes and is counted (rc=$rc)"
+  fail "untagged asha hook with existing path plus argv passes and is counted (rc=$rc)"
 fi
 
 # ---------------------------------------------------------------------------

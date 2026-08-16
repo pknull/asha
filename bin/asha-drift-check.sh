@@ -198,6 +198,125 @@ fix_reconcile_copilot_hooks() {
   _FIX_COPILOT_HOOKS_DONE=1
 }
 
+_FIX_OPENCODE_SOURCED=0
+source_opencode_renderer() {
+  [[ $_FIX_OPENCODE_SOURCED -eq 0 ]] || return 0
+  # Consumed by lazily sourced installer/harness functions.
+  # shellcheck disable=SC2034
+  DRY_RUN=0 VERBOSE=0 FORCE=1
+  # shellcheck source=../lib/install.sh
+  source "$ASHA/lib/install.sh"
+  # shellcheck source=../harnesses/opencode.sh
+  source "$ASHA/harnesses/opencode.sh"
+  _FIX_OPENCODE_SOURCED=1
+}
+
+check_opencode_current_source() {
+  source_opencode_renderer
+  local issues=0 cmd declared destination expected agent plugin_dir ns src_dir
+  local manifest ledger_destination ledger_type artifact_exists
+  declare -A expected_destinations=() ledger_destinations=()
+  for cmd in "$ASHA"/plugins/*/commands/*.md; do
+    [[ -f "$cmd" ]] || continue
+    plugin_dir="$(basename "$(dirname "$(dirname "$cmd")")")"
+    ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
+    declared="$(_opencode_field "$cmd" name)"
+    declared="${declared:-${ns}-$(basename "$cmd" .md)}"
+    _opencode_valid_name "$declared" || continue
+    destination="$OPENCODE/commands/$declared.md"
+    expected_destinations["$destination"]="opencode-command"
+    if [[ ! -f "$destination" || -L "$destination" ]]; then
+      [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+      echo "  $destination  (missing or wrong type; source: $cmd)"
+      issues=$((issues + 1))
+      continue
+    fi
+    expected="$(mktemp)"
+    _opencode_emit_command "$cmd" "$expected" render
+    if ! cmp -s "$expected" "$destination"; then
+      [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+      echo "  $destination  (source: $cmd)"
+      issues=$((issues + 1))
+    fi
+    rm -f "$expected"
+  done
+  for agent in "$ASHA"/plugins/*/agents/*.md; do
+    [[ -f "$agent" ]] || continue
+    plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
+    ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
+    src_dir="$(dirname "$agent")"
+    declared="$(_opencode_field "$agent" name)"
+    declared="${declared//:/-}"
+    declared="${declared:-$(basename "$agent" .md)}"
+    destination="$OPENCODE/agents/${ns}-${declared}.md"
+    _opencode_valid_name "${ns}-${declared}" || continue
+    expected_destinations["$destination"]="opencode-agent"
+    if [[ ! -f "$destination" || -L "$destination" ]]; then
+      [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+      echo "  $destination  (missing or wrong type; source: $agent)"
+      issues=$((issues + 1))
+      continue
+    fi
+    expected="$(mktemp)"
+    _opencode_emit_agent "$agent" "$expected" "$src_dir" "$ns" render
+    if ! cmp -s "$expected" "$destination"; then
+      [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+      echo "  $destination  (source: $agent)"
+      issues=$((issues + 1))
+    fi
+    rm -f "$expected"
+  done
+  destination="$OPENCODE/plugins/asha.js"
+  expected_destinations["$destination"]="opencode-plugin"
+  if [[ ! -f "$destination" || -L "$destination" ]]; then
+    [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+    echo "  $destination  (missing or wrong type; source: session hook handlers)"
+    issues=$((issues + 1))
+  else
+    expected="$(mktemp)"
+    opencode_install_plugin render "$expected"
+    if ! cmp -s "$expected" "$destination"; then
+      [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+      echo "  $destination  (source: session hook handlers)"
+      issues=$((issues + 1))
+    fi
+    rm -f "$expected"
+  fi
+
+  manifest="$(asha_artifact_manifest_path opencode)"
+  if [[ -f "$manifest" ]]; then
+    while IFS=$'\t' read -r ledger_destination ledger_type; do
+      [[ -n "$ledger_destination" ]] || continue
+      case "$ledger_type" in
+        opencode-command|opencode-agent|opencode-plugin) ;;
+        *) continue ;;
+      esac
+      if [[ -n "${expected_destinations[$ledger_destination]+x}" ]]; then
+        ledger_destinations["$ledger_destination"]="$ledger_type"
+        if [[ "$ledger_type" != "${expected_destinations[$ledger_destination]}" ]]; then
+          [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+          echo "  $ledger_destination  (managed artifact type does not match current source)"
+          issues=$((issues + 1))
+        fi
+        continue
+      fi
+      artifact_exists=0
+      [[ -e "$ledger_destination" || -L "$ledger_destination" ]] && artifact_exists=1
+      [[ $artifact_exists -eq 1 ]] || continue
+      [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+      echo "  $ledger_destination  (retired managed OpenCode artifact remains installed)"
+      issues=$((issues + 1))
+    done < <(jq -r '.artifacts[]? | [.destination, .type] | @tsv' "$manifest" 2>/dev/null)
+  fi
+  for destination in "${!expected_destinations[@]}"; do
+    [[ -n "${ledger_destinations[$destination]+x}" ]] && continue
+    [[ $issues -eq 0 ]] && nope "generated OpenCode artifact set is stale against current source:"
+    echo "  $destination  (current artifact is not recorded as managed)"
+    issues=$((issues + 1))
+  done
+  [[ $issues -eq 0 ]] && pass "generated OpenCode command, agent, and plugin artifact set matches current source"
+}
+
 check_generated_agents() { # agents_dir label ext fix_fn
   local agents_dir="$1" label="$2" ext="$3" fix_fn="$4"
   local issues=0 agent plugin_dir ns base name dest expected
@@ -428,9 +547,21 @@ if [[ "$TARGET" == "claude" || "$TARGET" == "all" ]]; then
     missing=0
     while IFS= read -r c; do
       [[ -z "$c" ]] && continue
-      if [[ ! -e "$c" ]]; then
+      hook_path="$(python3 -c '
+import re, shlex, sys
+try:
+    words = shlex.split(sys.argv[1])
+except ValueError:
+    words = [sys.argv[1]]
+if words and words[0] == "env":
+    words = words[1:]
+    while words and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", words[0]):
+        words = words[1:]
+print(words[0] if words else "")
+' "$c" 2>/dev/null)"
+      if [[ -z "$hook_path" || ! -e "$hook_path" ]]; then
         [[ $missing -eq 0 ]] && nope "asha hook paths missing in settings.json:"
-        echo "  $c"
+        echo "  ${hook_path:-$c}"
         missing=$((missing+1))
       fi
     done < <(jq -r --arg prefix "$ASHA/plugins/" '.hooks // {} | .[] | .[]? | .hooks[]?
@@ -541,7 +672,6 @@ print(f\"{len(events)} {str(feats.get('hooks', False)).lower()} {len(trust)}\")
       nope "generated-artifact ownership drift (codex):"
       printf '%s\n' "$manifest_out" | sed 's/^/  /'
     fi
-
     # ───── Cached identity check (regenerated on each `asha codex` launch) ─────
     if [[ -f "$HOME/.cache/asha/instructions.md" ]]; then
       pass "cached identity exists at ~/.cache/asha/instructions.md"
@@ -704,6 +834,7 @@ if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
       nope "generated-artifact ownership drift (opencode):"
       printf '%s\n' "$manifest_out" | sed 's/^/  /'
     fi
+    check_opencode_current_source
     adapter="$ASHA/plugins/session/hooks/handlers/opencode-policy-adapter.sh"
     [[ -x "$adapter" ]] \
       && pass "OpenCode policy adapter is executable" \
@@ -746,6 +877,9 @@ fi
 section "Memory v2 contract"
 
 memory_tool="$ASHA/plugins/session/tools/memory_v2.py"
+save_scope_tool="$ASHA/plugins/session/tools/save_scope.py"
+save_none_tool="$ASHA/plugins/session/tools/save_none.py"
+control_marker_tool="$ASHA/plugins/session/tools/control_task_marker.py"
 recovery_tool="$ASHA/plugins/session/tools/recovery_state.py"
 save_identity_tool="$ASHA/plugins/session/tools/save_identity.py"
 learnings_tool="$ASHA/plugins/session/tools/learnings_manager.py"
@@ -754,9 +888,40 @@ decisions_template="$ASHA/plugins/session/templates/decisions.md"
 hooks_registry="$ASHA/plugins/session/hooks/hooks.json"
 
 [[ -x "$memory_tool" && -x "$recovery_tool" && -x "$save_identity_tool" \
-    && -x "$learnings_tool" ]] \
+    && -x "$learnings_tool" && -f "$save_scope_tool" && -f "$save_none_tool" \
+    && -f "$control_marker_tool" ]] \
   && pass "Memory v2 publication, recovery, identity, and learning tools are executable" \
-  || nope "Memory v2 publication, recovery, identity, or learning tool missing/not executable"
+  || nope "Memory v2 publication, recovery, identity, scope, or Control marker tool missing/not executable"
+
+if python3 - "$save_scope_tool" <<'PY' >/dev/null 2>&1
+import importlib.util, pathlib, sys
+path = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(path.parent))
+spec = importlib.util.spec_from_file_location("save_scope_doctor", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert callable(module.resolve_effective_plane)
+PY
+then
+  pass "save scope resolver includes strict managed-task no-Git resolution"
+else
+  nope "save scope resolver or Control marker contract is invalid"
+fi
+
+if python3 - "$save_none_tool" <<'PY' >/dev/null 2>&1
+import importlib.util, pathlib, sys
+path = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(path.parent))
+spec = importlib.util.spec_from_file_location("save_none_doctor", path)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+assert callable(module.publish_managed_none)
+PY
+then
+  pass "managed effective-none save has an executable no-Git publication path"
+else
+  nope "managed effective-none save executor is missing or invalid"
+fi
 
 if [[ -f "$active_template" && -f "$decisions_template" ]] \
     && python3 - "$memory_tool" "$active_template" "$decisions_template" <<'PY' >/dev/null 2>&1
