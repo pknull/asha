@@ -103,11 +103,17 @@ for save_workflow in \
 	  if [[ -f "$save_workflow" || -L "$save_workflow" ]] \
 	     && grep -q 'save_identity.py' "$save_workflow" \
 	     && grep -q 'SAVE_SESSION_ID' "$save_workflow" \
+	     && grep -q 'control-task.json' "$save_workflow" \
+	     && grep -q 'effective.*scope' "$save_workflow" \
+	     && grep -q 'save_none.py' "$save_workflow" \
+	     && grep -q -- '--scope none' "$save_workflow" \
+	     && grep -q 'identity_status=skipped' "$save_workflow" \
+	     && grep -q 'do not invoke `git diff`' "$save_workflow" \
 	     && awk '/memory_v2.py" publish/{p=NR} /save_identity.py/{i=NR} END{exit !(p && i && p < i)}' "$save_workflow" \
 	     && ! grep -q -- '--capability\|learning_capability' "$save_workflow"; then
-	    ok "rendered explicit save publishes before optional identity without capability: $save_workflow"
+    ok "rendered explicit save includes managed no-Git scope and identity ordering: $save_workflow"
   else
-    fail "rendered explicit save identity workflow missing or stale: $save_workflow"
+    fail "rendered explicit save managed-scope or identity workflow missing/stale: $save_workflow"
   fi
 done
 jq -e --arg root "$REPO_ROOT" '.asha_root == $root' "$SANDBOX/.asha/config.json" >/dev/null \
@@ -198,7 +204,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# Test 2: Claude hook ownership spans the five v2 lifecycle events
+# Test 2: Claude hook ownership spans recovery plus Control Stop observation
 # ---------------------------------------------------------------------------
 echo "--- test 2: hook registration covers lifecycle events ---"
 hook_count="$(asha_hook_count)"
@@ -206,7 +212,7 @@ event_count="$(asha_hook_event_count)"
 [[ "$hook_count" -ge 7 ]] \
   && ok "at least 7 asha-tagged hook entries registered ($hook_count)" \
   || fail "at least 7 asha-tagged hook entries registered (got $hook_count)"
-assert_eq "asha hooks span all five v2 events" "5" "$event_count"
+assert_eq "asha hooks span all six registered events" "6" "$event_count"
 
 # ---------------------------------------------------------------------------
 # Test 3: a Codex failure does not abort Claude, Copilot, or OpenCode
