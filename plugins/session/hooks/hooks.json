@@ -6,6 +6,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/session-start.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh SessionStart"
           }
         ]
       }
@@ -49,6 +53,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/post-tool-use.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh PostToolUse"
           }
         ]
       }
@@ -59,16 +67,36 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/user-prompt-submit.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh UserPromptSubmit"
           }
         ]
       }
     ],
     "SessionEnd": [
       {
+        "_asha_harnesses": ["claude"],
         "hooks": [
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/session-end.sh"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh SessionEnd"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "_asha_harnesses": ["claude"],
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh Stop"
           }
         ]
       }
