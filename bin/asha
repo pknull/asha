@@ -292,6 +292,9 @@ Usage:
                                    bootstrap, discover, or validate a workspace
   asha workspace knowledge|promote|worktree|work-item [...]
                                    manage shared knowledge and optional coordination
+  asha task start|list|show|attach|stop|archive|reconcile|doctor [...]
+                                   manage persistent Control tasks and runs
+  asha control [event|tmux]        run the terminal TUI or Control internals
   asha process route <task>        advisory process route with risks and fallback
   asha capabilities match <task>   registry-backed harness capability match
                                    (both accept --json)
@@ -327,6 +330,16 @@ ASHA_FLAG_YES=0
 case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;
 esac
+
+# Asha Control owns these public nouns. Route them before harness selection so
+# neither can fall through and become a default-harness argument.
+if [[ "${1:-}" == "task" || "${1:-}" == "control" ]]; then
+  control_route="$1"; shift
+  # shellcheck disable=SC1090
+  source "$ASHA_ROOT/lib/control.sh"
+  ( set -euo pipefail; asha_control_main "$control_route" "$@" )
+  exit $?
+fi
 
 # asha's own install-health audit. Verb-first — `asha claude doctor` still
 # reaches Claude Code's native doctor via launch forwarding.

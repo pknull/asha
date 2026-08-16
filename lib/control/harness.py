@@ -1,0 +1,204 @@
+"""Validated harness launch and Linux process-identity primitives."""
+
+from __future__ import annotations
+
+import errno
+import os
+import re
+import unicodedata
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
+
+from .config import is_canonical_absolute_path
+from .model import ModelError, canonical_uuid
+
+
+HARNESSES = frozenset({"claude", "codex", "copilot", "opencode"})
+PROC_ROOT = Path("/proc")
+MAX_PROC_BYTES = 64 * 1024
+_BOOT_ID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.ASCII,
+)
+_CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+
+
+class HarnessError(ValueError):
+    """A harness launch or process-identity precondition failed."""
+
+
+def _has_unicode_control(value: str) -> bool:
+    return any(unicodedata.category(char) in _CONTROL_CATEGORIES for char in value)
+
+
+def _validate_pid(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+        raise HarnessError("process id is invalid")
+    return value
+
+
+def _canonical_path(value: Any, message: str) -> Path:
+    if not isinstance(value, Path):
+        raise HarnessError(message)
+    text = str(value)
+    if (_has_unicode_control(text) or
+            not is_canonical_absolute_path(text, resolved=True)):
+        raise HarnessError(message)
+    return value
+
+
+def _read_bounded(path: Path, *, missing_is_none: bool) -> bytes | None:
+    try:
+        with path.open("rb") as handle:
+            raw = handle.read(MAX_PROC_BYTES + 1)
+    except FileNotFoundError:
+        if missing_is_none:
+            return None
+        raise HarnessError("required proc identity file is missing") from None
+    except OSError as exc:
+        if missing_is_none and exc.errno == errno.ESRCH:
+            return None
+        raise HarnessError(f"cannot read proc identity file: {exc}") from exc
+    if len(raw) > MAX_PROC_BYTES:
+        raise HarnessError("proc identity file exceeds the bounded read limit")
+    return raw
+
+
+def validate_harness(name: Any) -> str:
+    if not isinstance(name, str) or name not in HARNESSES:
+        raise HarnessError("unsupported harness")
+    return name
+
+
+def launch_argv(
+    asha_root: Path, harness: str, extra: Sequence[str] = (),
+) -> list[str]:
+    root = _canonical_path(asha_root, "Asha root is not an absolute canonical path")
+    harness = validate_harness(harness)
+    executable = root / "bin" / "asha"
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise HarnessError("Asha launcher is missing or not executable")
+    if isinstance(extra, (str, bytes)) or not isinstance(extra, Sequence):
+        raise HarnessError("harness extra arguments are invalid")
+    arguments = list(extra)
+    if any(not isinstance(item, str) or _has_unicode_control(item)
+           for item in arguments):
+        raise HarnessError("harness extra arguments are invalid")
+    if arguments and arguments[0].startswith("-"):
+        raise HarnessError("the first goal argument must not begin with '-'")
+    return [str(executable), harness, *arguments]
+
+
+def controller_env(
+    *, task_id: str, run_id: str, state_dir: Path,
+) -> dict[str, str]:
+    try:
+        task_id = canonical_uuid(task_id)
+        run_id = canonical_uuid(run_id)
+    except ModelError as exc:
+        raise HarnessError("control identifiers must be canonical UUIDs") from exc
+    state = _canonical_path(
+        state_dir, "control state directory is not an absolute canonical path",
+    )
+    return {
+        "ASHA_CONTROL_TASK_ID": task_id,
+        "ASHA_CONTROL_RUN_ID": run_id,
+        "ASHA_CONTROL_STATE_DIR": str(state),
+        "ASHA_CONTROL_MANAGED": "1",
+    }
+
+
+def boot_id() -> str:
+    raw = _read_bounded(
+        PROC_ROOT / "sys" / "kernel" / "random" / "boot_id",
+        missing_is_none=False,
+    )
+    assert raw is not None
+    try:
+        value = raw.decode("ascii").strip()
+    except UnicodeDecodeError as exc:
+        raise HarnessError("boot id is malformed") from exc
+    if _BOOT_ID.fullmatch(value) is None:
+        raise HarnessError("boot id is malformed")
+    return value
+
+
+def _process_stat_fields(pid: int) -> list[bytes] | None:
+    pid = _validate_pid(pid)
+    raw = _read_bounded(PROC_ROOT / str(pid) / "stat", missing_is_none=True)
+    if raw is None:
+        return None
+    closing = raw.rfind(b")")
+    expected_prefix = f"{pid} (".encode("ascii")
+    if (not raw.startswith(expected_prefix) or closing < len(expected_prefix) or
+            raw[closing + 1:closing + 2] != b" "):
+        raise HarnessError("process stat line is malformed")
+    fields = raw[closing + 2:].split()
+    if len(fields) < 20:
+        raise HarnessError("process stat line is malformed")
+    return fields
+
+
+def _stat_integer(fields: list[bytes], index: int) -> int:
+    try:
+        value = int(fields[index])
+    except (ValueError, IndexError) as exc:
+        raise HarnessError("process stat line is malformed") from exc
+    if value < 0:
+        raise HarnessError("process stat line is malformed")
+    return value
+
+
+def process_start_ticks(pid: int) -> int | None:
+    fields = _process_stat_fields(pid)
+    if fields is None:
+        return None
+    # The suffix begins at field 3, so field 22 is suffix index 19.
+    return _stat_integer(fields, 19)
+
+
+def process_identity(pid: int) -> str | None:
+    ticks = process_start_ticks(pid)
+    if ticks is None:
+        return None
+    identity = f"boot:{boot_id()}:start:{ticks}"
+    if len(identity) > 200 or _has_unicode_control(identity):
+        raise HarnessError("process identity is invalid")
+    return identity
+
+
+def verify_process(pid: int, expected_identity: str) -> bool:
+    if (not isinstance(expected_identity, str) or not expected_identity or
+            len(expected_identity) > 200 or _has_unicode_control(expected_identity)):
+        return False
+    return process_identity(pid) == expected_identity
+
+
+def pane_ancestry_ok(pane_pid: int, server_pid: int) -> bool:
+    pane_pid = _validate_pid(pane_pid)
+    server_pid = _validate_pid(server_pid)
+    fields = _process_stat_fields(pane_pid)
+    if fields is None:
+        return False
+    # The suffix begins at field 3, so field 4 is suffix index 1.
+    return _stat_integer(fields, 1) == server_pid
+
+
+def stop_signal_allowed(
+    *,
+    pid: int,
+    expected_identity: str,
+    pane_pid: int,
+    server_pid: int,
+    pane_dead: bool,
+) -> bool:
+    if pane_dead is not False or pid != pane_pid:
+        return False
+    try:
+        return (
+            verify_process(pid, expected_identity)
+            and pane_ancestry_ok(pane_pid, server_pid)
+        )
+    except HarnessError:
+        return False
