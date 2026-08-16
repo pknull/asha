@@ -69,6 +69,95 @@ else
   fail "OpenCode doctor passes a healthy install ($(tail -3 "$WORK/doctor.out"))"
 fi
 
+echo "--- current-source drift defeats a stale matching ledger ---"
+printf '\nstale rendered bytes\n' >>"$OC1/commands/session-save.md"
+stale_hash="$(sha256sum "$OC1/commands/session-save.md" | awk '{print $1}')"
+manifest="$H1/.asha/install-manifests/opencode.json"
+jq --arg d "$OC1/commands/session-save.md" --arg h "$stale_hash" \
+  '(.artifacts[] | select(.destination == $d) | .sha256) = $h' \
+  "$manifest" >"$manifest.tmp" && mv "$manifest.tmp" "$manifest"
+if HOME="$H1" XDG_CONFIG_HOME="$H1/config" ASHA_HOME="$H1/.asha" \
+    ASHA_OPENCODE_CMD="$OPENCODE_OK" \
+    bash "$REPO_ROOT/bin/asha-drift-check.sh" --target opencode \
+    >"$WORK/stale-source.out" 2>"$WORK/stale-source.err"; then
+  fail "OpenCode doctor re-renders source rather than trusting a stale ledger"
+else
+  ok "OpenCode doctor re-renders source rather than trusting a stale ledger"
+fi
+assert "OpenCode source-drift diagnostic names generated source freshness" \
+  'grep -q "source" "$WORK/stale-source.out"'
+if install_into "$H1" --force >/dev/null 2>&1; then
+  ok "OpenCode force reinstall repairs stale rendered source"
+else
+  fail "OpenCode force reinstall repairs stale rendered source"
+fi
+
+echo "--- complete current-source artifact set ---"
+SET_REPO="$WORK/source-set-repo"
+cp -a "$REPO_ROOT" "$SET_REPO"
+HSET="$WORK/hset"; mkdir -p "$HSET"
+install_set() {
+  HOME="$HSET" XDG_CONFIG_HOME="$HSET/config" ASHA_HOME="$HSET/.asha" \
+    ASHA_OPENCODE_CMD="$OPENCODE_OK" \
+    bash "$SET_REPO/install.sh" --target opencode "$@"
+}
+drift_set() {
+  HOME="$HSET" XDG_CONFIG_HOME="$HSET/config" ASHA_HOME="$HSET/.asha" \
+    ASHA_OPENCODE_CMD="$OPENCODE_OK" \
+    bash "$SET_REPO/bin/asha-drift-check.sh" --target opencode
+}
+if install_set >/dev/null 2>&1; then ok "artifact-set fixture install succeeds"; else fail "artifact-set fixture install succeeds"; fi
+unowned="$HSET/config/opencode/commands/session-save.md"
+unowned_hash="$(sha256sum "$unowned" | awk '{print $1}')"
+set_manifest="$HSET/.asha/install-manifests/opencode.json"
+jq --arg d "$unowned" '.artifacts |= map(select(.destination != $d))' \
+  "$set_manifest" >"$set_manifest.tmp" && mv "$set_manifest.tmp" "$set_manifest"
+if drift_set >"$WORK/unowned-set.out" 2>"$WORK/unowned-set.err"; then
+  fail "current OpenCode artifact without a managed-set record fails drift"
+else
+  ok "current OpenCode artifact without a managed-set record fails drift"
+fi
+assert "unowned current artifact is reported without changing foreign bytes" \
+  'grep -q "not recorded as managed" "$WORK/unowned-set.out" && [[ $(sha256sum "$unowned" | awk '\''{print $1}'\'') == "$unowned_hash" ]]'
+if install_set --force >/dev/null 2>&1; then ok "reinstall restores complete managed artifact set"; else fail "reinstall restores complete managed artifact set"; fi
+cat >"$SET_REPO/plugins/test/commands/new-source-set.md" <<'EOF'
+---
+name: test-new-source-set
+description: "Disposable artifact-set command"
+---
+
+# Disposable command
+EOF
+cat >"$SET_REPO/plugins/test/agents/new-source-set.md" <<'EOF'
+---
+name: new-source-set
+description: "Disposable artifact-set agent"
+---
+
+# Disposable agent
+EOF
+if drift_set >"$WORK/new-set.out" 2>"$WORK/new-set.err"; then
+  fail "new OpenCode sources missing at destination fail drift"
+else
+  ok "new OpenCode sources missing at destination fail drift"
+fi
+assert "new-source drift names both missing generated destinations" \
+  'grep -q "/commands/test-new-source-set.md" "$WORK/new-set.out" && grep -q "/agents/test-new-source-set.md" "$WORK/new-set.out"'
+if install_set --force >/dev/null 2>&1 && drift_set >"$WORK/unchanged-set.out" 2>"$WORK/unchanged-set.err"; then
+  ok "unchanged complete OpenCode artifact set passes drift"
+else
+  fail "unchanged complete OpenCode artifact set passes drift"
+fi
+rm "$SET_REPO/plugins/test/commands/new-source-set.md" \
+   "$SET_REPO/plugins/test/agents/new-source-set.md"
+if drift_set >"$WORK/removed-set.out" 2>"$WORK/removed-set.err"; then
+  fail "retired OpenCode sources with installed artifacts fail drift"
+else
+  ok "retired OpenCode sources with installed artifacts fail drift"
+fi
+assert "retired-source drift names managed artifact-set residue" \
+  'grep -q "retired" "$WORK/removed-set.out" && grep -q "test-new-source-set.md" "$WORK/removed-set.out"'
+
 echo "--- full-install retirement reconciliation ---"
 orphan="$OC1/commands/retired-command.md"
 printf 'managed old bytes\n' >"$orphan"

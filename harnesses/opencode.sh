@@ -86,7 +86,7 @@ opencode_install_skills() {
 }
 
 _opencode_emit_command() {
-  local src="$1" dest="$2" content prepared
+  local src="$1" dest="$2" mode="${3:-install}" content prepared
   content="$(python3 - "$src" <<'PYEOF'
 import json, re, sys
 text = open(sys.argv[1], encoding="utf-8").read()
@@ -112,7 +112,11 @@ PYEOF
 )"
   prepared="$(mktemp)"
   printf '%s\n' "$content" >"$prepared"
-  asha_artifact_install_prepared opencode "$src" "$dest" opencode-command "$prepared"
+  if [[ "$mode" == render ]]; then
+    cat "$prepared" >"$dest"
+  else
+    asha_artifact_install_prepared opencode "$src" "$dest" opencode-command "$prepared"
+  fi
   rm -f "$prepared"
 }
 
@@ -134,7 +138,7 @@ opencode_install_commands() {
 }
 
 _opencode_emit_agent() {
-  local src="$1" dest="$2" src_dir="$3" ns="$4" content prepared
+  local src="$1" dest="$2" src_dir="$3" ns="$4" mode="${5:-install}" content prepared
   content="$(python3 - "$src" "$src_dir" "$ns" <<'PYEOF'
 import json, pathlib, re, sys
 src, src_dir, namespace = sys.argv[1:]
@@ -174,7 +178,11 @@ PYEOF
 )"
   prepared="$(mktemp)"
   printf '%s\n' "$content" >"$prepared"
-  asha_artifact_install_prepared opencode "$src" "$dest" opencode-agent "$prepared"
+  if [[ "$mode" == render ]]; then
+    cat "$prepared" >"$dest"
+  else
+    asha_artifact_install_prepared opencode "$src" "$dest" opencode-agent "$prepared"
+  fi
   rm -f "$prepared"
 }
 
@@ -197,6 +205,7 @@ opencode_install_agents() {
 }
 
 opencode_install_plugin() {
+  local mode="$1" destination="$2"
   local handlers="$PLUGINS_DIR/session/hooks/handlers"
   local adapter="$handlers/opencode-policy-adapter.sh"
   local start="$handlers/session-start.sh"
@@ -284,7 +293,11 @@ PYEOF
 )"
   prepared="$(mktemp)"
   printf '%s\n' "$content" >"$prepared"
-  asha_artifact_install_prepared opencode "$adapter" "$OPENCODE_PLUGIN_FILE" opencode-plugin "$prepared"
+  if [[ "$mode" == render ]]; then
+    cat "$prepared" >"$destination"
+  else
+    asha_artifact_install_prepared opencode "$adapter" "$destination" opencode-plugin "$prepared"
+  fi
   rm -f "$prepared"
 }
 
@@ -307,7 +320,7 @@ opencode_install() {
   done < <(selected_plugins)
   say ""
   say "== [opencode] integration plugin =="
-  opencode_install_plugin
+  opencode_install_plugin install "$OPENCODE_PLUGIN_FILE"
   asha_artifact_finalize opencode "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)"
 }
 
