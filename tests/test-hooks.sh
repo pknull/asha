@@ -200,8 +200,8 @@ MALFORMED="$(run_hook post-tool-use.sh 'not-json')"; RC=$?
 [[ $RC -eq 0 && "$MALFORMED" == '{}' ]] && ok "malformed hook payload fails open" || fail "malformed hook payload fails open"
 
 HOOKS="$REPO_ROOT/plugins/session/hooks/hooks.json"
-jq -e '.hooks | has("SessionStart") and has("UserPromptSubmit") and has("PostToolUse") and has("SessionEnd") and (has("Stop")|not)' "$HOOKS" >/dev/null \
-  && ok "hook registry carries recovery lifecycle without Stop auto-save" || fail "hook registry carries recovery lifecycle without Stop auto-save"
+jq -e '.hooks | has("SessionStart") and has("UserPromptSubmit") and has("PostToolUse") and has("SessionEnd") and has("Stop")' "$HOOKS" >/dev/null \
+  && ok "hook registry carries recovery lifecycle plus Control Stop observation" || fail "hook registry carries recovery lifecycle plus Control Stop observation"
 if ! rg -n 'pattern_analyzer|jsonl_reader|event_store|detached-save|save-session|git (commit|push)|Memory/' \
       "$HANDLERS/session-start.sh" "$HANDLERS/user-prompt-submit.sh" \
       "$HANDLERS/post-tool-use.sh" "$HANDLERS/session-end.sh" >/dev/null; then
@@ -337,6 +337,52 @@ jq -e '.hooks.PreToolUse[] | select((._asha_harnesses // []) | index("codex"))
   | any(.hooks[]?; (.command // "") | test("policy-guard\\.sh$"))' "$HOOKS" >/dev/null 2>&1 \
   && ok "Codex apply_patch alias reaches published-Memory policy" \
   || fail "Codex apply_patch alias reaches published-Memory policy"
+
+CONTROL_REACHABLE=1
+while read -r native control_event; do
+  jq -e --arg native "$native" '.hooks[$native][]
+    | any(.hooks[]?; (.command // "")
+      | endswith("control-event.sh " + $native))' "$HOOKS" >/dev/null 2>&1 \
+    || CONTROL_REACHABLE=0
+done <<'EOF'
+SessionStart session-start
+UserPromptSubmit prompt-submitted
+PostToolUse tool-completed
+Stop turn-stopped
+SessionEnd session-ended
+EOF
+[[ $CONTROL_REACHABLE -eq 1 ]] \
+  && ok "Control event handler is reachable from every registered native event" \
+  || fail "Control event handler is reachable from every registered native event"
+
+if jq -e '[.hooks.SessionStart[], .hooks.UserPromptSubmit[], .hooks.PostToolUse[]]
+    | all(.[] | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")));
+          has("_asha_harnesses") | not)' "$HOOKS" >/dev/null 2>&1 \
+  && jq -e '.hooks.Stop[]
+    | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")))
+    | ._asha_harnesses == ["claude"]' "$HOOKS" >/dev/null 2>&1 \
+  && jq -e '.hooks.SessionEnd[]
+    | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")))
+    | ._asha_harnesses == ["claude"]' "$HOOKS" >/dev/null 2>&1; then
+  ok "cross-harness and Claude-only Control groups carry the exact tags"
+else
+  fail "cross-harness and Claude-only Control groups carry the exact tags"
+fi
+
+asha_harness_home() { printf '%s\n' "$WORK/codex-render-home"; }
+# shellcheck source=../harnesses/codex.sh
+source "$REPO_ROOT/harnesses/codex.sh"
+CODEX_RENDER="$(_codex_emit_hooks_for_plugin \
+  "$REPO_ROOT/plugins/session" "$HOOKS" session 2>/dev/null)"
+[[ "$CODEX_RENDER" == *"control-event.sh SessionStart"* \
+   && "$CODEX_RENDER" == *"control-event.sh UserPromptSubmit"* \
+   && "$CODEX_RENDER" == *"control-event.sh PostToolUse"* \
+   && "$CODEX_RENDER" != *"control-event.sh Stop"* \
+   && "$CODEX_RENDER" != *"control-event.sh SessionEnd"* \
+   && "$CODEX_RENDER" != *"[[hooks.Stop]]"* \
+   && "$CODEX_RENDER" != *"[[hooks.SessionEnd]]"* ]] \
+  && ok "Codex renderer includes only the three claimed Control events" \
+  || fail "Codex renderer includes only the three claimed Control events"
 
 echo "test-hooks: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

@@ -15,6 +15,24 @@ contract is portability of behavior, not identical primitives.
 | Semantic Memory publication | Explicit `/session:save` | Explicit session save skill | Explicit session save skill | Explicit session save command |
 | Workspace context | SessionStart delivery | SessionStart delivery | SessionStart delivery | Plugin SessionStart delivery |
 
+## Control status event claims
+
+Control writes one bounded current snapshot per managed run. These are status
+observations, not enforcement hooks, and only the following native bindings are
+claimed:
+
+| Control event | Claude Code | OpenAI Codex |
+|---|---|---|
+| `session-start` | Wired from `SessionStart` | Wired from `SessionStart` |
+| `prompt-submitted` | Wired from `UserPromptSubmit` | Wired from `UserPromptSubmit` |
+| `tool-completed` | Wired from `PostToolUse` | Wired from `PostToolUse`; interception is known incomplete for `unified_exec` |
+| `permission-requested` | Not claimed. `Notification` is multi-purpose and its payload is unverified. | Not claimed. `PermissionRequest` exists in Codex's allowlist but has no live-probe evidence and is trust-gated. |
+| `turn-stopped` | Wired from `Stop` | Not claimed. `Stop` exists in Codex's allowlist but has no live-probe evidence and is trust-gated. |
+| `session-ended` | Wired from `SessionEnd` | Codex has no equivalent event. |
+
+Copilot and OpenCode provide process liveness only; Asha claims no semantic
+Control events for either harness.
+
 No harness performs automatic semantic publication. Prompt and tool hooks write
 only ignored recovery state under `Work/session-state/`. Session end seals that
 state and prunes entries older than seven days. An explicit save uses the live

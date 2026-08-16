@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-08-13",
+  "reviewed": "2026-08-15",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
@@ -31,6 +31,14 @@
           "surface": "settings.json",
           "verifier": "doctor:hook-paths",
           "limitations": []
+        },
+        "control-status": {
+          "support": "partial",
+          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; Stop -> turn-stopped; SessionEnd -> session-ended",
+          "verifier": "task doctor:harness-events + task doctor:hooks",
+          "limitations": [
+            "permission-requested is not claimed; Notification is multi-purpose and its payload is unverified"
+          ]
         },
         "persona": {
           "support": "native",
@@ -84,6 +92,17 @@
             "Some unified_exec shell calls are not intercepted",
             "Non-shell non-MCP tools are not universally intercepted",
             "Hooks are not a complete enforcement boundary"
+          ]
+        },
+        "control-status": {
+          "support": "partial",
+          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed",
+          "verifier": "task doctor:harness-events + task doctor:hooks",
+          "limitations": [
+            "Some unified_exec shell calls are not intercepted",
+            "turn-stopped is not claimed; Stop exists in the Codex allowlist but has no live-probe evidence and is trust-gated",
+            "permission-requested is not claimed; PermissionRequest exists in the Codex allowlist but has no live-probe evidence and is trust-gated",
+            "session-ended has no equivalent event in Codex"
           ]
         },
         "guardrails": {
@@ -150,6 +169,14 @@
             "Parallel tool calls can bypass PreToolUse"
           ]
         },
+        "control-status": {
+          "support": "partial",
+          "surface": "process liveness only",
+          "verifier": "task doctor:tmux",
+          "limitations": [
+            "No semantic Control events are claimed"
+          ]
+        },
         "guardrails": {
           "support": "partial",
           "surface": "hooks/asha-guardrails.json",
@@ -207,6 +234,14 @@
           "verifier": "doctor:opencode-plugin",
           "limitations": [
             "dispose seals recovery state only; it never publishes semantic memory"
+          ]
+        },
+        "control-status": {
+          "support": "partial",
+          "surface": "process liveness only",
+          "verifier": "task doctor:tmux",
+          "limitations": [
+            "No semantic Control events are claimed"
           ]
         },
         "guardrails": {
