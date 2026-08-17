@@ -105,6 +105,15 @@ class OrchestrationStoreTests(unittest.TestCase):
             with self.store.transaction_lock(INITIATIVE_ID):
                 self.assertEqual(self.store.peek(INITIATIVE_ID)["initiative_id"], INITIATIVE_ID)
 
+    def test_assignment_directory_is_created_on_demand_for_legacy_initiative(self) -> None:
+        self.create()
+        assignments = self.config.initiatives_dir / INITIATIVE_ID / "assignments"
+        os.rmdir(assignments)
+        attempt_id = "33333333-3333-4333-8333-333333333333"
+        path = self.store.write_assignment(INITIATIVE_ID, attempt_id, b"assignment\n")
+        self.assertEqual(path.read_bytes(), b"assignment\n")
+        self.assertEqual(stat.S_IMODE(assignments.stat().st_mode), 0o700)
+
     def test_digest_guarded_update_and_conflict(self) -> None:
         self.create()
         current = self.store.read_initiative(INITIATIVE_ID)

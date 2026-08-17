@@ -19,6 +19,7 @@ from lib.control.orchestration.cli import (
 )
 from lib.control.orchestration.config import load_config
 from lib.control.orchestration.store import InitiativeStore, StoreError
+from lib.control.orchestration.scheduler import SchedulerError
 from lib.control.orchestration.storage import storage_report
 from tests.python.test_orchestration_graph import valid_plan
 
@@ -250,6 +251,31 @@ class OrchestrationCliTests(unittest.TestCase):
         os.mkfifo(fifo)
         with self.assertRaisesRegex(ValueError, "regular file"):
             _plan([initiative["initiative_id"], "--file", str(fifo)], self.store, self.config)
+
+    def test_plan_refuses_before_persistence_when_control_goal_cannot_fit(self) -> None:
+        initiative = self.create("s" * 40)
+        plan_path = self.write_plan(initiative, "overlong-goal.json")
+        with mock.patch(
+            "lib.control.orchestration.cli.validate_goal_capacity",
+            side_effect=SchedulerError("absolute assignment path exceeds goal limit"),
+        ), self.assertRaisesRegex(SchedulerError, "assignment path"):
+            _plan(
+                [initiative["initiative_id"], "--file", str(plan_path)],
+                self.store, self.config,
+            )
+        self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "draft")
+        self.assertEqual(self.store.list_plans_snapshot(initiative["initiative_id"]), [])
+
+    def test_indeterminate_operator_action_exits_three(self) -> None:
+        with mock.patch(
+            "lib.control.orchestration.cli._operator_action",
+            return_value=({"state": "indeterminate"}, True),
+        ):
+            status, stdout, stderr = self.invoke([
+                "dispatch", "ignored", "--node", "ignored", "--json",
+            ])
+        self.assertEqual((status, stderr), (3, ""))
+        self.assertEqual(json.loads(stdout)["state"], "indeterminate")
 
     def test_storage_report_supports_required_positional_api(self) -> None:
         initiative = self.create("positional-storage")

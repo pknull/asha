@@ -315,6 +315,7 @@ class OrchestrationModelTests(unittest.TestCase):
             "actor_id": "keeper",
             "expected_initiative_revision": 0,
             "control_task_id": task_id,
+            "control_task_identity_digest": "a" * 64,
             "control_task_record_digest": "b" * 64,
         }
         evidence = {
@@ -821,6 +822,17 @@ class OrchestrationModelTests(unittest.TestCase):
         pending["state"] = "running"
         with self.assertRaises(model.ModelError):
             model.validate_review(pending)
+
+    def test_attempt_action_id_is_nullable_only_for_allocation(self) -> None:
+        attempt = next(
+            record for validator, record in self.contract_records()
+            if validator is model.validate_attempt
+        )
+        attempt["action_id"] = None
+        model.validate_attempt(attempt)
+        attempt["state"] = "dispatching"
+        with self.assertRaisesRegex(model.ModelError, "allocated attempt"):
+            model.validate_attempt(attempt)
 
     def test_every_record_contract_validates_and_rejects_extra_or_future_fields(self) -> None:
         for validator, record in self.contract_records():

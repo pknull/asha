@@ -818,13 +818,18 @@ def validate_attempt(value: Any) -> dict[str, Any]:
     attempt = _object(value, "attempt", _ATTEMPT_KEYS)
     if attempt["contract"] != ATTEMPT_CONTRACT:
         raise ModelError(f"attempt contract must be {ATTEMPT_CONTRACT}")
-    for field in ("attempt_id", "initiative_id", "task_id", "action_id"):
+    for field in ("attempt_id", "initiative_id", "task_id"):
         canonical_uuid(attempt[field], f"attempt {field}")
     validate_slug(attempt["node_id"], "attempt node_id")
     _integer(attempt["ordinal"], "attempt ordinal", minimum=1)
     validate_base_policy(attempt["base"])
     if attempt["state"] not in ATTEMPT_TRANSITIONS:
         raise ModelError("attempt state is invalid")
+    if attempt["action_id"] is None:
+        if attempt["state"] != "allocated":
+            raise ModelError("only an allocated attempt may have a null action_id")
+    else:
+        canonical_uuid(attempt["action_id"], "attempt action_id")
     for field in ("result_publication_id", "result_id", "seal_id"):
         _nullable_uuid(attempt[field], f"attempt {field}")
     created = _timestamp(attempt["created_at"], "attempt created_at")
@@ -1219,7 +1224,7 @@ def validate_event(value: Any) -> dict[str, Any]:
 _LINK_BASE_KEYS = frozenset({
     "contract", "initiative_id", "active_plan_digest", "node_id", "attempt_id",
     "action_id", "actor_kind", "actor_id", "expected_initiative_revision",
-    "control_task_id", "control_task_record_digest",
+    "control_task_id", "control_task_identity_digest", "control_task_record_digest",
 })
 
 
@@ -1243,6 +1248,7 @@ def validate_link(value: Any) -> dict[str, Any]:
         raise ModelError("link actor_kind is invalid")
     _text(link["actor_id"], "link actor_id", maximum=MAX_ACTOR_ID_BYTES)
     _integer(link["expected_initiative_revision"], "link expected_initiative_revision")
+    _digest(link["control_task_identity_digest"], "link control_task_identity_digest")
     _digest(link["control_task_record_digest"], "link control_task_record_digest")
     if link["actor_kind"] == "coordinator":
         _integer(link["coordinator_generation"], "link coordinator_generation", minimum=1)

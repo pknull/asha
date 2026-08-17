@@ -777,7 +777,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         return 0 if args else 2
     command, tail = args[0], args[1:]
     if command in {"report", "result", "seal"}:
-        print(f"asha task {command}: not available before Increment 2", file=sys.stderr)
+        print(f"asha task {command}: not available before Increment 2b", file=sys.stderr)
         return 2
     if command not in {
         "start", "list", "show", "attach", "stop", "archive", "unarchive",

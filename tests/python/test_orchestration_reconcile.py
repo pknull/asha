@@ -6,6 +6,7 @@ from unittest import mock
 from lib.control.reconcile import UnavailableAdapters
 from lib.control.store import StoreError, task_digest
 from lib.control.orchestration.reconcile import reconcile_nodes
+from lib.control.orchestration.links import control_task_identity_digest
 from tests.python.test_control_config_model import task_record
 
 
@@ -26,7 +27,9 @@ class OrchestrationReconcileTests(unittest.TestCase):
         )
         link = {
             "node_id": "work", "attempt_id": "33333333-3333-4333-8333-333333333333",
-            "control_task_id": task["task_id"], "control_task_record_digest": task_digest(task),
+            "control_task_id": task["task_id"],
+            "control_task_identity_digest": control_task_identity_digest(task),
+            "control_task_record_digest": task_digest(task),
         }
         store = mock.Mock()
         store.list_links_snapshot.return_value = [link]
@@ -40,7 +43,7 @@ class OrchestrationReconcileTests(unittest.TestCase):
         )[0]
         self.assertTrue(matched["digest_match"])
         changed = dict(link)
-        changed["control_task_record_digest"] = "0" * 64
+        changed["control_task_identity_digest"] = "0" * 64
         store.list_links_snapshot.return_value = [changed]
         stale = reconcile_nodes(
             "11111111-1111-4111-8111-111111111111", [{"node_id": "work"}],
