@@ -18,9 +18,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from lib.control.cli import main as control_main
+from lib.control.cli import _parse_start, _run_popup, _start_command, main as control_main
 from lib.control.config import load_config
-from lib.control.doctor import run_doctor
+from lib.control.doctor import DEFAULT_PROBES, run_doctor
 from lib.control.harness import (
     HarnessError,
     boot_id,
@@ -32,13 +32,18 @@ from lib.control.harness import (
     stop_signal_allowed,
     verify_process,
 )
-from lib.control.jj import WorkspaceIdentity
-from lib.control.launch import LaunchError, archive_task, launch_task, stop_task
+from lib.control.jj import JjAdapter, WorkspaceIdentity
+from lib.control.launch import (
+    LaunchError, archive_task, launch_task, recover_task, stop_task,
+    unarchive_task,
+)
 from lib.control.model import RUN_CONTRACT, validate_run, validate_task
 from lib.control.prepare import prepare_task_workspace
 from lib.control.reconcile import Evidence, LiveAdapters, reconcile_task
 from lib.control.store import StoreError, TaskStore, task_digest
-from lib.control.tmux import PaneFacts, TmuxAdapter, TmuxError
+from lib.control.tmux import (
+    PaneFacts, TmuxAdapter, TmuxError, _validate_argv, _validate_pane_id,
+)
 from lib.control.transaction import (
     CreationJournalStore, JournalError, PHASES, PHASE_TRANSITIONS,
 )
@@ -57,6 +62,14 @@ class TmuxAdapterTests(unittest.TestCase):
             "pane_options": {"@asha_run_id": "11111111-1111-4111-8111-111111111111"},
             "pane_title": "Primary run",
         }
+
+    def test_command_argv_rejects_tmux_command_separators_only_at_token_end(self) -> None:
+        for argv in (["x", "goal;"], [";"]):
+            with self.subTest(argv=argv), self.assertRaisesRegex(
+                TmuxError, "tmux command argv is invalid",
+            ):
+                _validate_argv(argv)
+        self.assertEqual(_validate_argv(["a;b"]), ["a;b"])
 
     def test_create_task_session_is_one_chained_argv_only_invocation(self) -> None:
         run = mock.Mock(return_value=subprocess.CompletedProcess(
@@ -473,12 +486,20 @@ class FakeTmux:
         return "%1"
 
     def respawn(self, pane_id, argv):
+        _validate_argv(argv)
         self.respawned = True
 
     def pane_facts(self, pane_id):
+        _validate_pane_id(pane_id)
         return PaneFacts(
             pane_id, self.pid, self.dead, None, None,
             self.session or "asha-control-test", self.window, "asha:codex:implementer",
+        )
+
+    def window_pane_facts(self, session, window):
+        return PaneFacts(
+            "%1", self.pid, self.dead, None, None,
+            session, window, "asha:codex:implementer",
         )
 
     def server_pid(self):
@@ -487,6 +508,32 @@ class FakeTmux:
     def kill_session(self, name):
         self.killed = True
         self.present = False
+
+
+class DerivedRunAdapters:
+    def __init__(self, state: str) -> None:
+        self.state = state
+
+    def tmux(self, task, run):
+        if self.state in {"exited", "failed"}:
+            return Evidence("tmux", "missing", "owned pane has exited")
+        return Evidence("tmux", "match", "owned pane matched")
+
+    def process(self, task, run):
+        if self.state in {"exited", "failed"}:
+            return Evidence(
+                "process", "missing", "process exited", state=self.state,
+            )
+        return Evidence("process", "match", "process identity matched")
+
+    def jj(self, task):
+        return Evidence("jj", "match", "workspace identity matched")
+
+    def event(self, task, run):
+        return Evidence(
+            "event", "match", "verified session-ended event snapshot",
+            state=self.state,
+        )
 
 
 class LaunchFixtureTests(unittest.TestCase):
@@ -752,7 +799,18 @@ class LaunchFixtureTests(unittest.TestCase):
             )
         self.assertEqual(result["task"]["lifecycle"], "running")
 
-    def test_stop_is_identity_gated_and_archive_only_changes_ended_lifecycle(self) -> None:
+    def test_trailing_semicolon_goal_is_rejected_before_tmux_respawn(self) -> None:
+        task = self.prepared(61)
+        adapter = FakeTmux()
+        with self.assertRaisesRegex(LaunchError, "tmux command argv is invalid"):
+            launch_task(
+                self.config, task, tmux=adapter, tasks=self.tasks,
+                journals=self.journals, harness="codex",
+                goal_args=("investigate;", "kill-server"),
+            )
+        self.assertFalse(adapter.respawned)
+
+    def test_stop_is_identity_gated_and_archive_persists_reconciled_terminal_edge(self) -> None:
         task = self.prepared(70)
         adapter = FakeTmux()
         with self.process_evidence():
@@ -777,18 +835,157 @@ class LaunchFixtureTests(unittest.TestCase):
         self.assertEqual(sent.call_args_list[1].args[1], signal.SIGTERM)
         self.assertFalse(adapter.killed)
 
-        ended = copy.deepcopy(running)
-        ended["lifecycle"] = "ended"
-        ended["updated_at"] = self.timestamp()
-        ended["runs"][0]["state"] = "exited"
-        ended["runs"][0]["evidence_at"] = ended["updated_at"]
-        self.tasks.save(ended, expected_digest=task_digest(running))
-        workspace = Path(ended["jj"]["workspace_path"])
-        archived = archive_task(self.config, ended, tasks=self.tasks)
+        workspace = Path(running["jj"]["workspace_path"])
+        archived = archive_task(
+            self.config, running, tasks=self.tasks,
+            adapters=DerivedRunAdapters("exited"), journals=self.journals,
+        )
         self.assertEqual(archived["lifecycle"], "archived")
+        self.assertEqual(archived["runs"][0]["state"], "exited")
+        self.assertIn("process=missing", archived["runs"][0]["evidence"])
+        self.assertEqual(self.tasks.read(task["task_id"]), archived)
         self.assertTrue(workspace.exists())
-        with self.assertRaisesRegex(LaunchError, "only an ended"):
+        ended = unarchive_task(self.config, archived, tasks=self.tasks)
+        self.assertEqual(ended["lifecycle"], "ended")
+        archived_again = archive_task(self.config, ended, tasks=self.tasks)
+        self.assertEqual(archived_again["lifecycle"], "archived")
+        with self.assertRaisesRegex(LaunchError, "already archived"):
             archive_task(self.config, archived, tasks=self.tasks)
+
+    def test_archive_refuses_live_reconciliation_without_changing_record(self) -> None:
+        task = self.prepared(71)
+        adapter = FakeTmux()
+        with self.process_evidence():
+            running = launch_task(
+                self.config, task, tmux=adapter, tasks=self.tasks,
+                journals=self.journals, harness="codex", goal_args=("Goal",),
+            )["task"]
+        before = task_digest(running)
+        with self.assertRaisesRegex(
+            LaunchError, "runs have all exited.* is working",
+        ):
+            archive_task(
+                self.config, running, tasks=self.tasks,
+                adapters=DerivedRunAdapters("working"), journals=self.journals,
+            )
+        self.assertEqual(task_digest(self.tasks.read(task["task_id"])), before)
+
+    def test_archive_accepts_reconciled_failed_terminal_run(self) -> None:
+        task = self.prepared(72)
+        adapter = FakeTmux()
+        with self.process_evidence():
+            running = launch_task(
+                self.config, task, tmux=adapter, tasks=self.tasks,
+                journals=self.journals, harness="codex", goal_args=("Goal",),
+            )["task"]
+        archived = archive_task(
+            self.config, running, tasks=self.tasks,
+            adapters=DerivedRunAdapters("failed"), journals=self.journals,
+        )
+        self.assertEqual(archived["runs"][0]["state"], "failed")
+        self.assertEqual(archived["lifecycle"], "archived")
+
+    def test_keyboard_interrupt_after_respawn_preserves_and_propagates(self) -> None:
+        task = self.prepared(73)
+        adapter = FakeTmux()
+
+        def interrupt(boundary: str) -> None:
+            if boundary == "respawned":
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            launch_task(
+                self.config, task, tmux=adapter, tasks=self.tasks,
+                journals=self.journals, harness="codex", goal_args=("Goal",),
+                failure_injector=interrupt,
+            )
+        stored = self.tasks.read(task["task_id"])
+        journal = self.journals.read(task["task_id"])
+        self.assertEqual(stored["lifecycle"], "failed")
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertTrue(journal["launch_attempted"])
+        self.assertFalse(adapter.killed)
+
+
+@unittest.skipUnless(shutil.which("jj"), "jj is required")
+class RecoverTaskTests(unittest.TestCase):
+    def setUp(self) -> None:
+        fixture_type = __import__(
+            "tests.python.test_control_increment2",
+            fromlist=["RealJjPreparationTests"],
+        ).RealJjPreparationTests
+        self.fixture = fixture_type(
+            methodName="test_success_uses_exact_base_and_preserves_source",
+        )
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.config = self.fixture.config
+
+    def prepared(self, slug: str) -> dict:
+        return prepare_task_workspace(
+            self.config, self.fixture.request(slug), jj=JjAdapter(),
+        )
+
+    def test_recover_prelaunch_tmux_phases_kills_only_owned_session_and_rolls_back(self) -> None:
+        for index, boundary in enumerate(("tmux-intent", "tmux-session-created")):
+            with self.subTest(boundary=boundary):
+                task = self.prepared(f"recover-tmux-{index}")
+                adapter = FakeTmux()
+
+                def interrupt(observed: str, expected=boundary) -> None:
+                    if observed == expected:
+                        raise KeyboardInterrupt
+
+                with mock.patch(
+                    "lib.control.launch._rollback_before_launch", return_value=None,
+                ), self.assertRaises(KeyboardInterrupt):
+                    launch_task(
+                        self.config, task, tmux=adapter,
+                        tasks=TaskStore(self.config),
+                        journals=CreationJournalStore(self.config),
+                        harness="codex", goal_args=("Goal",),
+                        failure_injector=interrupt,
+                    )
+
+                result = recover_task(
+                    self.config, task, tasks=TaskStore(self.config),
+                    journals=CreationJournalStore(self.config),
+                    tmux=adapter, jj=JjAdapter(),
+                )
+                self.assertEqual(result["message"], "rolled back")
+                self.assertEqual(result["task"]["lifecycle"], "failed")
+                self.assertEqual(result["journal"]["phase"], "rolled-back")
+                self.assertEqual(
+                    adapter.killed, boundary == "tmux-session-created",
+                )
+
+    def test_recover_launch_attempted_preserves_possible_live_process_without_kill(self) -> None:
+        task = self.prepared("recover-launch-attempted")
+        adapter = FakeTmux()
+
+        def interrupt(observed: str) -> None:
+            if observed == "respawned":
+                raise KeyboardInterrupt
+
+        with mock.patch(
+            "lib.control.launch._preserve_after_launch", return_value=task,
+        ), self.assertRaises(KeyboardInterrupt):
+            launch_task(
+                self.config, task, tmux=adapter, tasks=TaskStore(self.config),
+                journals=CreationJournalStore(self.config), harness="codex",
+                goal_args=("Goal",), failure_injector=interrupt,
+            )
+
+        result = recover_task(
+            self.config, task, tasks=TaskStore(self.config),
+            journals=CreationJournalStore(self.config), tmux=adapter,
+            jj=JjAdapter(),
+        )
+        self.assertEqual(result["task"]["lifecycle"], "failed")
+        self.assertEqual(result["journal"]["phase"], "preserved")
+        self.assertIn("may still be live", result["message"])
+        self.assertIn("asha task show", result["recovery_commands"] or "")
+        self.assertFalse(adapter.killed)
 
 
 class LiveAdapterEvidenceTests(unittest.TestCase):
@@ -843,6 +1040,28 @@ class LiveAdapterEvidenceTests(unittest.TestCase):
 
 
 class Increment3DoctorTests(unittest.TestCase):
+    def test_transactions_probe_matches_empty_registry_without_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            home = root / "home"
+            home.mkdir()
+            config = load_config({
+                "HOME": str(home),
+                "ASHA_CONFIG": str(root / "missing.json"),
+                "XDG_STATE_HOME": str(root / "state"),
+                "XDG_DATA_HOME": str(root / "data"),
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+            })
+            with mock.patch(
+                "subprocess.run",
+                side_effect=AssertionError("transactions probe must not spawn"),
+            ):
+                result = run_doctor(
+                    config,
+                    probes={"transactions": DEFAULT_PROBES["transactions"]},
+                )
+        self.assertEqual(result["probes"][0]["outcome"], "match")
+
     def test_tmux_probe_uses_private_socket_no_config_and_never_starts_session(self) -> None:
         responses = iter([
             (0, b"tmux 3.4\n", b""),
@@ -921,6 +1140,58 @@ class Increment3CliGrammarTests(unittest.TestCase):
                 self.assertEqual((status, stdout), (2, ""))
                 self.assertIn(expected, stderr)
 
+    def test_goal_arguments_reject_trailing_tmux_separator_with_remedy(self) -> None:
+        remedy = (
+            "goal arguments must not end with ';' (tmux treats a trailing "
+            "semicolon as a command separator); rephrase the goal or pass it "
+            "as one --goal string that does not end in ';'"
+        )
+        for argv in (
+            ["--repo", str(self.root), "--goal", "flake;"],
+            ["--", "fix", "it;"],
+        ):
+            with self.subTest(argv=argv), self.assertRaisesRegex(
+                ValueError, re.escape(remedy),
+            ):
+                _parse_start(argv)
+        self.assertEqual(_parse_start(["--goal", "a; b"])["goal_args"], ("a; b",))
+
+    def test_start_preflight_refuses_missing_harness_and_invalid_role_before_prepare(self) -> None:
+        prepare = mock.Mock(side_effect=AssertionError("prepare must not be called"))
+        with mock.patch("lib.control.cli.prepare_task_workspace", prepare), \
+                mock.patch("lib.control.cli.shutil.which", return_value=None):
+            with self.assertRaisesRegex(ValueError, "not installed or not on PATH"):
+                _start_command([
+                    "--harness", "codex", "--goal", "Do work",
+                ], self.env)
+        prepare.assert_not_called()
+
+        prepare.reset_mock()
+        with mock.patch("lib.control.cli.prepare_task_workspace", prepare), \
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/codex"):
+            with self.assertRaisesRegex(ValueError, "invalid restricted grammar"):
+                _start_command([
+                    "--harness", "codex", "--role", "bad role",
+                    "--goal", "Do work",
+                ], self.env)
+        prepare.assert_not_called()
+
+    def test_start_sigterm_handler_raises_keyboard_interrupt_and_is_restored(self) -> None:
+        previous = signal.getsignal(signal.SIGTERM)
+
+        def terminate(args, env):
+            os.kill(os.getpid(), signal.SIGTERM)
+
+        with mock.patch(
+            "lib.control.cli._start_command_inner", side_effect=terminate,
+        ):
+            status, stdout, stderr = self.invoke([
+                "task", "start", "--goal", "Work",
+            ])
+        self.assertEqual((status, stdout), (130, ""))
+        self.assertIn("interrupted", stderr)
+        self.assertIs(signal.getsignal(signal.SIGTERM), previous)
+
     def test_defaults_json_discipline_and_start_text_field_order(self) -> None:
         result = self.fake_result()
         captured: dict[str, Any] = {}
@@ -937,20 +1208,26 @@ class Increment3CliGrammarTests(unittest.TestCase):
             mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"),
             mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare),
             mock.patch("lib.control.cli.launch_task", side_effect=launch),
+            mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"),
         )
-        with patches[0], patches[1], patches[2]:
+        with patches[0], patches[1], patches[2], patches[3]:
             status, stdout, stderr = self.invoke([
                 "task", "start", "--goal", "Do work", "--detach", "--json",
             ])
         self.assertEqual((status, stderr), (0, ""))
-        self.assertEqual(json.loads(stdout)["contract"], "asha.control-task-start.v1")
+        payload = json.loads(stdout)
+        self.assertEqual(payload["contract"], "asha.control-task-start.v1")
+        self.assertEqual(
+            payload["attach"], "tmux attach-session -t asha-do-work-12345678",
+        )
         self.assertEqual(captured["request"].requested_base, "trunk()")
         self.assertEqual(captured["launch"]["harness"], "claude")
 
         captured.clear()
         with mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"), \
                 mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
-                mock.patch("lib.control.cli.launch_task", side_effect=launch):
+                mock.patch("lib.control.cli.launch_task", side_effect=launch), \
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"):
             status, stdout, stderr = self.invoke([
                 "task", "start", "--goal", "Do work", "--detach",
             ])
@@ -959,6 +1236,44 @@ class Increment3CliGrammarTests(unittest.TestCase):
         self.assertEqual(fields, [
             "Task:", "Task ID:", "Workspace:", "jj name:", "Change:", "Tmux:", "Run:",
         ])
+
+    def test_json_start_implies_detach_and_never_opens_popup(self) -> None:
+        result = self.fake_result()
+
+        def prepare(config, request, jj=None):
+            return result["task"]
+
+        env = {**self.env, "TMUX": "/tmp/tmux/default,1,0"}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"), \
+                mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
+                mock.patch("lib.control.cli.launch_task", return_value=result), \
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("lib.control.cli._run_popup") as popup, \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = control_main([
+                "task", "start", "--goal", "Do work", "--json",
+            ], env=env)
+        self.assertEqual((status, stderr.getvalue()), (0, ""))
+        popup.assert_not_called()
+        self.assertIn("attach", json.loads(stdout.getvalue()))
+
+    def test_nonzero_popup_status_is_advisory_after_successful_start(self) -> None:
+        adapter = mock.Mock()
+        adapter.executable = "tmux"
+        adapter.socket = None
+        adapter.popup_argv.return_value = ["tmux", "display-popup"]
+        stderr = io.StringIO()
+        with mock.patch(
+            "lib.control.cli.subprocess.run",
+            return_value=subprocess.CompletedProcess(["tmux"], 1),
+        ), contextlib.redirect_stderr(stderr):
+            _run_popup(adapter, load_config(self.env), "asha-task-12345678", "do-work")
+        self.assertEqual(
+            stderr.getvalue(),
+            "asha control: popup closed with status 1; task do-work is still "
+            "running (attach: tmux attach-session -t asha-task-12345678)\n",
+        )
 
     def test_control_tmux_prints_only_the_snippet(self) -> None:
         status, stdout, stderr = self.invoke(["control", "tmux"])
@@ -999,6 +1314,47 @@ class Increment3CliGrammarTests(unittest.TestCase):
             f"tmux attach-session -t {result['task']['tmux']['session']}",
         )
         self.assertEqual(adapter.selected[2], run["pane_id"])
+
+    def test_archive_and_recovery_cli_refusals_exit_two(self) -> None:
+        result = self.fake_result()
+        store = TaskStore(load_config(self.env))
+        store.save(result["task"])
+        with mock.patch(
+            "lib.control.cli.LiveAdapters",
+            return_value=DerivedRunAdapters("working"),
+        ):
+            status, stdout, stderr = self.invoke([
+                "task", "archive", result["task"]["slug"],
+            ])
+        self.assertEqual((status, stdout), (2, ""))
+        self.assertIn("runs have all exited", stderr)
+
+        for verb in ("recover", "unarchive"):
+            with self.subTest(verb=verb):
+                status, stdout, stderr = self.invoke([
+                    "task", verb, result["task"]["slug"],
+                ])
+                self.assertEqual((status, stdout), (2, ""))
+                self.assertIn("nothing to recover" if verb == "recover" else "archived", stderr)
+
+    def test_archive_then_unarchive_cli_each_prints_one_success_line(self) -> None:
+        result = self.fake_result()
+        TaskStore(load_config(self.env)).save(result["task"])
+        with mock.patch(
+            "lib.control.cli.LiveAdapters",
+            return_value=DerivedRunAdapters("exited"),
+        ):
+            status, stdout, stderr = self.invoke([
+                "task", "archive", result["task"]["slug"],
+            ])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(len(stdout.splitlines()), 1)
+
+        status, stdout, stderr = self.invoke([
+            "task", "unarchive", result["task"]["slug"],
+        ])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(len(stdout.splitlines()), 1)
 
 
 @unittest.skipUnless(shutil.which("jj"), "jj is required")
@@ -1151,6 +1507,39 @@ class RealTmuxLaunchTests(unittest.TestCase):
             self.launch(prepared, failure_injector=inject)
         self.assertFalse(self.adapter.has_session(prepared["tmux"]["session"]))
         self.assertFalse(Path(prepared["jj"]["workspace_path"]).exists())
+
+    def test_recover_after_interrupted_respawn_reports_live_process_via_real_tmux(self) -> None:
+        prepared = self.prepare("live-recover")
+
+        def interrupt(phase):
+            if phase == "respawned":
+                raise KeyboardInterrupt
+
+        with mock.patch(
+            "lib.control.launch._preserve_after_launch", return_value=prepared,
+        ), self.assertRaises(KeyboardInterrupt):
+            self.launch(prepared, failure_injector=interrupt)
+        stored = TaskStore(self.config).read(prepared["task_id"])
+        self.assertEqual(stored["lifecycle"], "creating")
+        self.assertEqual(stored["runs"], [])
+        self.assertTrue(self.adapter.has_session(stored["tmux"]["session"]))
+
+        result = recover_task(
+            self.config, stored, tasks=TaskStore(self.config),
+            journals=CreationJournalStore(self.config), tmux=self.adapter,
+        )
+        self.assertEqual(result["task"]["lifecycle"], "failed")
+        self.assertEqual(result["journal"]["phase"], "preserved")
+        self.assertIn("may still be live", result["message"])
+        self.assertIn("attach-session", result["message"])
+        # Recovery never kills: the owned session and its pane survive.
+        self.assertTrue(self.adapter.has_session(stored["tmux"]["session"]))
+        facts = self.adapter.window_pane_facts(
+            stored["tmux"]["session"], stored["tmux"]["window"],
+        )
+        self.assertFalse(facts.dead)
+        with self.assertRaises(TmuxError):
+            self.adapter.window_pane_facts(stored["tmux"]["session"], "not-the-window")
 
     def test_postlaunch_failure_preserves_workspace_and_live_run_facts(self) -> None:
         prepared = self.prepare("live-post-failure")

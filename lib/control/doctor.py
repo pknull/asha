@@ -21,6 +21,7 @@ from .jj import JjAdapter, JjError
 from .process import capture_bytes
 from .store import StoreError, TaskStore
 from .tmux import TmuxAdapter, TmuxError
+from .transaction import CreationJournalStore, JournalError
 
 
 @dataclass(frozen=True)
@@ -469,6 +470,44 @@ def _repository_probe(config) -> Probe:
     )
 
 
+def _transactions_probe(config) -> Probe:
+    if config is None:
+        return Probe(
+            "transactions", "unavailable",
+            "configuration was not supplied to the creation transaction probe",
+        )
+    try:
+        tasks = TaskStore(config).list()
+        journals = CreationJournalStore(config)
+        interrupted: list[str] = []
+        for task in tasks:
+            if task["lifecycle"] != "creating":
+                continue
+            try:
+                journals.read(task["task_id"])
+            except JournalError:
+                continue
+            interrupted.append(task["task_id"])
+    except (StoreError, JournalError) as exc:
+        return Probe(
+            "transactions", "unavailable",
+            f"creation transactions could not be inspected: {_safe_detail(exc)}",
+        )
+    if not interrupted:
+        return Probe(
+            "transactions", "match",
+            "no interrupted creation transactions are registered",
+        )
+    commands = "; ".join(
+        f"asha task recover {task_id}"
+        for task_id in interrupted[:5]
+    )
+    return Probe(
+        "transactions", "mismatch",
+        f"{len(interrupted)} interrupted creation transaction(s); run: {commands}",
+    )
+
+
 DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "python": _python_probe,
     "configuration": _configuration_probe,
@@ -477,6 +516,7 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "gh": _gh_probe,
     "jj": _jj_probe,
     "repository": _repository_probe,
+    "transactions": _transactions_probe,
     "harness-events": _harness_events_probe,
     "hooks": _hooks_probe,
     "tui": _tui_probe,

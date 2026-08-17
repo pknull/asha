@@ -861,7 +861,7 @@ else:
         stored = self.store.read(record["task_id"])
         self.assertEqual(stored["label"], expected_label)
 
-    def test_fifo_records_and_locks_fail_promptly_for_list_read_and_save(self) -> None:
+    def test_fifo_records_are_skipped_and_direct_operations_fail_promptly(self) -> None:
         record = self.record()
         self.store.save(record)
         record_path = self.config.tasks_dir / f"{record['task_id']}.json"
@@ -891,8 +891,18 @@ except StoreError:
 else:
     raise SystemExit('unsafe operation succeeded')
 """
+        list_result = subprocess.run(
+            [sys.executable, "-c", """
+import os
+from lib.control.config import load_config
+from lib.control.store import TaskStore
+s = TaskStore(load_config(os.environ))
+print(len(s.list()), len(s.skipped))
+"""],
+            env=env, capture_output=True, text=True, timeout=2, check=True,
+        )
+        self.assertEqual(list_result.stdout.strip(), "0 1")
         for operation in (
-            "s.list()",
             "s.read(os.environ['TASK_ID'])",
             "s.save(json.loads(os.environ['TASK_JSON']), expected_digest=os.environ['DIGEST'])",
         ):
@@ -931,6 +941,26 @@ else:
             self.store.resolve("unsafe\u202eselector")
         self.assertNotIn("\u202e", str(caught.exception))
 
+    def test_list_skips_foreign_and_unreadable_records_without_hiding_good_tasks(self) -> None:
+        good = self.record(slug="good")
+        self.store.save(good)
+        (self.config.tasks_dir / "notes.json").write_text(
+            "operator notes\n", encoding="utf-8",
+        )
+        unreadable_name = f"{uuid.uuid4()}.json"
+        unreadable = self.config.tasks_dir / unreadable_name
+        unreadable.write_text("{}\n", encoding="utf-8")
+        unreadable.chmod(0o644)
+
+        self.assertEqual(self.store.list(), [good])
+        self.assertEqual(
+            {entry["name"] for entry in self.store.skipped},
+            {"notes.json", unreadable_name},
+        )
+        self.assertTrue(all(entry["reason"] for entry in self.store.skipped))
+        self.assertEqual(self.store.resolve("good"), good)
+        self.assertEqual(len(self.store.skipped), 2)
+
     def test_update_preserves_existing_run_order(self) -> None:
         record = self.record()
         record["lifecycle"] = "ended"
@@ -962,13 +992,15 @@ else:
         with self.assertRaisesRegex(StoreError, "new runs.*starting"):
             self.store.save(changed, expected_digest=task_digest(record))
 
-    def test_read_rejects_symlink_and_malformed_record_instead_of_silently_skipping(self) -> None:
+    def test_list_skips_malformed_record_while_direct_read_rejects_it(self) -> None:
         record = self.record()
         self.store.save(record)
         path = self.config.tasks_dir / f"{record['task_id']}.json"
         path.write_text("not json")
+        self.assertEqual(self.store.list(), [])
+        self.assertIn("invalid JSON", self.store.skipped[0]["reason"])
         with self.assertRaisesRegex(StoreError, "invalid JSON"):
-            self.store.list()
+            self.store.read(record["task_id"])
 
         path.unlink()
         path.symlink_to(self.root / "outside")
@@ -1012,9 +1044,9 @@ else:
         hostile = self.config.tasks_dir / "unsafe\u202ename.json"
         hostile.write_text("{}")
         hostile.chmod(0o600)
-        with self.assertRaises(StoreError) as caught:
-            self.store.list()
-        self.assertNotIn("\u202e", str(caught.exception))
+        self.assertEqual(len(self.store.list()), 1)
+        self.assertEqual(self.store.skipped[0]["name"], hostile.name)
+        self.assertNotIn("\u202e", self.store.skipped[0]["reason"])
 
 
 if __name__ == "__main__":

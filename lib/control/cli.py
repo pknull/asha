@@ -6,6 +6,8 @@ import json
 import os
 import re
 import shlex
+import shutil
+import signal
 import subprocess
 import sys
 import unicodedata
@@ -16,7 +18,10 @@ from .config import ConfigError, is_canonical_absolute_path, load_config
 from .doctor import run_doctor
 from .events import EventError, read_snapshot, summarize, write_snapshot
 from .jj import JjAdapter
-from .launch import LaunchError, archive_task, launch_task, stop_task
+from .launch import (
+    LaunchError, archive_task, launch_task, recover_task, stop_task,
+    unarchive_task,
+)
 from .model import new_uuid
 from .prepare import PrepareRequest, PreparationError, prepare_task_workspace
 from .reconcile import LiveAdapters, UnavailableAdapters
@@ -24,6 +29,7 @@ from .sources import GithubAdapter, SourceError
 from .store import StoreError, TaskStore
 from .tmux import TmuxAdapter, TmuxError
 from .transaction import CreationJournalStore, JournalError
+from . import harness as harness_api
 from . import view
 
 
@@ -43,6 +49,8 @@ Usage:
   asha task attach <task-id|exact-slug> [--run RUN_ID]
   asha task stop <task-id|exact-slug> [--terminate]
   asha task archive <task-id|exact-slug>
+  asha task unarchive <task-id|exact-slug>
+  asha task recover <task-id|exact-slug>
   asha task reconcile [task-id|exact-slug] [--json]
   asha task doctor [--json]""", file=stream)
 
@@ -171,13 +179,21 @@ def _publish_tmux_presentation(
         state = snapshot.get("state") if snapshot else None
         adapter = TmuxAdapter()
         if isinstance(state, str):
-            if adapter.pane_option(pane_id, "@asha_run_id") != run_id:
+            if adapter.pane_option(
+                pane_id, "@asha_run_id", deadline_seconds=5,
+            ) != run_id:
                 return
-            adapter.set_pane_option(pane_id, "@asha_state", state)
-            session = adapter.pane_facts(pane_id).session
-            if adapter.session_option(session, "@asha_task_id") == task_id:
-                adapter.set_session_option(session, "@asha_state", state)
-        adapter.set_server_summary(summarize(config))
+            adapter.set_pane_option(
+                pane_id, "@asha_state", state, deadline_seconds=5,
+            )
+            session = adapter.pane_facts(pane_id, deadline_seconds=5).session
+            if adapter.session_option(
+                session, "@asha_task_id", deadline_seconds=5,
+            ) == task_id:
+                adapter.set_session_option(
+                    session, "@asha_state", state, deadline_seconds=5,
+                )
+        adapter.set_server_summary(summarize(config), deadline_seconds=5)
     except (EventError, TmuxError, OSError, ValueError):
         return
 
@@ -274,10 +290,19 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         values["goal_args"] = (values["goal"],)
     else:
         raise ValueError("task start requires --goal TEXT or goal arguments after --")
+    for argument in values["goal_args"]:
+        if argument == ";" or argument.endswith(";"):
+            raise ValueError(
+                "goal arguments must not end with ';' (tmux treats a trailing "
+                "semicolon as a command separator); rephrase the goal or pass it "
+                "as one --goal string that does not end in ';'"
+            )
     label = " ".join(values["goal_args"])
     if not 1 <= len(label) <= 200:
         raise ValueError("task goal must contain 1-200 characters")
     values["label"] = label
+    if values["json"]:
+        values["detach"] = True
     return values
 
 
@@ -286,7 +311,7 @@ def _attach_tokens(adapter: TmuxAdapter, session: str) -> list[str]:
     return [adapter.executable, *socket, "attach-session", "-t", session]
 
 
-def _run_popup(adapter: TmuxAdapter, config, session: str) -> None:
+def _run_popup(adapter: TmuxAdapter, config, session: str, slug: str) -> None:
     argv = adapter.popup_argv(
         session=session, width=config.popup_width, height=config.popup_height,
     )
@@ -295,12 +320,35 @@ def _run_popup(adapter: TmuxAdapter, config, session: str) -> None:
     except OSError as exc:
         raise LaunchError(f"tmux popup could not be invoked: {exc}") from exc
     if result.returncode != 0:
-        raise LaunchError(f"tmux popup exited with status {result.returncode}")
+        attach = shlex.join(_attach_tokens(adapter, session))
+        print(
+            f"asha control: popup closed with status {result.returncode}; task "
+            f"{slug} is still running (attach: {attach})",
+            file=sys.stderr,
+        )
 
 
-def _start_command(args: list[str], env: Mapping[str, str]) -> int:
+def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
     parsed = _parse_start(args)
     config = load_config(env)
+    selected_harness = harness_api.validate_harness(
+        parsed["harness"] or config.default_harness
+    )
+    selected_role = harness_api.validate_role(parsed["role"])
+    if shutil.which(selected_harness) is None:
+        raise ValueError(
+            f"harness {selected_harness!r} is not installed or not on PATH; "
+            "install it or pass --harness <claude|codex|copilot|opencode>"
+        )
+    raw_root = env.get("ASHA_ROOT")
+    if raw_root is None:
+        asha_root = Path(__file__).resolve().parents[2]
+    else:
+        supplied = Path(raw_root)
+        if not supplied.is_absolute():
+            raise ValueError("ASHA_ROOT must be an absolute path")
+        asha_root = supplied.resolve()
+    harness_api.launch_argv(asha_root, selected_harness, parsed["goal_args"])
     jj = JjAdapter()
     source = _repo_argument(parsed["repo"], config, jj)
     task_source = {"kind": "ad-hoc", "number": None, "url": None}
@@ -349,22 +397,23 @@ def _start_command(args: list[str], env: Mapping[str, str]) -> int:
         resolved_base_commit_id=resolved_base_commit_id,
     )
     prepared = prepare_task_workspace(config, request, jj=jj)
-    selected_harness = parsed["harness"] or config.default_harness
     socket = prepared["tmux"]["socket"]
     adapter = TmuxAdapter(socket=None if socket == "default" else socket)
     result = launch_task(
         config, prepared, tmux=adapter, harness=selected_harness,
-        goal_args=parsed["goal_args"], role=parsed["role"],
+        goal_args=parsed["goal_args"], role=selected_role,
     )
+    launched, run = result["task"], result["run"]
+    attach = shlex.join(_attach_tokens(adapter, launched["tmux"]["session"]))
     payload = {
         "contract": "asha.control-task-start.v1",
         **result,
         "source_mutations": source_mutations,
+        "attach": attach,
     }
     if parsed["json"]:
         _json(payload)
         return 0
-    launched, run = result["task"], result["run"]
     print(f"Task: {launched['slug']}")
     print(f"Task ID: {launched['task_id']}")
     print(f"Workspace: {launched['jj']['workspace_path']}")
@@ -376,10 +425,23 @@ def _start_command(args: list[str], env: Mapping[str, str]) -> int:
     )
     print(f"Run: {run['run_id']}")
     if env.get("TMUX") and not parsed["detach"]:
-        _run_popup(adapter, config, launched["tmux"]["session"])
+        _run_popup(adapter, config, launched["tmux"]["session"], launched["slug"])
     elif not parsed["detach"]:
-        print("Attach: " + shlex.join(_attach_tokens(adapter, launched["tmux"]["session"])))
+        print("Attach: " + attach)
     return 0
+
+
+def _start_command(args: list[str], env: Mapping[str, str]) -> int:
+    previous = signal.getsignal(signal.SIGTERM)
+
+    def interrupt_on_term(signum, frame) -> None:
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, interrupt_on_term)
+    try:
+        return _start_command_inner(args, env)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
 
 
 def _attach_command(args: list[str], env: Mapping[str, str]) -> int:
@@ -406,7 +468,7 @@ def _attach_command(args: list[str], env: Mapping[str, str]) -> int:
     target = view.attach_target(task, run_id, adapter=adapter)
     adapter.select_target(target.session, target.window, target.pane_id)
     if env.get("TMUX"):
-        _run_popup(adapter, config, task["tmux"]["session"])
+        _run_popup(adapter, config, task["tmux"]["session"], task["slug"])
     else:
         print(shlex.join(_attach_tokens(adapter, task["tmux"]["session"])))
     return 0
@@ -439,9 +501,46 @@ def _archive_command(args: list[str], env: Mapping[str, str]) -> int:
         raise ValueError("task archive requires exactly one task ID or exact slug")
     config = load_config(env)
     store = TaskStore(config)
+    journals = CreationJournalStore(config)
+    jj = JjAdapter()
     task = store.resolve(args[0])
-    archived = archive_task(config, task, tasks=store)
+    archived = archive_task(
+        config, task, tasks=store,
+        adapters=LiveAdapters(config=config, jj=jj), journals=journals, jj=jj,
+    )
     print(f"Archived task {archived['slug']} ({archived['task_id']}).")
+    return 0
+
+
+def _unarchive_command(args: list[str], env: Mapping[str, str]) -> int:
+    if len(args) != 1 or args[0].startswith("-"):
+        raise ValueError("task unarchive requires exactly one task ID or exact slug")
+    config = load_config(env)
+    store = TaskStore(config)
+    task = store.resolve(args[0])
+    ended = unarchive_task(config, task, tasks=store)
+    print(f"Unarchived task {ended['slug']} ({ended['task_id']}).")
+    return 0
+
+
+def _recover_command(args: list[str], env: Mapping[str, str]) -> int:
+    if len(args) != 1 or args[0].startswith("-"):
+        raise ValueError("task recover requires exactly one task ID or exact slug")
+    config = load_config(env)
+    store = TaskStore(config)
+    journals = CreationJournalStore(config)
+    task = store.resolve(args[0])
+    socket = task["tmux"]["socket"]
+    adapter = TmuxAdapter(socket=None if socket == "default" else socket)
+    result = recover_task(
+        config, task, tasks=store, journals=journals,
+        tmux=adapter, jj=JjAdapter(),
+    )
+    print(result["message"])
+    if result["recovery_commands"] is not None:
+        print(result["recovery_commands"])
+    print(f"Lifecycle: {result['task']['lifecycle']}")
+    print(f"Journal phase: {result['journal']['phase']}")
     return 0
 
 
@@ -450,7 +549,10 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         _task_usage(sys.stdout if args else sys.stderr)
         return 0 if args else 2
     command, tail = args[0], args[1:]
-    if command not in {"start", "list", "show", "attach", "stop", "archive", "reconcile", "doctor"}:
+    if command not in {
+        "start", "list", "show", "attach", "stop", "archive", "unarchive",
+        "recover", "reconcile", "doctor",
+    }:
         print("asha task: unknown subcommand", file=sys.stderr)
         return 2
     if command == "start":
@@ -461,6 +563,10 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         return _stop_command(tail, env)
     if command == "archive":
         return _archive_command(tail, env)
+    if command == "unarchive":
+        return _unarchive_command(tail, env)
+    if command == "recover":
+        return _recover_command(tail, env)
     tail, json_output = _parse_json_flag(tail)
     config = load_config(env)
     store = TaskStore(config)
@@ -476,12 +582,20 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         if tail:
             raise ValueError("task list accepts only --json")
         tasks = []
-        for listed in store.list():
+        listed_records = store.list()
+        for skipped in store.skipped:
+            print(
+                f"asha task list: skipped {skipped['name']}: {skipped['reason']}",
+                file=sys.stderr,
+            )
+        for listed in listed_records:
             task, reconciliation = view.locked_reconciliation(
                 store, journals, listed["task_id"], adapters, jj,
             )
             tasks.append(view.task_summary(task, reconciliation))
         payload = {"contract": "asha.control-task-list.v1", "tasks": tasks}
+        if store.skipped:
+            payload["skipped"] = store.skipped
         if json_output:
             _json(payload)
         else:

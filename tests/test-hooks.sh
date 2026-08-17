@@ -355,6 +355,20 @@ EOF
   && ok "Control event handler is reachable from every registered native event" \
   || fail "Control event handler is reachable from every registered native event"
 
+CONTROL_HANDLER="$HANDLERS/control-event.sh"
+if grep -Fq '[[ -t 0 ]] || IFS= read -r -N 4096 INPUT || true' "$CONTROL_HANDLER" \
+  && grep -Fq 'timeout --signal=TERM 15 "$ASHA_CMD" "${ARGS[@]}"' "$CONTROL_HANDLER"; then
+  ok "Control event bridge guards tty input and bounds controller time"
+else
+  fail "Control event bridge guards tty input and bounds controller time"
+fi
+CONTROL_OUTPUT="$(timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$REPO_ROOT" \
+  "$CONTROL_HANDLER" PostToolUse </dev/null)"
+CONTROL_STATUS=$?
+[[ $CONTROL_STATUS -eq 0 && "$CONTROL_OUTPUT" == '{}' ]] \
+  && ok "Control event bridge remains fail-open with empty stdin" \
+  || fail "Control event bridge remains fail-open with empty stdin"
+
 if jq -e '[.hooks.SessionStart[], .hooks.UserPromptSubmit[], .hooks.PostToolUse[]]
     | all(.[] | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")));
           has("_asha_harnesses") | not)' "$HOOKS" >/dev/null 2>&1 \

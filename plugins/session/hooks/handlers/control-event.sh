@@ -15,7 +15,7 @@ esac
 # Never retain or forward payload bodies. A truncated or malformed object
 # simply yields no optional session/exit facts and the controller remains open.
 INPUT=""
-IFS= read -r -N 4096 INPUT || true
+[[ -t 0 ]] || IFS= read -r -N 4096 INPUT || true
 SESSION_ID=""
 EXIT_STATUS=""
 if command -v jq >/dev/null 2>&1 && [[ -n "$INPUT" ]]; then
@@ -49,7 +49,11 @@ elif command -v asha >/dev/null 2>&1; then
   ASHA_CMD="asha"
 fi
 if [[ -n "$ASHA_CMD" ]]; then
-  "$ASHA_CMD" "${ARGS[@]}" >/dev/null 2>&1 || true
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --signal=TERM 15 "$ASHA_CMD" "${ARGS[@]}" >/dev/null 2>&1 || true
+  else
+    "$ASHA_CMD" "${ARGS[@]}" >/dev/null 2>&1 || true
+  fi
 fi
 echo '{}'
 exit 0

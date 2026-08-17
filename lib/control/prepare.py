@@ -849,7 +849,7 @@ def _rollback_locked(
         journals.save(journal, expected_phase=journal["phase"])
         if failure_injector is not None:
             failure_injector("before-forget")
-        adapter.forget_workspace(destination, name)
+        adapter.forget_workspace(source, name)
         if failure_injector is not None:
             failure_injector("after-forget")
         journal["jj"]["registration_state"] = "absent-after-forget"
@@ -1119,7 +1119,7 @@ def prepare_task_workspace(
             phase("task-identity-recorded")
             phase("ready-for-launch")
             return task
-    except Exception as exc:
+    except BaseException as exc:
         if claimed:
             try:
                 rollback_prelaunch(
@@ -1127,6 +1127,8 @@ def prepare_task_workspace(
                 )
             except PreparationError:
                 pass
+        if not isinstance(exc, Exception):
+            raise
         if not claimed:
             raise PreparationError(f"creation intent was not claimed; existing state preserved: {exc}") from exc
         raise PreparationError(f"workspace preparation failed with durable recovery state: {exc}") from exc

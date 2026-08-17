@@ -106,7 +106,8 @@ from `asha control` or the non-interactive `asha task` commands.
 | `asha task attach` | Attach to the owned task session or open it in a tmux popup. |
 | `asha task reconcile` | Refresh registry facts from jj, tmux, process identity, and supported harness events. |
 | `asha task stop` | Signal the verified run process without deleting its session, workspace, or change. |
-| `asha task archive` | Hide an ended task while preserving all task data; archive is reversible. |
+| `asha task archive` | Hide a task after every reconciled run exits while preserving all task data; archive is reversible (`asha task unarchive`). |
+| `asha task recover` | Recover an interrupted creation transaction from its durable journal. |
 | `asha task doctor` | Report local prerequisites and optional capability limits. |
 | `asha control` | Open the terminal Control TUI. |
 | `asha control tmux` | Print the optional tmux-format integration snippet; it never edits `.tmux.conf`. |

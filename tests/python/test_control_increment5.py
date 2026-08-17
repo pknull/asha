@@ -151,7 +151,7 @@ class PureModelTests(unittest.TestCase):
                 self.assertIs(model.dispatch_key(key).kind, kind)
         refused = model.dispatch_key("a")
         self.assertIs(refused.kind, IntentKind.NONE)
-        self.assertIn("ended", refused.reason or "")
+        self.assertIn("all exited", refused.reason or "")
         self.assertIs(model.dispatch_key("x").kind, IntentKind.NONE)
         self.assertIs(model.dispatch_key("DELETE").kind, IntentKind.NONE)
 
@@ -196,9 +196,9 @@ class PureModelTests(unittest.TestCase):
         self.assertLessEqual(len(lines), model.height)
         self.assertTrue(all(len(line) <= model.width for line in lines))
 
-    def test_archive_intent_requires_confirmation_and_refuses_non_ended(self) -> None:
-        ended = TuiModel([row("ended", "exited", lifecycle="ended")])
-        intent = ended.dispatch_key("a")
+    def test_archive_intent_uses_derived_terminal_run_state(self) -> None:
+        exited = TuiModel([row("exited", "exited")])
+        intent = exited.dispatch_key("a")
         self.assertIs(intent.kind, IntentKind.ARCHIVE)
         self.assertTrue(intent.requires_confirmation)
 
@@ -206,7 +206,10 @@ class PureModelTests(unittest.TestCase):
         intent = running.dispatch_key("a")
         self.assertIs(intent.kind, IntentKind.NONE)
         self.assertFalse(intent.requires_confirmation)
-        self.assertIn("ended", intent.reason or "")
+        self.assertEqual(
+            intent.reason,
+            "only a task whose runs have all exited can be archived",
+        )
 
     def test_help_render_names_keys_status_evidence_and_limitations(self) -> None:
         model = TuiModel([row("help", "working")], height=20, width=140)
@@ -343,6 +346,53 @@ class DoctorTuiProbeTests(unittest.TestCase):
                 self.assertEqual(result["outcome"], outcome)
                 self.assertEqual(curses.calls, 1)
                 self.assertFalse(hasattr(curses, "initscr"))
+
+
+class PopupIntegrationTests(unittest.TestCase):
+    """The TUI Enter path must reach the real _run_popup with a matching
+    signature.  A MagicMock would accept any arity, so this drives the actual
+    cli._run_popup (only its subprocess call is stubbed): if _open_popup and
+    _run_popup ever disagree on arguments again, this raises TypeError exactly
+    as the live controller did."""
+
+    class FakeCurses:
+        def endwin(self) -> None:
+            pass
+
+    class FakeAdapter:
+        socket = None
+        executable = "tmux"
+
+        def select_target(self, session, window, pane_id) -> None:
+            self.selected = (session, window, pane_id)
+
+        def popup_argv(self, *, session, width, height) -> list[str]:
+            return ["tmux", "display-popup", "-E", "-t", session]
+
+    def test_enter_reaches_real_run_popup_with_matching_signature(self) -> None:
+        from types import SimpleNamespace
+        from lib.control import tui as tui_module
+        from lib.control import cli as cli_module
+
+        popup_row = row("popup-task", "working")
+        adapter = self.FakeAdapter()
+        target = view.AttachTarget(
+            session=popup_row.task["tmux"]["session"],
+            window=popup_row.task["tmux"]["window"],
+            pane_id=None,
+        )
+        config = SimpleNamespace(popup_width="80%", popup_height="80%")
+        completed = SimpleNamespace(returncode=0)
+        with mock.patch.object(tui_module, "_adapter_for_task", return_value=adapter), \
+                mock.patch.object(tui_module.view, "attach_target", return_value=target), \
+                mock.patch.object(tui_module, "_repaint_after_suspend"), \
+                mock.patch.object(cli_module.subprocess, "run", return_value=completed) as run:
+            # Must not raise: the real _run_popup binds (adapter, config,
+            # session, slug).  Regression guard for the missing-slug crash.
+            tui_module._open_popup(
+                self.FakeCurses(), self.FakeCurses(), config, popup_row, None,
+            )
+        run.assert_called_once()
 
 
 class SharedViewTests(unittest.TestCase):

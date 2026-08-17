@@ -677,22 +677,22 @@ class TmuxPresentationTests(unittest.TestCase):
         outer = self
 
         class Recording:
-            def pane_option(self, pane_id, option):
+            def pane_option(self, pane_id, option, **kwargs):
                 return run_option if option == "@asha_run_id" else None
 
-            def session_option(self, name, option):
+            def session_option(self, name, option, **kwargs):
                 return task_option if option == "@asha_task_id" else None
 
-            def pane_facts(self, pane_id):
+            def pane_facts(self, pane_id, **kwargs):
                 return type("F", (), {"session": "asha-demo-1234abcd"})()
 
-            def set_pane_option(self, pane_id, option, value):
+            def set_pane_option(self, pane_id, option, value, **kwargs):
                 writes.append(("pane", pane_id, option, value))
 
-            def set_session_option(self, name, option, value):
+            def set_session_option(self, name, option, value, **kwargs):
                 writes.append(("session", name, option, value))
 
-            def set_server_summary(self, value):
+            def set_server_summary(self, value, **kwargs):
                 writes.append(("server", "@asha_summary", value))
 
         return Recording, writes

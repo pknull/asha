@@ -356,8 +356,14 @@ class JjAdapter:
         return result
 
     def forget_workspace(self, source: Path, name: str) -> None:
+        # Forget through the SOURCE repository, never the destination: the
+        # destination is exactly the workspace rollback may be cleaning up,
+        # and its .jj may be partial or gone.  jj 0.38 rewrites the colocated
+        # Git index file's layout under --ignore-working-copy; staged content
+        # is unchanged, and callers compare staged content, not raw bytes.
         operation_id = self.pin_operation(source)
         self._run([
-            "-R", str(source), "--at-operation", operation_id,
+            "-R", str(source), "--ignore-working-copy",
+            "--at-operation", operation_id,
             "workspace", "forget", name,
         ])

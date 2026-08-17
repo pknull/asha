@@ -232,8 +232,8 @@ def validate_task(task: Any) -> dict[str, Any]:
             raise ModelError("running task latest run must be nonterminal")
     elif lifecycle in {"ended", "archived"}:
         if (jj["change_id"] is None or jj["working_commit_id"] is None or not runs
-                or any(run["state"] != "exited" for run in runs)):
-            raise ModelError(f"{lifecycle} task requires successful terminal runs")
+                or any(run["state"] not in {"exited", "failed"} for run in runs)):
+            raise ModelError(f"{lifecycle} task requires terminal runs")
     elif lifecycle == "failed" and runs:
         terminal_history = all(run["state"] in {"exited", "failed"} for run in runs)
         preserved_live_run = (
