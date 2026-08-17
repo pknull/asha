@@ -510,6 +510,7 @@ Individual plugins licensed separately. See each plugin's LICENSE file (MIT thro
 
 - Asha Control: [docs/control.md](docs/control.md); frozen v1 contracts:
   [docs/control-contracts.md](docs/control-contracts.md)
+- Orchestration Core Increment 1: [docs/orchestration.md](docs/orchestration.md)
 - Panel system: `plugins/panel/README.md`
 - Code workflows: `plugins/code/README.md`
 - Writing workflows: `plugins/write/README.md`

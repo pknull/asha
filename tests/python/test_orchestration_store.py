@@ -614,6 +614,46 @@ with store.transaction_lock({INITIATIVE_ID!r}):
         with self.assertRaisesRegex(StoreError, "symlink"):
             self.store.inventory(INITIATIVE_ID)
 
+    def test_snapshot_readers_reject_filename_mismatch_gap_and_symlink(self) -> None:
+        self.create()
+        self.store.save_node(INITIATIVE_ID, node())
+        nodes_dir = self.config.initiatives_dir / INITIATIVE_ID / "nodes"
+        (nodes_dir / f"{NODE_ID}.json").rename(nodes_dir / "different-node.json")
+        with self.assertRaisesRegex(StoreError, "does not match its filename"):
+            self.store.list_nodes_snapshot(INITIATIVE_ID)
+
+        self.store.save_plan(INITIATIVE_ID, plan())
+        second = plan()
+        second["revision"] = 2
+        self.store.save_plan(INITIATIVE_ID, second)
+        plans_dir = self.config.initiatives_dir / INITIATIVE_ID / "plans"
+        (plans_dir / "0001.json").unlink()
+        with self.assertRaisesRegex(StoreError, "gap"):
+            self.store.list_plans_snapshot(INITIATIVE_ID)
+
+        attempts_dir = self.config.initiatives_dir / INITIATIVE_ID / "attempts"
+        outside = self.root / "outside-attempt.json"
+        outside.write_text("{}")
+        outside.chmod(0o600)
+        attempt_id = "33333333-3333-4333-8333-333333333333"
+        (attempts_dir / f"{attempt_id}.json").symlink_to(outside)
+        with self.assertRaisesRegex(StoreError, "symlink"):
+            self.store.list_attempts_snapshot(INITIATIVE_ID)
+
+    def test_snapshot_inventory_counts_and_preserves_hidden_residue(self) -> None:
+        self.create()
+        residue = (
+            self.config.initiatives_dir / INITIATIVE_ID / "evidence"
+            / ".record.json.tmp.interrupted"
+        )
+        residue.write_text("residue")
+        residue.chmod(0o600)
+        snapshot = self.store.inventory(INITIATIVE_ID, locked=False)
+        self.assertEqual(snapshot["evidence"]["inodes"], 1)
+        self.assertTrue(residue.exists())
+        self.assertEqual(self.store.record_counts_snapshot(INITIATIVE_ID)["evidence"], 0)
+        self.assertTrue(residue.exists())
+
     def test_symlink_and_duplicate_json_records_refuse_and_list_skips_corrupt(self) -> None:
         self.create()
         path = self.config.initiatives_dir / INITIATIVE_ID / "initiative.json"

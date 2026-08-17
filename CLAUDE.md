@@ -35,6 +35,7 @@ Use these sources instead of copying their facts into new catalogues:
 | Install and launcher mechanics | `INSTALLER.md`, then live scripts |
 | Memory authority and workspace planes | `docs/memory-architecture.md` |
 | Frozen Control v1 contracts orchestration binds to | `docs/control-contracts.md` |
+| Orchestration Core operating surface and JSON wrappers | `docs/orchestration.md` |
 | Release history | `CHANGELOG.md` |
 | Current behavior | Live state and repository code |
 

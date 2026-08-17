@@ -904,6 +904,76 @@ class InitiativeStore:
             raise StoreError(f"record {identity_field} does not match its filename")
         return record
 
+    def _list_subrecords_snapshot(
+        self,
+        initiative_id: str,
+        directory: str,
+        validator: Callable[[Any], dict[str, Any]],
+        filename_pattern: re.Pattern[str],
+        identity_field: str,
+        identity_parser: Callable[[str], Any] = lambda value: value,
+    ) -> list[dict[str, Any]]:
+        """List validated regular records without locks, writes, or cleanup."""
+        with self._initiative_directory(
+            initiative_id, create_root=False, create_initiative=False
+        ) as (_, initiative_fd):
+            directory_fd = self._subdirectory(initiative_fd, directory)
+            try:
+                try:
+                    names = sorted(name for name in os.listdir(directory_fd) if not name.startswith("."))
+                except OSError as exc:
+                    raise StoreError(f"cannot list {directory} records: {exc}") from exc
+                records: list[dict[str, Any]] = []
+                for name in names:
+                    match = filename_pattern.fullmatch(name)
+                    if match is None:
+                        raise StoreError(f"invalid {directory} record filename: {name}")
+                    identity = identity_parser(match.group(1))
+                    record = self._validated_read(
+                        directory_fd, name, f"{directory} record", validator
+                    )
+                    if record.get("initiative_id", initiative_id) != initiative_id:
+                        raise StoreError("record initiative_id does not match destination initiative")
+                    if record[identity_field] != identity:
+                        raise StoreError(f"record {identity_field} does not match its filename")
+                    records.append(record)
+                return records
+            finally:
+                _close(directory_fd)
+
+    def list_plans_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        records = self._list_subrecords_snapshot(
+            initiative_id, "plans", self._validate_stored_plan,
+            re.compile(r"([0-9]{4})\.json"), "revision", int,
+        )
+        if [record["revision"] for record in records] != list(range(1, len(records) + 1)):
+            raise StoreError("stored plan revisions contain a gap")
+        return records
+
+    def list_nodes_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "nodes", validate_node,
+            re.compile(r"([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.json"), "node_id",
+        )
+
+    def list_attempts_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "attempts", validate_attempt,
+            re.compile(r"([0-9a-f-]{36})\.json"), "attempt_id",
+        )
+
+    def list_links_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "links", validate_link,
+            re.compile(r"([0-9a-f-]{36})\.json"), "attempt_id",
+        )
+
+    def list_approvals_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "approvals", validate_approval,
+            re.compile(r"([0-9a-f-]{36})\.json"), "request_id",
+        )
+
     def _read_uuid_record(
         self,
         initiative_id: str,
@@ -1077,6 +1147,48 @@ class InitiativeStore:
             finally:
                 _close(events_fd)
 
+    def list_events_snapshot(
+        self, initiative_id: str, *, after: int = 0
+    ) -> list[dict[str, Any]]:
+        """Read the immutable journal without acquiring locks or sweeping residue."""
+        if isinstance(after, bool) or not isinstance(after, int) or after < 0:
+            raise StoreError("event sequence cursor must be a nonnegative integer")
+        with self._initiative_directory(
+            initiative_id, create_root=False, create_initiative=False
+        ) as (_, initiative_fd):
+            events_fd = self._subdirectory(initiative_fd, "events")
+            try:
+                return [
+                    event for event in self._event_records(events_fd, initiative_id)
+                    if event["sequence"] > after
+                ]
+            finally:
+                _close(events_fd)
+
+    def record_counts_snapshot(self, initiative_id: str) -> dict[str, int]:
+        """Count canonical retained fact records without locks or residue cleanup."""
+        uuid_filename = re.compile(r"([0-9a-f-]{36})\.json")
+        classes = {
+            "result-publications": (validate_result_publication, "publication_id"),
+            "results": (validate_result, "result_id"),
+            "seals": (validate_seal, "seal_id"),
+            "reviews": (validate_review, "review_id"),
+            "verifications": (validate_verification, "verification_id"),
+            "bundles": (validate_bundle, "bundle_id"),
+            "approvals": (validate_approval, "request_id"),
+            "actions": (validate_action, "action_id"),
+            "evidence": (validate_evidence, "evidence_id"),
+        }
+        counts = {
+            "links": len(self.list_links_snapshot(initiative_id)),
+            "events": len(self.list_events_snapshot(initiative_id)),
+        }
+        for directory, (validator, identity_field) in classes.items():
+            counts[directory] = len(self._list_subrecords_snapshot(
+                initiative_id, directory, validator, uuid_filename, identity_field,
+            ))
+        return counts
+
     def verify_events(self, initiative_id: str) -> list[dict[str, Any]]:
         """Replay and validate the complete journal against its initiative snapshot."""
         with self._locked_fds(initiative_id) as (_, initiative_fd):
@@ -1091,14 +1203,17 @@ class InitiativeStore:
                 raise StoreError("event sequence disagrees with initiative snapshot")
             return records
 
-    def inventory(self, initiative_id: str) -> dict[str, Any]:
-        """Inventory retained regular files by class without following symlinks."""
+    def inventory(
+        self, initiative_id: str, *, locked: bool = True
+    ) -> dict[str, Any]:
+        """Inventory retained files; snapshot mode never locks or sweeps residue."""
         result: dict[str, Any] = {
             name: {"bytes": 0, "inodes": 0} for name in _INVENTORY_CLASSES
         }
 
         def scan(directory_fd: int, class_name: str) -> None:
-            self._sweep_write_residue(directory_fd)
+            if locked:
+                self._sweep_write_residue(directory_fd)
             try:
                 names = sorted(os.listdir(directory_fd))
             except OSError as exc:
@@ -1129,19 +1244,27 @@ class InitiativeStore:
                 else:
                     raise StoreError(f"non-file retained path rejected during inventory: {name}")
 
-        with self._locked_fds(initiative_id) as (_, initiative_fd):
+        manager = (
+            self._locked_fds(initiative_id)
+            if locked
+            else self._initiative_directory(
+                initiative_id, create_root=False, create_initiative=False
+            )
+        )
+        with manager as (_, initiative_fd):
             try:
                 names = sorted(os.listdir(initiative_fd))
             except OSError as exc:
                 raise StoreError(f"cannot inventory initiative: {exc}") from exc
             for name in names:
-                metadata = os.stat(name, dir_fd=initiative_fd, follow_symlinks=False)
+                try:
+                    metadata = os.stat(name, dir_fd=initiative_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise StoreError(f"cannot inspect retained path {name}: {exc}") from exc
                 if stat.S_ISLNK(metadata.st_mode):
                     raise StoreError(f"symlink rejected during inventory: {name}")
                 if name == "initiative.json" and stat.S_ISREG(metadata.st_mode):
-                    fd = _open_existing_file(
-                        initiative_fd, name, "initiative record"
-                    )
+                    fd = _open_existing_file(initiative_fd, name, "initiative record")
                     try:
                         pinned = os.fstat(fd)
                     finally:
@@ -1161,12 +1284,12 @@ class InitiativeStore:
 
         total_bytes = sum(value["bytes"] for value in result.values())
         total_inodes = sum(value["inodes"] for value in result.values())
+        result["totals"] = {"bytes": total_bytes, "inodes": total_inodes}
         result["pause_recommended"] = (
             total_bytes >= self.config.max_retained_bytes_before_pause
             or total_inodes >= self.config.max_retained_inodes_before_pause
         )
         return result
-
 
 __all__ = [
     "MAX_RECORD_BYTES", "InitiativeStore", "StoreError", "StoreCommittedError",

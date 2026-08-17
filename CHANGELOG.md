@@ -10,7 +10,20 @@ the active instruction surface loses no release detail.
 
 ## Public release history
 
-### Unreleased — Instruction and workflow cleanup
+### Unreleased
+
+#### Orchestration Core Increment 1
+
+- Added durable initiative, graph, node, approval, and immutable event records;
+  exact-digest plan approval/rejection; read-only Control reconciliation and
+  retained-storage reports; a pure initiative tree presentation model; and
+  orchestration doctor probes.
+- Routed `asha initiative` through the trusted Control Python entry while
+  keeping orchestration configuration lazy. Dispatch, harness launch, tmux
+  mutation, jj workspace creation, and Control record writes remain absent
+  until later increments.
+
+#### Instruction and workflow cleanup
 
 - Collapsed the repository guide to project-specific invariants and made each
   plugin README the sole authority for that plugin's version.

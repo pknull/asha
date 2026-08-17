@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lib/control.sh — thin router for `asha task` and `asha control`.
+# lib/control.sh — thin router for `asha task`, `asha control`, and `asha initiative`.
 
 asha_control_main() {
   local root="${ASHA_ROOT:-}"

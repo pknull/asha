@@ -1175,7 +1175,8 @@ _EVENT_KEYS = frozenset({
 })
 
 EVENT_TYPES = frozenset({
-    "initiative-created", "plan-proposed", "approval-requested", "approval-decided",
+    "initiative-created", "plan-proposed", "plan-approved", "plan-rejected",
+    "approval-requested", "approval-decided",
     "initiative-state-changed", "coordinator-handshake-accepted",
     "coordinator-generation-fenced", "node-ready", "action-received",
     "action-refused", "action-indeterminate", "attempt-started",
