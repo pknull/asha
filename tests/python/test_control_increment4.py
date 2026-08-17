@@ -198,7 +198,7 @@ class EventSnapshotTests(Increment4Fixture):
 class EventCliTests(Increment4Fixture):
     def seed_task(
         self, *, pane_id: str = "%4", task_id: str | None = None,
-        run_id: str | None = None,
+        run_id: str | None = None, harness: str = "claude",
     ) -> dict:
         source = self.root / "source"
         workspace = self.config.workspace_root / "repo-key" / "control-test"
@@ -218,6 +218,7 @@ class EventCliTests(Increment4Fixture):
         )
         task["runs"][0]["run_id"] = self.run_id if run_id is None else run_id
         task["runs"][0]["pane_id"] = pane_id
+        task["runs"][0]["harness"] = harness
         TaskStore(self.config).save(task)
         return task
 
@@ -254,6 +255,32 @@ class EventCliTests(Increment4Fixture):
         snapshot = read_snapshot(self.config, self.run_id)
         self.assertEqual(snapshot["task_id"], self.task_id)
         self.assertEqual(snapshot["harness"], "codex")
+
+    def test_event_harness_precedence_is_payload_then_environment_then_stored_run(self) -> None:
+        self.seed_task(harness="codex")
+
+        cases = (
+            ("stored run", [], {}, "codex"),
+            ("environment", [], {"ASHA_HARNESS": "opencode"}, "opencode"),
+            (
+                "explicit payload",
+                ["--harness", "claude"],
+                {"ASHA_HARNESS": "opencode"},
+                "claude",
+            ),
+        )
+        for label, harness_args, environment, expected in cases:
+            with self.subTest(label=label), \
+                    mock.patch("lib.control.cli._publish_tmux_presentation"):
+                status, stdout, stderr = self.invoke([
+                    "control", "event", "--event", "prompt-submitted",
+                    "--pane-id", "%4", *harness_args,
+                ], {**self.managed_env(), **environment})
+
+            self.assertEqual((status, stdout, stderr), (0, "", ""))
+            self.assertEqual(
+                read_snapshot(self.config, self.run_id)["harness"], expected,
+            )
 
     def test_managed_event_authorizes_with_lock_free_peek(self) -> None:
         task = self.seed_task()

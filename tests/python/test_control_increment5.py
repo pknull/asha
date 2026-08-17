@@ -197,6 +197,29 @@ class PureModelTests(unittest.TestCase):
         self.assertLessEqual(len(lines), model.height)
         self.assertTrue(all(len(line) <= model.width for line in lines))
 
+    def test_detail_and_open_intent_project_the_latest_of_multiple_runs(self) -> None:
+        selected = row("latest-run", "working")
+        first_run = selected.task["runs"][0]
+        first_run["role"] = "reviewer"
+        first_run["evidence"] = "older evidence"
+        latest_run = copy.deepcopy(first_run)
+        latest_run["run_id"] = "22222222-2222-4222-8222-222222222222"
+        latest_run["role"] = "tdd"
+        latest_run["pane_id"] = "%22"
+        latest_run["evidence"] = "latest evidence"
+        selected.task["runs"].append(latest_run)
+        selected = TuiRow.from_records(
+            selected.task, reconciliation(selected.task, "working"),
+        )
+
+        model = TuiModel([selected])
+
+        self.assertEqual(model.detail.run_id, latest_run["run_id"])
+        self.assertEqual(model.detail.role, "tdd")
+        self.assertIn("latest evidence", model.detail.evidence)
+        self.assertNotIn("older evidence", model.detail.evidence)
+        self.assertEqual(model.dispatch_key("ENTER").run_id, latest_run["run_id"])
+
     def test_archive_intent_uses_derived_terminal_run_state(self) -> None:
         exited = TuiModel([row("exited", "exited")])
         intent = exited.dispatch_key("a")

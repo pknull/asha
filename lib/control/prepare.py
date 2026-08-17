@@ -1,4 +1,4 @@
-"""Increment 2 task workspace preparation (launch remains unavailable)."""
+"""Prepare isolated task workspaces and persist rollback-safe creation state."""
 
 from __future__ import annotations
 

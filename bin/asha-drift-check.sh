@@ -203,7 +203,7 @@ source_opencode_renderer() {
   [[ $_FIX_OPENCODE_SOURCED -eq 0 ]] || return 0
   # Consumed by lazily sourced installer/harness functions.
   # shellcheck disable=SC2034
-  DRY_RUN=0 VERBOSE=0 FORCE=1
+  DRY_RUN=0 VERBOSE=0 FORCE=0
   # shellcheck source=../lib/install.sh
   source "$ASHA/lib/install.sh"
   # shellcheck source=../harnesses/opencode.sh

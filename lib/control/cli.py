@@ -24,7 +24,7 @@ from .launch import (
 )
 from .model import canonical_uuid, new_uuid
 from .prepare import PrepareRequest, PreparationError, prepare_task_workspace
-from .reconcile import LiveAdapters, UnavailableAdapters
+from .reconcile import LiveAdapters
 from .sources import GithubAdapter, SourceError
 from .store import StoreError, TaskStore
 from .tmux import TmuxAdapter, TmuxError
@@ -154,7 +154,7 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
             task_id=task_id,
             run_id=run_id,
             event=parsed["event"],
-            harness=parsed["harness"] or env.get("ASHA_HARNESS") or "claude",
+            harness=parsed["harness"] or env.get("ASHA_HARNESS") or run["harness"],
             harness_session_id=parsed["session_id"],
             exit_status=exit_status,
             pane_id=pane_id,

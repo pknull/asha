@@ -152,7 +152,6 @@ class TuiModel:
         self.height = max(0, int(height))
         self.width = max(0, int(width))
         self.now = now or datetime.now(timezone.utc)
-        self.selected_run_id: str | None = None
         self.scroll_offset = 0
         self.diffs: dict[str, DiffSummary] = {}
         self.message: str | None = None
@@ -187,12 +186,7 @@ class TuiModel:
         if row is None:
             return None
         task = row.task
-        run = next(
-            (item for item in task["runs"] if item["run_id"] == self.selected_run_id),
-            None,
-        )
-        if run is None and task["runs"]:
-            run = task["runs"][-1]
+        run = task["runs"][-1] if task["runs"] else None
         derived = None
         if run is not None:
             derived = next(
@@ -228,7 +222,6 @@ class TuiModel:
         if count == 0:
             self.selection = None
             self.scroll_offset = 0
-            self.selected_run_id = None
             return
         if self.selection is None:
             self.selection = 0
@@ -256,14 +249,12 @@ class TuiModel:
             return None
         current = 0 if self.selection is None else self.selection
         self.selection = min(max(current + int(delta), 0), len(rows) - 1)
-        self.selected_run_id = None
         self._ensure_visible()
         return self.selected_row
 
     def set_filter(self, value: str) -> None:
         self.filter_string = value
         self.selection = 0
-        self.selected_run_id = None
         self.scroll_offset = 0
         self._clamp_selection()
 
@@ -289,14 +280,6 @@ class TuiModel:
         retained = [item for item in self.rows if item.task["task_id"] != task_id]
         retained.append(row)
         self.replace_rows(retained)
-
-    def select_run(self, run_id: str | None) -> None:
-        row = self.selected_row
-        if run_id is not None and (
-            row is None or all(run["run_id"] != run_id for run in row.task["runs"])
-        ):
-            raise ValueError("selected run does not belong to the selected task")
-        self.selected_run_id = run_id
 
     def record_diff(self, task_id: str, diff: DiffSummary) -> None:
         if all(row.task["task_id"] != task_id for row in self.rows):

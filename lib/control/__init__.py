@@ -1,9 +1,4 @@
-"""Deterministic Asha Control core.
-
-Increment 3 adds owned tmux sessions, harness launch and process identity,
-live infrastructure evidence, attach/stop/archive verbs, and isolated doctor
-probes. Semantic harness events and the TUI remain deferred.
-"""
+"""Coordinate deterministic task lifecycles, live evidence, events, and the TUI."""
 
 from .model import TASK_CONTRACT, RUN_CONTRACT
 
