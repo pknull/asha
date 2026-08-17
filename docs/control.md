@@ -19,7 +19,10 @@ copies privately into the task workspace. GitHub source modes additionally
 require an installed, authenticated `gh`; ordinary ad-hoc tasks do not.
 
 `asha task doctor` reports these local capabilities. Its `gh` probe is always
-shown but is optional and never blocks ad-hoc task creation.
+shown but is optional and never blocks ad-hoc task creation. Running it outside
+a repository is also informational. Hook checks cover only the installed Claude
+and Codex configurations, and live-event checks skip Copilot and OpenCode runs
+because those harnesses claim process liveness only.
 
 ## Command surface
 
@@ -55,7 +58,9 @@ workspace root so a new task does not stop at Codex's directory-trust prompt.
 The override applies only to that process and never edits the Codex trust store
 or `~/.codex/config.toml`.
 
-Exit codes: 0 success, 2 usage/refusal, 1 internal error, 130 interrupted.
+Exit codes: `0` success (and, for `task doctor`, all required checks matched);
+`1` when doctor checks complete with `ok:false`, or on an internal error; `2`
+usage/refusal; and `130` interrupted.
 
 A goal is mandatory in every mode and is the only instruction authority.
 `--pr` and `--issue` provide source context, never a prompt. `--pr` conflicts

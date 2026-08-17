@@ -861,7 +861,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
     else:
         for probe in payload["probes"]:
             print(f"{probe['outcome']:<11} {probe['name']}: {probe['detail']}")
-    return 0
+    return 0 if payload["ok"] else 1
 
 
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:

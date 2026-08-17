@@ -56,6 +56,8 @@ _CONTROL_EVENT_HANDLER = (
     Path(__file__).resolve().parents[2]
     / "plugins/session/hooks/handlers/control-event.sh"
 )
+# Only these harnesses have live-proven native event delivery into Control.
+_SEMANTIC_EVENT_HARNESSES = frozenset({"claude", "codex"})
 
 
 def _python_probe(config) -> Probe:
@@ -202,8 +204,8 @@ def _harness_events_probe(config) -> Probe:
             "Control runtime path is not a directory",
         )
     try:
-        runs = [
-            (task["task_id"], run["run_id"])
+        registered_runs = [
+            (task["task_id"], run["run_id"], run["harness"])
             for task in TaskStore(config).list()
             for run in task["runs"]
         ]
@@ -211,6 +213,18 @@ def _harness_events_probe(config) -> Probe:
         return Probe(
             "harness-events", "unavailable",
             f"registered runs could not be read: {_safe_detail(exc)}",
+        )
+    runs = [
+        (task_id, run_id)
+        for task_id, run_id, harness in registered_runs
+        if harness in _SEMANTIC_EVENT_HARNESSES
+    ]
+    skipped = len(registered_runs) - len(runs)
+    if registered_runs and not runs:
+        return Probe(
+            "harness-events", "match",
+            f"registered runs have no claimed semantic event seam; "
+            f"skipped {skipped} liveness-only run(s)",
         )
     if not runs:
         return Probe(
@@ -242,6 +256,8 @@ def _harness_events_probe(config) -> Probe:
         summary += f"; missing {len(missing)}"
     if unreadable:
         summary += f"; unreadable or mismatched {len(unreadable)}"
+    if skipped:
+        summary += f"; skipped {skipped} liveness-only run(s)"
     summary = summary[:500]
     if unreadable:
         outcome = "unavailable"
@@ -323,14 +339,19 @@ def _hooks_probe(config) -> Probe:
     claude_home, codex_home = _claimed_hook_homes(config)
     claude_path = claude_home / "settings.json"
     codex_path = codex_home / "config.toml"
-    missing_configs = [
-        name for name, path in (("claude", claude_path), ("codex", codex_path))
-        if not path.is_file()
-    ]
-    if missing_configs:
+    installed: list[str] = []
+    for name, path in (("claude", claude_path), ("codex", codex_path)):
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            continue
+        except OSError:
+            pass
+        installed.append(name)
+    if not installed:
         return Probe(
-            "hooks", "missing",
-            "Control hook configuration is absent for: " + ", ".join(missing_configs),
+            "hooks", "match",
+            "no installed Claude or Codex configuration requires Control hook inspection",
         )
     expected_claude = {
         "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
@@ -338,35 +359,37 @@ def _hooks_probe(config) -> Probe:
     expected_codex = {"SessionStart", "UserPromptSubmit", "PostToolUse"}
     missing: list[str] = []
     try:
-        claude_value = json.loads(_read_install_config(claude_path))
-        if not isinstance(claude_value, dict):
-            raise ValueError("Claude settings root is not an object")
-        claude_hooks = claude_value.get("hooks", {})
-        if not isinstance(claude_hooks, dict):
-            raise ValueError("Claude hooks root is not an object")
-        for event in sorted(expected_claude):
-            groups = claude_hooks.get(event, [])
-            found = any(
-                _control_hook_command(hook.get("command"), event)
-                for group in groups if isinstance(group, dict)
-                for hook in group.get("hooks", []) if isinstance(hook, dict)
-            ) if isinstance(groups, list) else False
-            if not found:
-                missing.append(f"claude:{event}")
+        if "claude" in installed:
+            claude_value = json.loads(_read_install_config(claude_path))
+            if not isinstance(claude_value, dict):
+                raise ValueError("Claude settings root is not an object")
+            claude_hooks = claude_value.get("hooks", {})
+            if not isinstance(claude_hooks, dict):
+                raise ValueError("Claude hooks root is not an object")
+            for event in sorted(expected_claude):
+                groups = claude_hooks.get(event, [])
+                found = any(
+                    _control_hook_command(hook.get("command"), event)
+                    for group in groups if isinstance(group, dict)
+                    for hook in group.get("hooks", []) if isinstance(hook, dict)
+                ) if isinstance(groups, list) else False
+                if not found:
+                    missing.append(f"claude:{event}")
 
-        codex_value = tomllib.loads(_read_install_config(codex_path))
-        codex_hooks = codex_value.get("hooks", {})
-        if not isinstance(codex_hooks, dict):
-            raise ValueError("Codex hooks root is not a table")
-        for event in sorted(expected_codex):
-            groups = codex_hooks.get(event, [])
-            found = any(
-                _control_hook_command(hook.get("command"), event)
-                for group in groups if isinstance(group, dict)
-                for hook in group.get("hooks", []) if isinstance(hook, dict)
-            ) if isinstance(groups, list) else False
-            if not found:
-                missing.append(f"codex:{event}")
+        if "codex" in installed:
+            codex_value = tomllib.loads(_read_install_config(codex_path))
+            codex_hooks = codex_value.get("hooks", {})
+            if not isinstance(codex_hooks, dict):
+                raise ValueError("Codex hooks root is not a table")
+            for event in sorted(expected_codex):
+                groups = codex_hooks.get(event, [])
+                found = any(
+                    _control_hook_command(hook.get("command"), event)
+                    for group in groups if isinstance(group, dict)
+                    for hook in group.get("hooks", []) if isinstance(hook, dict)
+                ) if isinstance(groups, list) else False
+                if not found:
+                    missing.append(f"codex:{event}")
     except (ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError, RecursionError) as exc:
         return Probe(
             "hooks", "unavailable",
@@ -375,9 +398,10 @@ def _hooks_probe(config) -> Probe:
     if missing:
         detail = "missing expected Control hooks: " + ", ".join(missing)
         return Probe("hooks", "missing", detail[:500])
+    labels = [name.title() for name in installed]
     return Probe(
         "hooks", "match",
-        "expected Claude and Codex Control hook command paths are installed and executable",
+        f"expected {' and '.join(labels)} Control hook command paths are installed and executable",
     )
 
 
@@ -567,9 +591,12 @@ def run_doctor(config, probes: Mapping[str, ProbeFunction] | None = None) -> dic
             raise ValueError(f"doctor probe {name} returned an invalid result")
         results.append(Probe(result.name, result.outcome, result.detail))
     limitations = [result.detail for result in results if result.outcome != "match"]
+    # GitHub source support and absence of a repository in the caller's current
+    # directory are contextual; report them without failing the general check.
     blocking = [
         result for result in results
-        if result.outcome != "match" and result.name != "gh"
+        if (result.outcome != "match" and result.name != "gh" and
+            not (result.name == "repository" and result.outcome == "unavailable"))
     ]
     return {
         "contract": "asha.control-doctor.v1",
