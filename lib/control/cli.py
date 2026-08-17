@@ -776,6 +776,9 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         _task_usage(sys.stdout if args else sys.stderr)
         return 0 if args else 2
     command, tail = args[0], args[1:]
+    if command in {"report", "result", "seal"}:
+        print(f"asha task {command}: not available before Increment 2", file=sys.stderr)
+        return 2
     if command not in {
         "start", "list", "show", "attach", "stop", "archive", "unarchive",
         "recover", "reconcile", "doctor",
@@ -932,6 +935,11 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         domain, tail = args[0], args[1:]
         if domain == "task":
             return _task_command(tail, values)
+        if domain == "initiative":
+            # Lazy by contract: malformed orchestration configuration must not
+            # change any ordinary Control command.
+            from .orchestration.cli import main as orchestration_main
+            return orchestration_main(args, env=values)
         if domain == "control":
             if tail and tail[0] in {"-h", "--help", "help"}:
                 _control_usage()
