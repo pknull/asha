@@ -31,6 +31,17 @@ from lib.control.transaction import CreationJournalStore, JournalError
 
 
 class JjAdapterTests(unittest.TestCase):
+    def test_visible_commit_refuses_all_zero_id_without_running_jj(self) -> None:
+        runner = mock.Mock(side_effect=AssertionError("jj must not run"))
+        adapter = JjAdapter(runner=runner)
+
+        for length in (40, 64):
+            with self.subTest(length=length), self.assertRaisesRegex(
+                JjError, "empty root commit",
+            ):
+                adapter.require_visible_commit(Path("/repo"), "0" * length)
+        runner.assert_not_called()
+
     def test_workspace_add_uses_full_pinned_operation_and_argv_only(self) -> None:
         calls: list[list[str]] = []
 
@@ -426,6 +437,13 @@ class RealJjPreparationTests(unittest.TestCase):
     def jj(self, *args: str) -> str:
         return subprocess.run(["jj", "-R", str(self.source), "--ignore-working-copy", *args],
                               check=True, capture_output=True, text=True).stdout
+
+    def test_resolve_base_refuses_empty_root_and_ambiguous_revsets(self) -> None:
+        adapter = JjAdapter()
+        with self.assertRaisesRegex(JjError, "empty root commit"):
+            adapter.resolve_base(self.source, "trunk()")
+        with self.assertRaisesRegex(JjError, "ambiguous base commit ID"):
+            adapter.resolve_base(self.source, "all()")
 
     def source_facts(self) -> dict:
         working_copy = {}
