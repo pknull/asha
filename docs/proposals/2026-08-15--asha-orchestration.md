@@ -1,13 +1,20 @@
 ---
 title: Asha Orchestration
 type: proposal
-status: panel-reviewed and step-4 cold-reviewed; delivered proposal awaiting Control soak before implementation
+status: panel-reviewed and step-4 cold-reviewed; Control soak (runway Phase 3) and contract freeze (Phase 4) completed 2026-08-17; prerequisite gate satisfied; implementation not started
 date: 2026-08-15
 depends_on: docs/proposals/2026-08-14--asha-control.md
 origin: Keeper design session after comparing Asha Control with persistent multi-agent supervisors
 ---
 
 # Asha Orchestration: initiative-scoped coordination over Asha Control
+
+> **Prerequisite gate status (2026-08-17).** The Control soak ran on real work
+> and its defects were fixed in Control; the required create-by-id amendment
+> shipped as `asha task start --task-id` (see `docs/control.md`, "Idempotent
+> creation"); the contracts Core binds to are frozen in
+> [`docs/control-contracts.md`](../control-contracts.md). Re-read those live
+> surfaces, not this document's predictions, before Increment 1.
 
 ## Status and dependency
 
