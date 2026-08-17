@@ -461,10 +461,17 @@ class ControlCliTests(unittest.TestCase):
         self.assertEqual(data["tasks"][0]["task_id"], self.record["task_id"])
         # This never-launched fixture has no tmux session, no live process, and
         # no jj workspace.  Reconciliation follows the documented precedence
-        # tmux -> process -> jj, so the absent recorded session is the first
-        # and reported blocker (see the isolated tmux socket in setUp).
+        # tmux -> process -> jj: with tmux isolated to an empty socket dir the
+        # recorded session resolves as `missing`, and a missing tmux session
+        # with a non-missing process is the first and reported blocker, before
+        # jj is consulted (see the isolated tmux socket in setUp). Verified
+        # empirically against a machine with tmux installed; codex's sandbox,
+        # which has no tmux binary, degrades tmux to `unavailable` and would
+        # otherwise mislead this assertion toward the jj blocker.
         self.assertEqual(data["tasks"][0]["status"], "stale")
-        self.assertIn("tmux", data["tasks"][0]["blocker"])
+        self.assertEqual(
+            data["tasks"][0]["blocker"], "tmux: recorded tmux session is absent",
+        )
 
     def test_show_json_has_narrow_versioned_contract(self) -> None:
         rc, stdout, stderr = self.invoke(["task", "show", "cli-test", "--json"])

@@ -167,6 +167,14 @@ stored lifecycle. Missing or conflicting evidence produces `unknown`, `stale`,
 or an explicit blocker; reconciliation never mutates external state to make an
 old record appear current.
 
+"Recent" is enforced, not decorative. An in-progress event state (`working`,
+`needs-input`) is trusted only while its snapshot is newer than
+`control.event_staleness_seconds` (default `1800`). Past that window a live
+process reconciles to `unknown` rather than a stale positive, because a harness
+with no wired stop event (Codex today) never supersedes an in-progress
+snapshot. `idle` (a completed turn) is a legitimate resting state and is not
+aged; `exited` and `failed` are durable facts and never age.
+
 The Increment 4 live-probed semantic claims are:
 
 | Control event | Claude Code | OpenAI Codex |
