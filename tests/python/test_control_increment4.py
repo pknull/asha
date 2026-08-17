@@ -196,6 +196,31 @@ class EventSnapshotTests(Increment4Fixture):
 
 
 class EventCliTests(Increment4Fixture):
+    def seed_task(
+        self, *, pane_id: str = "%4", task_id: str | None = None,
+        run_id: str | None = None,
+    ) -> dict:
+        source = self.root / "source"
+        workspace = self.config.workspace_root / "repo-key" / "control-test"
+        source.mkdir(exist_ok=True)
+        source.chmod(0o755)
+        workspace.mkdir(parents=True, exist_ok=True)
+        # The namespace predicate rejects writable ancestors and requires 0700
+        # destination components: privatize the fixture chain like production.
+        current = workspace
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
+        task = task_record(
+            task_id=self.task_id if task_id is None else task_id,
+            repository_root=str(source),
+            workspace_path=str(workspace),
+        )
+        task["runs"][0]["run_id"] = self.run_id if run_id is None else run_id
+        task["runs"][0]["pane_id"] = pane_id
+        TaskStore(self.config).save(task)
+        return task
+
     def managed_env(self) -> dict[str, str]:
         return {
             **self.env,
@@ -216,6 +241,8 @@ class EventCliTests(Increment4Fixture):
         self.assertFalse(self.config.runtime_dir.exists())
 
     def test_managed_event_writes_from_environment_identity(self) -> None:
+        self.seed_task()
+
         status, stdout, stderr = self.invoke([
             "control", "event", "--event", "prompt-submitted",
             "--harness", "codex", "--session-id", "opaque-session",
@@ -228,13 +255,78 @@ class EventCliTests(Increment4Fixture):
         self.assertEqual(snapshot["task_id"], self.task_id)
         self.assertEqual(snapshot["harness"], "codex")
 
+    def test_managed_event_authorizes_with_lock_free_peek(self) -> None:
+        task = self.seed_task()
+        store = mock.Mock()
+        store.peek.return_value = task
+        store.read.side_effect = AssertionError("event authorization must not lock")
+
+        with mock.patch("lib.control.cli.TaskStore", return_value=store), \
+                mock.patch("lib.control.cli._publish_tmux_presentation"):
+            status, stdout, stderr = self.invoke([
+                "control", "event", "--event", "prompt-submitted",
+                "--pane-id", "%4",
+            ], self.managed_env())
+
+        self.assertEqual((status, stdout, stderr), (0, "", ""))
+        store.peek.assert_called_once_with(self.task_id)
+        store.read.assert_not_called()
+
+    def test_event_rejects_missing_task_foreign_run_and_unowned_pane(self) -> None:
+        self.seed_task()
+        cases = (
+            (
+                "missing task",
+                {"ASHA_CONTROL_TASK_ID": str(uuid.uuid4())},
+                ["--pane-id", "%4"],
+            ),
+            (
+                "foreign run",
+                {"ASHA_CONTROL_RUN_ID": str(uuid.uuid4())},
+                ["--pane-id", "%4"],
+            ),
+            ("mismatched pane", {}, ["--pane-id", "%99"]),
+            ("missing pane", {}, []),
+        )
+
+        for label, environment, pane_args in cases:
+            with self.subTest(label=label), \
+                    mock.patch("lib.control.cli.write_snapshot") as write, \
+                    mock.patch("lib.control.cli._publish_tmux_presentation") as publish:
+                status, stdout, stderr = self.invoke([
+                    "control", "event", "--event", "prompt-submitted",
+                    *pane_args,
+                ], {**self.managed_env(), **environment})
+
+                self.assertEqual((status, stdout), (0, ""))
+                self.assertIn("asha control event:", stderr)
+                self.assertLessEqual(len(stderr), 600)
+                write.assert_not_called()
+                publish.assert_not_called()
+
+    def test_rejected_event_preserves_an_existing_snapshot(self) -> None:
+        self.seed_task()
+        self.write("prompt-submitted", pane_id="%4")
+        before = read_snapshot(self.config, self.run_id)
+
+        status, stdout, stderr = self.invoke([
+            "control", "event", "--event", "turn-stopped",
+            "--pane-id", "%99",
+        ], self.managed_env())
+
+        self.assertEqual((status, stdout), (0, ""))
+        self.assertIn("asha control event:", stderr)
+        self.assertEqual(read_snapshot(self.config, self.run_id), before)
+
     def test_broken_unwritable_runtime_dir_fails_open(self) -> None:
-        runtime = Path(self.env["XDG_RUNTIME_DIR"])
-        runtime.mkdir(mode=0o500)
+        self.seed_task()
+        runtime = self.config.runtime_dir
+        runtime.chmod(0o500)
         self.addCleanup(runtime.chmod, 0o700)
 
         status, stdout, stderr = self.invoke([
             "control", "event", "--event", "prompt-submitted",
+            "--pane-id", "%4",
         ], self.managed_env())
 
         self.assertEqual((status, stdout), (0, ""))
@@ -242,8 +334,9 @@ class EventCliTests(Increment4Fixture):
         self.assertLessEqual(len(stderr), 600)
 
     def test_malformed_managed_value_fails_open_but_usage_errors_do_not(self) -> None:
+        self.seed_task()
         status, stdout, stderr = self.invoke([
-            "control", "event", "--event", "unknown",
+            "control", "event", "--event", "unknown", "--pane-id", "%4",
         ], self.managed_env())
         self.assertEqual((status, stdout), (0, ""))
         self.assertIn("asha control event:", stderr)

@@ -100,6 +100,37 @@ python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == 
 allowed_only '^(tmux|jj|)$' "$doctor_before"
 ! grep -Eq '^git$' "$WORK/invoked"
 
+# The externally reachable event route authorizes against the durable task
+# registry before it writes a snapshot. Seed the exact task/run/pane identity
+# exercised below; isolated mode plus an explicit trusted path keeps both
+# poison import roots out of this setup process.
+mkdir -p "$WORK/source" "$XDG_DATA_HOME/asha/workspaces/repo-key/shell-event"
+# The namespace predicate rejects writable ancestors and requires 0700
+# destination components: privatize the fixture chain like production.
+chmod 0755 "$WORK/source"
+chmod 0700 "$XDG_DATA_HOME" "$XDG_DATA_HOME/asha" "$XDG_DATA_HOME/asha/workspaces" \
+  "$XDG_DATA_HOME/asha/workspaces/repo-key" "$XDG_DATA_HOME/asha/workspaces/repo-key/shell-event"
+python3 -I - "$ROOT" "$WORK/source" \
+  "$XDG_DATA_HOME/asha/workspaces/repo-key/shell-event" <<'PY'
+import os
+import sys
+
+sys.path.insert(0, sys.argv[1])
+from lib.control.config import load_config
+from lib.control.store import TaskStore
+from tests.python.test_control_config_model import task_record
+
+task = task_record(
+    task_id="11111111-1111-4111-8111-111111111111",
+    repository_root=sys.argv[2],
+    workspace_path=sys.argv[3],
+)
+task["runs"][0]["run_id"] = "22222222-2222-4222-8222-222222222222"
+task["runs"][0]["pane_id"] = "%9"
+TaskStore(load_config(os.environ)).save(task)
+PY
+state_before="$(find "$XDG_STATE_HOME" -printf '%P %y %m %u %g\n' | sort)"
+
 export ASHA_CONTROL_MANAGED=1
 export ASHA_CONTROL_TASK_ID=11111111-1111-4111-8111-111111111111
 export ASHA_CONTROL_RUN_ID=22222222-2222-4222-8222-222222222222

@@ -131,6 +131,18 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
             raise EventError(
                 "ASHA_CONTROL_STATE_DIR does not match the configured task registry"
             )
+        task = TaskStore(config).peek(task_id)
+        run = next(
+            (candidate for candidate in task["runs"] if candidate["run_id"] == run_id),
+            None,
+        )
+        if run is None:
+            raise EventError("submitted run does not belong to the submitted task")
+        pane_id = parsed["pane_id"]
+        if pane_id is None:
+            raise EventError("control event requires --pane-id <pane-id>")
+        if pane_id != run["pane_id"]:
+            raise EventError("submitted pane does not belong to the submitted run")
         raw_status = parsed["exit_status"]
         exit_status = None
         if raw_status is not None:
@@ -145,15 +157,15 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
             harness=parsed["harness"] or env.get("ASHA_HARNESS") or "claude",
             harness_session_id=parsed["session_id"],
             exit_status=exit_status,
-            pane_id=parsed["pane_id"],
+            pane_id=pane_id,
         )
-        _publish_tmux_presentation(config, run_id, parsed["pane_id"], task_id)
+        _publish_tmux_presentation(config, run_id, pane_id, task_id)
         if parsed["json"]:
             snapshot = read_snapshot(config, run_id)
             if snapshot is None:
                 raise EventError("event snapshot disappeared after its write")
             _json(snapshot)
-    except (ConfigError, EventError, OSError, ValueError) as exc:
+    except (ConfigError, EventError, StoreError, OSError, ValueError) as exc:
         _event_diagnostic(exc)
     return 0
 
