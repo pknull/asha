@@ -122,6 +122,40 @@ grep -q 'config lacks memory_version=2 or project_id' <<<"$out" \
   && ok "doctor rejects a whitespace-only Memory v2 project_id" \
   || fail "doctor rejects a whitespace-only Memory v2 project_id"
 
+MEMORY_LIMIT_PROJECT="$SANDBOX/memory-limit-project"
+mkdir -p "$MEMORY_LIMIT_PROJECT/.asha" "$MEMORY_LIMIT_PROJECT/Memory"
+printf '{"initialized":true,"memory_version":2,"project_id":"memory-limit-test"}\n' \
+  > "$MEMORY_LIMIT_PROJECT/.asha/config.json"
+printf '/Work/session-state/\n/Work/memory-migration/\n' \
+  > "$MEMORY_LIMIT_PROJECT/.gitignore"
+python3 - "$MEMORY_LIMIT_PROJECT/Memory/decisions.md" <<'PY'
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+prefix = b"# Decisions\n\n"
+path.write_bytes(prefix + b"x" * (64 * 1024 - len(prefix)))
+PY
+out="$(cd "$MEMORY_LIMIT_PROJECT" && run --target copilot 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q 'Memory/decisions.md is within the 65,536-byte publication cap' <<<"$out" \
+    && ! grep -q 'Memory/decisions.md exceeds' <<<"$out"; then
+  ok "doctor accepts decisions.md at the 64 KiB publication cap"
+else
+  fail "doctor accepts decisions.md at the 64 KiB publication cap (rc=$rc)"
+fi
+
+printf 'x' >> "$MEMORY_LIMIT_PROJECT/Memory/decisions.md"
+out="$(cd "$MEMORY_LIMIT_PROJECT" && run --target copilot 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q 'WARN  current project Memory/decisions.md exceeds the 65,536-byte publication cap (65,537 bytes)' <<<"$out" \
+    && grep -q '/session:consolidate' <<<"$out" \
+    && grep -q '/session:save' <<<"$out"; then
+  ok "doctor warns non-fatally on oversized decisions.md with migration guidance"
+else
+  fail "doctor warns non-fatally on oversized decisions.md with migration guidance (rc=$rc)"
+fi
+
 # ---------------------------------------------------------------------------
 echo "--- test 1a: current source defeats matching stale ownership ledgers ---"
 assert_command_skill_source_freshness() { # target skill_md
