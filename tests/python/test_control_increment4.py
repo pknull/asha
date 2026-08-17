@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import copy
 import io
 import json
 import os
@@ -11,6 +12,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
+from lib.control import view
 from lib.control.cli import _publish_tmux_presentation, main as control_main
 from lib.control.config import load_config
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
@@ -19,7 +21,10 @@ from lib.control.events import (
     EVENTS,
     EventError,
     events_dir,
+    expire_snapshot,
+    expire_terminal_snapshots,
     read_snapshot,
+    summarize,
     write_snapshot,
 )
 from lib.control.jj import WorkspaceIdentity
@@ -101,7 +106,9 @@ class EventSnapshotTests(Increment4Fixture):
         )
         adapter.session_option.return_value = self.task_id
         with mock.patch("lib.control.cli.TmuxAdapter", return_value=adapter), \
-                mock.patch("lib.control.cli.summarize", return_value="asha: 1 working"):
+                mock.patch(
+                    "lib.control.events.summarize", return_value="asha: 1 working",
+                ):
             _publish_tmux_presentation(
                 self.config, self.run_id, "%7", self.task_id,
             )
@@ -193,6 +200,168 @@ class EventSnapshotTests(Increment4Fixture):
         path.chmod(0o600)
         with self.assertRaises(EventError):
             read_snapshot(self.config, self.run_id)
+
+    def test_expire_snapshot_is_safe_and_idempotent(self) -> None:
+        path = self.write()
+
+        self.assertTrue(expire_snapshot(self.config, self.run_id))
+        self.assertFalse(path.exists())
+        self.assertFalse(expire_snapshot(self.config, self.run_id))
+        with self.assertRaises(EventError):
+            expire_snapshot(self.config, "not-a-run-id")
+
+    def test_terminal_expiry_preserves_nonterminal_and_blocked_snapshots(self) -> None:
+        self.write()
+        self.assertFalse(expire_terminal_snapshots(self.config, [{
+            "run_id": self.run_id, "state": "working", "blocker": None,
+        }]))
+        self.assertFalse(expire_terminal_snapshots(self.config, [{
+            "run_id": self.run_id, "state": "exited", "blocker": "conflict",
+        }]))
+        self.assertIsNotNone(read_snapshot(self.config, self.run_id))
+
+    def test_summary_labels_event_only_evidence_and_reports_truncation(self) -> None:
+        self.assertEqual(summarize(self.config), "asha last-event-only: no snapshots")
+        for _ in range(3):
+            self.write(run_id=str(uuid.uuid4()))
+
+        with mock.patch("lib.control.events.MAX_SUMMARY_SNAPSHOTS", 2):
+            summary = summarize(self.config)
+
+        self.assertEqual(
+            summary,
+            "asha last-event-only: 2 working, 2 total (truncated: 1 snapshot omitted)",
+        )
+
+    def test_summary_scopes_unvalidated_cap_and_reports_observation_failure(self) -> None:
+        self.write(run_id="ffffffff-ffff-4fff-8fff-ffffffffffff")
+        directory = events_dir(self.config)
+        for name in ("-bad-a.json", "-bad-b.json"):
+            (directory / name).write_text("not json", encoding="utf-8")
+
+        with mock.patch("lib.control.events.MAX_SUMMARY_SNAPSHOTS", 2):
+            self.assertEqual(
+                summarize(self.config),
+                "asha last-event-only: no valid inspected snapshots "
+                "(truncated: 1 snapshot omitted)",
+            )
+        with mock.patch(
+            "lib.control.events.events_dir", side_effect=EventError("unavailable"),
+        ):
+            self.assertEqual(
+                summarize(self.config),
+                "asha last-event-only: snapshot status unavailable",
+            )
+
+    def test_terminal_reconciliation_persists_before_expiry_and_refreshes_summary(self) -> None:
+        source = self.root / "source"
+        workspace = self.config.workspace_root / "repo-key" / "terminal"
+        source.mkdir()
+        source.chmod(0o755)
+        workspace.mkdir(parents=True)
+        current = workspace
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
+        task = task_record(
+            task_id=self.task_id,
+            repository_root=str(source),
+            workspace_path=str(workspace),
+        )
+        task["runs"][0]["run_id"] = self.run_id
+        store = TaskStore(self.config)
+        store.save(task)
+        self.write()
+
+        class TerminalAdapters:
+            def tmux(inner, task, run):
+                return Evidence("tmux", "match", "owned")
+
+            def process(inner, task, run):
+                return Evidence("process", "missing", "exited without status")
+
+            def jj(inner, task):
+                return Evidence("jj", "match", "owned")
+
+            def event(inner, task, run):
+                return Evidence("event", "match", "session ended", state="exited")
+
+        adapters = TerminalAdapters()
+        presentation = mock.Mock()
+        persisted, terminal = view.locked_reconciliation(
+            store, mock.Mock(), task["task_id"], adapters, mock.Mock(),
+            presentation=presentation,
+        )
+
+        self.assertEqual(terminal["runs"][0]["state"], "exited")
+        self.assertEqual(persisted["lifecycle"], "ended")
+        self.assertEqual(store.read(task["task_id"])["runs"][0]["state"], "exited")
+        self.assertIsNone(read_snapshot(self.config, self.run_id))
+        presentation.set_server_summary.assert_called_once_with(
+            "asha last-event-only: no snapshots", deadline_seconds=5,
+        )
+
+        class MissingEventAdapters(TerminalAdapters):
+            def event(inner, task, run):
+                return Evidence("event", "missing", "snapshot expired")
+
+        _, repeated = view.locked_reconciliation(
+            store, mock.Mock(), task["task_id"], MissingEventAdapters(), mock.Mock(),
+        )
+        self.assertEqual(repeated["runs"][0]["state"], "exited")
+
+    def test_partial_terminal_reconciliation_keeps_unpersisted_event_evidence(self) -> None:
+        source = self.root / "mixed-source"
+        workspace = self.config.workspace_root / "repo-key" / "mixed"
+        source.mkdir()
+        source.chmod(0o755)
+        workspace.mkdir(parents=True)
+        current = workspace
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
+        task = task_record(
+            task_id=self.task_id,
+            repository_root=str(source),
+            workspace_path=str(workspace),
+        )
+        latest = task["runs"][0]
+        latest["run_id"] = self.run_id
+        prior = copy.deepcopy(latest)
+        prior["run_id"] = str(uuid.uuid4())
+        prior["state"] = "exited"
+        prior["evidence"] = "stored exit"
+        task["runs"] = [prior, latest]
+        store = TaskStore(self.config)
+        store.save(task)
+        self.write("session-ended")
+
+        class MixedAdapters:
+            def tmux(inner, task, run):
+                return Evidence("tmux", "match", "owned")
+
+            def process(inner, task, run):
+                if run["run_id"] == prior["run_id"]:
+                    return Evidence("process", "match", "unexpectedly live")
+                return Evidence("process", "missing", "exited without status")
+
+            def jj(inner, task):
+                return Evidence("jj", "match", "owned")
+
+            def event(inner, task, run):
+                if run["run_id"] == self.run_id:
+                    return Evidence("event", "match", "session ended", state="exited")
+                return Evidence("event", "missing", "no snapshot")
+
+        persisted, result = view.locked_reconciliation(
+            store, mock.Mock(), task["task_id"], MixedAdapters(), mock.Mock(),
+            presentation=mock.Mock(),
+        )
+
+        self.assertEqual([run["state"] for run in result["runs"]], ["stale", "exited"])
+        self.assertEqual(persisted["lifecycle"], "running")
+        self.assertEqual(persisted["runs"][-1]["state"], "starting")
+        self.assertIsNotNone(read_snapshot(self.config, self.run_id))
 
 
 class EventCliTests(Increment4Fixture):
@@ -296,8 +465,31 @@ class EventCliTests(Increment4Fixture):
             ], self.managed_env())
 
         self.assertEqual((status, stdout, stderr), (0, "", ""))
-        store.peek.assert_called_once_with(self.task_id)
+        self.assertEqual(
+            store.peek.call_args_list,
+            [mock.call(self.task_id), mock.call(self.task_id)],
+        )
         store.read.assert_not_called()
+
+    def test_late_event_write_is_removed_after_terminal_record_wins(self) -> None:
+        task = self.seed_task()
+        terminal = copy.deepcopy(task)
+        terminal["lifecycle"] = "ended"
+        terminal["runs"][0]["state"] = "exited"
+        store = mock.Mock()
+        store.peek.side_effect = [task, terminal]
+
+        with mock.patch("lib.control.cli.TaskStore", return_value=store), \
+                mock.patch("lib.control.cli._publish_tmux_presentation") as publish, \
+                mock.patch("lib.control.cli.publish_server_summary") as publish_summary:
+            status, stdout, stderr = self.invoke([
+                "control", "event", "--event", "turn-stopped", "--pane-id", "%4",
+            ], self.managed_env())
+
+        self.assertEqual((status, stdout, stderr), (0, "", ""))
+        self.assertIsNone(read_snapshot(self.config, self.run_id))
+        publish.assert_not_called()
+        publish_summary.assert_called_once()
 
     def test_event_rejects_missing_task_foreign_run_and_unowned_pane(self) -> None:
         self.seed_task()

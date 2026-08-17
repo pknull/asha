@@ -443,12 +443,14 @@ class SharedViewTests(unittest.TestCase):
             "blocker": "wait for operator",
         })
 
-    def test_reconciliation_composition_and_locking_match_pre_extraction_behavior(self) -> None:
+    def test_reconciliation_composition_includes_locked_terminal_maintenance(self) -> None:
         task = task_record(slug="parity")
         expected = reconcile_task(task, UnavailableAdapters())
         events: list[str] = []
 
         class Store:
+            config = mock.sentinel.config
+
             @contextlib.contextmanager
             def transaction_lock(inner, task_id):
                 events.append(f"lock:{task_id}")
@@ -459,13 +461,19 @@ class SharedViewTests(unittest.TestCase):
                 return copy.deepcopy(task)
 
         journals = mock.Mock()
-        actual_task, actual = view.locked_reconciliation(
-            Store(), journals, task["task_id"], UnavailableAdapters(), JjAdapter(),
-        )
+        with mock.patch.object(view, "expire_terminal_snapshots") as expire:
+            actual_task, actual = view.locked_reconciliation(
+                Store(), journals, task["task_id"], UnavailableAdapters(), JjAdapter(),
+            )
 
         self.assertEqual(actual_task, task)
         self.assertEqual(actual, expected)
         self.assertEqual(events, [f"lock:{task['task_id']}", f"read:{task['task_id']}"])
+        expire.assert_called_once_with(mock.sentinel.config, [{
+            "run_id": task["runs"][0]["run_id"],
+            "state": task["runs"][0]["state"],
+            "blocker": actual["runs"][0]["blocker"],
+        }])
         journals.read.assert_not_called()
 
     def test_attach_target_checks_session_run_and_pane_ownership(self) -> None:

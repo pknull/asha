@@ -189,6 +189,13 @@ format snippet and does not edit the user's tmux configuration.
 Popups are bound to the client attached to the caller's own session and never
 fall back to another tmux client.
 
+The server summary labels itself `last-event-only`: it does not claim process
+liveness, and it reports when more than 256 snapshots exist. Terminal
+reconciliation persists the terminal run evidence before expiring the
+corresponding runtime snapshots; archive does the same. Both refresh the
+cached server summary after cleanup, and a late hook write rechecks the durable
+run state before it may survive.
+
 ## State and XDG locations
 
 Defaults follow XDG paths:

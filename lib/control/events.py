@@ -1,4 +1,4 @@
-"""Bounded, lock-free current event snapshots for managed Control runs."""
+"""Bounded event snapshots and aggregate presentation for managed Control runs."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from .store import (
     _managed_start,
     _open_existing_file,
 )
+from .tmux import TmuxAdapter
 
 
 class EventError(ValueError):
@@ -333,13 +334,55 @@ def read_snapshot(config: ControlConfig, run_id: str) -> dict[str, Any] | None:
     return _validate_snapshot(value, run_id)
 
 
+def expire_snapshot(config: ControlConfig, run_id: str) -> bool:
+    """Durably remove one run snapshot; return whether a file was removed."""
+    try:
+        run_id = canonical_uuid(run_id)
+    except ModelError as exc:
+        raise EventError(str(exc)) from exc
+    directory, managed_start = _events_path(config)
+    name = f"{run_id}.json"
+    try:
+        with _directory_fd(
+            directory, create=False, managed_start=managed_start,
+        ) as directory_fd:
+            if directory_fd is None:
+                return False
+            try:
+                os.unlink(name, dir_fd=directory_fd)
+            except FileNotFoundError:
+                return False
+            os.fsync(directory_fd)
+    except (StoreError, OSError) as exc:
+        raise EventError(f"event snapshot expiry failed: {exc}") from exc
+    return True
+
+
+def expire_terminal_snapshots(
+    config: ControlConfig, runs: list[dict[str, Any]],
+) -> bool:
+    """Best-effort expiry; return whether any unblocked terminal run was seen."""
+    terminal = False
+    for run in runs:
+        if run.get("state") not in {"exited", "failed"} or run.get("blocker") is not None:
+            continue
+        terminal = True
+        try:
+            expire_snapshot(config, run.get("run_id"))
+        except EventError:
+            # Runtime presentation cleanup must not obscure a persisted
+            # terminal record or the reconciliation result being reported.
+            continue
+    return terminal
+
+
 MAX_SUMMARY_SNAPSHOTS = 256
 _SUMMARY_ORDER = ("needs-input", "working", "idle", "exited", "failed")
 _SUMMARY_LABELS = {"needs-input": "needs-you"}
 
 
 def summarize(config: ControlConfig) -> str:
-    """Aggregate current run snapshots into one bounded status string.
+    """Aggregate last-event-only run snapshots into one bounded status string.
 
     Reads only the runtime snapshot directory, never the task registry, so the
     hook path takes no lock and contends with no controller transaction. Bounded
@@ -351,12 +394,15 @@ def summarize(config: ControlConfig) -> str:
     total = 0
     try:
         directory = events_dir(config)
-        names = sorted(entry.name for entry in directory.iterdir() if entry.is_file())
+        names = sorted(
+            entry.name for entry in directory.iterdir()
+            if entry.is_file() and entry.name.endswith(".json")
+        )
     except (EventError, OSError):
-        return "asha: no tasks"
-    for name in names[:MAX_SUMMARY_SNAPSHOTS]:
-        if not name.endswith(".json"):
-            continue
+        return "asha last-event-only: snapshot status unavailable"
+    inspected = names[:MAX_SUMMARY_SNAPSHOTS]
+    omitted = len(names) - len(inspected)
+    for name in inspected:
         try:
             snapshot = read_snapshot(config, name[: -len(".json")])
         except (EventError, OSError, ValueError):
@@ -367,12 +413,25 @@ def summarize(config: ControlConfig) -> str:
         state = snapshot.get("state")
         if isinstance(state, str):
             counts[state] = counts.get(state, 0) + 1
+    suffix = ""
+    if omitted:
+        noun = "snapshot" if omitted == 1 else "snapshots"
+        suffix = f" (truncated: {omitted} {noun} omitted)"
     if not total:
-        return "asha: no tasks"
+        detail = "no snapshots" if not names else "no valid inspected snapshots"
+        return f"asha last-event-only: {detail}{suffix}"
     parts = [
         f"{counts[state]} {_SUMMARY_LABELS.get(state, state)}"
         for state in _SUMMARY_ORDER
         if counts.get(state)
     ]
     parts.append(f"{total} total")
-    return "asha: " + ", ".join(parts)
+    return "asha last-event-only: " + ", ".join(parts) + suffix
+
+
+def publish_server_summary(config: ControlConfig, adapter: TmuxAdapter) -> None:
+    """Best-effort refresh of the cached tmux server presentation value."""
+    try:
+        adapter.set_server_summary(summarize(config), deadline_seconds=5)
+    except (EventError, OSError, ValueError):
+        return

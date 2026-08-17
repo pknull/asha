@@ -1,4 +1,4 @@
-"""Shared read-side composition for Control front ends."""
+"""Shared reconciliation and presentation composition for Control front ends."""
 
 from __future__ import annotations
 
@@ -7,8 +7,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .events import expire_terminal_snapshots, publish_server_summary
 from .jj import JjAdapter, JjError
-from .launch import LaunchError
+from .launch import LaunchError, persist_terminal_reconciliation
 from .reconcile import Adapters, reconcile_task
 from .store import TaskStore, task_digest
 from .tmux import TmuxAdapter
@@ -145,12 +146,26 @@ def reconcile_with_creation(
 
 def locked_reconciliation(
     store: TaskStore, journals: CreationJournalStore, task_id: str,
-    adapters: Adapters, jj: JjAdapter,
+    adapters: Adapters, jj: JjAdapter, *, presentation: TmuxAdapter | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Read and reconcile one task while holding its durable transaction lock."""
+    """Reconcile under lock, persisting and expiring a terminal edge."""
     with store.transaction_lock(task_id):
         task = store.read(task_id)
-        return task, reconcile_with_creation(task, adapters, journals, jj)
+        reconciliation = reconcile_with_creation(task, adapters, journals, jj)
+        task = persist_terminal_reconciliation(task, reconciliation, store)
+        derived = {run["run_id"]: run for run in reconciliation["runs"]}
+        durable_runs = [
+            {
+                "run_id": run["run_id"],
+                "state": run["state"],
+                "blocker": derived[run["run_id"]]["blocker"],
+            }
+            for run in task["runs"]
+        ]
+        terminal = expire_terminal_snapshots(store.config, durable_runs)
+        if terminal and presentation is not None:
+            publish_server_summary(store.config, presentation)
+        return task, reconciliation
 
 
 def _adapter_for_task(task: dict[str, Any]) -> TmuxAdapter:
