@@ -72,6 +72,16 @@ def _validate_pane_id(value: Any) -> str:
     return value
 
 
+def _validate_client_tty(value: Any) -> str:
+    if not isinstance(value, str):
+        raise TmuxError("tmux client tty is invalid")
+    parts = Path(value).parts
+    if (len(parts) < 3 or parts[:2] != ("/", "dev") or ".." in parts or
+            len(value) > 4096 or _has_unicode_control(value)):
+        raise TmuxError("tmux client tty is invalid")
+    return value
+
+
 def _validate_user_option_key(value: Any) -> str:
     if not isinstance(value, str) or _USER_OPTION.fullmatch(value) is None:
         raise TmuxError("tmux user option key is invalid")
@@ -499,14 +509,37 @@ class TmuxAdapter:
             args.extend([";", "select-pane", "-t", pane])
         self._run(args)
 
-    def popup_argv(self, *, session: str, width: str, height: str) -> list[str]:
+    def caller_client(self, pane: str) -> str | None:
+        """Return the first client tty attached to the caller pane's session."""
+        pane_id = _validate_pane_id(pane)
+        session = _validate_session_name(self._one_line(
+            self._run([
+                "display-message", "-p", "-t", pane_id, "#{session_name}",
+            ]),
+            "session name",
+        ))
+        output = self._run([
+            "list-clients", "-t", session, "-F", "#{client_tty}",
+        ])
+        if output == "":
+            return None
+        lines = output.split("\n")
+        if not lines or not lines[0]:
+            raise TmuxError("tmux returned invalid client tty")
+        return _validate_client_tty(lines[0])
+
+    def popup_argv(
+        self, *, client: str, session: str, width: str, height: str,
+    ) -> list[str]:
+        client = _validate_client_tty(client)
         session = _validate_session_name(session)
         width = _validate_popup_dimension(width)
         height = _validate_popup_dimension(height)
         socket_args = self._socket_args()
         return [
             self.executable, *socket_args,
-            "display-popup", "-E", "-w", width, "-h", height, "--",
+            "display-popup", "-c", client, "-E",
+            "-w", width, "-h", height, "--",
             self.executable, *socket_args,
             "attach-session", "-t", session,
         ]

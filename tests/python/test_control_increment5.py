@@ -367,8 +367,11 @@ class PopupIntegrationTests(unittest.TestCase):
         def select_target(self, session, window, pane_id) -> None:
             self.selected = (session, window, pane_id)
 
-        def popup_argv(self, *, session, width, height) -> list[str]:
-            return ["tmux", "display-popup", "-E", "-t", session]
+        def caller_client(self, pane) -> str:
+            return "/dev/pts/7"
+
+        def popup_argv(self, *, client, session, width, height) -> list[str]:
+            return ["tmux", "display-popup", "-c", client, "-E", "-t", session]
 
     def test_enter_reaches_real_run_popup_with_matching_signature(self) -> None:
         from types import SimpleNamespace
@@ -392,6 +395,7 @@ class PopupIntegrationTests(unittest.TestCase):
             # session, slug).  Regression guard for the missing-slug crash.
             tui_module._open_popup(
                 self.FakeCurses(), self.FakeCurses(), config, popup_row, None,
+                {"TMUX_PANE": "%7"},
             )
         run.assert_called_once()
 
