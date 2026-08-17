@@ -445,6 +445,25 @@ def _repository_probe(config) -> Probe:
     try:
         root = adapter.discover_root(start)
     except (JjError, ValueError):
+        if shutil.which("git") is not None:
+            for git_root in (start, *start.parents):
+                marker = git_root / ".git"
+                try:
+                    is_git_root = marker.is_dir() and (marker / "HEAD").is_file()
+                    if marker.is_file():
+                        with marker.open("rb") as stream:
+                            is_git_root = stream.read(8) == b"gitdir: "
+                except OSError:
+                    is_git_root = False
+                git_root_text = str(git_root)
+                if is_git_root and git_root_text and git_root.is_absolute():
+                    safe_root = _safe_detail(git_root_text)
+                    return Probe(
+                        "repository", "missing",
+                        f"{safe_root} is a Git repository but is not jj-colocated; "
+                        f"run `jj git init --colocate {safe_root}` so Control can manage it "
+                        "(creates .jj/ only; revert by removing .jj/)",
+                    )
         return Probe(
             "repository", "unavailable",
             "the working directory is not inside a jj repository; "

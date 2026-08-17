@@ -834,3 +834,43 @@ class DoctorProbeCompletionTests(unittest.TestCase):
                 )
             self.assertEqual(result["probes"][0]["outcome"], "missing")
             self.assertIn("Memory v2", result["probes"][0]["detail"])
+
+    @unittest.skipUnless(shutil.which("git"), "git is required for the plain-Git repository probe")
+    def test_repository_probe_reports_jj_colocate_remediation_for_git_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            subprocess.run(
+                ["git", "init", "--quiet", str(root)],
+                check=True,
+                capture_output=True,
+                timeout=10,
+            )
+            self.assertFalse((root / ".jj").exists())
+
+            with contextlib.chdir(root):
+                result = run_doctor(
+                    None, probes={"repository": DEFAULT_PROBES["repository"]},
+                )
+
+            probe = result["probes"][0]
+            self.assertEqual(probe["outcome"], "missing")
+            self.assertIn("jj git init --colocate", probe["detail"])
+            self.assertIn(str(root), probe["detail"])
+            self.assertFalse((root / ".jj").exists())
+
+    def test_repository_probe_keeps_generic_result_outside_any_repository(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td).resolve()
+            with contextlib.chdir(root):
+                result = run_doctor(
+                    None, probes={"repository": DEFAULT_PROBES["repository"]},
+                )
+
+        probe = result["probes"][0]
+        self.assertEqual(probe["outcome"], "unavailable")
+        self.assertEqual(
+            probe["detail"],
+            "the working directory is not inside a jj repository; "
+            "run `asha task start --repo PATH` or change directory",
+        )
+        self.assertNotIn("jj git init --colocate", probe["detail"])
