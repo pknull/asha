@@ -76,12 +76,12 @@ class ControlStoreTests(unittest.TestCase):
         lock = self.config.runtime_dir / "tasks" / f"{record['task_id']}.lock"
         self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
 
-    def test_private_state_root_accepts_shared_asha_parent_without_read_side_effects(self) -> None:
+    def test_private_state_root_accepts_group_readable_asha_parent_without_read_side_effects(self) -> None:
         state = self.root / "live-state"
         shared = state / "asha"
         state.mkdir(mode=0o700)
-        shared.mkdir(mode=0o775)
-        shared.chmod(0o775)
+        shared.mkdir(mode=0o750)
+        shared.chmod(0o750)
         config = load_config({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
@@ -109,7 +109,7 @@ class ControlStoreTests(unittest.TestCase):
             repository_root=str(self.root / "repositories/source"),
             workspace_path=str(config.workspace_root / "repo-key/shared-state"),
         ))
-        self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o775)
+        self.assertEqual(stat.S_IMODE(shared.stat().st_mode), 0o750)
         self.assertEqual(stat.S_IMODE((shared / "control").stat().st_mode), 0o700)
         self.assertEqual(stat.S_IMODE((shared / "control/tasks").stat().st_mode), 0o700)
 
@@ -572,7 +572,7 @@ else:
         })
         config.tasks_dir.parents[1].mkdir(parents=True, mode=0o700)
         config.tasks_dir.parents[2].chmod(0o700)
-        config.tasks_dir.parents[1].chmod(0o775)
+        config.tasks_dir.parents[1].chmod(0o700)
         raced.clear()
 
         def unsafe_winner(path, mode=0o777, *, dir_fd=None):

@@ -18,7 +18,7 @@ printf '%s\n' '{"control":{"default_harness":"codex"}}' >"$HOME/dotfiles/asha/.a
 chmod 0600 "$HOME/dotfiles/asha/.asha/config.json"
 ln -s '../dotfiles/asha/.asha/config.json' "$HOME/.asha/config.json"
 mkdir -m 0700 "$XDG_STATE_HOME"
-mkdir -m 0775 "$XDG_STATE_HOME/asha"
+mkdir -m 0750 "$XDG_STATE_HOME/asha"
 
 # Neither cwd nor inherited PYTHONPATH may shadow the trusted controller.
 mkdir -p "$WORK/repository/control" "$WORK/python-poison/control"

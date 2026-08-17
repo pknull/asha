@@ -358,6 +358,7 @@ class RealColocatedSyncTests(unittest.TestCase):
         (self.source / "Memory" / "decisions.md").write_text(
             "# Decisions\n\n- One.\n", encoding="utf-8",
         )
+        self.source.chmod(0o755)
 
     def git(self, *args: str) -> str:
         return subprocess.run(

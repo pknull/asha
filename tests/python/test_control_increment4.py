@@ -538,8 +538,13 @@ class Increment4DoctorTests(Increment4Fixture):
 
         source = self.root / "source"
         source.mkdir()
+        source.chmod(0o755)
         workspace = self.config.workspace_root / "repo-key" / "doctor-event"
         workspace.mkdir(parents=True)
+        current = workspace
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
         task = task_record(
             slug="doctor-event", repository_root=str(source),
             workspace_path=str(workspace),

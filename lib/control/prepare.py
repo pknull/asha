@@ -101,6 +101,42 @@ def _open_absolute_directory(path: Path) -> int:
         raise PreparationError(f"cannot open Control path without following links: {exc}") from exc
 
 
+def _make_workspace_private(path: Path) -> None:
+    """Pin and privatize the workspace root created by jj."""
+    fd = _open_absolute_directory(path)
+    try:
+        metadata = os.fstat(fd)
+        if metadata.st_uid != os.geteuid():
+            raise PreparationError("created task workspace is not owned by the effective user")
+        os.fchmod(fd, 0o700)
+        metadata = os.fstat(fd)
+        if stat.S_IMODE(metadata.st_mode) != 0o700:
+            raise PreparationError("created task workspace must have mode 0700")
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _make_registered_workspace_private(
+    adapter: JjAdapter,
+    source: Path,
+    destination: Path,
+    name: str,
+    base_commit_id: str,
+    description: str,
+) -> None:
+    """Privatize an exceptional jj result only after exact registration checks."""
+    observed = adapter.workspace_identities(source).get(name)
+    if observed is None:
+        return
+    identity = adapter.inspect_workspace(destination, name, require_empty=False)
+    if (identity.parent_commit_ids != (base_commit_id,) or
+            identity.description != description or
+            observed != (identity.change_id, identity.commit_id)):
+        return
+    _make_workspace_private(destination)
+
+
 def _file_fact_at(directory_fd: int, name: str, budget: list[int]) -> dict[str, Any]:
     metadata = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
     value: dict[str, Any] = {**_inode_fact(metadata)}
@@ -323,8 +359,9 @@ def _create_destination_parents(
     fd = os.open("/", _DIRECTORY_FLAGS)
     current = Path("/")
     created: list[dict[str, Any]] = []
+    managed_start = len(config.workspace_root.parts) - 2
     try:
-        for part in target.parts[1:]:
+        for index, part in enumerate(target.parts[1:]):
             _validate_layout(config, source, destination, repo_key, slug)
             parent_metadata = os.fstat(fd)
             visible_parent = _open_absolute_directory(current)
@@ -355,6 +392,18 @@ def _create_destination_parents(
                     raise PreparationError("workspace parent changed before ownership recording")
             finally:
                 os.close(visible_child)
+            if index >= managed_start:
+                if child_metadata.st_uid != os.geteuid():
+                    os.close(child)
+                    raise PreparationError(
+                        "workspace destination parent is not owned by the effective user: "
+                        f"{current}"
+                    )
+                if stat.S_IMODE(child_metadata.st_mode) != 0o700:
+                    os.close(child)
+                    raise PreparationError(
+                        f"workspace destination parent must have mode 0700: {current}"
+                    )
             if made:
                 item = {
                     "path": str(current), "parent_path": str(current.parent),
@@ -1045,9 +1094,25 @@ def prepare_task_workspace(
             _validate_layout(config, source, destination, repo_key, slug)
             journal["jj"]["registration_state"] = "add-intent"
             phase("workspace-add-intent")
-            adapter.add_workspace(
-                source, destination, workspace_name, base_commit_id, request.label, operation_id
-            )
+            try:
+                adapter.add_workspace(
+                    source, destination, workspace_name, base_commit_id,
+                    request.label, operation_id,
+                )
+            except BaseException:
+                # jj can register and materialize the workspace before returning
+                # an error. Privatize only an exactly registered partial result;
+                # an unregistered same-uid collision remains foreign and
+                # byte-for-byte untouched.
+                try:
+                    _make_registered_workspace_private(
+                        adapter, source, destination, workspace_name,
+                        base_commit_id, request.label,
+                    )
+                except (OSError, JjError, PreparationError):
+                    pass
+                raise
+            _make_workspace_private(destination)
             phase("workspace-added")
             identity = adapter.inspect_workspace(destination, workspace_name)
             if identity.parent_commit_ids != (base_commit_id,) or identity.description != request.label:

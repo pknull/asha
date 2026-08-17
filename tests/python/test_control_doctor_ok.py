@@ -138,9 +138,14 @@ class DoctorSupportedConfigurationTests(DoctorOkFixture):
     def test_events_probe_skips_runs_without_a_claimed_event_seam(self) -> None:
         source = self.root / "source"
         source.mkdir()
+        source.chmod(0o755)
         for harness in ("copilot", "opencode"):
             workspace = self.config.workspace_root / "repo-key" / f"{harness}-only"
             workspace.mkdir(parents=True)
+            current = workspace
+            while current != self.root:
+                current.chmod(0o700)
+                current = current.parent
             task = task_record(
                 slug=f"{harness}-only",
                 repository_root=str(source),

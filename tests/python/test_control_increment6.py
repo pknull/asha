@@ -260,6 +260,7 @@ class RealGithubSourceTests(unittest.TestCase):
         (self.source / "Memory" / "decisions.md").write_text(
             "# Decisions\n\n- One.\n"
         )
+        self.source.chmod(0o755)
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),

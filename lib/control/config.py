@@ -137,6 +137,7 @@ def namespace_safety_step(
     private_boundary: bool,
     *,
     root_uid: int | None = None,
+    namespace_root: bool = False,
 ) -> tuple[str | None, bool]:
     """Validate one ancestor and carry forward a private namespace boundary."""
     # User namespaces can map the filesystem-root owner away from numeric UID 0.
@@ -147,25 +148,23 @@ def namespace_safety_step(
     mode = metadata.st_mode
     is_directory = stat.S_ISDIR(mode)
     sticky = bool(mode & stat.S_ISVTX)
-    # Other-writable is never tolerable, boundary or not: any user on the system
-    # could substitute an entry here, so no amount of trust established further
-    # up the path makes it safe. Sticky directories (/tmp) are exempt because
-    # only an entry's own owner may remove or rename it.
+    # A leading sticky directory such as /tmp may precede a private boundary:
+    # its owner cannot replace an entry owned by the effective user. It is not
+    # safe as the managed namespace root or below a private boundary, where an
+    # attacker can pre-create the exact child name Control intends to use.
     if is_directory and mode & 0o002 and not sticky:
         return "world-writable non-sticky ancestor", private_boundary
-    # Group-writable is tolerable only beneath an established private boundary,
-    # and only for a directory we own.
-    if (is_directory and mode & 0o020 and not sticky
-            and not (private_boundary and metadata.st_uid == euid)):
+    if is_directory and mode & 0o020 and not sticky:
         return "writable non-sticky ancestor", private_boundary
+    if (is_directory and mode & 0o022 and sticky
+            and (private_boundary or namespace_root)):
+        return "writable sticky ancestor", private_boundary
     # The boundary answers path SUBSTITUTION, which requires write access, so
     # the test is group/other WRITABILITY (0o022) rather than total group/other
     # access (0o077). Demanding 0700 rejected an ordinary 0750 home and with it
     # every repository beneath one, while 0750 already denies creation and
-    # replacement to everyone but the owner. Pairing this with the absolute
-    # other-writable refusal above keeps the property the original 0700 rule
-    # protected: a permissive descendant is never silently trusted just because
-    # some ancestor was.
+    # replacement to everyone but the owner. A writable descendant never
+    # inherits trust from this boundary; the checks above reject it.
     private_boundary = private_boundary or (
         is_directory and metadata.st_uid == euid and not mode & 0o022
     )
@@ -187,7 +186,8 @@ def reject_unsafe_writable_ancestors(path: Path, name: str = "path") -> None:
         except OSError as exc:
             raise ConfigError(f"cannot inspect {name} ancestor {current}: {exc}") from exc
         problem, private_boundary = namespace_safety_step(
-            metadata, os.geteuid(), private_boundary
+            metadata, os.geteuid(), private_boundary,
+            namespace_root=current == path,
         )
         if problem:
             raise ConfigError(f"{problem} rejected in {name}: {current}")

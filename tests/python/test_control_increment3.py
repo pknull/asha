@@ -554,6 +554,7 @@ class LaunchFixtureTests(unittest.TestCase):
         })
         self.source = self.root / "source"
         self.source.mkdir()
+        self.source.chmod(0o755)
         self.tasks = TaskStore(self.config)
         self.journals = CreationJournalStore(self.config)
 
@@ -568,6 +569,10 @@ class LaunchFixtureTests(unittest.TestCase):
         slug = f"launch-{index}-{task_id[:6]}"
         workspace = self.config.workspace_root / "repo-key" / slug
         workspace.mkdir(parents=True)
+        current = workspace
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
         timestamp = self.timestamp()
         task = {
             "contract": "asha.control-task.v1",
@@ -1114,6 +1119,10 @@ class Increment3CliGrammarTests(unittest.TestCase):
         config = load_config(self.env)
         workspace = config.workspace_root / "repo-key" / "do-work"
         workspace.mkdir(parents=True, exist_ok=True)
+        current = workspace
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
         task = task_record(
             slug="do-work", repository_root=str(self.root / "source"),
             workspace_path=str(workspace),
@@ -1467,6 +1476,7 @@ class RealTmuxLaunchTests(unittest.TestCase):
         (self.source / "Memory" / "decisions.md").write_text(
             "# Decisions\n\n- One.\n", encoding="utf-8",
         )
+        self.source.chmod(0o755)
         self.config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
             "XDG_STATE_HOME": str(self.root / "state"),
