@@ -22,6 +22,7 @@ from lib.control.events import read_snapshot
 from lib.control.reconcile import LiveAdapters
 from lib.control.sources import GithubAdapter, SourceError
 from lib.control.store import TaskStore
+from tests.python.test_control_config_model import task_record
 from tests.python.test_control_increment3 import FakeTmux
 
 
@@ -669,6 +670,25 @@ class TmuxPresentationTests(unittest.TestCase):
         self.config = load_config(self.env)
         self.task_id = str(uuid.uuid4())
         self.run_id = str(uuid.uuid4())
+        source = root / "source"
+        workspace = self.config.workspace_root / "repo-key" / "presentation"
+        source.mkdir()
+        source.chmod(0o755)
+        workspace.mkdir(parents=True)
+        # Privatize the fixture chain: the namespace predicate rejects
+        # writable ancestors and requires 0700 destination components.
+        current = workspace
+        while current != root:
+            current.chmod(0o700)
+            current = current.parent
+        task = task_record(
+            task_id=self.task_id,
+            repository_root=str(source),
+            workspace_path=str(workspace),
+        )
+        task["runs"][0]["run_id"] = self.run_id
+        task["runs"][0]["pane_id"] = "%7"
+        TaskStore(self.config).save(task)
 
     def _managed_env(self) -> dict[str, str]:
         return {

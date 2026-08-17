@@ -663,6 +663,24 @@ class TaskStore:
                     with self._locked(task_id, locks_fd):
                         return self._read_unlocked(tasks_fd, task_id)
 
+    def peek(self, task_id: str) -> dict[str, Any]:
+        """Read one atomic task snapshot without acquiring registry or task locks."""
+        try:
+            task_id = canonical_uuid(task_id)
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        with _directory_fd(
+            self.config.tasks_dir,
+            create=False,
+            managed_start=self._tasks_managed_start,
+        ) as tasks_fd:
+            if tasks_fd is None:
+                raise StoreError(f"task not found: {task_id}")
+            task = self._read_if_exists(tasks_fd, task_id)
+            if task is None:
+                raise StoreError(f"task not found: {task_id}")
+            return task
+
     def list(self) -> list[dict[str, Any]]:
         self.skipped = []
         with self._directories(create_state=False) as (tasks_fd, locks_fd):

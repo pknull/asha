@@ -527,6 +527,92 @@ else:
                     if stream is not None:
                         stream.close()
 
+    def test_peek_ignores_registry_lock_without_allocating_runtime_state_and_rejects_malformed(self) -> None:
+        record = self.record()
+        path = self.store.save(record)
+        peek_runtime = self.root / "peek-runtime"
+        env = os.environ.copy()
+        env.update({
+            "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "HOME": str(self.home),
+            "ASHA_CONFIG": str(self.root / "missing.json"),
+            "XDG_STATE_HOME": str(self.root / "state"),
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "XDG_RUNTIME_DIR": str(peek_runtime),
+            "TASKS_DIR": str(self.config.tasks_dir),
+            "TASK_ID": record["task_id"],
+        })
+        holder_code = """
+import fcntl, os, sys
+fd = os.open(os.environ['TASKS_DIR'], os.O_RDONLY | os.O_DIRECTORY)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX)
+    print('held', flush=True)
+    if sys.stdin.readline().strip() != 'release': raise SystemExit(3)
+finally:
+    fcntl.flock(fd, fcntl.LOCK_UN)
+    os.close(fd)
+"""
+        peek_code = """
+import json, os
+from lib.control.config import load_config
+from lib.control.store import TaskStore
+task = TaskStore(load_config(os.environ)).peek(os.environ['TASK_ID'])
+print(json.dumps(task, sort_keys=True), flush=True)
+"""
+        holder = subprocess.Popen(
+            [sys.executable, "-c", holder_code], env=env, stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        peeker = None
+        try:
+            self.assertEqual(self.child_line(holder), "held")
+            peeker = subprocess.Popen(
+                [sys.executable, "-c", peek_code], env=env,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            self.assertEqual(json.loads(self.child_line(peeker, timeout=2)), record)
+            self.assertEqual(peeker.wait(timeout=2), 0, peeker.stderr.read())
+            self.assertIsNone(holder.poll())
+            self.assertFalse(peek_runtime.exists())
+
+            holder.stdin.write("release\n")
+            holder.stdin.flush()
+            self.assertEqual(holder.wait(timeout=5), 0, holder.stderr.read())
+
+            path.write_text("not json", encoding="utf-8")
+            with self.assertRaisesRegex(StoreError, "invalid JSON"):
+                TaskStore(load_config(env)).peek(record["task_id"])
+            self.assertFalse(peek_runtime.exists())
+        finally:
+            for process in (holder, peeker):
+                if process is None:
+                    continue
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    if stream is not None:
+                        stream.close()
+
+    def test_peek_missing_registry_is_read_only_and_invalid_ids_are_store_errors(self) -> None:
+        config = load_config({
+            "HOME": str(self.home),
+            "ASHA_CONFIG": str(self.root / "missing.json"),
+            "XDG_STATE_HOME": str(self.root / "peek-state"),
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "XDG_RUNTIME_DIR": str(self.root / "peek-runtime"),
+        })
+        store = TaskStore(config)
+
+        with self.assertRaisesRegex(StoreError, "not found"):
+            store.peek(str(uuid.uuid4()))
+        with self.assertRaises(StoreError):
+            store.peek("not-a-canonical-task-id")
+
+        self.assertFalse(config.tasks_dir.exists())
+        self.assertFalse(config.runtime_dir.exists())
+
     def test_first_use_mkdir_eexist_race_reopens_and_validates_without_chmod(self) -> None:
         self.config.tasks_dir.parents[2].mkdir(parents=True, mode=0o700)
         self.config.tasks_dir.parents[2].chmod(0o700)
