@@ -293,12 +293,27 @@ class PreflightDegradeTests(unittest.TestCase):
         self.assertIn("asha task list --json", stderr.getvalue())
         self.assertEqual(len(stderr.getvalue().splitlines()), 1)
 
+    def test_no_stdin_tty_degrades_before_curses_initialization(self) -> None:
+        curses = self.FakeCurses()
+        stderr = io.StringIO()
+
+        status = run_tui(
+            {}, stdin=io.StringIO(), stdout=self.Tty(), stderr=stderr,
+            curses_module=curses,
+        )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(curses.setup_calls, 0)
+        self.assertEqual(curses.wrapper_calls, 0)
+        self.assertIn("asha task list --json", stderr.getvalue())
+
     def test_setupterm_failure_exits_two_without_curses_initialization(self) -> None:
         curses = self.FakeCurses(setup_error=True)
         stderr = io.StringIO()
 
         status = run_tui(
-            {}, stdout=self.Tty(), stderr=stderr, curses_module=curses,
+            {}, stdin=self.Tty(), stdout=self.Tty(), stderr=stderr,
+            curses_module=curses,
         )
 
         self.assertEqual(status, 2)
@@ -335,7 +350,8 @@ class PreflightDegradeTests(unittest.TestCase):
             curses.wrapper = wrapper
 
             status = run_tui(
-                env, stdout=self.Tty(), stderr=io.StringIO(), curses_module=curses,
+                env, stdin=self.Tty(), stdout=self.Tty(), stderr=io.StringIO(),
+                curses_module=curses,
             )
 
             self.assertEqual(status, 0)
@@ -343,6 +359,27 @@ class PreflightDegradeTests(unittest.TestCase):
             for signum in (signal.SIGTERM, signal.SIGHUP):
                 self.assertTrue(callable(observed[signum]))
                 self.assertIs(signal.getsignal(signum), previous[signum])
+
+    def test_start_form_preserves_the_tui_sigterm_handler(self) -> None:
+        from types import SimpleNamespace
+        from lib.control import tui as tui_module
+        from lib.control import cli as cli_module
+
+        with mock.patch.object(
+            tui_module, "_prompt_line",
+            side_effect=["/repo", "trunk()", "codex", "implementer", "goal"],
+        ), mock.patch.object(
+            cli_module, "_start_command_inner", return_value=0,
+        ) as start_inner, mock.patch.object(
+            cli_module.signal, "signal",
+            side_effect=AssertionError("TUI SIGTERM handler was replaced"),
+        ), mock.patch.object(tui_module, "_repaint_after_suspend"):
+            tui_module._start_form(
+                mock.Mock(), mock.Mock(), TuiModel([]), {},
+                SimpleNamespace(default_harness="codex"),
+            )
+
+        start_inner.assert_called_once()
 
 
 class DoctorTuiProbeTests(unittest.TestCase):

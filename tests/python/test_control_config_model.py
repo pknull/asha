@@ -526,6 +526,24 @@ class ControlConfigTests(unittest.TestCase):
             self.assertEqual(config.workspace_root, home / ".local/share/asha/workspaces")
             self.assertEqual(config.runtime_dir, Path(f"/tmp/user-{os.getuid()}/asha-control"))
 
+    def test_unsafe_runtime_fallback_names_the_xdg_runtime_dir_remedy(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            home.mkdir()
+
+            def reject(path: Path, name: str) -> None:
+                if name == "XDG_RUNTIME_DIR":
+                    raise ConfigError("unsafe fallback runtime path")
+
+            with mock.patch(
+                "lib.control.config.reject_unsafe_writable_ancestors",
+                side_effect=reject,
+            ), self.assertRaisesRegex(
+                ConfigError,
+                r"unsafe fallback runtime path.*set XDG_RUNTIME_DIR.*private directory",
+            ):
+                load_config({"HOME": str(home), "XDG_RUNTIME_DIR": ""})
+
     def test_nonsticky_group_or_world_writable_path_ancestor_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

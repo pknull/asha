@@ -20,6 +20,7 @@ MAX_TITLE_CHARS = 500
 MAX_URL_CHARS = 2048
 _CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 _REMOTE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", re.ASCII)
+_SCP_REMOTE = re.compile(r"(?:[^/@:\s]+@)?([^/:\s]+):(.+)", re.ASCII)
 _PR_FIELDS = "number,title,url,headRefOid,state,isDraft,isCrossRepository"
 _ISSUE_FIELDS = "number,title,url,state"
 
@@ -165,6 +166,70 @@ class GithubAdapter:
         if value["state"] not in {"OPEN", "CLOSED"}:
             raise SourceError("gh returned an invalid issue state")
         return value
+
+    @staticmethod
+    def _repository_identity(url: str) -> tuple[str, str] | None:
+        parsed = urlsplit(url)
+        if parsed.scheme in {"http", "https", "ssh", "git"}:
+            host = parsed.hostname
+            path = parsed.path
+        else:
+            matched = _SCP_REMOTE.fullmatch(url)
+            if matched is None:
+                return None
+            host, path = matched.groups()
+        normalized = path.strip("/")
+        if normalized.endswith(".git"):
+            normalized = normalized[:-4]
+        if not host or not normalized:
+            return None
+        return host.lower(), normalized.lower()
+
+    def pr_remote(self, git_root: Path, url: str, number: int) -> str:
+        """Resolve the configured Git remote that owns the viewed PR."""
+        repository = self._canonical_directory(git_root, "Git backend root")
+        requested = self._number(number)
+        try:
+            raw = self._run_bytes(
+                "git", ["-C", str(repository), "remote"],
+            ).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SourceError("git returned non-UTF-8 remote names") from exc
+        remotes = raw.splitlines()
+        if (
+            not remotes
+            or any(_REMOTE.fullmatch(remote) is None or ".." in remote for remote in remotes)
+            or len(set(remotes)) != len(remotes)
+        ):
+            raise SourceError("Git repository has no unambiguous remote with a safe name")
+        if len(remotes) == 1:
+            return remotes[0]
+
+        parsed = urlsplit(url)
+        suffix = f"/pull/{requested}"
+        if not parsed.path.endswith(suffix):
+            raise SourceError("GitHub pull request URL does not match its source number")
+        target = self._repository_identity(
+            f"{parsed.scheme}://{parsed.netloc}{parsed.path[:-len(suffix)]}"
+        )
+        matches: list[str] = []
+        for remote in remotes:
+            try:
+                urls = self._run_bytes(
+                    "git",
+                    ["-C", str(repository), "remote", "get-url", "--all", remote],
+                ).decode("utf-8").splitlines()
+            except UnicodeDecodeError as exc:
+                raise SourceError("git returned a non-UTF-8 remote URL") from exc
+            if target is not None and any(
+                self._repository_identity(candidate) == target for candidate in urls
+            ):
+                matches.append(remote)
+        if not matches:
+            raise SourceError(
+                "could not identify the Git remote for the pull request repository"
+            )
+        return "origin" if "origin" in matches else sorted(matches)[0]
 
     def fetch_pr_head(
         self, git_root: Path, remote: str, number: int,

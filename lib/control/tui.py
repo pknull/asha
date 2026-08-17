@@ -616,7 +616,9 @@ def _start_form(
     try:
         from .cli import _start_command
         with contextlib.redirect_stdout(output):
-            status = _start_command(arguments, env)
+            status = _start_command(
+                arguments, env, preserve_sigterm_handler=True,
+            )
         if status != 0:
             raise ValueError(f"task start exited with status {status}")
     finally:
@@ -756,12 +758,14 @@ def _degrade(stderr: TextIO) -> int:
 def run_tui(
     env: Mapping[str, str] | None = None,
     *,
+    stdin: TextIO | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     curses_module=None,
 ) -> int:
     """Preflight and run curses, restoring signal dispositions on every exit."""
     values = os.environ if env is None else env
+    input_stream = sys.stdin if stdin is None else stdin
     output = sys.stdout if stdout is None else stdout
     errors = sys.stderr if stderr is None else stderr
     if curses_module is None:
@@ -769,7 +773,8 @@ def run_tui(
             curses_module = importlib.import_module("curses")
         except (ImportError, OSError):
             return _degrade(errors)
-    if not getattr(output, "isatty", lambda: False)():
+    if (not getattr(input_stream, "isatty", lambda: False)() or
+            not getattr(output, "isatty", lambda: False)()):
         return _degrade(errors)
     try:
         curses_module.setupterm()

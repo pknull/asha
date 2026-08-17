@@ -532,8 +532,11 @@ def _start_new_task(
         }
         slug_input = f"{source.name}-{kind}-{github_number}"
         if kind == "pr":
+            remote = github.pr_remote(
+                repository.git_root, metadata["url"], github_number,
+            )
             for mutation in github.fetch_pr_head(
-                repository.git_root, "origin", github_number,
+                repository.git_root, remote, github_number,
             ):
                 source_mutations.append(mutation)
                 print(f"Source mutation: {mutation['detail']}", file=sys.stderr)
@@ -642,7 +645,12 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
         )
 
 
-def _start_command(args: list[str], env: Mapping[str, str]) -> int:
+def _start_command(
+    args: list[str], env: Mapping[str, str], *,
+    preserve_sigterm_handler: bool = False,
+) -> int:
+    if preserve_sigterm_handler:
+        return _start_command_inner(args, env)
     previous = signal.getsignal(signal.SIGTERM)
 
     def interrupt_on_term(signum, frame) -> None:

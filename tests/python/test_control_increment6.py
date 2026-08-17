@@ -134,6 +134,46 @@ class GithubAdapterTests(unittest.TestCase):
         self.assertIn("refs/remotes/origin/asha-control-pr-34", fetch_report[1]["detail"])
         self.assertIn("jj operation-log", import_report[0]["detail"])
 
+    def test_pr_remote_uses_the_configured_name_instead_of_assuming_origin(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if argv[-1] == "remote":
+                return self.completed(argv, stdout=b"upstream\n")
+            return self.completed(argv)
+
+        adapter = GithubAdapter(runner=runner)
+        remote = adapter.pr_remote(
+            self.source, "https://github.example/owner/repo/pull/34", 34,
+        )
+        adapter.fetch_pr_head(self.source, remote, 34)
+
+        self.assertEqual(remote, "upstream")
+        self.assertEqual(calls, [
+            ["git", "-C", str(self.source), "remote"],
+            [
+                "git", "-C", str(self.source), "fetch", "upstream",
+                "pull/34/head:refs/remotes/upstream/asha-control-pr-34",
+            ],
+        ])
+
+    def test_pr_remote_matches_the_viewed_repository_when_several_exist(self) -> None:
+        outputs = {
+            ("remote",): b"mirror\nupstream\n",
+            ("remote", "get-url", "--all", "mirror"): b"git@example.invalid:elsewhere/repo.git\n",
+            ("remote", "get-url", "--all", "upstream"): b"git@github.example:owner/repo.git\n",
+        }
+
+        def runner(argv, **kwargs):
+            return self.completed(argv, stdout=outputs[tuple(argv[3:])])
+
+        remote = GithubAdapter(runner=runner).pr_remote(
+            self.source, "https://github.example/owner/repo/pull/34", 34,
+        )
+
+        self.assertEqual(remote, "upstream")
+
 
 class Increment6GrammarAndDoctorTests(unittest.TestCase):
     def test_source_selector_grammar_and_issue_base_precedence(self) -> None:
@@ -369,6 +409,7 @@ class RealGithubSourceTests(unittest.TestCase):
         return status, stdout.getvalue(), stderr.getvalue(), captured.get("task")
 
     def test_pr_mode_resolves_head_preserves_source_and_reports_mutations(self) -> None:
+        self._git(self.source, "remote", "rename", "origin", "upstream")
         before = self.source_positions()
         status, stdout, stderr, task = self.invoke([
             "task", "start", "--repo", str(self.source),
@@ -391,7 +432,7 @@ class RealGithubSourceTests(unittest.TestCase):
         )
         self.assertEqual(identity.parent_commit_ids, (self.pr_commit,))
         self.assertEqual(
-            self._git_output(self.source, "rev-parse", f"refs/remotes/origin/asha-control-pr-{self.PR_NUMBER}"),
+            self._git_output(self.source, "rev-parse", f"refs/remotes/upstream/asha-control-pr-{self.PR_NUMBER}"),
             self.pr_commit,
         )
         self.assertNotIn(f"pr-{self.PR_NUMBER}", self.source_positions()["bookmarks"].decode())
@@ -400,7 +441,7 @@ class RealGithubSourceTests(unittest.TestCase):
         self.assertIn("jj operation-log", stderr)
         mutations = json.loads(stdout)["source_mutations"]
         self.assertEqual(mutations[1]["ref"],
-                         f"refs/remotes/origin/asha-control-pr-{self.PR_NUMBER}")
+                         f"refs/remotes/upstream/asha-control-pr-{self.PR_NUMBER}")
         self.assertEqual(len(mutations), 3)
         self.assertEqual(mutations[2]["operation"], "git import")
 

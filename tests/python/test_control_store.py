@@ -73,6 +73,8 @@ class ControlStoreTests(unittest.TestCase):
         ):
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700, directory)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        durable_lock = self.config.tasks_dir / f"{record['task_id']}.lock"
+        self.assertEqual(stat.S_IMODE(durable_lock.stat().st_mode), 0o600)
         lock = self.config.runtime_dir / "tasks" / f"{record['task_id']}.lock"
         self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
 
@@ -484,7 +486,6 @@ else:
             self.assertEqual(self.child_line(one), "registry-waiting")
             self.assertEqual(self.child_line(one), "registry-acquired")
             two = start(second, "runtime-two", False)
-            self.assertEqual(self.child_line(two), "registry-waiting")
             probe = subprocess.run(
                 [
                     sys.executable,
@@ -512,6 +513,7 @@ else:
             one.stdin.flush()
             self.assertEqual(self.child_line(one), "success")
             self.assertEqual(one.wait(timeout=5), 0, one.stderr.read())
+            self.assertEqual(self.child_line(two), "registry-waiting")
             self.assertEqual(self.child_line(two), "registry-acquired")
             self.assertIn("digest mismatch", self.child_line(two))
             self.assertEqual(two.wait(timeout=5), 0, two.stderr.read())

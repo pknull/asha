@@ -453,6 +453,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
         home=home,
     )
     runtime_default = f"/tmp/user-{os.getuid()}"
+    using_runtime_fallback = not values.get("XDG_RUNTIME_DIR")
     runtime_home = _absolute(
         values.get("XDG_RUNTIME_DIR") or runtime_default,
         "XDG_RUNTIME_DIR",
@@ -463,11 +464,19 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
         ("XDG_DATA_HOME", data_home),
         ("XDG_RUNTIME_DIR", runtime_home),
     ):
-        reject_symlink_components(path, name)
-        require_existing_directory_components(path, name)
-        reject_unsafe_writable_ancestors(path, name)
-        if path == Path("/"):
-            raise ConfigError(f"{name} must not be filesystem root")
+        try:
+            reject_symlink_components(path, name)
+            require_existing_directory_components(path, name)
+            reject_unsafe_writable_ancestors(path, name)
+            if path == Path("/"):
+                raise ConfigError(f"{name} must not be filesystem root")
+        except ConfigError as exc:
+            if name == "XDG_RUNTIME_DIR" and using_runtime_fallback:
+                raise ConfigError(
+                    f"{exc}; set XDG_RUNTIME_DIR to an existing private directory "
+                    "owned by the effective user"
+                ) from exc
+            raise
 
     raw_workspace = control.get("workspace_root", str(data_home / "asha/workspaces"))
     if not isinstance(raw_workspace, str) or not raw_workspace:
