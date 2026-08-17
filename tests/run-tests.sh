@@ -258,6 +258,17 @@ else
 fi
 echo ""
 
+# Test Suite 17: Control-Managed Codex Trust Override
+echo -e "${BLUE}--- Test Suite 17: Control-Managed Codex Trust Override ---${NC}"
+if "$SCRIPT_DIR/test-codex-trust.sh"; then
+    echo -e "${GREEN}✓ Codex trust override tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Codex trust override tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"
