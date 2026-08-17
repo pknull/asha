@@ -22,7 +22,7 @@ from .launch import (
     LaunchError, archive_task, launch_task, recover_task, stop_task,
     unarchive_task,
 )
-from .model import new_uuid
+from .model import canonical_uuid, new_uuid
 from .prepare import PrepareRequest, PreparationError, prepare_task_workspace
 from .reconcile import LiveAdapters, UnavailableAdapters
 from .sources import GithubAdapter, SourceError
@@ -42,6 +42,7 @@ def _task_usage(stream=sys.stdout) -> None:
 
 Usage:
   asha task start [--repo PATH] (--pr N | --issue N | [--base REVSET])
+                  [--task-id UUID]
                   [--harness H|--agent H] (--goal TEXT | -- TEXT...)
                   [--role ROLE] [--detach] [--json]
   asha task list [--json]
@@ -237,7 +238,8 @@ def _repo_argument(value: str | None, config, jj: JjAdapter) -> Path:
 def _parse_start(args: list[str]) -> dict[str, Any]:
     values: dict[str, Any] = {
         "repo": None, "base": "trunk()", "harness": None, "role": "implementer",
-        "goal": None, "pr": None, "issue": None, "detach": False, "json": False,
+        "goal": None, "pr": None, "issue": None, "task_id": None,
+        "detach": False, "json": False,
     }
     seen: set[str] = set()
     index = 0
@@ -256,7 +258,7 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
             index += 1
             continue
         if argument in {"--repo", "--base", "--harness", "--agent", "--goal", "--role",
-                        "--pr", "--issue"}:
+                        "--pr", "--issue", "--task-id"}:
             if index + 1 >= len(args):
                 raise ValueError(f"{argument} requires a value")
             key = argument[2:]
@@ -271,6 +273,8 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
                 if re.fullmatch(r"[1-9][0-9]{0,9}", raw_value) is None:
                     raise ValueError(f"{argument} requires a positive decimal number")
                 values[destination] = int(raw_value)
+            elif key == "task-id":
+                values["task_id"] = canonical_uuid(raw_value)
             else:
                 values[destination] = raw_value
             index += 2
@@ -354,29 +358,112 @@ def _guard_colocated_sync(jj: JjAdapter, repository: RepositoryFacts) -> None:
         raise ValueError(remediation)
 
 
-def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
-    parsed = _parse_start(args)
-    config = load_config(env)
-    selected_harness = harness_api.validate_harness(
-        parsed["harness"] or config.default_harness
+def _requested_source(parsed: Mapping[str, Any]) -> tuple[str, int | None]:
+    if parsed["pr"] is not None:
+        return "pr", parsed["pr"]
+    if parsed["issue"] is not None:
+        return "issue", parsed["issue"]
+    return "ad-hoc", None
+
+
+def _requested_base(parsed: Mapping[str, Any]) -> str:
+    if parsed["pr"] is not None:
+        return f"PR #{parsed['pr']} head"
+    return parsed["base"]
+
+
+def _existing_task_difference(
+    task: Mapping[str, Any], *, source: Path, parsed: Mapping[str, Any],
+    harness: str, role: str,
+) -> str | None:
+    source_kind, source_number = _requested_source(parsed)
+    comparisons = (
+        ("repository root", task["repository"]["root"], str(source)),
+        ("source kind", task["source"]["kind"], source_kind),
+        ("source number", task["source"]["number"], source_number),
+        ("requested base", task["jj"]["requested_base"], _requested_base(parsed)),
     )
-    selected_role = harness_api.validate_role(parsed["role"])
-    if shutil.which(selected_harness) is None:
-        raise ValueError(
-            f"harness {selected_harness!r} is not installed or not on PATH; "
-            "install it or pass --harness <claude|codex|copilot|opencode>"
+    for field, stored, requested in comparisons:
+        if stored != requested:
+            return field
+    if not task["runs"]:
+        return "primary run"
+    primary = task["runs"][0]
+    for field, stored, requested in (
+        ("primary run harness", primary["harness"], harness),
+        ("primary run role", primary["role"], role),
+        ("label", task["label"], parsed["label"]),
+    ):
+        if stored != requested:
+            return field
+    return None
+
+
+def _stored_start_result(task: dict[str, Any]) -> dict[str, Any]:
+    primary = task["runs"][0]
+    return {
+        "task": task,
+        "run": primary,
+        "session": task["tmux"]["session"],
+        "pane": primary["pane_id"],
+        "workspace": {
+            "path": task["jj"]["workspace_path"],
+            "name": task["jj"]["workspace_name"],
+            "change_id": task["jj"]["change_id"],
+        },
+    }
+
+
+def _emit_start_result(
+    parsed: Mapping[str, Any], env: Mapping[str, str], config,
+    result: dict[str, Any], adapter: TmuxAdapter, *,
+    source_mutations: list[dict[str, str]], existing: bool,
+) -> int:
+    launched, run = result["task"], result["run"]
+    attach = shlex.join(_attach_tokens(adapter, launched["tmux"]["session"]))
+    payload = {
+        "contract": "asha.control-task-start.v1",
+        **result,
+        "source_mutations": source_mutations,
+        "attach": attach,
+        "existing": existing,
+    }
+    if parsed["json"]:
+        _json(payload)
+        return 0
+    if existing:
+        print("Existing task (unchanged):")
+    print(f"Task: {launched['slug']}")
+    print(f"Task ID: {launched['task_id']}")
+    print(f"Workspace: {launched['jj']['workspace_path']}")
+    print(f"jj name: {launched['jj']['workspace_name']}")
+    print(f"Change: {launched['jj']['change_id']}")
+    print(
+        f"Tmux: {launched['tmux']['session']}:{launched['tmux']['window']} "
+        f"{run['pane_id']}"
+    )
+    print(f"Run: {run['run_id']}")
+    if existing:
+        if not env.get("TMUX") and not parsed["detach"]:
+            print("Attach: " + attach)
+        return 0
+    if env.get("TMUX") and not parsed["detach"]:
+        refusal = _run_popup(
+            adapter, config=config, session=launched["tmux"]["session"],
+            slug=launched["slug"], env=env,
         )
-    raw_root = env.get("ASHA_ROOT")
-    if raw_root is None:
-        asha_root = Path(__file__).resolve().parents[2]
-    else:
-        supplied = Path(raw_root)
-        if not supplied.is_absolute():
-            raise ValueError("ASHA_ROOT must be an absolute path")
-        asha_root = supplied.resolve()
-    harness_api.launch_argv(asha_root, selected_harness, parsed["goal_args"])
-    jj = JjAdapter()
-    source = _repo_argument(parsed["repo"], config, jj)
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+    elif not parsed["detach"]:
+        print("Attach: " + attach)
+    return 0
+
+
+def _start_new_task(
+    parsed: Mapping[str, Any], env: Mapping[str, str], config, jj: JjAdapter,
+    source: Path, *, task_id: str | None, selected_harness: str,
+    selected_role: str,
+) -> int:
     repository = jj.preflight(source)
     _guard_colocated_sync(jj, repository)
     task_source = {"kind": "ad-hoc", "number": None, "url": None}
@@ -414,7 +501,7 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
     for mutation in jj.import_git(source):
         source_mutations.append(mutation)
         print(f"Source mutation: {mutation['detail']}", file=sys.stderr)
-    task_id = new_uuid()
+    task_id = task_id or new_uuid()
     request = PrepareRequest(
         repository=source,
         requested_base=requested_base,
@@ -431,36 +518,86 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
         config, prepared, tmux=adapter, harness=selected_harness,
         goal_args=parsed["goal_args"], role=selected_role,
     )
-    launched, run = result["task"], result["run"]
-    attach = shlex.join(_attach_tokens(adapter, launched["tmux"]["session"]))
-    payload = {
-        "contract": "asha.control-task-start.v1",
-        **result,
-        "source_mutations": source_mutations,
-        "attach": attach,
-    }
-    if parsed["json"]:
-        _json(payload)
-        return 0
-    print(f"Task: {launched['slug']}")
-    print(f"Task ID: {launched['task_id']}")
-    print(f"Workspace: {launched['jj']['workspace_path']}")
-    print(f"jj name: {launched['jj']['workspace_name']}")
-    print(f"Change: {launched['jj']['change_id']}")
-    print(
-        f"Tmux: {launched['tmux']['session']}:{launched['tmux']['window']} "
-        f"{run['pane_id']}"
+    return _emit_start_result(
+        parsed, env, config, result, adapter,
+        source_mutations=source_mutations, existing=False,
     )
-    print(f"Run: {run['run_id']}")
-    if env.get("TMUX") and not parsed["detach"]:
-        refusal = _run_popup(
-            adapter, config, launched["tmux"]["session"], launched["slug"], env,
+
+
+def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
+    parsed = _parse_start(args)
+    config = load_config(env)
+    selected_harness = harness_api.validate_harness(
+        parsed["harness"] or config.default_harness
+    )
+    selected_role = harness_api.validate_role(parsed["role"])
+    if shutil.which(selected_harness) is None:
+        raise ValueError(
+            f"harness {selected_harness!r} is not installed or not on PATH; "
+            "install it or pass --harness <claude|codex|copilot|opencode>"
         )
-        if refusal is not None:
-            print(refusal, file=sys.stderr)
-    elif not parsed["detach"]:
-        print("Attach: " + attach)
-    return 0
+    raw_root = env.get("ASHA_ROOT")
+    if raw_root is None:
+        asha_root = Path(__file__).resolve().parents[2]
+    else:
+        supplied = Path(raw_root)
+        if not supplied.is_absolute():
+            raise ValueError("ASHA_ROOT must be an absolute path")
+        asha_root = supplied.resolve()
+    harness_api.launch_argv(asha_root, selected_harness, parsed["goal_args"])
+    jj = JjAdapter()
+    source = _repo_argument(parsed["repo"], config, jj)
+    task_id = parsed["task_id"]
+    if task_id is None:
+        return _start_new_task(
+            parsed, env, config, jj, source, task_id=None,
+            selected_harness=selected_harness, selected_role=selected_role,
+        )
+
+    tasks = TaskStore(config)
+    journals = CreationJournalStore(config)
+    with tasks.transaction_lock(task_id):
+        try:
+            existing = tasks.read(task_id)
+        except StoreError as exc:
+            if str(exc) != f"task not found: {task_id}":
+                raise
+            existing = None
+        if existing is not None:
+            if existing["lifecycle"] == "creating":
+                raise ValueError(
+                    f"task {task_id} has an interrupted creation; run "
+                    f"`asha task recover {task_id}` then retry"
+                )
+            difference = _existing_task_difference(
+                existing, source=source, parsed=parsed,
+                harness=selected_harness, role=selected_role,
+            )
+            if difference is not None:
+                raise ValueError(
+                    f"task {task_id} is already registered with different "
+                    f"parameters: {difference}"
+                )
+            socket = existing["tmux"]["socket"]
+            adapter = TmuxAdapter(socket=None if socket == "default" else socket)
+            return _emit_start_result(
+                parsed, env, config, _stored_start_result(existing), adapter,
+                source_mutations=[], existing=True,
+            )
+        try:
+            journals.read(task_id)
+        except JournalError as exc:
+            if str(exc) != f"creation journal not found: {task_id}":
+                raise
+        else:
+            raise ValueError(
+                f"task {task_id} has an interrupted creation; run "
+                f"`asha task recover {task_id}` then retry"
+            )
+        return _start_new_task(
+            parsed, env, config, jj, source, task_id=task_id,
+            selected_harness=selected_harness, selected_role=selected_role,
+        )
 
 
 def _start_command(args: list[str], env: Mapping[str, str]) -> int:

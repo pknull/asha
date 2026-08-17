@@ -31,6 +31,8 @@ weaken the data-preservation, ownership, or explicit-base rules in this
 document. Record a required design amendment here before implementing behavior
 that contradicts those rules.
 
+Amendment (2026-08-17): `asha task start --task-id UUID` adds locked, idempotent create-by-ID without extending `asha.control-task.v1`.
+
 ## Problem
 
 Asha can launch a harness and coordinate work inside one process, but it does
