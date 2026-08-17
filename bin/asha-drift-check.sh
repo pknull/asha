@@ -967,6 +967,33 @@ if [[ -f "$PWD/.asha/config.json" ]]; then
     "$PWD/.asha/config.json" >/dev/null 2>&1 \
     && pass "current project has stable Memory v2 project_id" \
     || nope "current project config lacks memory_version=2 or project_id (run /session:init)"
+  current_decisions="$PWD/Memory/decisions.md"
+  if [[ -f "$current_decisions" ]]; then
+    decisions_measurement="$(python3 - "$memory_tool" "$current_decisions" <<'PY' 2>/dev/null || true
+import importlib.util, pathlib, sys
+
+tool = pathlib.Path(sys.argv[1]).resolve()
+sys.path.insert(0, str(tool.parent))
+spec = importlib.util.spec_from_file_location("memory_v2_decisions_doctor", tool)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+size = pathlib.Path(sys.argv[2]).stat().st_size
+limit = module.DECISIONS_LIMIT
+print(f"{size}\t{limit}\t{size:,}\t{limit:,}")
+PY
+)"
+    IFS=$'\t' read -r decisions_size decisions_limit decisions_size_label decisions_limit_label \
+      <<<"$decisions_measurement"
+    if [[ "$decisions_size" =~ ^[0-9]+$ && "$decisions_limit" =~ ^[0-9]+$ ]]; then
+      if (( decisions_size > decisions_limit )); then
+        warn "current project Memory/decisions.md exceeds the ${decisions_limit_label}-byte publication cap (${decisions_size_label} bytes); run /session:consolidate to review and migrate current binding decisions before /session:save"
+      else
+        pass "current project Memory/decisions.md is within the ${decisions_limit_label}-byte publication cap"
+      fi
+    else
+      warn "current project Memory/decisions.md size could not be checked against the publication cap"
+    fi
+  fi
   if command -v git >/dev/null 2>&1 \
       && git -C "$PWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     git -C "$PWD" check-ignore --no-index -q -- 'Work/session-state/.asha-ignore-probe.json' \
