@@ -251,6 +251,8 @@ class JjAdapter:
         """Confirm an already-resolved full commit ID is visible to this jj repo."""
         if _COMMIT_ID.fullmatch(commit_id) is None:
             raise JjError("visible commit check requires a full commit ID")
+        if set(commit_id) == {"0"}:
+            raise JjError("visible commit check refuses the empty root commit")
         output = self._run([
             "-R", str(source), "--ignore-working-copy", "log", "-r", commit_id,
             "--no-graph", "-T", 'commit_id ++ "\\n"',
