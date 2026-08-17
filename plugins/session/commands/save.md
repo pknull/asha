@@ -13,11 +13,12 @@ from a lifecycle hook, timer, background process, or transcript parser.
 ## Contract
 
 1. Resolve the effective plane through `tools/save_scope.py resolve`, passing
-   `--scope` only when the user supplied it. The resolver checks a strict
-   `.asha/control-task.json` marker before repository or Git discovery. Bare
-   save in a valid managed Control workspace becomes effective scope `none`;
-   a malformed marker fails closed. Explicit `repo` and `workspace` keep their
-   existing meaning. Explicit `none` performs no Git discovery.
+   `--scope` only when the user supplied it. For bare and explicit `none`
+   saves, the resolver checks a strict `.asha/control-task.json` marker before
+   repository or Git discovery; a malformed marker fails closed. Bare save in
+   a valid managed Control workspace becomes effective scope `none`. Explicit
+   `repo` and `workspace` bypass marker discovery and keep their existing
+   ordinary-plane meaning. Explicit `none` performs no Git discovery.
 2. Read the live conversation and verify every state claim against current
    disk. A recovery snapshot is low-authority orientation only.
 3. Draft, from live model context:

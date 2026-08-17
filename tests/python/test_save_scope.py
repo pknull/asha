@@ -125,6 +125,28 @@ class ResolveCases(ScopeFixture):
         self.assertIsNone(mapping)
         self.assertEqual({e["code"] for e in errors}, {"no_active_repo"})
 
+    def test_explicit_repo_scope_does_not_discover_invalid_control_marker(self):
+        marker = self.ws / ".asha" / "control-task.json"
+        marker.write_text('{"contract":"wrong"}\n', encoding="utf-8")
+        marker.chmod(0o600)
+        with mock.patch.object(ss, "find_marker", wraps=ss.find_marker) as find_marker:
+            mapping, errors = ss.resolve_effective_plane("repo", start=self.child)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "repo")
+        self.assertEqual(mapping["plane_base"], str(self.child))
+        find_marker.assert_not_called()
+
+    def test_explicit_workspace_scope_does_not_discover_invalid_control_marker(self):
+        marker = self.ws / ".asha" / "control-task.json"
+        marker.write_text('{"contract":"wrong"}\n', encoding="utf-8")
+        marker.chmod(0o600)
+        with mock.patch.object(ss, "find_marker", wraps=ss.find_marker) as find_marker:
+            mapping, errors = ss.resolve_effective_plane("workspace", start=self.child)
+        self.assertEqual(errors, [])
+        self.assertEqual(mapping["scope"], "workspace")
+        self.assertEqual(mapping["plane_base"], str(self.ws))
+        find_marker.assert_not_called()
+
     def test_bare_scope_in_managed_workspace_becomes_none_without_git(self):
         managed = self.tmp / "managed"
         (managed / "Memory").mkdir(parents=True)
@@ -144,6 +166,18 @@ class ResolveCases(ScopeFixture):
         marker.chmod(0o600)
         with mock.patch.object(ss.subprocess, "run") as run:
             mapping, errors = ss.resolve_effective_plane(None, start=managed)
+        self.assertIsNone(mapping)
+        self.assertEqual(errors[0]["code"], "invalid_control_task_marker")
+        run.assert_not_called()
+
+    def test_explicit_none_with_malformed_marker_fails_closed_before_git(self):
+        managed = self.tmp / "malformed-explicit-none"
+        (managed / ".asha").mkdir(parents=True)
+        marker = managed / ".asha" / "control-task.json"
+        marker.write_text('{"contract":"wrong"}\n', encoding="utf-8")
+        marker.chmod(0o600)
+        with mock.patch.object(ss.subprocess, "run") as run:
+            mapping, errors = ss.resolve_effective_plane("none", start=managed)
         self.assertIsNone(mapping)
         self.assertEqual(errors[0]["code"], "invalid_control_task_marker")
         run.assert_not_called()
