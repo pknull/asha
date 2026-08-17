@@ -198,10 +198,15 @@ def _harness_events_probe(config) -> Probe:
             "Control runtime path is not a directory",
         )
     try:
+        # Terminal edges and archive expire a run's event snapshot by design
+        # (issue #54), so only live, non-terminal runs of unarchived tasks are
+        # expected to have one.
         registered_runs = [
             (task["task_id"], run["run_id"], run["harness"])
             for task in TaskStore(config).list()
+            if task["lifecycle"] in {"running", "creating"}
             for run in task["runs"]
+            if run["state"] not in {"exited", "failed"}
         ]
     except StoreError as exc:
         return Probe(
