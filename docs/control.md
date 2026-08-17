@@ -61,6 +61,50 @@ A goal is mandatory in every mode and is the only instruction authority.
 with both `--issue` and `--base`. `--issue` may be paired with `--base`; without
 one it uses `trunk()`.
 
+## Terminal TUI
+
+`asha control` opens the task supervisor in the current terminal. Use the up
+and down arrow keys to move between tasks. The remaining keys are:
+
+| Key | Action |
+|---|---|
+| `Enter` | Open the selected task and run in a tmux popup. |
+| `n` | Open the task-start form. |
+| `r` | Reconcile the selected task from live state. |
+| `d` | Refresh and display a read-only jj diff summary. |
+| `a` | After confirmation, archive the selected eligible task; preserve its workspace and change. |
+| `/` | Filter the task list without mutating task state. |
+| `q` | Exit the TUI without affecting tasks. |
+| `?` | Toggle help for the keys, status evidence, and limitations. |
+
+The `n` form prompts for repository, base, harness, role, and goal. Its defaults
+are the current directory, `trunk()`, the configured default harness, and the
+`implementer` role. It invokes the same controller validation as `asha task
+start` and always supplies `--detach`, so creation does not replace the TUI
+with the new task's session. Select the created task and press `Enter` to open
+it. Press `Escape` at any prompt to cancel the form.
+
+The TUI offers `a` only for a `running` or `ended` task that has runs and whose
+reconciled runs are all `exited` or `failed`. For a running task, final archive
+reconciliation also refuses any run blocker.
+
+`Enter` selects the target pane and attaches to its persistent task session in
+a popup. Closing the popup only detaches that popup client: it does not stop
+the harness, archive the task, or alter the jj workspace or change. The TUI
+then redraws.
+
+The TUI requires stdout attached to a TTY and importable curses support whose
+`setupterm()` check succeeds. If any preflight check fails, `asha control`
+writes this diagnostic to stderr and exits 2 without opening a curses screen:
+
+```text
+asha control: terminal TUI unavailable; use `asha task list --json` as the non-interactive fallback.
+```
+
+Use `asha task list --json` directly for scripts and other non-interactive
+callers. A curses failure after initialization also exits 2 and names the same
+fallback.
+
 ## Task and run model
 
 A task is the durable container. Its lifecycle is `creating`, `running`,
