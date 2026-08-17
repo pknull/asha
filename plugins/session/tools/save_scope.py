@@ -126,15 +126,18 @@ def _find_initialized_project(start: Path) -> Tuple[Optional[Path], List[dict]]:
 
 def resolve_effective_plane(scope: Optional[str], start: Optional[Path] = None
                             ) -> Tuple[Optional[dict], List[dict]]:
-    """Resolve bare/explicit save scope, checking Control ownership first.
+    """Resolve bare/explicit save scope, checking Control ownership as needed.
 
     ``None`` is the bare command default. A valid managed marker changes only
-    that default to ``none``. Explicit repo/workspace retain their contracts;
+    that default to ``none``. Explicit repo/workspace use the ordinary plane
+    without marker discovery. Bare and explicit none discover marker state;
     explicit none remains a Git-free path.
     """
     if scope not in (None, "repo", "workspace", "none"):
         return None, [_err("invalid_scope", f"scope must be repo|workspace|none, got {scope!r}")]
     start_path = Path(start if start is not None else Path.cwd())
+    if scope in ("repo", "workspace"):
+        return resolve_plane(scope, start=start_path)
     try:
         managed = find_marker(start_path)
     except MarkerError as exc:
