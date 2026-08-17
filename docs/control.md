@@ -206,7 +206,7 @@ Run states use a shared vocabulary:
 | `needs-input` | A verified event reports an operator decision or permission requirement. |
 | `idle` | A verified stop or completed-turn event occurred while the process remains live. |
 | `exited` | The verified process ended normally. |
-| `failed` | Launch or termination has verified failure evidence. |
+| `failed` | Launch or termination has verified failure evidence, including when the process ended by signal or vanished without a reported exit status while its pane was absent. |
 | `unknown` | The process is live but the harness has no proven semantic event seam. |
 | `stale` | Registry, tmux, process, event, or jj identities disagree. |
 
