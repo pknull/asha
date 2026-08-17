@@ -48,6 +48,8 @@ class OrchestrationConfigTests(unittest.TestCase):
             self.assertEqual(config.max_retained_bytes_before_pause, 10737418240)
             self.assertEqual(config.max_retained_inodes_before_pause, 200000)
             self.assertEqual(config.coordinator_wait_seconds, 120)
+            self.assertEqual(config.result_grace_seconds, 120)
+            self.assertEqual(config.max_consecutive_failures, 3)
             self.assertEqual(
                 config.initiatives_dir, root / "state/asha/control/initiatives"
             )
@@ -66,6 +68,8 @@ class OrchestrationConfigTests(unittest.TestCase):
                 "max_retained_bytes_before_pause": 1024,
                 "max_retained_inodes_before_pause": 100,
                 "coordinator_wait_seconds": 30,
+                "result_grace_seconds": 45,
+                "max_consecutive_failures": 5,
             }
             self.write(Path(env["ASHA_CONFIG"]), {"orchestration": value})
             config = load_config(env)

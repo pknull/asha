@@ -11,7 +11,11 @@ PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_orchestration_cli \
   tests.python.test_orchestration_reconcile \
   tests.python.test_orchestration_tui_model \
-  tests.python.test_orchestration_doctor
+  tests.python.test_orchestration_doctor \
+  tests.python.test_orchestration_actions \
+  tests.python.test_orchestration_scheduler \
+  tests.python.test_orchestration_dispatch \
+  tests.python.test_orchestration_reconcile_live
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -32,7 +36,7 @@ task_refusal="$(bash "$ROOT/bin/asha" task report 2>&1)"
 task_refusal_rc=$?
 set -e
 [[ $task_refusal_rc -eq 2 ]]
-[[ "$task_refusal" == *"not available before Increment 2"* ]]
+[[ "$task_refusal" == *"not available before Increment 2b"* ]]
 
 printf '%s\n' '{"orchestration":{"contract":"asha.orchestration-config.v99"}}' >"$ASHA_CONFIG"
 
@@ -46,4 +50,4 @@ set -e
 [[ $task_rc -ne 2 ]]
 python3 -I -c 'import json,sys; value=json.load(open(sys.argv[1])); assert value["contract"] == "asha.control-doctor.v1"' "$WORK/task.out"
 
-printf 'ok - initiative and reserved task routes are wired; corrupt orchestration config stays isolated\n'
+printf 'ok - initiative execution and reserved 2b task routes are wired; corrupt orchestration config stays isolated\n'

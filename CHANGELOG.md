@@ -12,6 +12,14 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration Core Increment 2a
+
+- Added effect-once operator action journals, immutable Control task links,
+  bounded worker assignments, deterministic readiness and dispatch through
+  Control's create-by-ID seam, live attempt reconciliation, autonomous
+  original-base retry, activation handshake, and deadline, task, storage,
+  repeated-failure, and nested-workflow breakers.
+
 #### Orchestration Core Increment 1
 
 - Added durable initiative, graph, node, approval, and immutable event records;

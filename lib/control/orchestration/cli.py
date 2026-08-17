@@ -1,4 +1,4 @@
-"""Deterministic Orchestration Core Increment 1 command-line surface."""
+"""Deterministic Orchestration Core operator command surface."""
 
 from __future__ import annotations
 
@@ -18,6 +18,10 @@ from ..context import read_published_snapshot
 from ..jj import JjAdapter, JjError
 from ..prepare import derive_repository_identity
 from ..store import StoreError
+from .actions import (
+    ActionError, ActionRefused, build_action_document, reconcile_actions,
+    submit_action,
+)
 from .config import OrchestrationConfigError, load_config
 from .doctor import run_orchestration_doctor
 from .graph import PlanError, validate_plan
@@ -28,7 +32,8 @@ from .model import (
     validate_approval, validate_event, validate_initiative, validate_node,
     validate_plan_record, validate_slug,
 )
-from .reconcile import reconcile_nodes
+from .reconcile import reconcile_live, reconcile_nodes
+from .scheduler import SchedulerError, validate_goal_capacity
 from .storage import storage_report
 from .store import MAX_RECORD_BYTES, InitiativeStore
 
@@ -60,10 +65,15 @@ Usage:
   asha initiative plan <id> --show [--revision N] [--json]
   asha initiative approve <id> --digest SHA256 [--json]
   asha initiative reject <id> --digest SHA256 --reason TEXT [--json]
+  asha initiative activate <id> [--json]
+  asha initiative action <id> --file ACTION.json --json
+  asha initiative dispatch <id> --node NODE [--json]
+  asha initiative pause|resume <id> [--json]
+  asha initiative stop <id> --attempt ATTEMPT [--json]
+  asha initiative cancel <id> --node NODE [--json]
   asha initiative list [--json]
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
-  asha initiative doctor [--json]
-  asha initiative activate <id>  (reserved; refuses before Increment 2)""", file=stream)
+  asha initiative doctor [--json]""", file=stream)
 
 
 def _payload(value: Any, json_output: bool) -> None:
@@ -77,12 +87,12 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError(f"duplicate JSON key in plan file: {key}")
+            raise ValueError(f"duplicate JSON key in input file: {key}")
         result[key] = value
     return result
 
 
-def _read_plan_file(path: Path) -> Any:
+def _read_json_file(path: Path, label: str) -> Any:
     flags = (
         os.O_RDONLY
         | getattr(os, "O_NOFOLLOW", 0)
@@ -94,9 +104,9 @@ def _read_plan_file(path: Path) -> Any:
         fd = os.open(path, flags)
         metadata = os.fstat(fd)
         if not stat.S_ISREG(metadata.st_mode):
-            raise ValueError("plan file must be a regular file")
+            raise ValueError(f"{label} file must be a regular file")
         if metadata.st_size > MAX_RECORD_BYTES:
-            raise ValueError(f"plan file exceeds {MAX_RECORD_BYTES} bytes")
+            raise ValueError(f"{label} file exceeds {MAX_RECORD_BYTES} bytes")
         chunks: list[bytes] = []
         remaining = MAX_RECORD_BYTES + 1
         while remaining:
@@ -107,16 +117,20 @@ def _read_plan_file(path: Path) -> Any:
             remaining -= len(chunk)
         raw = b"".join(chunks)
     except OSError as exc:
-        raise ValueError(f"cannot read plan file: {exc}") from exc
+        raise ValueError(f"cannot read {label} file: {exc}") from exc
     finally:
         if fd >= 0:
             os.close(fd)
     if len(raw) > MAX_RECORD_BYTES:
-        raise ValueError(f"plan file exceeds {MAX_RECORD_BYTES} bytes")
+        raise ValueError(f"{label} file exceeds {MAX_RECORD_BYTES} bytes")
     try:
         return json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_object)
     except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
-        raise ValueError(f"cannot read plan file: {exc}") from exc
+        raise ValueError(f"cannot read {label} file: {exc}") from exc
+
+
+def _read_plan_file(path: Path) -> Any:
+    return _read_json_file(path, "plan")
 
 
 def _parse_options(args: list[str], *, repeat: set[str] = set(), flags: set[str] = set()) -> dict[str, Any]:
@@ -367,6 +381,7 @@ def _plan(args: list[str], store: InitiativeStore, config) -> tuple[dict[str, An
     nodes = [validate_node(node) for node in plan["nodes"]]
     if any(node["state"] != "proposed" for node in nodes):
         raise ValueError("new plan nodes must be proposed")
+    validate_goal_capacity(config, initiative, nodes)
     retained = {
         node["node_id"]: node
         for node in store.list_nodes_snapshot(initiative["initiative_id"])
@@ -662,9 +677,78 @@ def _snapshot(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, A
         "contract": SNAPSHOT_CONTRACT, "initiative": initiative, "active_plan": active,
         "nodes": nodes, "superseded_nodes": superseded_nodes,
         "attempts": store.list_attempts_snapshot(initiative["initiative_id"]),
+        "links": store.list_links_snapshot(initiative["initiative_id"]),
+        "actions": store.list_actions_snapshot(initiative["initiative_id"]),
         "last_event_sequence": initiative["last_event_sequence"],
         "state_revision": initiative["state_revision"],
     }
+
+
+def _submit_convenience_action(
+    store: InitiativeStore,
+    initiative: dict[str, Any],
+    action_class: str,
+    payload: dict[str, Any],
+    *,
+    action_id: str | None = None,
+) -> dict[str, Any]:
+    document = build_action_document(
+        initiative, action_class, payload, actor_id="cli", action_id=action_id,
+    )
+    return submit_action(store, initiative["initiative_id"], document)
+
+
+def _action_command(
+    args: list[str], store: InitiativeStore
+) -> tuple[dict[str, Any], bool]:
+    if not args:
+        raise ValueError("action requires an initiative ID or exact slug")
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={"json"})
+    _only(options, {"file", "json"}, "action")
+    _required(options, "file")
+    if not options["json"]:
+        raise ValueError("action requires --json")
+    document = _read_json_file(Path(options["file"]), "action")
+    result = submit_action(store, initiative["initiative_id"], document)
+    return result, True
+
+
+def _operator_action(
+    command: str, args: list[str], store: InitiativeStore
+) -> tuple[dict[str, Any], bool]:
+    if not args:
+        raise ValueError(f"{command} requires an initiative ID or exact slug")
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={"json"})
+    allowed = {"json"}
+    payload: dict[str, Any]
+    action_class = command
+    if command == "activate":
+        action_class, payload = "activate-initiative", {}
+    elif command in {"pause", "resume"}:
+        payload = {}
+    elif command == "dispatch":
+        allowed.add("node")
+        _required(options, "node")
+        action_class, payload = "dispatch-node", {"node_id": options["node"]}
+    elif command == "stop":
+        allowed.add("attempt")
+        _required(options, "attempt")
+        action_class, payload = "stop-attempt", {"attempt_id": options["attempt"]}
+    elif command == "cancel":
+        allowed.add("node")
+        _required(options, "node")
+        action_class, payload = "cancel-node", {"node_id": options["node"]}
+    else:
+        raise ValueError(f"unknown operator action: {command}")
+    _only(options, allowed, command)
+    return (
+        _submit_convenience_action(
+            store, initiative, action_class, payload,
+        ),
+        bool(options["json"]),
+    )
 
 
 def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapter | None = None) -> int:
@@ -675,9 +759,6 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
         _usage()
         return 0
     command, tail = args[0], args[1:]
-    if command == "activate":
-        print("asha initiative: activate is not available before Increment 2", file=sys.stderr)
-        return 2
     config = load_config(env)
     store = InitiativeStore(config)
     if command == "create":
@@ -697,6 +778,14 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
         result, json_output = _reject(tail, store)
         _payload(result, json_output)
         return 0
+    if command == "action":
+        result, json_output = _action_command(tail, store)
+        _payload(result, json_output)
+        return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
+    if command in {"activate", "dispatch", "pause", "resume", "stop", "cancel"}:
+        result, json_output = _operator_action(command, tail, store)
+        _payload(result, json_output)
+        return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
     options_tail, json_output = [], False
     if command == "list":
         options = _parse_options(tail, flags={"json"})
@@ -740,10 +829,15 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
             raise ValueError("snapshot requires --json")
         payload = _snapshot(store, initiative)
     elif command == "reconcile":
+        action_result = reconcile_actions(store, initiative["initiative_id"])
+        live_result = reconcile_live(store, initiative["initiative_id"])
+        initiative = store.peek(initiative["initiative_id"])
         snapshot = _snapshot(store, initiative)
         payload = {
             "contract": RECONCILE_LIST_CONTRACT,
             "initiative_id": initiative["initiative_id"],
+            "action_reconciliation": action_result,
+            "live_reconciliation": live_result,
             "results": reconcile_nodes(
                 initiative["initiative_id"], snapshot["nodes"], store=store,
             ),
@@ -757,7 +851,11 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
         evidence_counts = store.record_counts_snapshot(initiative["initiative_id"])
         payload = {
             "contract": SHOW_CONTRACT, "initiative": initiative,
-            "graph": {"plan": snapshot["active_plan"], "nodes": snapshot["nodes"], "attempts": snapshot["attempts"]},
+            "graph": {
+                "plan": snapshot["active_plan"], "nodes": snapshot["nodes"],
+                "attempts": snapshot["attempts"], "links": snapshot["links"],
+            },
+            "action_outcomes": snapshot["actions"],
             "gates": [] if snapshot["active_plan"] is None else snapshot["active_plan"]["declared_gates"],
             "limits": initiative["limits"],
             "evidence_counts": evidence_counts,
@@ -778,11 +876,11 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         if args[0] == "initiative":
             return _initiative_command(args[1:], values)
         if args[0] == "task" and len(args) >= 2 and args[1] in {"report", "result", "seal"}:
-            print(f"asha task {args[1]}: not available before Increment 2", file=sys.stderr)
+            print(f"asha task {args[1]}: not available before Increment 2b", file=sys.stderr)
             return 2
         raise ValueError("unknown orchestration route")
-    except (OrchestrationConfigError, StoreError, JjError, ModelError, PlanError,
-            OSError, ValueError) as exc:
+    except (ActionError, ActionRefused, OrchestrationConfigError, SchedulerError,
+            StoreError, JjError, ModelError, PlanError, OSError, ValueError) as exc:
         print(f"asha initiative: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:

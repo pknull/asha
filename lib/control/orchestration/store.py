@@ -66,7 +66,7 @@ _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CLOEXEC
 
 _LAYOUT_DIRECTORIES = (
-    "plans", "nodes", "attempts", "links", "result-publications", "results",
+    "plans", "nodes", "attempts", "assignments", "links", "result-publications", "results",
     "seals", "reviews", "verifications", "bundles", "approvals", "actions",
     "evidence", "events", "locks",
 )
@@ -574,6 +574,7 @@ class InitiativeStore:
         transition_machine: Mapping[str, frozenset[str]] | None = None,
         immutable_fields: tuple[str, ...] = (),
         bind_once_fields: tuple[str, ...] = (),
+        mutable_while_states: Mapping[str, frozenset[str]] | None = None,
         terminal_states: frozenset[str] = frozenset(),
     ) -> Path:
         validated, raw = _canonical_bytes(validator, record)
@@ -597,6 +598,15 @@ class InitiativeStore:
                         self._same_fields(current, validated, immutable_fields)
                         for field in bind_once_fields:
                             if current[field] is not None and current[field] != validated[field]:
+                                raise StoreError(f"immutable record field changed: {field}")
+                        for field, states in (mutable_while_states or {}).items():
+                            if (
+                                current[field] != validated[field]
+                                and (
+                                    current.get("state") not in states
+                                    or validated.get("state") not in states
+                                )
+                            ):
                                 raise StoreError(f"immutable record field changed: {field}")
                         if transition_machine is not None and validated["state"] != current["state"]:
                             try:
@@ -705,17 +715,79 @@ class InitiativeStore:
             attempt_id = validate_attempt(record)["attempt_id"]
         except ModelError as exc:
             raise StoreError(str(exc)) from exc
-        mutable = {"state", "result_publication_id", "result_id", "seal_id", "updated_at"}
+        mutable = {
+            "action_id", "state", "result_publication_id", "result_id", "seal_id",
+            "updated_at",
+        }
         return self._save_subrecord(
             initiative_id, "attempts", f"{attempt_id}.json", record, validate_attempt,
             immutable=False, expected_digest=expected_digest,
             transition_machine=ATTEMPT_TRANSITIONS,
             immutable_fields=tuple(field for field in validate_attempt(record) if field not in mutable),
+            mutable_while_states={"action_id": frozenset({"allocated"})},
             terminal_states=frozenset({
                 "sealed-success", "sealed-failure", "sealed-paused", "completed-readonly",
                 "launch-failed", "failed-no-artifact", "cancelled", "stale",
             }),
         )
+
+    def write_assignment(
+        self, initiative_id: str, attempt_id: str, content: bytes
+    ) -> Path:
+        """Publish one immutable bounded worker assignment with mode 0600.
+
+        Replaying the exact bytes is a read-only success.  A changed file or a
+        changed requested body is a conflict rather than an overwrite.
+        """
+        try:
+            attempt_id = canonical_uuid(attempt_id, "attempt_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        if not isinstance(content, bytes) or not content:
+            raise StoreError("assignment must contain bounded UTF-8 bytes")
+        if len(content) > 32 * 1024:
+            raise StoreError("assignment exceeds 32768 bytes")
+        try:
+            content.decode("utf-8")
+        except UnicodeError as exc:
+            raise StoreError("assignment must be UTF-8") from exc
+        name = f"{attempt_id}.md"
+        with self._locked_fds(initiative_id) as (_, initiative_fd):
+            directory_fd = _open_directory(initiative_fd, "assignments", create=True)
+            if directory_fd is None:
+                raise StoreError("cannot create assignment storage directory")
+            try:
+                self._sweep_write_residue(directory_fd)
+                try:
+                    fd = _open_existing_file(directory_fd, name, "assignment")
+                except FileNotFoundError:
+                    self._write_once(directory_fd, name, content)
+                else:
+                    try:
+                        metadata = os.fstat(fd)
+                        if (
+                            not stat.S_ISREG(metadata.st_mode)
+                            or metadata.st_uid != os.geteuid()
+                            or stat.S_IMODE(metadata.st_mode) != 0o600
+                            or metadata.st_nlink != 1
+                        ):
+                            raise StoreError("retained assignment ownership or mode changed")
+                        chunks: list[bytes] = []
+                        remaining = 32 * 1024 + 1
+                        while remaining:
+                            chunk = os.read(fd, min(65536, remaining))
+                            if not chunk:
+                                break
+                            chunks.append(chunk)
+                            remaining -= len(chunk)
+                        current = b"".join(chunks)
+                    finally:
+                        _close(fd)
+                    if current != content:
+                        raise StoreError("retained assignment differs from the action reservation")
+            finally:
+                _close(directory_fd)
+        return self.config.initiatives_dir / initiative_id / "assignments" / name
 
     def read_attempt(self, initiative_id: str, attempt_id: str) -> dict[str, Any]:
         return self._read_uuid_record(initiative_id, "attempts", attempt_id, validate_attempt)
@@ -972,6 +1044,18 @@ class InitiativeStore:
         return self._list_subrecords_snapshot(
             initiative_id, "approvals", validate_approval,
             re.compile(r"([0-9a-f-]{36})\.json"), "request_id",
+        )
+
+    def list_actions_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "actions", validate_action,
+            re.compile(r"([0-9a-f-]{36})\.json"), "action_id",
+        )
+
+    def list_seals_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "seals", validate_seal,
+            re.compile(r"([0-9a-f-]{36})\.json"), "seal_id",
         )
 
     def _read_uuid_record(
