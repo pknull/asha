@@ -25,6 +25,7 @@ shown but is optional and never blocks ad-hoc task creation.
 
 ```text
 asha task start [--repo PATH] (--pr N | --issue N | [--base REVSET])
+                [--task-id UUID]
                 [--harness H|--agent H] (--goal TEXT | -- TEXT...)
                 [--role ROLE] [--detach] [--json]
 asha task list [--json]
@@ -47,7 +48,7 @@ asha control event ...       internal hook-facing route
 Without `--detach`, a start inside tmux opens the new session in a popup. From
 outside tmux it prints the exact attach command. `--json` keeps stdout to one
 versioned machine-readable result, implies `--detach`, and includes the exact
-attach command in its payload.
+attach command and an `existing` boolean in its payload.
 
 Control-managed Codex launches pass a per-launch trust override for the
 workspace root so a new task does not stop at Codex's directory-trust prompt.
@@ -120,6 +121,16 @@ tmux user options, and live process facts establish ownership. GitHub task
 slugs are derived only from repository name, source kind, and number, such as
 `thallus-pr-34`; GitHub titles never enter a slug, prompt, tmux value, harness
 argv, or record.
+
+### Idempotent creation
+
+`asha task start --task-id UUID` accepts a canonical lowercase caller-supplied
+UUID. Under the task's transaction lock, Control creates the task when both its
+record and creation journal are absent. An identical registered task is
+returned unchanged without fetching a PR, importing Git state, creating a jj
+workspace or tmux session, launching a harness, or adding a run. A different
+request is refused; an interrupted `creating` task must be recovered explicitly
+with `asha task recover UUID` before retrying.
 
 ## jj contract
 
