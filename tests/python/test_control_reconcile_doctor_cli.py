@@ -143,11 +143,11 @@ class ControlReconciliationTests(unittest.TestCase):
         ))
         self.assertEqual(reconcile_task(task, adapters)["state"], "failed")
 
-    def test_stored_terminal_state_rejects_live_active_or_different_terminal_evidence(self) -> None:
+    def test_stored_terminal_state_supersedes_active_but_rejects_live_or_terminal_conflicts(self) -> None:
         for stored in ("exited", "failed"):
             for case, process, event_state, expected in (
                 ("live", "match", None, "stale"),
-                ("active-event", "missing", "working", "stale"),
+                ("active-event", "missing", "working", stored),
                 ("different-terminal", "missing", "failed" if stored == "exited" else "exited", "stale"),
                 ("same-terminal", "missing", stored, stored),
                 ("fallback", "missing", None, stored),

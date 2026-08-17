@@ -361,13 +361,13 @@ class LiveEventEvidenceTests(Increment4Fixture):
 
         return LiveAdapters(config=self.config, tmux=DeadTmux(), jj=MatchingJj())
 
-    def test_dead_status_reconciles_terminal_and_signal_death_stays_stale(self) -> None:
+    def test_dead_status_and_signal_death_reconcile_terminal(self) -> None:
         for status, expected in ((0, "exited"), (7, "failed")):
             with self.subTest(status=status):
                 result = reconcile_task(self.task, self.adapters_for_dead_status(status))
                 self.assertEqual(result["state"], expected)
         signalled = reconcile_task(self.task, self.adapters_for_dead_status(None, 15))
-        self.assertEqual(signalled["state"], "stale")
+        self.assertEqual(signalled["state"], "failed")
 
     def test_live_process_is_never_overridden_by_terminal_event(self) -> None:
         task = self.task

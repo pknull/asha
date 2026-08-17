@@ -162,7 +162,26 @@ class LiveAdapters:
             facts = self.tmux_adapter.pane_facts(run["pane_id"])
         except TmuxError as exc:
             if _tmux_target_missing(exc):
-                return Evidence("process", "missing", "recorded tmux pane is absent")
+                try:
+                    matched = harness_api.verify_process(
+                        run["pid"], run["process_start_identity"],
+                    )
+                except HarnessError as identity_exc:
+                    return Evidence(
+                        "process", "unavailable",
+                        "process identity evidence unavailable: "
+                        f"{_safe_detail(identity_exc, 'adapter failure')}",
+                    )
+                if matched:
+                    return Evidence(
+                        "process", "match",
+                        "recorded tmux pane is absent but the process identity is live",
+                    )
+                return Evidence(
+                    "process", "missing",
+                    "recorded tmux pane is absent and the process identity is gone",
+                    state="failed",
+                )
             return Evidence(
                 "process", "unavailable",
                 f"process pane evidence unavailable: {_safe_detail(exc, 'adapter failure')}",
@@ -170,6 +189,12 @@ class LiveAdapters:
         # tmux 3.4 leaves pane_pid stale after death.  pane_dead is the
         # authoritative liveness fact and must be consulted first.
         if facts.dead:
+            if facts.dead_signal is not None:
+                return Evidence(
+                    "process", "missing",
+                    f"tmux pane process was killed by signal {facts.dead_signal}",
+                    state="failed",
+                )
             if facts.dead_status is not None:
                 state = "exited" if facts.dead_status == 0 else "failed"
                 return Evidence(
@@ -353,7 +378,8 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
     if stored_terminal is not None:
         if process.outcome == "match":
             return result("stale", "process: live process contradicts stored terminal state")
-        if event.outcome == "match" and event.state != stored_terminal:
+        if (event.outcome == "match" and event.state in _TERMINAL_STATES and
+                event.state != stored_terminal):
             return result("stale", "event: state contradicts stored terminal state")
         return result(stored_terminal)
     if process.outcome == "missing":
