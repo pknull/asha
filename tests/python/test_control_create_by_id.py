@@ -31,6 +31,7 @@ class ExistingTaskCliTests(unittest.TestCase):
         self.home.mkdir()
         self.source = self.root / "source"
         self.source.mkdir()
+        self.source.chmod(0o755)
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
@@ -45,6 +46,10 @@ class ExistingTaskCliTests(unittest.TestCase):
                requested_base: str = "trunk()") -> dict:
         workspace = self.config.workspace_root / "repo-key" / "create-by-id"
         workspace.mkdir(parents=True, exist_ok=True)
+        current = workspace
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
         value = task_record(
             task_id=TASK_ID,
             slug="create-by-id",
@@ -324,6 +329,7 @@ class RealJjCreateByIdTests(unittest.TestCase):
         (self.source / "Memory" / "decisions.md").write_text(
             "# Decisions\n\n- One.\n", encoding="utf-8",
         )
+        self.source.chmod(0o755)
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),

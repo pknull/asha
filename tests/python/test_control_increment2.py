@@ -427,6 +427,7 @@ class RealJjPreparationTests(unittest.TestCase):
             "# Objective\n\nO\n\n# State\n\nS\n\n# Next\n\n- N\n\n# Blockers\n\n- None.\n", encoding="utf-8")
         (self.source / "Memory" / "decisions.md").write_text(
             "# Decisions\n\n- One.\n", encoding="utf-8")
+        self.source.chmod(0o755)
         self.config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
             "XDG_STATE_HOME": str(self.root / "state"),
@@ -496,12 +497,22 @@ class RealJjPreparationTests(unittest.TestCase):
             slug=slug, label="Task one",
         )
 
+    def create_workspace_root(self, mode: int) -> None:
+        self.config.workspace_root.parent.mkdir(parents=True, mode=0o700)
+        current = self.config.workspace_root.parent
+        while current != self.root:
+            current.chmod(0o700)
+            current = current.parent
+        self.config.workspace_root.mkdir(mode=mode)
+        self.config.workspace_root.chmod(mode)
+
     def test_success_uses_exact_base_and_preserves_source(self) -> None:
         before = self.source_facts()
         result = prepare_task_workspace(self.config, self.request())
         after = self.source_facts()
         self.assertEqual(before, after)
         workspace = Path(result["jj"]["workspace_path"])
+        self.assertEqual(stat.S_IMODE(workspace.stat().st_mode), 0o700)
         identity = JjAdapter().inspect_workspace(workspace, result["jj"]["workspace_name"])
         self.assertEqual(identity.parent_commit_ids, (result["jj"]["base_commit_id"],))
         self.assertEqual(identity.description, "Task one")
@@ -1015,7 +1026,7 @@ class RealJjPreparationTests(unittest.TestCase):
 
     def test_eight_missing_destination_ancestors_are_preflighted_and_supported(self) -> None:
         anchor = self.root / "eight-parent-anchor"
-        anchor.mkdir()
+        anchor.mkdir(mode=0o700)
         workspace_root = anchor.joinpath(*(f"level-{index}" for index in range(7)))
         config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "eight-config.json"),
@@ -1038,7 +1049,7 @@ class RealJjPreparationTests(unittest.TestCase):
 
     def test_nine_missing_destination_ancestors_reject_before_all_mutation(self) -> None:
         anchor = self.root / "nine-parent-anchor"
-        anchor.mkdir()
+        anchor.mkdir(mode=0o700)
         workspace_root = anchor.joinpath(*(f"level-{index}" for index in range(8)))
         config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "nine-config.json"),
@@ -1060,6 +1071,59 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertEqual(before_anchor, self.workspace_bytes(anchor))
         self.assertFalse((config.tasks_dir / f"{request.task_id}.json").exists())
         self.assertFalse(CreationJournalStore(config).path(request.task_id).exists())
+
+    def test_preexisting_workspace_root_must_have_mode_0700(self) -> None:
+        self.create_workspace_root(0o755)
+        request = self.request("public-workspace-root")
+
+        with self.assertRaisesRegex(PreparationError, "mode 0700"):
+            prepare_task_workspace(self.config, request)
+
+        self.assertEqual(stat.S_IMODE(self.config.workspace_root.stat().st_mode), 0o755)
+        self.assertEqual(list(self.config.workspace_root.iterdir()), [])
+
+    def test_preexisting_repository_parent_must_have_mode_0700(self) -> None:
+        self.create_workspace_root(0o700)
+        repository = JjAdapter().preflight(self.source)
+        _, repo_key = derive_repository_identity(
+            "project-one", repository.root, repository.git_root,
+        )
+        repository_parent = self.config.workspace_root / repo_key
+        repository_parent.mkdir(mode=0o755)
+        repository_parent.chmod(0o755)
+        request = self.request("public-repository-parent")
+
+        with self.assertRaisesRegex(PreparationError, "mode 0700"):
+            prepare_task_workspace(self.config, request)
+
+        self.assertEqual(stat.S_IMODE(repository_parent.stat().st_mode), 0o755)
+        self.assertEqual(list(repository_parent.iterdir()), [])
+
+    def test_preexisting_repository_parent_must_be_euid_owned(self) -> None:
+        self.create_workspace_root(0o700)
+        repository = JjAdapter().preflight(self.source)
+        _, repo_key = derive_repository_identity(
+            "project-one", repository.root, repository.git_root,
+        )
+        repository_parent = self.config.workspace_root / repo_key
+        repository_parent.mkdir(mode=0o700)
+        repository_inode = (repository_parent.stat().st_dev, repository_parent.stat().st_ino)
+        real_fstat = os.fstat
+
+        def foreign_owner(fd):
+            metadata = real_fstat(fd)
+            if (metadata.st_dev, metadata.st_ino) != repository_inode:
+                return metadata
+            fields = list(metadata)
+            fields[4] = os.geteuid() + 1
+            return os.stat_result(fields)
+
+        request = self.request("foreign-repository-parent")
+        with mock.patch("lib.control.prepare.os.fstat", side_effect=foreign_owner):
+            with self.assertRaisesRegex(PreparationError, "effective user"):
+                prepare_task_workspace(self.config, request)
+
+        self.assertEqual(list(repository_parent.iterdir()), [])
 
     def test_base_without_private_ignore_rules_fails_and_leaves_no_registered_workspace(self) -> None:
         before = self.source_facts()
@@ -1176,6 +1240,24 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertEqual(journal["phase"], "rolled-back")
         self.assertFalse(Path(journal["workspace"]["path"]).exists())
         self.assertNotIn(journal["workspace"]["name"], JjAdapter().workspace_identities(self.source))
+
+    def test_unregistered_add_collision_is_preserved_without_chmod(self) -> None:
+        class CollidingAdapter(JjAdapter):
+            def add_workspace(inner_self, source, destination, name, base, message, operation):
+                destination.mkdir(mode=0o755)
+                destination.chmod(0o755)
+                (destination / "foreign.ignored").write_text("foreign", encoding="utf-8")
+                raise JjError("injected unregistered collision")
+
+        request = self.request("unregistered-collision")
+        with self.assertRaises(PreparationError):
+            prepare_task_workspace(self.config, request, jj=CollidingAdapter())
+
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        destination = Path(journal["workspace"]["path"])
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertEqual(stat.S_IMODE(destination.stat().st_mode), 0o755)
+        self.assertEqual((destination / "foreign.ignored").read_text(), "foreign")
 
     def test_partial_add_with_missing_destination_retains_exact_registration_recovery(self) -> None:
         moved_paths: list[Path] = []

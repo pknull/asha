@@ -540,26 +540,29 @@ class ControlConfigTests(unittest.TestCase):
                     "XDG_RUNTIME_DIR": str(root / "runtime"),
                 })
 
-    def test_private_boundary_allows_owned_group_writable_descendants(self) -> None:
+    def test_private_boundary_rejects_owned_group_writable_descendants(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             root.chmod(0o755)
             home = root / "home"
             private = root / "private"
-            shared = private / "asha"
             home.mkdir(mode=0o700)
             private.mkdir(mode=0o700)
-            shared.mkdir(mode=0o775)
-            shared.chmod(0o775)
+            for mode in (0o770, 0o1770):
+                shared = private / f"shared-{mode:o}"
+                shared.mkdir(mode=mode)
+                shared.chmod(mode)
 
-            config = load_config({
-                "HOME": str(home),
-                "ASHA_CONFIG": str(home / "missing.json"),
-                "XDG_STATE_HOME": str(shared),
-                "XDG_DATA_HOME": str(private / "data"),
-                "XDG_RUNTIME_DIR": str(private / "runtime"),
-            })
-            self.assertEqual(config.tasks_dir, shared / "asha/control/tasks")
+                with self.subTest(mode=oct(mode)), self.assertRaisesRegex(
+                    ConfigError, "writable.*ancestor",
+                ):
+                    load_config({
+                        "HOME": str(home),
+                        "ASHA_CONFIG": str(home / "missing.json"),
+                        "XDG_STATE_HOME": str(shared),
+                        "XDG_DATA_HOME": str(private / "data"),
+                        "XDG_RUNTIME_DIR": str(private / "runtime"),
+                    })
 
     def test_group_readable_home_establishes_the_private_boundary(self) -> None:
         """A 0750 home must establish the boundary, not just 0700.
@@ -576,8 +579,7 @@ class ControlConfigTests(unittest.TestCase):
             home = root / "home"
             home.mkdir(mode=0o750)          # group-readable, NOT group-writable
             shared = home / "state"
-            shared.mkdir(mode=0o775)        # group-writable descendant
-            shared.chmod(0o775)
+            shared.mkdir(mode=0o750)        # group-readable, NOT group-writable
 
             config = load_config({
                 "HOME": str(home),
@@ -597,6 +599,29 @@ class ControlConfigTests(unittest.TestCase):
         problem, boundary = namespace_safety_step(metadata, os.geteuid(), False)
         self.assertEqual(problem, "writable non-sticky ancestor")
         self.assertFalse(boundary)
+
+    def test_sticky_writable_ancestor_is_allowed_only_before_the_managed_namespace(self) -> None:
+        for mode in (0o1770, 0o1777):
+            metadata = type("Metadata", (), {
+                "st_mode": stat.S_IFDIR | mode,
+                "st_uid": os.geteuid(),
+            })()
+            with self.subTest(mode=oct(mode)):
+                problem, boundary = namespace_safety_step(
+                    metadata, os.geteuid(), False,
+                )
+                self.assertIsNone(problem)
+                self.assertFalse(boundary)
+                self.assertIn(
+                    "sticky",
+                    namespace_safety_step(metadata, os.geteuid(), True)[0] or "",
+                )
+                self.assertIn(
+                    "sticky",
+                    namespace_safety_step(
+                        metadata, os.geteuid(), False, namespace_root=True,
+                    )[0] or "",
+                )
 
     def test_foreign_owned_namespace_ancestor_is_rejected(self) -> None:
         metadata = type("Metadata", (), {
