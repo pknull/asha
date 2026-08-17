@@ -143,6 +143,7 @@ printf 'ok - read-only verbs invoke nothing; doctor probes tmux+jj; event touche
 # The mutating seam runs only against Python-created disposable repositories;
 # restore the real PATH so this section exercises the installed jj 0.38 binary.
 PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
+  tests.python.test_control_colocated_sync \
   tests.python.test_control_increment2.RealJjPreparationTests \
   tests.python.test_control_increment3.RealTmuxLaunchTests \
   tests.python.test_control_popup_client.RealTmuxPopupClientTests \

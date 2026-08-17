@@ -120,7 +120,7 @@ class GithubAdapterTests(unittest.TestCase):
 
         adapter = GithubAdapter(runner=runner)
         fetch_report = adapter.fetch_pr_head(self.source, "origin", 34)
-        import_report = adapter.import_into_jj(self.source)
+        import_report = JjAdapter(runner=runner).import_git(self.source)
 
         self.assertEqual(calls, [
             [
@@ -396,8 +396,11 @@ class RealGithubSourceTests(unittest.TestCase):
         self.assertIn(self.title, stderr)
         self.assertIn("fetched Git objects", stderr)
         self.assertIn("jj operation-log", stderr)
-        self.assertEqual(json.loads(stdout)["source_mutations"][1]["ref"],
+        mutations = json.loads(stdout)["source_mutations"]
+        self.assertEqual(mutations[1]["ref"],
                          f"refs/remotes/origin/asha-control-pr-{self.PR_NUMBER}")
+        self.assertEqual(len(mutations), 3)
+        self.assertEqual(mutations[2]["operation"], "git import")
 
         calls = self.gh_log.read_text().splitlines()
         self.assertEqual(calls[0], "auth status")
@@ -423,7 +426,7 @@ class RealGithubSourceTests(unittest.TestCase):
         # visibility the adapter is responsible for establishing.
         sources = GithubAdapter()
         sources.fetch_pr_head(self.source, "origin", self.PR_NUMBER)
-        sources.import_into_jj(self.source)
+        JjAdapter().import_git(self.source)
 
         adapter = TrackingJj()
         request = PrepareRequest(
@@ -449,7 +452,7 @@ class RealGithubSourceTests(unittest.TestCase):
 
     def test_issue_mode_uses_trunk_and_explicit_base_and_persists_no_title(self) -> None:
         before = self.source_positions()
-        status, _stdout, stderr, task = self.invoke([
+        status, stdout, stderr, task = self.invoke([
             "task", "start", "--repo", str(self.source),
             "--issue", str(self.ISSUE_NUMBER), "--goal", "Investigate issue",
             "--detach", "--json",
@@ -462,6 +465,10 @@ class RealGithubSourceTests(unittest.TestCase):
         self.assertEqual(task["jj"]["base_commit_id"], self.base_commit)
         self.assertEqual(set(task["source"]), {"kind", "number", "url"})
         self.assertNotIn("Issue context", json.dumps(task))
+        self.assertEqual(
+            [item["operation"] for item in json.loads(stdout)["source_mutations"]],
+            ["git import"],
+        )
 
         other = self.root / "second-state"
         env = {**self.env, "XDG_STATE_HOME": str(other / "state"),
@@ -824,6 +831,12 @@ class DoctorProbeCompletionTests(unittest.TestCase):
 
                 def preflight(self, source):
                     return type("Facts", (), {"root": root, "git_root": root / ".git"})()
+
+                def working_copy_parent(self, source):
+                    return "a" * 40
+
+                def git_head(self, git_root):
+                    return "a" * 40
 
             with mock.patch("lib.control.doctor.shutil.which", return_value="/fake/jj"), \
                     mock.patch("lib.control.doctor.JjAdapter", FakeJj), \

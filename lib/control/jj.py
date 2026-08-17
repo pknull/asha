@@ -10,10 +10,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Sequence, Any
 
-from .process import bounded_process, checked_bytes
+from .process import bounded_process, capture_bytes, checked_bytes
 
 
 _COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", re.ASCII)
+_GIT_SHA1 = re.compile(r"[0-9a-f]{40}", re.ASCII)
+_GIT_BRANCH_REF = re.compile(r"refs/heads/[^\s\x00-\x1f\x7f]+", re.ASCII)
 _CHANGE_ID = re.compile(r"[k-z]{32}", re.ASCII)
 _OPERATION_ID = re.compile(r"[0-9a-f]{128}", re.ASCII)
 MAX_OUTPUT_BYTES = 64 * 1024
@@ -57,6 +59,29 @@ class DiffSummary:
     refreshed_at: str
 
 
+def colocated_sync_remediation(
+    root: Path, git_head: str | None, working_copy_parent: str,
+) -> str | None:
+    if git_head is None:
+        if working_copy_parent == "0" * 40:
+            return None
+        head_detail = "git HEAD is unborn"
+    elif git_head == working_copy_parent:
+        return None
+    else:
+        head_detail = f"git HEAD {git_head}"
+    prefix = f"source working copy is out of sync with jj: {head_detail} "
+    middle = f"but jj @- is {working_copy_parent}; run `jj status` in "
+    suffix = " to import it, then retry"
+    root_text = "".join(
+        character if character.isprintable() else "?" for character in str(root)
+    )
+    root_budget = 500 - len(prefix) - len(middle) - len(suffix)
+    if len(root_text) > root_budget:
+        root_text = root_text[:root_budget - 3] + "..."
+    return prefix + middle + root_text + suffix
+
+
 class JjAdapter:
     def __init__(self, *, executable: str = "jj", runner: Callable[..., Any] | None = None):
         self.executable = executable
@@ -80,6 +105,15 @@ class JjAdapter:
             return self._run_bytes(self.executable, args, cwd=cwd).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise JjError("jj output was not UTF-8") from exc
+
+    def _run_status(
+        self, executable: str, args: Sequence[str], *, cwd: Path | None = None,
+        limit: int = MAX_OUTPUT_BYTES,
+    ) -> tuple[int, bytes, bytes]:
+        return capture_bytes(
+            [executable, *map(str, args)], cwd=cwd, limit=limit,
+            runner=self.runner, error_type=JjError,
+        )
 
     @staticmethod
     def _one_line(output: str, label: str, pattern: re.Pattern[str] | None = None) -> str:
@@ -126,6 +160,69 @@ class JjAdapter:
                 candidate.is_symlink() or not candidate.is_dir()):
             raise JjError("jj returned a non-canonical repository root")
         return self.preflight(candidate).root
+
+    def working_copy_parent(self, source: Path) -> str:
+        """Read the source working copy's parent without snapshotting it."""
+        output = self._run([
+            "-R", str(source), "--ignore-working-copy", "log", "-r", "@-",
+            "--no-graph", "-T", "commit_id",
+        ])
+        return self._one_line(output, "working-copy parent commit ID", _GIT_SHA1)
+
+    def git_head(self, git_root: Path) -> str | None:
+        """Read Git HEAD, returning ``None`` only for a confirmed unborn branch."""
+        repository = Path(git_root)
+        returncode, stdout, stderr = self._run_status(
+            "git", ["-C", str(repository), "rev-parse", "--verify", "HEAD^{commit}"],
+        )
+        if returncode == 0:
+            try:
+                output = stdout.decode("utf-8")
+            except UnicodeDecodeError as exc:
+                raise JjError("Git HEAD output was not UTF-8") from exc
+            try:
+                return self._one_line(output, "Git HEAD commit ID", _GIT_SHA1)
+            except JjError as exc:
+                raise JjError(
+                    "Git HEAD was not exactly one full lowercase 40-hex commit ID"
+                ) from exc
+
+        # A failed rev-parse is not itself proof of an unborn repository. HEAD
+        # must be a valid symbolic branch whose exact ref is absent. Detached,
+        # corrupt, inaccessible, and invocation-failure cases all remain errors.
+        symbolic_code, symbolic_stdout, _symbolic_stderr = self._run_status(
+            "git", ["-C", str(repository), "symbolic-ref", "--quiet", "HEAD"],
+        )
+        if symbolic_code == 0:
+            try:
+                symbolic_output = symbolic_stdout.decode("utf-8")
+                branch_ref = self._one_line(
+                    symbolic_output, "Git HEAD symbolic ref", _GIT_BRANCH_REF,
+                )
+            except (UnicodeDecodeError, JjError):
+                branch_ref = ""
+            if branch_ref:
+                ref_code, _ref_stdout, _ref_stderr = self._run_status(
+                    "git", [
+                        "-C", str(repository), "show-ref", "--verify", "--quiet",
+                        branch_ref,
+                    ],
+                )
+                if ref_code == 1:
+                    return None
+        detail = stderr[:4096].decode("utf-8", errors="replace").strip()
+        raise JjError(f"Git HEAD could not be resolved: {detail or 'no diagnostic'}")
+
+    def import_git(self, source: Path) -> tuple[dict[str, str], ...]:
+        """Import Git refs once without snapshotting the source working copy."""
+        self._run([
+            "-R", str(source), "--ignore-working-copy", "git", "import",
+        ])
+        return ({
+            "kind": "jj-operation",
+            "detail": "recorded a jj operation-log entry for git import",
+            "operation": "git import",
+        },)
 
     def resolve_base(self, source: Path, revset: str) -> str:
         if not isinstance(revset, str) or not 1 <= len(revset) <= 500:

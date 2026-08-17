@@ -17,7 +17,7 @@ from typing import Mapping, Sequence, Any
 from .config import ConfigError, is_canonical_absolute_path, load_config
 from .doctor import run_doctor
 from .events import EventError, read_snapshot, summarize, write_snapshot
-from .jj import JjAdapter
+from .jj import JjAdapter, RepositoryFacts, colocated_sync_remediation
 from .launch import (
     LaunchError, archive_task, launch_task, recover_task, stop_task,
     unarchive_task,
@@ -344,6 +344,16 @@ def _run_popup(
     return None
 
 
+def _guard_colocated_sync(jj: JjAdapter, repository: RepositoryFacts) -> None:
+    working_copy_parent = jj.working_copy_parent(repository.root)
+    git_head = jj.git_head(repository.git_root)
+    remediation = colocated_sync_remediation(
+        repository.root, git_head, working_copy_parent,
+    )
+    if remediation is not None:
+        raise ValueError(remediation)
+
+
 def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
     parsed = _parse_start(args)
     config = load_config(env)
@@ -367,6 +377,8 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
     harness_api.launch_argv(asha_root, selected_harness, parsed["goal_args"])
     jj = JjAdapter()
     source = _repo_argument(parsed["repo"], config, jj)
+    repository = jj.preflight(source)
+    _guard_colocated_sync(jj, repository)
     task_source = {"kind": "ad-hoc", "number": None, "url": None}
     requested_base = parsed["base"]
     resolved_base_commit_id = None
@@ -391,17 +403,17 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
         }
         slug_input = f"{source.name}-{kind}-{github_number}"
         if kind == "pr":
-            repository = jj.preflight(source)
             for mutation in github.fetch_pr_head(
                 repository.git_root, "origin", github_number,
             ):
                 source_mutations.append(mutation)
                 print(f"Source mutation: {mutation['detail']}", file=sys.stderr)
-            for mutation in github.import_into_jj(source):
-                source_mutations.append(mutation)
-                print(f"Source mutation: {mutation['detail']}", file=sys.stderr)
             requested_base = f"PR #{github_number} head"
             resolved_base_commit_id = metadata["headRefOid"]
+    _guard_colocated_sync(jj, repository)
+    for mutation in jj.import_git(source):
+        source_mutations.append(mutation)
+        print(f"Source mutation: {mutation['detail']}", file=sys.stderr)
     task_id = new_uuid()
     request = PrepareRequest(
         repository=source,

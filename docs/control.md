@@ -124,7 +124,13 @@ argv, or record.
 ## jj contract
 
 Control accepts only the canonical jj repository root and a usable Git
-backend. Base resolution is deterministic:
+backend. Before any source mutation, task start compares Git `HEAD` with jj
+`@-` and refuses a committed divergence with a `jj status` remediation. Once
+they agree (or Git `HEAD` is positively confirmed unborn while jj `@-` is the
+zero root), every source mode runs one
+`jj -R SOURCE --ignore-working-copy git import` after any PR fetch and before
+base resolution; the import is reported in `source_mutations` as a
+`jj-operation` with operation `git import`. Base resolution is deterministic:
 
 1. `--pr N` uses the fetched immutable PR head.
 2. `--base REVSET` must resolve to exactly one full commit ID.
@@ -277,10 +283,12 @@ know. Importing a remote-tracking ref creates an untracked *remote* bookmark
 only — your local bookmark namespace gains no controller entry, and no existing
 bookmark of either kind moves.
 
-The fetch never checks out a tree and never changes Git `HEAD`, staged content,
-source `@`, or bookmark positions. Issue mode performs only its bounded
-`gh issue view` read and resolves the explicit base or `trunk()`; it does not
-fetch.
+The fetch never checks out a tree. The pre-mutation Git `HEAD`/jj `@-` guard is
+what makes the following import safe and keeps Git `HEAD`, staged content, and
+source `@` untouched; Control refuses and asks the operator to run `jj status`
+when those positions diverge. Issue mode performs its bounded `gh issue view`
+read and the common reported import, then resolves the explicit base or
+`trunk()`; it does not fetch.
 
 Control has no GitHub write route. It does not comment, edit, label, close,
 review, merge, create a PR, or push. Subprocesses are argv-only, shell-free,
