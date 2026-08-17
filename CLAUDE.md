@@ -34,6 +34,7 @@ Use these sources instead of copying their facts into new catalogues:
 | Tested enforcement verdicts and caveats | `docs/harness-enforcement.md` |
 | Install and launcher mechanics | `INSTALLER.md`, then live scripts |
 | Memory authority and workspace planes | `docs/memory-architecture.md` |
+| Frozen Control v1 contracts orchestration binds to | `docs/control-contracts.md` |
 | Release history | `CHANGELOG.md` |
 | Current behavior | Live state and repository code |
 

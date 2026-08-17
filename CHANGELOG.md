@@ -22,6 +22,23 @@ the active instruction surface loses no release detail.
   artifact; panel transcripts, per-phase files, and the separate index are no
   longer produced.
 
+### Asha Control — Soak fixes, contract freeze, create-by-id (2026-08-17)
+
+- Ran the control->orchestration runway's Phase 3 soak on real work (nine
+  Codex tasks across two colocated repositories, four concurrent) and fixed
+  every Control defect it found in Control: Codex trust prompt skipped per
+  launch for managed workspaces; a dead or absent harness reconciles to a
+  terminal state (signal deaths, absent panes, archived tasks no longer read
+  `stale`); popups bind to the caller's own tmux client; task start guards
+  git HEAD/jj `@-` divergence in colocated sources and imports refs before
+  resolving a base; `--json` payloads carry an `existing` flag.
+- Added the orchestration prerequisite: idempotent
+  `asha task start --task-id UUID` (create-if-absent / return-existing under
+  the task lock, no record extension).
+- Documented the TUI surface, and froze the Control v1 contract set
+  orchestration binds to in `docs/control-contracts.md` (runway Phase 4).
+- Closed cold-review issues #56, #59, and #61 as soak work.
+
 ### Asha Control — Persistent jj and tmux task supervision (2026-08-15)
 
 - Added persistent task records, explicit-base jj workspaces, isolated tmux
