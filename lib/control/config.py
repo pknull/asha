@@ -59,6 +59,7 @@ class ControlConfig:
     popup_width: str
     popup_height: str
     session_prefix: str
+    event_staleness_seconds: int
 
 
 def _absolute(value: str, name: str, *, home: Path, allow_tilde: bool = True) -> Path:
@@ -413,7 +414,9 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
     control = root.get("control", {})
     if not isinstance(control, dict):
         raise ConfigError("control must be an object")
-    supported_control = {"workspace_root", "default_harness", "tmux"}
+    supported_control = {
+        "workspace_root", "default_harness", "tmux", "event_staleness_seconds",
+    }
     unknown_control = set(control) - supported_control
     if unknown_control:
         raise ConfigError(f"control has {len(unknown_control)} unsupported field(s)")
@@ -481,6 +484,16 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
             _SESSION_PREFIX.fullmatch(session_prefix) is None):
         raise ConfigError("control.tmux.session_prefix must be a bounded lowercase slug ending in '-'")
 
+    # Recency bound for in-progress semantic event evidence.  A harness without
+    # a wired stop/exit event (Codex today) never supersedes a `working` or
+    # `needs-input` snapshot, so reconciliation must age it to `unknown` past
+    # this window rather than report a stale positive state indefinitely.
+    raw_staleness = control.get("event_staleness_seconds", 1800)
+    if isinstance(raw_staleness, bool) or not isinstance(raw_staleness, int):
+        raise ConfigError("control.event_staleness_seconds must be an integer number of seconds")
+    if not 1 <= raw_staleness <= 86400:
+        raise ConfigError("control.event_staleness_seconds must be from 1 through 86400")
+
     return ControlConfig(
         config_path=config_path,
         home=home,
@@ -491,4 +504,5 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
         popup_width=popup_width,
         popup_height=popup_height,
         session_prefix=session_prefix,
+        event_staleness_seconds=raw_staleness,
     )

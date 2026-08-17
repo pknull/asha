@@ -47,6 +47,7 @@ def reconciliation(task: dict, state: str, blocker: str | None = None) -> dict:
                     "outcome": "match",
                     "detail": "verified tool-completed event snapshot",
                     "state": "working",
+                    "stale": False,
                 }] if state == "working" else [],
             }
             for run in task["runs"]

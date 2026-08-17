@@ -33,6 +33,15 @@ claimed:
 Copilot and OpenCode provide process liveness only; Asha claims no semantic
 Control events for either harness.
 
+A harness with no wired stop or exit event (Codex, Copilot, OpenCode) never
+emits a signal that supersedes an in-progress `working`/`needs-input` snapshot.
+Reconciliation therefore ages those states to `unknown` once the snapshot is
+older than `control.event_staleness_seconds` (default 30 minutes): a live
+process with only stale in-progress evidence reads as `unknown`, never as a
+false positive. Observed 2026-08-16: a Codex task otherwise reported `working`
+for 25+ hours while idle at its prompt. Claude, which wires `Stop` and
+`SessionEnd`, refreshes or supersedes its state within the window in normal use.
+
 No harness performs automatic semantic publication. Prompt and tool hooks write
 only ignored recovery state under `Work/session-state/`. Session end seals that
 state and prunes entries older than seven days. An explicit save uses the live

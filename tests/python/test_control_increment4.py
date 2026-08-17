@@ -7,6 +7,7 @@ import os
 import tempfile
 import unittest
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -24,7 +25,7 @@ from lib.control.events import (
 from lib.control.jj import WorkspaceIdentity
 from lib.control.reconcile import Evidence, LiveAdapters, reconcile_task
 from lib.control.store import TaskStore
-from lib.control.tmux import PaneFacts
+from lib.control.tmux import PaneFacts, TmuxError
 from tests.python.test_control_config_model import task_record
 
 
@@ -313,6 +314,27 @@ class LiveEventEvidenceTests(Increment4Fixture):
             with self.subTest(call=call), self.assertRaises(ValueError):
                 call()
 
+    def test_evidence_stale_permission_is_narrowly_widened(self) -> None:
+        allowed = Evidence(
+            "event", "match", "detail", state="working", stale=True,
+        )
+        self.assertTrue(allowed.stale)
+        invalid = (
+            lambda: Evidence(
+                "event", "match", "detail", state="idle", stale=True,
+            ),
+            lambda: Evidence(
+                "event", "match", "detail", state="exited", stale=True,
+            ),
+            lambda: Evidence("event", "unavailable", "detail", stale=True),
+            lambda: Evidence("tmux", "match", "detail", stale=True),
+        )
+        for call in invalid:
+            with self.subTest(call=call), self.assertRaisesRegex(
+                ValueError, "only a matched in-progress event may be marked stale",
+            ):
+                call()
+
     def adapters_for_dead_status(self, status: int | None, signal: int | None = None):
         task = self.task
 
@@ -379,6 +401,131 @@ class LiveEventEvidenceTests(Increment4Fixture):
         self.assertEqual(
             result["blocker"], "event: terminal state contradicts matched live process",
         )
+
+    def _now_after_snapshot(self, seconds: int):
+        snapshot = read_snapshot(self.config, self.run_id)
+        assert snapshot is not None
+        observed = datetime.fromisoformat(snapshot["observed_at"])
+        return lambda: observed + timedelta(seconds=seconds)
+
+    def test_in_progress_event_ages_to_match_stale_past_window(self) -> None:
+        self.write("prompt-submitted")
+        run = self.task["runs"][0]
+
+        fresh = LiveAdapters(config=self.config).event(self.task, run)
+        self.assertEqual((fresh.outcome, fresh.state), ("match", "working"))
+        self.assertFalse(fresh.stale)
+
+        window = self.config.event_staleness_seconds
+        aged = LiveAdapters(
+            config=self.config, now=self._now_after_snapshot(window + 60),
+        ).event(
+            self.task, run,
+        )
+        self.assertEqual((aged.outcome, aged.state), ("match", "working"))
+        self.assertTrue(aged.stale)
+        self.assertIn("stale", aged.detail)
+        self.assertIn(str(window), aged.detail)
+
+    def test_age_exactly_at_window_does_not_age(self) -> None:
+        self.write("prompt-submitted")
+        run = self.task["runs"][0]
+        window = self.config.event_staleness_seconds
+
+        result = LiveAdapters(
+            config=self.config, now=self._now_after_snapshot(window),
+        ).event(self.task, run)
+
+        self.assertEqual((result.outcome, result.state), ("match", "working"))
+        self.assertFalse(result.stale)
+
+    def test_idle_event_is_not_aged(self) -> None:
+        # turn-stopped -> idle is a legitimate resting state; it must survive
+        # the window so a finished-and-waiting agent is not flipped to unknown.
+        self.write("turn-stopped")
+        run = self.task["runs"][0]
+        aged = LiveAdapters(
+            config=self.config,
+            now=self._now_after_snapshot(self.config.event_staleness_seconds + 60),
+        ).event(self.task, run)
+        self.assertEqual((aged.outcome, aged.state), ("match", "idle"))
+        self.assertFalse(aged.stale)
+
+    def test_terminal_event_is_never_aged(self) -> None:
+        self.write("session-ended", exit_status=0)
+        run = self.task["runs"][0]
+        aged = LiveAdapters(
+            config=self.config,
+            now=self._now_after_snapshot(self.config.event_staleness_seconds + 60),
+        ).event(self.task, run)
+        self.assertEqual((aged.outcome, aged.state), ("match", "exited"))
+        self.assertFalse(aged.stale)
+
+    def test_live_process_with_stale_working_event_reconciles_unknown(self) -> None:
+        task = self.task
+        run = task["runs"][0]
+        self.write("prompt-submitted")
+
+        class LiveTmux:
+            def has_session(inner, name):
+                return True
+
+            def session_option(inner, name, option):
+                return "1" if option == "@asha_managed" else task["task_id"]
+
+            def pane_facts(inner, pane_id):
+                return PaneFacts(
+                    pane_id, run["pid"], False, None, None,
+                    task["tmux"]["session"], task["tmux"]["window"], "fixture",
+                )
+
+        class UnreachableTmux:
+            def has_session(inner, name):
+                raise TmuxError("tmux socket is unreachable")
+
+            def pane_facts(inner, pane_id):
+                raise TmuxError("tmux socket is unreachable")
+
+        class NoPidTmux(LiveTmux):
+            def pane_facts(inner, pane_id):
+                return PaneFacts(
+                    pane_id, None, False, None, None,
+                    task["tmux"]["session"], task["tmux"]["window"], "fixture",
+                )
+
+        class MatchingJj:
+            def inspect_workspace(inner, path, name, require_empty=False):
+                return WorkspaceIdentity(
+                    name, task["jj"]["change_id"], task["jj"]["working_commit_id"],
+                    (task["jj"]["base_commit_id"],), "fixture",
+                )
+
+        window = self.config.event_staleness_seconds
+        stale_now = self._now_after_snapshot(window + 60)
+
+        live = LiveAdapters(
+            config=self.config, tmux=LiveTmux(), jj=MatchingJj(), now=stale_now,
+        )
+        with mock.patch("lib.control.reconcile.harness_api.verify_process", return_value=True):
+            result = reconcile_task(task, live)
+        # A live process whose only semantic evidence is a stale `working` reads
+        # as unknown, not a false positive -- the c5cfa1d2 defect.
+        self.assertEqual(result["state"], "unknown")
+
+        for name, tmux in (
+            ("tmux-unreachable", UnreachableTmux()),
+            ("live-pane-no-pid", NoPidTmux()),
+        ):
+            with self.subTest(name=name, age="fresh"):
+                fresh = LiveAdapters(
+                    config=self.config, tmux=tmux, jj=MatchingJj(),
+                )
+                self.assertEqual(reconcile_task(task, fresh)["state"], "unknown")
+            with self.subTest(name=name, age="stale"):
+                stale = LiveAdapters(
+                    config=self.config, tmux=tmux, jj=MatchingJj(), now=stale_now,
+                )
+                self.assertEqual(reconcile_task(task, stale)["state"], "unknown")
 
 
 class Increment4DoctorTests(Increment4Fixture):

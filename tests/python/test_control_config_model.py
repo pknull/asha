@@ -103,6 +103,34 @@ class ControlConfigTests(unittest.TestCase):
             self.assertEqual(config.runtime_dir, root / "runtime/asha-control")
             self.assertEqual(config.popup_width, "90%")
             self.assertEqual(config.session_prefix, "asha-")
+            self.assertEqual(config.event_staleness_seconds, 1800)
+
+    def test_event_staleness_seconds_parses_and_is_bounded(self) -> None:
+        def load(value_json: str):
+            with tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                (root / "home").mkdir()
+                (root / "home").chmod(0o700)
+                config_path = root / "config.json"
+                write_config(
+                    config_path,
+                    '{"control":{"event_staleness_seconds":' + value_json + '}}',
+                )
+                return load_config({
+                    "HOME": str(root / "home"),
+                    "ASHA_CONFIG": str(config_path),
+                    "XDG_STATE_HOME": str(root / "state"),
+                    "XDG_DATA_HOME": str(root / "data"),
+                    "XDG_RUNTIME_DIR": str(root / "runtime"),
+                })
+
+        self.assertEqual(load("60").event_staleness_seconds, 60)
+        self.assertEqual(load("86400").event_staleness_seconds, 86400)
+        for invalid in ("0", "-1", "86401", "true", "1.5", '"1800"', "null"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(
+                ConfigError, "event_staleness_seconds",
+            ):
+                load(invalid)
 
     def test_nested_default_harness_precedes_existing_root_default(self) -> None:
         with tempfile.TemporaryDirectory() as td:

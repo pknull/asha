@@ -6,8 +6,9 @@ import copy
 import re
 import unicodedata
 from dataclasses import dataclass, asdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Callable, Literal, Protocol
 
 from .config import ControlConfig
 from .events import EventError, read_snapshot
@@ -24,6 +25,11 @@ _SEMANTIC_EVENT_STATES = frozenset({"working", "needs-input", "idle"})
 _TERMINAL_STATES = frozenset({"exited", "failed"})
 _EVENT_STATES = _SEMANTIC_EVENT_STATES | _TERMINAL_STATES
 _PROVEN_ACTIVE_STATES = frozenset({"starting", "working", "needs-input", "idle", "unknown"})
+# In-progress states imply the harness is mid-turn.  A harness with no wired
+# stop event never supersedes them, so they are only trustworthy while recent.
+# `idle` (turn-stopped) is a legitimate resting state and is NOT aged; terminal
+# states are durable facts and never age.
+_AGEABLE_EVENT_STATES = frozenset({"working", "needs-input"})
 _CREATION_UNSET = object()
 
 
@@ -42,6 +48,7 @@ class Evidence:
     outcome: Outcome
     detail: str
     state: str | None = None
+    stale: bool = False
 
     def __post_init__(self) -> None:
         _bounded_field(self.source, "evidence source", 32, pattern=_FIELD_NAME)
@@ -58,6 +65,11 @@ class Evidence:
             raise ValueError(
                 "only matched event or missing process evidence may carry a state"
             )
+        if self.stale and not (
+            self.source == "event" and self.outcome == "match" and
+            self.state in _AGEABLE_EVENT_STATES
+        ):
+            raise ValueError("only a matched in-progress event may be marked stale")
 
 
 class Adapters(Protocol):
@@ -110,10 +122,14 @@ class LiveAdapters:
         config: ControlConfig | None = None,
         tmux: TmuxAdapter | None = None,
         jj: JjAdapter | None = None,
+        now: Callable[[], datetime] | None = None,
     ) -> None:
         self.config = config
         self.tmux_adapter = tmux or TmuxAdapter()
         self.jj_adapter = jj or JjAdapter()
+        # Injectable so tests can age a snapshot deterministically; live callers
+        # get wall-clock UTC, consistent with this being the live evidence source.
+        self._now = now or (lambda: datetime.now(timezone.utc))
 
     def tmux(self, task, run):
         session = task["tmux"]["session"]
@@ -231,11 +247,38 @@ class LiveAdapters:
             return Evidence(
                 "event", "missing", "session-start carries no semantic state",
             )
+        if snapshot["state"] in _AGEABLE_EVENT_STATES:
+            age = self._snapshot_age_seconds(snapshot)
+            window = self.config.event_staleness_seconds
+            if age is not None and age > window:
+                # Past the recency window an in-progress state is no longer
+                # trustworthy: a harness with no wired stop event would otherwise
+                # report `working` forever.  Preserve the matched semantic state
+                # while marking it stale so precedence can decline to trust it.
+                return Evidence(
+                    "event", "match",
+                    f"stale {snapshot['state']} snapshot: observed {int(age)}s ago exceeds "
+                    f"the {window}s recency window",
+                    state=snapshot["state"],
+                    stale=True,
+                )
         return Evidence(
             "event", "match",
             f"verified {snapshot['event']} event snapshot",
             state=snapshot["state"],
         )
+
+    def _snapshot_age_seconds(self, snapshot: dict[str, Any]) -> float | None:
+        raw = snapshot.get("observed_at")
+        if not isinstance(raw, str):
+            return None
+        try:
+            observed = datetime.fromisoformat(raw)
+        except ValueError:
+            return None
+        if observed.tzinfo is None:
+            observed = observed.replace(tzinfo=timezone.utc)
+        return (self._now() - observed).total_seconds()
 
 
 def _terminal_from_stored(run: dict[str, Any]) -> str | None:
@@ -250,7 +293,7 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
             raise ValueError(f"{expected} adapter returned invalid evidence")
         # Revalidate and copy frozen instances because a hostile adapter can
         # still use object.__setattr__ after returning them.
-        safe = Evidence(item.source, item.outcome, item.detail, item.state)
+        safe = Evidence(item.source, item.outcome, item.detail, item.state, item.stale)
         gathered.append(safe)
         return safe
 
@@ -324,6 +367,12 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
     if event.outcome == "match" and event.state is not None:
         if process.outcome == "match" and event.state in _TERMINAL_STATES:
             return result("stale", "event: terminal state contradicts matched live process")
+        if event.stale:
+            return result(
+                "unknown",
+                f"event: {event.state} snapshot exceeds the recency window; "
+                "state is not trusted without live confirmation",
+            )
         unavailable = ", ".join(
             item.source for item in (tmux, process)
             if item.outcome == "unavailable"
