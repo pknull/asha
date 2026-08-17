@@ -269,6 +269,17 @@ else
 fi
 echo ""
 
+# Test Suite 18: Orchestration Core Model and Store
+echo -e "${BLUE}--- Test Suite 18: Orchestration Core Model and Store ---${NC}"
+if "$SCRIPT_DIR/test-orchestration.sh"; then
+    echo -e "${GREEN}✓ Orchestration Core tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Orchestration Core tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"
