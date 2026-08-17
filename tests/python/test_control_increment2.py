@@ -1322,17 +1322,43 @@ class RealJjPreparationTests(unittest.TestCase):
         ))
         prepare_thread.start()
         self.assertTrue(entered.wait(10))
+        other_runtime_config = load_config({
+            "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
+            "XDG_STATE_HOME": str(self.root / "state"),
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "XDG_RUNTIME_DIR": str(self.root / "other-runtime"),
+        })
         rollback_thread = threading.Thread(target=lambda: self._capture_error(
-            rollback_error, rollback_prelaunch, self.config, request.task_id
+            rollback_error, rollback_prelaunch, other_runtime_config, request.task_id
         ))
         rollback_thread.start()
         time.sleep(0.2)
         self.assertTrue(rollback_thread.is_alive(), "rollback did not wait for preparation lock")
+        registry_probe = subprocess.run(
+            [
+                sys.executable, "-c",
+                (
+                    "import fcntl,os,sys; "
+                    "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY); "
+                    "\ntry: fcntl.flock(fd,fcntl.LOCK_EX|fcntl.LOCK_NB)"
+                    "\nexcept BlockingIOError: print('contended')"
+                    "\nelse: print('acquired')"
+                ),
+                str(self.config.tasks_dir),
+            ],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        self.assertEqual(
+            registry_probe.stdout.strip(), "acquired",
+            "workspace preparation held the global registry flock",
+        )
         release.set()
         prepare_thread.join(20)
         rollback_thread.join(20)
         self.assertEqual(prepare_error, [])
-        self.assertEqual(rollback_error, [])
+        self.assertEqual(len(rollback_error), 1)
+        self.assertIn("not bound to the current Control config", str(rollback_error[0]))
+        rollback_prelaunch(self.config, request.task_id)
         self.assertEqual(CreationJournalStore(self.config).read(request.task_id)["phase"], "rolled-back")
 
     def test_dirty_source_tracked_state_is_byte_and_revision_stable(self) -> None:

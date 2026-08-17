@@ -421,13 +421,23 @@ class TaskStore:
 
     @contextmanager
     def transaction_lock(self, task_id: str) -> Iterator[None]:
-        """Hold the durable registry and production task lock across a transaction."""
+        """Hold one durable task lock without monopolizing the registry flock.
+
+        The lock lives beside the registry records so processes with different
+        XDG runtime roots still serialize the same task.  Record reads and
+        writes nest this lock before taking the short-lived registry flock;
+        keeping that order prevents a task/registry lock inversion.
+        """
         canonical_uuid(task_id)
-        with self._directories(create_state=True) as (tasks_fd, locks_fd):
-            assert tasks_fd is not None and locks_fd is not None
-            with self._registry_locked(tasks_fd):
-                with self._locked(task_id, locks_fd):
-                    yield
+        with _directory_fd(
+            self.config.tasks_dir,
+            create=True,
+            managed_start=self._tasks_managed_start,
+        ) as tasks_fd:
+            if tasks_fd is None:
+                raise StoreError("failed to create Control task registry")
+            with _task_lock(tasks_fd, task_id):
+                yield
 
     @staticmethod
     def _time(value: str) -> datetime:
@@ -511,84 +521,85 @@ class TaskStore:
 
         with self._directories(create_state=True) as (tasks_fd, locks_fd):
             assert tasks_fd is not None and locks_fd is not None
-            with self._registry_locked(tasks_fd):
-                with self._locked(task_id, locks_fd):
-                    current = self._read_if_exists(tasks_fd, task_id)
-                    if current is None:
-                        if expected_digest is not None:
-                            raise StoreError("expected digest supplied for a new task record")
-                    else:
-                        if expected_digest is None:
-                            raise StoreError("expected digest is required to update an existing task record")
-                        if (not isinstance(expected_digest, str) or
-                                re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None):
-                            raise StoreError("expected digest must be 64 lowercase hexadecimal characters")
-                        if not hmac.compare_digest(task_digest(current), expected_digest):
-                            raise StoreError("task digest mismatch; reload the current record")
-                        self._validate_update(current, validated)
-                    temporary_name = f".{record_name}.tmp.{secrets.token_hex(8)}"
-                    fd = -1
-                    replaced = False
-                    try:
-                        fd = os.open(
-                            temporary_name,
-                            os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC,
-                            0o600,
-                            dir_fd=tasks_fd,
-                        )
-                        os.fchmod(fd, 0o600)
-                        written = 0
-                        while written < len(raw):
-                            count = os.write(fd, raw[written:])
-                            if count <= 0:
-                                raise StoreError("short write while saving task record")
-                            written += count
-                        os.fsync(fd)
-                        os.close(fd)
+            with _task_lock(tasks_fd, task_id):
+                with self._registry_locked(tasks_fd):
+                    with self._locked(task_id, locks_fd):
+                        current = self._read_if_exists(tasks_fd, task_id)
+                        if current is None:
+                            if expected_digest is not None:
+                                raise StoreError("expected digest supplied for a new task record")
+                        else:
+                            if expected_digest is None:
+                                raise StoreError("expected digest is required to update an existing task record")
+                            if (not isinstance(expected_digest, str) or
+                                    re.fullmatch(r"[0-9a-f]{64}", expected_digest) is None):
+                                raise StoreError("expected digest must be 64 lowercase hexadecimal characters")
+                            if not hmac.compare_digest(task_digest(current), expected_digest):
+                                raise StoreError("task digest mismatch; reload the current record")
+                            self._validate_update(current, validated)
+                        temporary_name = f".{record_name}.tmp.{secrets.token_hex(8)}"
                         fd = -1
+                        replaced = False
                         try:
-                            os.replace(
+                            fd = os.open(
                                 temporary_name,
-                                record_name,
-                                src_dir_fd=tasks_fd,
-                                dst_dir_fd=tasks_fd,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL | _NOFOLLOW | _CLOEXEC,
+                                0o600,
+                                dir_fd=tasks_fd,
                             )
-                        except OSError as exc:
-                            raise StoreError(
-                                f"atomic replace failed for {self.config.tasks_dir / record_name}: {exc}"
-                            ) from exc
-                        replaced = True
-                        try:
-                            os.fsync(tasks_fd)
-                        except OSError as exc:
-                            raise StoreCommittedError(
-                                "task record is visible but durability is indeterminate: "
-                                f"{exc}"
-                            ) from exc
-                    except (StoreError, StoreCommittedError):
-                        raise
-                    except OSError as exc:
-                        phase = "after atomic replace" if replaced else "before atomic replace"
-                        if replaced:
-                            raise StoreCommittedError(
-                                "task record is visible but durability is indeterminate: "
-                                f"{exc}"
-                            ) from exc
-                        raise StoreError(f"task save failed {phase}: {exc}") from exc
-                    finally:
-                        if fd >= 0:
+                            os.fchmod(fd, 0o600)
+                            written = 0
+                            while written < len(raw):
+                                count = os.write(fd, raw[written:])
+                                if count <= 0:
+                                    raise StoreError("short write while saving task record")
+                                written += count
+                            os.fsync(fd)
+                            os.close(fd)
+                            fd = -1
                             try:
-                                os.close(fd)
-                            except OSError:
+                                os.replace(
+                                    temporary_name,
+                                    record_name,
+                                    src_dir_fd=tasks_fd,
+                                    dst_dir_fd=tasks_fd,
+                                )
+                            except OSError as exc:
+                                raise StoreError(
+                                    f"atomic replace failed for {self.config.tasks_dir / record_name}: {exc}"
+                                ) from exc
+                            replaced = True
+                            try:
+                                os.fsync(tasks_fd)
+                            except OSError as exc:
+                                raise StoreCommittedError(
+                                    "task record is visible but durability is indeterminate: "
+                                    f"{exc}"
+                                ) from exc
+                        except (StoreError, StoreCommittedError):
+                            raise
+                        except OSError as exc:
+                            phase = "after atomic replace" if replaced else "before atomic replace"
+                            if replaced:
+                                raise StoreCommittedError(
+                                    "task record is visible but durability is indeterminate: "
+                                    f"{exc}"
+                                ) from exc
+                            raise StoreError(f"task save failed {phase}: {exc}") from exc
+                        finally:
+                            if fd >= 0:
+                                try:
+                                    os.close(fd)
+                                except OSError:
+                                    pass
+                            try:
+                                os.unlink(temporary_name, dir_fd=tasks_fd)
+                            except FileNotFoundError:
                                 pass
-                        try:
-                            os.unlink(temporary_name, dir_fd=tasks_fd)
-                        except FileNotFoundError:
-                            pass
-                        except OSError:
-                            # The primary operation already determines success or
-                            # failure; cleanup cannot safely alter that outcome.
-                            pass
+                            except OSError:
+                                # The primary operation already determines success or
+                                # failure; cleanup cannot safely alter that outcome.
+                                pass
         return self.config.tasks_dir / record_name
 
     def _read_unlocked(self, tasks_fd: int, task_id: str) -> dict[str, Any]:
@@ -663,9 +674,10 @@ class TaskStore:
             ) as locks_fd:
                 if locks_fd is None:
                     raise StoreError("failed to create Control lock directory")
-                with self._registry_locked(tasks_fd):
-                    with self._locked(task_id, locks_fd):
-                        return self._read_unlocked(tasks_fd, task_id)
+                with _task_lock(tasks_fd, task_id):
+                    with self._registry_locked(tasks_fd):
+                        with self._locked(task_id, locks_fd):
+                            return self._read_unlocked(tasks_fd, task_id)
 
     def peek(self, task_id: str) -> dict[str, Any]:
         """Read one atomic task snapshot without acquiring registry or task locks."""
@@ -687,8 +699,12 @@ class TaskStore:
 
     def list(self) -> list[dict[str, Any]]:
         self.skipped = []
-        with self._directories(create_state=False) as (tasks_fd, locks_fd):
-            if tasks_fd is None or locks_fd is None:
+        with _directory_fd(
+            self.config.tasks_dir,
+            create=False,
+            managed_start=self._tasks_managed_start,
+        ) as tasks_fd:
+            if tasks_fd is None:
                 return []
             with self._registry_locked(tasks_fd):
                 try:
@@ -706,8 +722,7 @@ class TaskStore:
                         self.skipped.append({"name": name, "reason": str(exc)})
                         continue
                     try:
-                        with self._locked(task_id, locks_fd):
-                            records.append(self._read_unlocked(tasks_fd, task_id))
+                        records.append(self._read_unlocked(tasks_fd, task_id))
                     except (StoreError, ModelError, OSError) as exc:
                         self.skipped.append({"name": name, "reason": str(exc)})
                 return records

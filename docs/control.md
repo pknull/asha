@@ -202,6 +202,7 @@ Defaults follow XDG paths:
 
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.json
+${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.lock
 ${XDG_DATA_HOME:-~/.local/share}/asha/workspaces/<repo-key>/<task-slug>/
 ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/
 ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/events/<run-id>.json
@@ -211,6 +212,10 @@ ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/events/<run-id>.json
 default. It cannot be `/`, `$HOME`, the source, below the source, or an ancestor
 of the source. Existing path components must be canonical directories without
 symlink aliases or unsafe writable ancestry.
+
+If the `/tmp/user-$UID` runtime fallback already exists but fails those safety
+checks, Control refuses it and directs the operator to set `XDG_RUNTIME_DIR` to
+an existing private directory.
 
 Writable ancestry is judged by mode, not ownership: a group- or other-writable
 non-sticky directory anywhere on a Control path (state, runtime, workspace
@@ -303,9 +308,11 @@ once as transient display text and discarded.
 
 PR mode performs and reports exactly these repository mutations:
 
-1. `git -C GIT_ROOT fetch origin
-   pull/N/head:refs/remotes/origin/asha-control-pr-N` adds the fetched objects
-   and updates one controller-owned remote-tracking ref.
+1. `git -C GIT_ROOT fetch REMOTE
+   pull/N/head:refs/remotes/REMOTE/asha-control-pr-N` adds the fetched objects
+   and updates one controller-owned remote-tracking ref. `REMOTE` is the sole
+   configured remote, or the configured remote whose URL matches the viewed
+   pull-request repository when more than one exists.
 2. `jj -R SOURCE --ignore-working-copy git import` records the Git import in
    the jj operation log and surfaces the head as an untracked *remote*
    bookmark.

@@ -265,6 +265,9 @@ class StartGuardOrderingTests(unittest.TestCase):
                         "isCrossRepository": False,
                     }
 
+                def pr_remote(self, git_root, url, number):
+                    return "origin"
+
                 def fetch_pr_head(self, git_root, remote, number):
                     events.append("fetch")
                     return ({

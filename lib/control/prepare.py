@@ -1060,6 +1060,11 @@ def prepare_task_workspace(
     journals = CreationJournalStore(config)
     tasks = TaskStore(config)
     claimed = False
+    repository_lock_id = (
+        f"{repository_identity[5:13]}-{repository_identity[13:17]}-"
+        f"{repository_identity[17:21]}-{repository_identity[21:25]}-"
+        f"{repository_identity[25:37]}"
+    )
 
     def phase(next_phase: str) -> None:
         _save_phase(journals, journal, next_phase, failure_injector)
@@ -1068,7 +1073,10 @@ def prepare_task_workspace(
             failure_injector(next_phase)
 
     try:
-        with tasks.transaction_lock(task_id):
+        # Task identity serializes recovery; repository identity separately
+        # serializes jj registration and shared workspace-parent creation.
+        # Neither lock holds the registry directory flock during those steps.
+        with tasks.transaction_lock(task_id), tasks.transaction_lock(repository_lock_id):
             _validate_layout(config, source, destination, repo_key, slug)
             if destination.exists() or destination.is_symlink():
                 raise PreparationError("workspace destination already exists; no task was created")
