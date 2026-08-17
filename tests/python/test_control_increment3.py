@@ -143,13 +143,15 @@ class TmuxAdapterTests(unittest.TestCase):
 
     def test_popup_argv_is_plain_tokens_with_socket_on_both_tmux_calls(self) -> None:
         argv = TmuxAdapter(socket="asha-control").popup_argv(
-            session="asha-task-12345678", width="90%", height="85%",
+            client="/dev/pts/7", session="asha-task-12345678",
+            width="90%", height="85%",
         )
 
         self.assertEqual(
             argv,
             [
-                "tmux", "-L", "asha-control", "display-popup", "-E",
+                "tmux", "-L", "asha-control", "display-popup",
+                "-c", "/dev/pts/7", "-E",
                 "-w", "90%", "-h", "85%", "--",
                 "tmux", "-L", "asha-control", "attach-session", "-t",
                 "asha-task-12345678",
@@ -1262,13 +1264,17 @@ class Increment3CliGrammarTests(unittest.TestCase):
         adapter = mock.Mock()
         adapter.executable = "tmux"
         adapter.socket = None
+        adapter.caller_client.return_value = "/dev/pts/7"
         adapter.popup_argv.return_value = ["tmux", "display-popup"]
         stderr = io.StringIO()
         with mock.patch(
             "lib.control.cli.subprocess.run",
             return_value=subprocess.CompletedProcess(["tmux"], 1),
         ), contextlib.redirect_stderr(stderr):
-            _run_popup(adapter, load_config(self.env), "asha-task-12345678", "do-work")
+            _run_popup(
+                adapter, load_config(self.env), "asha-task-12345678", "do-work",
+                {"TMUX_PANE": "%7"},
+            )
         self.assertEqual(
             stderr.getvalue(),
             "asha control: popup closed with status 1; task do-work is still "
@@ -1637,7 +1643,10 @@ class RealTmuxLaunchTests(unittest.TestCase):
         derived = reconcile_task(
             result["task"], LiveAdapters(tmux=self.adapter),
         )
-        self.assertIn(derived["state"], {"stale", "exited"})
+        # SIGKILL leaves tmux with pane_dead=1 and pane_dead_signal=9; the
+        # soak fix reconciles that to the terminal `failed`, never `working`.
+        self.assertEqual(derived["state"], "failed")
+        self.assertIsNone(derived["blocker"])
         self.assertNotEqual(derived["state"], "working")
 
     def test_colliding_foreign_session_is_refused_and_left_running(self) -> None:

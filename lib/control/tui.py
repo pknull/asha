@@ -570,7 +570,14 @@ def _repaint_after_suspend(stdscr) -> None:
     stdscr.refresh()
 
 
-def _open_popup(stdscr, curses_module, config: ControlConfig, row: TuiRow, run_id: str | None) -> None:
+def _open_popup(
+    stdscr,
+    curses_module,
+    config: ControlConfig,
+    row: TuiRow,
+    run_id: str | None,
+    env: Mapping[str, str],
+) -> str | None:
     adapter = _adapter_for_task(row.task)
     target = view.attach_target(row.task, run_id, adapter=adapter)
     adapter.select_target(target.session, target.window, target.pane_id)
@@ -578,7 +585,9 @@ def _open_popup(stdscr, curses_module, config: ControlConfig, row: TuiRow, run_i
     try:
         # Imported lazily to avoid a module cycle while the CLI routes into this driver.
         from .cli import _run_popup
-        _run_popup(adapter, config, target.session, row.task["slug"])
+        return _run_popup(
+            adapter, config, target.session, row.task["slug"], env,
+        )
     finally:
         _repaint_after_suspend(stdscr)
 
@@ -672,8 +681,12 @@ def _execute_intent(
         model.message = "no task is selected"
         return True
     if intent.kind is IntentKind.OPEN:
-        _open_popup(stdscr, curses_module, config, row, intent.run_id)
-        model.message = "popup closed; task resources were left untouched"
+        refusal = _open_popup(
+            stdscr, curses_module, config, row, intent.run_id, env,
+        )
+        model.message = (
+            refusal or "popup closed; task resources were left untouched"
+        )
         return True
     if intent.kind is IntentKind.RECONCILE:
         model.replace_row(_read_row(config, store, journals, row.task, jj))

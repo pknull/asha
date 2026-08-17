@@ -311,9 +311,24 @@ def _attach_tokens(adapter: TmuxAdapter, session: str) -> list[str]:
     return [adapter.executable, *socket, "attach-session", "-t", session]
 
 
-def _run_popup(adapter: TmuxAdapter, config, session: str, slug: str) -> None:
+def _run_popup(
+    adapter: TmuxAdapter,
+    config,
+    session: str,
+    slug: str,
+    env: Mapping[str, str],
+) -> str | None:
+    pane = env.get("TMUX_PANE")
+    client = None if not pane else adapter.caller_client(pane)
+    if client is None:
+        attach = shlex.join(_attach_tokens(adapter, session))
+        return (
+            "asha control: no tmux client is attached to this session; "
+            f"attach with: {attach}"
+        )
     argv = adapter.popup_argv(
-        session=session, width=config.popup_width, height=config.popup_height,
+        client=client, session=session,
+        width=config.popup_width, height=config.popup_height,
     )
     try:
         result = subprocess.run(argv, shell=False, check=False)
@@ -326,6 +341,7 @@ def _run_popup(adapter: TmuxAdapter, config, session: str, slug: str) -> None:
             f"{slug} is still running (attach: {attach})",
             file=sys.stderr,
         )
+    return None
 
 
 def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
@@ -425,7 +441,11 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
     )
     print(f"Run: {run['run_id']}")
     if env.get("TMUX") and not parsed["detach"]:
-        _run_popup(adapter, config, launched["tmux"]["session"], launched["slug"])
+        refusal = _run_popup(
+            adapter, config, launched["tmux"]["session"], launched["slug"], env,
+        )
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
     elif not parsed["detach"]:
         print("Attach: " + attach)
     return 0
@@ -468,7 +488,12 @@ def _attach_command(args: list[str], env: Mapping[str, str]) -> int:
     target = view.attach_target(task, run_id, adapter=adapter)
     adapter.select_target(target.session, target.window, target.pane_id)
     if env.get("TMUX"):
-        _run_popup(adapter, config, task["tmux"]["session"], task["slug"])
+        refusal = _run_popup(
+            adapter, config, task["tmux"]["session"], task["slug"], env,
+        )
+        if refusal is not None:
+            print(refusal, file=sys.stderr)
+            return 2
     else:
         print(shlex.join(_attach_tokens(adapter, task["tmux"]["session"])))
     return 0

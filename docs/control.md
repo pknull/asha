@@ -92,6 +92,8 @@ reconciliation also refuses any run blocker.
 a popup. Closing the popup only detaches that popup client: it does not stop
 the harness, archive the task, or alter the jj workspace or change. The TUI
 then redraws.
+The popup is bound to the client attached to the caller's own tmux session and
+never opens on another client.
 
 The TUI requires stdout attached to a TTY and importable curses support whose
 `setupterm()` check succeeds. If any preflight check fails, `asha control`
@@ -162,6 +164,8 @@ Attach, stop, and other targeted operations require the registry identity and
 tmux options to agree. A foreign session with the same readable name is never
 adopted, signaled, renamed, or killed. `asha control tmux` prints an optional
 format snippet and does not edit the user's tmux configuration.
+Popups are bound to the client attached to the caller's own session and never
+fall back to another tmux client.
 
 ## State and XDG locations
 
