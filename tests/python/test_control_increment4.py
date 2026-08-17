@@ -873,6 +873,23 @@ class Increment4DoctorTests(Increment4Fixture):
         self.assertIn("readable 1/1", delivered["detail"])
         self.assertIn(self.run_id[:8], delivered["detail"])
 
+        # A terminal run whose snapshot was expired at archive is not "missing":
+        # terminal edges and archive delete snapshots by design (issue #54).
+        from lib.control.events import expire_snapshot
+        from lib.control.store import task_digest
+        ended = dict(task)
+        ended["runs"] = [dict(task["runs"][0], state="exited")]
+        ended["lifecycle"] = "ended"
+        TaskStore(self.config).save(ended, expected_digest=task_digest(task))
+        archived = dict(ended, lifecycle="archived")
+        TaskStore(self.config).save(archived, expected_digest=task_digest(ended))
+        expire_snapshot(self.config, self.run_id)
+        expired = run_doctor(
+            self.config, probes={"harness-events": DEFAULT_PROBES["harness-events"]},
+        )["probes"][0]
+        self.assertEqual(expired["outcome"], "match")
+        self.assertIn("no registered Control runs require", expired["detail"])
+
     def test_hook_installation_probe_checks_claimed_native_events_read_only(self) -> None:
         handler = (
             Path(__file__).resolve().parents[2]
