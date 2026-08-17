@@ -550,7 +550,7 @@ class ControlCliTests(unittest.TestCase):
 
     def test_doctor_json_has_versioned_contract(self) -> None:
         rc, stdout, stderr = self.invoke(["task", "doctor", "--json"])
-        self.assertEqual((rc, stderr), (0, ""))
+        self.assertEqual((rc, stderr), (1, ""))
         self.assertEqual(json.loads(stdout)["contract"], "asha.control-doctor.v1")
 
     def test_control_reports_non_tty_fallback_without_launch_fallthrough(self) -> None:

@@ -15,6 +15,7 @@ from unittest import mock
 
 from lib.control.cli import _run_popup, main as control_main
 from lib.control.config import load_config
+from lib.control.jj import RepositoryFacts
 from lib.control.store import TaskStore
 from lib.control.tmux import TmuxAdapter, TmuxError
 from lib.control import tui as tui_module
@@ -212,7 +213,16 @@ class PopupClientCliTests(unittest.TestCase):
         adapter = self.no_client_adapter()
         result = {"task": self.task, "run": self.task["runs"][0]}
 
+        # The source repository is a fixture path: stub the jj preflight, the
+        # colocated-sync guard, and the ref import that a real start performs.
+        jj = mock.Mock()
+        jj.preflight.return_value = RepositoryFacts(
+            root=self.root / "source", git_root=self.root / "source" / ".git",
+        )
+        jj.import_git.return_value = ()
         with mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"), \
+                mock.patch("lib.control.cli.JjAdapter", return_value=jj), \
+                mock.patch("lib.control.cli._guard_colocated_sync"), \
                 mock.patch("lib.control.cli.prepare_task_workspace", return_value=self.task), \
                 mock.patch("lib.control.cli.launch_task", return_value=result), \
                 mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/codex"), \

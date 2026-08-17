@@ -89,8 +89,12 @@ allowed_only() { # allowed-egrep-pattern  since-line-count
 invoked_lines() { [[ -e "$WORK/invoked" ]] && wc -l < "$WORK/invoked" || echo 0; }
 
 doctor_before="$(invoked_lines)"
+set +e
 doctor="$(bash "$ROOT/bin/asha" task doctor --json)"
-python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == "asha.control-doctor.v1"; assert any(p["name"] == "tmux" and p["outcome"] == "unavailable" for p in d["probes"])' <<<"$doctor"
+doctor_rc=$?
+set -e
+[[ $doctor_rc -eq 1 ]]
+python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == "asha.control-doctor.v1"; assert d["ok"] is False; assert any(p["name"] == "tmux" and p["outcome"] == "unavailable" for p in d["probes"])' <<<"$doctor"
 # doctor probes capabilities, so tmux and jj are expected and correct. git is
 # not a capability Control probes and must never be invoked.
 allowed_only '^(tmux|jj|)$' "$doctor_before"
