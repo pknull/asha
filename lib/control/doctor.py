@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Any
 
 from .events import EventError, read_snapshot
-from .jj import JjAdapter, JjError
+from .jj import JjAdapter, JjError, colocated_sync_remediation
 from .process import capture_bytes
 from .store import StoreError, TaskStore
 from .tmux import TmuxAdapter, TmuxError
@@ -460,9 +460,11 @@ def _repository_probe(config) -> Probe:
                     safe_root = _safe_detail(git_root_text)
                     return Probe(
                         "repository", "missing",
-                        f"{safe_root} is a Git repository but is not jj-colocated; "
-                        f"run `jj git init --colocate {safe_root}` so Control can manage it "
-                        "(creates .jj/ only; revert by removing .jj/)",
+                        _safe_detail(
+                            f"{safe_root} is a Git repository but is not jj-colocated; "
+                            f"run `jj git init --colocate {safe_root}` so Control can manage it "
+                            "(creates .jj/ only; revert by removing .jj/)"
+                        ),
                     )
         return Probe(
             "repository", "unavailable",
@@ -471,21 +473,32 @@ def _repository_probe(config) -> Probe:
         )
     try:
         facts = adapter.preflight(root)
+        working_copy_parent = adapter.working_copy_parent(root)
+        git_head = adapter.git_head(facts.git_root)
     except (JjError, ValueError) as exc:
         return Probe("repository", "mismatch", f"jj repository is unusable: {_safe_detail(str(exc))}")
+    remediation = colocated_sync_remediation(root, git_head, working_copy_parent)
+    if remediation is not None:
+        return Probe(
+            "repository", "mismatch", remediation,
+        )
     initialized = (root / ".asha" / "config.json").is_file() and (
         root / "Memory" / "activeContext.md"
     ).is_file()
     if not initialized:
         return Probe(
             "repository", "missing",
-            f"{_safe_detail(str(root))} is jj-managed with a Git backend but is not "
-            "Asha Memory v2 initialized; task creation will refuse",
+            _safe_detail(
+                f"{root} is jj-managed with a Git backend but is not "
+                "Asha Memory v2 initialized; task creation will refuse"
+            ),
         )
     return Probe(
         "repository", "match",
-        f"{_safe_detail(str(root))} is jj-managed, Git-backed at "
-        f"{_safe_detail(str(facts.git_root))}, and Memory v2 initialized",
+        _safe_detail(
+            f"{root} is jj-managed, Git-backed at {facts.git_root}, "
+            "and Memory v2 initialized"
+        ),
     )
 
 

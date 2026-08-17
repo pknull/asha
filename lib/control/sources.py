@@ -1,4 +1,4 @@
-"""Read-only GitHub metadata and bounded PR-head import adapters."""
+"""Read-only GitHub metadata and bounded PR-head fetch adapters."""
 
 from __future__ import annotations
 
@@ -209,15 +209,3 @@ class GithubAdapter:
                 "ref": controller_ref,
             },
         )
-
-    def import_into_jj(self, source: Path) -> tuple[dict[str, str], ...]:
-        repository = self._canonical_directory(source, "jj source repository")
-        self._run_bytes(
-            "jj",
-            ["-R", str(repository), "--ignore-working-copy", "git", "import"],
-        )
-        return ({
-            "kind": "jj-operation",
-            "detail": "recorded a jj operation-log entry for git import",
-            "operation": "git import",
-        },)

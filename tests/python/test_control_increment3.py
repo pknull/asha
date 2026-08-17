@@ -32,7 +32,7 @@ from lib.control.harness import (
     stop_signal_allowed,
     verify_process,
 )
-from lib.control.jj import JjAdapter, WorkspaceIdentity
+from lib.control.jj import JjAdapter, RepositoryFacts, WorkspaceIdentity
 from lib.control.launch import (
     LaunchError, archive_task, launch_task, recover_task, stop_task,
     unarchive_task,
@@ -1129,6 +1129,24 @@ class Increment3CliGrammarTests(unittest.TestCase):
             },
         }
 
+    def fake_start_jj(self):
+        source = self.root / "source"
+
+        class FakeJj:
+            def preflight(inner, requested):
+                return RepositoryFacts(root=source, git_root=source)
+
+            def working_copy_parent(inner, requested):
+                return "a" * 40
+
+            def git_head(inner, requested):
+                return "a" * 40
+
+            def import_git(inner, requested):
+                return ()
+
+        return FakeJj()
+
     def test_mutual_exclusion_and_missing_goal(self) -> None:
         cases = (
             (["task", "start", "--harness", "codex", "--agent", "claude", "--goal", "x"],
@@ -1208,11 +1226,12 @@ class Increment3CliGrammarTests(unittest.TestCase):
 
         patches = (
             mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"),
+            mock.patch("lib.control.cli.JjAdapter", return_value=self.fake_start_jj()),
             mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare),
             mock.patch("lib.control.cli.launch_task", side_effect=launch),
             mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"),
         )
-        with patches[0], patches[1], patches[2], patches[3]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4]:
             status, stdout, stderr = self.invoke([
                 "task", "start", "--goal", "Do work", "--detach", "--json",
             ])
@@ -1227,6 +1246,7 @@ class Increment3CliGrammarTests(unittest.TestCase):
 
         captured.clear()
         with mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"), \
+                mock.patch("lib.control.cli.JjAdapter", return_value=self.fake_start_jj()), \
                 mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
                 mock.patch("lib.control.cli.launch_task", side_effect=launch), \
                 mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"):
@@ -1248,6 +1268,7 @@ class Increment3CliGrammarTests(unittest.TestCase):
         env = {**self.env, "TMUX": "/tmp/tmux/default,1,0"}
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"), \
+                mock.patch("lib.control.cli.JjAdapter", return_value=self.fake_start_jj()), \
                 mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
                 mock.patch("lib.control.cli.launch_task", return_value=result), \
                 mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"), \
