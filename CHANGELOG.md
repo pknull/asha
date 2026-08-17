@@ -37,7 +37,12 @@ the active instruction surface loses no release detail.
   the task lock, no record extension).
 - Documented the TUI surface, and froze the Control v1 contract set
   orchestration binds to in `docs/control-contracts.md` (runway Phase 4).
-- Closed cold-review issues #56, #59, and #61 as soak work.
+- Closed cold-review issues #52, #53, #55, #56, #57, #59, and #61 as soak
+  work: event snapshots are authorized against the owned task record through
+  a lock-free store peek; the namespace predicate now judges writable
+  ancestry by mode (pre-existing `0775` task workspaces need one
+  `chmod g-w,o-w`, printed by every refusal); explicit repo/workspace saves
+  bypass Control marker discovery; doctor no longer reports false negatives.
 
 ### Asha Control — Persistent jj and tmux task supervision (2026-08-15)
 

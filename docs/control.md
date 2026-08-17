@@ -205,6 +205,20 @@ default. It cannot be `/`, `$HOME`, the source, below the source, or an ancestor
 of the source. Existing path components must be canonical directories without
 symlink aliases or unsafe writable ancestry.
 
+Writable ancestry is judged by mode, not ownership: a group- or other-writable
+non-sticky directory anywhere on a Control path (state, runtime, workspace
+root, task workspace, or source repository root) is refused, and every
+component from the workspace root down must be owned by the effective user
+with mode `0700`. Control creates its own directories that way and never
+changes the mode of a directory it did not create; each refusal names the
+path and the exact remediation (`chmod g-w,o-w <path>`). Task workspaces
+created before 2026-08-17 may carry the umask mode `0775` and are skipped by
+`task list` until remediated:
+
+```text
+chmod g-w,o-w "${XDG_DATA_HOME:-~/.local/share}"/asha/workspaces/*/*
+```
+
 Task records use the `asha.control-task.v1` schema:
 
 | Object | Fields |

@@ -23,6 +23,7 @@ from .config import (
     ControlConfig,
     reject_symlink_components,
     reject_unsafe_writable_ancestors,
+    namespace_remediation,
     namespace_safety_step,
     is_canonical_absolute_path,
     require_existing_directory_components,
@@ -167,7 +168,10 @@ def _directory_fd(
                     metadata, os.geteuid(), private_boundary
                 )
                 if problem:
-                    raise StoreError(f"{problem} rejected in Control path: {current}")
+                    raise StoreError(
+                        f"{problem} rejected in Control path: {current}"
+                        f"{namespace_remediation(problem, current)}"
+                    )
                 if index >= managed_start:
                     if metadata.st_uid != os.geteuid():
                         raise StoreError(
