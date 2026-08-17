@@ -21,6 +21,7 @@ from unittest import mock
 from lib.control.cli import _parse_start, _run_popup, _start_command, main as control_main
 from lib.control.config import load_config
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
+from lib.control.events import read_snapshot, write_snapshot
 from lib.control.harness import (
     HarnessError,
     boot_id,
@@ -843,14 +844,32 @@ class LaunchFixtureTests(unittest.TestCase):
         self.assertFalse(adapter.killed)
 
         workspace = Path(running["jj"]["workspace_path"])
+        run = running["runs"][0]
+        write_snapshot(
+            self.config,
+            task_id=running["task_id"],
+            run_id=run["run_id"],
+            event="prompt-submitted",
+            harness=run["harness"],
+            harness_session_id=run["harness_session_id"],
+            exit_status=None,
+            pane_id=run["pane_id"],
+        )
+        terminal_adapters = DerivedRunAdapters("exited")
+        presentation = mock.Mock()
         archived = archive_task(
             self.config, running, tasks=self.tasks,
-            adapters=DerivedRunAdapters("exited"), journals=self.journals,
+            adapters=terminal_adapters, journals=self.journals,
+            presentation=presentation,
         )
         self.assertEqual(archived["lifecycle"], "archived")
         self.assertEqual(archived["runs"][0]["state"], "exited")
         self.assertIn("process=missing", archived["runs"][0]["evidence"])
         self.assertEqual(self.tasks.read(task["task_id"]), archived)
+        self.assertIsNone(read_snapshot(self.config, run["run_id"]))
+        presentation.set_server_summary.assert_called_once_with(
+            "asha last-event-only: no snapshots", deadline_seconds=5,
+        )
         self.assertTrue(workspace.exists())
         ended = unarchive_task(self.config, archived, tasks=self.tasks)
         self.assertEqual(ended["lifecycle"], "ended")

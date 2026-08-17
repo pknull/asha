@@ -16,7 +16,13 @@ from typing import Mapping, Sequence, Any
 
 from .config import ConfigError, is_canonical_absolute_path, load_config
 from .doctor import run_doctor
-from .events import EventError, read_snapshot, summarize, write_snapshot
+from .events import (
+    EventError,
+    expire_snapshot,
+    publish_server_summary,
+    read_snapshot,
+    write_snapshot,
+)
 from .jj import JjAdapter, RepositoryFacts, colocated_sync_remediation
 from .launch import (
     LaunchError, archive_task, launch_task, recover_task, stop_task,
@@ -131,13 +137,20 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
             raise EventError(
                 "ASHA_CONTROL_STATE_DIR does not match the configured task registry"
             )
-        task = TaskStore(config).peek(task_id)
+        store = TaskStore(config)
+        task = store.peek(task_id)
         run = next(
             (candidate for candidate in task["runs"] if candidate["run_id"] == run_id),
             None,
         )
         if run is None:
             raise EventError("submitted run does not belong to the submitted task")
+        if task["lifecycle"] in {"ended", "archived"} or run["state"] in {
+            "exited", "failed",
+        }:
+            expire_snapshot(config, run_id)
+            publish_server_summary(config, TmuxAdapter())
+            return 0
         pane_id = parsed["pane_id"]
         if pane_id is None:
             raise EventError("control event requires --pane-id <pane-id>")
@@ -159,6 +172,23 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
             exit_status=exit_status,
             pane_id=pane_id,
         )
+        # Event ingestion deliberately does not take the registry lock. Close
+        # the race with terminal reconciliation/archive by re-reading after the
+        # atomic replace and removing a late write against a terminal record.
+        try:
+            current = store.peek(task_id)
+        except StoreError:
+            expire_snapshot(config, run_id)
+            raise
+        current_run = next(
+            (candidate for candidate in current["runs"] if candidate["run_id"] == run_id),
+            None,
+        )
+        if (current_run is None or current["lifecycle"] in {"ended", "archived"} or
+                current_run["state"] in {"exited", "failed"}):
+            expire_snapshot(config, run_id)
+            publish_server_summary(config, TmuxAdapter())
+            return 0
         _publish_tmux_presentation(config, run_id, pane_id, task_id)
         if parsed["json"]:
             snapshot = read_snapshot(config, run_id)
@@ -206,7 +236,7 @@ def _publish_tmux_presentation(
                 adapter.set_session_option(
                     session, "@asha_state", state, deadline_seconds=5,
                 )
-        adapter.set_server_summary(summarize(config), deadline_seconds=5)
+        publish_server_summary(config, adapter)
     except (EventError, TmuxError, OSError, ValueError):
         return
 
@@ -690,9 +720,12 @@ def _archive_command(args: list[str], env: Mapping[str, str]) -> int:
     journals = CreationJournalStore(config)
     jj = JjAdapter()
     task = store.resolve(args[0])
+    socket = task["tmux"]["socket"]
+    presentation = TmuxAdapter(socket=None if socket == "default" else socket)
     archived = archive_task(
         config, task, tasks=store,
-        adapters=LiveAdapters(config=config, jj=jj), journals=journals, jj=jj,
+        adapters=LiveAdapters(config=config, tmux=presentation, jj=jj),
+        journals=journals, jj=jj, presentation=presentation,
     )
     print(f"Archived task {archived['slug']} ({archived['task_id']}).")
     return 0
@@ -777,6 +810,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         for listed in listed_records:
             task, reconciliation = view.locked_reconciliation(
                 store, journals, listed["task_id"], adapters, jj,
+                presentation=adapters.tmux_adapter,
             )
             tasks.append(view.task_summary(task, reconciliation))
         payload = {"contract": "asha.control-task-list.v1", "tasks": tasks}
@@ -798,6 +832,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         resolved = store.resolve(tail[0])
         task, reconciliation = view.locked_reconciliation(
             store, journals, resolved["task_id"], adapters, jj,
+            presentation=adapters.tmux_adapter,
         )
         payload = {
             "contract": "asha.control-task-show.v1",
@@ -852,7 +887,10 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         else:
             selected = store.list()
         pairs = [
-            view.locked_reconciliation(store, journals, task["task_id"], adapters, jj)
+            view.locked_reconciliation(
+                store, journals, task["task_id"], adapters, jj,
+                presentation=adapters.tmux_adapter,
+            )
             for task in selected
         ]
         tasks = [task for task, _ in pairs]

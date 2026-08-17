@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from . import harness as harness_api
 from .config import ControlConfig
+from .events import expire_terminal_snapshots, publish_server_summary
 from .jj import JjAdapter
 from .model import RUN_CONTRACT, canonical_uuid, new_uuid
 from .prepare import PreparationError, rollback_prelaunch
@@ -119,6 +120,35 @@ def _reconciled_evidence(run: dict[str, Any]) -> str:
         for item in evidence
     )
     return (summary or f"reconciled terminal state: {run['state']}")[:500]
+
+
+def persist_terminal_reconciliation(
+    task: dict[str, Any], reconciliation: dict[str, Any], task_store: TaskStore,
+) -> dict[str, Any]:
+    """Persist an entirely terminal reconciliation before ephemeral expiry."""
+    runs = reconciliation["runs"]
+    if (not runs or
+            any(run["state"] not in {"exited", "failed"} or
+                run["blocker"] is not None for run in runs)):
+        return task
+    if task["lifecycle"] not in {"running", "failed"}:
+        return task
+    if all(run["state"] in {"exited", "failed"} for run in task["runs"]):
+        return task
+
+    changed = copy.deepcopy(task)
+    timestamp = _now()
+    derived = {run["run_id"]: run for run in runs}
+    for run in changed["runs"]:
+        reconciled = derived[run["run_id"]]
+        run["state"] = reconciled["state"]
+        run["evidence"] = _reconciled_evidence(reconciled)
+        run["evidence_at"] = timestamp
+    if changed["lifecycle"] == "running":
+        changed["lifecycle"] = "ended"
+    changed["updated_at"] = timestamp
+    task_store.save(changed, expected_digest=task_digest(task))
+    return changed
 
 
 def _mark_prelaunch_preserved(
@@ -466,6 +496,7 @@ def archive_task(
     adapters: Adapters | None = None,
     journals: CreationJournalStore | None = None,
     jj: JjAdapter | None = None,
+    presentation: TmuxAdapter | None = None,
 ) -> dict[str, Any]:
     """Persist terminal evidence, then archive without mutating external state."""
     task_id = canonical_uuid(task["task_id"])
@@ -498,23 +529,16 @@ def archive_task(
                         "only a task whose runs have all exited can be archived; "
                         f"run {run['run_id']} is {run['state']}"
                     )
-            ended = copy.deepcopy(current)
-            timestamp = _now()
-            derived = {run["run_id"]: run for run in snapshot["runs"]}
-            for run in ended["runs"]:
-                reconciled = derived[run["run_id"]]
-                run["state"] = reconciled["state"]
-                run["evidence"] = _reconciled_evidence(reconciled)
-                run["evidence_at"] = timestamp
-            ended["lifecycle"] = "ended"
-            ended["updated_at"] = timestamp
-            task_store.save(ended, expected_digest=previous_digest)
+            ended = persist_terminal_reconciliation(current, snapshot, task_store)
             previous_digest = task_digest(ended)
 
         archived = copy.deepcopy(ended)
         archived["lifecycle"] = "archived"
         archived["updated_at"] = _now()
         task_store.save(archived, expected_digest=previous_digest)
+        expire_terminal_snapshots(config, archived["runs"])
+        if presentation is not None:
+            publish_server_summary(config, presentation)
         return archived
 
 

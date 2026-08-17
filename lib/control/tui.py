@@ -469,7 +469,7 @@ def _read_row(
     adapter = _adapter_for_task(listed)
     live = LiveAdapters(config=config, tmux=adapter, jj=jj)
     task, reconciliation = view.locked_reconciliation(
-        store, journals, listed["task_id"], live, jj,
+        store, journals, listed["task_id"], live, jj, presentation=adapter,
     )
     return TuiRow.from_records(task, reconciliation)
 
@@ -689,12 +689,13 @@ def _execute_intent(
         if answer != "yes":
             model.message = "archive cancelled"
             return True
+        presentation = _adapter_for_task(row.task)
         archive_task(
             config, row.task, tasks=store,
             adapters=LiveAdapters(
-                config=config, tmux=_adapter_for_task(row.task), jj=jj,
+                config=config, tmux=presentation, jj=jj,
             ),
-            journals=journals, jj=jj,
+            journals=journals, jj=jj, presentation=presentation,
         )
         model.replace_rows(_load_rows(config, store, journals, jj))
         model.message = "task archived; workspace and change preserved"
