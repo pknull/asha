@@ -94,6 +94,8 @@ SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and SessionEnd handlers
 The installer renders source hooks and execution rules into Codex-native
 configuration. Custom agents and commands are rendered separately because
 Claude command metadata is not portable to Codex.
+Control-managed launches trust the workspace root through a per-launch
+override; they never modify Codex's persisted trust store.
 
 ### GitHub Copilot CLI
 

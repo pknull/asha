@@ -49,6 +49,11 @@ outside tmux it prints the exact attach command. `--json` keeps stdout to one
 versioned machine-readable result, implies `--detach`, and includes the exact
 attach command in its payload.
 
+Control-managed Codex launches pass a per-launch trust override for the
+workspace root so a new task does not stop at Codex's directory-trust prompt.
+The override applies only to that process and never edits the Codex trust store
+or `~/.codex/config.toml`.
+
 Exit codes: 0 success, 2 usage/refusal, 1 internal error, 130 interrupted.
 
 A goal is mandatory in every mode and is the only instruction authority.

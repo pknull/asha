@@ -214,7 +214,19 @@ launch() {
       exec "$executable" "$@"
       ;;
     codex)
-      local base instr op_merge op_tmp
+      local base instr op_merge op_tmp trust_root escaped_root
+      local -a trust_args=()
+      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" ]]; then
+        trust_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
+          || trust_root="$PWD"
+        if [[ "$trust_root" =~ [[:cntrl:]] ]]; then
+          info "warn: Codex trust override skipped: workspace root contains TOML-unsafe control characters"
+        else
+          escaped_root="${trust_root//\\/\\\\}"
+          escaped_root="${escaped_root//\"/\\\"}"
+          trust_args=(-c "projects={\"$escaped_root\"={trust_level=\"trusted\"}}")
+        fi
+      fi
       base="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
       instr="$base"
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
@@ -233,10 +245,10 @@ launch() {
           fi
           rm -f "$op_tmp"
         fi
-        exec "$executable" -c "model_instructions_file=\"$instr\"" "$@"
+        exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
       fi
       info "warn: identity merge failed; launching plain codex"
-      exec "$executable" "$@"
+      exec "$executable" "${trust_args[@]}" "$@"
       ;;
     copilot)
       exec_copilot "$@"
