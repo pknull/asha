@@ -12,7 +12,7 @@ from typing import Any, Callable
 
 def bounded_process(
     argv: list[str], *, cwd: Path | None, limit: int,
-    error_type: type[ValueError],
+    error_type: type[ValueError], deadline_seconds: float = 60,
 ) -> tuple[int, bytes, bytes]:
     """Capture each pipe incrementally without allocating beyond ``limit``."""
     try:
@@ -30,7 +30,7 @@ def bounded_process(
     selector.register(process.stdout, selectors.EVENT_READ, "stdout")
     selector.register(process.stderr, selectors.EVENT_READ, "stderr")
     collected = {"stdout": bytearray(), "stderr": bytearray()}
-    deadline = time.monotonic() + 60
+    deadline = time.monotonic() + deadline_seconds
     try:
         while selector.get_map():
             remaining = deadline - time.monotonic()
@@ -72,17 +72,21 @@ def bounded_process(
 def capture_bytes(
     argv: list[str], *, cwd: Path | None, limit: int,
     runner: Callable[..., Any] | None, error_type: type[ValueError],
+    deadline_seconds: float = 60,
 ) -> tuple[int, bytes, bytes]:
     """Run one exact argv through an injected or production bounded runner."""
     if runner is None:
-        return bounded_process(argv, cwd=cwd, limit=limit, error_type=error_type)
+        return bounded_process(
+            argv, cwd=cwd, limit=limit, error_type=error_type,
+            deadline_seconds=deadline_seconds,
+        )
     try:
         result = runner(
             argv,
             cwd=str(cwd) if cwd is not None else None,
             capture_output=True,
             text=False,
-            timeout=60,
+            timeout=deadline_seconds,
             check=False,
             shell=False,
         )

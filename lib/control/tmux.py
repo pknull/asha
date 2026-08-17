@@ -112,7 +112,8 @@ def _validate_start_directory(value: Any) -> str:
 
 def _validate_argv(value: Any) -> list[str]:
     if (not isinstance(value, list) or not value or
-            any(not isinstance(item, str) or _has_unicode_control(item) for item in value)):
+            any(not isinstance(item, str) or _has_unicode_control(item) or
+                item == ";" or item.endswith(";") for item in value)):
         raise TmuxError("tmux command argv is invalid")
     return list(value)
 
@@ -175,10 +176,12 @@ class TmuxAdapter:
         *,
         cwd: Path | None = None,
         limit: int = MAX_OUTPUT_BYTES,
+        deadline_seconds: float = 60,
     ) -> tuple[int, bytes, bytes]:
         argv = [executable, *self._socket_args(), *map(str, args)]
         return capture_bytes(
             argv, cwd=cwd, limit=limit, runner=self.runner, error_type=TmuxError,
+            deadline_seconds=deadline_seconds,
         )
 
     def _run_bytes(
@@ -188,22 +191,30 @@ class TmuxAdapter:
         *,
         cwd: Path | None = None,
         limit: int = MAX_OUTPUT_BYTES,
+        deadline_seconds: float = 60,
     ) -> bytes:
         returncode, stdout, stderr = self._capture_bytes(
             executable, args, cwd=cwd, limit=limit,
+            deadline_seconds=deadline_seconds,
         )
         if returncode != 0:
             self._raise_failure(returncode, stderr)
         return stdout
 
-    def _run(self, args: Sequence[str]) -> str:
+    def _run(self, args: Sequence[str], *, deadline_seconds: float = 60) -> str:
         try:
-            return self._run_bytes(self.executable, args).decode("utf-8")
+            return self._run_bytes(
+                self.executable, args, deadline_seconds=deadline_seconds,
+            ).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise TmuxError("tmux output was not UTF-8") from exc
 
-    def _run_status(self, args: Sequence[str]) -> tuple[int, bytes, bytes]:
-        return self._capture_bytes(self.executable, args)
+    def _run_status(
+        self, args: Sequence[str], *, deadline_seconds: float = 60,
+    ) -> tuple[int, bytes, bytes]:
+        return self._capture_bytes(
+            self.executable, args, deadline_seconds=deadline_seconds,
+        )
 
     @staticmethod
     def _raise_failure(returncode: int, stderr: bytes) -> None:
@@ -264,11 +275,14 @@ class TmuxAdapter:
             return False
         self._raise_failure(returncode, stderr)
 
-    def session_option(self, name: str, option: str) -> str | None:
+    def session_option(
+        self, name: str, option: str, *, deadline_seconds: float = 60,
+    ) -> str | None:
         session = _validate_session_name(name)
         key = _validate_user_option_key(option)
         returncode, stdout, stderr = self._run_status(
             ["show-options", "-v", "-t", session, key],
+            deadline_seconds=deadline_seconds,
         )
         if returncode == 0:
             return self._option_output(stdout)
@@ -276,11 +290,14 @@ class TmuxAdapter:
             return None
         self._raise_failure(returncode, stderr)
 
-    def pane_option(self, pane_id: str, option: str) -> str | None:
+    def pane_option(
+        self, pane_id: str, option: str, *, deadline_seconds: float = 60,
+    ) -> str | None:
         pane = _validate_pane_id(pane_id)
         key = _validate_user_option_key(option)
         returncode, stdout, stderr = self._run_status(
             ["show-options", "-p", "-v", "-t", pane, key],
+            deadline_seconds=deadline_seconds,
         )
         if returncode == 0:
             return self._option_output(stdout)
@@ -288,38 +305,85 @@ class TmuxAdapter:
             return None
         self._raise_failure(returncode, stderr)
 
-    def set_server_summary(self, value: str) -> None:
+    def set_server_summary(
+        self, value: str, *, deadline_seconds: float = 60,
+    ) -> None:
         summary = _validate_restricted_value(value)
-        self._run(["set-option", "-s", "@asha_summary", summary])
+        self._run(
+            ["set-option", "-s", "@asha_summary", summary],
+            deadline_seconds=deadline_seconds,
+        )
 
-    def set_pane_option(self, pane_id: str, option: str, value: str) -> None:
+    def set_pane_option(
+        self, pane_id: str, option: str, value: str, *,
+        deadline_seconds: float = 60,
+    ) -> None:
         """Set one pane-scoped user option. Callers verify ownership first."""
         pane = _validate_pane_id(pane_id)
         key = _validate_user_option_key(option)
         setting = _validate_restricted_value(value)
-        self._run(["set-option", "-p", "-t", pane, key, setting])
+        self._run(
+            ["set-option", "-p", "-t", pane, key, setting],
+            deadline_seconds=deadline_seconds,
+        )
 
-    def set_session_option(self, name: str, option: str, value: str) -> None:
+    def set_session_option(
+        self, name: str, option: str, value: str, *,
+        deadline_seconds: float = 60,
+    ) -> None:
         """Set one session-scoped user option. Callers verify ownership first."""
         session = _validate_session_name(name)
         key = _validate_user_option_key(option)
         setting = _validate_restricted_value(value)
-        self._run(["set-option", "-t", session, key, setting])
+        self._run(
+            ["set-option", "-t", session, key, setting],
+            deadline_seconds=deadline_seconds,
+        )
 
-    def pane_facts(self, pane_id: str) -> PaneFacts:
+    def pane_facts(
+        self, pane_id: str, *, deadline_seconds: float = 60,
+    ) -> PaneFacts:
         expected_pane = _validate_pane_id(pane_id)
+        return self._target_facts(
+            expected_pane, expected_pane=expected_pane,
+            deadline_seconds=deadline_seconds,
+        )
+
+    def window_pane_facts(
+        self, session: str, window: str, *, deadline_seconds: float = 60,
+    ) -> PaneFacts:
+        """Facts for the active pane of an owned session window.
+
+        Recovery paths know only the session and window they recorded, never a
+        pane id, so this resolves ``session:window`` and verifies that tmux
+        answered for exactly that window.
+        """
+        name = _validate_session_name(session)
+        window_name = _validate_window_name(window)
+        facts = self._target_facts(
+            f"{name}:{window_name}", expected_pane=None,
+            deadline_seconds=deadline_seconds,
+        )
+        if facts.session != name or facts.window != window_name:
+            raise TmuxError("tmux returned a different window identity")
+        return facts
+
+    def _target_facts(
+        self, target: str, *, expected_pane: str | None, deadline_seconds: float,
+    ) -> PaneFacts:
         line = self._one_line(
             self._run([
-                "display-message", "-p", "-t", expected_pane, "-F", _PANE_FORMAT,
-            ]),
+                "display-message", "-p", "-t", target, "-F", _PANE_FORMAT,
+            ], deadline_seconds=deadline_seconds),
             "pane facts",
         )
         fields = line.split("\t")
         if len(fields) != 8:
             raise TmuxError("tmux returned malformed pane facts")
         returned_pane, raw_pid, raw_dead, raw_status, raw_signal, session, window, title = fields
-        if _validate_pane_id(returned_pane) != expected_pane:
+        if expected_pane is not None and _validate_pane_id(returned_pane) != expected_pane:
             raise TmuxError("tmux returned a different pane identity")
+        _validate_pane_id(returned_pane)
         _validate_session_name(session)
         _validate_window_name(window)
         _validate_restricted_value(title)

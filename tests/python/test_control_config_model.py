@@ -823,7 +823,7 @@ class ControlModelTests(unittest.TestCase):
             cases.append((f"{lifecycle}-exited", terminal, True))
             terminal_failed = json.loads(json.dumps(terminal))
             terminal_failed["runs"][0]["state"] = "failed"
-            cases.append((f"{lifecycle}-failed", terminal_failed, False))
+            cases.append((f"{lifecycle}-failed", terminal_failed, True))
 
         failed_empty = json.loads(json.dumps(creating))
         failed_empty["lifecycle"] = "failed"

@@ -22,6 +22,7 @@ _BOOT_ID = re.compile(
     re.ASCII,
 )
 _CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+_ROLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", re.ASCII)
 
 
 class HarnessError(ValueError):
@@ -69,6 +70,12 @@ def validate_harness(name: Any) -> str:
     if not isinstance(name, str) or name not in HARNESSES:
         raise HarnessError("unsupported harness")
     return name
+
+
+def validate_role(role: Any) -> str:
+    if not isinstance(role, str) or _ROLE.fullmatch(role) is None:
+        raise HarnessError("run role uses an invalid restricted grammar")
+    return role
 
 
 def launch_argv(

@@ -352,6 +352,7 @@ class TaskStore:
         self._locks_managed_start = _managed_start(
             self._locks_dir, ("asha-control", "tasks")
         )
+        self.skipped: list[dict[str, str]] = []
 
     def _validate_record_paths(self, task: dict[str, Any]) -> None:
         repository = Path(task["repository"]["root"])
@@ -663,6 +664,7 @@ class TaskStore:
                         return self._read_unlocked(tasks_fd, task_id)
 
     def list(self) -> list[dict[str, Any]]:
+        self.skipped = []
         with self._directories(create_state=False) as (tasks_fd, locks_fd):
             if tasks_fd is None or locks_fd is None:
                 return []
@@ -679,9 +681,13 @@ class TaskStore:
                     try:
                         task_id = canonical_uuid(candidate)
                     except ModelError as exc:
-                        raise StoreError("invalid task record filename in registry") from exc
-                    with self._locked(task_id, locks_fd):
-                        records.append(self._read_unlocked(tasks_fd, task_id))
+                        self.skipped.append({"name": name, "reason": str(exc)})
+                        continue
+                    try:
+                        with self._locked(task_id, locks_fd):
+                            records.append(self._read_unlocked(tasks_fd, task_id))
+                    except (StoreError, ModelError, OSError) as exc:
+                        self.skipped.append({"name": name, "reason": str(exc)})
                 return records
 
     def resolve(self, selector: str) -> dict[str, Any]:

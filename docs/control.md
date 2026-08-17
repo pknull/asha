@@ -32,6 +32,8 @@ asha task show <task-id|exact-slug> [--json]
 asha task attach <task-id|exact-slug> [--run RUN_ID]
 asha task stop <task-id|exact-slug> [--terminate]
 asha task archive <task-id|exact-slug>
+asha task unarchive <task-id|exact-slug>
+asha task recover <task-id|exact-slug>
 asha task reconcile [task-id|exact-slug] [--json]
 asha task doctor [--json]
 
@@ -44,7 +46,10 @@ asha control event ...       internal hook-facing route
 `--harness` defaults to Asha's configured harness; `--agent` is its CLI alias.
 Without `--detach`, a start inside tmux opens the new session in a popup. From
 outside tmux it prints the exact attach command. `--json` keeps stdout to one
-versioned machine-readable result.
+versioned machine-readable result, implies `--detach`, and includes the exact
+attach command in its payload.
+
+Exit codes: 0 success, 2 usage/refusal, 1 internal error, 130 interrupted.
 
 A goal is mandatory in every mode and is the only instruction authority.
 `--pr` and `--issue` provide source context, never a prompt. `--pr` conflicts
@@ -222,15 +227,36 @@ deadline-bound, and byte-capped.
 
 ## Data preservation
 
-Control has no workspace deletion command. Archive changes only the task's
-registry lifecycle and is reversible; the jj workspace, change, ignored files,
-tmux history, and source repository remain. Stop verifies task, pane, process
-start identity, and tmux ancestry, then sends `SIGINT` or explicit `SIGTERM` to
-that process only. It does not kill the tmux session, archive the task, or
-touch jj.
+Control has no workspace deletion command. Archive requires an ended task or a
+running task whose reconciled runs are all terminal (`exited` or `failed`) and
+unblocked. At that terminal edge Control persists the reconciled run state and
+bounded evidence, then changes only the task's registry lifecycle. Archive is
+reversible with `asha task unarchive <selector>`; the jj workspace, change,
+ignored files, tmux history, and source repository remain. Stop verifies task,
+pane, process start identity, and tmux ancestry, then sends `SIGINT` or explicit
+`SIGTERM` to that process only. It does not kill the tmux session, archive the
+task, or touch jj.
 
 Before a harness process may have started, transaction rollback removes only
 artifacts whose exact ownership was journaled and reverified. After launch is
 possible, every failure path preserves the workspace and records recovery
 facts. Control never substitutes raw recursive deletion, destructive Git, or
 unreviewed jj abandonment for a removal design.
+
+### Interrupted creation
+
+Ctrl-C and SIGTERM during `asha task start` run the same rollback-or-preserve
+handler before the original interruption reaches the CLI. A hard process exit
+can still leave a durable `creating` record and creation journal. Recover it
+explicitly with:
+
+```text
+asha task recover <task-id|exact-slug>
+```
+
+Pre-launch phases remove only reverified transaction-owned artifacts. A phase
+at or after `launch-attempted` never kills the session or process: Control marks
+the task failed, preserves the workspace, reports the exact attach/show
+commands, and requires the operator to stop any live harness manually. The
+`transactions` doctor probe names interrupted creation records and the command
+for each.

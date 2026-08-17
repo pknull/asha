@@ -3,11 +3,13 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import tempfile
 import unittest
 import uuid
 from copy import deepcopy
 from pathlib import Path
+from unittest import mock
 
 from lib.control.cli import main
 from lib.control.config import load_config
@@ -193,6 +195,23 @@ class ControlReconciliationTests(unittest.TestCase):
     def test_live_process_with_unavailable_semantic_adapter_is_unknown(self) -> None:
         adapters = FakeAdapters(evidence(event=Evidence("event", "unavailable", "unsupported harness")))
         self.assertEqual(reconcile_task(task_record(), adapters)["state"], "unknown")
+
+    def test_active_event_is_not_trusted_when_live_process_evidence_is_unavailable(self) -> None:
+        unavailable = FakeAdapters(evidence(
+            tmux=Evidence("tmux", "unavailable", "tmux socket denied"),
+            process=Evidence("process", "unavailable", "proc evidence denied"),
+        ))
+        result = reconcile_task(task_record(), unavailable)
+        self.assertEqual(result["state"], "unknown")
+        self.assertEqual(
+            result["blocker"],
+            "tmux, process: evidence unavailable; event state not trusted "
+            "without live process evidence",
+        )
+
+        matched = reconcile_task(task_record(), FakeAdapters(evidence()))
+        self.assertEqual(matched["state"], "working")
+        self.assertIsNone(matched["blocker"])
 
     def test_missing_event_preserves_proven_active_state_when_jj_is_match_or_unavailable(self) -> None:
         for stored in ("starting", "working", "needs-input", "idle", "unknown"):
@@ -404,6 +423,18 @@ class ControlCliTests(unittest.TestCase):
             "XDG_DATA_HOME": str(root / "data"),
             "XDG_RUNTIME_DIR": str(root / "runtime"),
         }
+        # Isolate tmux completely: the live adapters shell out to the default
+        # tmux socket, which would otherwise reach the developer's real server
+        # and make evidence depend on ambient panes.  An empty TMUX_TMPDIR with
+        # no inherited client guarantees "no server", so every reconciliation
+        # here is deterministic regardless of the host environment.
+        socket_dir = root / "tmux-socket"
+        socket_dir.mkdir(mode=0o700)
+        tmux_env = {"TMUX_TMPDIR": str(socket_dir)}
+        patcher = mock.patch.dict(os.environ, tmux_env)
+        patcher.start()
+        os.environ.pop("TMUX", None)
+        self.addCleanup(patcher.stop)
         self.config = load_config(self.env)
         self.record = task_record(
             slug="cli-test",
@@ -428,13 +459,10 @@ class ControlCliTests(unittest.TestCase):
         data = json.loads(stdout)
         self.assertEqual(data["contract"], "asha.control-task-list.v1")
         self.assertEqual(data["tasks"][0]["task_id"], self.record["task_id"])
-        # This fixture registers a task whose tmux session does not exist. The
-        # CLI reconciles from LIVE adapters, so the correct answer is `stale`,
-        # not the stored `starting`. It read `starting` only while the CLI was
-        # still wired to the Increment 1 placeholder, which reported every seam
-        # `unavailable` and fell back to the record — exactly the contract's
-        # "a missing pane becomes stale from live evidence, not working from an
-        # old record".
+        # This never-launched fixture has no tmux session, no live process, and
+        # no jj workspace.  Reconciliation follows the documented precedence
+        # tmux -> process -> jj, so the absent recorded session is the first
+        # and reported blocker (see the isolated tmux socket in setUp).
         self.assertEqual(data["tasks"][0]["status"], "stale")
         self.assertIn("tmux", data["tasks"][0]["blocker"])
 
@@ -481,8 +509,10 @@ class ControlCliTests(unittest.TestCase):
 
         rc, stdout, stderr = self.invoke(["task", "list", "--json"])
 
-        self.assertEqual(rc, 2)
-        self.assertEqual(stdout, "")
+        self.assertEqual(rc, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["tasks"], [])
+        self.assertEqual(payload["skipped"][0]["name"], path.name)
         self.assertNotIn("raw-secret", stderr)
         self.assertNotIn("\u202e", stderr)
         self.assertNotIn("Traceback", stderr)
@@ -493,7 +523,10 @@ class ControlCliTests(unittest.TestCase):
         path.write_text("[" * 10000 + "0" + "]" * 10000)
         path.chmod(0o600)
         rc, stdout, stderr = self.invoke(["task", "list", "--json"])
-        self.assertEqual((rc, stdout), (2, ""))
+        self.assertEqual(rc, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["tasks"], [])
+        self.assertEqual(payload["skipped"][0]["name"], path.name)
         self.assertIn("nesting", stderr)
         self.assertNotIn("Traceback", stderr)
         self.assertNotIn("[[[", stderr)

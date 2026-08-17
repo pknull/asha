@@ -324,6 +324,16 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
     if event.outcome == "match" and event.state is not None:
         if process.outcome == "match" and event.state in _TERMINAL_STATES:
             return result("stale", "event: terminal state contradicts matched live process")
+        unavailable = ", ".join(
+            item.source for item in (tmux, process)
+            if item.outcome == "unavailable"
+        )
+        if unavailable and event.state not in _TERMINAL_STATES:
+            return result(
+                "unknown",
+                f"{unavailable}: evidence unavailable; event state not trusted "
+                "without live process evidence",
+            )
         return result(event.state)
     if process.outcome == "match":
         if event.outcome == "unavailable":

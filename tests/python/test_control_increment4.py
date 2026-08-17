@@ -10,7 +10,7 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
-from lib.control.cli import main as control_main
+from lib.control.cli import _publish_tmux_presentation, main as control_main
 from lib.control.config import load_config
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
 from lib.control.events import (
@@ -90,6 +90,36 @@ class EventSnapshotTests(Increment4Fixture):
             "terminal_capture", '"environment":', '"payload":',
         ):
             self.assertNotIn(forbidden, serialized)
+
+    def test_tmux_presentation_calls_use_five_second_deadlines(self) -> None:
+        self.write()
+        adapter = mock.Mock()
+        adapter.pane_option.return_value = self.run_id
+        adapter.pane_facts.return_value = PaneFacts(
+            "%7", 123, False, None, None, "asha-task", "work", "title",
+        )
+        adapter.session_option.return_value = self.task_id
+        with mock.patch("lib.control.cli.TmuxAdapter", return_value=adapter), \
+                mock.patch("lib.control.cli.summarize", return_value="asha: 1 working"):
+            _publish_tmux_presentation(
+                self.config, self.run_id, "%7", self.task_id,
+            )
+        adapter.pane_option.assert_called_once_with(
+            "%7", "@asha_run_id", deadline_seconds=5,
+        )
+        adapter.set_pane_option.assert_called_once_with(
+            "%7", "@asha_state", "working", deadline_seconds=5,
+        )
+        adapter.pane_facts.assert_called_once_with("%7", deadline_seconds=5)
+        adapter.session_option.assert_called_once_with(
+            "asha-task", "@asha_task_id", deadline_seconds=5,
+        )
+        adapter.set_session_option.assert_called_once_with(
+            "asha-task", "@asha_state", "working", deadline_seconds=5,
+        )
+        adapter.set_server_summary.assert_called_once_with(
+            "asha: 1 working", deadline_seconds=5,
+        )
 
     def test_atomic_replace_failure_preserves_the_old_valid_snapshot(self) -> None:
         self.write("prompt-submitted")

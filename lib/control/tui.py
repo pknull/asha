@@ -323,10 +323,15 @@ class TuiModel:
         if normalized == "a":
             if row is None:
                 return TuiIntent(IntentKind.NONE, reason="no task is selected")
-            if row.task["lifecycle"] != "ended":
+            terminal_runs = bool(row.reconciliation["runs"]) and all(
+                run["state"] in {"exited", "failed"}
+                for run in row.reconciliation["runs"]
+            )
+            if (row.task["lifecycle"] not in {"running", "ended"} or
+                    not terminal_runs):
                 return TuiIntent(
                     IntentKind.NONE, task_id=row.task["task_id"],
-                    reason="only an ended task can be archived",
+                    reason="only a task whose runs have all exited can be archived",
                 )
             return TuiIntent(
                 IntentKind.ARCHIVE, task_id=row.task["task_id"],
@@ -401,7 +406,7 @@ def render(model: TuiModel) -> list[str]:
             "ASHA CONTROL HELP",
             "",
             "Keys: Enter open popup | n start | r reconcile | d diff refresh",
-            "      a archive ended task | / filter | q quit | ? help",
+            "      a archive task after every run exits | / filter | q quit | ? help",
             "",
             "Status: every state is derived from qualified tmux, process, jj, and event evidence.",
             "Limitations: no destructive removal or automated integration; archive preserves data.",
@@ -497,6 +502,13 @@ def _load_rows(
     ]
 
 
+def _surface_skipped(model: TuiModel, store: TaskStore) -> None:
+    if not store.skipped:
+        return
+    detail = f"{len(store.skipped)} registry entries skipped"
+    model.message = f"{model.message}; {detail}" if model.message else detail
+
+
 def _paint(stdscr, curses_module, model: TuiModel) -> None:
     height, width = stdscr.getmaxyx()
     model.resize(height, width)
@@ -566,7 +578,7 @@ def _open_popup(stdscr, curses_module, config: ControlConfig, row: TuiRow, run_i
     try:
         # Imported lazily to avoid a module cycle while the CLI routes into this driver.
         from .cli import _run_popup
-        _run_popup(adapter, config, target.session)
+        _run_popup(adapter, config, target.session, row.task["slug"])
     finally:
         _repaint_after_suspend(stdscr)
 
@@ -654,6 +666,7 @@ def _execute_intent(
     if intent.kind is IntentKind.START:
         model.message = _start_form(stdscr, curses_module, model, env, config)
         model.replace_rows(_load_rows(config, store, journals, jj))
+        _surface_skipped(model, store)
         return True
     if row is None:
         model.message = "no task is selected"
@@ -680,9 +693,16 @@ def _execute_intent(
         if answer != "yes":
             model.message = "archive cancelled"
             return True
-        archive_task(config, row.task, tasks=store)
+        archive_task(
+            config, row.task, tasks=store,
+            adapters=LiveAdapters(
+                config=config, tmux=_adapter_for_task(row.task), jj=jj,
+            ),
+            journals=journals, jj=jj,
+        )
         model.replace_rows(_load_rows(config, store, journals, jj))
         model.message = "task archived; workspace and change preserved"
+        _surface_skipped(model, store)
         return True
     return True
 
@@ -764,6 +784,7 @@ def run_tui(
     journals = CreationJournalStore(config)
     jj = JjAdapter()
     model = TuiModel(_load_rows(config, store, journals, jj))
+    _surface_skipped(model, store)
 
     previous: dict[int, Any] = {}
 

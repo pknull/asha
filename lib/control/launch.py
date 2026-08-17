@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import os
-import re
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,14 +11,13 @@ from typing import Any, Callable
 
 from . import harness as harness_api
 from .config import ControlConfig
+from .jj import JjAdapter
 from .model import RUN_CONTRACT, canonical_uuid, new_uuid
 from .prepare import PreparationError, rollback_prelaunch
+from .reconcile import Adapters, LiveAdapters
 from .store import TaskStore, task_digest
 from .tmux import TmuxAdapter, TmuxError
 from .transaction import CreationJournalStore
-
-
-_ROLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", re.ASCII)
 
 
 class LaunchError(ValueError):
@@ -114,6 +112,15 @@ def _recovery_commands(task: dict[str, Any], tmux: TmuxAdapter) -> str:
     return f"asha task show {task['task_id']}; {attach}"
 
 
+def _reconciled_evidence(run: dict[str, Any]) -> str:
+    evidence = run.get("evidence", [])
+    summary = "; ".join(
+        f"{item['source']}={item['outcome']}: {item['detail']}"
+        for item in evidence
+    )
+    return (summary or f"reconciled terminal state: {run['state']}")[:500]
+
+
 def _mark_prelaunch_preserved(
     config: ControlConfig,
     journals: CreationJournalStore,
@@ -135,6 +142,7 @@ def _rollback_before_launch(
     tmux: TmuxAdapter,
     *,
     created_session: bool,
+    jj: JjAdapter | None = None,
 ) -> str | None:
     if created_session:
         try:
@@ -147,7 +155,10 @@ def _rollback_before_launch(
         except (TmuxError, ValueError) as exc:
             return f"created tmux session could not be safely removed: {exc}"
     try:
-        rollback_prelaunch(config, task["task_id"])
+        if jj is None:
+            rollback_prelaunch(config, task["task_id"])
+        else:
+            rollback_prelaunch(config, task["task_id"], jj=jj)
     except PreparationError as exc:
         return str(exc)
     return None
@@ -253,8 +264,7 @@ def launch_task(
             )
         try:
             selected_harness = harness_api.validate_harness(harness)
-            if not isinstance(role, str) or _ROLE.fullmatch(role) is None:
-                raise LaunchError("run role uses an invalid restricted grammar")
+            selected_role = harness_api.validate_role(role)
             run_id = new_uuid()
             environment = harness_api.controller_env(
                 task_id=task_id, run_id=run_id, state_dir=config.tasks_dir,
@@ -287,7 +297,7 @@ def launch_task(
 
             _save_phase(journal_store, journal, "tmux-intent", failure_injector)
             expected_session = _session_options(current)
-            expected_pane = _pane_options(run_id, selected_harness, role)
+            expected_pane = _pane_options(run_id, selected_harness, selected_role)
             # A chained new-session can create the session and then report a
             # later option failure.  Mark the attempt first so cleanup probes
             # for an exact owned survivor instead of assuming no mutation.
@@ -300,7 +310,7 @@ def launch_task(
                 holder_argv=["sleep", "3600"],
                 session_options=expected_session,
                 pane_options=expected_pane,
-                pane_title=f"asha:{selected_harness}:{role}",
+                pane_title=f"asha:{selected_harness}:{selected_role}",
             )
             _inject(failure_injector, "tmux-created")
             _verify_created_options(
@@ -327,7 +337,7 @@ def launch_task(
             run = _make_run(
                 run_id=run_id,
                 harness=selected_harness,
-                role=role,
+                role=selected_role,
                 pane_id=pane_id,
                 pid=facts.pane_pid,
                 identity=identity,
@@ -358,7 +368,8 @@ def launch_task(
                     "change_id": launched["jj"]["change_id"],
                 },
             }
-        except Exception as exc:
+        except BaseException as exc:
+            ordinary = isinstance(exc, Exception)
             if isinstance(exc, LaunchError) and journal["phase"] == "preserved":
                 raise
             if irrevocable:
@@ -367,10 +378,14 @@ def launch_task(
                         task_store, journal_store, task_id, journal, run,
                     )
                 except Exception as recovery_exc:
+                    if not ordinary:
+                        raise exc
                     raise LaunchError(
                         f"launch failed and recovery recording was interrupted: {recovery_exc}; "
                         f"{_recovery_commands(current, adapter)}"
                     ) from exc
+                if not ordinary:
+                    raise
                 raise LaunchError(
                     f"launch failed after process execution became possible; resources preserved: "
                     f"{exc}; {_recovery_commands(preserved, adapter)}"
@@ -384,10 +399,14 @@ def launch_task(
                 if latest["phase"] in {"tmux-intent", "tmux-session-created"}:
                     _save_phase(journal_store, latest, "preserved", None)
                     _mark_prelaunch_preserved(config, journal_store, latest)
+                if not ordinary:
+                    raise
                 raise LaunchError(
                     f"launch failed before process execution; recovery was preserved: "
                     f"{exc}; {cleanup_error}"
                 ) from exc
+            if not ordinary:
+                raise
             raise LaunchError(f"launch failed before process execution and rolled back: {exc}") from exc
 
 
@@ -444,16 +463,164 @@ def archive_task(
     task: dict[str, Any],
     *,
     tasks: TaskStore | None = None,
+    adapters: Adapters | None = None,
+    journals: CreationJournalStore | None = None,
+    jj: JjAdapter | None = None,
 ) -> dict[str, Any]:
-    """Move an ended task to archived state without external mutations."""
+    """Persist terminal evidence, then archive without mutating external state."""
+    task_id = canonical_uuid(task["task_id"])
+    task_store = tasks or TaskStore(config)
+    jj_adapter = jj or JjAdapter()
+    live = adapters or LiveAdapters(config=config, jj=jj_adapter)
+    journal_store = journals or CreationJournalStore(config)
+    with task_store.transaction_lock(task_id):
+        current = task_store.read(task_id)
+        if current["lifecycle"] == "archived":
+            raise LaunchError("task is already archived")
+        if current["lifecycle"] not in {"running", "ended"}:
+            raise LaunchError(
+                "only a running task whose runs have all exited, or an ended "
+                "task, can be archived"
+            )
+        ended = current
+        previous_digest = task_digest(current)
+        if current["lifecycle"] == "running":
+            # Local import avoids the view -> launch controller dependency at
+            # module initialization time.
+            from . import view
+
+            snapshot = view.reconcile_with_creation(
+                current, live, journal_store, jj_adapter,
+            )
+            for run in snapshot["runs"]:
+                if run["state"] not in {"exited", "failed"} or run["blocker"] is not None:
+                    raise LaunchError(
+                        "only a task whose runs have all exited can be archived; "
+                        f"run {run['run_id']} is {run['state']}"
+                    )
+            ended = copy.deepcopy(current)
+            timestamp = _now()
+            derived = {run["run_id"]: run for run in snapshot["runs"]}
+            for run in ended["runs"]:
+                reconciled = derived[run["run_id"]]
+                run["state"] = reconciled["state"]
+                run["evidence"] = _reconciled_evidence(reconciled)
+                run["evidence_at"] = timestamp
+            ended["lifecycle"] = "ended"
+            ended["updated_at"] = timestamp
+            task_store.save(ended, expected_digest=previous_digest)
+            previous_digest = task_digest(ended)
+
+        archived = copy.deepcopy(ended)
+        archived["lifecycle"] = "archived"
+        archived["updated_at"] = _now()
+        task_store.save(archived, expected_digest=previous_digest)
+        return archived
+
+
+def unarchive_task(
+    config: ControlConfig,
+    task: dict[str, Any],
+    *,
+    tasks: TaskStore | None = None,
+) -> dict[str, Any]:
+    """Restore an archived task to its terminal ended lifecycle."""
     task_id = canonical_uuid(task["task_id"])
     task_store = tasks or TaskStore(config)
     with task_store.transaction_lock(task_id):
         current = task_store.read(task_id)
-        if current["lifecycle"] != "ended":
-            raise LaunchError("only an ended task can be archived")
+        if current["lifecycle"] != "archived":
+            raise LaunchError("only an archived task can be unarchived")
         changed = copy.deepcopy(current)
-        changed["lifecycle"] = "archived"
+        changed["lifecycle"] = "ended"
         changed["updated_at"] = _now()
         task_store.save(changed, expected_digest=task_digest(current))
         return changed
+
+
+_PRE_TMUX_PHASES = frozenset({
+    "intent", "task-recorded", "parent-intent", "parent-ready",
+    "workspace-add-intent", "workspace-added", "workspace-recorded",
+    "context-intent", "context-provisioning", "context-provisioned",
+    "task-identity-intent", "task-identity-recorded", "ready-for-launch",
+    "rollback-intent", "workspace-forgotten", "removing",
+})
+
+
+def recover_task(
+    config: ControlConfig,
+    task: dict[str, Any],
+    *,
+    tasks: TaskStore,
+    journals: CreationJournalStore,
+    tmux: TmuxAdapter | None = None,
+    jj: JjAdapter | None = None,
+) -> dict[str, Any]:
+    """Recover one durable task-creation transaction without adopting state."""
+    task_id = canonical_uuid(task["task_id"])
+    adapter = tmux or _adapter_for_task(task)
+    jj_adapter = jj or JjAdapter()
+    recovery_commands: str | None = None
+    with tasks.transaction_lock(task_id):
+        current = tasks.read(task_id)
+        if current["lifecycle"] != "creating":
+            raise LaunchError(
+                "task is not in an interrupted creation state; nothing to recover"
+            )
+        journal = journals.read(task_id)
+        phase = journal["phase"]
+        if phase in _PRE_TMUX_PHASES:
+            try:
+                rollback_prelaunch(config, task_id, jj=jj_adapter)
+            except PreparationError as exc:
+                message = str(exc)
+            else:
+                message = "rolled back"
+        elif phase in {"tmux-intent", "tmux-session-created"}:
+            message = _rollback_before_launch(
+                config, current, adapter, created_session=True, jj=jj_adapter,
+            ) or "rolled back"
+        elif phase == "launch-attempted":
+            preserved = _preserve_after_launch(
+                tasks, journals, task_id, journal, run=None,
+            )
+            live_process = False
+            try:
+                if _ownership_matches(adapter, preserved):
+                    live_process = not adapter.window_pane_facts(
+                        preserved["tmux"]["session"], preserved["tmux"]["window"],
+                    ).dead
+            except (TmuxError, ValueError):
+                live_process = False
+            if live_process:
+                commands = _recovery_commands(preserved, adapter)
+                attach = commands.split("; ", 1)[1]
+                message = (
+                    "harness process may still be live in tmux session "
+                    f"{preserved['tmux']['session']}; attach with: {attach}; "
+                    "stop it manually before reusing the destination"
+                )
+                recovery_commands = commands
+            else:
+                message = (
+                    "no live process found; task marked failed and workspace preserved"
+                )
+                recovery_commands = _recovery_commands(preserved, adapter)
+        elif phase in {"preserved", "rolled-back"}:
+            message = f"creation transaction is {phase}; no action is needed"
+        elif phase == "run-recorded":
+            raise LaunchError(
+                "creation journal is run-recorded while the task is still creating; "
+                "no automatic recovery is safe"
+            )
+        else:
+            raise LaunchError(f"unsupported interrupted creation phase: {phase}")
+
+        resulting_task = tasks.read(task_id)
+        resulting_journal = journals.read(task_id)
+        return {
+            "task": resulting_task,
+            "journal": resulting_journal,
+            "message": message,
+            "recovery_commands": recovery_commands,
+        }

@@ -32,6 +32,9 @@ the active instruction surface loses no release detail.
 - Added read-only GitHub PR and issue sources: transient bounded metadata,
   non-checkout PR-head fetches, and no GitHub write path.
 - Published the current operating contract in `docs/control.md`.
+- Made archive reachable through reconciled terminal evidence, added reversible
+  unarchive, and added journal-driven interrupted-creation recovery and doctor
+  reporting.
 
 ### Asha identity v3.0.0 — Compact identity split (2026-08-13)
 

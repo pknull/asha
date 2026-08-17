@@ -5,6 +5,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -18,7 +19,9 @@ from unittest import mock
 
 from lib.control.config import load_config
 from lib.control.context import ContextError, provision_context
+from lib.control.doctor import DEFAULT_PROBES, run_doctor
 from lib.control.jj import JjAdapter, JjError, WorkspaceIdentity
+from lib.control.launch import recover_task
 from lib.control.prepare import derive_repository_identity
 from lib.control.prepare import (
     PrepareRequest, PreparationError, prepare_task_workspace, rollback_prelaunch,
@@ -440,7 +443,12 @@ class RealJjPreparationTests(unittest.TestCase):
             working_copy[str(relative)] = value
         git_head = subprocess.run(["git", "-C", str(self.source), "rev-parse", "HEAD"],
                                   check=True, capture_output=True, text=True).stdout
-        git_index = (self.source / ".git" / "index").read_bytes()
+        # Staged CONTENT, not raw index bytes: jj 0.38 rewrites the colocated
+        # index file's layout (cache-tree extension) under --ignore-working-copy
+        # while leaving every staged entry identical.  The invariant Control
+        # promises is that nothing staged changes.
+        git_index = subprocess.run(["git", "-C", str(self.source), "ls-files", "-s"],
+                                   check=True, capture_output=True, text=True).stdout
         return {
             "working_copy": working_copy,
             "source_at": self.jj("log", "-r", "@", "--no-graph", "-T", 'change_id ++ " " ++ commit_id'),
@@ -607,6 +615,66 @@ class RealJjPreparationTests(unittest.TestCase):
         journal = CreationJournalStore(self.config).read(request.task_id)
         self.assertEqual(journal["phase"], "rolled-back")
         self.assertFalse(Path(journal["workspace"]["path"]).exists())
+
+    def test_keyboard_interrupt_after_workspace_add_rolls_back_and_propagates(self) -> None:
+        request = self.request("keyboard-interrupt")
+
+        def interrupt(phase: str) -> None:
+            if phase == "workspace-added":
+                raise KeyboardInterrupt
+
+        with self.assertRaises(KeyboardInterrupt):
+            prepare_task_workspace(
+                self.config, request, failure_injector=interrupt,
+            )
+        task = TaskStore(self.config).read(request.task_id)
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        self.assertEqual(task["lifecycle"], "failed")
+        self.assertEqual(journal["phase"], "rolled-back")
+        self.assertNotIn(
+            journal["workspace"]["name"],
+            JjAdapter().workspace_identities(self.source),
+        )
+
+    def test_recover_ready_for_launch_rolls_back_and_doctor_clears_transaction(self) -> None:
+        request = self.request("recover-ready")
+        prepared = prepare_task_workspace(self.config, request)
+        before = run_doctor(
+            self.config, probes={"transactions": DEFAULT_PROBES["transactions"]},
+        )["probes"][0]
+        self.assertEqual(before["outcome"], "mismatch")
+        self.assertIn(request.task_id, before["detail"])
+
+        result = recover_task(
+            self.config, prepared, tasks=TaskStore(self.config),
+            journals=CreationJournalStore(self.config), jj=JjAdapter(),
+        )
+
+        self.assertEqual(result["message"], "rolled back")
+        self.assertEqual(result["task"]["lifecycle"], "failed")
+        self.assertEqual(result["journal"]["phase"], "rolled-back")
+        after = run_doctor(
+            self.config, probes={"transactions": DEFAULT_PROBES["transactions"]},
+        )["probes"][0]
+        self.assertEqual(after["outcome"], "match")
+
+    def test_rollback_forgets_from_source_when_destination_jj_disappears(self) -> None:
+        request = self.request("missing-destination-jj")
+        prepared = prepare_task_workspace(self.config, request)
+        destination = Path(prepared["jj"]["workspace_path"])
+
+        def remove_destination_jj(phase: str) -> None:
+            if phase == "before-forget":
+                shutil.rmtree(destination / ".jj")
+
+        with self.assertRaises(PreparationError):
+            rollback_prelaunch(
+                self.config, request.task_id, failure_injector=remove_destination_jj,
+            )
+        self.assertNotIn(
+            prepared["jj"]["workspace_name"],
+            JjAdapter().workspace_identities(self.source),
+        )
 
     def test_foreign_ignored_file_blocks_prelaunch_rollback(self) -> None:
         request = self.request("foreign")
