@@ -65,6 +65,16 @@ else
   fail "sandbox copilot install succeeds (got $?)"
 fi
 
+echo "--- fixture: real codex install into sandbox HOME ---"
+mkdir -p "$SANDBOX/.codex"
+: > "$SANDBOX/.codex/config.toml"
+if env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+     bash "$REPO_ROOT/install.sh" --target codex >/dev/null 2>&1; then
+  ok "sandbox codex install succeeds"
+else
+  fail "sandbox codex install succeeds (got $?)"
+fi
+
 # ---------------------------------------------------------------------------
 echo "--- test 1: healthy install passes --target copilot ---"
 if out="$(run --target copilot 2>&1)"; then
@@ -111,6 +121,54 @@ out="$(cd "$IGNORE_PROJECT" && run --target copilot 2>&1 || true)"
 grep -q 'config lacks memory_version=2 or project_id' <<<"$out" \
   && ok "doctor rejects a whitespace-only Memory v2 project_id" \
   || fail "doctor rejects a whitespace-only Memory v2 project_id"
+
+# ---------------------------------------------------------------------------
+echo "--- test 1a: current source defeats matching stale ownership ledgers ---"
+assert_command_skill_source_freshness() { # target skill_md
+  local target="$1" skill_md="$2" manifest stale_hash out rc
+  manifest="$SANDBOX/.asha/install-manifests/$target.json"
+
+  printf '\nstale rendered bytes\n' >> "$skill_md"
+  stale_hash="$(python3 -c \
+    'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' \
+    "$skill_md")"
+  if jq --arg d "$skill_md" --arg h "$stale_hash" \
+      '(.artifacts[] | select(.destination == $d) | .sha256) = $h' \
+      "$manifest" > "$manifest.tmp" && mv "$manifest.tmp" "$manifest" \
+      && jq -e --arg d "$skill_md" --arg h "$stale_hash" \
+        '.artifacts[] | select(.destination == $d and .sha256 == $h)' \
+        "$manifest" >/dev/null; then
+    ok "$target fixture gives stale command-skill bytes a matching ownership hash"
+  else
+    fail "$target fixture gives stale command-skill bytes a matching ownership hash"
+    return
+  fi
+
+  out="$(run --target "$target" 2>&1)"; rc=$?
+  if [[ $rc -ne 0 ]] && grep -q "command-skill content drifted" <<<"$out"; then
+    ok "$target doctor re-renders command source rather than trusting the ownership ledger"
+  else
+    fail "$target doctor re-renders command source rather than trusting the ownership ledger (rc=$rc)"
+  fi
+  grep -q "generated-artifact ownership manifest clean ($target)" <<<"$out" \
+    && ok "$target stale-source fixture leaves ownership validation clean" \
+    || fail "$target stale-source fixture leaves ownership validation clean"
+
+  out="$(run --target "$target" --fix 2>&1)"; rc=$?
+  if [[ $rc -eq 0 ]] && grep -q "FIXED  regenerated drifted command-skill" <<<"$out"; then
+    ok "$target --fix regenerates source-drifted command-skill"
+  else
+    fail "$target --fix regenerates source-drifted command-skill (rc=$rc)"
+  fi
+  run --target "$target" >/dev/null 2>&1 \
+    && ok "$target source-freshness post-fix re-run is clean" \
+    || fail "$target source-freshness post-fix re-run is clean"
+}
+
+assert_command_skill_source_freshness \
+  copilot "$SANDBOX/.copilot/skills/session-save/SKILL.md"
+assert_command_skill_source_freshness \
+  codex "$SANDBOX/.codex/skills/session-save/SKILL.md"
 
 # ---------------------------------------------------------------------------
 echo "--- test 1b: Copilot version outside the live-verified range warns ---"
