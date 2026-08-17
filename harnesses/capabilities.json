@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-08-15",
+  "reviewed": "2026-08-17",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
@@ -172,7 +172,7 @@
         "control-status": {
           "support": "partial",
           "surface": "process liveness only",
-          "verifier": "task doctor:tmux",
+          "verifier": "python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
           "limitations": [
             "No semantic Control events are claimed"
           ]
@@ -239,7 +239,7 @@
         "control-status": {
           "support": "partial",
           "surface": "process liveness only",
-          "verifier": "task doctor:tmux",
+          "verifier": "python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
           "limitations": [
             "No semantic Control events are claimed"
           ]

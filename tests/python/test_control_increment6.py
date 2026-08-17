@@ -625,9 +625,7 @@ class CliUsesLiveEvidenceTests(unittest.TestCase):
             with self.subTest(verb=verb):
                 with mock.patch(
                     "lib.control.cli.LiveAdapters", wraps=LiveAdapters,
-                ) as live, mock.patch(
-                    "lib.control.cli.UnavailableAdapters",
-                ) as unavailable:
+                ) as live:
                     stdout = io.StringIO()
                     with contextlib.redirect_stdout(stdout):
                         status = control_main(["task", verb, "--json"], env=self.env)
@@ -635,10 +633,6 @@ class CliUsesLiveEvidenceTests(unittest.TestCase):
                     self.assertTrue(
                         live.called,
                         f"`asha task {verb}` must reconcile from LiveAdapters",
-                    )
-                    self.assertFalse(
-                        unavailable.called,
-                        f"`asha task {verb}` must not fall back to the Increment 1 stub",
                     )
 
 

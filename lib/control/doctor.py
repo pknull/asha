@@ -72,12 +72,6 @@ def _configuration_probe(config) -> Probe:
     return Probe("configuration", "match", "Control configuration parsed and paths passed static safety validation")
 
 
-def _not_probed(name: str) -> ProbeFunction:
-    def probe(config) -> Probe:
-        return Probe(name, "unavailable", f"{name} is not probed in Increment 1; no live server or repository was contacted")
-    return probe
-
-
 def _safe_detail(value: Any) -> str:
     text = "".join(char if char.isprintable() else "?" for char in str(value))
     return text[:400] or "no diagnostic"
