@@ -171,6 +171,24 @@ def namespace_safety_step(
     return None, private_boundary
 
 
+def namespace_remediation(problem: str | None, path: Path) -> str:
+    """Name the operator command that clears a writable-ancestor refusal.
+
+    Group- and other-writable directories are the operator's to fix; Control
+    never changes the mode of a directory it did not create. Returned text is
+    appended to the refusal so `task start`, `task doctor`, and every other
+    verb print the same exact remediation.
+    """
+    if problem is None or "writable" not in problem:
+        return ""
+    if "sticky" in problem and "non-sticky" not in problem:
+        return (
+            "; a writable sticky directory cannot host the managed namespace: "
+            "point control.workspace_root or XDG state at a private directory"
+        )
+    return f"; remediate with: chmod g-w,o-w {path}"
+
+
 def reject_unsafe_writable_ancestors(path: Path, name: str = "path") -> None:
     """Reject existing untrusted namespace ancestors."""
     if not path.is_absolute():
@@ -190,7 +208,10 @@ def reject_unsafe_writable_ancestors(path: Path, name: str = "path") -> None:
             namespace_root=current == path,
         )
         if problem:
-            raise ConfigError(f"{problem} rejected in {name}: {current}")
+            raise ConfigError(
+                f"{problem} rejected in {name}: {current}"
+                f"{namespace_remediation(problem, current)}"
+            )
 
 
 def require_owned_directory_ancestors(path: Path, name: str) -> None:
