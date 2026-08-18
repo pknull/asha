@@ -47,7 +47,7 @@ ACTION_RECONCILIATION_CONTRACT = "asha.orchestration-action-reconciliation.v1"
 SUPPORTED_ACTION_KINDS = frozenset({
     "activate-initiative", "dispatch-node", "pause", "resume",
     "stop-attempt", "cancel-node", "repair-node", "request-salvage",
-    "decide", "continue-node",
+    "decide", "continue-node", "finalize", "archive", "unarchive",
 })
 _ACTION_DOCUMENT_KEYS = frozenset({
     "contract", "action_id", "initiative_id", "actor_kind", "actor_id",
@@ -70,6 +70,33 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
         "+00:00", "Z"
     )
+
+
+def _process_start_ticks(pid: int) -> int:
+    """Return the Linux process start instance used to defeat PID reuse."""
+    try:
+        raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        fields = raw[raw.rfind(")") + 2:].split()
+        return int(fields[19])
+    except (OSError, ValueError, IndexError) as exc:
+        raise ActionError("controller process identity is unavailable") from exc
+
+
+def _verification_controller_is_live(outcome: Mapping[str, Any]) -> bool:
+    pid = outcome.get("controller_pid")
+    ticks = outcome.get("controller_start_ticks")
+    if (
+        isinstance(pid, bool) or not isinstance(pid, int)
+        or isinstance(ticks, bool) or not isinstance(ticks, int)
+        or pid <= 0 or ticks < 0
+    ):
+        return False
+    try:
+        if Path(f"/proc/{pid}").stat().st_uid != os.geteuid():
+            return False
+        return _process_start_ticks(pid) == ticks
+    except (ActionError, OSError):
+        return False
 
 
 def _canonical(value: Any) -> bytes:
@@ -210,6 +237,9 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         "request-salvage": frozenset({"node_id", "failure_seal_id", "plan"}),
         "decide": frozenset({"paused_seal_id", "decision"}),
         "continue-node": frozenset({"node_id", "paused_seal_id", "decision_action_id"}),
+        "finalize": frozenset({"outcome", "reason"}),
+        "archive": frozenset(),
+        "unarchive": frozenset(),
     }[kind]
     if kind == "dispatch-node" and set(payload) == {"node_id", "salvage_request_id"}:
         expected = frozenset({"node_id", "salvage_request_id"})
@@ -238,6 +268,16 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
                 or any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in value)
             ):
                 raise ActionRefused(f"action {field} must be bounded printable text")
+    if "reason" in payload:
+        value = payload["reason"]
+        if (
+            not isinstance(value, str) or not value
+            or len(value.encode("utf-8")) > 4096
+            or any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in value)
+        ):
+            raise ActionRefused("action reason must be bounded printable text")
+    if "outcome" in payload and payload["outcome"] not in {"partial", "failed"}:
+        raise ActionRefused("finalize outcome must be partial or failed")
     return copy.deepcopy(payload)
 
 
@@ -363,7 +403,13 @@ def _activate(
         actor_kind="controller", actor_id="action-broker",
     )
     refresh_readiness(store, initiative_id)
-    return {"status": "running", "already_running": False}
+    try:
+        from .readiness import ReadinessError, bind_readiness
+
+        bind_readiness(store, initiative_id)
+    except ReadinessError:
+        pass
+    return {"status": store.peek(initiative_id)["state"], "already_running": False}
 
 
 def _pause(store: InitiativeStore, initiative_id: str) -> dict[str, Any]:
@@ -418,7 +464,13 @@ def _resume(
         actor_kind="controller", actor_id="action-broker",
     )
     refresh_readiness(store, initiative_id)
-    return {"status": "running", "already_running": False}
+    try:
+        from .readiness import ReadinessError, bind_readiness
+
+        bind_readiness(store, initiative_id)
+    except ReadinessError:
+        pass
+    return {"status": store.peek(initiative_id)["state"], "already_running": False}
 
 
 def _asha_executable() -> Path:
@@ -494,6 +546,18 @@ def _cancel_node(
     node = store.read_node(initiative_id, node_id)
     if node["state"] in NODE_TERMINAL_STATES:
         raise ActionRefused("a terminal node cannot be cancelled")
+    owning_verifications = [
+        item for item in store.list_verifications_snapshot(initiative_id)
+        if item["node_id"] == node_id
+        and (
+            item["state"] in {"pending", "dispatching", "running"}
+            or (node["state"] == "evaluating" and item["state"] != "stale")
+        )
+    ]
+    if owning_verifications:
+        raise ActionRefused(
+            "an active verification must finish before the node can be cancelled"
+        )
     attempts = sorted(
         (item for item in store.list_attempts_snapshot(initiative_id) if item["node_id"] == node_id),
         key=lambda item: (item["ordinal"], item["attempt_id"]),
@@ -602,6 +666,36 @@ def _invalidate_candidate_records(
     for review in store.list_reviews_snapshot(initiative_id):
         if review["target"]["seal_id"] != seal_id or review["state"] == "stale":
             continue
+        stale_reviews.append(review["review_id"])
+        review_node = store.read_node(initiative_id, review["node_id"])
+        if review_node["state"] in {"succeeded", "needs-input"}:
+            reopened = copy.deepcopy(review_node)
+            reopened["state"] = "ready"
+            validate_node(reopened)
+            store.save_node(
+                initiative_id, reopened,
+                expected_digest=record_digest(review_node),
+            )
+            review_node = reopened
+        if review_node["state"] == "ready" and not any(
+            item["type"] == "node-ready"
+            and review["review_id"] in item["subject_ids"]
+            and item["payload"].get("reason") == "candidate-review-staled"
+            for item in store.list_events_snapshot(initiative_id)
+        ):
+            append_event(
+                store, initiative_id, "node-ready",
+                [review_node["node_id"], review["review_id"], seal_id],
+                {
+                    "from": (
+                        "succeeded" if review["state"] == "accepted-pass"
+                        else "needs-input"
+                    ),
+                    "to": "ready",
+                    "reason": "candidate-review-staled",
+                },
+                actor_kind="controller", actor_id="repair-invalidation",
+            )
         changed = copy.deepcopy(review)
         changed.update({
             "state": "stale", "verdict": None, "findings": [], "updated_at": _now(),
@@ -609,26 +703,46 @@ def _invalidate_candidate_records(
         store.save_review(
             initiative_id, changed, expected_digest=record_digest(review),
         )
-        stale_reviews.append(review["review_id"])
-    verification_ids = {
-        member["verification_id"]
-        for bundle in store.list_bundles_snapshot(initiative_id)
-        for member in bundle["members"]
-        if member["seal_id"] == seal_id
-    }
     stale_verifications: list[str] = []
     for verification in store.list_verifications_snapshot(initiative_id):
         if (
-            verification["verification_id"] not in verification_ids
+            verification["seal_id"] != seal_id
             or verification["state"] == "stale"
         ):
             continue
+        stale_verifications.append(verification["verification_id"])
+        verification_node = store.read_node(
+            initiative_id, verification["node_id"],
+        )
+        if verification_node["state"] == "succeeded":
+            reopened = copy.deepcopy(verification_node)
+            reopened["state"] = "ready"
+            validate_node(reopened)
+            store.save_node(
+                initiative_id, reopened,
+                expected_digest=record_digest(verification_node),
+            )
+            verification_node = reopened
+        if verification_node["state"] == "ready" and not any(
+            item["type"] == "node-ready"
+            and verification["verification_id"] in item["subject_ids"]
+            and item["payload"].get("reason") == "candidate-verification-staled"
+            for item in store.list_events_snapshot(initiative_id)
+        ):
+            append_event(
+                store, initiative_id, "node-ready",
+                [verification_node["node_id"], verification["verification_id"], seal_id],
+                {
+                    "from": "succeeded", "to": "ready",
+                    "reason": "candidate-verification-staled",
+                },
+                actor_kind="controller", actor_id="repair-invalidation",
+            )
         changed = copy.deepcopy(verification)
         changed.update({"state": "stale", "outcome": None, "updated_at": _now()})
         store.save_verification(
             initiative_id, changed, expected_digest=record_digest(verification),
         )
-        stale_verifications.append(verification["verification_id"])
     return {"reviews": stale_reviews, "verifications": stale_verifications}
 
 
@@ -1087,6 +1201,22 @@ def _execute_local(
     payload: dict[str, Any],
 ) -> dict[str, Any]:
     kind = action["action_class"]
+    if kind == "dispatch-node":
+        node = store.read_node(action["initiative_id"], payload["node_id"])
+        if node["type"] != "verify":
+            raise ActionError("only a verify node uses controller-local dispatch")
+        from .verification import run_verification
+
+        verification = run_verification(
+            store, action["initiative_id"], payload["node_id"],
+            action_id=action["action_id"],
+            verification_id=action_outcome(action).get("verification_id"),
+        )
+        return {
+            "status": verification["outcome"],
+            "verification_id": verification["verification_id"],
+            "node_id": payload["node_id"],
+        }
     if kind == "activate-initiative":
         return _activate(store, action)
     if kind == "pause":
@@ -1107,6 +1237,31 @@ def _execute_local(
         return _decide(store, action, payload)
     if kind == "continue-node":
         return _continue_node(store, action, payload)
+    if kind == "finalize":
+        from .readiness import finalize_initiative
+
+        initiative = finalize_initiative(
+            store, action["initiative_id"], payload["outcome"], payload["reason"],
+            action_id=action["action_id"],
+            source_state=action_outcome(action).get("finalize_from"),
+        )
+        return {"status": initiative["state"], "reason": payload["reason"]}
+    if kind == "archive":
+        from .readiness import archive_initiative
+
+        initiative, inventory = archive_initiative(
+            store, action["initiative_id"],
+            source_state=action_outcome(action).get("archive_from"),
+            action_id=action["action_id"],
+        )
+        return {"status": initiative["state"], "retained_inventory": inventory}
+    if kind == "unarchive":
+        from .readiness import unarchive_initiative
+
+        initiative = unarchive_initiative(
+            store, action["initiative_id"], action_id=action["action_id"],
+        )
+        return {"status": initiative["state"]}
     raise ActionError(f"unsupported local action: {kind}")
 
 
@@ -1119,6 +1274,7 @@ def submit_action(
     requested, payload = _parse_document(action_document)
     if requested["initiative_id"] != initiative_id:
         raise ActionError("action initiative identity differs from its route")
+    deferred_verification: tuple[dict[str, Any], dict[str, Any]] | None = None
     with store.transaction_lock(initiative_id):
         try:
             stored = store.read_action(initiative_id, requested["action_id"])
@@ -1160,11 +1316,55 @@ def submit_action(
             payload = _validate_payload(action["action_class"], payload)
         except (ActionRefused, ModelError) as exc:
             return _refuse(store, action, str(exc))
+        if action["action_class"] == "finalize" and initiative["state"] != "running":
+            return _refuse(store, action, "only a running initiative may be finalized")
+        if action["action_class"] == "finalize":
+            from .readiness import ReadinessError, prevalidate_finalization
+
+            try:
+                prevalidate_finalization(
+                    store, initiative_id, payload["outcome"], payload["reason"],
+                )
+            except ReadinessError as exc:
+                return _refuse(store, action, str(exc))
+        if action["action_class"] == "archive" and initiative["state"] not in {
+            "ready-for-integration", "partial", "failed", "cancelled",
+        }:
+            return _refuse(store, action, "only a terminal initiative outcome may be archived")
+        if action["action_class"] == "unarchive" and initiative["state"] != "archived":
+            return _refuse(store, action, "only an archived initiative may be unarchived")
+        if action["action_class"] == "dispatch-node":
+            target_node = store.read_node(initiative_id, payload["node_id"])
+            if target_node["type"] == "verify":
+                from .scheduler import pause_for_breaker
+                from .storage import storage_report
+                from .verification import VerificationError, prevalidate_verification
+
+                if storage_report(initiative, store=store)["pause_recommended"]:
+                    pause_for_breaker(
+                        store, initiative_id,
+                        "retained storage pause threshold reached",
+                        event_type="storage-threshold-reached",
+                        subject_ids=[target_node["node_id"]],
+                    )
+                    return _refuse(
+                        store, action, "retained storage pause threshold reached",
+                    )
+                try:
+                    prevalidate_verification(
+                        store, initiative_id, target_node["node_id"],
+                        exclude_action_id=action["action_id"],
+                    )
+                except VerificationError as exc:
+                    return _refuse(store, action, str(exc))
         action = set_action_state(
             store, action, "validated",
             {"payload": payload, "status": "validated"},
         )
-        if action["action_class"] == "dispatch-node":
+        if (
+            action["action_class"] == "dispatch-node"
+            and store.read_node(initiative_id, payload["node_id"])["type"] != "verify"
+        ):
             from .scheduler import SchedulerError, dispatch
 
             try:
@@ -1173,36 +1373,122 @@ def submit_action(
                 )["action"]
             except SchedulerError as exc:
                 return _refuse(store, action, str(exc))
+        is_verification = (
+            action["action_class"] == "dispatch-node"
+            and store.read_node(initiative_id, payload["node_id"])["type"] == "verify"
+        )
+        dispatching_outcome = {"payload": payload, "status": "dispatching"}
+        if action["action_class"] == "dispatch-node":
+            dispatching_outcome["node_id"] = payload["node_id"]
+        if is_verification:
+            dispatching_outcome.update({
+                "verification_id": new_uuid(),
+                "controller_pid": os.getpid(),
+                "controller_start_ticks": _process_start_ticks(os.getpid()),
+            })
+        if action["action_class"] == "finalize":
+            dispatching_outcome["finalize_from"] = initiative["state"]
+        if action["action_class"] == "archive":
+            # Retain the terminal outcome before the initiative edge so
+            # reconciliation can complete an interrupted archive event.
+            dispatching_outcome["archive_from"] = initiative["state"]
+        if action["action_class"] == "unarchive":
+            archive_events = [
+                event for event in store.list_events_snapshot(initiative_id)
+                if event["type"] == "initiative-state-changed"
+                and event["payload"].get("to") == "archived"
+            ]
+            dispatching_outcome["unarchive_to"] = (
+                None if not archive_events else archive_events[-1]["payload"].get("from")
+            )
         action = set_action_state(
             store, action, "dispatching",
-            {"payload": payload, "status": "dispatching"},
+            dispatching_outcome,
         )
-        try:
-            result = _execute_local(store, action, payload)
-            current = store.read_action(initiative_id, action["action_id"])
-            return set_action_state(
-                store, current, "completed",
-                {**action_outcome(current), **result},
-            )
-        except ActionRefused as exc:
-            return _refuse(store, store.read_action(initiative_id, action["action_id"]), str(exc))
-        except (ActionError, StoreError, OSError, ValueError) as exc:
-            # A bounded subprocess timeout or lost response cannot prove the
-            # side effect, and a cross-record failure may have become visible.
-            # Retain indeterminate until durable target evidence resolves it.
-            current = store.read_action(initiative_id, action["action_id"])
-            if current["state"] == "completed":
+        if is_verification:
+            from .verification import VerificationError, prepare_verification_intent
+
+            try:
+                prepare_verification_intent(
+                    store, initiative_id, payload["node_id"],
+                    action_id=action["action_id"],
+                    verification_id=dispatching_outcome["verification_id"],
+                )
+            except (VerificationError, StoreError, OSError, ValueError) as exc:
+                current = store.read_action(initiative_id, action["action_id"])
+                current = set_action_state(
+                    store, current, "indeterminate",
+                    {
+                        **action_outcome(current), "status": "indeterminate",
+                        "reason": str(exc),
+                    },
+                )
+                append_event(
+                    store, initiative_id, "action-indeterminate",
+                    [current["action_id"]], {"reason": str(exc)},
+                    actor_kind="controller", actor_id="action-broker",
+                )
                 return current
+            # Both action and exact verification/materialization intent are
+            # durable. Command execution must not retain the initiative lock.
+            deferred_verification = (action, payload)
+        else:
+            try:
+                result = _execute_local(store, action, payload)
+                current = store.read_action(initiative_id, action["action_id"])
+                return set_action_state(
+                    store, current, "completed",
+                    {**action_outcome(current), **result},
+                )
+            except ActionRefused as exc:
+                return _refuse(
+                    store, store.read_action(initiative_id, action["action_id"]), str(exc),
+                )
+            except (ActionError, StoreError, OSError, ValueError) as exc:
+                current = store.read_action(initiative_id, action["action_id"])
+                if current["state"] == "completed":
+                    return current
+                if current["state"] == "dispatching":
+                    current = set_action_state(
+                        store, current, "indeterminate",
+                        {
+                            **action_outcome(current), "status": "indeterminate",
+                            "reason": str(exc),
+                        },
+                    )
+                    append_event(
+                        store, initiative_id, "action-indeterminate",
+                        [current["action_id"]], {"reason": str(exc)},
+                        actor_kind="controller", actor_id="action-broker",
+                    )
+                return current
+
+    if deferred_verification is None:
+        raise ActionError("local action dispatch lost its execution binding")
+    action, payload = deferred_verification
+    try:
+        result = _execute_local(store, action, payload)
+    except (ActionRefused, ActionError, StoreError, OSError, ValueError) as exc:
+        with store.transaction_lock(initiative_id):
+            current = store.read_action(initiative_id, action["action_id"])
             if current["state"] == "dispatching":
                 current = set_action_state(
                     store, current, "indeterminate",
-                    {**action_outcome(current), "status": "indeterminate", "reason": str(exc)},
+                    {
+                        **action_outcome(current), "status": "indeterminate",
+                        "reason": str(exc),
+                    },
                 )
                 append_event(
                     store, initiative_id, "action-indeterminate", [current["action_id"]],
                     {"reason": str(exc)}, actor_kind="controller", actor_id="action-broker",
                 )
-            return current
+        return store.read_action(initiative_id, action["action_id"])
+    with store.transaction_lock(initiative_id):
+        current = store.read_action(initiative_id, action["action_id"])
+        return set_action_state(
+            store, current, "completed", {**action_outcome(current), **result},
+        )
 
 
 def _attempt_to_running(
@@ -1231,6 +1517,17 @@ def reconcile_actions(
                 continue
             if action["state"] not in {"dispatching", "indeterminate"}:
                 continue
+            if (
+                action["state"] == "dispatching"
+                and action["action_class"] == "dispatch-node"
+                and isinstance(action_outcome(action).get("verification_id"), str)
+                and _verification_controller_is_live(action_outcome(action))
+            ):
+                # A separate reconcile/report process may observe the command
+                # while its controller is legitimately outside the initiative
+                # lock. PID start ticks distinguish this lease from PID reuse.
+                results.append(action)
+                continue
             if action["state"] == "dispatching":
                 action = set_action_state(
                     store, action, "indeterminate",
@@ -1248,6 +1545,196 @@ def reconcile_actions(
             outcome = action_outcome(action)
             kind = action["action_class"]
             if kind == "dispatch-node":
+                node_id = outcome.get("node_id")
+                if isinstance(node_id, str):
+                    node_probe = store.read_node(initiative_id, node_id)
+                else:
+                    node_probe = None
+                if node_probe is not None and node_probe["type"] == "verify":
+                    retained = [
+                        item for item in store.list_verifications_snapshot(initiative_id)
+                        if item["node_id"] == node_id
+                        and item["active_plan_digest"] == action["active_plan_digest"]
+                        and item["state"] != "stale"
+                    ]
+                    if len(retained) > 1:
+                        results.append(action)
+                        continue
+                    if retained and retained[0]["state"] in {"passed", "failed"}:
+                        verification = retained[0]
+                        desired_node_state = (
+                            "succeeded" if verification["state"] == "passed" else "failed"
+                        )
+                        current_node = store.read_node(initiative_id, node_id)
+                        if current_node["state"] == "evaluating":
+                            reconciled_node = copy.deepcopy(current_node)
+                            reconciled_node["state"] = desired_node_state
+                            validate_node(reconciled_node)
+                            store.save_node(
+                                initiative_id, reconciled_node,
+                                expected_digest=record_digest(current_node),
+                            )
+                            append_event(
+                                store, initiative_id, "node-state-changed",
+                                [node_id, verification["verification_id"]],
+                                {
+                                    "from": "evaluating", "to": desired_node_state,
+                                    "reconciled": "terminal-verification",
+                                },
+                                actor_kind="controller", actor_id="action-reconciler",
+                            )
+                            current_node = reconciled_node
+                        if current_node["state"] != desired_node_state:
+                            results.append(action)
+                            continue
+                        if not any(
+                            event["type"] == "node-state-changed"
+                            and verification["verification_id"] in event["subject_ids"]
+                            and event["payload"].get("reconciled")
+                            == "terminal-verification"
+                            for event in store.list_events_snapshot(initiative_id)
+                        ):
+                            append_event(
+                                store, initiative_id, "node-state-changed",
+                                [node_id, verification["verification_id"]],
+                                {
+                                    "from": "evaluating", "to": desired_node_state,
+                                    "reconciled": "terminal-verification",
+                                },
+                                actor_kind="controller", actor_id="action-reconciler",
+                            )
+                        if not any(
+                            event["type"] == "verification-finished"
+                            and verification["verification_id"] in event["subject_ids"]
+                            for event in store.list_events_snapshot(initiative_id)
+                        ):
+                            append_event(
+                                store, initiative_id, "verification-finished",
+                                [node_id, verification["verification_id"], verification["seal_id"]],
+                                {
+                                    "outcome": verification["outcome"],
+                                    "bundle_digest": verification["bundle_digest"],
+                                    "command_count": len(verification["commands"]),
+                                    "reconciled": True,
+                                },
+                                actor_kind="controller", actor_id="action-reconciler",
+                            )
+                        if (
+                            verification["state"] == "passed"
+                            and store.peek(initiative_id)["state"] == "running"
+                        ):
+                            from .readiness import bind_readiness
+
+                            bind_readiness(store, initiative_id)
+                        action = set_action_state(
+                            store, action, "completed",
+                            {
+                                **outcome,
+                                "status": verification["outcome"],
+                                "verification_id": verification["verification_id"],
+                            },
+                        )
+                        results.append(action)
+                        continue
+                    if retained and retained[0]["state"] in {
+                        "pending", "dispatching", "running", "indeterminate",
+                    }:
+                        verification = retained[0]
+                        if verification["state"] != "indeterminate":
+                            interrupted = copy.deepcopy(verification)
+                            interrupted.update({
+                                "state": "indeterminate",
+                                "outcome": "indeterminate",
+                                "updated_at": _now(),
+                            })
+                            store.save_verification(
+                                initiative_id, interrupted,
+                                expected_digest=record_digest(verification),
+                            )
+                            verification = interrupted
+                        current_node = store.read_node(initiative_id, node_id)
+                        if current_node["state"] == "evaluating":
+                            action = set_action_state(
+                                store, action, "indeterminate",
+                                {
+                                    **outcome,
+                                    "verification_node_from": "evaluating",
+                                },
+                            )
+                            outcome = action_outcome(action)
+                            retryable = copy.deepcopy(current_node)
+                            retryable["state"] = "ready"
+                            validate_node(retryable)
+                            store.save_node(
+                                initiative_id, retryable,
+                                expected_digest=record_digest(current_node),
+                            )
+                            current_node = retryable
+                        if (
+                            current_node["state"] == "ready"
+                            and outcome.get("verification_node_from") == "evaluating"
+                            and not any(
+                            event["type"] == "node-ready"
+                            and verification["verification_id"] in event["subject_ids"]
+                            and event["payload"].get("reason")
+                            == "controller-verification-interrupted"
+                            for event in store.list_events_snapshot(initiative_id)
+                            )
+                        ):
+                            append_event(
+                                store, initiative_id, "node-ready",
+                                [node_id, verification["verification_id"]],
+                                {
+                                    "from": "evaluating", "to": "ready",
+                                    "reason": "controller-verification-interrupted",
+                                },
+                                actor_kind="controller", actor_id="action-reconciler",
+                            )
+                        if not any(
+                            event["type"] == "verification-finished"
+                            and verification["verification_id"] in event["subject_ids"]
+                            for event in store.list_events_snapshot(initiative_id)
+                        ):
+                            append_event(
+                                store, initiative_id, "verification-finished",
+                                [node_id, verification["verification_id"], verification["seal_id"]],
+                                {
+                                    "outcome": "indeterminate",
+                                    "bundle_digest": verification["bundle_digest"],
+                                    "command_count": len(verification["commands"]),
+                                },
+                                actor_kind="controller", actor_id="action-reconciler",
+                            )
+                        action = set_action_state(
+                            store, action, "completed",
+                            {
+                                **outcome,
+                                "status": "indeterminate",
+                                "verification_id": verification["verification_id"],
+                            },
+                        )
+                        results.append(action)
+                        continue
+                    if not retained and node_probe["state"] == "ready":
+                        action = set_action_state(
+                            store, action, "refused",
+                            {
+                                **outcome, "status": "not-started",
+                                "reason": "controller verification has no durable start record",
+                            },
+                        )
+                        append_event(
+                            store, initiative_id, "action-refused", [action["action_id"]],
+                            {
+                                "action_class": "dispatch-node",
+                                "reason": "controller verification has no durable start record",
+                            },
+                            actor_kind="controller", actor_id="action-reconciler",
+                        )
+                        results.append(action)
+                        continue
+                    results.append(action)
+                    continue
                 try:
                     attempt = store.read_attempt(initiative_id, outcome["attempt_id"])
                 except StoreError as exc:
@@ -1431,6 +1918,46 @@ def reconcile_actions(
                 completed = store.read_node(
                     initiative_id, outcome["payload"]["node_id"]
                 )["state"] == "cancelled"
+            payload = outcome.get("payload", {})
+            if kind == "finalize":
+                from .readiness import finalize_initiative
+
+                try:
+                    initiative = finalize_initiative(
+                        store, initiative_id, payload.get("outcome"), payload.get("reason"),
+                        action_id=action["action_id"],
+                        source_state=outcome.get("finalize_from"),
+                    )
+                except (StoreError, ValueError):
+                    completed = False
+                else:
+                    completed = initiative["state"] == payload.get("outcome")
+            elif kind == "archive":
+                from .readiness import archive_initiative
+
+                try:
+                    initiative, inventory = archive_initiative(
+                        store, initiative_id,
+                        source_state=outcome.get("archive_from"),
+                        action_id=action["action_id"],
+                    )
+                except (StoreError, ValueError):
+                    completed = False
+                else:
+                    outcome = {**outcome, "retained_inventory": inventory}
+                    completed = initiative["state"] == "archived"
+            elif kind == "unarchive":
+                from .readiness import unarchive_initiative
+
+                try:
+                    initiative = unarchive_initiative(
+                        store, initiative_id, action_id=action["action_id"],
+                        recovery_state=outcome.get("unarchive_to"), recover=True,
+                    )
+                except (StoreError, ValueError):
+                    completed = False
+                else:
+                    completed = initiative["state"] == outcome.get("unarchive_to")
             if completed:
                 action = set_action_state(
                     store, action, "completed", {**outcome, "status": "completed"},

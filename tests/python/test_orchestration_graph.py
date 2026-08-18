@@ -63,6 +63,7 @@ def graph_node(
         value["role"] = "implementer"
     elif node_type == "compose":
         value["role"] = "composer"
+        value["conflict_policy"] = "fail-on-conflict"
     elif node_type == "review":
         value.update({
             "role": "reviewer",
@@ -92,7 +93,14 @@ def valid_plan() -> dict:
         "limits": limits(),
         "declared_gates": [
             {"kind": "review", "node_id": "review-a", "required": True},
-            {"kind": "verification", "node_id": "verify-a", "required": True},
+            {
+                "kind": "verification", "node_id": "verify-a", "required": True,
+                "environment_policy": "minimal",
+                "commands": [{
+                    "argv": ["python3", "-c", "print('verified')"],
+                    "cwd": ".", "timeout_seconds": 30,
+                }],
+            },
         ],
         "nested_workflow_policy": {"workflow": "none", "single_writer": False},
         "acceptance_conditions": ["Required review and verification pass."],

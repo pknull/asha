@@ -199,6 +199,7 @@ def _process_kind(reconciliation: Mapping[str, Any]) -> tuple[str, dict[str, Any
 def _base_binding(
     store: InitiativeStore,
     initiative_id: str,
+    node: Mapping[str, Any],
     attempt: Mapping[str, Any],
 ) -> tuple[dict[str, Any], list[str], str]:
     base = attempt["base"]
@@ -235,19 +236,24 @@ def _base_binding(
             "tree_digest": seal["tree_digest"],
             "seal_ids": [seal["seal_id"]],
         }, failures, seal["jj_commit_id"])
-    commits = {seal["jj_commit_id"] for seal in seals}
-    if len(commits) != 1:
-        raise SealError("composition inputs do not resolve to one dispatched base commit")
+    if node.get("type") != "compose":
+        raise SealError("multiple upstream seals require an explicit compose node")
+    from .composition import CompositionError, composition_inputs
+
+    try:
+        seals = composition_inputs(store, initiative_id, node, attempt)
+    except CompositionError as exc:
+        raise SealError(str(exc)) from exc
     digest = hashlib.sha256(_canonical([
-        [seal["seal_id"], seal["tree_digest"]]
-        for seal in sorted(seals, key=lambda item: item["seal_id"])
+        [seal["seal_id"], seal["jj_commit_id"], seal["tree_digest"]]
+        for seal in seals
     ])).hexdigest()
     return ({
         "kind": "composition-inputs",
         "jj_commit_id": None,
         "tree_digest": digest,
-        "seal_ids": sorted(seal["seal_id"] for seal in seals),
-    }, failures, next(iter(commits)))
+        "seal_ids": [seal["seal_id"] for seal in seals],
+    }, failures, base["scope_origin"]["jj_commit_id"])
 
 
 def _transition_attempt(
@@ -508,7 +514,9 @@ def prepare_and_publish_seal(
             or result["run_id"] != task["runs"][0]["run_id"]
         ):
             raise SealError("accepted result binding changed before sealing")
-        base, failure_inputs, base_commit = _base_binding(store, initiative_id, attempt)
+        base, failure_inputs, base_commit = _base_binding(
+            store, initiative_id, node, attempt,
+        )
         preparation = _existing_preparation(store, initiative_id, attempt_id)
         if preparation is None:
             process_evidence = _save_evidence(
@@ -725,6 +733,13 @@ def prepare_and_publish_seal(
             "process_evidence_id": process_evidence["evidence_id"],
             "sealed_at": _now(),
         })
+        if seal["outcome"] == "success" and node["terminal_candidate"]:
+            from .composition import CompositionError, enforce_terminal_candidate
+
+            try:
+                enforce_terminal_candidate(store, initiative_id, node)
+            except CompositionError as exc:
+                raise SealError(str(exc)) from exc
         published_payload = _seal_published_payload(
             seal, hard_scope_valid=hard_scope_valid,
             scope_violations=scope_violations,

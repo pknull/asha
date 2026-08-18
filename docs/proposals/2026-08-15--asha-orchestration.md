@@ -2584,3 +2584,19 @@ The following require evidence from this release and separate authorization:
 None of those are prerequisites for useful orchestration. The first release is
 successful when Asha can safely coordinate real isolated work through a small,
 truthful terminal surface.
+
+## Increment 3 amendments (2026-08-17)
+
+Implementation review established two lifecycle edges that the original
+proposal did not enumerate. An accepted-findings review reopens its exact
+terminal candidate through node `succeeded -> ready`, where only an explicit
+repair action may continue from the retained success seal. Retained archive is
+reversible through initiative `archived -> ready-for-integration | partial |
+failed | cancelled`, restoring the terminal outcome from the latest archive
+cycle without deleting or rewriting evidence.
+
+Controller review and verification use a read-only filesystem capture against
+the immutable target tree: every tracked entry must preserve bytes, mode, and
+type, while extra untracked or ignored paths are bounded evidence rather than
+candidate mutation. Verification drains command output and retains at most
+1 MiB with an explicit truncation marker and digest over the retained bytes.

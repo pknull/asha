@@ -1,10 +1,11 @@
-# Orchestration Core Increment 2b
+# Orchestration Core: Increments 1-3
 
 Orchestration Core stores one bounded initiative and approved dependency graph
-beside Asha Control. Increment 2b adds worker result publication, exit-bound
-immutable seals, autonomous retry, repair, salvage, and paused-work
-continuation to the effect-once dispatch machinery. Control remains the only
-owner of jj workspace and tmux task creation.
+beside Asha Control. Increment 3 adds ordered composition, independent
+exact-seal review, controller-owned verification, compatible candidate bundles,
+terminal readiness, finalization, and retained archive. Control remains the
+only owner of worker jj workspace and tmux task creation; its run-less
+materialization seam owns fresh controller verification workspaces.
 
 ## Commands
 
@@ -24,7 +25,10 @@ asha initiative pause ID [--json]
 asha initiative resume ID [--json]
 asha initiative stop ID --attempt ATTEMPT [--json]
 asha initiative cancel ID --node NODE [--json]
-asha initiative list [--json]
+asha initiative finalize ID --outcome partial|failed --reason TEXT [--json]
+asha initiative archive ID [--json]
+asha initiative unarchive ID [--json]
+asha initiative list [--all] [--json]
 asha initiative show ID [--json]
 asha initiative events ID [--after SEQUENCE] [--json]
 asha initiative reconcile ID [--json]
@@ -53,6 +57,8 @@ reconciliation.
 It reconciles indeterminate actions, persists live Control evidence, applies
 attempt and node transitions, allocates eligible retries, applies breakers,
 then returns the ordinary read-only node join.
+
+`list` omits archived initiatives by default. `list --all` includes them.
 
 ## Action document and journal
 
@@ -87,6 +93,9 @@ Core 2b action classes and exact payload shapes are:
 | `request-salvage` | `{"node_id":"NODE","failure_seal_id":"FAILURE-SEAL-UUID","plan":"BOUNDED TEXT"}` |
 | `decide` | `{"paused_seal_id":"PAUSED-SEAL-UUID","decision":"BOUNDED TEXT"}` |
 | `continue-node` | `{"node_id":"NODE","paused_seal_id":"PAUSED-SEAL-UUID","decision_action_id":"UUID"}` |
+| `finalize` | `{"outcome":"partial|failed","reason":"BOUNDED TEXT"}` |
+| `archive` | `{}` |
+| `unarchive` | `{}` |
 
 The journal record keeps the same authority envelope without `payload`, adds
 `state`, `outcome`, `received_at`, and `updated_at`, and stores the canonical
@@ -273,6 +282,11 @@ repair attempt publishes a success seal. Only then is the source superseded
 and its bound review or verification records marked `stale`. Every retained
 repair-lineage attempt counts against `max_repair_cycles`, including legacy
 autonomous retries with a null `action_id`.
+Review gate reruns caused by `candidate-review-staled` do not consume the gate
+node's ordinary `max_attempts_per_node`; they consume the initiative's
+`max_repair_cycles`. A plain dispatch of a node with a retained success seal is
+refused with the exact seal ID. The operator must use `repair-node` so repair
+cycle accounting and stale-evidence invalidation cannot be bypassed.
 
 `request-salvage` creates a requested approval bound to the failure seal,
 scope origin, hard scope, active plan digest, salvage plan, and action payload
@@ -304,6 +318,13 @@ the recorded task digest, and calls Control's pure live reconciler. Live
 `starting`, `working`, `needs-input`, `idle`, and `unknown` states retain a
 running attempt and append `task-status-observed` evidence. Normal process exit
 without a result becomes `result-missing` after `result_grace_seconds`.
+One narrow live-worker exception covers jj's mid-snapshot metadata split: when
+Control reports `stale` solely because the created-workspace registration and
+working-copy identities briefly disagree, the owned process still matches, and
+no non-jj identity mismatches, orchestration treats that observation as
+`working` for that poll. The downgrade does not alter Control's verdict. Once
+the process exits, or any harder mismatch appears, the ordinary stale/conflict
+path applies.
 Nonzero or signal exit becomes `abnormal-exit`. Missing tasks, task digest
 mismatch, and stale live identity make the attempt and node `stale` and pause
 the initiative with `reconciliation-conflict`. Seal classification prefers
@@ -331,13 +352,16 @@ Orchestration configuration adds:
 ```json
 {
   "orchestration": {
+    "link_grace_seconds": 30,
     "result_grace_seconds": 120,
     "max_consecutive_failures": 3
   }
 }
 ```
 
-Both values must be positive integers.
+All three values must be positive integers. `link_grace_seconds` bounds the
+launch-to-link publication wait; result publication polls for the immutable
+attempt link every 250 milliseconds before returning a retryable refusal.
 
 ## Storage and JSON contracts
 
@@ -361,7 +385,7 @@ except the explicitly conditional `skipped` member on the list payload.
 | `plan`, `plan --show` | stored `asha.orchestration-plan.v1` record |
 | `approve` | `asha.orchestration-plan-approval.v1` `{contract, initiative, plan, approval}` |
 | `reject` | `asha.orchestration-plan-rejection.v1` `{contract, initiative, plan_digest, reason}` |
-| `activate`, `dispatch`, `pause`, `resume`, `stop`, `cancel`, `action` | stored `asha.orchestration-action.v1` journal record |
+| `activate`, `dispatch`, `pause`, `resume`, `stop`, `cancel`, `finalize`, `archive`, `unarchive`, `action` | stored `asha.orchestration-action.v1` journal record |
 | `approve-salvage` | `asha.orchestration-salvage-approval.v1` `{contract, initiative_id, approval}` |
 | `task report` | `asha.orchestration-result-publication-receipt.v1` `{contract, publication_id, result_id, phase, refusal}` |
 | `task result` | `asha.orchestration-task-results.v1` `{contract, task_id, results}` |
@@ -387,10 +411,108 @@ than only the cumulative path list.
 `{contract, initiative_id, actions}`. Live reconciliation is
 `{contract, initiative_id, observations, conflicts, retries, probes}`.
 
-Increment 3 adds composition, independent review, and verification. Core 2b
-does not compose candidates, create review or verification records, or run a
-coordinator. Repair only stales retained review and verification records that
-were created by a later increment.
+## Composition, review, and repair
+
+A `compose` attempt is an ordinary Control task created at the repository
+scope-origin commit. Its assignment lists an ordered set of exact success
+seals, their immutable commits and trees, and `conflict_policy`
+(`fail-on-conflict` or `worker-resolves`). The worker may combine those inputs
+only inside its own workspace and must publish one candidate. Its seal records
+`base.kind: composition-inputs`, the same ordered seal IDs, and a cumulative
+diff from the shared scope origin. Conflicts and scope failures follow the
+ordinary failure, pause, retry-cap, and needs-input paths.
+
+A `review` attempt is an ordinary read-only Control task based on the terminal
+candidate seal commit. Its assignment and result bind the active plan and
+specification digests, repository and seal IDs, exact commit, base-seal IDs,
+and diff digest. The result must claim `completed`, list no changed files, and
+carry `review.verdict` (`pass` or `findings`), bounded findings with
+`severity`, `location`, and `summary`, plus the exact target object. Acceptance
+also requires a normal zero exit and a filesystem capture against the target
+tree; the controller never snapshots. Every expected tracked entry must retain
+its bytes, mode, and type. Extra untracked or ignored paths are bounded evidence
+and do not fail the review. A rejected review retains immutable failure evidence
+and reopens for a fresh attempt while its ordinary attempt cap permits. Findings
+retain a repair requirement against the exact target node and seal. A later
+successful repair seal marks reviews and verifications bound to its predecessor
+`stale`; the new seal must pass both gates again.
+
+## Controller verification specification
+
+A required verification gate in the approved plan has this closed form:
+
+```json
+{
+  "kind": "verification",
+  "node_id": "verification-a",
+  "required": true,
+  "environment_policy": "minimal",
+  "commands": [
+    {"argv": ["python3", "-c", "print('verified')"], "cwd": ".", "timeout_seconds": 60}
+  ]
+}
+```
+
+The controller creates a fresh run-less Control materialization at the exact
+terminal seal and executes only those argv arrays. `minimal` supplies exactly
+`PATH`, `HOME`, and `LANG`. There is no worker, harness, tmux session, shell, or
+source checkout mutation. On Linux, the runner requires a trusted, executable,
+non-group/other-writable `bwrap` at `/usr/bin/bwrap` or `/bin/bwrap`; it refuses
+before materialization if PID-namespace lifetime containment is unavailable.
+An orchestration-owned supervisor inside that namespace records the exact child
+PID, `/proc` start time, PID namespace, and signed return status. When the
+supervisor exits, the namespace kills residual descendants before post-run jj
+identity is inspected.
+
+The runner refuses before execution: `git push`,
+`git commit`, `git tag`, `jj git push`, `gh`, `curl`, `wget`, `ssh`, `scp`,
+`rsync`, `pip install` (including `python -m pip install`), `uv pip install`,
+`npm publish` or `npm install`, `twine`, `cargo publish`, `gem push`,
+`poetry publish`, `docker`, `sudo`, and recursive forms of `rm`. It also refuses
+environment, shell, and multicall/process wrappers (`env`, common shells,
+`busybox`, `timeout`, `nice`, `nohup`, `setsid`, and `xargs`) rather than claim
+visibility through a wrapper. This conservative argv policy is not hostile-code
+or general filesystem containment; approved program internals remain outside
+the deny classifier.
+
+Each command retains immutable evidence binding the verification and candidate
+bundle digests; repository, seal, and materialization identities; approved
+argv and relative cwd; environment policy and process identity; start and
+finish times; exit, signal, and timeout status; bounded output path and digest;
+and pre/post jj commit and tree identities. Denial, timeout, signal, nonzero
+exit, identity mismatch, or materialization mutation fails verification. A
+failed identity probe is recorded as `indeterminate` with null identity fields,
+never as an inferred commit or tree. Post-run identity requires unchanged jj
+commit, parents, and tree plus unchanged bytes, modes, and types for every
+tracked target entry. Extra ignored or untracked paths are retained as bounded
+evidence and do not fail verification. Raw output streams into a pre-reserved
+`0600` retained artifact while the command runs. The artifact is capped at
+1 MiB and receives a `truncated` marker when the original stream exceeds that
+bound, including on timeout. Its retained bytes match the command digest. The evidence and
+materialization remain retained.
+
+## Bundle, readiness, finalization, and archive
+
+One accepted passing review and one passed controller verification must both
+name the current terminal candidate seal. The controller then binds a
+one-member compatible bundle and advances only `running ->
+ready-for-integration`. Core has no integrate, merge, push, or deletion verb.
+When every graph node is terminal without a qualifying candidate, the operator
+may acknowledge `partial` or `failed` with `finalize --reason`; partial requires
+at least one retained success seal as useful work. Failure-only evidence must
+be finalized with outcome `failed`; a `partial` request is refused.
+
+`archive` changes a terminal outcome to `archived` and records a retained
+inventory without deleting records, evidence, tasks, or workspaces.
+`unarchive` restores the terminal outcome recorded by the latest archive event.
+
+## Increment 3 state-transition amendments
+
+The node transition graph includes `succeeded -> ready` when accepted review
+findings make the exact candidate repairable. The initiative transition graph
+includes `archived -> ready-for-integration | partial | failed | cancelled`
+when `unarchive` restores the terminal outcome retained by the latest archive
+cycle. These are explicit lifecycle edges, not same-state record rewrites.
 
 Exit status is 0 for success, 2 for usage or deterministic refusal, 3 for an
 indeterminate action outcome, 1 when a doctor payload has `ok:false` or an

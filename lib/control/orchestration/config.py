@@ -29,6 +29,7 @@ DEFAULT_MAX_RETAINED_BYTES_BEFORE_PAUSE = 10737418240
 DEFAULT_MAX_RETAINED_INODES_BEFORE_PAUSE = 200000
 DEFAULT_COORDINATOR_WAIT_SECONDS = 120
 DEFAULT_RESULT_GRACE_SECONDS = 120
+DEFAULT_LINK_GRACE_SECONDS = 30
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
 
 _FIELDS = frozenset({
@@ -42,6 +43,7 @@ _FIELDS = frozenset({
     "max_retained_inodes_before_pause",
     "coordinator_wait_seconds",
     "result_grace_seconds",
+    "link_grace_seconds",
     "max_consecutive_failures",
 })
 _LIMIT_FIELDS = (
@@ -53,6 +55,7 @@ _LIMIT_FIELDS = (
     "max_retained_inodes_before_pause",
     "coordinator_wait_seconds",
     "result_grace_seconds",
+    "link_grace_seconds",
     "max_consecutive_failures",
 )
 
@@ -75,6 +78,7 @@ class OrchestrationConfig:
     max_retained_inodes_before_pause: int
     coordinator_wait_seconds: int
     result_grace_seconds: int
+    link_grace_seconds: int
     max_consecutive_failures: int
 
     @property
@@ -137,6 +141,7 @@ def load_config(env: Mapping[str, str] | None = None) -> OrchestrationConfig:
         "max_retained_inodes_before_pause": DEFAULT_MAX_RETAINED_INODES_BEFORE_PAUSE,
         "coordinator_wait_seconds": DEFAULT_COORDINATOR_WAIT_SECONDS,
         "result_grace_seconds": DEFAULT_RESULT_GRACE_SECONDS,
+        "link_grace_seconds": DEFAULT_LINK_GRACE_SECONDS,
         "max_consecutive_failures": DEFAULT_MAX_CONSECUTIVE_FAILURES,
     }
     limits = {

@@ -79,6 +79,8 @@ MAX_EVIDENCE_IDS = 256
 MAX_SUBJECT_IDS = 64
 MAX_BUNDLE_MEMBERS = 32
 MAX_VERIFICATION_COMMANDS = 128
+MAX_VERIFICATION_TIMEOUT_SECONDS = 3600
+MAX_VERIFICATION_COMMAND_SPEC_BYTES = 32 * 1024
 
 MAX_EVENT_SEQUENCE = 999999
 MAX_STATE_REVISION = 2**63 - 1
@@ -257,6 +259,7 @@ def _string_list(
     maximum_items: int,
     maximum_bytes: int,
     validator: Callable[[Any, str], str] | None = None,
+    unique: bool = True,
 ) -> list[str]:
     result = _array(value, name, maximum_items)
     checked: list[str] = []
@@ -265,7 +268,8 @@ def _string_list(
             checked.append(_text(item, f"{name}[{index}]", maximum=maximum_bytes))
         else:
             checked.append(validator(item, f"{name}[{index}]"))
-    _unique(checked, name)
+    if unique:
+        _unique(checked, name)
     return checked
 
 
@@ -464,6 +468,10 @@ _initiative_pairs += [
     (state, "archived")
     for state in ("ready-for-integration", "partial", "failed", "cancelled")
 ]
+_initiative_pairs += [
+    ("archived", state)
+    for state in ("ready-for-integration", "partial", "failed", "cancelled")
+]
 INITIATIVE_TRANSITIONS = _edges(INITIATIVE_STATES, _initiative_pairs)
 
 _COORDINATOR_LIVE = frozenset({"starting", "active", "waiting", "needs-input", "stopping"})
@@ -499,7 +507,7 @@ _node_pairs = [
     ("dispatching", "evaluating"), ("running", "evaluating"),
     ("needs-input", "evaluating"), ("needs-input", "ready"),
     ("evaluating", "succeeded"), ("evaluating", "ready"),
-    ("evaluating", "failed"),
+    ("evaluating", "failed"), ("succeeded", "ready"),
 ]
 _node_pairs += [(state, "needs-input") for state in _NODE_ACTIVE]
 _node_pairs += [(state, "cancelled") for state in _NODE_NONTERMINAL]
@@ -739,12 +747,16 @@ _NODE_KEYS = frozenset({
 
 
 def validate_node(value: Any) -> dict[str, Any]:
-    node = _object(value, "node", _NODE_KEYS)
+    expected = _NODE_KEYS | ({"conflict_policy"} if isinstance(value, dict) and value.get("type") == "compose" else set())
+    node = _object(value, "node", frozenset(expected))
     if node["contract"] != NODE_CONTRACT:
         raise ModelError(f"node contract must be {NODE_CONTRACT}")
     validate_slug(node["node_id"], "node_id")
     if node["type"] not in NODE_TYPES:
         raise ModelError("node type is invalid")
+    if node["type"] == "compose":
+        if node["conflict_policy"] not in {"fail-on-conflict", "worker-resolves"}:
+            raise ModelError("compose conflict_policy is invalid")
     _text(node["goal"], "node goal", maximum=MAX_GOAL_BYTES)
     _text(node["role"], "node role", maximum=MAX_ROLE_BYTES, pattern=_TOKEN)
     if node["workflow"] not in WORKFLOWS:
@@ -797,15 +809,50 @@ def validate_plan_record(value: Any) -> dict[str, Any]:
     validate_limits(plan["limits"], "plan limits")
     gates = _array(plan["declared_gates"], "plan declared_gates", MAX_DECLARED_GATES)
     for index, gate_value in enumerate(gates):
+        gate_kind = gate_value.get("kind") if isinstance(gate_value, dict) else None
+        gate_keys = {"kind", "node_id", "required"}
+        if gate_kind == "verification":
+            gate_keys.update({"commands", "environment_policy"})
         gate = _object(
             gate_value, f"plan declared_gates[{index}]",
-            frozenset({"kind", "node_id", "required"}),
+            frozenset(gate_keys),
         )
         if gate["kind"] not in {"review", "verification"}:
             raise ModelError("declared gate kind is invalid")
         validate_slug(gate["node_id"], "declared gate node_id")
         if not isinstance(gate["required"], bool):
             raise ModelError("declared gate required must be boolean")
+        if gate["kind"] == "verification":
+            if gate["environment_policy"] != "minimal":
+                raise ModelError("verification environment_policy must be minimal")
+            commands = _array(
+                gate["commands"], "verification gate commands",
+                MAX_VERIFICATION_COMMANDS,
+            )
+            if not commands:
+                raise ModelError("verification gate commands must not be empty")
+            for command_index, command_value in enumerate(commands):
+                command = _object(
+                    command_value,
+                    f"verification gate commands[{command_index}]",
+                    frozenset({"argv", "cwd", "timeout_seconds"}),
+                )
+                argv = _string_list(
+                    command["argv"], "verification gate argv",
+                    maximum_items=MAX_ARGV_ITEMS, maximum_bytes=MAX_ARG_BYTES,
+                    unique=False,
+                )
+                if not argv:
+                    raise ModelError("verification gate argv must not be empty")
+                _relative_path(command["cwd"], "verification gate cwd")
+                _integer(
+                    command["timeout_seconds"], "verification gate timeout_seconds",
+                    minimum=1, maximum=MAX_VERIFICATION_TIMEOUT_SECONDS,
+                )
+                if len(_canonical_bytes(command)) > MAX_VERIFICATION_COMMAND_SPEC_BYTES:
+                    raise ModelError(
+                        "verification gate command exceeds the immutable evidence capacity"
+                    )
     nested = _object(
         plan["nested_workflow_policy"], "plan nested_workflow_policy",
         frozenset({"workflow", "single_writer"}),
@@ -891,9 +938,42 @@ _RESULT_KEYS = frozenset({
     "verification_attestations", "concerns", "follow_up", "published_at",
 })
 
+_REVIEW_FINDING_KEYS = frozenset({"severity", "location", "summary"})
+_REVIEW_RESULT_TARGET_KEYS = frozenset({
+    "specification_digest", "active_plan_digest", "repository_id", "seal_id",
+    "jj_commit_id", "base_seal_ids", "diff_digest",
+})
+_REVIEW_RESULT_KEYS = frozenset({"verdict", "findings", "target"})
+
+
+def _review_findings(value: Any, name: str) -> list[dict[str, Any]]:
+    findings = _array(value, name, MAX_FINDINGS)
+    for index, item_value in enumerate(findings):
+        item = _object(item_value, f"{name}[{index}]", _REVIEW_FINDING_KEYS)
+        if item["severity"] not in {"low", "medium", "high", "critical"}:
+            raise ModelError("review finding severity is invalid")
+        _relative_path(item["location"], "review finding location")
+        _text(item["summary"], "review finding summary", maximum=MAX_FINDING_BYTES)
+    return copy.deepcopy(findings)
+
+
+def _review_target(value: Any, name: str) -> dict[str, Any]:
+    target = _object(value, name, _REVIEW_RESULT_TARGET_KEYS)
+    for field in ("specification_digest", "active_plan_digest", "diff_digest"):
+        _digest(target[field], f"{name}.{field}")
+    for field in ("repository_id", "seal_id"):
+        canonical_uuid(target[field], f"{name}.{field}")
+    _git_object_id(target["jj_commit_id"], f"{name}.jj_commit_id")
+    _string_list(
+        target["base_seal_ids"], f"{name}.base_seal_ids",
+        maximum_items=MAX_SEAL_INPUTS, maximum_bytes=36, validator=canonical_uuid,
+    )
+    return copy.deepcopy(target)
+
 
 def validate_result(value: Any) -> dict[str, Any]:
-    result = _object(value, "result", _RESULT_KEYS)
+    expected = _RESULT_KEYS | ({"review"} if isinstance(value, dict) and "review" in value else set())
+    result = _object(value, "result", frozenset(expected))
     if result["contract"] != RESULT_CONTRACT:
         raise ModelError(f"result contract must be {RESULT_CONTRACT}")
     for field in ("publication_id", "result_id", "initiative_id", "attempt_id", "task_id", "run_id"):
@@ -925,6 +1005,18 @@ def validate_result(value: Any) -> dict[str, Any]:
         maximum_bytes=MAX_FOLLOW_UP_BYTES,
     )
     _timestamp(result["published_at"], "result published_at")
+    if "review" in result:
+        payload = _object(result["review"], "result review", _REVIEW_RESULT_KEYS)
+        if payload["verdict"] not in {"pass", "findings"}:
+            raise ModelError("result review verdict is invalid")
+        findings = _review_findings(payload["findings"], "result review findings")
+        _review_target(payload["target"], "result review target")
+        if payload["verdict"] == "pass" and findings:
+            raise ModelError("passing result review must not contain findings")
+        if payload["verdict"] == "findings" and not findings:
+            raise ModelError("findings result review requires findings")
+        if result["claim_status"] != "completed" or result["files_changed"]:
+            raise ModelError("review result requires completed claim and no changed files")
     return copy.deepcopy(result)
 
 
@@ -1103,10 +1195,9 @@ def validate_seal(value: Any) -> dict[str, Any]:
     return copy.deepcopy(seal)
 
 
-_FINDING_KEYS = frozenset({"severity", "summary", "evidence_location"})
 _REVIEW_TARGET_KEYS = frozenset({
     "seal_id", "active_plan_digest", "specification_digest", "repository_id",
-    "jj_commit_id", "diff_digest",
+    "jj_commit_id", "base_seal_ids", "diff_digest",
 })
 _REVIEW_KEYS = frozenset({
     "contract", "review_id", "initiative_id", "node_id", "attempt_id", "task_id",
@@ -1127,21 +1218,10 @@ def validate_review(value: Any) -> dict[str, Any]:
         _nullable_uuid(review[field], f"review {field}")
         if review["state"] != "pending" and review[field] is None:
             raise ModelError(f"review {field} is required from running onward")
-    target = _object(review["target"], "review target", _REVIEW_TARGET_KEYS)
-    for field in ("seal_id", "repository_id"):
-        canonical_uuid(target[field], f"review target {field}")
-    for field in ("active_plan_digest", "specification_digest", "diff_digest"):
-        _digest(target[field], f"review target {field}")
-    _git_object_id(target["jj_commit_id"], "review target jj_commit_id")
+    _review_target(review["target"], "review target")
     if review["verdict"] not in {None, "pass", "findings"}:
         raise ModelError("review verdict is invalid")
-    findings = _array(review["findings"], "review findings", MAX_FINDINGS)
-    for index, item_value in enumerate(findings):
-        item = _object(item_value, f"review findings[{index}]", _FINDING_KEYS)
-        if item["severity"] not in {"low", "medium", "high", "critical"}:
-            raise ModelError("review finding severity is invalid")
-        _text(item["summary"], "review finding summary", maximum=MAX_FINDING_BYTES)
-        _relative_path(item["evidence_location"], "review finding evidence_location")
+    findings = _review_findings(review["findings"], "review findings")
     if review["verdict"] == "pass" and findings:
         raise ModelError("passing review must not contain findings")
     if review["verdict"] == "findings" and not findings:
@@ -1162,11 +1242,15 @@ def validate_review(value: Any) -> dict[str, Any]:
 _VERIFICATION_COMMAND_KEYS = frozenset({
     "argv", "cwd", "environment_policy_id", "started_at", "finished_at",
     "exit_code", "signal", "timed_out", "output_digest", "pre_identity_digest",
-    "post_identity_digest",
+    "post_identity_digest", "command_id", "timeout_seconds", "process_identity",
+    "output_path", "pre_jj_commit_id", "pre_tree_digest", "post_jj_commit_id",
+    "post_tree_digest", "pre_identity_status", "post_identity_status",
+    "output_truncated", "output_original_bytes",
 })
 _VERIFICATION_KEYS = frozenset({
     "contract", "verification_id", "initiative_id", "node_id", "bundle_digest",
     "active_plan_digest", "state", "commands", "evidence_ids", "outcome",
+    "repository_id", "seal_id", "materialization_id", "materialization_path",
     "created_at", "updated_at",
 })
 
@@ -1177,6 +1261,9 @@ def validate_verification(value: Any) -> dict[str, Any]:
         raise ModelError(f"verification contract must be {VERIFICATION_CONTRACT}")
     canonical_uuid(record["verification_id"], "verification_id")
     canonical_uuid(record["initiative_id"], "verification initiative_id")
+    for field in ("repository_id", "seal_id", "materialization_id"):
+        canonical_uuid(record[field], f"verification {field}")
+    _canonical_path(record["materialization_path"], "verification materialization_path")
     validate_slug(record["node_id"], "verification node_id")
     _digest(record["bundle_digest"], "verification bundle_digest")
     _digest(record["active_plan_digest"], "verification active_plan_digest")
@@ -1187,10 +1274,17 @@ def validate_verification(value: Any) -> dict[str, Any]:
         item = _object(value, f"verification commands[{index}]", _VERIFICATION_COMMAND_KEYS)
         _string_list(
             item["argv"], "verification argv", maximum_items=MAX_ARGV_ITEMS,
-            maximum_bytes=MAX_ARG_BYTES,
+            maximum_bytes=MAX_ARG_BYTES, unique=False,
         )
         _relative_path(item["cwd"], "verification cwd")
         _token(item["environment_policy_id"], "verification environment_policy_id")
+        canonical_uuid(item["command_id"], "verification command_id")
+        _integer(
+            item["timeout_seconds"], "verification timeout_seconds",
+            minimum=1, maximum=MAX_VERIFICATION_TIMEOUT_SECONDS,
+        )
+        _token(item["process_identity"], "verification process_identity")
+        _canonical_path(item["output_path"], "verification output_path")
         _timestamp(item["started_at"], "verification started_at")
         _timestamp(item["finished_at"], "verification finished_at")
         if item["exit_code"] is not None:
@@ -1202,8 +1296,32 @@ def validate_verification(value: Any) -> dict[str, Any]:
             _integer(item["signal"], "verification signal", minimum=1, maximum=255)
         if not isinstance(item["timed_out"], bool):
             raise ModelError("verification timed_out must be boolean")
-        for field in ("output_digest", "pre_identity_digest", "post_identity_digest"):
-            _digest(item[field], f"verification {field}")
+        if not isinstance(item["output_truncated"], bool):
+            raise ModelError("verification output_truncated must be boolean")
+        _integer(
+            item["output_original_bytes"], "verification output_original_bytes",
+            minimum=0, maximum=2**63 - 1,
+        )
+        _digest(item["output_digest"], "verification output_digest")
+        for side in ("pre", "post"):
+            status = item[f"{side}_identity_status"]
+            if status not in {"observed", "indeterminate"}:
+                raise ModelError(
+                    f"verification {side}_identity_status is invalid"
+                )
+            fields = (
+                f"{side}_identity_digest", f"{side}_jj_commit_id",
+                f"{side}_tree_digest",
+            )
+            if status == "indeterminate":
+                if any(item[field] is not None for field in fields):
+                    raise ModelError(
+                        f"indeterminate verification {side} identity must be null"
+                    )
+                continue
+            _digest(item[fields[0]], f"verification {fields[0]}")
+            _git_object_id(item[fields[1]], f"verification {fields[1]}")
+            _digest(item[fields[2]], f"verification {fields[2]}")
     _string_list(
         record["evidence_ids"], "verification evidence_ids", maximum_items=MAX_EVIDENCE_IDS,
         maximum_bytes=36, validator=canonical_uuid,
@@ -1387,9 +1505,14 @@ def validate_evidence(value: Any) -> dict[str, Any]:
         record["summary"], "evidence summary",
         maximum=(
             MAX_EVIDENCE_SUMMARY_BYTES
-            if record["kind"] == "seal-evidence" else MAX_SUMMARY_BYTES
+            if record["kind"] in {"seal-evidence", "verification-command"}
+            else MAX_SUMMARY_BYTES
         ),
     )
+    if record["digest"] != hashlib.sha256(
+        record["summary"].encode("utf-8")
+    ).hexdigest():
+        raise ModelError("evidence digest does not match its summary")
     _timestamp(record["recorded_at"], "evidence recorded_at")
     return copy.deepcopy(record)
 

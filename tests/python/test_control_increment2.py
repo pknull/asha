@@ -24,7 +24,8 @@ from lib.control.jj import JjAdapter, JjError, WorkspaceIdentity
 from lib.control.launch import recover_task
 from lib.control.prepare import derive_repository_identity
 from lib.control.prepare import (
-    PrepareRequest, PreparationError, prepare_task_workspace, rollback_prelaunch,
+    PrepareRequest, PreparationError, plan_materialization, prepare_materialization,
+    prepare_task_workspace, rollback_prelaunch,
 )
 from lib.control.store import StoreCommittedError, TaskStore, task_digest
 from lib.control.transaction import CreationJournalStore, JournalError
@@ -544,6 +545,120 @@ class RealJjPreparationTests(unittest.TestCase):
         observed = next(item for item in listed if item["task_id"] == result["task_id"])
         self.assertEqual(observed["status"], "stale")
         self.assertIn("missing", observed["blocker"])
+
+    def test_controller_materialization_is_exact_retained_and_runless(self) -> None:
+        other = prepare_task_workspace(self.config, self.request("other-workspace"))
+        before_source = self.source_facts()
+        before_tasks = TaskStore(self.config).list()
+        before_workspaces = JjAdapter().workspace_identities(self.source)
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        materialized = prepare_materialization(
+            self.config, self.source, base, "verification-one",
+        )
+
+        path = Path(materialized["workspace_path"])
+        identity = JjAdapter().inspect_workspace(
+            path, materialized["workspace_name"], require_empty=True,
+        )
+        self.assertEqual(identity.parent_commit_ids, (base,))
+        self.assertEqual(identity.change_id, materialized["change_id"])
+        self.assertEqual(identity.commit_id, materialized["working_commit_id"])
+        self.assertEqual(path.parent.name, "materializations")
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+        self.assertFalse((path / ".asha" / "control-task.json").exists())
+        self.assertEqual(before_source, self.source_facts())
+        self.assertEqual(before_tasks, TaskStore(self.config).list())
+        after_workspaces = JjAdapter().workspace_identities(self.source)
+        self.assertEqual(
+            after_workspaces[other["jj"]["workspace_name"]],
+            before_workspaces[other["jj"]["workspace_name"]],
+        )
+        self.assertIn(materialized["workspace_name"], after_workspaces)
+        self.assertTrue(path.is_dir(), "controller materialization must be retained")
+
+    def test_controller_materialization_planner_is_deterministic_and_read_only(self) -> None:
+        before_source = self.source_facts()
+        before_tasks = TaskStore(self.config).list()
+        before_workspaces = JjAdapter().workspace_identities(self.source)
+
+        first = plan_materialization(
+            self.config, self.source, "planned-verification",
+        )
+        second = plan_materialization(
+            self.config, self.source, "planned-verification",
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            Path(first["workspace_path"]).parent.name, "materializations",
+        )
+        self.assertFalse(Path(first["workspace_path"]).exists())
+        self.assertEqual(before_source, self.source_facts())
+        self.assertEqual(before_tasks, TaskStore(self.config).list())
+        self.assertEqual(
+            before_workspaces, JjAdapter().workspace_identities(self.source),
+        )
+
+    def test_controller_materialization_partial_add_is_retained_private(self) -> None:
+        destinations: list[Path] = []
+
+        class PartialAddAdapter(JjAdapter):
+            def add_workspace(inner_self, source, destination, name, base, message, operation):
+                super().add_workspace(source, destination, name, base, message, operation)
+                destinations.append(destination)
+                destination.chmod(0o755)
+                raise JjError("injected after materialization add")
+
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        with self.assertRaises(JjError):
+            prepare_materialization(
+                self.config, self.source, base, "partial-verification",
+                jj=PartialAddAdapter(),
+            )
+        self.assertEqual(len(destinations), 1)
+        self.assertTrue(destinations[0].is_dir())
+        self.assertEqual(stat.S_IMODE(destinations[0].stat().st_mode), 0o700)
+
+    def test_existing_unmarked_materializations_path_is_preserved_and_refused(self) -> None:
+        task = prepare_task_workspace(self.config, self.request("namespace-probe"))
+        container = Path(task["jj"]["workspace_path"]).parent / "materializations"
+        container.mkdir(mode=0o700)
+        (container / "legacy-task-bytes").write_bytes(b"preserve exactly\n")
+        before = self.workspace_bytes(container)
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        with self.assertRaisesRegex(PreparationError, "authenticated controller namespace"):
+            prepare_materialization(
+                self.config, self.source, base, "collision-one",
+            )
+
+        self.assertEqual(self.workspace_bytes(container), before)
+
+    def test_materialization_namespace_reserves_same_named_task_slug(self) -> None:
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        materialized = prepare_materialization(
+            self.config, self.source, base, "namespace-first",
+        )
+        container = Path(materialized["workspace_path"]).parent
+        before = self.workspace_bytes(container)
+
+        with self.assertRaisesRegex(PreparationError, "reserved"):
+            prepare_task_workspace(self.config, self.request("materializations"))
+
+        self.assertEqual(self.workspace_bytes(container), before)
 
     def test_cli_creation_reconciliation_detects_live_change_drift_read_only(self) -> None:
         request = self.request("cli-live-drift")

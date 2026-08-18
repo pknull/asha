@@ -69,7 +69,7 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CL
 _LAYOUT_DIRECTORIES = (
     "plans", "nodes", "attempts", "assignments", "links", "result-publications", "results",
     "seal-preparations", "seals", "reviews", "verifications", "bundles", "approvals", "actions",
-    "evidence", "events", "locks",
+    "evidence", "outputs", "events", "locks",
 )
 _INVENTORY_CLASSES = ("initiative",) + _LAYOUT_DIRECTORIES
 
@@ -871,6 +871,24 @@ class InitiativeStore:
             value = validate_review(record)
         except ModelError as exc:
             raise StoreError(str(exc)) from exc
+        try:
+            current = self.read_review(initiative_id, value["review_id"])
+        except StoreError as exc:
+            if "not found" not in str(exc):
+                raise
+        else:
+            if current["state"] in {
+                "accepted-pass", "accepted-findings", "failed", "indeterminate",
+            }:
+                unchanged = copy.deepcopy(current)
+                unchanged.update({
+                    "state": "stale", "verdict": None, "findings": [],
+                    "updated_at": value["updated_at"],
+                })
+                if value != unchanged:
+                    raise StoreError(
+                        "terminal review evidence is immutable; only state may become stale"
+                    )
         mutable = {
             "attempt_id", "task_id", "run_id", "state", "verdict", "findings",
             "updated_at",
@@ -895,6 +913,22 @@ class InitiativeStore:
             value = validate_verification(record)
         except ModelError as exc:
             raise StoreError(str(exc)) from exc
+        try:
+            current = self.read_verification(initiative_id, value["verification_id"])
+        except StoreError as exc:
+            if "not found" not in str(exc):
+                raise
+        else:
+            if current["state"] in {"passed", "failed", "indeterminate"}:
+                unchanged = copy.deepcopy(current)
+                unchanged.update({
+                    "state": "stale", "outcome": None,
+                    "updated_at": value["updated_at"],
+                })
+                if value != unchanged:
+                    raise StoreError(
+                        "terminal verification evidence is immutable; only state may become stale"
+                    )
         mutable = {"state", "commands", "evidence_ids", "outcome", "updated_at"}
         return self._save_subrecord(
             initiative_id, "verifications", f"{value['verification_id']}.json", value,
@@ -959,6 +993,125 @@ class InitiativeStore:
         return self._save_uuid_immutable(
             initiative_id, "evidence", record, validate_evidence, "evidence_id"
         )
+
+    def save_output(
+        self, initiative_id: str, output_id: str, content: bytes,
+    ) -> Path:
+        """Retain one bounded command-output artifact as private write-once bytes."""
+        try:
+            output_id = canonical_uuid(output_id, "output_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        if not isinstance(content, bytes) or len(content) > 1024 * 1024:
+            raise StoreError("command output must contain at most 1048576 bytes")
+        name = f"{output_id}.bin"
+        with self._locked_fds(initiative_id) as (_, initiative_fd):
+            directory_fd = self._subdirectory(initiative_fd, "outputs")
+            try:
+                self._write_once(directory_fd, name, content)
+            finally:
+                _close(directory_fd)
+        return self.config.initiatives_dir / initiative_id / "outputs" / name
+
+    def reserve_output(self, initiative_id: str, output_id: str) -> Path:
+        """Create one private output destination before a command starts."""
+        try:
+            output_id = canonical_uuid(output_id, "output_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        name = f"{output_id}.bin"
+        with self._locked_fds(initiative_id) as (_, initiative_fd):
+            evidence_fd = self._subdirectory(initiative_fd, "evidence")
+            directory_fd = self._subdirectory(initiative_fd, "outputs")
+            try:
+                if self._read_if_exists(
+                    evidence_fd, f"{output_id}.json", "evidence record",
+                    validate_evidence,
+                ) is not None:
+                    raise StoreError("cannot reserve output after evidence publication")
+                self._write_once(directory_fd, name, b"")
+            finally:
+                _close(directory_fd)
+                _close(evidence_fd)
+        return self.config.initiatives_dir / initiative_id / "outputs" / name
+
+    def finalize_reserved_output(
+        self, initiative_id: str, output_id: str, content: bytes,
+    ) -> Path:
+        """Durably finish a reserved output before immutable evidence binds it."""
+        try:
+            output_id = canonical_uuid(output_id, "output_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        if not isinstance(content, bytes) or len(content) > 1024 * 1024:
+            raise StoreError("command output must contain at most 1048576 bytes")
+        name = f"{output_id}.bin"
+        with self._locked_fds(initiative_id) as (_, initiative_fd):
+            evidence_fd = self._subdirectory(initiative_fd, "evidence")
+            directory_fd = self._subdirectory(initiative_fd, "outputs")
+            descriptor = -1
+            try:
+                if self._read_if_exists(
+                    evidence_fd, f"{output_id}.json", "evidence record",
+                    validate_evidence,
+                ) is not None:
+                    raise StoreError("retained output is immutable after evidence publication")
+                descriptor = os.open(
+                    name, os.O_WRONLY | _NONBLOCK | _NOFOLLOW | _CLOEXEC,
+                    dir_fd=directory_fd,
+                )
+                _validate_open_file(descriptor, "reserved command output")
+                os.ftruncate(descriptor, 0)
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                self._write_all(descriptor, content)
+                os.fsync(descriptor)
+                os.fsync(directory_fd)
+            except FileNotFoundError as exc:
+                raise StoreError(f"reserved command output not found: {name}") from exc
+            except StoreError:
+                raise
+            except OSError as exc:
+                raise StoreError(f"reserved command output save failed: {exc}") from exc
+            finally:
+                _close(descriptor)
+                _close(directory_fd)
+                _close(evidence_fd)
+        return self.config.initiatives_dir / initiative_id / "outputs" / name
+
+    def read_output(self, initiative_id: str, output_id: str) -> bytes:
+        """Read one private retained output with its ownership invariants checked."""
+        try:
+            output_id = canonical_uuid(output_id, "output_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        name = f"{output_id}.bin"
+        with self._locked_fds(initiative_id) as (_, initiative_fd):
+            directory_fd = self._subdirectory(initiative_fd, "outputs")
+            descriptor = -1
+            try:
+                descriptor = _open_existing_file(
+                    directory_fd, name, "command output",
+                )
+                metadata = os.fstat(descriptor)
+                if metadata.st_size > 1024 * 1024:
+                    raise StoreError("command output exceeds 1048576 bytes")
+                remaining = metadata.st_size
+                chunks: list[bytes] = []
+                while remaining:
+                    chunk = os.read(descriptor, min(65536, remaining))
+                    if not chunk:
+                        raise StoreError("command output shortened during read")
+                    chunks.append(chunk)
+                    remaining -= len(chunk)
+                if os.read(descriptor, 1):
+                    raise StoreError("command output grew during read")
+                content = b"".join(chunks)
+            except FileNotFoundError as exc:
+                raise StoreError(f"command output not found: {name}") from exc
+            finally:
+                _close(descriptor)
+                _close(directory_fd)
+        return content
 
     def _save_uuid_immutable(
         self,
@@ -1112,6 +1265,12 @@ class InitiativeStore:
         return self._list_subrecords_snapshot(
             initiative_id, "verifications", validate_verification,
             re.compile(r"([0-9a-f-]{36})\.json"), "verification_id",
+        )
+
+    def list_evidence_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "evidence", validate_evidence,
+            re.compile(r"([0-9a-f-]{36})\.json"), "evidence_id",
         )
 
     def list_bundles_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:

@@ -49,6 +49,7 @@ class OrchestrationConfigTests(unittest.TestCase):
             self.assertEqual(config.max_retained_inodes_before_pause, 200000)
             self.assertEqual(config.coordinator_wait_seconds, 120)
             self.assertEqual(config.result_grace_seconds, 120)
+            self.assertEqual(config.link_grace_seconds, 30)
             self.assertEqual(config.max_consecutive_failures, 3)
             self.assertEqual(
                 config.initiatives_dir, root / "state/asha/control/initiatives"
@@ -69,6 +70,7 @@ class OrchestrationConfigTests(unittest.TestCase):
                 "max_retained_inodes_before_pause": 100,
                 "coordinator_wait_seconds": 30,
                 "result_grace_seconds": 45,
+                "link_grace_seconds": 7,
                 "max_consecutive_failures": 5,
             }
             self.write(Path(env["ASHA_CONFIG"]), {"orchestration": value})
@@ -85,6 +87,7 @@ class OrchestrationConfigTests(unittest.TestCase):
             {"max_total_tasks": "12"},
             {"max_total_tasks": 0},
             {"max_total_tasks": -1},
+            {"link_grace_seconds": 0},
         ]
         for bad in bad_values:
             with self.subTest(bad=bad), tempfile.TemporaryDirectory() as td:

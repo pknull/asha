@@ -149,7 +149,9 @@ class OrchestrationStoreTests(unittest.TestCase):
         active = initiative()
         active["active_plan"] = {
             "revision": 1,
-            "digest": DIGEST,
+            "digest": hashlib.sha256(
+                b"Controller-observed evidence."
+            ).hexdigest(),
             "approval_id": "33333333-3333-4333-8333-333333333333",
         }
         mutations.append(active)
@@ -225,7 +227,9 @@ class OrchestrationStoreTests(unittest.TestCase):
             "initiative_id": INITIATIVE_ID,
             "kind": "process-exit",
             "subject_id": NODE_ID,
-            "digest": DIGEST,
+            "digest": hashlib.sha256(
+                b"Controller-observed evidence."
+            ).hexdigest(),
             "summary": "Controller-observed evidence.",
             "recorded_at": TIMESTAMP,
         }
@@ -414,6 +418,14 @@ class OrchestrationStoreTests(unittest.TestCase):
             accepted,
             expected_digest=record_digest(current_review),
         )
+        rewritten_review = copy.deepcopy(accepted)
+        rewritten_review["updated_at"] = "2026-08-17T16:00:03.500000Z"
+        with self.assertRaisesRegex(StoreError, "terminal review evidence"):
+            self.store.save_review(
+                INITIATIVE_ID,
+                rewritten_review,
+                expected_digest=record_digest(accepted),
+            )
         stale_review = copy.deepcopy(accepted)
         stale_review.update({
             "state": "stale", "verdict": None, "findings": [],
@@ -473,6 +485,14 @@ class OrchestrationStoreTests(unittest.TestCase):
             passed,
             expected_digest=record_digest(current_verification),
         )
+        rewritten_verification = copy.deepcopy(passed)
+        rewritten_verification["updated_at"] = "2026-08-17T16:00:03.500000Z"
+        with self.assertRaisesRegex(StoreError, "terminal verification evidence"):
+            self.store.save_verification(
+                INITIATIVE_ID,
+                rewritten_verification,
+                expected_digest=record_digest(passed),
+            )
         stale_verification = copy.deepcopy(passed)
         stale_verification.update({
             "state": "stale", "outcome": None,
@@ -636,7 +656,9 @@ with store.transaction_lock({INITIATIVE_ID!r}):
             "initiative_id": INITIATIVE_ID,
             "kind": "process-exit",
             "subject_id": NODE_ID,
-            "digest": DIGEST,
+            "digest": hashlib.sha256(
+                b"Controller-observed evidence."
+            ).hexdigest(),
             "summary": "Controller-observed evidence.",
             "recorded_at": TIMESTAMP,
         }

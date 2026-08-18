@@ -19,6 +19,10 @@ PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_orchestration_results \
   tests.python.test_orchestration_seals \
   tests.python.test_orchestration_salvage \
+  tests.python.test_orchestration_composition \
+  tests.python.test_orchestration_review \
+  tests.python.test_orchestration_verification \
+  tests.python.test_orchestration_readiness \
   tests.python.test_orchestration_real_execution
 
 WORK="$(mktemp -d)"

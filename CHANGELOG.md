@@ -12,6 +12,18 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration Core complete: Increments 1-3
+
+- Added ordered exact-seal composition, independent mutation-free review,
+  controller-owned approved-argv verification in fresh retained
+  materializations, exact-seal candidate bundles, readiness/finalization, and
+  retained archive and unarchive operations.
+- Added composition, review, verification, readiness, archive, and real-jj
+  materialization coverage, including verification denial and failure paths.
+- Closed the worker launch-to-link publication race with a bounded link grace
+  period, and documented the narrow live-worker jj mid-snapshot reconciliation
+  downgrade that applies only while process ownership still matches.
+
 #### Orchestration Core Increment 2b
 
 - Added managed worker result publication with durable restartable phases,

@@ -78,7 +78,10 @@ Usage:
   asha initiative pause|resume <id> [--json]
   asha initiative stop <id> --attempt ATTEMPT [--json]
   asha initiative cancel <id> --node NODE [--json]
-  asha initiative list [--json]
+  asha initiative finalize <id> --outcome partial|failed --reason TEXT [--json]
+  asha initiative archive <id> [--json]
+  asha initiative unarchive <id> [--json]
+  asha initiative list [--all] [--json]
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
   asha initiative doctor [--json]""", file=stream)
 
@@ -749,6 +752,14 @@ def _operator_action(
         allowed.add("node")
         _required(options, "node")
         action_class, payload = "cancel-node", {"node_id": options["node"]}
+    elif command == "finalize":
+        allowed.update({"outcome", "reason"})
+        _required(options, "outcome", "reason")
+        action_class, payload = "finalize", {
+            "outcome": options["outcome"], "reason": options["reason"],
+        }
+    elif command in {"archive", "unarchive"}:
+        action_class, payload = command, {}
     else:
         raise ValueError(f"unknown operator action: {command}")
     _only(options, allowed, command)
@@ -814,15 +825,24 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
         result, json_output = _action_command(tail, store)
         _payload(result, json_output)
         return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
-    if command in {"activate", "dispatch", "pause", "resume", "stop", "cancel"}:
+    if command in {
+        "activate", "dispatch", "pause", "resume", "stop", "cancel",
+        "finalize", "archive", "unarchive",
+    }:
         result, json_output = _operator_action(command, tail, store)
         _payload(result, json_output)
         return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
     options_tail, json_output = [], False
     if command == "list":
-        options = _parse_options(tail, flags={"json"})
-        _only(options, {"json"}, "list")
-        payload = {"contract": LIST_CONTRACT, "initiatives": store.list_initiatives()}
+        options = _parse_options(tail, flags={"all", "json"})
+        _only(options, {"all", "json"}, "list")
+        payload = {
+            "contract": LIST_CONTRACT,
+            "initiatives": [
+                item for item in store.list_initiatives()
+                if options["all"] or item["state"] != "archived"
+            ],
+        }
         if store.skipped:
             payload["skipped"] = list(store.skipped)
         _payload(payload, bool(options["json"]))
