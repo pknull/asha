@@ -183,5 +183,7 @@ PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_control_increment2.RealJjPreparationTests \
   tests.python.test_control_increment3.RealTmuxLaunchTests \
   tests.python.test_control_popup_client.RealTmuxPopupClientTests \
+  tests.python.test_control_prune.RealTmuxPruneTests \
+  tests.python.test_control_prune.RealJjForgetTests \
   tests.python.test_control_increment6.RealGithubSourceTests
 printf 'ok - Control real-jj, isolated-tmux, and hermetic GitHub-source integration\n'

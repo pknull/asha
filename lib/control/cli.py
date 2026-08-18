@@ -30,6 +30,10 @@ from .launch import (
 )
 from .model import canonical_uuid, new_uuid
 from .prepare import PrepareRequest, PreparationError, prepare_task_workspace
+from .prune import (
+    PRUNE_CONTRACT, PruneError, PruneRecordStore, orchestration_bindings,
+    prune_task, workspace_path_owners,
+)
 from .reconcile import LiveAdapters
 from .sources import GithubAdapter, SourceError
 from .store import StoreError, TaskStore
@@ -58,6 +62,8 @@ Usage:
   asha task archive <task-id|exact-slug>
   asha task unarchive <task-id|exact-slug>
   asha task recover <task-id|exact-slug>
+  asha task prune (<task-id|exact-slug>... | --all) [--keep-workspace]
+                  [--dry-run] [--yes] [--json]
   asha task reconcile [task-id|exact-slug] [--json]
   asha task report --file RESULT.json [--json]
   asha task result <task-id> [--json]
@@ -753,6 +759,102 @@ def _unarchive_command(args: list[str], env: Mapping[str, str]) -> int:
     return 0
 
 
+def _parse_prune(args: list[str]) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "selectors": [], "all": False, "keep_workspace": False,
+        "dry_run": False, "yes": False, "json": False,
+    }
+    flags = {
+        "--all": "all", "--keep-workspace": "keep_workspace",
+        "--dry-run": "dry_run", "--yes": "yes", "--json": "json",
+    }
+    for argument in args:
+        if argument in flags:
+            if values[flags[argument]]:
+                raise ValueError(f"{argument} may be specified only once")
+            values[flags[argument]] = True
+        elif argument.startswith("-"):
+            raise ValueError(f"unknown task prune argument: {argument}")
+        else:
+            values["selectors"].append(argument)
+    if values["all"] == bool(values["selectors"]):
+        raise ValueError("task prune requires task selectors or --all, not both")
+    return values
+
+
+def _prune_command(args: list[str], env: Mapping[str, str]) -> int:
+    values = _parse_prune(args)
+    config = load_config(env)
+    store = TaskStore(config)
+    journals = CreationJournalStore(config)
+    jj = JjAdapter()
+    if values["all"]:
+        selected = [record for record in store.list() if record["lifecycle"] == "archived"]
+        for skipped in store.skipped:
+            print(
+                f"asha task prune: skipped {skipped['name']}: {skipped['reason']}",
+                file=sys.stderr,
+            )
+    else:
+        selected = [store.resolve(selector) for selector in values["selectors"]]
+    remove_workspace = not values["keep_workspace"]
+    if remove_workspace and selected and not values["dry_run"] and not values["yes"]:
+        if not sys.stdin.isatty() or values["json"]:
+            raise ValueError(
+                "task prune removes workspace directories; pass --yes, "
+                "--keep-workspace, or --dry-run when stdin is not a terminal "
+                "or --json is requested"
+            )
+        print(
+            f"Prune {len(selected)} archived task(s): kill their dead tmux "
+            "sessions, forget their jj workspaces, and remove the workspace "
+            "directories (jj changes remain in the source repository)."
+        )
+        answer = input("Proceed? [y/N] ").strip().casefold()
+        if answer not in {"y", "yes"}:
+            print("Prune cancelled.")
+            return 2
+    bindings: dict[str, list[dict[str, str]]] = {}
+    binding_error: str | None = None
+    if remove_workspace:
+        try:
+            bindings = orchestration_bindings(dict(env))
+        except PruneError as exc:
+            binding_error = str(exc)
+    results = []
+    records = PruneRecordStore(config)
+    owners = workspace_path_owners(store) if (remove_workspace and selected) else {}
+    for task in selected:
+        socket = task["tmux"]["socket"]
+        adapter = TmuxAdapter(socket=None if socket == "default" else socket)
+        results.append(prune_task(
+            config, task, tasks=store, journals=journals, tmux=adapter, jj=jj,
+            bindings=bindings, bindings_error=binding_error,
+            remove_workspace=remove_workspace, dry_run=values["dry_run"],
+            records=records, path_owners=owners,
+        ).as_dict())
+    outcomes = {result["outcome"] for result in results}
+    exit_code = 2 if outcomes & {"refused", "partial"} else 0
+    if values["json"]:
+        payload = {
+            "contract": PRUNE_CONTRACT, "dry_run": values["dry_run"],
+            "results": results,
+        }
+        if binding_error is not None:
+            payload["orchestration_bindings_error"] = binding_error
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return exit_code
+    for result in results:
+        print(
+            f"{result['outcome']:<17} {result['slug']} ({result['task_id']}): "
+            f"session {result['session']['action']} ({result['session']['detail']}); "
+            f"workspace {result['workspace']['action']} ({result['workspace']['detail']})"
+        )
+    if not results:
+        print("No archived tasks to prune.")
+    return exit_code
+
+
 def _recover_command(args: list[str], env: Mapping[str, str]) -> int:
     if len(args) != 1 or args[0].startswith("-"):
         raise ValueError("task recover requires exactly one task ID or exact slug")
@@ -787,7 +889,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         return orchestration_task_main(args, env=env)
     if command not in {
         "start", "list", "show", "attach", "stop", "archive", "unarchive",
-        "recover", "reconcile", "doctor",
+        "recover", "prune", "reconcile", "doctor",
     }:
         print("asha task: unknown subcommand", file=sys.stderr)
         return 2
@@ -803,6 +905,8 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         return _unarchive_command(tail, env)
     if command == "recover":
         return _recover_command(tail, env)
+    if command == "prune":
+        return _prune_command(tail, env)
     tail, json_output = _parse_json_flag(tail)
     config = load_config(env)
     store = TaskStore(config)

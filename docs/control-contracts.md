@@ -25,6 +25,7 @@ these surfaces and to nothing else in Control.
 | `asha.control-task-list.v1` | `cli.py` list route via `lib/control/view.py` `task_summary` | `contract`, `tasks[]` each `{task_id, slug, label, lifecycle, status, updated_at, repository{root, identity}, run_count, blocker}`, optional `skipped[]` (unreadable records) | closed |
 | `asha.control-task-show.v1` | `cli.py` show route | `contract`, `task` (record), `reconciliation` (`asha.control-reconciliation.v1`) | closed |
 | `asha.control-reconcile-list.v1` | `cli.py` reconcile route | `contract`, `results[]` (`asha.control-reconciliation.v1`) | closed |
+| `asha.control-task-prune.v1` | `cli.py` prune route via `lib/control/prune.py` `prune_task` (added 2026-08-18, additive) | `contract`, `dry_run`, `results[]` each `{task_id, slug, outcome, session{action, detail}, workspace{action, detail}, bindings[]}` with outcome in `pruned`, `planned`, `partial`, `refused`, `nothing-to-prune`; session action in `killed`, `would-kill`, `absent`, `refused`, `kept`; workspace action in `removed`, `would-remove`, `forgotten`, `would-forget`, `absent`, `refused`, `kept`; optional `orchestration_bindings_error` | closed |
 | `asha.control-doctor.v1` | `lib/control/doctor.py` `run_doctor` | `contract`, `ok`, `probes[]` `{name, outcome, detail}` with outcome in `match`, `mismatch`, `missing`, `unavailable`, `limitations[]` | closed |
 
 `status` and `state` values everywhere use the run vocabulary from
@@ -42,6 +43,7 @@ these surfaces and to nothing else in Control.
 | `asha.control-event.v1` | `lib/control/events.py` (`write_snapshot`/`read_snapshot`), written by `plugins/session/hooks/handlers/control-event.sh` | Exact keys: `contract, task_id, run_id, event, state, harness, harness_session_id, exit_status, pane_id, observed_at`; events `session-start, prompt-submitted, tool-completed, permission-requested, turn-stopped, session-ended`; `exit_status` only with `session-ended`. One bounded (4 KiB) current snapshot per run under `$XDG_RUNTIME_DIR/asha-control/events/<run-id>.json`. Trust window: `control.event_staleness_seconds` (default 1800) for in-progress states. |
 | `asha.control-task-context.v1` | `lib/control/prepare.py` via `plugins/session/tools/control_task_marker.py` | The `.asha/control-task.json` marker inside a task workspace: `contract, task_id, repository{root, identity}, jj{workspace_name, workspace_path, change_id, working_commit_id}`; canonical bytes are sorted-key compact JSON + `\n`. |
 | `asha.control-creation-journal.v1` | `lib/control/transaction.py` | Internal recovery journal; not an orchestration surface. |
+| `asha.control-prune-record.v1` | `lib/control/prune.py` `PruneRecordStore` | Internal removal journal for a task's workspace root (`task_id, recorded_at, workspace_removed` false at intent and true at completion, `workspace_path, workspace_name, root_fact{dev, ino, uid}, entries_removed`); consulted so a repeat prune never re-matches a reused inode and can finish an interrupted removal, and by the orchestration seal-drift reconciler to recognize a pruned sealed workspace. Not an orchestration surface. |
 
 ## Task record digest
 
@@ -52,6 +54,8 @@ token every store update must present (`expected_digest`) and the value an
 orchestration sidecar binds to a Control task snapshot. Because it is computed
 over the validated record, any field addition to `asha.control-task.v1` would
 change every digest; that is one more reason the record is not extended.
+`asha task prune` honours this: it kills a dead session, forgets and removes a
+workspace, and leaves the archived record and its digest untouched.
 
 ## Process environment given to a harness
 

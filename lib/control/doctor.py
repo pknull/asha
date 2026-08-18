@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Any
 
 from .events import EventError, read_snapshot
+from .prune import prunable_summary
 from .jj import JjAdapter, JjError, colocated_sync_remediation
 from .process import capture_bytes
 from .store import StoreError, TaskStore
@@ -563,6 +564,38 @@ def _transactions_probe(config) -> Probe:
     )
 
 
+def _prunable_probe(config) -> Probe:
+    """Report reclaimable residue of archived tasks; never a failure by itself."""
+    if config is None:
+        return Probe(
+            "prunable", "unavailable",
+            "configuration was not supplied to the prunable probe",
+        )
+    try:
+        summary = prunable_summary(
+            config, tasks=TaskStore(config),
+            tmux_for_socket=lambda socket: TmuxAdapter(
+                socket=None if socket == "default" else socket,
+            ),
+        )
+    except (StoreError, ValueError, OSError) as exc:
+        return Probe(
+            "prunable", "unavailable",
+            f"archived task residue could not be inspected: {_safe_detail(exc)}",
+        )
+    if summary["tasks"] == 0:
+        return Probe(
+            "prunable", "match",
+            "no archived task holds a tmux session or workspace directory",
+        )
+    return Probe(
+        "prunable", "match",
+        f"{summary['tasks']} archived task(s) hold {summary['sessions']} dead tmux "
+        f"session(s) and {summary['workspaces']} workspace director(y/ies); "
+        "reclaim with: asha task prune --all",
+    )
+
+
 DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "python": _python_probe,
     "configuration": _configuration_probe,
@@ -572,6 +605,7 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "jj": _jj_probe,
     "repository": _repository_probe,
     "transactions": _transactions_probe,
+    "prunable": _prunable_probe,
     "harness-events": _harness_events_probe,
     "hooks": _hooks_probe,
     "tui": _tui_probe,

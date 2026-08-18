@@ -898,6 +898,17 @@ def _finish_published_seal(
     return seal
 
 
+def _pruned_record(store: InitiativeStore, task_id: str) -> bool:
+    # Local import: the prune module is a Control seam, not orchestration.
+    from ..prune import PruneError, PruneRecordStore
+
+    try:
+        record = PruneRecordStore(store.config.control).read(task_id)
+    except PruneError:
+        return False
+    return bool(record and record.get("workspace_removed"))
+
+
 def reconcile_seal_drift(
     store: InitiativeStore,
     initiative_id: str,
@@ -922,9 +933,18 @@ def reconcile_seal_drift(
             current_commit = None
             try:
                 task = control.peek(seal["task_id"])
+                workspace = Path(task["jj"]["workspace_path"])
+                if task["lifecycle"] == "archived" and not (
+                        workspace.is_dir() or workspace.is_symlink()
+                ) and _pruned_record(store, seal["task_id"]):
+                    # Reclaimed by `asha task prune`: the seal is bound to the
+                    # exact commit, which survives in the repository, and there
+                    # is no workspace left whose drift could be observed.  A
+                    # workspace that merely moved has no prune record and is
+                    # still reported as drift.
+                    continue
                 identity = adapter.inspect_workspace(
-                    Path(task["jj"]["workspace_path"]),
-                    task["jj"]["workspace_name"], require_empty=False,
+                    workspace, task["jj"]["workspace_name"], require_empty=False,
                 )
                 current_commit = identity.commit_id
                 if current_commit != seal["jj_commit_id"]:
