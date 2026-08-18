@@ -206,7 +206,7 @@ print(json.dumps({
             "implementation-a",
             attempts[0]["attempt_id"],
             str(self.repo),
-            "asha task report --file RESULT.json",
+            "asha task report --file .asha/result.json",
             "Nested workflows are prohibited",
         ):
             self.assertIn(expected, text)

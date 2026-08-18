@@ -361,10 +361,13 @@ session, coordinator, or unmanaged parallel writer.
 
 ## Result publication contract
 
-Before exiting, write the bounded result document to RESULT.json and run:
+Before exiting, write the bounded result document to .asha/result.json (the
+private `.asha/` directory inside this workspace is ignored by the repository,
+so the result file never enters your sealed diff; a result file placed
+anywhere tracked is a hard-scope violation and fails the seal) and run:
 
 ```text
-asha task report --file RESULT.json
+asha task report --file .asha/result.json
 ```
 
 Required: run `jj status` in this workspace to snapshot before `asha task report`, and after any later edit.
