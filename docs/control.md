@@ -121,8 +121,10 @@ fallback.
 ## Task and run model
 
 A task is the durable container. Its lifecycle is `creating`, `running`,
-`ended`, `failed`, or `archived`. The initial release launches one primary
-mutating run. Runs carry a harness, role, tmux pane, verified process identity,
+`ended`, `failed`, or `archived`; `creating` moves to `running` or `failed`,
+`running` to `ended` or `failed`, and `ended` or `failed` (without a live
+run) to `archived`, which unarchive reverses. The initial release launches one
+primary mutating run. Runs carry a harness, role, tmux pane, verified process identity,
 and current evidence state. A task may outlive the launching CLI, TUI, popup,
 and ordinary tmux clients.
 
@@ -376,11 +378,14 @@ session or harness, and receives no task context marker. Success returns only
 Failure preserves the journal and any ambiguous materialization for inspection.
 There is no materialization deletion route.
 
-Archive requires an ended task or a running task whose reconciled runs are all
-terminal (`exited` or `failed`) and unblocked. At that terminal edge Control
-persists the reconciled run state and bounded evidence, then changes only the
-task's registry lifecycle. Archive is reversible with
-`asha task unarchive <selector>`; the jj workspace, change, ignored files, tmux
+Archive requires an ended task, a running task whose reconciled runs are all
+terminal (`exited` or `failed`) and unblocked, or a failed task with no run or
+only terminal runs (a creation that rolled back, or an interrupted creation
+recovered without a live process). At that terminal edge Control persists the
+reconciled run state and bounded evidence, then changes only the task's
+registry lifecycle. Archive is reversible with
+`asha task unarchive <selector>`, which restores `ended` (or `failed` for a
+task that never had a run); the jj workspace, change, ignored files, tmux
 history, and source repository remain. Stop verifies task, pane, process start
 identity, and tmux ancestry, then sends `SIGINT` or explicit `SIGTERM` to that
 process only. It does not kill the tmux session, archive the task, or touch jj.

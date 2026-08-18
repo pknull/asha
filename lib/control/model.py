@@ -22,8 +22,8 @@ TASK_LIFECYCLE_TRANSITIONS = {
     "creating": frozenset({"running", "failed"}),
     "running": frozenset({"ended", "failed"}),
     "ended": frozenset({"archived"}),
-    "failed": frozenset(),
-    "archived": frozenset({"ended"}),
+    "failed": frozenset({"archived"}),
+    "archived": frozenset({"ended", "failed"}),
 }
 
 _ACTIVE_RUN_STATES = frozenset({"starting", "working", "needs-input", "idle", "unknown", "stale"})
@@ -230,6 +230,10 @@ def validate_task(task: Any) -> dict[str, Any]:
             raise ModelError("running task preceding runs must be terminal")
         if runs[-1]["state"] not in _ACTIVE_RUN_STATES:
             raise ModelError("running task latest run must be nonterminal")
+    elif lifecycle == "archived" and not runs:
+        # A creation that failed and rolled back before any launch may be
+        # archived so it leaves the working list; it never had a run.
+        pass
     elif lifecycle in {"ended", "archived"}:
         if (jj["change_id"] is None or jj["working_commit_id"] is None or not runs
                 or any(run["state"] not in {"exited", "failed"} for run in runs)):
