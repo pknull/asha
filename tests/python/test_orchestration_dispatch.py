@@ -487,14 +487,16 @@ class RealOrchestrationDispatchTests(unittest.TestCase):
 
     def test_real_control_task_workspace_and_tmux_are_created_once(self) -> None:
         with mock.patch.dict(os.environ, self.env, clear=True):
+            jj = JjAdapter()
             initiative = _create([
                 "--repo", str(self.source), "--slug", "real-dispatch",
                 "--label", "Real dispatch", "--objective", "Run one real worker.",
-            ], self.config, self.store, JjAdapter())["initiative"]
+            ], self.config, self.store, jj)["initiative"]
             base_commit = subprocess.run(
                 ["git", "-C", str(self.source), "rev-parse", "HEAD"],
                 env=self.env, capture_output=True, text=True, check=True,
             ).stdout.strip()
+            base_tree = jj.immutable_tree(self.source, base_commit)
             plan_value = valid_plan()
             plan_value["initiative_id"] = initiative["initiative_id"]
             plan_value["repositories"] = [copy.deepcopy(initiative["scope"]["repository"])]
@@ -503,12 +505,15 @@ class RealOrchestrationDispatchTests(unittest.TestCase):
                 if node["repository_id"] is not None:
                     node["repository_id"] = repository_id
                 if node["base"] is not None:
-                    node["base"]["scope_origin"]["jj_commit_id"] = base_commit
+                    node["base"]["scope_origin"] = {
+                        "jj_commit_id": base_commit,
+                        "tree_digest": base_tree.digest,
+                    }
             plan_file = self.root / "real-plan.json"
             plan_file.write_text(json.dumps(plan_value))
             plan, _ = _plan(
                 [initiative["initiative_id"], "--file", str(plan_file)],
-                self.store, self.config,
+                self.store, self.config, jj=jj,
             )
             approved, _ = _approve(
                 [initiative["initiative_id"], "--digest", plan["digest"]], self.store,

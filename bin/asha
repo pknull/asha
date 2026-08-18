@@ -306,7 +306,7 @@ Usage:
                                    manage shared knowledge and optional coordination
   asha task start|list|show|attach|stop|archive|reconcile|doctor [...]
                                    manage persistent Control tasks and runs
-  asha initiative create|plan|approve|reject|activate|action|dispatch|pause|resume|stop|cancel|list|show|events|reconcile|storage|snapshot|doctor [...]
+  asha initiative baseline|create|plan|approve|reject|activate|action|dispatch|pause|resume|stop|cancel|list|show|events|reconcile|storage|snapshot|doctor [...]
                                    manage bounded Orchestration Core initiatives
   asha control [event|tmux]        run the terminal TUI or Control internals
   asha process route <task>        advisory process route with risks and fallback

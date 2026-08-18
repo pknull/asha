@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import stat
 import sys
 import uuid
@@ -15,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..context import read_published_snapshot
-from ..jj import JjAdapter, JjError
+from ..jj import JjAdapter, JjError, colocated_sync_remediation
 from ..prepare import derive_repository_identity
 from ..store import StoreError
 from .actions import (
@@ -27,7 +28,8 @@ from .doctor import run_orchestration_doctor
 from .graph import PlanError, validate_plan
 from .model import (
     APPROVAL_CONTRACT, EVENT_CONTRACT, FORBIDDEN_ACTION_CLASSES,
-    INITIATIVE_CONTRACT, MAX_CRITERION_BYTES, NODE_NONTERMINAL_STATES,
+    INITIATIVE_CONTRACT, MAX_CRITERION_BYTES, MUTATING_NODE_TYPES,
+    NODE_NONTERMINAL_STATES,
     ModelError, new_uuid, record_digest,
     validate_approval, validate_event, validate_initiative, validate_node,
     validate_plan_record, validate_slug,
@@ -44,6 +46,7 @@ from .store import MAX_RECORD_BYTES, InitiativeStore
 
 
 CREATE_CONTRACT = "asha.orchestration-initiative-create.v1"
+BASELINE_CONTRACT = "asha.orchestration-baseline.v1"
 APPROVAL_RESULT_CONTRACT = "asha.orchestration-plan-approval.v1"
 REJECTION_RESULT_CONTRACT = "asha.orchestration-plan-rejection.v1"
 LIST_CONTRACT = "asha.orchestration-initiative-list.v1"
@@ -66,6 +69,7 @@ def _usage(stream=sys.stdout) -> None:
     print("""asha initiative: bounded Orchestration Core records
 
 Usage:
+  asha initiative baseline --repo PATH [--revision REVSET] [--json]
   asha initiative create --repo PATH --slug SLUG --label TEXT --objective TEXT [--acceptance TEXT]...
   asha initiative plan <id> --file PLAN.json
   asha initiative plan <id> --show [--revision N] [--json]
@@ -242,6 +246,53 @@ def _repository_scope(repo: Path, jj: JjAdapter) -> dict[str, Any]:
     }
 
 
+def _guard_colocated_sync(jj: JjAdapter, root: Path, git_root: Path) -> None:
+    working_copy_parent = jj.working_copy_parent(root)
+    git_head = jj.git_head(git_root)
+    remediation = colocated_sync_remediation(
+        root, git_head, working_copy_parent,
+    )
+    if remediation is not None:
+        raise ValueError(remediation)
+
+
+def _baseline(
+    args: list[str], jj: JjAdapter,
+) -> tuple[dict[str, Any], bool]:
+    options = _parse_options(args, flags={"json"})
+    _only(options, {"repo", "revision", "json"}, "baseline")
+    _required(options, "repo")
+    revision = "trunk()" if options.get("revision") is None else options["revision"]
+    root = Path(options["repo"]).expanduser().resolve()
+    facts = jj.preflight(root)
+    _guard_colocated_sync(jj, facts.root, facts.git_root)
+    try:
+        commit_id = jj.resolve_base(facts.root, revision)
+    except JjError as exc:
+        detail = str(exc).replace(
+            "Pass an explicit --base, for example --base main, or add a remote.",
+            "Pass an explicit --revision, for example --revision main, or add a remote.",
+        )
+        raise JjError(
+            f"could not resolve revision {revision!r} from jj's read-only "
+            f"repository view: {detail}; no import was attempted. If Git knows "
+            f"the revision or bookmark but jj does not, run `jj status` in "
+            f"{facts.root} to import it, then retry"
+        ) from exc
+    tree = jj.immutable_tree(facts.root, commit_id)
+    repository = _repository_scope(facts.root, jj)
+    return {
+        "contract": BASELINE_CONTRACT,
+        "repository": {
+            "root": repository["root"],
+            "control_repository_id": repository["control_repository_id"],
+        },
+        "jj_commit_id": commit_id,
+        "tree_digest": tree.digest,
+        "entry_count": len(tree.entries),
+    }, bool(options["json"])
+
+
 def _create(args: list[str], config, store: InitiativeStore, jj: JjAdapter) -> dict[str, Any]:
     options = _parse_options(args, repeat={"acceptance"}, flags={"json"})
     allowed = {"repo", "slug", "label", "objective", "acceptance", "max_parallel",
@@ -338,7 +389,63 @@ def _candidate_plan(
     return plan
 
 
-def _plan(args: list[str], store: InitiativeStore, config) -> tuple[dict[str, Any], bool]:
+def _baseline_command(root: Path, commit_id: str) -> str:
+    return shlex.join([
+        "asha", "initiative", "baseline", "--repo", str(root),
+        "--revision", commit_id,
+    ])
+
+
+def _verify_approved_baselines(
+    nodes: list[dict[str, Any]], plan: dict[str, Any], jj: JjAdapter,
+) -> None:
+    repositories = {
+        repository["repository_id"]: Path(repository["root"])
+        for repository in plan["repositories"]
+    }
+    trees: dict[tuple[Path, str], Any] = {}
+    for node in nodes:
+        if (
+            node["type"] not in MUTATING_NODE_TYPES
+            or node["base"]["policy"] != "approved-baseline"
+        ):
+            continue
+        origin = node["base"]["scope_origin"]
+        commit_id = origin["jj_commit_id"]
+        root = repositories[node["repository_id"]]
+        command = _baseline_command(root, commit_id)
+        key = (root, commit_id)
+        tree = trees.get(key)
+        if tree is None:
+            try:
+                jj.require_visible_commit(root, commit_id)
+            except JjError as exc:
+                raise ValueError(
+                    f"node {node['node_id']} approved-baseline commit "
+                    f"{commit_id} is not visible in initiative repository "
+                    f"{root}; run `{command}`"
+                ) from exc
+            try:
+                tree = jj.immutable_tree(root, commit_id)
+            except JjError as exc:
+                raise ValueError(
+                    f"node {node['node_id']} approved-baseline commit "
+                    f"{commit_id} could not be inspected in initiative "
+                    f"repository {root}: {exc}; run `{command}`"
+                ) from exc
+            trees[key] = tree
+        if tree.digest != origin["tree_digest"]:
+            raise ValueError(
+                f"node {node['node_id']} approved-baseline tree digest "
+                f"disagrees with commit {commit_id}: plan declares "
+                f"{origin['tree_digest']} but the repository has {tree.digest}; "
+                f"run `{command}`"
+            )
+
+
+def _plan(
+    args: list[str], store: InitiativeStore, config, *, jj: JjAdapter,
+) -> tuple[dict[str, Any], bool]:
     if not args:
         raise ValueError("plan requires an initiative ID or exact slug")
     initiative = _resolve(store, args[0])
@@ -391,6 +498,7 @@ def _plan(args: list[str], store: InitiativeStore, config) -> tuple[dict[str, An
     nodes = [validate_node(node) for node in plan["nodes"]]
     if any(node["state"] != "proposed" for node in nodes):
         raise ValueError("new plan nodes must be proposed")
+    _verify_approved_baselines(nodes, plan, jj)
     validate_goal_capacity(config, initiative, nodes)
     retained = {
         node["node_id"]: node
@@ -798,6 +906,14 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
         _usage()
         return 0
     command, tail = args[0], args[1:]
+    if command == "baseline":
+        result, json_output = _baseline(tail, jj or JjAdapter())
+        if json_output:
+            _json(result)
+        else:
+            print(f"Commit: {result['jj_commit_id']}")
+            print(f"Tree digest: {result['tree_digest']}")
+        return 0
     config = load_config(env)
     store = InitiativeStore(config)
     if command == "create":
@@ -806,7 +922,7 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
         _payload(result, json_output)
         return 0
     if command == "plan":
-        result, json_output = _plan(tail, store, config)
+        result, json_output = _plan(tail, store, config, jj=jj or JjAdapter())
         _payload(result, json_output)
         return 0
     if command == "approve":
