@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import stat
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -162,13 +163,22 @@ def locate_task_binding(
     except ModelError as exc:
         raise ResultRefused(str(exc)) from exc
     store = InitiativeStore(config)
-    matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    for initiative in store.list_initiatives():
-        for link in store.list_links_snapshot(initiative["initiative_id"]):
-            if link["control_task_id"] == task_id:
-                matches.append((initiative, link))
-    if not matches:
-        raise ResultRefused("Control task is not linked to an orchestration attempt")
+    deadline = time.monotonic() + config.link_grace_seconds
+    while True:
+        matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for initiative in store.list_initiatives():
+            for link in store.list_links_snapshot(initiative["initiative_id"]):
+                if link["control_task_id"] == task_id:
+                    matches.append((initiative, link))
+        if matches:
+            break
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise ResultRefused(
+                "Control task is not yet linked to an orchestration attempt; "
+                "the report may be retried"
+            )
+        time.sleep(min(0.25, remaining))
     if len(matches) != 1:
         raise ResultRefused("Control task is linked to more than one initiative")
     initiative, link = matches[0]
@@ -269,7 +279,8 @@ def _semantic_result(
     *,
     jj: JjAdapter,
 ) -> dict[str, Any]:
-    if set(body) != _CLIENT_KEYS:
+    expected_keys = _CLIENT_KEYS | ({"review"} if node["type"] == "review" else set())
+    if set(body) != expected_keys:
         raise ResultRefused(
             "result body must use the closed worker schema (without result_id/payload_digest)"
         )
@@ -293,6 +304,10 @@ def _semantic_result(
     for field, value in expected.items():
         if result[field] != value:
             raise ResultRefused(f"result {field} disagrees with the task binding")
+    if node["type"] == "review" and "review" not in result:
+        raise ResultRefused("review node result requires the bounded review payload")
+    if node["type"] != "review" and "review" in result:
+        raise ResultRefused("only a review node may publish a review payload")
     if link["control_task_id"] != task["task_id"]:
         raise ResultRefused("Control task link identity changed")
     if control_task_identity_digest(dict(task)) != link["control_task_identity_digest"]:

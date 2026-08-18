@@ -1,0 +1,868 @@
+"""Controller-owned approved-argv verification in retained materializations."""
+
+from __future__ import annotations
+
+import copy
+import hashlib
+import json
+import os
+import re
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable, Mapping
+
+from ..jj import JjAdapter, JjError
+from ..process import capture_bytes
+from ..prepare import (
+    PreparationError,
+    plan_materialization,
+    prepare_materialization,
+)
+from .actions import append_event
+from .model import (
+    EVIDENCE_CONTRACT,
+    VERIFICATION_CONTRACT,
+    new_uuid,
+    record_digest,
+    validate_evidence,
+    validate_node,
+    validate_verification,
+)
+from .review import specification_digest, tracked_workspace_status
+from .store import InitiativeStore, StoreError
+
+
+MAX_VERIFICATION_OUTPUT_BYTES = 1024 * 1024
+_STATUS_TAIL_BYTES = 64 * 1024
+_PROCESS_STATUS_PREFIX = b"\nASHA_VERIFICATION_PROCESS_V1:"
+
+
+class VerificationError(ValueError):
+    """A verification specification, command, or candidate identity failed."""
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
+
+
+def _canonical(value: Any) -> bytes:
+    return json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+
+
+def _identity_digest(
+    workspace_name: str, change_id: str, commit_id: str, tree_digest: str,
+) -> str:
+    return hashlib.sha256(_canonical([
+        workspace_name, change_id, commit_id, tree_digest,
+    ])).hexdigest()
+
+
+def _verification_gate(plan: Mapping[str, Any], node_id: str) -> dict[str, Any]:
+    gates = [
+        gate for gate in plan["declared_gates"]
+        if gate["kind"] == "verification" and gate["node_id"] == node_id
+        and gate["required"] is True
+    ]
+    if len(gates) != 1:
+        raise VerificationError("verify node requires one approved verification specification")
+    return gates[0]
+
+
+def _terminal_seal(
+    store: InitiativeStore,
+    initiative_id: str,
+    plan: Mapping[str, Any],
+) -> dict[str, Any]:
+    candidates = [item for item in plan["nodes"] if item["terminal_candidate"]]
+    if len(candidates) != 1:
+        raise VerificationError("Core verification requires one terminal candidate producer")
+    node = candidates[0]
+    seals = sorted(
+        (
+            item for item in store.list_seals_snapshot(initiative_id)
+            if item["node_id"] == node["node_id"] and item["outcome"] == "success"
+        ),
+        key=lambda item: (item["sealed_at"], item["seal_id"]),
+    )
+    if not seals:
+        raise VerificationError("terminal candidate has no success seal")
+    return seals[-1]
+
+
+def candidate_bundle_digest(
+    initiative: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    seal: Mapping[str, Any],
+    gate: Mapping[str, Any],
+) -> str:
+    return hashlib.sha256(_canonical({
+        "initiative_id": initiative["initiative_id"],
+        "active_plan_digest": plan["digest"],
+        "aggregate_spec_digest": specification_digest(initiative, plan),
+        "repository_id": seal["repository_id"],
+        "seal_id": seal["seal_id"],
+        "jj_commit_id": seal["jj_commit_id"],
+        "tree_digest": seal["tree_digest"],
+        "diff_digest": seal["diff_digest"],
+        "verification_spec": gate,
+    })).hexdigest()
+
+
+def prevalidate_verification(
+    store: InitiativeStore, initiative_id: str, node_id: str,
+    *, exclude_action_id: str | None = None,
+) -> tuple[
+    dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any],
+    Path, dict[str, Any], dict[str, Any],
+]:
+    """Refuse an ineligible controller verification before dispatch is journaled."""
+    initiative = store.peek(initiative_id)
+    if initiative["state"] != "running" or initiative["active_plan"] is None:
+        raise VerificationError("verification requires a running approved initiative")
+    plan = store.read_plan(initiative_id, initiative["active_plan"]["revision"])
+    if plan["digest"] != initiative["active_plan"]["digest"]:
+        raise VerificationError("active plan digest differs from its retained revision")
+    node = store.read_node(initiative_id, node_id)
+    if node["type"] != "verify" or node["state"] != "ready":
+        raise VerificationError("verify node is not deterministically ready")
+    from .scheduler import readiness
+
+    if readiness(store, initiative).get(node_id) != "ready":
+        raise VerificationError("verify node is blocked by effective readiness")
+    for action in store.list_actions_snapshot(initiative_id):
+        if (
+            action["action_id"] == exclude_action_id
+            or action["action_class"] != "dispatch-node"
+            or action["state"] in {"completed", "refused"}
+        ):
+            continue
+        try:
+            outcome = json.loads(action["outcome"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if (
+            outcome.get("node_id") == node_id
+            or outcome.get("payload", {}).get("node_id") == node_id
+        ):
+            raise VerificationError("verify node already has an active dispatch action")
+    gate = _verification_gate(plan, node_id)
+    seal = _terminal_seal(store, initiative_id, plan)
+    reviews = [
+        item for item in store.list_reviews_snapshot(initiative_id)
+        if item["state"] == "accepted-pass"
+        and item["target"]["seal_id"] == seal["seal_id"]
+        and item["target"]["active_plan_digest"] == plan["digest"]
+        and item["target"]["specification_digest"]
+        == specification_digest(initiative, plan)
+        and item["target"]["repository_id"] == seal["repository_id"]
+        and item["target"]["jj_commit_id"] == seal["jj_commit_id"]
+        and item["target"]["base_seal_ids"] == seal["base"]["seal_ids"]
+        and item["target"]["diff_digest"] == seal["diff_digest"]
+    ]
+    if len(reviews) != 1:
+        raise VerificationError(
+            "verification requires one accepted-pass review on the exact seal"
+        )
+    prior = [
+        item for item in store.list_verifications_snapshot(initiative_id)
+        if item["node_id"] == node_id
+        and item["active_plan_digest"] == plan["digest"]
+        and item["state"] != "stale"
+    ]
+    if any(item["state"] != "indeterminate" for item in prior):
+        raise VerificationError("verify node already has a retained current execution")
+    return initiative, plan, node, gate, _bubblewrap_program(), seal, reviews[0]
+
+
+def command_denial(argv: list[str]) -> str | None:
+    """Return the known external-write class before executing an argv."""
+    if not argv:
+        return "empty argv"
+    if argv[0].startswith("-") or "=" in argv[0]:
+        return "invalid executable token"
+    program = Path(argv[0]).name.lower()
+    lowered = [item.lower() for item in argv[1:]]
+    if program in {
+        "gh", "curl", "wget", "ssh", "scp", "rsync", "docker", "sudo",
+        "env", "sh", "bash", "dash", "zsh", "ksh", "fish", "busybox",
+        "timeout", "nice", "nohup", "setsid", "xargs", "twine",
+    }:
+        return program
+    if program == "git" and any(item in {"push", "commit", "tag"} for item in lowered):
+        return "git external-write subcommand"
+    if program == "jj" and "git" in lowered and "push" in lowered:
+        return "jj git push"
+    if re.fullmatch(r"pip(?:\d+(?:\.\d+)*)?", program) and "install" in lowered:
+        return "pip install"
+    python_modules: set[str] = set()
+    if program.startswith("python"):
+        modules = [
+            lowered[index + 1]
+            for index, item in enumerate(lowered[:-1])
+            if item == "-m"
+        ]
+        modules.extend(
+            item[2:] for item in lowered if item.startswith("-m") and len(item) > 2
+        )
+        python_modules = {item.split(".", 1)[0] for item in modules}
+    if program.startswith("python") and "install" in lowered:
+        if "pip" in python_modules:
+            return "python -m pip install"
+        if "uv" in python_modules and "pip" in lowered:
+            return "python -m uv pip install"
+    if program.startswith("python"):
+        if "twine" in python_modules:
+            return "python -m twine"
+        if "poetry" in python_modules and "publish" in lowered:
+            return "python -m poetry publish"
+    if program == "npm" and any(item in {"publish", "install", "i"} for item in lowered):
+        return "npm publish/install"
+    if program == "cargo" and "publish" in lowered:
+        return "cargo publish"
+    if program == "gem" and "push" in lowered:
+        return "gem push"
+    if program == "poetry" and "publish" in lowered:
+        return "poetry publish"
+    if program == "uv" and "pip" in lowered and "install" in lowered:
+        return "uv pip install"
+    if program == "rm":
+        for item in argv[1:]:
+            if item == "--recursive" or (
+                item.startswith("-") and not item.startswith("--")
+                and any(flag in item[1:] for flag in ("r", "R"))
+            ):
+                return "recursive rm"
+    return None
+
+
+def _command_cwd(materialization: Path, relative: str) -> Path:
+    target = materialization if relative == "." else materialization.joinpath(*relative.split("/"))
+    current = materialization
+    for part in target.relative_to(materialization).parts:
+        current /= part
+        if current.is_symlink():
+            raise VerificationError("verification cwd traverses a symlink")
+    if not target.is_dir() or target.resolve() != target:
+        raise VerificationError("verification cwd must be an exact directory inside the materialization")
+    return target
+
+
+def _minimal_argv(
+    environment: Mapping[str, str], argv: list[str],
+) -> list[str]:
+    """Clear the inherited environment while retaining bounded streaming."""
+    exact = {
+        "PATH": environment.get("PATH", "/usr/bin:/bin"),
+        "HOME": environment.get("HOME", "/tmp"),
+        "LANG": environment.get("LANG", "C.UTF-8"),
+    }
+    env_program = Path("/usr/bin/env")
+    if not env_program.is_file() or not os.access(env_program, os.X_OK):
+        raise VerificationError("minimal environment launcher is unavailable")
+    return [
+        str(env_program), "-i", "--",
+        *(f"{name}={value}" for name, value in exact.items()),
+        *argv,
+    ]
+
+
+def _bubblewrap_program() -> Path:
+    for candidate in (Path("/usr/bin/bwrap"), Path("/bin/bwrap")):
+        try:
+            resolved = candidate.resolve(strict=True)
+            metadata = resolved.stat()
+        except OSError:
+            continue
+        if (
+            resolved.is_file()
+            and os.access(resolved, os.X_OK)
+            and (metadata.st_mode & 0o022) == 0
+        ):
+            return resolved
+    raise VerificationError("trusted bubblewrap PID containment is unavailable")
+
+
+def _contained_argv(
+    bubblewrap: Path,
+    environment: Mapping[str, str],
+    argv: list[str],
+    *,
+    output_path: Path,
+    timeout_seconds: int,
+) -> list[str]:
+    supervisor = Path(__file__).with_name("verification_supervisor.py").resolve()
+    if not supervisor.is_file():
+        raise VerificationError("verification process supervisor is unavailable")
+    return [
+        str(bubblewrap), "--unshare-pid", "--die-with-parent",
+        "--bind", "/", "/", "--proc", "/proc", "--dev-bind", "/dev", "/dev",
+        "--", *_minimal_argv(
+            environment,
+            [
+                sys.executable, str(supervisor),
+                "--output", str(output_path),
+                "--limit", str(MAX_VERIFICATION_OUTPUT_BYTES),
+                "--timeout", str(timeout_seconds),
+                "--", *argv,
+            ],
+        ),
+    ]
+
+
+def _process_status(stderr: bytes) -> tuple[dict[str, Any], bytes]:
+    offset = stderr.rfind(_PROCESS_STATUS_PREFIX)
+    if offset < 0 or not stderr.endswith(b"\n"):
+        raise VerificationError("verification supervisor returned no process status")
+    raw = stderr[offset + len(_PROCESS_STATUS_PREFIX):-1]
+    try:
+        status = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise VerificationError("verification supervisor process status is invalid") from exc
+    if not isinstance(status, dict) or set(status) != {
+        "pid", "start_ticks", "pid_namespace", "returncode", "invocation_error",
+        "timed_out", "output_truncated", "output_original_bytes", "output_digest",
+    }:
+        raise VerificationError("verification supervisor process status is incomplete")
+    return status, stderr[:offset]
+
+
+def _capture_truncated(
+    argv: list[str], *, cwd: Path, deadline_seconds: int,
+) -> tuple[int, dict[str, Any]]:
+    """Run the bounded orchestration shim through Control's argv-only seam."""
+    returncode, stdout, stderr = capture_bytes(
+        argv, cwd=cwd, limit=_STATUS_TAIL_BYTES, runner=None,
+        error_type=VerificationError,
+        # The inner supervisor owns the approved timeout and needs a bounded
+        # interval to persist its status before the outer containment deadline.
+        deadline_seconds=deadline_seconds + 5,
+    )
+    status, clean_stderr = _process_status(stderr)
+    if stdout or clean_stderr:
+        raise VerificationError("verification containment emitted unexpected output")
+    return returncode, status
+
+
+def _save_command_evidence(
+    store: InitiativeStore,
+    initiative_id: str,
+    evidence_id: str,
+    verification_id: str,
+    detail: Mapping[str, Any],
+    output: bytes,
+    *,
+    output_path: Path | None = None,
+) -> tuple[dict[str, Any], str, str]:
+    output_digest = hashlib.sha256(output).hexdigest()
+    if output_path is None:
+        output_path = store.save_output(initiative_id, evidence_id, output)
+    else:
+        if store.read_output(initiative_id, evidence_id) != output:
+            raise VerificationError("retained command output differs from evidence bytes")
+    summary = json.dumps(
+        {
+            **copy.deepcopy(dict(detail)),
+            "output_digest": output_digest,
+            "output_path": str(output_path),
+        },
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    )
+    evidence = validate_evidence({
+        "contract": EVIDENCE_CONTRACT,
+        "evidence_id": evidence_id,
+        "initiative_id": initiative_id,
+        "kind": "verification-command",
+        "subject_id": verification_id,
+        "digest": hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+        "summary": summary,
+        "recorded_at": _now(),
+    })
+    store.save_evidence(initiative_id, evidence)
+    return evidence, str(output_path), output_digest
+
+
+def prepare_verification_intent(
+    store: InitiativeStore,
+    initiative_id: str,
+    node_id: str,
+    *,
+    jj: JjAdapter | None = None,
+    action_id: str | None = None,
+    verification_id: str | None = None,
+) -> dict[str, Any]:
+    """Journal the exact verification/materialization intent under the lock."""
+    adapter = jj or JjAdapter()
+    initiative, plan, node, gate, bubblewrap, seal, review = prevalidate_verification(
+        store, initiative_id, node_id, exclude_action_id=action_id,
+    )
+    prior = [
+        item for item in store.list_verifications_snapshot(initiative_id)
+        if item["node_id"] == node_id
+        and item["active_plan_digest"] == plan["digest"]
+        and item["state"] != "stale"
+    ]
+    if any(item["state"] != "indeterminate" for item in prior):
+        raise VerificationError("verify node already has a retained current execution")
+    for item in prior:
+        stale = copy.deepcopy(item)
+        stale.update({"state": "stale", "outcome": None, "updated_at": _now()})
+        store.save_verification(
+            initiative_id, stale, expected_digest=record_digest(item),
+        )
+    del review, bubblewrap
+    verification_id = verification_id or new_uuid()
+    materialization_id = new_uuid()
+    name = f"verify-{initiative_id}-{verification_id[:8]}"
+    source = Path(initiative["scope"]["repository"]["root"])
+    try:
+        target = plan_materialization(
+            store.config.control, source, name, jj=adapter,
+        )
+        planned_path = Path(target["workspace_path"])
+    except (PreparationError, JjError, OSError, ValueError) as exc:
+        raise VerificationError(f"materialization intent failed without mutation: {exc}") from exc
+    materialization_path = planned_path
+    bundle_digest = candidate_bundle_digest(initiative, plan, seal, gate)
+    at = _now()
+    record = validate_verification({
+        "contract": VERIFICATION_CONTRACT,
+        "verification_id": verification_id,
+        "initiative_id": initiative_id,
+        "node_id": node_id,
+        "bundle_digest": bundle_digest,
+        "active_plan_digest": plan["digest"],
+        "repository_id": seal["repository_id"],
+        "seal_id": seal["seal_id"],
+        "materialization_id": materialization_id,
+        "materialization_path": str(materialization_path),
+        "state": "pending",
+        "commands": [],
+        "evidence_ids": [],
+        "outcome": None,
+        "created_at": at,
+        "updated_at": at,
+    })
+    store.save_verification(initiative_id, record)
+    evaluating = copy.deepcopy(node)
+    evaluating["state"] = "evaluating"
+    validate_node(evaluating)
+    store.save_node(initiative_id, evaluating, expected_digest=record_digest(node))
+    dispatching = copy.deepcopy(record)
+    dispatching.update({"state": "dispatching", "updated_at": _now()})
+    store.save_verification(
+        initiative_id, dispatching, expected_digest=record_digest(record),
+    )
+    append_event(
+        store, initiative_id, "verification-started",
+        [node_id, verification_id, seal["seal_id"]],
+        {"bundle_digest": bundle_digest, "materialization_id": materialization_id},
+        actor_kind="controller", actor_id="verification-runner",
+    )
+    return dispatching
+
+
+def run_verification(
+    store: InitiativeStore,
+    initiative_id: str,
+    node_id: str,
+    *,
+    jj: JjAdapter | None = None,
+    environment: Mapping[str, str] | None = None,
+    materializer: Callable[..., dict[str, str]] = prepare_materialization,
+    action_id: str | None = None,
+    verification_id: str | None = None,
+) -> dict[str, Any]:
+    """Run one approved verification gate without a worker, harness, or tmux."""
+    adapter = jj or JjAdapter()
+    if verification_id is None:
+        intent = prepare_verification_intent(
+            store, initiative_id, node_id, jj=adapter, action_id=action_id,
+        )
+    else:
+        intent = store.read_verification(initiative_id, verification_id)
+        if intent["node_id"] != node_id or intent["state"] != "dispatching":
+            raise VerificationError("verification intent is not dispatchable for this node")
+    initiative = store.peek(initiative_id)
+    if initiative["state"] not in {"running", "paused"} or initiative["active_plan"] is None:
+        raise VerificationError("verification intent lost its active initiative")
+    plan = store.read_plan(initiative_id, initiative["active_plan"]["revision"])
+    if (
+        plan["digest"] != initiative["active_plan"]["digest"]
+        or intent["active_plan_digest"] != plan["digest"]
+    ):
+        raise VerificationError("verification intent active plan is stale")
+    node = store.read_node(initiative_id, node_id)
+    if node["state"] != "evaluating" or node["type"] != "verify":
+        raise VerificationError("verification intent node is not evaluating")
+    gate = _verification_gate(plan, node_id)
+    bubblewrap = _bubblewrap_program()
+    seal = store.read_seal(initiative_id, intent["seal_id"])
+    if (
+        intent["bundle_digest"] != candidate_bundle_digest(initiative, plan, seal, gate)
+        or intent["repository_id"] != seal["repository_id"]
+    ):
+        raise VerificationError("verification intent candidate binding is stale")
+    verification_id = intent["verification_id"]
+    name = f"verify-{initiative_id}-{verification_id[:8]}"
+    source = Path(initiative["scope"]["repository"]["root"])
+    try:
+        target = plan_materialization(
+            store.config.control, source, name, jj=adapter,
+        )
+    except (PreparationError, JjError, OSError, ValueError) as exc:
+        raise VerificationError(f"materialization intent cannot be recovered: {exc}") from exc
+    planned_path = Path(target["workspace_path"])
+    planned_workspace_name = target["workspace_name"]
+    if Path(intent["materialization_path"]) != planned_path:
+        raise VerificationError("verification materialization path differs from its intent")
+    materialization_path = planned_path
+    bundle_digest = intent["bundle_digest"]
+    materialization_id = intent["materialization_id"]
+    running = copy.deepcopy(intent)
+    running.update({"state": "running", "updated_at": _now()})
+    store.save_verification(
+        initiative_id, running, expected_digest=record_digest(intent),
+    )
+
+    try:
+        materialization = materializer(
+            store.config.control, source, seal["jj_commit_id"], name, jj=adapter,
+        )
+        if (
+            materialization["workspace_name"] != planned_workspace_name
+            or Path(materialization["workspace_path"]) != planned_path
+        ):
+            raise VerificationError(
+                "materializer returned a path or workspace name outside its durable intent"
+            )
+    except (PreparationError, JjError, OSError, ValueError) as exc:
+        current = store.read_verification(initiative_id, verification_id)
+        failed_record = copy.deepcopy(current)
+        failed_record.update({
+            "state": "failed", "outcome": "failed", "updated_at": _now(),
+        })
+        store.save_verification(
+            initiative_id, failed_record, expected_digest=record_digest(current),
+        )
+        current_node = store.read_node(initiative_id, node_id)
+        failed_node = copy.deepcopy(current_node)
+        failed_node["state"] = "failed"
+        validate_node(failed_node)
+        store.save_node(
+            initiative_id, failed_node,
+            expected_digest=record_digest(current_node),
+        )
+        append_event(
+            store, initiative_id, "verification-finished",
+            [node_id, verification_id, seal["seal_id"]],
+            {
+                "outcome": "failed", "bundle_digest": bundle_digest,
+                "command_count": 0, "reason": f"materialization failed: {exc}"[:1000],
+            },
+            actor_kind="controller", actor_id="verification-runner",
+        )
+        return failed_record
+
+    command_records: list[dict[str, Any]] = []
+    evidence_ids: list[str] = []
+    failed = False
+    command_environment = environment or os.environ
+    for specification in gate["commands"]:
+        command_id = new_uuid()
+        evidence_id = new_uuid()
+        process_identity = f"not-executed:{command_id}"
+        started_at = _now()
+        denial = command_denial(specification["argv"])
+        output = b""
+        exit_code: int | None = None
+        signal: int | None = None
+        timed_out = False
+        output_truncated = False
+        output_original_bytes = 0
+        retained_output_path: Path | None = None
+        mutation = False
+        identity_error: str | None = None
+        pre_identity_status = "observed"
+        pre_change_id: str | None = None
+        pre_commit_id: str | None = None
+        pre_tree_digest: str | None = None
+        pre_parent_commit_ids: tuple[str, ...] | None = None
+        try:
+            pre_identity = adapter.inspect_workspace(
+                materialization_path, materialization["workspace_name"],
+                require_empty=False,
+            )
+            pre_tree = adapter.immutable_tree(materialization_path, pre_identity.commit_id)
+            tracked_unchanged, _pre_non_tracked, _pre_truncated = tracked_workspace_status(
+                adapter, materialization_path, source, seal["jj_commit_id"],
+            )
+            if (
+                pre_identity.change_id != materialization["change_id"]
+                or pre_identity.commit_id != materialization["working_commit_id"]
+                or pre_identity.parent_commit_ids != (seal["jj_commit_id"],)
+                or pre_tree.digest != seal["tree_digest"]
+                or not tracked_unchanged
+            ):
+                raise VerificationError("materialization pre-run identity differs from the target seal")
+            pre_change_id = pre_identity.change_id
+            pre_commit_id = pre_identity.commit_id
+            pre_tree_digest = pre_tree.digest
+            pre_parent_commit_ids = pre_identity.parent_commit_ids
+        except (PreparationError, JjError, OSError, ValueError) as exc:
+            pre_identity_status = "indeterminate"
+            identity_error = f"materialization pre-run identity failed: {exc}"
+            failed = True
+            output = identity_error.encode("utf-8", errors="replace")
+        pre_digest = (
+            _identity_digest(
+                materialization["workspace_name"], pre_change_id,
+                pre_commit_id, pre_tree_digest,
+            )
+            if pre_identity_status == "observed"
+            and pre_change_id is not None
+            and pre_commit_id is not None
+            and pre_tree_digest is not None
+            else None
+        )
+        if identity_error is not None:
+            pass
+        elif denial is not None:
+            output = f"refused before execution: {denial}".encode("utf-8")
+            failed = True
+        else:
+            try:
+                cwd = _command_cwd(materialization_path, specification["cwd"])
+                process_identity = f"indeterminate:{command_id}"
+                retained_output_path = store.reserve_output(
+                    initiative_id, evidence_id,
+                )
+                returncode, status = _capture_truncated(
+                    _contained_argv(
+                        bubblewrap, command_environment, list(specification["argv"]),
+                        output_path=retained_output_path,
+                        timeout_seconds=specification["timeout_seconds"],
+                    ),
+                    cwd=cwd,
+                    deadline_seconds=specification["timeout_seconds"],
+                )
+                output = store.read_output(initiative_id, evidence_id)
+                if (
+                    not isinstance(status["output_truncated"], bool)
+                    or isinstance(status["output_original_bytes"], bool)
+                    or not isinstance(status["output_original_bytes"], int)
+                    or status["output_original_bytes"] < len(output)
+                    or not isinstance(status["timed_out"], bool)
+                    or not isinstance(status["output_digest"], str)
+                    or status["output_digest"] != hashlib.sha256(output).hexdigest()
+                ):
+                    raise VerificationError("verification output status is invalid")
+                output_truncated = status["output_truncated"]
+                output_original_bytes = status["output_original_bytes"]
+                timed_out = status["timed_out"]
+                if returncode != 0 or status["invocation_error"] is not None:
+                    raise VerificationError(
+                        "verification process containment or invocation failed: "
+                        f"{status['invocation_error'] or returncode}"
+                    )
+                child_returncode = status["returncode"]
+                if (
+                    not isinstance(status["pid"], int)
+                    or not isinstance(status["start_ticks"], int)
+                    or not isinstance(status["pid_namespace"], str)
+                    or isinstance(child_returncode, bool)
+                    or not isinstance(child_returncode, int)
+                ):
+                    raise VerificationError("verification process identity is invalid")
+                process_identity = (
+                    f"pidns:{status['pid_namespace']}:pid:{status['pid']}:"
+                    f"start:{status['start_ticks']}"
+                )
+                if child_returncode < 0:
+                    signal = -child_returncode
+                else:
+                    exit_code = child_returncode
+                if child_returncode != 0 or timed_out:
+                    failed = True
+            except (VerificationError, StoreError) as exc:
+                if retained_output_path is not None:
+                    try:
+                        output = store.read_output(initiative_id, evidence_id)
+                    except StoreError:
+                        output = b""
+                diagnostic = str(exc).encode("utf-8", errors="replace")
+                output = output + b"\n" + diagnostic if output else diagnostic
+                timed_out = timed_out or "timed out" in str(exc)
+                failed = True
+        post_identity_status = "observed"
+        post_change_id: str | None = None
+        post_commit_id: str | None = None
+        post_tree_digest: str | None = None
+        post_parent_commit_ids: tuple[str, ...] | None = None
+        non_tracked_paths: list[str] = []
+        non_tracked_paths_truncated = False
+        tracked_unchanged = False
+        try:
+            post_identity = adapter.inspect_workspace(
+                materialization_path, materialization["workspace_name"],
+                require_empty=False,
+            )
+            post_tree = adapter.immutable_tree(materialization_path, post_identity.commit_id)
+            (
+                tracked_unchanged,
+                non_tracked_paths,
+                non_tracked_paths_truncated,
+            ) = tracked_workspace_status(
+                adapter, materialization_path, source, seal["jj_commit_id"],
+            )
+            post_change_id = post_identity.change_id
+            post_commit_id = post_identity.commit_id
+            post_tree_digest = post_tree.digest
+            post_parent_commit_ids = post_identity.parent_commit_ids
+        except (PreparationError, JjError, OSError, ValueError) as exc:
+            post_identity_status = "indeterminate"
+            mutation = True
+            failed = True
+            output += (
+                "\npost-run materialization identity failed: " + str(exc)
+            ).encode("utf-8", errors="replace")
+        post_digest = (
+            _identity_digest(
+                materialization["workspace_name"], post_change_id,
+                post_commit_id, post_tree_digest,
+            )
+            if post_identity_status == "observed"
+            and post_change_id is not None
+            and post_commit_id is not None
+            and post_tree_digest is not None
+            else None
+        )
+        if (
+            pre_identity_status != "observed"
+            or post_identity_status != "observed"
+            or post_digest != pre_digest
+            or post_tree_digest != seal["tree_digest"]
+            or post_parent_commit_ids != (seal["jj_commit_id"],)
+            or not tracked_unchanged
+        ):
+            mutation = True
+            failed = True
+        if len(output) > MAX_VERIFICATION_OUTPUT_BYTES:
+            original = max(output_original_bytes, len(output))
+            marker = (
+                f"\n[truncated by Asha verification; original bytes={original}]\n"
+            ).encode("ascii")
+            output = output[:MAX_VERIFICATION_OUTPUT_BYTES - len(marker)] + marker
+            output_truncated = True
+            output_original_bytes = original
+        output_original_bytes = max(output_original_bytes, len(output))
+        if retained_output_path is not None:
+            store.finalize_reserved_output(
+                initiative_id, evidence_id, output,
+            )
+        finished_at = _now()
+        detail = {
+            "verification_id": verification_id,
+            "bundle_digest": bundle_digest,
+            "repository_id": seal["repository_id"],
+            "seal_id": seal["seal_id"],
+            "argv": specification["argv"],
+            "cwd": specification["cwd"],
+            "environment_policy_id": gate["environment_policy"],
+            "process_identity": process_identity,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "exit_code": exit_code,
+            "signal": signal,
+            "timed_out": timed_out,
+            "denied": denial is not None,
+            "mutation": mutation,
+            "non_tracked_paths": non_tracked_paths,
+            "non_tracked_paths_truncated": non_tracked_paths_truncated,
+            "output_truncated": output_truncated,
+            "output_original_bytes": output_original_bytes or len(output),
+            "pre_identity_status": pre_identity_status,
+            "post_identity_status": post_identity_status,
+            "pre_jj_commit_id": pre_commit_id,
+            "pre_tree_digest": pre_tree_digest,
+            "post_jj_commit_id": post_commit_id,
+            "post_tree_digest": post_tree_digest,
+        }
+        _evidence, output_path, output_digest = _save_command_evidence(
+            store, initiative_id, evidence_id, verification_id, detail, output,
+            output_path=retained_output_path,
+        )
+        evidence_ids.append(evidence_id)
+        command_records.append({
+            "command_id": command_id,
+            "argv": list(specification["argv"]),
+            "cwd": specification["cwd"],
+            "environment_policy_id": gate["environment_policy"],
+            "timeout_seconds": specification["timeout_seconds"],
+            "process_identity": process_identity,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "exit_code": exit_code,
+            "signal": signal,
+            "timed_out": timed_out,
+            "output_path": output_path,
+            "output_digest": output_digest,
+            "output_truncated": output_truncated,
+            "output_original_bytes": output_original_bytes or len(output),
+            "pre_identity_status": pre_identity_status,
+            "post_identity_status": post_identity_status,
+            "pre_identity_digest": pre_digest,
+            "post_identity_digest": post_digest,
+            "pre_jj_commit_id": pre_commit_id,
+            "pre_tree_digest": pre_tree_digest,
+            "post_jj_commit_id": post_commit_id,
+            "post_tree_digest": post_tree_digest,
+        })
+        if failed:
+            break
+
+    current = store.read_verification(initiative_id, verification_id)
+    terminal = copy.deepcopy(current)
+    terminal.update({
+        "state": "failed" if failed else "passed",
+        "commands": command_records,
+        "evidence_ids": evidence_ids,
+        "outcome": "failed" if failed else "passed",
+        "updated_at": _now(),
+    })
+    store.save_verification(
+        initiative_id, terminal, expected_digest=record_digest(current),
+    )
+    current_node = store.read_node(initiative_id, node_id)
+    changed_node = copy.deepcopy(current_node)
+    changed_node["state"] = "failed" if failed else "succeeded"
+    validate_node(changed_node)
+    store.save_node(
+        initiative_id, changed_node, expected_digest=record_digest(current_node),
+    )
+    append_event(
+        store, initiative_id, "verification-finished",
+        [node_id, verification_id, seal["seal_id"]],
+        {
+            "outcome": terminal["outcome"],
+            "bundle_digest": bundle_digest,
+            "command_count": len(command_records),
+        },
+        actor_kind="controller", actor_id="verification-runner",
+    )
+    if not failed and store.peek(initiative_id)["state"] == "running":
+        from .readiness import bind_readiness
+
+        bind_readiness(store, initiative_id)
+    return terminal
+
+
+__all__ = [
+    "MAX_VERIFICATION_OUTPUT_BYTES", "VerificationError",
+    "candidate_bundle_digest", "command_denial", "run_verification",
+]

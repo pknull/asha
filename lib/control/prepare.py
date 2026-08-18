@@ -54,6 +54,14 @@ def derive_repository_identity(
     return f"repo:{digest}", f"{readable}-{digest[:16]}"
 
 
+def _repository_lock_id(repository_identity: str) -> str:
+    return (
+        f"{repository_identity[5:13]}-{repository_identity[13:17]}-"
+        f"{repository_identity[17:21]}-{repository_identity[21:25]}-"
+        f"{repository_identity[25:37]}"
+    )
+
+
 class PreparationError(ValueError):
     pass
 
@@ -959,6 +967,10 @@ def prepare_task_workspace(
         slug = validate_slug(request.slug)
     except ValueError as exc:
         raise PreparationError(str(exc)) from exc
+    if slug == "materializations":
+        raise PreparationError(
+            "task slug 'materializations' is reserved for controller materializations"
+        )
     if not request.label or len(request.label) > 200:
         raise PreparationError("task label must contain 1-200 characters")
     source = Path(request.repository)
@@ -1060,11 +1072,7 @@ def prepare_task_workspace(
     journals = CreationJournalStore(config)
     tasks = TaskStore(config)
     claimed = False
-    repository_lock_id = (
-        f"{repository_identity[5:13]}-{repository_identity[13:17]}-"
-        f"{repository_identity[17:21]}-{repository_identity[21:25]}-"
-        f"{repository_identity[25:37]}"
-    )
+    repository_lock_id = _repository_lock_id(repository_identity)
 
     def phase(next_phase: str) -> None:
         _save_phase(journals, journal, next_phase, failure_injector)
@@ -1205,3 +1213,270 @@ def prepare_task_workspace(
         if not claimed:
             raise PreparationError(f"creation intent was not claimed; existing state preserved: {exc}") from exc
         raise PreparationError(f"workspace preparation failed with durable recovery state: {exc}") from exc
+
+
+_MATERIALIZATION_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?", re.ASCII)
+_MATERIALIZATION_OWNER = ".asha-control-materializations.json"
+
+
+def _materialization_journal(path: Path, value: dict[str, Any]) -> None:
+    """Atomically retain one private controller-materialization phase."""
+    raw = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8") + b"\n"
+    if len(raw) > 64 * 1024:
+        raise PreparationError("materialization journal exceeds 65536 bytes")
+    temporary = path.with_name(f".{path.name}.tmp-{secrets.token_hex(8)}")
+    fd = os.open(
+        temporary,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        0o600,
+    )
+    try:
+        offset = 0
+        while offset < len(raw):
+            offset += os.write(fd, raw[offset:])
+        os.fchmod(fd, 0o600)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(temporary, path)
+    parent_fd = _open_absolute_directory(path.parent)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
+def _private_child(parent: Path, name: str) -> Path:
+    """Create or verify one owned 0700 child without following links."""
+    parent_fd = _open_absolute_directory(parent)
+    try:
+        try:
+            child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+        except FileNotFoundError:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+            child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+            os.fchmod(child_fd, 0o700)
+            os.fsync(parent_fd)
+        try:
+            metadata = os.fstat(child_fd)
+            if metadata.st_uid != os.geteuid() or stat.S_IMODE(metadata.st_mode) != 0o700:
+                raise PreparationError(
+                    f"materialization directory must be owned by the effective user with mode 0700: {parent / name}"
+                )
+        finally:
+            os.close(child_fd)
+    finally:
+        os.close(parent_fd)
+    return parent / name
+
+
+def _materialization_owner(path: Path, repo_key: str, *, create: bool) -> None:
+    """Create or authenticate the reserved per-repository namespace."""
+    marker = path / _MATERIALIZATION_OWNER
+    expected = {
+        "contract": "asha.control-materialization-namespace.v1",
+        "repository_key": repo_key,
+    }
+    if create:
+        if marker.exists() or marker.is_symlink():
+            raise PreparationError("materialization namespace marker already exists")
+        _materialization_journal(marker, expected)
+        return
+    try:
+        fd = os.open(
+            marker,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0),
+        )
+    except OSError as exc:
+        raise PreparationError(
+            "existing materializations path is not an authenticated controller namespace"
+        ) from exc
+    try:
+        metadata = os.fstat(fd)
+        if (
+            not stat.S_ISREG(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+            or metadata.st_nlink != 1
+            or metadata.st_size > 4096
+        ):
+            raise PreparationError("materialization namespace marker is not private and regular")
+        raw = os.read(fd, metadata.st_size + 1)
+    finally:
+        os.close(fd)
+    try:
+        actual = json.loads(raw)
+    except (UnicodeError, json.JSONDecodeError, RecursionError) as exc:
+        raise PreparationError("materialization namespace marker is invalid") from exc
+    if actual != expected:
+        raise PreparationError("materialization namespace marker identity changed")
+
+
+def plan_materialization(
+    config: ControlConfig, source: Path, name: str, *, jj: JjAdapter | None = None,
+) -> dict[str, str]:
+    """Resolve the deterministic controller materialization identity without mutation."""
+    adapter = jj or JjAdapter()
+    if not isinstance(name, str) or _MATERIALIZATION_NAME.fullmatch(name) is None:
+        raise PreparationError("materialization name uses an invalid restricted grammar")
+    validate_workspace_root(config.workspace_root, home=config.home, repository=source)
+    snapshot = read_published_snapshot(source)
+    repository = adapter.preflight(source)
+    repository_identity, repo_key = derive_repository_identity(
+        snapshot.project_id, repository.root, repository.git_root,
+    )
+    destination = config.workspace_root / repo_key / "materializations" / name
+    workspace_name = "asha-materialization-" + hashlib.sha256(
+        f"{repo_key}\0{name}".encode("utf-8")
+    ).hexdigest()[:24]
+    return {
+        "repository_identity": repository_identity,
+        "repository_key": repo_key,
+        "workspace_name": workspace_name,
+        "workspace_path": str(destination),
+    }
+
+
+def prepare_materialization(
+    config: ControlConfig,
+    source: Path,
+    base_commit_id: str,
+    name: str,
+    *,
+    jj: JjAdapter | None = None,
+) -> dict[str, str]:
+    """Create one retained explicit-base jj workspace without a Control task.
+
+    The materialization is a controller-owned verification input. It registers
+    no task, run, tmux session, harness, or task-context marker. Failures retain
+    their journal and any exactly registered partial workspace for inspection;
+    this seam never removes data.
+    """
+    adapter = jj or JjAdapter()
+    source = Path(source)
+    if not isinstance(name, str) or _MATERIALIZATION_NAME.fullmatch(name) is None:
+        raise PreparationError("materialization name uses an invalid restricted grammar")
+    try:
+        target = plan_materialization(config, source, name, jj=adapter)
+        repository_identity = target["repository_identity"]
+        repo_key = target["repository_key"]
+        destination = Path(target["workspace_path"])
+        workspace_name = target["workspace_name"]
+        repository = adapter.preflight(source)
+        if (
+            not isinstance(base_commit_id, str)
+            or GIT_OBJECT_ID_PATTERN.fullmatch(base_commit_id) is None
+        ):
+            raise ValueError("base commit ID must be a full Git object ID")
+        adapter.require_visible_commit(source, base_commit_id)
+        operation_id = adapter.pin_operation(source)
+        expected = adapter.expected_materialization(repository.git_root, base_commit_id)
+    except (OSError, ValueError, JjError) as exc:
+        raise PreparationError(f"materialization preflight failed without mutation: {exc}") from exc
+
+    repository_parent = config.workspace_root / repo_key
+    materializations = repository_parent / "materializations"
+    lock_id = _repository_lock_id(repository_identity)
+
+    with TaskStore(config).transaction_lock(lock_id):
+        # Reuse task preparation's descriptor-relative parent creation for the
+        # managed workspace root and repository namespace, then add only the
+        # fixed materializations and journal components below it.
+        probe = repository_parent / "materialization-parent-probe"
+        _create_destination_parents(
+            config, source, probe, repo_key, "materialization-parent-probe",
+            lambda _item: None,
+        )
+        materializations_preexisting = (
+            materializations.exists() or materializations.is_symlink()
+        )
+        materializations = _private_child(repository_parent, "materializations")
+        _materialization_owner(
+            materializations, repo_key, create=not materializations_preexisting,
+        )
+        journals = _private_child(materializations, ".journals")
+        journal_path = journals / f"{name}.json"
+        if (
+            destination.exists() or destination.is_symlink()
+            or journal_path.exists() or journal_path.is_symlink()
+        ):
+            raise PreparationError("materialization destination or journal already exists; retained state was not changed")
+        at = _now()
+        journal: dict[str, Any] = {
+            "contract": "asha.control-materialization-journal.v1",
+            "name": name,
+            "source": str(source),
+            "base_commit_id": base_commit_id,
+            "workspace_name": workspace_name,
+            "workspace_path": str(destination),
+            "pinned_operation_id": operation_id,
+            "phase": "intent",
+            "change_id": None,
+            "working_commit_id": None,
+            "error": None,
+            "created_at": at,
+            "updated_at": at,
+        }
+        _materialization_journal(journal_path, journal)
+        try:
+            journal.update({"phase": "workspace-add-intent", "updated_at": _now()})
+            _materialization_journal(journal_path, journal)
+            description = f"controller materialization {name}"
+            try:
+                adapter.add_workspace(
+                    source, destination, workspace_name, base_commit_id,
+                    description, operation_id,
+                )
+            except BaseException:
+                # jj can register and materialize before returning an error.
+                # Preserve that exact partial result, but do not leave its
+                # workspace root more permissive than a successful result.
+                try:
+                    _make_registered_workspace_private(
+                        adapter, source, destination, workspace_name,
+                        base_commit_id, description,
+                    )
+                except (OSError, JjError, PreparationError):
+                    pass
+                raise
+            _make_workspace_private(destination)
+            identity = adapter.inspect_workspace(destination, workspace_name)
+            if (
+                identity.parent_commit_ids != (base_commit_id,)
+                or identity.description != description
+            ):
+                raise PreparationError("created materialization is not the exact empty requested change")
+            _verify_materialization(destination, source, expected)
+            final = adapter.inspect_workspace(
+                destination, workspace_name, snapshot=False, require_empty=True,
+            )
+            if final != identity:
+                raise PreparationError("materialization jj identity changed during verification")
+            journal.update({
+                "phase": "ready",
+                "change_id": identity.change_id,
+                "working_commit_id": identity.commit_id,
+                "updated_at": _now(),
+            })
+            _materialization_journal(journal_path, journal)
+            return {
+                "workspace_name": workspace_name,
+                "workspace_path": str(destination),
+                "change_id": identity.change_id,
+                "working_commit_id": identity.commit_id,
+            }
+        except BaseException as exc:
+            journal.update({
+                "phase": "preserved",
+                "error": str(exc)[:2048],
+                "updated_at": _now(),
+            })
+            try:
+                _materialization_journal(journal_path, journal)
+            except Exception:
+                pass
+            raise

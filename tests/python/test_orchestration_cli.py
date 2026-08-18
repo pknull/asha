@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
@@ -125,6 +126,23 @@ class OrchestrationCliTests(unittest.TestCase):
         self.assertFalse(report["workspaces"])
         self.jj.add_workspace.assert_not_called()
         self.jj.forget_workspace.assert_not_called()
+
+    def test_list_all_includes_archived_initiatives(self) -> None:
+        archived = self.create("archived-list")
+        archived = copy.deepcopy(archived)
+        archived["state"] = "archived"
+        with mock.patch.object(
+            InitiativeStore, "list_initiatives", return_value=[archived],
+        ):
+            status, stdout, stderr = self.invoke(["list", "--json"])
+            self.assertEqual((status, stderr), (0, ""))
+            self.assertEqual(json.loads(stdout)["initiatives"], [])
+            status, stdout, stderr = self.invoke(["list", "--all", "--json"])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(
+            json.loads(stdout)["initiatives"][0]["initiative_id"],
+            archived["initiative_id"],
+        )
 
     def test_public_cli_routes_every_increment_one_verb(self) -> None:
         with mock.patch(
@@ -303,6 +321,7 @@ class OrchestrationCliTests(unittest.TestCase):
             {"attempt_id": "one", "control_task_id": "task"},
             {"attempt_id": "two", "control_task_id": "task"},
         ]
+        fake_store.list_verifications_snapshot.return_value = []
         control = mock.Mock()
         control.peek.return_value = {
             "jj": {"workspace_path": str(workspace), "workspace_name": "shared"},
@@ -317,6 +336,48 @@ class OrchestrationCliTests(unittest.TestCase):
             )
         self.assertEqual(report["totals"], {"bytes": 15, "inodes": 3})
         self.assertEqual(usage.call_count, 1)
+
+    def test_storage_counts_shared_verification_materialization_once_and_pauses(self) -> None:
+        initiative = self.create("materialization-storage")
+        materialization = self.root / "retained-materialization"
+        materialization.mkdir()
+        fake_store = mock.Mock()
+        fake_store.config = replace(
+            self.config,
+            max_retained_bytes_before_pause=15,
+            max_retained_inodes_before_pause=100,
+        )
+        fake_store.inventory.return_value = {
+            "initiative": {"bytes": 5, "inodes": 1},
+            "totals": {"bytes": 5, "inodes": 1},
+        }
+        fake_store.list_links_snapshot.return_value = []
+        fake_store.list_verifications_snapshot.return_value = [
+            {
+                "verification_id": "one",
+                "materialization_path": str(materialization),
+            },
+            {
+                "verification_id": "two",
+                "materialization_path": str(materialization),
+            },
+        ]
+        jj = mock.Mock()
+        jj.workspace_identities.return_value = {}
+        with mock.patch(
+            "lib.control.orchestration.storage._path_usage", return_value=(10, 2),
+        ) as usage:
+            report = storage_report(
+                initiative, store=fake_store,
+                control_store=mock.Mock(), jj=jj,
+            )
+        self.assertEqual(report["totals"], {"bytes": 15, "inodes": 3})
+        self.assertTrue(report["pause_recommended"])
+        self.assertEqual(usage.call_count, 1)
+        self.assertEqual(len(report["materializations"]), 1)
+        self.assertEqual(
+            report["materializations"][0]["verification_ids"], ["one", "two"],
+        )
 
     def test_reject_returns_to_planning_and_records_one_event(self) -> None:
         initiative = self.create("reject-demo")

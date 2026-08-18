@@ -68,6 +68,22 @@ with different parameters, or one whose creation was interrupted, is refused
 with exit 2 (the latter names `asha task recover`). The check runs under the
 per-task transaction lock before any source mutation.
 
+## Controller-materialization library seam
+
+`lib/control/prepare.py` exposes
+`plan_materialization(config, source, name)` and
+`prepare_materialization(config, source, base_commit_id, name)`. The planner
+returns the deterministic repository identity, repository key, workspace name,
+and workspace path without mutation so a caller can journal intent before
+creation. Preparation creates one
+fresh explicit-base jj workspace below
+`<workspace-root>/<repo-key>/materializations/<name>` and returns the closed
+Python mapping `workspace_name`, `workspace_path`, `change_id`, and
+`working_commit_id`. It uses Control's operation pinning, jj adapter, namespace
+and path validation, private modes, and retained journaling, but creates no
+`asha.control-task.v1` or `asha.control-run.v1` record and invokes no harness or
+tmux operation. This is a library seam, not a CLI or JSON contract.
+
 ## Not contracts
 
 tmux user options (`@asha_*`), session/window/pane names, workspace directory

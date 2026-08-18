@@ -3,9 +3,12 @@ from __future__ import annotations
 import copy
 import json
 import os
+import threading
+import time
 import unittest
 import uuid
 from contextlib import redirect_stdout
+from dataclasses import replace
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -17,6 +20,7 @@ from lib.control.orchestration.actions import build_action_document, submit_acti
 from lib.control.orchestration.results import (
     ResultError,
     ResultRefused,
+    locate_task_binding,
     publish_result,
     reconcile_publications,
 )
@@ -267,6 +271,51 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
         with self.assertRaisesRegex(ResultRefused, "primary run"):
             publish_result(self.store, body, wrong, jj=self.jj)
         self.assertEqual(self.store.list_result_publications_snapshot(self.initiative_id), [])
+
+    def test_publication_waits_for_a_link_written_after_worker_launch(self) -> None:
+        link = self.store.read_link(self.initiative_id, self.attempt["attempt_id"])
+        link_path = (
+            self.store.config.initiatives_dir / self.initiative_id
+            / "links" / f"{self.attempt['attempt_id']}.json"
+        )
+        link_path.unlink()
+        self.store.config = replace(self.store.config, link_grace_seconds=3)
+        errors: list[BaseException] = []
+
+        def delayed_link() -> None:
+            try:
+                time.sleep(1)
+                self.store.save_link(self.initiative_id, link)
+            except BaseException as exc:
+                errors.append(exc)
+
+        writer = threading.Thread(target=delayed_link)
+        writer.start()
+        started = time.monotonic()
+        try:
+            receipt = self.publish(self.body())
+        finally:
+            writer.join(3)
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(errors, [])
+        self.assertGreaterEqual(time.monotonic() - started, 0.75)
+        self.assertEqual(receipt["phase"], "completed")
+
+    def test_missing_link_refusal_says_report_may_be_retried(self) -> None:
+        link_path = (
+            self.store.config.initiatives_dir / self.initiative_id
+            / "links" / f"{self.attempt['attempt_id']}.json"
+        )
+        link_path.unlink()
+        self.store.config = replace(self.store.config, link_grace_seconds=1)
+        with mock.patch(
+            "lib.control.orchestration.results.time.monotonic",
+            side_effect=[0.0, 1.0],
+        ):
+            with self.assertRaisesRegex(
+                ResultRefused, "not yet linked.*report may be retried",
+            ):
+                locate_task_binding(self.store.config, self.task["task_id"])
 
     def test_path_validation_refuses_noncanonical_and_symlink_traversal(self) -> None:
         outside = self.root / "outside"

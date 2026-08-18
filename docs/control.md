@@ -340,6 +340,25 @@ deadline-bound, and byte-capped.
 
 ## Data preservation
 
+### Controller materializations
+
+Orchestration may call the library-only
+`lib.control.prepare.plan_materialization(config, source, name)` seam to resolve
+the deterministic repository identity, workspace name, and target path without
+mutation, then call
+`lib.control.prepare.prepare_materialization(config, source, base_commit_id, name)`
+to create a fresh, explicit-base jj workspace for controller verification.
+It uses the same pinned-operation workspace-add primitive, canonical workspace
+root and repository namespace, path checks, private `0700` directories, and
+durable phase journaling as task preparation. The retained workspace lives at
+`<workspace-root>/<repo-key>/materializations/<name>`.
+
+A controller materialization registers no Control task or run, starts no tmux
+session or harness, and receives no task context marker. Success returns only
+`workspace_name`, `workspace_path`, `change_id`, and `working_commit_id`.
+Failure preserves the journal and any ambiguous materialization for inspection.
+There is no materialization deletion route.
+
 Control has no workspace deletion command. Archive requires an ended task or a
 running task whose reconciled runs are all terminal (`exited` or `failed`) and
 unblocked. At that terminal edge Control persists the reconciled run state and

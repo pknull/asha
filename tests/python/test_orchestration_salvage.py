@@ -388,6 +388,7 @@ class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
             "seal_id": success["seal_id"],
             "repository_id": success["repository_id"],
             "jj_commit_id": success["jj_commit_id"],
+            "base_seal_ids": success["base"]["seal_ids"],
             "diff_digest": success["diff_digest"],
             "active_plan_digest": self.plan["digest"],
         })
@@ -396,7 +397,8 @@ class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
         verification.update({
             "initiative_id": self.initiative_id, "node_id": "verify-a",
             "active_plan_digest": self.plan["digest"], "state": "passed",
-            "outcome": "passed",
+            "outcome": "passed", "seal_id": success["seal_id"],
+            "repository_id": success["repository_id"],
         })
         self.store.save_verification(self.initiative_id, verification)
         bundle = contract_record(model.validate_bundle)

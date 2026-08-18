@@ -46,6 +46,19 @@ class EvidenceAdapters:
         return Evidence("event", "missing", "no semantic event")
 
 
+class SnapshotWindowAdapters(EvidenceAdapters):
+    def __init__(self) -> None:
+        super().__init__("working")
+
+    def jj(self, task):
+        del task
+        return Evidence(
+            "jj", "mismatch",
+            "jj workspace evidence mismatched: created workspace registration "
+            "identity disagrees with working copy",
+        )
+
+
 class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
     def dispatch_one(self):
         tasks = []
@@ -314,6 +327,21 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
     def test_stale_live_evidence_pauses_with_conflict(self) -> None:
         task = self.dispatch_one()
         self.assert_reconciliation_conflict(self.reconcile(task, "stale"))
+
+    def test_live_jj_snapshot_split_waits_for_result_or_process_exit(self) -> None:
+        task = self.dispatch_one()
+        result = reconcile_live(
+            self.store, self.initiative_id,
+            control_store=self.control(task),
+            adapters_factory=lambda _task: SnapshotWindowAdapters(),
+        )
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual(result["observations"][-1]["control_state"], "working")
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
+            "running",
+        )
+        self.assertEqual(self.initiative()["state"], "running")
 
     def test_nested_workflow_second_control_task_trips_breaker(self) -> None:
         task = self.dispatch_one()

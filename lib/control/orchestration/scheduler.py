@@ -79,6 +79,39 @@ def _active_attempts(attempts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _gate_rerun_attempt_ids(
+    store: InitiativeStore, initiative_id: str, node_id: str,
+    attempts: list[dict[str, Any]],
+) -> tuple[set[str], int]:
+    """Bind stale-gate reopen events one-to-one to their later attempts."""
+    events = sorted(
+        (
+            event for event in store.list_events_snapshot(initiative_id)
+            if event["type"] == "node-ready"
+            and node_id in event["subject_ids"]
+            and event["payload"].get("reason") == "candidate-review-staled"
+        ),
+        key=lambda item: (item["recorded_at"], item["event_id"]),
+    )
+    candidates = sorted(
+        (item for item in attempts if item["node_id"] == node_id),
+        key=lambda item: (item["created_at"], item["attempt_id"]),
+    )
+    bound: set[str] = set()
+    for event in events:
+        match = next(
+            (
+                attempt for attempt in candidates
+                if attempt["attempt_id"] not in bound
+                and attempt["created_at"] >= event["recorded_at"]
+            ),
+            None,
+        )
+        if match is not None:
+            bound.add(match["attempt_id"])
+    return bound, max(0, len(events) - len(bound))
+
+
 def _storage_paused(store: InitiativeStore, initiative: dict[str, Any]) -> bool:
     return bool(storage_report(initiative, store=store)["pause_recommended"])
 
@@ -108,12 +141,17 @@ def readiness(
         or len(_active_attempts(attempts)) >= _limit(initiative, plan, "max_parallel")
         or _storage_paused(store, initiative)
     )
-    per_node_count: dict[str, int] = {}
-    for attempt in attempts:
-        per_node_count[attempt["node_id"]] = per_node_count.get(attempt["node_id"], 0) + 1
     result: dict[str, str] = {}
     for node_id in sorted(nodes):
         current = nodes[node_id]["state"]
+        gate_attempt_ids, pending_gate_reruns = _gate_rerun_attempt_ids(
+            store, initiative["initiative_id"], node_id, attempts,
+        )
+        ordinary_attempts = sum(
+            1 for attempt in attempts
+            if attempt["node_id"] == node_id
+            and attempt["attempt_id"] not in gate_attempt_ids
+        )
         has_reservation = any(
             attempt["node_id"] == node_id and attempt["state"] == "allocated"
             for attempt in attempts
@@ -129,8 +167,15 @@ def readiness(
             )
             or (
                 not has_reservation
-                and per_node_count.get(node_id, 0)
+                and pending_gate_reruns == 0
+                and ordinary_attempts
                 >= _limit(initiative, plan, "max_attempts_per_node")
+            )
+            or (
+                not has_reservation
+                and pending_gate_reruns > 0
+                and len(gate_attempt_ids)
+                >= _limit(initiative, plan, "max_repair_cycles")
             )
         ):
             result[node_id] = "blocked"
@@ -286,6 +331,65 @@ def assignment_bytes(
     nested = plan["nested_workflow_policy"]
     seal_facts = resolved_seals or []
     read_only_facts = [item for item in seal_facts if item["read_only"]]
+    composition = ""
+    if node["type"] == "compose":
+        composition = f"""
+## Composition contract
+
+- Conflict policy: {node['conflict_policy']}
+- Ordered exact success seals: {json.dumps([item['seal_id'] for item in seal_facts])}
+- Start from the shared scope-origin base above. Produce one candidate combining
+  the ordered inputs. Rebase or merge only inside this workspace. Never touch
+  the source repository or another workspace. If the declared conflict policy
+  cannot be satisfied, publish `failed` or `blocked`; do not omit an input.
+"""
+    review_contract = ""
+    if node["type"] == "review":
+        from .review import specification_digest
+
+        target = {
+            "seal_id": seal_facts[0]["seal_id"],
+            "active_plan_digest": plan["digest"],
+            "specification_digest": specification_digest(initiative, plan),
+            "repository_id": initiative["scope"]["repository"]["repository_id"],
+            "jj_commit_id": seal_facts[0]["jj_commit_id"],
+            "base_seal_ids": seal_facts[0].get("base_seal_ids", []),
+            "diff_digest": seal_facts[0]["diff_digest"],
+        }
+        review_contract = f"""
+## Independent review contract
+
+This is a read-only review of the exact immutable target below. Do not write
+into this workspace or run any command that writes into it. Publish a
+`completed` result with `files_changed: []` and a
+`review` object containing `verdict` (`pass|findings`), `findings`
+(`severity`, `location`, `summary`), and this exact `target` object:
+
+{json.dumps(target, ensure_ascii=False, sort_keys=True)}
+"""
+    publication_workspace_rule = (
+        "Do not run `jj status` or any other command that may snapshot or write "
+        "the review workspace. Write the result document outside the workspace "
+        "to `$XDG_RUNTIME_DIR/asha-review-$ASHA_CONTROL_TASK_ID.json`, then run "
+        "`asha task report --file "
+        "$XDG_RUNTIME_DIR/asha-review-$ASHA_CONTROL_TASK_ID.json`."
+        if node["type"] == "review" else
+        "Required: run `jj status` in this workspace to snapshot before "
+        "`asha task report`, and after any later edit."
+    )
+    publication_contract = (
+        "Before exiting, write the bounded result document outside this "
+        "workspace to "
+        "`$XDG_RUNTIME_DIR/asha-review-$ASHA_CONTROL_TASK_ID.json`. Do not "
+        "create `.asha/result.json` or any other review-workspace artifact."
+        if node["type"] == "review" else
+        "Before exiting, write the bounded result document to "
+        ".asha/result.json (the private `.asha/` directory inside this "
+        "workspace is ignored by the repository, so the result file never "
+        "enters your sealed diff; a result file placed anywhere tracked is a "
+        "hard-scope violation and fails the seal) and run:\n\n"
+        "```text\nasha task report --file .asha/result.json\n```"
+    )
     text = f"""# Asha Orchestration Assignment
 
 ## Identity
@@ -329,6 +433,7 @@ Declared node dependencies:
 
 Upstream result summaries and their payload digests are embedded in the exact
 immutable seal inputs above.
+{composition}{review_contract}
 
 ## Acceptance criteria
 
@@ -361,16 +466,9 @@ session, coordinator, or unmanaged parallel writer.
 
 ## Result publication contract
 
-Before exiting, write the bounded result document to .asha/result.json (the
-private `.asha/` directory inside this workspace is ignored by the repository,
-so the result file never enters your sealed diff; a result file placed
-anywhere tracked is a hard-scope violation and fails the seal) and run:
+{publication_contract}
 
-```text
-asha task report --file .asha/result.json
-```
-
-Required: run `jj status` in this workspace to snapshot before `asha task report`, and after any later edit.
+{publication_workspace_rule}
 The controller never snapshots or otherwise mutates the worker workspace on
 the worker's behalf.
 
@@ -394,6 +492,14 @@ def _exact_base(
     store: InitiativeStore, initiative_id: str, node: dict[str, Any], attempt: dict[str, Any]
 ) -> str:
     base = attempt["base"]
+    if node["type"] == "compose":
+        from .composition import CompositionError, composition_inputs
+
+        try:
+            composition_inputs(store, initiative_id, node, attempt)
+        except CompositionError as exc:
+            raise SchedulerError(str(exc)) from exc
+        return base["scope_origin"]["jj_commit_id"]
     if base["policy"] in {"approved-baseline", "scope-baseline"}:
         return base["scope_origin"]["jj_commit_id"]
     seal_ids = [item["seal_id"] for item in base["seal_inputs"]]
@@ -461,6 +567,25 @@ def _resolved_attempt_base(
     node: dict[str, Any],
 ) -> dict[str, Any]:
     """Fix plan-level upstream node references to exact immutable success seals."""
+    if node["type"] == "review":
+        from .review import ReviewError, review_target
+
+        initiative = store.peek(initiative_id)
+        try:
+            seal, _target = review_target(store, initiative, plan, node)
+        except ReviewError as exc:
+            raise SchedulerError(str(exc)) from exc
+        return {
+            "policy": "upstream-seal",
+            "scope_origin": copy.deepcopy(seal["scope_origin"]),
+            "upstream_node_ids": [seal["node_id"]],
+            "seal_inputs": [{
+                "seal_id": seal["seal_id"],
+                "outcome": "success",
+                "read_only": False,
+                "scope_origin": copy.deepcopy(seal["scope_origin"]),
+            }],
+        }
     base = _attempt_base(plan, node)
     if base["policy"] != "upstream-seal" or base["seal_inputs"]:
         return base
@@ -742,11 +867,41 @@ def dispatch(
                 raise SchedulerError("node is not deterministically ready")
             if len(_active_attempts(attempts)) >= _limit(initiative, plan, "max_parallel"):
                 raise SchedulerError("initiative max_parallel limit reached")
+            gate_attempt_ids, pending_gate_reruns = _gate_rerun_attempt_ids(
+                store, initiative_id, node_id, attempts,
+            )
+            ordinary_attempts = sum(
+                1 for item in node_attempts
+                if item["attempt_id"] not in gate_attempt_ids
+            )
+            if reserved is None and salvage_approval is None:
+                retained_success = sorted(
+                    (
+                        seal for seal in store.list_seals_snapshot(initiative_id)
+                        if seal["node_id"] == node_id and seal["outcome"] == "success"
+                    ),
+                    key=lambda item: (item["sealed_at"], item["seal_id"]),
+                )
+                if retained_success:
+                    raise SchedulerError(
+                        "use repair-node with seal " + retained_success[-1]["seal_id"]
+                    )
             if (
                 reserved is None
-                and len(node_attempts) >= _limit(initiative, plan, "max_attempts_per_node")
+                and pending_gate_reruns == 0
+                and ordinary_attempts >= _limit(
+                    initiative, plan, "max_attempts_per_node",
+                )
             ):
                 raise SchedulerError("node max_attempts_per_node exhausted")
+            if (
+                reserved is None
+                and pending_gate_reruns > 0
+                and len(gate_attempt_ids) >= _limit(
+                    initiative, plan, "max_repair_cycles",
+                )
+            ):
+                raise SchedulerError("initiative max_repair_cycles exhausted")
             if reserved is not None:
                 bound_id = reserved["action_id"]
                 if bound_id not in {None, action["action_id"]}:
@@ -864,6 +1019,8 @@ def dispatch(
                     **copy.deepcopy(item),
                     "jj_commit_id": seal["jj_commit_id"],
                     "tree_digest": seal["tree_digest"],
+                    "diff_digest": seal["diff_digest"],
+                    "base_seal_ids": list(seal["base"]["seal_ids"]),
                     "changed_paths": seal["changed_paths"],
                     "cumulative_changed_paths": seal["cumulative_changed_paths"],
                     "result": result_summary,
@@ -990,6 +1147,12 @@ def dispatch(
                 },
                 actor_kind="controller", actor_id="scheduler",
             )
+            if node["type"] == "review":
+                from .review import register_review_attempt
+
+                register_review_attempt(
+                    store, initiative, plan, node, attempt, control["task"],
+                )
             action = store.read_action(initiative_id, action["action_id"])
             action = set_action_state(
                 store, action, "completed",

@@ -55,6 +55,7 @@ def storage_report(
         registration_error = str(exc)[:400]
 
     workspaces: list[dict[str, Any]] = []
+    materializations: list[dict[str, Any]] = []
     workspace_bytes = 0
     workspace_inodes = 0
     counted_paths: set[str] = set()
@@ -94,6 +95,28 @@ def storage_report(
             "inodes": used_inodes,
             "detail": detail,
         })
+    verification_paths: dict[str, list[str]] = {}
+    for verification in store.list_verifications_snapshot(initiative_id):
+        verification_paths.setdefault(
+            verification["materialization_path"], [],
+        ).append(verification["verification_id"])
+    for path_key in sorted(verification_paths):
+        path = Path(path_key)
+        exists = path.exists() and path.is_dir() and not path.is_symlink()
+        if exists and path_key not in usage_by_path:
+            usage_by_path[path_key] = _path_usage(path)
+        used_bytes, used_inodes = usage_by_path.get(path_key, (0, 0))
+        if path_key not in counted_paths:
+            counted_paths.add(path_key)
+            workspace_bytes += used_bytes
+            workspace_inodes += used_inodes
+        materializations.append({
+            "path": path_key,
+            "verification_ids": sorted(verification_paths[path_key]),
+            "exists": exists,
+            "bytes": used_bytes,
+            "inodes": used_inodes,
+        })
     totals = {
         "bytes": inventory["totals"]["bytes"] + workspace_bytes,
         "inodes": inventory["totals"]["inodes"] + workspace_inodes,
@@ -107,6 +130,7 @@ def storage_report(
         "initiative_id": initiative_id,
         "inventory": inventory,
         "workspaces": workspaces,
+        "materializations": materializations,
         "totals": totals,
         "thresholds": thresholds,
         "pause_recommended": (

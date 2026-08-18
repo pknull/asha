@@ -219,6 +219,42 @@ def _observe(
     )
 
 
+def _active_jj_snapshot_window(
+    task: dict[str, Any], reconciliation: dict[str, Any],
+) -> bool:
+    """Recognize the brief jj metadata split while a live worker snapshots.
+
+    `jj status` updates the working-copy and repository views in separate
+    durable steps. A concurrent read can observe their documented identity
+    disagreement even though the owned process is still running. Result
+    publication performs its own ownership check, and a mismatch that remains
+    after process exit still takes the normal stale/conflict path.
+    """
+    if task["lifecycle"] != "running" or reconciliation.get("state") != "stale":
+        return False
+    evidence = reconciliation.get("evidence", [])
+    process_live = any(
+        item.get("source") == "process"
+        and item.get("outcome") == "match"
+        for item in evidence
+    )
+    jj_split = any(
+        item.get("source") == "jj"
+        and item.get("outcome") == "mismatch"
+        and isinstance(item.get("detail"), str)
+        and item["detail"].endswith(
+            "created workspace registration identity disagrees with working copy"
+        )
+        for item in evidence
+    )
+    hard_mismatch = any(
+        item.get("outcome") == "mismatch"
+        and item.get("source") != "jj"
+        for item in evidence
+    )
+    return process_live and jj_split and not hard_mismatch
+
+
 def _mark_conflict(
     store: InitiativeStore,
     initiative_id: str,
@@ -578,6 +614,10 @@ def reconcile_live(
             else:
                 adapters = adapters_factory(task)
             observed = reconcile_task(task, adapters)
+            if _active_jj_snapshot_window(task, observed):
+                observed = copy.deepcopy(observed)
+                observed["state"] = "working"
+                observed["blocker"] = None
             previous_exit = _first_exit_observation(
                 store, initiative_id, attempt["attempt_id"]
             )
@@ -643,6 +683,30 @@ def reconcile_live(
                         store, initiative_id, attempt, "awaiting-exit", current_time,
                     )
             else:
+                continue
+            if node["type"] == "review":
+                from .review import ReviewError, complete_review_attempt
+
+                try:
+                    complete_review_attempt(
+                        store, initiative_id, attempt["attempt_id"], task, observed,
+                        jj=(
+                            adapters.jj_adapter
+                            if isinstance(adapters, LiveAdapters) else None
+                        ),
+                    )
+                except (ReviewError, StoreError, JjError, OSError, ValueError) as exc:
+                    from .scheduler import pause_for_breaker
+
+                    reason = f"review reconciliation failed: {exc}"
+                    pause_for_breaker(
+                        store, initiative_id, reason[:1000],
+                        event_type="reconciliation-conflict",
+                        subject_ids=[node["node_id"], attempt["attempt_id"]],
+                    )
+                    conflicts.append({
+                        "attempt_id": attempt["attempt_id"], "reason": reason,
+                    })
                 continue
             try:
                 seal = prepare_and_publish_seal(
