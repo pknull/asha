@@ -438,10 +438,54 @@ def render(model: TuiModel) -> list[str]:
         if detail.diff_summary is not None:
             diff_lines = detail.diff_summary.splitlines() or ["No changes."]
             lines.extend(f"Diff:       {line}" for line in diff_lines[:3])
+    footer = "Enter open  n start  r reconcile  d diff  a archive  / filter  ? help  q quit"
+    status_lines: list[str] = []
     if model.message:
-        lines.append(f"Status: {model.message}")
-    lines.append("Enter open  n start  r reconcile  d diff  a archive  / filter  ? help  q quit")
+        # Wrap rather than clip: a refusal carries its remedy at the END of
+        # the sentence, which a single clipped line would hide.
+        status_lines = _wrap_status(model.message, model.width)
+    budget = max(0, model.height - len(lines) - 1)
+    if len(status_lines) > budget:
+        status_lines = status_lines[:budget]
+        if status_lines:
+            status_lines[-1] = _clip(status_lines[-1][:-1] + "…", model.width)
+    lines.extend(status_lines)
+    lines.append(footer)
     return [_clip(line, model.width) for line in lines[:model.height]]
+
+
+_STATUS_MAX_LINES = 6
+
+
+def _wrap_status(message: str, width: int) -> list[str]:
+    """Wrap a status message under a `Status: ` label into bounded lines."""
+    label = "Status: "
+    usable = max(1, width - 1 - len(label))
+    words = _safe_text(message).split(" ")
+    wrapped: list[str] = []
+    current = ""
+    for word in words:
+        while len(word) > usable:
+            if current:
+                wrapped.append(current)
+                current = ""
+            wrapped.append(word[:usable])
+            word = word[usable:]
+        candidate = word if not current else f"{current} {word}"
+        if len(candidate) <= usable:
+            current = candidate
+        else:
+            wrapped.append(current)
+            current = word
+    if current:
+        wrapped.append(current)
+    if len(wrapped) > _STATUS_MAX_LINES:
+        wrapped = wrapped[:_STATUS_MAX_LINES]
+        wrapped[-1] = wrapped[-1][:max(0, usable - 1)] + "…"
+    return [
+        (label if index == 0 else " " * len(label)) + line
+        for index, line in enumerate(wrapped)
+    ]
 
 
 class _TuiShutdown(Exception):
@@ -451,7 +495,7 @@ class _TuiShutdown(Exception):
 
 
 def _safe_error(exc: BaseException) -> str:
-    return _safe_text(exc)[:300] or "controller failure"
+    return _safe_text(exc)[:1200] or "controller failure"
 
 
 def _adapter_for_task(task: dict[str, Any]) -> TmuxAdapter:

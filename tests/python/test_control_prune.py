@@ -358,10 +358,15 @@ class PruneTaskTests(PruneFixture):
         self.assertEqual(fourth.workspace.action, "refused")
         self.assertIn("names no task", fourth.workspace.detail)
         self.assertTrue((workspace / "live.txt").exists())
-        # And a genuinely different inode is refused by identity alone.
+        # Unpatched: either the inode differs (identity refuses) or the
+        # filesystem reused it (the marker refuses); both keep the tree.
         fifth, _tmux, _jj = self.prune(task, tmux=FakeTmux(present=False), jj=FakeJj())
         self.assertEqual(fifth.workspace.action, "refused")
-        self.assertIn("identity differs", fifth.workspace.detail)
+        self.assertTrue(
+            "identity differs" in fifth.workspace.detail
+            or "names no task" in fifth.workspace.detail,
+            fifth.workspace.detail,
+        )
         self.assertTrue((workspace / "live.txt").exists())
 
     def test_shared_workspace_path_in_registry_refuses_removal(self) -> None:
