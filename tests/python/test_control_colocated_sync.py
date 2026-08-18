@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -120,6 +121,73 @@ class ColocatedProbeAdapterTests(unittest.TestCase):
             "detail": "recorded a jj operation-log entry for git import",
             "operation": "git import",
         },))
+
+    def immutable_runner(self, tree: bytes, *, conflict: bytes = b"false\n"):
+        calls: list[list[str]] = []
+
+        def runner(argv, **_kwargs):
+            calls.append(list(argv))
+            if argv[0] == "git":
+                return self.completed(argv, stdout=tree)
+            if argv[-1] == "root" and argv[-2] != "git":
+                return self.completed(argv, stdout=(str(self.root) + "\n").encode())
+            if argv[-2:] == ["git", "root"]:
+                return self.completed(argv, stdout=(str(self.root) + "\n").encode())
+            if "conflict" in argv[-1]:
+                return self.completed(argv, stdout=conflict)
+            raise AssertionError(argv)
+
+        return runner, calls
+
+    def test_immutable_tree_uses_one_git_tree_and_hashes_modes_and_blob_ids(self) -> None:
+        commit = "a" * 40
+        entries = [
+            ["link", "120000", "b" * 40],
+            ["regular", "100644", "c" * 40],
+        ]
+        raw = (
+            f"120000 blob {'b' * 40}\tlink\0"
+            f"100644 blob {'c' * 40}\tregular\0"
+        ).encode()
+        runner, calls = self.immutable_runner(raw)
+        tree = JjAdapter(runner=runner).immutable_tree(self.root, commit)
+        canonical = json.dumps(
+            entries, ensure_ascii=False, sort_keys=False, separators=(",", ":"),
+        ).encode()
+        self.assertEqual(tree.entries, tuple(tuple(item) for item in entries))
+        self.assertEqual(tree.digest, hashlib.sha256(canonical).hexdigest())
+        git_calls = [call for call in calls if call[0] == "git"]
+        self.assertEqual(git_calls, [[
+            "git", "-C", str(self.root), "ls-tree", "-rz", "--full-tree", commit,
+        ]])
+        self.assertFalse(any("file" in call and "show" in call for call in calls))
+
+    def test_immutable_tree_refuses_conflicts_submodules_entry_and_byte_overflow(self) -> None:
+        commit = "a" * 40
+        conflicted, calls = self.immutable_runner(b"", conflict=b"true\n")
+        with self.assertRaisesRegex(JjError, "conflicted"):
+            JjAdapter(runner=conflicted).immutable_tree(self.root, commit)
+        self.assertFalse(any(call[0] == "git" for call in calls))
+
+        submodule, _ = self.immutable_runner(
+            f"160000 commit {'d' * 40}\tsubmodule\0".encode()
+        )
+        with self.assertRaisesRegex(JjError, "submodules"):
+            JjAdapter(runner=submodule).immutable_tree(self.root, commit)
+
+        two_entries = (
+            f"100644 blob {'b' * 40}\ta\0"
+            f"100644 blob {'c' * 40}\tb\0"
+        ).encode()
+        oversized_count, _ = self.immutable_runner(two_entries)
+        with mock.patch("lib.control.jj.MAX_IMMUTABLE_TREE_ENTRIES", 1), \
+                self.assertRaisesRegex(JjError, "exceeds 1 entries"):
+            JjAdapter(runner=oversized_count).immutable_tree(self.root, commit)
+
+        oversized_bytes, _ = self.immutable_runner(two_entries)
+        with mock.patch("lib.control.jj.MAX_IMMUTABLE_TREE_BYTES", 8), \
+                self.assertRaisesRegex(JjError, "bounded"):
+            JjAdapter(runner=oversized_bytes).immutable_tree(self.root, commit)
 
 
 class RepositorySyncDoctorTests(unittest.TestCase):

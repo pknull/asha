@@ -116,7 +116,7 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
             self.store.list_attempts_snapshot(self.initiative_id),
             key=lambda item: item["ordinal"],
         )
-        self.assertEqual([item["state"] for item in attempts], ["result-missing", "allocated"])
+        self.assertEqual([item["state"] for item in attempts], ["failed-no-artifact", "allocated"])
         self.assertEqual(attempts[1]["base"], attempts[0]["base"])
         self.assertIsNone(attempts[1]["action_id"])
         self.assertEqual(result["retries"][0]["attempt_id"], attempts[1]["attempt_id"])
@@ -132,7 +132,7 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
             self.store.list_attempts_snapshot(self.initiative_id),
             key=lambda item: item["ordinal"],
         )
-        self.assertEqual(attempts[0]["state"], "abnormal-exit")
+        self.assertEqual(attempts[0]["state"], "failed-no-artifact")
         self.assertEqual(attempts[1]["state"], "allocated")
         self.assertEqual(len(result["retries"]), 1)
 
@@ -154,7 +154,7 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
         )
         self.assertEqual(action["state"], "completed", action["outcome"])
         self.assertEqual(
-            [item["state"] for item in attempts], ["abnormal-exit", "cancelled"],
+            [item["state"] for item in attempts], ["failed-no-artifact", "cancelled"],
         )
         self.assertEqual(attempts[1]["action_id"], action["action_id"])
         self.assertEqual(
@@ -274,7 +274,7 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
                 self.store.list_attempts_snapshot(self.initiative_id),
                 key=lambda item: item["ordinal"],
             )["state"],
-            "result-missing",
+            "failed-no-artifact",
         )
 
     def assert_reconciliation_conflict(self, result) -> None:
@@ -372,7 +372,7 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
             self.store.list_attempts_snapshot(self.initiative_id),
             key=lambda item: item["ordinal"],
         )
-        self.assertEqual([item["state"] for item in attempts], ["abnormal-exit", "allocated"])
+        self.assertEqual([item["state"] for item in attempts], ["failed-no-artifact", "allocated"])
         self.assertIsNone(attempts[-1]["action_id"])
         self.assertEqual(
             self.store.read_node(self.initiative_id, "implementation-a")["state"],

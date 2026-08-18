@@ -152,8 +152,9 @@ class OrchestrationModelTests(unittest.TestCase):
             "run_id": run_id,
             "state": "reserved",
             "body_digest": DIGEST,
+            "body": body,
             "receipt_sequence": 1,
-            "attempt_revision": 0,
+            "attempt_revision": "a" * 64,
             "refusal": None,
             "created_at": TIMESTAMP,
             "updated_at": TIMESTAMP,
@@ -207,7 +208,17 @@ class OrchestrationModelTests(unittest.TestCase):
             "diff_digest": "f" * 64,
             "cumulative_diff_digest": "0" * 64,
             "changed_paths": ["lib/example.py"],
+            "changed_paths_truncated": 0,
+            "changed_paths_digest": hashlib.sha256(json.dumps(
+                ["lib/example.py"], ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            ).encode()).hexdigest(),
             "cumulative_changed_paths": ["lib/example.py"],
+            "cumulative_changed_paths_truncated": 0,
+            "cumulative_changed_paths_digest": hashlib.sha256(json.dumps(
+                ["lib/example.py"], ensure_ascii=False, sort_keys=True,
+                separators=(",", ":"),
+            ).encode()).hexdigest(),
             "result_id": result_id,
             "process_evidence_id": evidence_id,
             "sealed_at": TIMESTAMP,
@@ -623,6 +634,9 @@ class OrchestrationModelTests(unittest.TestCase):
                 ("running", "indeterminate"), ("running", "stale"),
                 ("submitted", "failed"), ("submitted", "indeterminate"),
                 ("submitted", "stale"),
+                ("accepted-pass", "stale"),
+                ("accepted-findings", "stale"),
+                ("failed", "stale"), ("indeterminate", "stale"),
             ],
             "verification": [
                 ("pending", "dispatching"), ("dispatching", "running"),
@@ -630,6 +644,8 @@ class OrchestrationModelTests(unittest.TestCase):
                 ("pending", "indeterminate"), ("pending", "stale"),
                 ("dispatching", "indeterminate"), ("dispatching", "stale"),
                 ("running", "indeterminate"), ("running", "stale"),
+                ("passed", "stale"), ("failed", "stale"),
+                ("indeterminate", "stale"),
             ],
             "bundle": [
                 ("binding", "compatible"), ("binding", "incompatible"),
@@ -833,6 +849,21 @@ class OrchestrationModelTests(unittest.TestCase):
         attempt["state"] = "dispatching"
         with self.assertRaisesRegex(model.ModelError, "allocated attempt"):
             model.validate_attempt(attempt)
+
+    def test_cumulative_seal_path_markers_bind_the_complete_list(self) -> None:
+        seal = next(
+            record for validator, record in self.contract_records()
+            if validator is model.validate_seal
+        )
+        model.validate_seal(seal)
+        missing = copy.deepcopy(seal)
+        missing.pop("cumulative_changed_paths_digest")
+        with self.assertRaises(model.ModelError):
+            model.validate_seal(missing)
+        wrong = copy.deepcopy(seal)
+        wrong["cumulative_changed_paths_digest"] = "f" * 64
+        with self.assertRaisesRegex(model.ModelError, "complete path list"):
+            model.validate_seal(wrong)
 
     def test_every_record_contract_validates_and_rejects_extra_or_future_fields(self) -> None:
         for validator, record in self.contract_records():

@@ -6,7 +6,9 @@ import copy
 import hashlib
 import json
 import os
-from datetime import datetime, timezone
+import unicodedata
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -20,6 +22,8 @@ from ..transaction import CreationJournalStore, JournalError
 from .doctor import run_orchestration_doctor
 from .model import (
     ACTION_CONTRACT,
+    APPROVAL_CONTRACT,
+    ATTEMPT_CONTRACT,
     ATTEMPT_NONTERMINAL_STATES,
     ATTEMPT_TERMINAL_STATES,
     EVENT_CONTRACT,
@@ -30,6 +34,8 @@ from .model import (
     new_uuid,
     record_digest,
     validate_action,
+    validate_approval,
+    validate_attempt,
     validate_event,
     validate_initiative,
     validate_node,
@@ -40,7 +46,8 @@ from .store import InitiativeStore
 ACTION_RECONCILIATION_CONTRACT = "asha.orchestration-action-reconciliation.v1"
 SUPPORTED_ACTION_KINDS = frozenset({
     "activate-initiative", "dispatch-node", "pause", "resume",
-    "stop-attempt", "cancel-node",
+    "stop-attempt", "cancel-node", "repair-node", "request-salvage",
+    "decide", "continue-node",
 })
 _ACTION_DOCUMENT_KEYS = frozenset({
     "contract", "action_id", "initiative_id", "actor_kind", "actor_id",
@@ -199,7 +206,13 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         "dispatch-node": frozenset({"node_id"}),
         "stop-attempt": frozenset({"attempt_id"}),
         "cancel-node": frozenset({"node_id"}),
+        "repair-node": frozenset({"node_id", "seal_id"}),
+        "request-salvage": frozenset({"node_id", "failure_seal_id", "plan"}),
+        "decide": frozenset({"paused_seal_id", "decision"}),
+        "continue-node": frozenset({"node_id", "paused_seal_id", "decision_action_id"}),
     }[kind]
+    if kind == "dispatch-node" and set(payload) == {"node_id", "salvage_request_id"}:
+        expected = frozenset({"node_id", "salvage_request_id"})
     if set(payload) != expected:
         raise ActionRefused(
             f"{kind} payload requires exactly {sorted(expected)}"
@@ -210,12 +223,27 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         validate_slug(payload["node_id"], "action node_id")
     if "attempt_id" in payload:
         canonical_uuid(payload["attempt_id"], "action attempt_id")
+    for field in (
+        "seal_id", "failure_seal_id", "paused_seal_id", "decision_action_id",
+        "salvage_request_id",
+    ):
+        if field in payload:
+            canonical_uuid(payload[field], f"action {field}")
+    for field, maximum in (("plan", 4096), ("decision", 4096)):
+        if field in payload:
+            value = payload[field]
+            if (
+                not isinstance(value, str) or not value
+                or len(value.encode("utf-8")) > maximum
+                or any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in value)
+            ):
+                raise ActionRefused(f"action {field} must be bounded printable text")
     return copy.deepcopy(payload)
 
 
 def _parse_document(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
     if not isinstance(value, dict) or set(value) != _ACTION_DOCUMENT_KEYS:
-        raise ActionError("action document is not the closed Core 2a schema")
+        raise ActionError("action document is not the closed Core 2b schema")
     if value["contract"] != ACTION_CONTRACT:
         raise ActionError(f"action contract must be {ACTION_CONTRACT}")
     if not isinstance(value["payload"], dict):
@@ -449,7 +477,15 @@ def _stop_attempt(
         raise ActionRefused(
             f"Control task creation is incomplete; run asha task recover {attempt['task_id']}"
         )
-    return {**_stop_task(store, attempt["task_id"]), "attempt_id": attempt_id}
+    result = _stop_task(store, attempt["task_id"])
+    current = store.read_attempt(initiative_id, attempt_id)
+    if current["state"] not in ATTEMPT_TERMINAL_STATES:
+        cancelled = copy.deepcopy(current)
+        cancelled.update({"state": "cancelled", "updated_at": _now()})
+        store.save_attempt(
+            initiative_id, cancelled, expected_digest=record_digest(current),
+        )
+    return {**result, "attempt_id": attempt_id, "status": "cancelled"}
 
 
 def _cancel_node(
@@ -504,6 +540,547 @@ def _cancel_node(
     return {"status": "cancelled", "already_cancelled": False, "node_id": node_id}
 
 
+def _active_plan(store: InitiativeStore, initiative: Mapping[str, Any]) -> dict[str, Any]:
+    active = initiative.get("active_plan")
+    if not isinstance(active, Mapping):
+        raise ActionRefused("initiative has no active plan")
+    plan = store.read_plan(initiative["initiative_id"], active["revision"])
+    if plan["digest"] != active["digest"]:
+        raise ActionRefused("active plan digest changed")
+    return plan
+
+
+def _reserve_attempt(
+    store: InitiativeStore,
+    initiative: dict[str, Any],
+    plan: dict[str, Any],
+    node: dict[str, Any],
+    action_id: str,
+    base: dict[str, Any],
+) -> dict[str, Any]:
+    attempts = store.list_attempts_snapshot(initiative["initiative_id"])
+    node_attempts = [item for item in attempts if item["node_id"] == node["node_id"]]
+    attempt_cap = min(
+        initiative["limits"]["max_attempts_per_node"],
+        plan["limits"]["max_attempts_per_node"],
+    )
+    total_cap = min(
+        initiative["limits"]["max_total_tasks"],
+        plan["limits"]["max_total_tasks"],
+    )
+    if len(node_attempts) >= attempt_cap:
+        raise ActionRefused("node max_attempts_per_node exhausted")
+    if len(attempts) >= total_cap:
+        raise ActionRefused("initiative max_total_tasks exhausted")
+    if any(item["state"] == "allocated" for item in node_attempts):
+        raise ActionRefused("node already has an allocated attempt")
+    at = _now()
+    attempt = validate_attempt({
+        "contract": ATTEMPT_CONTRACT,
+        "attempt_id": str(uuid.uuid4()),
+        "initiative_id": initiative["initiative_id"],
+        "node_id": node["node_id"],
+        "task_id": str(uuid.uuid4()),
+        "action_id": action_id,
+        "ordinal": max((item["ordinal"] for item in node_attempts), default=0) + 1,
+        "base": copy.deepcopy(base),
+        "state": "allocated",
+        "result_publication_id": None,
+        "result_id": None,
+        "seal_id": None,
+        "created_at": at,
+        "updated_at": at,
+    })
+    store.save_attempt(initiative["initiative_id"], attempt)
+    return attempt
+
+
+def _invalidate_candidate_records(
+    store: InitiativeStore, initiative_id: str, seal_id: str,
+) -> dict[str, list[str]]:
+    stale_reviews: list[str] = []
+    for review in store.list_reviews_snapshot(initiative_id):
+        if review["target"]["seal_id"] != seal_id or review["state"] == "stale":
+            continue
+        changed = copy.deepcopy(review)
+        changed.update({
+            "state": "stale", "verdict": None, "findings": [], "updated_at": _now(),
+        })
+        store.save_review(
+            initiative_id, changed, expected_digest=record_digest(review),
+        )
+        stale_reviews.append(review["review_id"])
+    verification_ids = {
+        member["verification_id"]
+        for bundle in store.list_bundles_snapshot(initiative_id)
+        for member in bundle["members"]
+        if member["seal_id"] == seal_id
+    }
+    stale_verifications: list[str] = []
+    for verification in store.list_verifications_snapshot(initiative_id):
+        if (
+            verification["verification_id"] not in verification_ids
+            or verification["state"] == "stale"
+        ):
+            continue
+        changed = copy.deepcopy(verification)
+        changed.update({"state": "stale", "outcome": None, "updated_at": _now()})
+        store.save_verification(
+            initiative_id, changed, expected_digest=record_digest(verification),
+        )
+        stale_verifications.append(verification["verification_id"])
+    return {"reviews": stale_reviews, "verifications": stale_verifications}
+
+
+def _repair_lineage_roots(
+    store: InitiativeStore, initiative_id: str,
+) -> dict[str, str]:
+    """Map repair roots and inherited legacy retries to their root attempt."""
+    attempts = store.list_attempts_snapshot(initiative_id)
+    by_id = {item["attempt_id"]: item for item in attempts}
+    root_ids: set[str] = set()
+    for action in store.list_actions_snapshot(initiative_id):
+        if action["action_class"] != "repair-node" or action["state"] != "completed":
+            continue
+        attempt_id = action_outcome(action).get("attempt_id")
+        if isinstance(attempt_id, str) and attempt_id in by_id:
+            root_ids.add(attempt_id)
+    lineage_roots = {item: item for item in root_ids}
+    events = store.list_events_snapshot(initiative_id)
+    changed = True
+    while changed:
+        changed = False
+        for event in events:
+            parent = event["payload"].get("retry_of")
+            if event["type"] != "node-ready" or parent not in lineage_roots:
+                continue
+            children = set(event["subject_ids"]) & by_id.keys()
+            for child in children - lineage_roots.keys():
+                lineage_roots[child] = lineage_roots[parent]
+                changed = True
+    root_bindings: dict[tuple[str, str], list[str]] = {}
+    for root_id in root_ids:
+        item = by_id[root_id]
+        binding = (
+            item["node_id"],
+            json.dumps(item["base"], sort_keys=True, separators=(",", ":")),
+        )
+        root_bindings.setdefault(binding, []).append(root_id)
+    for item in attempts:
+        if item["attempt_id"] in lineage_roots or item["action_id"] is not None:
+            continue
+        binding = (
+            item["node_id"],
+            json.dumps(item["base"], sort_keys=True, separators=(",", ":")),
+        )
+        candidates = [
+            root_id for root_id in root_bindings.get(binding, [])
+            if by_id[root_id]["ordinal"] < item["ordinal"]
+            and by_id[root_id]["created_at"] <= item["created_at"]
+        ]
+        if candidates:
+            latest_ordinal = max(by_id[root_id]["ordinal"] for root_id in candidates)
+            latest = [
+                root_id for root_id in candidates
+                if by_id[root_id]["ordinal"] == latest_ordinal
+            ]
+            if len(latest) == 1:
+                lineage_roots[item["attempt_id"]] = latest[0]
+    return lineage_roots
+
+
+def _repair_lineage_attempts(
+    store: InitiativeStore, initiative_id: str,
+) -> list[dict[str, Any]]:
+    """Return repair roots and inherited legacy retries, including null action IDs."""
+    lineage = _repair_lineage_roots(store, initiative_id)
+    return [
+        item for item in store.list_attempts_snapshot(initiative_id)
+        if item["attempt_id"] in lineage
+    ]
+
+
+def _repair_node(
+    store: InitiativeStore,
+    action: dict[str, Any],
+    node_id: str,
+    seal_id: str,
+) -> dict[str, Any]:
+    initiative_id = action["initiative_id"]
+    initiative = store.peek(initiative_id)
+    plan = _active_plan(store, initiative)
+    seal = store.read_seal(initiative_id, seal_id)
+    if seal["outcome"] != "success":
+        raise ActionRefused("repair-node requires the exact prior success seal")
+    target = store.read_node(initiative_id, node_id)
+    if target["repository_id"] != seal["repository_id"]:
+        raise ActionRefused("repair target repository differs from the candidate seal")
+    retained = [
+        item for item in store.list_attempts_snapshot(initiative_id)
+        if item["action_id"] == action["action_id"]
+    ]
+    if len(retained) > 1:
+        raise ActionError("repair action owns multiple retained attempts")
+    if target["state"] != "ready" and not (
+        retained and target["state"] in {"dispatching", "running", "evaluating"}
+    ):
+        raise ActionRefused("repair target node must be deterministically ready")
+    base = {
+        "policy": "upstream-seal",
+        "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        "upstream_node_ids": [seal["node_id"]] if seal["node_id"] != node_id else [],
+        "seal_inputs": [{
+            "seal_id": seal_id,
+            "outcome": "success",
+            "read_only": False,
+            "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        }],
+    }
+    if retained:
+        attempt = retained[0]
+        if attempt["node_id"] != node_id or attempt["base"] != base:
+            raise ActionRefused("retained repair reservation binding changed")
+    else:
+        cycles = len(_repair_lineage_attempts(store, initiative_id))
+        cap = min(
+            initiative["limits"]["max_repair_cycles"],
+            plan["limits"]["max_repair_cycles"],
+        )
+        if cycles >= cap:
+            raise ActionRefused("initiative max_repair_cycles exhausted")
+        attempt = _reserve_attempt(
+            store, initiative, plan, target, action["action_id"], base,
+        )
+    return {
+        "status": "repair-allocated",
+        "node_id": node_id,
+        "attempt_id": attempt["attempt_id"],
+        "control_task_id": attempt["task_id"],
+        "candidate_seal_id": seal_id,
+        "base_commit_id": seal["jj_commit_id"],
+        "invalidated": {"reviews": [], "verifications": []},
+    }
+
+
+def _salvage_binding(
+    action: Mapping[str, Any],
+    node: Mapping[str, Any],
+    seal: Mapping[str, Any],
+    plan_text: str,
+) -> dict[str, Any]:
+    return {
+        "node_id": node["node_id"],
+        "failure_seal_id": seal["seal_id"],
+        "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        "hard_write_scope": copy.deepcopy(node["hard_write_scope"]),
+        "active_plan_digest": action["active_plan_digest"],
+        "plan_digest": hashlib.sha256(plan_text.encode("utf-8")).hexdigest(),
+        "request_action_payload_digest": action["payload_digest"],
+    }
+
+
+def _request_salvage(
+    store: InitiativeStore,
+    action: dict[str, Any],
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    initiative_id = action["initiative_id"]
+    node = store.read_node(initiative_id, payload["node_id"])
+    seal = store.read_seal(initiative_id, payload["failure_seal_id"])
+    if seal["outcome"] != "failure":
+        raise ActionRefused("request-salvage requires an immutable failure seal")
+    if seal["repository_id"] != node["repository_id"]:
+        raise ActionRefused("salvage node repository differs from the failure seal")
+    binding = _salvage_binding(action, node, seal, payload["plan"])
+    binding_digest = hashlib.sha256(_canonical(binding)).hexdigest()
+    retained = [
+        item for item in store.list_approvals_snapshot(initiative_id)
+        if item["action_class"] == "salvage"
+        and item["binding_digest"] == binding_digest
+        and item["actor_id"] == action["actor_id"]
+        and item["active_plan_digest"] == action["active_plan_digest"]
+        and item["expected_state_revision"] == action["expected_state_revision"]
+    ]
+    if len(retained) > 1:
+        raise ActionError("salvage action has multiple retained approval requests")
+    if retained:
+        approval = retained[0]
+        if not any(
+            event["type"] == "approval-requested"
+            and approval["request_id"] in event["subject_ids"]
+            for event in store.list_events_snapshot(initiative_id)
+        ):
+            append_event(
+                store, initiative_id, "approval-requested",
+                [approval["request_id"], seal["seal_id"], node["node_id"]],
+                {"action_class": "salvage", "binding_digest": approval["binding_digest"]},
+                actor_kind="operator", actor_id=action["actor_id"],
+            )
+        return {
+            "status": "salvage-requested",
+            "request_id": approval["request_id"],
+            "salvage_binding": binding,
+        }
+    at = _now()
+    approval = validate_approval({
+        "contract": APPROVAL_CONTRACT,
+        "request_id": new_uuid(),
+        "initiative_id": initiative_id,
+        "action_class": "salvage",
+        "binding_digest": binding_digest,
+        "active_plan_digest": action["active_plan_digest"],
+        "expected_state_revision": action["expected_state_revision"],
+        "actor_kind": "operator",
+        "actor_id": action["actor_id"],
+        "state": "requested",
+        "expires_at": (
+            datetime.now(timezone.utc) + timedelta(days=1)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "rationale": payload["plan"],
+        "created_at": at,
+        "updated_at": at,
+    })
+    store.save_approval(initiative_id, approval)
+    append_event(
+        store, initiative_id, "approval-requested",
+        [approval["request_id"], seal["seal_id"], node["node_id"]],
+        {"action_class": "salvage", "binding_digest": approval["binding_digest"]},
+        actor_kind="operator", actor_id=action["actor_id"],
+    )
+    return {
+        "status": "salvage-requested",
+        "request_id": approval["request_id"],
+        "salvage_binding": binding,
+    }
+
+
+def approve_salvage(
+    store: InitiativeStore,
+    initiative_id: str,
+    request_id: str,
+    *,
+    actor_id: str = "cli",
+) -> dict[str, Any]:
+    with store.transaction_lock(initiative_id):
+        approval = store.read_approval(initiative_id, request_id)
+        if approval["action_class"] != "salvage":
+            raise ActionRefused("approval request is not a salvage request")
+        if approval["state"] == "approved":
+            if not any(
+                event["type"] == "approval-decided"
+                and request_id in event["subject_ids"]
+                for event in store.list_events_snapshot(initiative_id)
+            ):
+                append_event(
+                    store, initiative_id, "approval-decided", [request_id],
+                    {"action_class": "salvage", "decision": "approved"},
+                    actor_kind="operator", actor_id=actor_id,
+                )
+            return approval
+        if approval["state"] != "requested":
+            raise ActionRefused("salvage approval request is no longer approvable")
+        if datetime.now(timezone.utc) >= datetime.fromisoformat(
+            approval["expires_at"][:-1] + "+00:00"
+        ):
+            raise ActionRefused("salvage approval request expired")
+        changed = copy.deepcopy(approval)
+        changed.update({"state": "approved", "updated_at": _now()})
+        store.save_approval(
+            initiative_id, changed, expected_digest=record_digest(approval),
+        )
+        append_event(
+            store, initiative_id, "approval-decided", [request_id],
+            {"action_class": "salvage", "decision": "approved"},
+            actor_kind="operator", actor_id=actor_id,
+        )
+        return changed
+
+
+def salvage_dispatch_binding(
+    store: InitiativeStore,
+    initiative: Mapping[str, Any],
+    node: Mapping[str, Any],
+    request_id: str,
+    *,
+    allow_consumed: bool = False,
+    dispatch_expected_revision: int | None = None,
+    dispatch_action_id: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Validate one approved salvage authority for scheduler consumption."""
+    approval = store.read_approval(initiative["initiative_id"], request_id)
+    permitted_states = {"approved", "consumed"} if allow_consumed else {"approved"}
+    if approval["action_class"] != "salvage" or approval["state"] not in permitted_states:
+        raise ActionRefused("salvage approval is not approved and unconsumed")
+    if approval["active_plan_digest"] != initiative["active_plan"]["digest"]:
+        raise ActionRefused("salvage approval active plan is stale")
+    # Authority is the approved request's immutable binding digest and active
+    # plan, not event adjacency. Other controller/worker events may land after
+    # approval without invalidating the approved salvage plan.
+    del dispatch_expected_revision, dispatch_action_id
+    if approval["state"] == "approved" and datetime.now(timezone.utc) >= datetime.fromisoformat(
+        approval["expires_at"][:-1] + "+00:00"
+    ):
+        raise ActionRefused("salvage approval expired before dispatch")
+    request_actions = [
+        item for item in store.list_actions_snapshot(initiative["initiative_id"])
+        if item["action_class"] == "request-salvage"
+        and action_outcome(item).get("request_id") == request_id
+    ]
+    if len(request_actions) != 1 or request_actions[0]["state"] != "completed":
+        raise ActionRefused("salvage approval has no exact completed request action")
+    if (
+        approval["expected_state_revision"]
+        != request_actions[0]["expected_state_revision"]
+        or approval["active_plan_digest"]
+        != request_actions[0]["active_plan_digest"]
+    ):
+        raise ActionRefused("salvage approval revision binding changed")
+    binding = action_outcome(request_actions[0]).get("salvage_binding")
+    if not isinstance(binding, dict):
+        raise ActionRefused("salvage request binding is missing")
+    if binding.get("node_id") != node["node_id"]:
+        raise ActionRefused("salvage approval cannot be substituted onto another node")
+    seal = store.read_seal(initiative["initiative_id"], binding["failure_seal_id"])
+    expected = _salvage_binding(
+        request_actions[0], node, seal, approval["rationale"],
+    )
+    digest = hashlib.sha256(_canonical(expected)).hexdigest()
+    if binding != expected or approval["binding_digest"] != digest:
+        raise ActionRefused("salvage approval binding changed")
+    base = {
+        "policy": "scope-baseline",
+        "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        "upstream_node_ids": [],
+        "seal_inputs": [{
+            "seal_id": seal["seal_id"], "outcome": "failure", "read_only": True,
+            "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        }],
+    }
+    return approval, base, seal
+
+
+def consume_salvage_approval(
+    store: InitiativeStore,
+    initiative_id: str,
+    approval: dict[str, Any],
+) -> dict[str, Any]:
+    current = store.read_approval(initiative_id, approval["request_id"])
+    if current["state"] != "approved" or record_digest(current) != record_digest(approval):
+        raise ActionRefused("salvage approval was already consumed or changed")
+    changed = copy.deepcopy(current)
+    changed.update({"state": "consumed", "updated_at": _now()})
+    store.save_approval(
+        initiative_id, changed, expected_digest=record_digest(current),
+    )
+    return changed
+
+
+def _decide(
+    store: InitiativeStore, action: dict[str, Any], payload: dict[str, Any],
+) -> dict[str, Any]:
+    seal = store.read_seal(action["initiative_id"], payload["paused_seal_id"])
+    if seal["outcome"] != "paused":
+        raise ActionRefused("decide requires an immutable paused seal")
+    return {
+        "status": "decision-recorded",
+        "paused_seal_id": seal["seal_id"],
+        "decision": payload["decision"],
+    }
+
+
+def _continue_node(
+    store: InitiativeStore, action: dict[str, Any], payload: dict[str, Any],
+) -> dict[str, Any]:
+    initiative_id = action["initiative_id"]
+    seal = store.read_seal(initiative_id, payload["paused_seal_id"])
+    if seal["outcome"] != "paused":
+        raise ActionRefused("continue-node requires an immutable paused seal")
+    decision = store.read_action(initiative_id, payload["decision_action_id"])
+    decision_outcome = action_outcome(decision)
+    if (
+        decision["action_class"] != "decide" or decision["state"] != "completed"
+        or decision_outcome.get("paused_seal_id") != seal["seal_id"]
+    ):
+        raise ActionRefused("continue-node requires the exact completed operator decision")
+    retained = [
+        item for item in store.list_attempts_snapshot(initiative_id)
+        if item["action_id"] == action["action_id"]
+    ]
+    if len(retained) > 1:
+        raise ActionError("continuation action owns multiple retained attempts")
+    if not retained and any(
+        item["action_class"] == "continue-node" and item["state"] == "completed"
+        and action_outcome(item).get("paused_seal_id") == seal["seal_id"]
+        for item in store.list_actions_snapshot(initiative_id)
+    ):
+        raise ActionRefused("paused seal has already been continued once")
+    node = store.read_node(initiative_id, payload["node_id"])
+    if node["node_id"] != seal["node_id"] or (
+        not retained and node["state"] != "needs-input"
+    ):
+        raise ActionRefused("paused continuation node binding or state changed")
+    initiative = store.peek(initiative_id)
+    plan = _active_plan(store, initiative)
+    base = {
+        "policy": "upstream-seal",
+        "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        "upstream_node_ids": [],
+        "seal_inputs": [{
+            "seal_id": seal["seal_id"], "outcome": "paused", "read_only": False,
+            "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        }],
+    }
+    if retained:
+        attempt = retained[0]
+        if attempt["node_id"] != payload["node_id"] or attempt["base"] != base:
+            raise ActionRefused("retained continuation reservation binding changed")
+    else:
+        attempt = _reserve_attempt(
+            store, initiative, plan, node, action["action_id"], base,
+        )
+    if node["state"] == "needs-input":
+        ready = copy.deepcopy(node)
+        ready["state"] = "ready"
+        store.save_node(initiative_id, ready, expected_digest=record_digest(node))
+        if not any(
+            event["type"] == "node-ready"
+            and attempt["attempt_id"] in event["subject_ids"]
+            for event in store.list_events_snapshot(initiative_id)
+        ):
+            append_event(
+                store, initiative_id, "node-ready",
+                [node["node_id"], attempt["attempt_id"], seal["seal_id"]],
+                {"continuation_of": seal["seal_id"], "decision_action_id": decision["action_id"]},
+                actor_kind="controller", actor_id="action-broker",
+            )
+    current_initiative = store.peek(initiative_id)
+    if current_initiative["state"] == "needs-input":
+        running = copy.deepcopy(current_initiative)
+        running.update({
+            "state": "running",
+            "state_revision": current_initiative["state_revision"] + 1,
+            "updated_at": _now(),
+        })
+        validate_initiative(running)
+        store.save_initiative(
+            running, expected_digest=record_digest(current_initiative),
+        )
+        append_event(
+            store, initiative_id, "initiative-state-changed", [initiative_id],
+            {"from": "needs-input", "to": "running", "continued_seal_id": seal["seal_id"]},
+            actor_kind="controller", actor_id="action-broker",
+        )
+    return {
+        "status": "continuation-allocated",
+        "node_id": node["node_id"],
+        "attempt_id": attempt["attempt_id"],
+        "control_task_id": attempt["task_id"],
+        "paused_seal_id": seal["seal_id"],
+        "decision_action_id": decision["action_id"],
+        "decision": decision_outcome["decision"],
+    }
+
+
 def _execute_local(
     store: InitiativeStore,
     action: dict[str, Any],
@@ -522,6 +1099,14 @@ def _execute_local(
         return _cancel_node(
             store, action["initiative_id"], payload["node_id"], action["action_id"],
         )
+    if kind == "repair-node":
+        return _repair_node(store, action, payload["node_id"], payload["seal_id"])
+    if kind == "request-salvage":
+        return _request_salvage(store, action, payload)
+    if kind == "decide":
+        return _decide(store, action, payload)
+    if kind == "continue-node":
+        return _continue_node(store, action, payload)
     raise ActionError(f"unsupported local action: {kind}")
 
 
@@ -556,12 +1141,11 @@ def submit_action(
             actor_kind=action["actor_kind"], actor_id=action["actor_id"],
         )
 
-        # This fixed denial is deliberately before every approval lookup.  Core
-        # 2a has no approval lookup for these unsupported classes at all.
+        # This fixed denial is deliberately before every approval lookup.
         if action["action_class"] in initiative["forbidden_action_classes"]:
             return _refuse(store, action, "action class is forbidden in Core v1")
         if action["action_class"] not in SUPPORTED_ACTION_KINDS:
-            return _refuse(store, action, "action class is unsupported in Core 2a")
+            return _refuse(store, action, "action class is unsupported in Core 2b")
         if initiative["active_plan"] is None:
             return _refuse(store, action, "initiative has no active approved plan")
         if action["active_plan_digest"] != initiative["active_plan"]["digest"]:
@@ -746,6 +1330,13 @@ def reconcile_actions(
                         if "not found" not in str(exc):
                             results.append(action)
                             continue
+                        if outcome.get("salvage_request_id") is not None:
+                            result = dispatch(
+                                store, store.config, initiative_id,
+                                node["node_id"], action=action,
+                            )
+                            results.append(result["action"])
+                            continue
                         action = mark_launch_failed(
                             store, initiative_id, action, attempt, node,
                             "Control has no task or creation journal for the reserved ID",
@@ -801,10 +1392,32 @@ def reconcile_actions(
                     ),
                 )
                 if observed["state"] in {"exited", "failed"}:
+                    current_attempt = store.read_attempt(
+                        initiative_id, attempt["attempt_id"],
+                    )
+                    if current_attempt["state"] not in ATTEMPT_TERMINAL_STATES:
+                        cancelled = copy.deepcopy(current_attempt)
+                        cancelled.update({"state": "cancelled", "updated_at": _now()})
+                        store.save_attempt(
+                            initiative_id, cancelled,
+                            expected_digest=record_digest(current_attempt),
+                        )
                     action = set_action_state(
                         store, action, "completed",
-                        {**outcome, "status": "stopped", "control_state": observed["state"]},
+                        {**outcome, "status": "cancelled", "control_state": observed["state"]},
                     )
+                results.append(action)
+                continue
+            if kind in {"repair-node", "request-salvage", "decide", "continue-node"}:
+                try:
+                    result = _execute_local(store, action, outcome["payload"])
+                    current = store.read_action(initiative_id, action["action_id"])
+                    action = set_action_state(
+                        store, current, "completed", {**action_outcome(current), **result},
+                    )
+                except (ActionError, ActionRefused, StoreError, ModelError, ValueError):
+                    results.append(action)
+                    continue
                 results.append(action)
                 continue
             # Local effects are reconciled by their durable target state.
@@ -833,6 +1446,7 @@ def reconcile_actions(
 __all__ = [
     "ACTION_RECONCILIATION_CONTRACT", "ActionError", "ActionRefused",
     "SUPPORTED_ACTION_KINDS", "action_outcome", "append_event",
-    "build_action_document", "payload_digest", "reconcile_actions",
+    "approve_salvage", "build_action_document", "consume_salvage_approval",
+    "payload_digest", "reconcile_actions", "salvage_dispatch_binding",
     "set_action_state", "submit_action",
 ]

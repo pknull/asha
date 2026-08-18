@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -133,7 +135,17 @@ def seal(
         "diff_digest": "f" * 64,
         "cumulative_diff_digest": "0" * 64,
         "changed_paths": ["lib/file.py"],
+        "changed_paths_truncated": 0,
+        "changed_paths_digest": hashlib.sha256(json.dumps(
+            ["lib/file.py"], ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        ).encode()).hexdigest(),
         "cumulative_changed_paths": ["lib/file.py"],
+        "cumulative_changed_paths_truncated": 0,
+        "cumulative_changed_paths_digest": hashlib.sha256(json.dumps(
+            ["lib/file.py"], ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"),
+        ).encode()).hexdigest(),
         "result_id": (
             "88888888-8888-4888-8888-888888888888"
             if outcome in {"success", "paused"}

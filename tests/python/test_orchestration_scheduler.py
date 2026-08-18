@@ -12,6 +12,7 @@ from lib.control.orchestration.model import ATTEMPT_CONTRACT, record_digest
 from lib.control.orchestration.scheduler import (
     SchedulerError,
     _goal,
+    assignment_bytes,
     consecutive_failures,
     pause_for_breaker,
     readiness,
@@ -63,6 +64,34 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
             "review-a": "blocked",
             "verify-a": "blocked",
         })
+
+    def test_assignment_embeds_bounded_upstream_result_summary(self) -> None:
+        initiative = self.initiative()
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        attempt = self.attempt(state="allocated")
+        rendered = assignment_bytes(
+            initiative, self.plan, node, attempt,
+            attempt["base"]["scope_origin"]["jj_commit_id"],
+            [{
+                "seal_id": str(uuid.uuid4()), "outcome": "success",
+                "read_only": False, "scope_origin": attempt["base"]["scope_origin"],
+                "jj_commit_id": "d" * 40, "tree_digest": "e" * 64,
+                "changed_paths": ["lib/change.py"],
+                "cumulative_changed_paths": ["lib/change.py"],
+                "result": {
+                    "result_id": str(uuid.uuid4()), "payload_digest": "f" * 64,
+                    "claim_status": "completed", "summary": "exact upstream work",
+                    "concerns": [], "follow_up": [],
+                },
+            }],
+        ).decode()
+        self.assertIn("exact upstream work", rendered)
+        self.assertIn("f" * 64, rendered)
+        self.assertIn(
+            "run `jj status` in this workspace to snapshot before `asha task report`, "
+            "and after any later edit",
+            rendered,
+        )
 
     def test_parallel_total_deadline_pause_and_storage_limits_block(self) -> None:
         with mock.patch(

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import unicodedata
@@ -23,6 +25,8 @@ MAX_TREE_LIST_BYTES = 512 * 1024
 MAX_TRACKED_BLOB_BYTES = 16 * 1024 * 1024
 MAX_TRACKED_TOTAL_BYTES = 64 * 1024 * 1024
 MAX_MATERIALIZATION_ENTRIES = 1024
+MAX_IMMUTABLE_TREE_BYTES = 64 * 1024 * 1024
+MAX_IMMUTABLE_TREE_ENTRIES = 200000
 PRIVATE_CONTEXT_PROBES = (
     ".asha/config.json",
     ".asha/control-task.json",
@@ -57,6 +61,15 @@ class DiffSummary:
 
     summary: str
     refreshed_at: str
+
+
+@dataclass(frozen=True)
+class ImmutableTree:
+    """Exact read-only Git-tree identity for one jj commit."""
+
+    commit_id: str
+    digest: str
+    entries: tuple[tuple[str, str, str], ...]
 
 
 def colocated_sync_remediation(
@@ -333,7 +346,7 @@ class JjAdapter:
             else:
                 fact = {
                     "type": "file", "mode": 0o755 if mode == "100755" else 0o644,
-                    "sha256": __import__("hashlib").sha256(content).hexdigest(),
+                    "sha256": hashlib.sha256(content).hexdigest(),
                     "size": len(content),
                 }
             if path in result:
@@ -408,6 +421,78 @@ class JjAdapter:
         if identity[:2] != (change_id, commit_id):
             raise JjError("created workspace registration identity disagrees with working copy")
         return WorkspaceIdentity(expected_name, change_id, commit_id, parents, description)
+
+    def immutable_tree(self, repository: Path, commit_id: str) -> ImmutableTree:
+        """Read one Git-backed jj commit's immutable tree without snapshotting.
+
+        The tree digest is SHA-256 over compact canonical JSON for the sorted
+        entries ``[path, mode, blob-id]``.  Git blob IDs cover regular-file
+        content and symlink targets (mode ``120000``).  Directories are absent;
+        jj conflicts and Git submodules (mode ``160000``) are refused because
+        neither has one supported file-tree identity for Core sealing.
+        """
+        if _COMMIT_ID.fullmatch(commit_id) is None or set(commit_id) == {"0"}:
+            raise JjError("immutable tree inspection requires a non-root full commit ID")
+        repository = Path(repository)
+        facts = self.preflight(repository)
+        conflict = self._one_line(self._run([
+            "-R", str(repository), "--ignore-working-copy", "log", "-r", commit_id,
+            "--no-graph", "-T", 'conflict ++ "\\n"',
+        ]), "immutable commit conflict state")
+        if conflict not in {"true", "false"}:
+            raise JjError("jj returned invalid immutable commit conflict state")
+        if conflict == "true":
+            raise JjError("immutable tree inspection refuses a conflicted jj commit")
+        raw = self._run_bytes(
+            "git", [
+                "-C", str(facts.git_root), "ls-tree", "-rz", "--full-tree",
+                commit_id,
+            ], limit=MAX_IMMUTABLE_TREE_BYTES,
+        )
+        entries: list[tuple[str, str, str]] = []
+        seen_paths: set[str] = set()
+        for record in raw.split(b"\0"):
+            if not record:
+                continue
+            try:
+                header, raw_path = record.split(b"\t", 1)
+                mode, kind, oid = header.decode("ascii").split(" ")
+                path = raw_path.decode("utf-8")
+            except (ValueError, UnicodeError) as exc:
+                raise JjError("Git returned malformed immutable tree metadata") from exc
+            parts = Path(path).parts
+            if (
+                not path or path.startswith("/") or "\\" in path or ".." in parts
+                or "//" in path or path.endswith("/")
+                or any(
+                    unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                    for character in path
+                )
+            ):
+                raise JjError("Git returned an unsafe immutable file path")
+            if path in seen_paths:
+                raise JjError("Git immutable tree contains a duplicate path")
+            seen_paths.add(path)
+            if mode == "160000":
+                raise JjError("immutable tree inspection refuses Git submodules")
+            if kind != "blob" or mode not in {"100644", "100755", "120000"}:
+                raise JjError("Git immutable tree contains an unsupported entry")
+            if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", oid) is None:
+                raise JjError("Git immutable tree contains an invalid blob ID")
+            entries.append((path, mode, oid))
+            if len(entries) > MAX_IMMUTABLE_TREE_ENTRIES:
+                raise JjError(
+                    f"immutable tree exceeds {MAX_IMMUTABLE_TREE_ENTRIES} entries"
+                )
+        entries.sort(key=lambda item: item[0])
+        canonical = json.dumps(
+            entries, ensure_ascii=False, sort_keys=False, separators=(",", ":"),
+        ).encode("utf-8")
+        return ImmutableTree(
+            commit_id=commit_id,
+            digest=hashlib.sha256(canonical).hexdigest(),
+            entries=tuple(entries),
+        )
 
     def diff_summary(self, workspace_path: Path) -> DiffSummary:
         """Snapshot and summarize one exact workspace after an explicit user request."""

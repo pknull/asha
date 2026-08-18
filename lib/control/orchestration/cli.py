@@ -19,8 +19,8 @@ from ..jj import JjAdapter, JjError
 from ..prepare import derive_repository_identity
 from ..store import StoreError
 from .actions import (
-    ActionError, ActionRefused, build_action_document, reconcile_actions,
-    submit_action,
+    ActionError, ActionRefused, approve_salvage, build_action_document,
+    reconcile_actions, submit_action,
 )
 from .config import OrchestrationConfigError, load_config
 from .doctor import run_orchestration_doctor
@@ -33,7 +33,12 @@ from .model import (
     validate_plan_record, validate_slug,
 )
 from .reconcile import reconcile_live, reconcile_nodes
+from .results import (
+    ResultError, ResultRefused, publish_result, read_client_file,
+    results_for_task,
+)
 from .scheduler import SchedulerError, validate_goal_capacity
+from .seals import SealError, seal_for_task_or_attempt
 from .storage import storage_report
 from .store import MAX_RECORD_BYTES, InitiativeStore
 
@@ -46,6 +51,7 @@ SHOW_CONTRACT = "asha.orchestration-initiative-show.v1"
 EVENT_LIST_CONTRACT = "asha.orchestration-event-list.v1"
 RECONCILE_LIST_CONTRACT = "asha.orchestration-reconcile-list.v1"
 SNAPSHOT_CONTRACT = "asha.orchestration-snapshot.v1"
+SALVAGE_APPROVAL_RESULT_CONTRACT = "asha.orchestration-salvage-approval.v1"
 
 
 def _now() -> str:
@@ -64,10 +70,11 @@ Usage:
   asha initiative plan <id> --file PLAN.json
   asha initiative plan <id> --show [--revision N] [--json]
   asha initiative approve <id> --digest SHA256 [--json]
+  asha initiative approve-salvage <id> --request REQUEST_ID [--json]
   asha initiative reject <id> --digest SHA256 --reason TEXT [--json]
   asha initiative activate <id> [--json]
   asha initiative action <id> --file ACTION.json --json
-  asha initiative dispatch <id> --node NODE [--json]
+  asha initiative dispatch <id> --node NODE [--salvage-request REQUEST_ID] [--json]
   asha initiative pause|resume <id> [--json]
   asha initiative stop <id> --attempt ATTEMPT [--json]
   asha initiative cancel <id> --node NODE [--json]
@@ -729,9 +736,11 @@ def _operator_action(
     elif command in {"pause", "resume"}:
         payload = {}
     elif command == "dispatch":
-        allowed.add("node")
+        allowed.update({"node", "salvage_request"})
         _required(options, "node")
         action_class, payload = "dispatch-node", {"node_id": options["node"]}
+        if options.get("salvage_request") is not None:
+            payload["salvage_request_id"] = options["salvage_request"]
     elif command == "stop":
         allowed.add("attempt")
         _required(options, "attempt")
@@ -749,6 +758,25 @@ def _operator_action(
         ),
         bool(options["json"]),
     )
+
+
+def _approve_salvage_command(
+    args: list[str], store: InitiativeStore,
+) -> tuple[dict[str, Any], bool]:
+    if not args:
+        raise ValueError("approve-salvage requires an initiative ID or exact slug")
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={"json"})
+    _only(options, {"request", "json"}, "approve-salvage")
+    _required(options, "request")
+    approval = approve_salvage(
+        store, initiative["initiative_id"], options["request"], actor_id="cli",
+    )
+    return {
+        "contract": SALVAGE_APPROVAL_RESULT_CONTRACT,
+        "initiative_id": initiative["initiative_id"],
+        "approval": approval,
+    }, bool(options["json"])
 
 
 def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapter | None = None) -> int:
@@ -776,6 +804,10 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
         return 0
     if command == "reject":
         result, json_output = _reject(tail, store)
+        _payload(result, json_output)
+        return 0
+    if command == "approve-salvage":
+        result, json_output = _approve_salvage_command(tail, store)
         _payload(result, json_output)
         return 0
     if command == "action":
@@ -866,6 +898,84 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
     return 0
 
 
+def _task_2b_command(args: list[str], env: Mapping[str, str]) -> int:
+    if not args or args[0] not in {"report", "result", "seal"}:
+        raise ValueError("task result route requires report, result, or seal")
+    command, tail = args[0], args[1:]
+    config = load_config(env)
+    if command == "report":
+        options = _parse_options(tail, flags={"json"})
+        _only(options, {"file", "json"}, "task report")
+        _required(options, "file")
+        body = read_client_file(Path(options["file"]))
+        receipt = publish_result(InitiativeStore(config), body, env)
+        if options["json"]:
+            _json(receipt)
+        else:
+            print(f"Result: {receipt['result_id']}")
+            print(f"Publication phase: {receipt['phase']}")
+            if receipt["refusal"] is not None:
+                print(f"Refusal: {receipt['refusal']}")
+        return (
+            0 if receipt["phase"] == "completed"
+            else 3 if receipt["phase"] == "indeterminate" else 2
+        )
+    if not tail or tail[0].startswith("--"):
+        raise ValueError(f"task {command} requires exactly one identity")
+    identity = tail[0]
+    options = _parse_options(tail[1:], flags={"json"})
+    _only(options, {"json"}, f"task {command}")
+    if command == "result":
+        payload = results_for_task(config, identity)
+        if options["json"]:
+            _json(payload)
+        elif not payload["results"]:
+            print("No accepted results.")
+        else:
+            for result in payload["results"]:
+                print(
+                    f"{result['claim_status']:<14} {result['result_id']}  "
+                    f"{result['summary']}"
+                )
+        return 0
+    payload = seal_for_task_or_attempt(config, identity)
+    if options["json"]:
+        _json(payload)
+    else:
+        seal = payload["seal"]
+        print(f"Seal: {seal['seal_id']}")
+        print(f"Outcome: {seal['outcome']}")
+        print(f"Commit: {seal['jj_commit_id']}")
+    return 0
+
+
+def task_main(
+    argv: Sequence[str] | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    values = os.environ if env is None else env
+    try:
+        return _task_2b_command(args, values)
+    except (OrchestrationConfigError, ResultError, ResultRefused, SealError,
+            StoreError, JjError, ModelError, OSError, ValueError) as exc:
+        print(f"asha task: {exc}", file=sys.stderr)
+        return 2
+    except KeyboardInterrupt:
+        print("asha task: interrupted", file=sys.stderr)
+        return 130
+    except Exception as exc:
+        detail = "".join(
+            character if character.isprintable() else "?" for character in str(exc)
+        )[:450]
+        print(
+            f"asha task: internal error: {detail or type(exc).__name__}",
+            file=sys.stderr,
+        )
+        return 1
+
+
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     values = os.environ if env is None else env
@@ -876,8 +986,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
         if args[0] == "initiative":
             return _initiative_command(args[1:], values)
         if args[0] == "task" and len(args) >= 2 and args[1] in {"report", "result", "seal"}:
-            print(f"asha task {args[1]}: not available before Increment 2b", file=sys.stderr)
-            return 2
+            return task_main(args[1:], env=values)
         raise ValueError("unknown orchestration route")
     except (ActionError, ActionRefused, OrchestrationConfigError, SchedulerError,
             StoreError, JjError, ModelError, PlanError, OSError, ValueError) as exc:

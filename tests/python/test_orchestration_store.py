@@ -114,6 +114,17 @@ class OrchestrationStoreTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), b"assignment\n")
         self.assertEqual(stat.S_IMODE(assignments.stat().st_mode), 0o700)
 
+    def test_first_locked_use_adds_increment_2b_layout_to_legacy_initiative(self) -> None:
+        self.create()
+        preparations = (
+            self.config.initiatives_dir / INITIATIVE_ID / "seal-preparations"
+        )
+        os.rmdir(preparations)
+        with self.store.transaction_lock(INITIATIVE_ID):
+            pass
+        self.assertTrue(preparations.is_dir())
+        self.assertEqual(stat.S_IMODE(preparations.stat().st_mode), 0o700)
+
     def test_digest_guarded_update_and_conflict(self) -> None:
         self.create()
         current = self.store.read_initiative(INITIATIVE_ID)
@@ -403,11 +414,19 @@ class OrchestrationStoreTests(unittest.TestCase):
             accepted,
             expected_digest=record_digest(current_review),
         )
+        stale_review = copy.deepcopy(accepted)
+        stale_review.update({
+            "state": "stale", "verdict": None, "findings": [],
+            "updated_at": "2026-08-17T16:00:04Z",
+        })
+        self.store.save_review(
+            INITIATIVE_ID, stale_review, expected_digest=record_digest(accepted),
+        )
         with self.assertRaisesRegex(StoreError, "write-once terminal"):
             self.store.save_review(
                 INITIATIVE_ID,
-                accepted,
-                expected_digest=record_digest(accepted),
+                stale_review,
+                expected_digest=record_digest(stale_review),
             )
 
         verification = contract_record(model.validate_verification)
@@ -454,11 +473,20 @@ class OrchestrationStoreTests(unittest.TestCase):
             passed,
             expected_digest=record_digest(current_verification),
         )
+        stale_verification = copy.deepcopy(passed)
+        stale_verification.update({
+            "state": "stale", "outcome": None,
+            "updated_at": "2026-08-17T16:00:04Z",
+        })
+        self.store.save_verification(
+            INITIATIVE_ID, stale_verification,
+            expected_digest=record_digest(passed),
+        )
         with self.assertRaisesRegex(StoreError, "write-once terminal"):
             self.store.save_verification(
                 INITIATIVE_ID,
-                passed,
-                expected_digest=record_digest(passed),
+                stale_verification,
+                expected_digest=record_digest(stale_verification),
             )
 
         bundle = contract_record(model.validate_bundle)
