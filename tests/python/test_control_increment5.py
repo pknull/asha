@@ -247,6 +247,29 @@ class PureModelTests(unittest.TestCase):
         self.assertIn("Limitations", output)
         self.assertIn("no destructive removal or automated integration", output)
 
+    def test_long_status_message_wraps_and_keeps_its_remedy_visible(self) -> None:
+        model = TuiModel([row("wrap", "working")], height=24, width=60)
+        model.message = (
+            "writable non-sticky ancestor rejected in task repository: "
+            "/home/pknull/Code/Thallus; remediate with: chmod g-w,o-w "
+            "/home/pknull/Code/Thallus (workspace preparation rolled back; "
+            "nothing to recover)"
+        )
+        lines = render(model)
+        status = [line for line in lines if line.startswith("Status: ") or line.startswith(" " * 8)]
+        self.assertGreater(len(status), 1)
+        for line in lines:
+            self.assertLessEqual(len(line), 60)
+        joined = " ".join(line.strip() for line in status).replace("Status: ", "")
+        self.assertIn("chmod g-w,o-w /home/pknull/Code/Thallus", joined)
+        self.assertIn("nothing to recover", joined)
+        self.assertEqual(lines[-1].split()[0], "Enter")  # footer survives
+        # A tiny terminal still yields the footer and a bounded status.
+        model.height = 12
+        small = render(model)
+        self.assertEqual(len(small), 12)
+        self.assertTrue(small[-1].startswith("Enter"))
+
     def test_no_intent_represents_removal_or_automated_integration(self) -> None:
         values = {kind.value for kind in IntentKind}
         for forbidden in ("remove", "delete", "merge", "rebase", "integrate", "push"):

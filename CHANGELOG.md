@@ -12,6 +12,17 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Control: refusals read cause-first and the TUI wraps them
+
+- Preparation refusals now lead with the cause and its remedy and end with
+  what Control did (`(preflight refused; no task state was created)`,
+  `(workspace preparation rolled back; nothing to recover)`, or the partial
+  rollback with the exact `asha task recover` command) instead of burying the
+  reason behind "durable recovery state".
+- The TUI wraps a long status message over up to six lines (footer kept)
+  rather than clipping it at the terminal edge, and no longer truncates
+  controller errors at 300 characters.
+
 #### Control: default base works in local-only repositories
 
 - `asha task start` without `--base`, the TUI `n` form with an empty base,

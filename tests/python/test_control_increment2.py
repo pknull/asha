@@ -532,6 +532,45 @@ class RealJjPreparationTests(unittest.TestCase):
         self.config.workspace_root.mkdir(mode=mode)
         self.config.workspace_root.chmod(mode)
 
+    def test_refusals_lead_with_the_cause_and_name_the_remedy(self) -> None:
+        # Preflight refusal: cause first, framing last, no task state.
+        request = PrepareRequest(
+            repository=self.source, requested_base=DEFAULT_BASE_REVSET,
+            task_id=str(uuid.uuid4()), slug="cause-first", label="Cause first",
+        )
+        for name in ("main", "master", "trunk"):
+            subprocess.run(
+                ["jj", "-R", str(self.source), "--ignore-working-copy",
+                 "bookmark", "delete", name], check=False, capture_output=True,
+            )
+        with self.assertRaises(PreparationError) as caught:
+            prepare_task_workspace(self.config, request)
+        message = str(caught.exception)
+        self.assertTrue(
+            message.startswith("the default base resolved to the empty root commit"), message,
+        )
+        self.assertIn("--base main", message)
+        self.assertTrue(message.endswith("(preflight refused; no task state was created)"), message)
+        self.assertFalse((self.config.tasks_dir / f"{request.task_id}.json").exists())
+        # Namespace refusal after the intent was claimed: cause, remedy, then the
+        # rollback outcome, and the record is gone.
+        self.source.chmod(0o775)
+        try:
+            request = self.request("cause-second")
+            with self.assertRaises(PreparationError) as caught:
+                prepare_task_workspace(self.config, request)
+        finally:
+            self.source.chmod(0o755)
+        message = str(caught.exception)
+        self.assertTrue(message.startswith("writable non-sticky ancestor rejected in"), message)
+        self.assertIn(f"remediate with: chmod g-w,o-w {self.source}", message)
+        self.assertTrue(
+            message.endswith("(workspace preparation rolled back; nothing to recover)")
+            or message.endswith("(preflight refused; no task state was created)"),
+            message,
+        )
+        self.assertFalse((self.config.tasks_dir / f"{request.task_id}.json").exists())
+
     def test_success_uses_exact_base_and_preserves_source(self) -> None:
         before = self.source_facts()
         result = prepare_task_workspace(self.config, self.request())

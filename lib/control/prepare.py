@@ -997,7 +997,7 @@ def prepare_task_workspace(
         operation_id = adapter.pin_operation(source)
         expected_materialization = adapter.expected_materialization(repository.git_root, base_commit_id)
     except (OSError, ValueError, JjError) as exc:
-        raise PreparationError(f"preflight failed without task mutation: {exc}") from exc
+        raise PreparationError(f"{exc} (preflight refused; no task state was created)") from exc
     destination = config.workspace_root / repo_key / slug
     _validate_layout(config, source, destination, repo_key, slug)
     workspace_name = f"asha-{slug}-{task_id[:8]}"
@@ -1068,7 +1068,7 @@ def prepare_task_workspace(
                 "workspace destination requires more than eight created ancestors"
             )
     except (OSError, ValueError) as exc:
-        raise PreparationError(f"preflight failed without task mutation: {exc}") from exc
+        raise PreparationError(f"{exc} (preflight refused; no task state was created)") from exc
     journals = CreationJournalStore(config)
     tasks = TaskStore(config)
     claimed = False
@@ -1201,18 +1201,28 @@ def prepare_task_workspace(
             phase("ready-for-launch")
             return task
     except BaseException as exc:
+        # Cause first, then what Control did about it: the operator reads the
+        # refusal and its remedy before the recovery framing.
+        recovery = ""
         if claimed:
             try:
                 rollback_prelaunch(
                     config, task_id, jj=adapter, invocation_id=invocation_id,
                 )
-            except PreparationError:
-                pass
+            except PreparationError as rollback_exc:
+                recovery = (
+                    f" (workspace preparation rolled back only partially: "
+                    f"{rollback_exc}; run: asha task recover {task_id})"
+                )
+            else:
+                recovery = " (workspace preparation rolled back; nothing to recover)"
         if not isinstance(exc, Exception):
             raise
         if not claimed:
-            raise PreparationError(f"creation intent was not claimed; existing state preserved: {exc}") from exc
-        raise PreparationError(f"workspace preparation failed with durable recovery state: {exc}") from exc
+            raise PreparationError(
+                f"{exc} (creation intent was not claimed; existing state preserved)"
+            ) from exc
+        raise PreparationError(f"{exc}{recovery}") from exc
 
 
 _MATERIALIZATION_NAME = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?", re.ASCII)
