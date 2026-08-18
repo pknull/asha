@@ -465,6 +465,20 @@ def _stored_start_result(task: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _progress(message: str) -> None:
+    """Human progress on stderr, only when a person is watching a terminal.
+
+    Scripted callers (JSON, orchestration dispatch, tests) capture stderr and
+    must not see progress prose; the TUI suspends curses around task start,
+    so this is what the operator sees while a large checkout runs.
+    """
+    try:
+        if sys.stderr.isatty():
+            print(message, file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass
+
+
 def _emit_start_result(
     parsed: Mapping[str, Any], env: Mapping[str, str], config,
     result: dict[str, Any], adapter: TmuxAdapter, *,
@@ -565,9 +579,14 @@ def _start_new_task(
         source=task_source,
         resolved_base_commit_id=resolved_base_commit_id,
     )
+    _progress(
+        f"Preparing jj workspace for {source} at {requested_base} "
+        "(checking out the base tree; a large repository takes a while)..."
+    )
     prepared = prepare_task_workspace(config, request, jj=jj)
     socket = prepared["tmux"]["socket"]
     adapter = TmuxAdapter(socket=None if socket == "default" else socket)
+    _progress(f"Workspace ready at {prepared['jj']['workspace_path']}; launching {selected_harness}...")
     result = launch_task(
         config, prepared, tmux=adapter, harness=selected_harness,
         goal_args=parsed["goal_args"], role=selected_role,

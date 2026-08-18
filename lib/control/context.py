@@ -123,7 +123,8 @@ def _open_parent(root_fd: int, relative: str) -> tuple[int, str]:
         raise ContextError(f"private context parent changed: {relative}") from exc
 
 
-def _entry_exists(root_fd: int, relative: str) -> bool:
+def _entry_kind(root_fd: int, relative: str) -> str | None:
+    """Kind of an existing entry (`directory`, `file`, `other`) or None."""
     parts = Path(relative).parts
     fd = os.dup(root_fd)
     try:
@@ -131,18 +132,31 @@ def _entry_exists(root_fd: int, relative: str) -> bool:
             try:
                 child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
             except FileNotFoundError:
-                return False
+                return None
             os.close(fd)
             fd = child
         try:
-            os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
+            metadata = os.stat(parts[-1], dir_fd=fd, follow_symlinks=False)
         except FileNotFoundError:
-            return False
-        return True
+            return None
+        if stat.S_ISDIR(metadata.st_mode):
+            return "directory"
+        if stat.S_ISREG(metadata.st_mode):
+            return "file"
+        return "other"
     except OSError as exc:
         raise ContextError(f"private context path is unsafe: {relative}") from exc
     finally:
         os.close(fd)
+
+
+def _entry_exists(root_fd: int, relative: str) -> bool:
+    return _entry_kind(root_fd, relative) is not None
+
+
+# The task marker is the one context entry no repository may already carry: it
+# binds the workspace to exactly this task and must be created by Control.
+_MARKER_PATH = ".asha/control-task.json"
 
 
 def _entry_fact(metadata: os.stat_result, kind: str, *, planned: PlannedFile | None = None
@@ -195,18 +209,38 @@ def provision_context(
     source = Path(source)
     destination = Path(destination)
     plan = build_context_plan(source, destination, marker, snapshot=snapshot)
+    # A fresh workspace may already carry some of these paths as TRACKED
+    # content of the base commit (a repository that commits `.asha/` or
+    # `Memory/`). Those stay exactly as checked out: overwriting a tracked
+    # file would dirty the change, and the directory is simply reused. Only
+    # the task marker, symlinks, and non-regular entries are collisions.
+    existing_directories: set[str] = set()
+    existing_files: set[str] = set()
     initial_fd = _open_absolute_directory(destination)
     try:
         root_fact = _root_fact(initial_fd)
-        for relative in (*DIRECTORY_MODES, *plan):
-            if _entry_exists(initial_fd, relative):
+        for relative in DIRECTORY_MODES:
+            kind = _entry_kind(initial_fd, relative)
+            if kind is None:
+                continue
+            if kind != "directory":
                 raise ContextError(f"private context destination collision: {relative}")
+            existing_directories.add(relative)
+        for relative in plan:
+            kind = _entry_kind(initial_fd, relative)
+            if kind is None:
+                continue
+            if kind != "file" or relative == _MARKER_PATH:
+                raise ContextError(f"private context destination collision: {relative}")
+            existing_files.add(relative)
     finally:
         os.close(initial_fd)
     if before_mutation is not None:
         before_mutation(plan)
     try:
         for relative, mode in DIRECTORY_MODES.items():
+            if relative in existing_directories:
+                continue
             root_fd = _reopen_destination(destination, root_fact)
             try:
                 parent_fd, name = _open_parent(root_fd, relative)
@@ -231,6 +265,8 @@ def provision_context(
             if after_entry is not None:
                 after_entry(relative, fact)
         for relative, planned in plan.items():
+            if relative in existing_files:
+                continue
             root_fd = _reopen_destination(destination, root_fact)
             try:
                 parent_fd, name = _open_parent(root_fd, relative)

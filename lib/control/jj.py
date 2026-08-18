@@ -557,6 +557,30 @@ class JjAdapter:
             result[fields[0]] = (fields[1], fields[2])
         return result
 
+    def abandon_empty_change(self, source: Path, change_id: str) -> bool:
+        """Abandon Control's own change only when it is still empty.
+
+        Rollback forgets a workspace whose working-copy commit carries the
+        task goal as its description; jj keeps a described empty commit, which
+        would otherwise litter the operator's log with one dead head per failed
+        start. Returns True when the change was abandoned.
+        """
+        if _CHANGE_ID.fullmatch(change_id) is None:
+            raise JjError("abandon requires a full change ID")
+        output = self._run([
+            "-R", str(source), "--ignore-working-copy", "log", "-r", change_id,
+            "--no-graph", "-T", 'if(empty, "empty", "nonempty") ++ "\n"',
+        ])
+        lines = output.splitlines()
+        if lines != ["empty"]:
+            return False
+        operation_id = self.pin_operation(source)
+        self._run([
+            "-R", str(source), "--ignore-working-copy",
+            "--at-operation", operation_id, "abandon", "-r", change_id,
+        ])
+        return True
+
     def forget_workspace(self, source: Path, name: str) -> None:
         # Forget through the SOURCE repository, never the destination: the
         # destination is exactly the workspace rollback may be cleaning up,
