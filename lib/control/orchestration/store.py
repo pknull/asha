@@ -54,6 +54,7 @@ from .model import (
     validate_result_publication,
     validate_review,
     validate_seal,
+    validate_seal_preparation,
     validate_slug,
     validate_verification,
 )
@@ -67,7 +68,7 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CL
 
 _LAYOUT_DIRECTORIES = (
     "plans", "nodes", "attempts", "assignments", "links", "result-publications", "results",
-    "seals", "reviews", "verifications", "bundles", "approvals", "actions",
+    "seal-preparations", "seals", "reviews", "verifications", "bundles", "approvals", "actions",
     "evidence", "events", "locks",
 )
 _INVENTORY_CLASSES = ("initiative",) + _LAYOUT_DIRECTORIES
@@ -214,9 +215,11 @@ class InitiativeStore:
         with self._initiative_directory(
             initiative_id, create_root=create, create_initiative=create
         ) as (root_fd, initiative_fd):
-            if create:
-                self._ensure_layout(initiative_fd)
-            locks_fd = _open_directory(initiative_fd, "locks", create=create)
+            # Increment 2b added record classes to initiatives already created
+            # by 2a. The first locked use upgrades only the missing 0700
+            # directories; immutable records and mutable snapshots are untouched.
+            self._ensure_layout(initiative_fd)
+            locks_fd = _open_directory(initiative_fd, "locks", create=True)
             if locks_fd is None:
                 raise StoreError("initiative lock directory is missing")
             try:
@@ -832,6 +835,31 @@ class InitiativeStore:
     def save_seal(self, initiative_id: str, record: Any) -> Path:
         return self._save_uuid_immutable(initiative_id, "seals", record, validate_seal, "seal_id")
 
+    def save_seal_preparation(
+        self,
+        initiative_id: str,
+        record: Any,
+        *,
+        expected_digest: str | None = None,
+    ) -> Path:
+        try:
+            value = validate_seal_preparation(record)
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        mutable = {"state", "refusal", "updated_at"}
+        return self._save_subrecord(
+            initiative_id, "seal-preparations", f"{value['seal_id']}.json", value,
+            validate_seal_preparation, immutable=False,
+            expected_digest=expected_digest,
+            transition_machine={
+                "preparing": frozenset({"indeterminate", "completed"}),
+                "indeterminate": frozenset({"preparing", "completed"}),
+                "completed": frozenset(),
+            },
+            immutable_fields=tuple(field for field in value if field not in mutable),
+            terminal_states=frozenset({"completed"}),
+        )
+
     def save_review(
         self,
         initiative_id: str,
@@ -853,9 +881,7 @@ class InitiativeStore:
             transition_machine=REVIEW_TRANSITIONS,
             immutable_fields=tuple(field for field in value if field not in mutable),
             bind_once_fields=("attempt_id", "task_id", "run_id"),
-            terminal_states=frozenset({
-                "accepted-pass", "accepted-findings", "failed", "indeterminate", "stale",
-            }),
+            terminal_states=frozenset({"stale"}),
         )
 
     def save_verification(
@@ -875,7 +901,7 @@ class InitiativeStore:
             validate_verification, immutable=False, expected_digest=expected_digest,
             transition_machine=VERIFICATION_TRANSITIONS,
             immutable_fields=tuple(field for field in value if field not in mutable),
-            terminal_states=frozenset({"passed", "failed", "indeterminate", "stale"}),
+            terminal_states=frozenset({"stale"}),
         )
 
     def save_bundle(
@@ -1058,6 +1084,42 @@ class InitiativeStore:
             re.compile(r"([0-9a-f-]{36})\.json"), "seal_id",
         )
 
+    def list_result_publications_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "result-publications", validate_result_publication,
+            re.compile(r"([0-9a-f-]{36})\.json"), "publication_id",
+        )
+
+    def list_results_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "results", validate_result,
+            re.compile(r"([0-9a-f-]{36})\.json"), "result_id",
+        )
+
+    def list_seal_preparations_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "seal-preparations", validate_seal_preparation,
+            re.compile(r"([0-9a-f-]{36})\.json"), "seal_id",
+        )
+
+    def list_reviews_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "reviews", validate_review,
+            re.compile(r"([0-9a-f-]{36})\.json"), "review_id",
+        )
+
+    def list_verifications_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "verifications", validate_verification,
+            re.compile(r"([0-9a-f-]{36})\.json"), "verification_id",
+        )
+
+    def list_bundles_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "bundles", validate_bundle,
+            re.compile(r"([0-9a-f-]{36})\.json"), "bundle_id",
+        )
+
     def _read_uuid_record(
         self,
         initiative_id: str,
@@ -1074,6 +1136,7 @@ class InitiativeStore:
             "links": "attempt_id",
             "result-publications": "publication_id",
             "results": "result_id",
+            "seal-preparations": "seal_id",
             "seals": "seal_id",
             "reviews": "review_id",
             "verifications": "verification_id",
@@ -1106,6 +1169,11 @@ class InitiativeStore:
 
     def read_seal(self, initiative_id: str, seal_id: str) -> dict[str, Any]:
         return self._read_uuid_record(initiative_id, "seals", seal_id, validate_seal)
+
+    def read_seal_preparation(self, initiative_id: str, seal_id: str) -> dict[str, Any]:
+        return self._read_uuid_record(
+            initiative_id, "seal-preparations", seal_id, validate_seal_preparation,
+        )
 
     def read_review(self, initiative_id: str, review_id: str) -> dict[str, Any]:
         return self._read_uuid_record(initiative_id, "reviews", review_id, validate_review)
@@ -1256,6 +1324,7 @@ class InitiativeStore:
             "result-publications": (validate_result_publication, "publication_id"),
             "results": (validate_result, "result_id"),
             "seals": (validate_seal, "seal_id"),
+            "seal-preparations": (validate_seal_preparation, "seal_id"),
             "reviews": (validate_review, "review_id"),
             "verifications": (validate_verification, "verification_id"),
             "bundles": (validate_bundle, "bundle_id"),

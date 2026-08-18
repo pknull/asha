@@ -12,6 +12,19 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration Core Increment 2b
+
+- Added managed worker result publication with durable restartable phases,
+  immutable accepted results, Control-exit reconciliation, write-once jj seals,
+  cumulative hard-scope enforcement, advisory path evidence, and seal-drift
+  detection.
+- Added autonomous sealed-failure retry, success-seal repair with stale
+  downstream evidence, approval-bound read-only failure salvage, paused-seal
+  decisions and continuation, and cancellation that preserves task workspaces.
+- Added task result and seal inspection, publication/seal/salvage unit suites,
+  and disposable real-Control execution coverage for success, scope violation,
+  and completed-claim/nonzero-exit failure.
+
 #### Orchestration Core Increment 2a
 
 - Added effect-once operator action journals, immutable Control task links,

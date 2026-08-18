@@ -9,13 +9,18 @@ import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from ..jj import JjAdapter
+from ..jj import JjAdapter, JjError
 from ..reconcile import LiveAdapters, reconcile_task
 from ..store import StoreError, TaskStore
 from ..tmux import TmuxAdapter
 from .links import control_task_identity_digest
 from .model import ATTEMPT_CONTRACT, record_digest, validate_attempt, validate_node
 from .store import InitiativeStore
+from .results import reconcile_publications
+from .seals import (
+    NoSealableArtifact, SealError, prepare_and_publish_seal,
+    reconcile_seal_drift,
+)
 
 
 NODE_RECONCILIATION_CONTRACT = "asha.orchestration-node-reconciliation.v1"
@@ -270,9 +275,9 @@ def _failure_target(
     at: datetime,
 ) -> tuple[dict[str, Any], dict[str, Any] | None, str | None]:
     """Move a failure through evaluating and reserve one autonomous retry."""
-    from .actions import append_event
+    from .actions import _repair_lineage_attempts, append_event
     from .scheduler import (
-        _attempt_base,
+        _resolved_attempt_base,
         consecutive_failures,
         pause_for_breaker,
         storage_report as scheduler_storage_report,
@@ -287,6 +292,39 @@ def _failure_target(
             [current_node["node_id"], failed["attempt_id"]],
             {"from": before, "to": "evaluating", "reason": failed["state"]},
             actor_kind="controller", actor_id="live-reconciler",
+        )
+
+    salvage_lineage = any(
+        item["outcome"] == "failure" and item["read_only"]
+        for item in failed["base"]["seal_inputs"]
+    )
+    repair_lineage = any(
+        item["attempt_id"] == failed["attempt_id"]
+        for item in _repair_lineage_attempts(store, initiative_id)
+    )
+    if salvage_lineage or repair_lineage:
+        if current_node["state"] == "evaluating":
+            before = current_node["state"]
+            current_node = _transition_node(
+                store, initiative_id, current_node, "needs-input",
+            )
+            append_event(
+                store, initiative_id, "node-state-changed",
+                [current_node["node_id"], failed["attempt_id"]],
+                {
+                    "from": before,
+                    "to": "needs-input",
+                    "reason": (
+                        "salvage lineage requires new approval"
+                        if salvage_lineage else
+                        "repair lineage requires operator input"
+                    ),
+                },
+                actor_kind="controller", actor_id="live-reconciler",
+            )
+        return current_node, None, (
+            "salvage-lineage-needs-input"
+            if salvage_lineage else "repair-lineage-needs-input"
         )
 
     refreshed = [
@@ -364,7 +402,9 @@ def _failure_target(
         "task_id": str(uuid.uuid4()),
         "action_id": None,
         "ordinal": max(item["ordinal"] for item in node_attempts) + 1,
-        "base": _attempt_base(plan, node),
+        "base": _resolved_attempt_base(
+            store, initiative_id, plan, current_node,
+        ),
         "state": "allocated",
         "result_publication_id": None,
         "result_id": None,
@@ -400,6 +440,7 @@ def reconcile_live(
     observations: list[dict[str, Any]] = []
     conflicts: list[dict[str, str]] = []
     retries: list[dict[str, Any]] = []
+    seals: list[dict[str, Any]] = []
     probes: list[dict[str, str]] = []
     clock = now or _now
     with store.transaction_lock(initiative_id):
@@ -411,8 +452,19 @@ def reconcile_live(
                 "observations": observations,
                 "conflicts": conflicts,
                 "retries": retries,
+                "seals": seals,
                 "probes": probes,
             }
+        # Result journals always recover before later process-exit or seal
+        # evaluation, so a completion visible before a crash wins the ordering.
+        reconcile_publications(
+            store, initiative_id, control_store=control_store,
+        )
+        publication_conflicts = {
+            publication["attempt_id"]
+            for publication in store.list_result_publications_snapshot(initiative_id)
+            if publication["state"] == "indeterminate"
+        }
         plan = _active_plan(store, initiative)
         control_store = control_store or TaskStore(store.config.control)
         attempts = store.list_attempts_snapshot(initiative_id)
@@ -445,7 +497,11 @@ def reconcile_live(
         for attempt in sorted(
             attempts, key=lambda item: (item["node_id"], item["ordinal"], item["attempt_id"]),
         ):
-            if attempt["state"] not in {"dispatching", "running", "indeterminate"}:
+            if attempt["state"] not in {
+                "dispatching", "running", "reported", "awaiting-exit",
+                "success-seal-ready", "failure-seal-ready", "paused-seal-ready",
+                "sealing", "indeterminate",
+            }:
                 continue
             link = links.get(attempt["attempt_id"])
             node = nodes[attempt["node_id"]]
@@ -463,6 +519,17 @@ def reconcile_live(
                     "control_state": "action-indeterminate",
                 })
                 continue
+            if attempt["attempt_id"] in publication_conflicts:
+                observations.append({
+                    "attempt_id": attempt["attempt_id"],
+                    "control_task_id": attempt["task_id"],
+                    "control_state": "publication-indeterminate",
+                })
+                continue
+            if attempt["state"] == "reported":
+                attempt = _transition_attempt(
+                    store, initiative_id, attempt, "awaiting-exit", current_time,
+                )
             if attempt["state"] == "dispatching" and link is None:
                 observations.append({
                     "attempt_id": attempt["attempt_id"],
@@ -535,7 +602,14 @@ def reconcile_live(
                 if current_node["state"] == "dispatching":
                     _transition_node(store, initiative_id, current_node, "running")
                 continue
-            if state == "exited" and attempt["result_id"] is None:
+            seal_in_progress = attempt["state"] in {
+                "success-seal-ready", "failure-seal-ready", "paused-seal-ready",
+                "sealing",
+            }
+            if seal_in_progress:
+                if state not in {"exited", "failed"}:
+                    continue
+            elif state == "exited" and attempt["result_id"] is None:
                 if previous_exit is None:
                     continue
                 if (current_time - previous_exit).total_seconds() < store.config.result_grace_seconds:
@@ -563,19 +637,57 @@ def reconcile_live(
                 attempt = _transition_attempt(
                     store, initiative_id, attempt, "abnormal-exit", current_time,
                 )
+            elif state == "exited" and attempt["result_id"] is not None:
+                if attempt["state"] == "reported":
+                    attempt = _transition_attempt(
+                        store, initiative_id, attempt, "awaiting-exit", current_time,
+                    )
             else:
                 continue
-            handled_failures.add(attempt["attempt_id"])
-            current_attempts = store.list_attempts_snapshot(initiative_id)
-            current_initiative = store.peek(initiative_id)
-            current_node, retry, _reason = _failure_target(
-                store, initiative_id, current_initiative, plan,
-                store.read_node(initiative_id, node["node_id"]), attempt,
-                current_attempts, current_time,
-            )
-            nodes[current_node["node_id"]] = current_node
-            if retry is not None:
-                retries.append(retry)
+            try:
+                seal = prepare_and_publish_seal(
+                    store, initiative_id, attempt["attempt_id"], task, observed,
+                    jj=(adapters.jj_adapter if isinstance(adapters, LiveAdapters) else None),
+                )
+            except NoSealableArtifact:
+                latest = store.read_attempt(initiative_id, attempt["attempt_id"])
+                if latest["state"] in {"abnormal-exit", "result-missing"}:
+                    latest = _transition_attempt(
+                        store, initiative_id, latest, "failed-no-artifact", current_time,
+                    )
+                current_attempts = store.list_attempts_snapshot(initiative_id)
+                current_node, retry, _reason = _failure_target(
+                    store, initiative_id, store.peek(initiative_id), plan,
+                    store.read_node(initiative_id, node["node_id"]), latest,
+                    current_attempts, current_time,
+                )
+                nodes[current_node["node_id"]] = current_node
+                if retry is not None:
+                    retries.append(retry)
+                handled_failures.add(attempt["attempt_id"])
+                continue
+            except (SealError, StoreError, JjError, OSError, ValueError) as exc:
+                from .scheduler import pause_for_breaker
+
+                reason = f"seal reconciliation failed: {exc}"
+                pause_for_breaker(
+                    store, initiative_id, reason[:1000],
+                    event_type="reconciliation-conflict",
+                    subject_ids=[node["node_id"], attempt["attempt_id"]],
+                )
+                conflicts.append({"attempt_id": attempt["attempt_id"], "reason": reason})
+                continue
+            seals.append(seal)
+            if seal["outcome"] == "failure":
+                handled_failures.add(attempt["attempt_id"])
+            refreshed_attempts = store.list_attempts_snapshot(initiative_id)
+            newly_allocated = [
+                item for item in refreshed_attempts
+                if item["node_id"] == node["node_id"]
+                and item["state"] == "allocated"
+                and item["ordinal"] > attempt["ordinal"]
+            ]
+            retries.extend(newly_allocated)
 
         # The latest retriable failure is re-evaluated on every pass.  This is
         # what lets a breaker-paused initiative reserve its retry on resume.
@@ -590,7 +702,7 @@ def reconcile_live(
             if (
                 failed["state"] not in {
                     "launch-failed", "result-missing", "abnormal-exit",
-                    "failed-no-artifact",
+                    "failed-no-artifact", "sealed-failure",
                 }
                 or failed["attempt_id"] in handled_failures
             ):
@@ -610,12 +722,30 @@ def reconcile_live(
             if retry is not None:
                 retries.append(retry)
 
+        if any(item["outcome"] == "success" for item in seals):
+            from .scheduler import refresh_readiness
+
+            refresh_readiness(store, initiative_id)
+
+        # Published seals remain immutable. Any later workspace commit drift is
+        # separate evidence and pauses affected work.
+        conflicts.extend({
+            "attempt_id": next(
+                seal["attempt_id"] for seal in store.list_seals_snapshot(initiative_id)
+                if seal["seal_id"] == item["seal_id"]
+            ),
+            "reason": item["reason"],
+        } for item in reconcile_seal_drift(
+            store, initiative_id, control_store=control_store,
+        ))
+
     return {
         "contract": LIVE_RECONCILIATION_CONTRACT,
         "initiative_id": initiative_id,
         "observations": observations,
         "conflicts": conflicts,
         "retries": retries,
+        "seals": seals,
         "probes": probes,
     }
 

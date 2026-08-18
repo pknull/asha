@@ -174,6 +174,7 @@ class OrchestrationCliTests(unittest.TestCase):
                 if contract == "asha.orchestration-initiative-show.v1":
                     self.assertEqual(set(value["evidence_counts"]), {
                         "links", "result-publications", "results", "seals",
+                        "seal-preparations",
                         "reviews", "verifications", "bundles", "approvals",
                         "actions", "evidence", "events",
                     })

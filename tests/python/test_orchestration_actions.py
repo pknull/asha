@@ -290,6 +290,10 @@ class OrchestrationActionTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(action["state"], "completed")
         self.assertEqual(calls[0][1:3], ["task", "stop"])
         self.assertEqual(calls[0][-1], attempt["task_id"])
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "cancelled",
+        )
 
     def test_cancel_node_stops_live_attempt_then_cancels_both(self) -> None:
         attempt = self.dispatch_one()

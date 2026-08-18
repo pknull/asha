@@ -59,6 +59,9 @@ Usage:
   asha task unarchive <task-id|exact-slug>
   asha task recover <task-id|exact-slug>
   asha task reconcile [task-id|exact-slug] [--json]
+  asha task report --file RESULT.json [--json]
+  asha task result <task-id> [--json]
+  asha task seal <task-id|attempt-id> [--json]
   asha task doctor [--json]""", file=stream)
 
 
@@ -777,8 +780,11 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         return 0 if args else 2
     command, tail = args[0], args[1:]
     if command in {"report", "result", "seal"}:
-        print(f"asha task {command}: not available before Increment 2b", file=sys.stderr)
-        return 2
+        # Lazy by contract: malformed orchestration configuration cannot alter
+        # any ordinary Control task command.
+        from .orchestration.cli import task_main as orchestration_task_main
+
+        return orchestration_task_main(args, env=env)
     if command not in {
         "start", "list", "show", "attach", "stop", "archive", "unarchive",
         "recover", "reconcile", "doctor",

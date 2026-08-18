@@ -26,6 +26,7 @@ ATTEMPT_CONTRACT = "asha.orchestration-attempt.v1"
 RESULT_PUBLICATION_CONTRACT = "asha.orchestration-result-publication.v1"
 RESULT_CONTRACT = "asha.orchestration-result.v1"
 SEAL_CONTRACT = "asha.orchestration-seal.v1"
+SEAL_PREPARATION_CONTRACT = "asha.orchestration-seal-preparation.v1"
 REVIEW_CONTRACT = "asha.orchestration-review.v1"
 VERIFICATION_CONTRACT = "asha.orchestration-verification.v1"
 APPROVAL_CONTRACT = "asha.orchestration-approval.v1"
@@ -57,6 +58,8 @@ MAX_EVIDENCE_LOCATION_BYTES = 4096
 MAX_EVENT_PAYLOAD_BYTES = 16384
 MAX_ACTION_OUTCOME_BYTES = 8192
 MAX_REFUSAL_BYTES = 2048
+MAX_RESULT_TRANSPORT_BYTES = 256 * 1024
+MAX_EVIDENCE_SUMMARY_BYTES = 128 * 1024
 
 # Array item caps.
 MAX_ACCEPTANCE_CRITERIA_ITEMS = 64
@@ -310,6 +313,22 @@ def _bounded_payload(value: Any, name: str) -> Any:
         raise ModelError(f"{name} is not canonical JSON") from exc
     if len(raw) > MAX_EVENT_PAYLOAD_BYTES:
         raise ModelError(f"{name} exceeds {MAX_EVENT_PAYLOAD_BYTES} UTF-8 bytes")
+    return value
+
+
+def _transport_payload(value: Any, name: str) -> Any:
+    """Validate a strict JSON value at the result transport cap only."""
+    try:
+        raw = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError, RecursionError) as exc:
+        raise ModelError(f"{name} is not strict canonical JSON") from exc
+    if len(raw) > MAX_RESULT_TRANSPORT_BYTES:
+        raise ModelError(
+            f"{name} exceeds {MAX_RESULT_TRANSPORT_BYTES} UTF-8 bytes"
+        )
     return value
 
 
@@ -581,6 +600,10 @@ _review_pairs += [
     for state in ("pending", "running", "submitted")
     for target in ("failed", "indeterminate", "stale")
 ]
+_review_pairs += [
+    (state, "stale")
+    for state in ("accepted-pass", "accepted-findings", "failed", "indeterminate")
+]
 REVIEW_TRANSITIONS = _simple_machine(REVIEW_STATES, _review_pairs)
 _verification_pairs = [
     ("pending", "dispatching"), ("dispatching", "running"),
@@ -590,6 +613,9 @@ _verification_pairs += [
     (state, target)
     for state in ("pending", "dispatching", "running")
     for target in ("indeterminate", "stale")
+]
+_verification_pairs += [
+    (state, "stale") for state in ("passed", "failed", "indeterminate")
 ]
 VERIFICATION_TRANSITIONS = _simple_machine(VERIFICATION_STATES, _verification_pairs)
 BUNDLE_TRANSITIONS = _simple_machine(
@@ -905,7 +931,8 @@ def validate_result(value: Any) -> dict[str, Any]:
 _PUBLICATION_KEYS = frozenset({
     "contract", "publication_id", "result_id", "payload_digest", "initiative_id",
     "node_id", "attempt_id", "task_id", "run_id", "state", "body_digest",
-    "receipt_sequence", "attempt_revision", "refusal", "created_at", "updated_at",
+    "body", "receipt_sequence", "attempt_revision", "refusal", "created_at",
+    "updated_at",
 })
 
 
@@ -918,10 +945,11 @@ def validate_result_publication(value: Any) -> dict[str, Any]:
     validate_slug(record["node_id"], "result publication node_id")
     _digest(record["payload_digest"], "result publication payload_digest")
     _digest(record["body_digest"], "result publication body_digest")
+    _transport_payload(record["body"], "result publication body")
     if record["state"] not in RESULT_PUBLICATION_TRANSITIONS:
         raise ModelError("result publication state is invalid")
     _integer(record["receipt_sequence"], "result publication receipt_sequence", minimum=1)
-    _integer(record["attempt_revision"], "result publication attempt_revision")
+    _digest(record["attempt_revision"], "result publication attempt_revision")
     _optional_text(record["refusal"], "result publication refusal", maximum=MAX_REFUSAL_BYTES)
     created = _timestamp(record["created_at"], "result publication created_at")
     updated = _timestamp(record["updated_at"], "result publication updated_at")
@@ -930,12 +958,78 @@ def validate_result_publication(value: Any) -> dict[str, Any]:
     return copy.deepcopy(record)
 
 
+_SEAL_PREPARATION_KEYS = frozenset({
+    "contract", "seal_id", "initiative_id", "node_id", "attempt_id", "task_id",
+    "run_id", "repository_id", "scope_origin", "base",
+    "read_only_failure_seal_ids", "result_id", "process_evidence_id", "state",
+    "refusal", "created_at", "updated_at",
+})
+SEAL_PREPARATION_STATES = frozenset({"preparing", "indeterminate", "completed"})
+
+
+def validate_seal_preparation(value: Any) -> dict[str, Any]:
+    record = _object(value, "seal preparation", _SEAL_PREPARATION_KEYS)
+    if record["contract"] != SEAL_PREPARATION_CONTRACT:
+        raise ModelError(
+            f"seal preparation contract must be {SEAL_PREPARATION_CONTRACT}"
+        )
+    for field in (
+        "seal_id", "initiative_id", "attempt_id", "task_id", "run_id",
+        "repository_id", "process_evidence_id",
+    ):
+        canonical_uuid(record[field], f"seal preparation {field}")
+    validate_slug(record["node_id"], "seal preparation node_id")
+    _scope_origin(record["scope_origin"], "seal preparation scope_origin")
+    base = _object(record["base"], "seal preparation base", _SEAL_BASE_KEYS)
+    if base["kind"] not in {"repository-baseline", "seal", "composition-inputs"}:
+        raise ModelError("seal preparation base kind is invalid")
+    if base["jj_commit_id"] is not None:
+        _git_object_id(base["jj_commit_id"], "seal preparation base jj_commit_id")
+    _digest(base["tree_digest"], "seal preparation base tree_digest")
+    _string_list(
+        base["seal_ids"], "seal preparation base seal_ids",
+        maximum_items=MAX_SEAL_INPUTS, maximum_bytes=36, validator=canonical_uuid,
+    )
+    if base["kind"] == "repository-baseline":
+        if base["jj_commit_id"] is None or base["seal_ids"]:
+            raise ModelError(
+                "repository-baseline seal preparation requires a commit and no seal IDs"
+            )
+    elif base["kind"] == "seal":
+        if base["jj_commit_id"] is None or len(base["seal_ids"]) != 1:
+            raise ModelError(
+                "seal preparation base requires a commit and exactly one seal ID"
+            )
+    elif base["jj_commit_id"] is not None or len(base["seal_ids"]) < 2:
+        raise ModelError(
+            "composition-inputs seal preparation requires null commit and at least two seal IDs"
+        )
+    _string_list(
+        record["read_only_failure_seal_ids"],
+        "seal preparation read_only_failure_seal_ids",
+        maximum_items=MAX_SEAL_INPUTS, maximum_bytes=36, validator=canonical_uuid,
+    )
+    _nullable_uuid(record["result_id"], "seal preparation result_id")
+    if record["state"] not in SEAL_PREPARATION_STATES:
+        raise ModelError("seal preparation state is invalid")
+    _optional_text(
+        record["refusal"], "seal preparation refusal", maximum=MAX_REFUSAL_BYTES,
+    )
+    created = _timestamp(record["created_at"], "seal preparation created_at")
+    updated = _timestamp(record["updated_at"], "seal preparation updated_at")
+    if updated < created:
+        raise ModelError("seal preparation updated_at must not precede created_at")
+    return copy.deepcopy(record)
+
+
 _SEAL_BASE_KEYS = frozenset({"kind", "jj_commit_id", "tree_digest", "seal_ids"})
 _SEAL_KEYS = frozenset({
     "contract", "seal_id", "initiative_id", "node_id", "attempt_id", "task_id",
     "run_id", "outcome", "repository_id", "scope_origin", "base",
     "read_only_failure_seal_ids", "jj_commit_id", "tree_digest", "diff_digest",
-    "cumulative_diff_digest", "changed_paths", "cumulative_changed_paths",
+    "cumulative_diff_digest", "changed_paths", "changed_paths_truncated",
+    "changed_paths_digest", "cumulative_changed_paths",
+    "cumulative_changed_paths_truncated", "cumulative_changed_paths_digest",
     "result_id", "process_evidence_id", "sealed_at",
 })
 
@@ -983,6 +1077,25 @@ def validate_seal(value: Any) -> dict[str, Any]:
             seal[field], f"seal {field}", maximum_items=MAX_PATH_ITEMS,
             maximum_bytes=MAX_PATH_BYTES, validator=_relative_path,
         )
+    for field in ("changed_paths", "cumulative_changed_paths"):
+        truncated_field = f"{field}_truncated"
+        digest_field = f"{field}_digest"
+        _integer(
+            seal[truncated_field], f"seal {truncated_field}",
+            minimum=0, maximum=2**31 - 1,
+        )
+        _digest(seal[digest_field], f"seal {digest_field}")
+        if seal[truncated_field]:
+            if len(seal[field]) != MAX_PATH_ITEMS:
+                raise ModelError(
+                    f"truncated seal {field} must retain exactly the path cap"
+                )
+        elif seal[digest_field] != hashlib.sha256(
+            _canonical_bytes(seal[field])
+        ).hexdigest():
+            raise ModelError(
+                f"seal {digest_field} does not match the complete path list"
+            )
     _nullable_uuid(seal["result_id"], "seal result_id")
     if seal["outcome"] in {"success", "paused"} and seal["result_id"] is None:
         raise ModelError("success and paused seals require an accepted result")
@@ -1270,7 +1383,13 @@ def validate_evidence(value: Any) -> dict[str, Any]:
     _token(record["kind"], "evidence kind")
     _token(record["subject_id"], "evidence subject_id")
     _digest(record["digest"], "evidence digest")
-    _text(record["summary"], "evidence summary", maximum=MAX_SUMMARY_BYTES)
+    _text(
+        record["summary"], "evidence summary",
+        maximum=(
+            MAX_EVIDENCE_SUMMARY_BYTES
+            if record["kind"] == "seal-evidence" else MAX_SUMMARY_BYTES
+        ),
+    )
     _timestamp(record["recorded_at"], "evidence recorded_at")
     return copy.deepcopy(record)
 
@@ -1339,6 +1458,7 @@ _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     ATTEMPT_CONTRACT: validate_attempt,
     RESULT_PUBLICATION_CONTRACT: validate_result_publication,
     RESULT_CONTRACT: validate_result,
+    SEAL_PREPARATION_CONTRACT: validate_seal_preparation,
     SEAL_CONTRACT: validate_seal,
     REVIEW_CONTRACT: validate_review,
     VERIFICATION_CONTRACT: validate_verification,

@@ -37,6 +37,7 @@ MAX_CONTROL_OUTPUT_BYTES = 256 * 1024
 DISPATCH_TIMEOUT_SECONDS = 60
 _FAILURE_STATES = frozenset({
     "launch-failed", "result-missing", "abnormal-exit", "failed-no-artifact",
+    "sealed-failure",
 })
 
 
@@ -278,10 +279,13 @@ def assignment_bytes(
     node: dict[str, Any],
     attempt: dict[str, Any],
     exact_base: str,
+    resolved_seals: list[dict[str, Any]] | None = None,
 ) -> bytes:
-    """Render the bounded deterministic 2a worker assignment contract."""
+    """Render the bounded deterministic 2b worker assignment contract."""
     base = attempt["base"]
     nested = plan["nested_workflow_policy"]
+    seal_facts = resolved_seals or []
+    read_only_facts = [item for item in seal_facts if item["read_only"]]
     text = f"""# Asha Orchestration Assignment
 
 ## Identity
@@ -306,7 +310,9 @@ def assignment_bytes(
 - Exact base commit: {exact_base}
 - Scope-origin tree digest: {base['scope_origin']['tree_digest']}
 - Upstream seal inputs:
-{_json_lines(base['seal_inputs'], 1500)}
+{_json_lines(seal_facts or base['seal_inputs'], 3000)}
+- Read-only failure seal inputs:
+{_json_lines(read_only_facts, 3000)}
 
 ## Scope
 
@@ -321,7 +327,8 @@ Advisory path ownership:
 Declared node dependencies:
 {_json_lines(node['dependencies'], 1500)}
 
-Upstream result summaries: none in Orchestration Core 2a.
+Upstream result summaries and their payload digests are embedded in the exact
+immutable seal inputs above.
 
 ## Acceptance criteria
 
@@ -333,7 +340,7 @@ Node acceptance:
 
 ## Verification commands
 
-No node-level command argv exists in the approved Core 2a node record. Run the
+No node-level command argv exists in the approved Core node record. Run the
 repository checks required by the acceptance criteria and report their exact
 argv and exit status.
 
@@ -360,9 +367,17 @@ Before exiting, write the bounded result document to RESULT.json and run:
 asha task report --file RESULT.json
 ```
 
-That exact command is the Orchestration Core result-publication contract. The
-controller command is delivered by Increment 2b; do not substitute prose or a
-different publication path.
+Required: run `jj status` in this workspace to snapshot before `asha task report`, and after any later edit.
+The controller never snapshots or otherwise mutates the worker workspace on
+the worker's behalf.
+
+The client document is `asha.orchestration-result.v1` with every result field
+except controller-generated `result_id` and `payload_digest`: `publication_id`,
+`supersedes_result_id`, the initiative/node/attempt/task/run identities above,
+`claim_status` (`completed|failed|blocked|needs-decision`), `summary`,
+`files_changed`, `verification_attestations`, `concerns`, `follow_up`, and
+`published_at`. Paths are canonical repository-relative paths inside the task
+workspace. Reuse a publication ID only to replay the identical document.
 """
     raw = text.encode("utf-8")
     if len(raw) > MAX_ASSIGNMENT_BYTES:
@@ -382,11 +397,33 @@ def _exact_base(
     seals = [
         seal for seal in store.list_seals_snapshot(initiative_id)
         if seal["seal_id"] in seal_ids
-        or seal["node_id"] in set(base["upstream_node_ids"])
     ]
+    by_id = {seal["seal_id"]: seal for seal in seals}
+    for item in base["seal_inputs"]:
+        seal = by_id.get(item["seal_id"])
+        if seal is None or seal["outcome"] != item["outcome"]:
+            raise SchedulerError("upstream seal input identity or outcome changed")
+        if seal["scope_origin"] != item["scope_origin"]:
+            raise SchedulerError("upstream seal input scope origin changed")
+    inheritable = [
+        seal for seal in seals
+        if seal["outcome"] == "success"
+        or (
+            seal["outcome"] == "paused"
+            and any(
+                item["seal_id"] == seal["seal_id"] and not item["read_only"]
+                for item in base["seal_inputs"]
+            )
+        )
+    ]
+    if any(seal["outcome"] == "paused" for seal in inheritable):
+        if len(inheritable) != 1 or base["upstream_node_ids"]:
+            raise SchedulerError(
+                "paused continuation requires exactly one explicit paused seal"
+            )
+        return inheritable[0]["jj_commit_id"]
     successful = sorted(
-        (seal for seal in seals if seal["outcome"] == "success"),
-        key=lambda seal: (seal["sealed_at"], seal["seal_id"]),
+        inheritable, key=lambda seal: (seal["sealed_at"], seal["seal_id"]),
     )
     commits = {seal["jj_commit_id"] for seal in successful}
     if len(commits) != 1:
@@ -412,6 +449,43 @@ def _attempt_base(plan: dict[str, Any], node: dict[str, Any]) -> dict[str, Any]:
         "upstream_node_ids": [],
         "seal_inputs": [],
     }
+
+
+def _resolved_attempt_base(
+    store: InitiativeStore,
+    initiative_id: str,
+    plan: dict[str, Any],
+    node: dict[str, Any],
+) -> dict[str, Any]:
+    """Fix plan-level upstream node references to exact immutable success seals."""
+    base = _attempt_base(plan, node)
+    if base["policy"] != "upstream-seal" or base["seal_inputs"]:
+        return base
+    available = store.list_seals_snapshot(initiative_id)
+    inputs: list[dict[str, Any]] = []
+    for upstream_node_id in base["upstream_node_ids"]:
+        candidates = sorted(
+            (
+                seal for seal in available
+                if seal["node_id"] == upstream_node_id
+                and seal["outcome"] == "success"
+                and seal["scope_origin"] == base["scope_origin"]
+            ),
+            key=lambda seal: (seal["sealed_at"], seal["seal_id"]),
+        )
+        if not candidates:
+            raise SchedulerError(
+                f"upstream node {upstream_node_id} has no exact success seal"
+            )
+        seal = candidates[-1]
+        inputs.append({
+            "seal_id": seal["seal_id"],
+            "outcome": "success",
+            "read_only": False,
+            "scope_origin": copy.deepcopy(seal["scope_origin"]),
+        })
+    base["seal_inputs"] = inputs
+    return base
 
 
 def _goal(initiative: dict[str, Any], node: dict[str, Any], path: Path) -> str:
@@ -612,7 +686,13 @@ def dispatch(
     action: dict[str, Any],
 ) -> dict[str, Any]:
     """Dispatch one reserved action through Control's create-by-ID CLI seam."""
-    from .actions import append_event, set_action_state
+    from .actions import (
+        ActionRefused,
+        append_event,
+        consume_salvage_approval,
+        salvage_dispatch_binding,
+        set_action_state,
+    )
 
     with store.transaction_lock(initiative_id):
         initiative = store.peek(initiative_id)
@@ -623,12 +703,29 @@ def dispatch(
             raise SchedulerError("action active plan digest is stale")
         node = store.read_node(initiative_id, node_id)
         attempts = store.list_attempts_snapshot(initiative_id)
+        salvage_approval: dict[str, Any] | None = None
+        salvage_base: dict[str, Any] | None = None
         if action["state"] == "validated":
+            action_payload = json.loads(action["outcome"]).get("payload", {})
+            salvage_request_id = action_payload.get("salvage_request_id")
+            if salvage_request_id is not None:
+                try:
+                    salvage_approval, salvage_base, _ = salvage_dispatch_binding(
+                        store, initiative, node, salvage_request_id,
+                        dispatch_expected_revision=action["expected_state_revision"],
+                        dispatch_action_id=action["action_id"],
+                    )
+                except (ActionRefused, StoreError, ValueError) as exc:
+                    raise SchedulerError(str(exc)) from exc
             node_attempts = [item for item in attempts if item["node_id"] == node_id]
             allocated = [item for item in node_attempts if item["state"] == "allocated"]
             if len(allocated) > 1:
                 raise SchedulerError("node has multiple allocated attempt reservations")
             reserved = allocated[0] if allocated else None
+            if salvage_approval is not None and reserved is not None:
+                raise SchedulerError(
+                    "salvage dispatch cannot substitute an existing attempt reservation"
+                )
             breaker = _dispatch_breaker(
                 store, initiative, plan, attempts, has_reservation=reserved is not None,
             )
@@ -673,7 +770,10 @@ def dispatch(
                     "task_id": str(uuid.uuid4()),
                     "action_id": action["action_id"],
                     "ordinal": len(node_attempts) + 1,
-                    "base": _attempt_base(plan, node),
+                    "base": (
+                        copy.deepcopy(salvage_base) if salvage_base else
+                        _resolved_attempt_base(store, initiative_id, plan, node)
+                    ),
                     "state": "allocated",
                     "result_publication_id": None,
                     "result_id": None,
@@ -688,6 +788,11 @@ def dispatch(
                 "control_task_id": attempt["task_id"],
                 "status": "dispatching",
             })
+            if salvage_approval is not None:
+                outcome.update({
+                    "salvage_request_id": salvage_approval["request_id"],
+                    "read_only_failure_seal_id": salvage_base["seal_inputs"][0]["seal_id"],
+                })
             action = set_action_state(store, action, "dispatching", outcome)
             if reserved is None:
                 store.save_attempt(initiative_id, attempt)
@@ -698,6 +803,8 @@ def dispatch(
                     initiative_id, bound_attempt, expected_digest=record_digest(attempt),
                 )
                 attempt = bound_attempt
+            if salvage_approval is not None:
+                consume_salvage_approval(store, initiative_id, salvage_approval)
         elif action["state"] == "indeterminate":
             outcome = json.loads(action["outcome"])
             if outcome.get("node_id") != node_id:
@@ -712,6 +819,21 @@ def dispatch(
                     initiative_id, bound_attempt, expected_digest=record_digest(attempt),
                 )
                 attempt = bound_attempt
+            salvage_request_id = outcome.get("salvage_request_id")
+            if salvage_request_id is not None:
+                try:
+                    salvage_approval, salvage_base, _ = salvage_dispatch_binding(
+                        store, initiative, node, salvage_request_id,
+                        allow_consumed=True,
+                        dispatch_expected_revision=action["expected_state_revision"],
+                        dispatch_action_id=action["action_id"],
+                    )
+                except (ActionRefused, StoreError, ValueError) as exc:
+                    raise SchedulerError(str(exc)) from exc
+                if attempt["base"] != salvage_base:
+                    raise SchedulerError("retained salvage attempt base binding changed")
+                if salvage_approval["state"] == "approved":
+                    consume_salvage_approval(store, initiative_id, salvage_approval)
         else:
             raise SchedulerError("dispatch requires a validated or indeterminate action")
 
@@ -721,7 +843,31 @@ def dispatch(
                 config.initiatives_dir / initiative_id / "assignments"
                 / f"{attempt['attempt_id']}.md"
             )
-            assignment = assignment_bytes(initiative, plan, node, attempt, exact_base)
+            resolved_seals = []
+            for item in attempt["base"]["seal_inputs"]:
+                seal = store.read_seal(initiative_id, item["seal_id"])
+                result_summary = None
+                if seal["result_id"] is not None:
+                    result = store.read_result(initiative_id, seal["result_id"])
+                    result_summary = {
+                        "result_id": result["result_id"],
+                        "payload_digest": result["payload_digest"],
+                        "claim_status": result["claim_status"],
+                        "summary": result["summary"],
+                        "concerns": result["concerns"],
+                        "follow_up": result["follow_up"],
+                    }
+                resolved_seals.append({
+                    **copy.deepcopy(item),
+                    "jj_commit_id": seal["jj_commit_id"],
+                    "tree_digest": seal["tree_digest"],
+                    "changed_paths": seal["changed_paths"],
+                    "cumulative_changed_paths": seal["cumulative_changed_paths"],
+                    "result": result_summary,
+                })
+            assignment = assignment_bytes(
+                initiative, plan, node, attempt, exact_base, resolved_seals,
+            )
             asha = _asha_executable()
             goal = _goal(initiative, node, assignment_path)
             argv = [
