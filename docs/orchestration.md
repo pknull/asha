@@ -31,7 +31,7 @@ asha initiative reconcile ID [--json]
 asha initiative storage ID [--json]
 asha initiative snapshot ID --json
 asha initiative doctor [--json]
-asha task report --file RESULT.json [--json]
+asha task report --file PATH [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
 ```
@@ -118,10 +118,14 @@ role and workflow; nested-workflow policy; prohibited actions; and this exact
 result-publication command:
 
 ```text
-asha task report --file RESULT.json
+asha task report --file .asha/result.json
 ```
 
-The command is available only inside a Control-managed worker environment.
+The result document lives in the workspace's private `.asha/` directory,
+which every Control-acceptable repository ignores, so it never enters the
+sealed diff; a result file written to a tracked path is a hard-scope
+violation and fails the seal. The command is available only inside a
+Control-managed worker environment.
 The assignment also carries exact seal inputs and read-only failure-seal
 evidence when dispatching approved salvage work. It instructs the worker to
 run `jj status` in the workspace before `asha task report` and after every
