@@ -13,7 +13,7 @@ from unittest import mock
 
 from lib.control.cli import main as control_main
 from lib.control.config import load_config
-from lib.control.jj import RepositoryFacts
+from lib.control.jj import DEFAULT_BASE_REVSET, RepositoryFacts
 from lib.control.store import TaskStore
 from tests.python.test_control_config_model import task_record
 from tests.python.test_control_increment3 import FakeTmux
@@ -43,7 +43,7 @@ class ExistingTaskCliTests(unittest.TestCase):
         self.store = TaskStore(self.config)
 
     def record(self, *, source_kind: str = "ad-hoc", number: int | None = None,
-               requested_base: str = "trunk()") -> dict:
+               requested_base: str = DEFAULT_BASE_REVSET) -> dict:
         workspace = self.config.workspace_root / "repo-key" / "create-by-id"
         workspace.mkdir(parents=True, exist_ok=True)
         current = workspace

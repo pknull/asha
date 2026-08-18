@@ -15,7 +15,9 @@ from pathlib import Path
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-from lib.control.jj import ImmutableTree, JjAdapter, JjError, RepositoryFacts
+from lib.control.jj import (
+    DEFAULT_BASE_REVSET, ImmutableTree, JjAdapter, JjError, RepositoryFacts,
+)
 from lib.control.orchestration.cli import (
     _approve, _create, _plan, _reject, _repository_scope, _snapshot, main,
 )
@@ -116,7 +118,7 @@ class OrchestrationCliTests(unittest.TestCase):
             stdout,
             f"Commit: {'b' * 40}\nTree digest: {'c' * 64}\n",
         )
-        self.jj.resolve_base.assert_called_once_with(self.repo, "trunk()")
+        self.jj.resolve_base.assert_called_once_with(self.repo, DEFAULT_BASE_REVSET)
         self.assertEqual(
             [call[0] for call in self.jj.method_calls],
             [
@@ -128,16 +130,19 @@ class OrchestrationCliTests(unittest.TestCase):
 
     def test_baseline_default_trunk_error_translates_only_supported_guidance(self) -> None:
         self.jj.resolve_base.side_effect = JjError(
-            "base revset 'trunk()' resolved to the empty root commit; "
-            "Pass an explicit --base, for example --base main, or add a remote."
+            "the default base resolved to the empty root commit; this repository "
+            "has neither a remote trunk nor a local main, master, or trunk "
+            "bookmark. Pass an explicit --base naming a bookmark or commit, "
+            "for example --base main."
         )
         status, stdout, stderr = self.invoke([
             "baseline", "--repo", str(self.repo),
         ])
         self.assertEqual((status, stdout), (2, ""))
-        self.assertIn("could not resolve revision 'trunk()'", stderr)
+        self.assertIn("could not resolve revision the default base", stderr)
         self.assertIn("empty root commit", stderr)
         self.assertIn("--revision main", stderr)
+        self.assertNotIn("--base", stderr)
         self.assertNotIn("Pass an explicit --base", stderr)
         self.assertNotIn("for example --base main", stderr)
         self.assertIn("no import was attempted", stderr)

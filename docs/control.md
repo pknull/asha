@@ -67,7 +67,9 @@ usage/refusal; and `130` interrupted.
 A goal is mandatory in every mode and is the only instruction authority.
 `--pr` and `--issue` provide source context, never a prompt. `--pr` conflicts
 with both `--issue` and `--base`. `--issue` may be paired with `--base`; without
-one it uses `trunk()`.
+one it uses the default base: jj's `trunk()` when the repository has a remote
+trunk, otherwise the local `main`, `master`, or `trunk` bookmark
+(`coalesce(trunk() ~ root(), present(main), present(master), present(trunk))`).
 
 ## Terminal TUI
 
@@ -86,7 +88,8 @@ and down arrow keys to move between tasks. The remaining keys are:
 | `?` | Toggle help for the keys, status evidence, and limitations. |
 
 The `n` form prompts for repository, base, harness, role, and goal. Its defaults
-are the current directory, `trunk()`, the configured default harness, and the
+are the current directory, an empty base (meaning the default base described
+above), the configured default harness, and the
 `implementer` role. It invokes the same controller validation as `asha task
 start` and always supplies `--detach`, so creation does not replace the TUI
 with the new task's session. Select the created task and press `Enter` to open
@@ -152,7 +155,8 @@ base resolution; the import is reported in `source_mutations` as a
 
 1. `--pr N` uses the fetched immutable PR head.
 2. `--base REVSET` must resolve to exactly one full commit ID.
-3. `--issue N` or ad-hoc work without `--base` resolves `trunk()`.
+3. `--issue N` or ad-hoc work without `--base` resolves the default base
+   (remote `trunk()`, else the local `main`/`master`/`trunk` bookmark).
 4. Missing, ambiguous, or invalid commits refuse creation.
 
 The task record stores both the human request (`PR #N head` or the literal
@@ -334,8 +338,8 @@ The fetch never checks out a tree. The pre-mutation Git `HEAD`/jj `@-` guard is
 what makes the following import safe and keeps Git `HEAD`, staged content, and
 source `@` untouched; Control refuses and asks the operator to run `jj status`
 when those positions diverge. Issue mode performs its bounded `gh issue view`
-read and the common reported import, then resolves the explicit base or
-`trunk()`; it does not fetch.
+read and the common reported import, then resolves the explicit base or the
+default base; it does not fetch.
 
 Control has no GitHub write route. It does not comment, edit, label, close,
 review, merge, create a PR, or push. Subprocesses are argv-only, shell-free,

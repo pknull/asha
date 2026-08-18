@@ -20,7 +20,7 @@ from unittest import mock
 from lib.control.config import load_config
 from lib.control.context import ContextError, provision_context
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
-from lib.control.jj import JjAdapter, JjError, WorkspaceIdentity
+from lib.control.jj import DEFAULT_BASE_REVSET, JjAdapter, JjError, WorkspaceIdentity
 from lib.control.launch import recover_task
 from lib.control.prepare import derive_repository_identity
 from lib.control.prepare import (
@@ -446,6 +446,31 @@ class RealJjPreparationTests(unittest.TestCase):
             adapter.resolve_base(self.source, "trunk()")
         with self.assertRaisesRegex(JjError, "ambiguous base commit ID"):
             adapter.resolve_base(self.source, "all()")
+
+    def test_default_base_falls_back_to_the_local_main_bookmark(self) -> None:
+        """A local-only colocated repository has no remote trunk(); the default
+        base must resolve to its local main/master/trunk bookmark instead."""
+        adapter = JjAdapter()
+        branch = subprocess.run(
+            ["git", "-C", str(self.source), "symbolic-ref", "--short", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        head = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        if branch not in {"main", "master", "trunk"}:
+            self.jj("bookmark", "create", "main", "-r", head)
+        self.assertEqual(adapter.resolve_base(self.source, DEFAULT_BASE_REVSET), head)
+        # With no such bookmark at all, the default names the remedy exactly.
+        for name in ("main", "master", "trunk"):
+            subprocess.run(
+                ["jj", "-R", str(self.source), "--ignore-working-copy",
+                 "bookmark", "delete", name],
+                check=False, capture_output=True,
+            )
+        with self.assertRaisesRegex(JjError, "the default base resolved to the empty root commit"):
+            adapter.resolve_base(self.source, DEFAULT_BASE_REVSET)
 
     def source_facts(self) -> dict:
         working_copy = {}

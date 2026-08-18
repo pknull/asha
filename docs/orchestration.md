@@ -45,7 +45,8 @@ asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
 
 Use `asha initiative baseline --repo PATH [--revision REVSET]` to obtain the
 exact immutable scope origin for an `approved-baseline` node. The revision
-defaults to `trunk()`. The command preflights the canonical repository, applies
+defaults to Control's default base (remote `trunk()`, else the local `main`,
+`master`, or `trunk` bookmark). The command preflights the canonical repository, applies
 Control task start's colocated Git HEAD/jj `@-` synchronization guard, resolves
 the revision from jj's current read-only view, and computes its immutable tree.
 It never imports Git refs or otherwise mutates the repository. If Git knows a

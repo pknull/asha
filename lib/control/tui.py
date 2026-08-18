@@ -586,7 +586,8 @@ def _start_form(
     if repo is None:
         return "task start cancelled"
     base = _prompt_line(
-        stdscr, curses_module, model, "Base: ", initial="trunk()", maximum=500,
+        stdscr, curses_module, model, "Base (empty = default trunk/main): ",
+        initial="", maximum=500,
     )
     if base is None:
         return "task start cancelled"
@@ -607,10 +608,12 @@ def _start_form(
     )
     if goal is None:
         return "task start cancelled"
-    arguments = [
-        "--repo", repo, "--base", base, "--harness", harness,
-        "--role", role, "--goal", goal, "--detach",
-    ]
+    arguments = ["--repo", repo]
+    if base.strip():
+        arguments.extend(["--base", base.strip()])
+    arguments.extend([
+        "--harness", harness, "--role", role, "--goal", goal, "--detach",
+    ])
     output = io.StringIO()
     curses_module.endwin()
     try:

@@ -18,7 +18,7 @@ from typing import Any, Callable
 from .config import ControlConfig, validate_workspace_root
 from .context import DIRECTORY_MODES, build_context_plan, provision_context, read_published_snapshot
 from .jj import (
-    JjAdapter, JjError, MAX_MATERIALIZATION_ENTRIES,
+    DEFAULT_BASE_REVSET, JjAdapter, JjError, MAX_MATERIALIZATION_ENTRIES,
     MAX_TRACKED_BLOB_BYTES, MAX_TRACKED_TOTAL_BYTES,
 )
 from .model import (
@@ -69,7 +69,7 @@ class PreparationError(ValueError):
 @dataclass(frozen=True)
 class PrepareRequest:
     repository: Path
-    requested_base: str = "trunk()"
+    requested_base: str = DEFAULT_BASE_REVSET
     task_id: str = ""
     slug: str = ""
     label: str = ""
