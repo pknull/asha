@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from ..context import read_published_snapshot
-from ..jj import JjAdapter, JjError, colocated_sync_remediation
+from ..jj import DEFAULT_BASE_REVSET, JjAdapter, JjError, colocated_sync_remediation
 from ..prepare import derive_repository_identity
 from ..store import StoreError
 from .actions import (
@@ -262,7 +262,7 @@ def _baseline(
     options = _parse_options(args, flags={"json"})
     _only(options, {"repo", "revision", "json"}, "baseline")
     _required(options, "repo")
-    revision = "trunk()" if options.get("revision") is None else options["revision"]
+    revision = DEFAULT_BASE_REVSET if options.get("revision") is None else options["revision"]
     root = Path(options["repo"]).expanduser().resolve()
     facts = jj.preflight(root)
     _guard_colocated_sync(jj, facts.root, facts.git_root)
@@ -272,9 +272,13 @@ def _baseline(
         detail = str(exc).replace(
             "Pass an explicit --base, for example --base main, or add a remote.",
             "Pass an explicit --revision, for example --revision main, or add a remote.",
+        ).replace(
+            "Pass an explicit --base naming a bookmark or commit, for example --base main.",
+            "Pass an explicit --revision naming a bookmark or commit, for example --revision main.",
         )
+        shown = "the default base" if revision == DEFAULT_BASE_REVSET else repr(revision)
         raise JjError(
-            f"could not resolve revision {revision!r} from jj's read-only "
+            f"could not resolve revision {shown} from jj's read-only "
             f"repository view: {detail}; no import was attempted. If Git knows "
             f"the revision or bookmark but jj does not, run `jj status` in "
             f"{facts.root} to import it, then retry"

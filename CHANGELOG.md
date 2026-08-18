@@ -12,6 +12,15 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Control: default base works in local-only repositories
+
+- `asha task start` without `--base`, the TUI `n` form with an empty base,
+  and `asha initiative baseline` without `--revision` now use
+  `coalesce(trunk() ~ root(), present(main), present(master), present(trunk))`:
+  jj's remote `trunk()` when the repository has one, otherwise the local
+  `main`/`master`/`trunk` bookmark. A repository with neither is refused
+  with the remedy (`--base main`). Explicit bases are used verbatim.
+
 #### Control: `asha task prune`
 
 - Added `asha task prune (<selector>... | --all) [--keep-workspace] [--dry-run]

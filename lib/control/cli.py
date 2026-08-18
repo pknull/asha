@@ -23,7 +23,7 @@ from .events import (
     read_snapshot,
     write_snapshot,
 )
-from .jj import JjAdapter, RepositoryFacts, colocated_sync_remediation
+from .jj import DEFAULT_BASE_REVSET, JjAdapter, RepositoryFacts, colocated_sync_remediation
 from .launch import (
     LaunchError, archive_task, launch_task, recover_task, stop_task,
     unarchive_task,
@@ -288,7 +288,7 @@ def _repo_argument(value: str | None, config, jj: JjAdapter) -> Path:
 
 def _parse_start(args: list[str]) -> dict[str, Any]:
     values: dict[str, Any] = {
-        "repo": None, "base": "trunk()", "harness": None, "role": "implementer",
+        "repo": None, "base": DEFAULT_BASE_REVSET, "harness": None, "role": "implementer",
         "goal": None, "pr": None, "issue": None, "task_id": None,
         "detach": False, "json": False,
     }

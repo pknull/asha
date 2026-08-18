@@ -33,7 +33,7 @@ from lib.control.harness import (
     stop_signal_allowed,
     verify_process,
 )
-from lib.control.jj import JjAdapter, RepositoryFacts, WorkspaceIdentity
+from lib.control.jj import DEFAULT_BASE_REVSET, JjAdapter, RepositoryFacts, WorkspaceIdentity
 from lib.control.launch import (
     LaunchError, archive_task, launch_task, recover_task, stop_task,
     unarchive_task,
@@ -1269,7 +1269,7 @@ class Increment3CliGrammarTests(unittest.TestCase):
         self.assertEqual(
             payload["attach"], "tmux attach-session -t asha-do-work-12345678",
         )
-        self.assertEqual(captured["request"].requested_base, "trunk()")
+        self.assertEqual(captured["request"].requested_base, DEFAULT_BASE_REVSET)
         self.assertEqual(captured["launch"]["harness"], "claude")
 
         captured.clear()

@@ -15,7 +15,7 @@ from unittest import mock
 from lib.control.cli import _parse_start, main as control_main
 from lib.control.config import load_config
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
-from lib.control.jj import JjAdapter
+from lib.control.jj import DEFAULT_BASE_REVSET, JjAdapter
 from lib.control.launch import launch_task
 from lib.control.prepare import PrepareRequest, prepare_task_workspace
 from lib.control.events import read_snapshot
@@ -504,7 +504,7 @@ class RealGithubSourceTests(unittest.TestCase):
         assert task is not None
         self.assertEqual(before, self.source_positions())
         self.assertEqual(task["source"]["kind"], "issue")
-        self.assertEqual(task["jj"]["requested_base"], "trunk()")
+        self.assertEqual(task["jj"]["requested_base"], DEFAULT_BASE_REVSET)
         self.assertEqual(task["jj"]["base_commit_id"], self.base_commit)
         self.assertEqual(set(task["source"]), {"kind", "number", "url"})
         self.assertNotIn("Issue context", json.dumps(task))

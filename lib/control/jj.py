@@ -36,6 +36,20 @@ PRIVATE_CONTEXT_PROBES = (
 )
 
 
+# jj's built-in `trunk()` considers only REMOTE bookmarks, so in a repository
+# without a remote it resolves to the empty root commit. Control's default base
+# therefore falls back to the local main/master/trunk bookmark; an explicit
+# --base is always used verbatim.
+DEFAULT_BASE_REVSET = (
+    "coalesce(trunk() ~ root(), present(main), present(master), present(trunk))"
+)
+_DEFAULT_BASE_UNRESOLVED = (
+    "the default base resolved to the empty root commit; this repository has "
+    "neither a remote trunk nor a local main, master, or trunk bookmark. Pass "
+    "an explicit --base naming a bookmark or commit, for example --base main."
+)
+
+
 class JjError(ValueError):
     """A jj precondition, invocation, or identity check failed."""
 
@@ -244,6 +258,8 @@ class JjAdapter:
             "-R", str(source), "--ignore-working-copy", "log", "-r", revset,
             "--no-graph", "-T", 'commit_id ++ "\\n"',
         ])
+        if revset == DEFAULT_BASE_REVSET and not output.strip():
+            raise JjError(_DEFAULT_BASE_UNRESOLVED)
         resolved = self._one_line(output, "base commit ID", _COMMIT_ID)
         # jj's default `trunk()` looks for a REMOTE bookmark, so in a repository
         # with no remote it resolves to the all-zero root commit. That commit has
@@ -252,6 +268,8 @@ class JjAdapter:
         # refusing an ambiguous or missing base outright, so refuse it here with
         # the remedy attached.
         if set(resolved) == {"0"}:
+            if revset == DEFAULT_BASE_REVSET:
+                raise JjError(_DEFAULT_BASE_UNRESOLVED)
             raise JjError(
                 f"base revset {revset!r} resolved to the empty root commit; "
                 "this repository has no usable trunk (jj's default trunk() needs "
