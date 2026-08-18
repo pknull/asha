@@ -14,6 +14,8 @@ the active instruction surface loses no release detail.
 
 #### Orchestration Core complete: Increments 1-3
 
+- Added the read-only `asha initiative baseline` authoring helper and
+  plan-time visible-commit/tree-digest validation for approved baselines.
 - Added ordered exact-seal composition, independent mutation-free review,
   controller-owned approved-argv verification in fresh retained
   materializations, exact-seal candidate bundles, readiness/finalization, and

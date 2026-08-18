@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-from lib.control.jj import RepositoryFacts
+from lib.control.jj import ImmutableTree, RepositoryFacts
 from lib.control.orchestration.cli import _approve, _create, _plan
 from lib.control.orchestration.config import load_config
 from lib.control.orchestration.model import record_digest
@@ -56,6 +56,9 @@ class ExecutionFixture:
         jj.preflight.return_value = RepositoryFacts(
             root=self.repo, git_root=self.repo / ".git"
         )
+        jj.immutable_tree.return_value = ImmutableTree(
+            commit_id="b" * 40, digest="c" * 64, entries=(),
+        )
         initiative = _create([
             "--repo", str(self.repo), "--slug", "execution-test",
             "--label", "Execution test", "--objective", "Execute one node.",
@@ -71,7 +74,7 @@ class ExecutionFixture:
         plan_file.write_text(json.dumps(plan_value))
         plan, _ = _plan(
             [initiative["initiative_id"], "--file", str(plan_file)],
-            self.store, self.config,
+            self.store, self.config, jj=jj,
         )
         approved, _ = _approve(
             [initiative["initiative_id"], "--digest", plan["digest"]], self.store,

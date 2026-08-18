@@ -10,6 +10,7 @@ materialization seam owns fresh controller verification workspaces.
 ## Commands
 
 ```text
+asha initiative baseline --repo PATH [--revision REVSET] [--json]
 asha initiative create --repo PATH --slug SLUG --label TEXT --objective TEXT
   [--acceptance TEXT]... [--max-parallel N] [--max-total-tasks N]
   [--max-attempts-per-node N] [--max-repair-cycles N] [--deadline RFC3339]
@@ -39,6 +40,29 @@ asha task report --file PATH [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
 ```
+
+## Plan authoring and baseline identity
+
+Use `asha initiative baseline --repo PATH [--revision REVSET]` to obtain the
+exact immutable scope origin for an `approved-baseline` node. The revision
+defaults to `trunk()`. The command preflights the canonical repository, applies
+Control task start's colocated Git HEAD/jj `@-` synchronization guard, resolves
+the revision from jj's current read-only view, and computes its immutable tree.
+It never imports Git refs or otherwise mutates the repository. If Git knows a
+bookmark that jj cannot yet see, the refusal points to `jj status` rather than
+importing it. Human output is the commit and tree digest on two labelled lines;
+`--json` returns the closed `asha.orchestration-baseline.v1` contract.
+
+When `asha initiative plan ID --file PLAN.json` validates a proposed plan, it
+checks every mutating `work` or `compose` node with base policy
+`approved-baseline` before writing the plan, nodes, initiative state, or event.
+The node's `scope_origin.jj_commit_id` must already be visible in the initiative
+repository, and that commit's immutable tree digest must equal
+`scope_origin.tree_digest`. An invisible commit or digest disagreement names
+the node and prints the exact
+`asha initiative baseline --repo <root> --revision <commit>` command needed to
+regenerate the authoring values. This check is read-only; it does not import
+refs.
 
 `activate` performs the runtime handshake before changing `approved` to
 `running`: Orchestration doctor and Control doctor must pass, Control's
@@ -381,6 +405,7 @@ except the explicitly conditional `skipped` member on the list payload.
 
 | Command | Exact payload |
 |---|---|
+| `baseline` | `asha.orchestration-baseline.v1` `{contract, repository: {root, control_repository_id}, jj_commit_id, tree_digest, entry_count}` |
 | `create` | `asha.orchestration-initiative-create.v1` `{contract, initiative}` |
 | `plan`, `plan --show` | stored `asha.orchestration-plan.v1` record |
 | `approve` | `asha.orchestration-plan-approval.v1` `{contract, initiative, plan, approval}` |
