@@ -33,6 +33,13 @@ that contradicts those rules.
 
 Amendment (2026-08-17): `asha task start --task-id UUID` adds locked, idempotent create-by-ID without extending `asha.control-task.v1`.
 
+Amendment (2026-08-18): `asha task prune` delivers the deferred removal design
+for archived tasks only: owned dead tmux session kill, `jj workspace forget`
+through the source repository, and descriptor-anchored removal of the
+journaled workspace root behind ownership, path, live-pane, and orchestration
+binding checks, with batch confirmation or `--yes`. Records, digests, and jj
+changes stay untouched; see `docs/control.md`.
+
 ## Problem
 
 Asha can launch a harness and coordinate work inside one process, but it does

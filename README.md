@@ -108,6 +108,7 @@ from `asha control` or the non-interactive `asha task` commands.
 | `asha task stop` | Signal the verified run process without deleting its session, workspace, or change. |
 | `asha task archive` | Hide a task after every reconciled run exits while preserving all task data; archive is reversible (`asha task unarchive`). |
 | `asha task recover` | Recover an interrupted creation transaction from its durable journal. |
+| `asha task prune` | Reclaim what archived tasks leave behind: kill the dead owned tmux session, forget and remove the journaled jj workspace; records and jj changes stay. Confirms once per batch, or `--yes`; `--dry-run` previews. |
 | `asha task doctor` | Report local prerequisites and optional capability limits. |
 | `asha control` | Open the terminal Control TUI. |
 | `asha control tmux` | Print the optional tmux-format integration snippet; it never edits `.tmux.conf`. |

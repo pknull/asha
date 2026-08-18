@@ -38,6 +38,8 @@ asha task stop <task-id|exact-slug> [--terminate]
 asha task archive <task-id|exact-slug>
 asha task unarchive <task-id|exact-slug>
 asha task recover <task-id|exact-slug>
+asha task prune (<task-id|exact-slug>... | --all) [--keep-workspace]
+                [--dry-run] [--yes] [--json]
 asha task reconcile [task-id|exact-slug] [--json]
 asha task doctor [--json]
 
@@ -203,6 +205,7 @@ Defaults follow XDG paths:
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.json
 ${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.lock
+${XDG_STATE_HOME:-~/.local/state}/asha/control/prunes/<task-id>.json
 ${XDG_DATA_HOME:-~/.local/share}/asha/workspaces/<repo-key>/<task-slug>/
 ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/
 ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/events/<run-id>.json
@@ -359,21 +362,78 @@ session or harness, and receives no task context marker. Success returns only
 Failure preserves the journal and any ambiguous materialization for inspection.
 There is no materialization deletion route.
 
-Control has no workspace deletion command. Archive requires an ended task or a
-running task whose reconciled runs are all terminal (`exited` or `failed`) and
-unblocked. At that terminal edge Control persists the reconciled run state and
-bounded evidence, then changes only the task's registry lifecycle. Archive is
-reversible with `asha task unarchive <selector>`; the jj workspace, change,
-ignored files, tmux history, and source repository remain. Stop verifies task,
-pane, process start identity, and tmux ancestry, then sends `SIGINT` or explicit
-`SIGTERM` to that process only. It does not kill the tmux session, archive the
-task, or touch jj.
+Archive requires an ended task or a running task whose reconciled runs are all
+terminal (`exited` or `failed`) and unblocked. At that terminal edge Control
+persists the reconciled run state and bounded evidence, then changes only the
+task's registry lifecycle. Archive is reversible with
+`asha task unarchive <selector>`; the jj workspace, change, ignored files, tmux
+history, and source repository remain. Stop verifies task, pane, process start
+identity, and tmux ancestry, then sends `SIGINT` or explicit `SIGTERM` to that
+process only. It does not kill the tmux session, archive the task, or touch jj.
+
+### Pruning archived tasks
+
+Archive preserves everything, so `asha task prune` is the only route that
+reclaims what an archived task leaves behind: its dead tmux session, its jj
+workspace registration, and its workspace directory. The task record is not
+modified and stays archived; described or non-empty jj changes remain in the
+source repository (jj discards only an empty, undescribed working-copy commit
+when the workspace is forgotten). Prune changes no stored task fact; after
+it, `asha task show` reports the same record with live jj evidence `missing`.
+
+Prune is per task or `--all` (every archived task), and it is idempotent:
+each pass re-derives everything from live state, so an interrupted pass is
+finished by running it again. Per task, in order:
+
+1. Only an `archived` task is eligible; anything else is refused unchanged.
+2. The tmux session is killed only when it exists, carries this task's
+   `@asha_managed`/`@asha_task_id` options, and every pane in it is dead. A
+   live pane refuses the whole task (unarchive and stop it first). A session
+   with foreign ownership is left alone and reported.
+3. Unless `--keep-workspace`: the workspace is removed only when the creation
+   journal owns its root inode (device, inode, owner), the workspace's own
+   `.asha/control-task.json` marker names this task, no other task record
+   whose own root was not already reclaimed claims the same path, the path
+   lies below `control.workspace_root` without
+   symlink components, the source repository is readable, and no orchestration
+   attempt bound to the task (by link or by reserved task id) is still
+   non-terminal (an `indeterminate` or `result-missing` attempt may still be
+   sealed from that workspace). All of that is verified before prune runs
+   `jj workspace forget` through the source repository and then removes the
+   tree by descriptor-anchored, non-following deletion that refuses foreign
+   ownership, device crossings, loops, and mount points. Refusals keep the
+   workspace and name the reason.
+
+Removal is journaled in
+`${XDG_STATE_HOME}/asha/control/prunes/<task-id>.json`
+(`asha.control-prune-record.v1`): intent before the first unlink, completion
+after the root is gone. A later pass treats a completed path as absent for
+the pruned task even when a successor task with the same slug reuses the
+directory and its inode number; the marker and registry checks refuse the
+successor independently of that record, and a directory whose marker names
+the successor is reported as that task's, not as residue. A removal that
+stops midway (for example on a read-only subdirectory) leaves the partial
+tree in place and reports the reason; fix the cause and run prune again, and
+the recorded intent lets that pass finish even though `.asha` may already be
+gone.
+
+Because removal is destructive to ignored files inside the workspace (results,
+build output, notes), an interactive prune confirms once for the whole batch;
+non-interactive and `--json` callers must pass `--yes`, `--dry-run`, or
+`--keep-workspace`.
+`--dry-run` reports every planned action without touching tmux, jj, or disk.
+`--json` emits `asha.control-task-prune.v1`. Exit `2` when any selected task
+was refused or only partially pruned, `0` otherwise. `asha task doctor` reports
+how many archived tasks still hold a session or workspace in its `prunable`
+probe; that is information, never a failed check.
 
 Before a harness process may have started, transaction rollback removes only
 artifacts whose exact ownership was journaled and reverified. After launch is
 possible, every failure path preserves the workspace and records recovery
-facts. Control never substitutes raw recursive deletion, destructive Git, or
-unreviewed jj abandonment for a removal design.
+facts. Outside `asha task prune`, Control never substitutes raw recursive
+deletion, destructive Git, or unreviewed jj abandonment for a removal design;
+prune itself removes only a journaled workspace root through the ownership
+checks above.
 
 ### Interrupted creation
 

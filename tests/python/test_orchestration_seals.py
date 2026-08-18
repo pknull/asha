@@ -10,7 +10,8 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from lib.control.jj import ImmutableTree, WorkspaceIdentity
+from lib.control.jj import ImmutableTree, JjError, WorkspaceIdentity
+from lib.control.prune import PruneRecordStore
 from lib.control.cli import main as control_main
 from lib.control.store import StoreError
 from lib.control.orchestration.actions import build_action_document, submit_action
@@ -434,6 +435,44 @@ class OrchestrationSealTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(second, [])
         self.assertEqual(self.initiative()["state"], "paused")
         self.assertEqual(seal_path.read_bytes(), before)
+
+    def test_pruned_archived_workspace_is_not_seal_drift(self) -> None:
+        self._accept("completed")
+        adapter = SealJj(
+            self.task, self.origin_digest,
+            (_entry("lib/control/orchestration/change.py", "x"),),
+        )
+        seal = self.seal(adapter.entries, jj=adapter)
+        pruned = copy.deepcopy(self.task)
+        pruned["lifecycle"] = "archived"
+        pruned["jj"]["workspace_path"] = str(self.root / "reclaimed" / "gone")
+        control = mock.Mock()
+        control.peek.return_value = pruned
+        adapter.current_commit = "e" * 40  # would count as drift if inspected
+        PruneRecordStore(self.config.control).write(
+            pruned["task_id"], {"workspace_removed": True},
+        )
+        findings = reconcile_seal_drift(
+            self.store, self.initiative_id, control_store=control, jj=adapter,
+        )
+        self.assertEqual(findings, [])
+        self.assertEqual(self.initiative()["state"], "running")
+        self.assertFalse(any(
+            event["type"] == "seal-drift-detected"
+            and seal["seal_id"] in event["subject_ids"]
+            for event in self.store.list_events_snapshot(self.initiative_id)
+        ))
+        # An archived task whose directory is gone WITHOUT a prune record
+        # (moved aside, deleted by hand) is still drift.
+        PruneRecordStore(self.config.control).path(pruned["task_id"]).unlink()
+        with mock.patch.object(
+            adapter, "inspect_workspace", side_effect=JjError("workspace missing"),
+        ):
+            findings = reconcile_seal_drift(
+                self.store, self.initiative_id, control_store=control, jj=adapter,
+            )
+        self.assertEqual(len(findings), 1)
+        self.assertIn("unavailable", findings[0]["reason"])
 
     def test_control_task_seal_cli_inspects_by_task_and_attempt(self) -> None:
         self._accept("completed")

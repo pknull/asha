@@ -530,6 +530,13 @@ be finalized with outcome `failed`; a `partial` request is refused.
 `archive` changes a terminal outcome to `archived` and records a retained
 inventory without deleting records, evidence, tasks, or workspaces.
 `unarchive` restores the terminal outcome recorded by the latest archive event.
+Reclaiming worker and review workspaces is Control's job: once their attempts
+are terminal, archive the Control tasks and run `asha task prune` (see
+`docs/control.md`); prune refuses any workspace still bound to a non-terminal
+attempt, and seals, repair, salvage, and verification never read a pruned
+workspace because they work from the exact seal commit and fresh
+materializations. The seal-drift reconciler treats an archived task whose
+workspace directory is gone as reclaimed, not as drift.
 
 ## Increment 3 state-transition amendments
 

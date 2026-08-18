@@ -544,6 +544,37 @@ class TmuxAdapter:
             "attach-session", "-t", session,
         ]
 
+    def session_names(self) -> list[str]:
+        """Names of every session on this server; empty when no server runs."""
+        returncode, stdout, stderr = self._run_status(
+            ["list-sessions", "-F", "#{session_name}"],
+        )
+        if returncode != 0:
+            diagnostic = stderr.decode("utf-8", errors="replace").casefold()
+            if ("no server running" in diagnostic or "no sessions" in diagnostic
+                    or "error connecting to" in diagnostic
+                    or "failed to connect to server" in diagnostic):
+                return []
+            self._raise_failure(returncode, stderr)
+        names: list[str] = []
+        for line in stdout.decode("utf-8", errors="replace").splitlines():
+            if line:
+                names.append(line)
+        return names
+
+    def session_pane_states(self, name: str) -> list[bool]:
+        """Dead flags for every pane in a session, across all its windows."""
+        session = _validate_session_name(name)
+        output = self._run(["list-panes", "-s", "-t", session, "-F", "#{pane_dead}"])
+        states: list[bool] = []
+        for line in output.splitlines():
+            if line not in {"0", "1"}:
+                raise TmuxError("tmux returned invalid pane dead state")
+            states.append(line == "1")
+        if not states:
+            raise TmuxError("tmux returned no panes for the session")
+        return states
+
     def kill_session(self, name: str) -> None:
         """Kill a session; callers are required to verify ownership first."""
         session = _validate_session_name(name)

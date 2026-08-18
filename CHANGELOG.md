@@ -12,6 +12,25 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Control: `asha task prune`
+
+- Added `asha task prune (<selector>... | --all) [--keep-workspace] [--dry-run]
+  [--yes] [--json]`, the only route that reclaims what an archived task leaves
+  behind: it kills the dead, owned tmux session, runs `jj workspace forget`
+  through the source repository, and removes the journaled workspace root by
+  descriptor-anchored non-following deletion; the archived record, its digest,
+  and the jj change are untouched. Workspaces bound to a non-terminal
+  orchestration attempt (linked or reserved), without a journaled root inode,
+  whose own marker names another task, claimed by another live task record,
+  outside `control.workspace_root`, or with a live pane are refused with the
+  reason. Removal is journaled (`asha.control-prune-record.v1`, intent then
+  completion) so an interrupted pass finishes on re-run and a same-slug
+  successor reusing the directory inode is never mistaken for the pruned task.
+- Added the `prunable` doctor probe (informational), `asha.control-task-prune.v1`,
+  and `TmuxAdapter.session_names`/`session_pane_states`.
+- The orchestration seal-drift reconciler treats a pruned archived workspace
+  (prune record present) as reclaimed rather than as drift.
+
 #### Orchestration Core complete: Increments 1-3
 
 - Added the read-only `asha initiative baseline` authoring helper and
