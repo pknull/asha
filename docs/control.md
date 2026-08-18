@@ -168,6 +168,16 @@ creating one new empty working-copy change on the base. Source reads use
 
 Control records the new change and working commit IDs. It does not create or
 move a bookmark, integrate the change, push it, or remove the workspace.
+
+Into the fresh workspace Control then provisions its bounded private context:
+`.asha/config.json` and `.asha/control-task.json` (the task marker) plus the
+source's published `Memory/activeContext.md` and `Memory/decisions.md`, under
+`.asha/`, `Memory/`, and `Work/session-state/`. A repository that commits some
+of those paths keeps them exactly as checked out from the base: an existing
+tracked directory is reused and an existing tracked file is left alone, so the
+change stays empty. Only the task marker itself, a symlink, or a non-regular
+entry at one of those paths is a collision, and the source must ignore whatever
+Control does create there or the workspace identity check refuses the task.
 Explicit diff refresh may snapshot the task workspace; background list and
 reconciliation reads do not.
 

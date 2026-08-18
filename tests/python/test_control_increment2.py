@@ -156,6 +156,49 @@ class ContextProvisionTests(unittest.TestCase):
         })
         self.assertTrue(all(set(item) == {"sha256", "mode"} for item in facts.values()))
 
+    def test_tracked_context_paths_are_reused_never_overwritten(self) -> None:
+        # A repository that commits .asha/workspace.json and Memory/*.md hands
+        # Control a fresh workspace that already carries those entries.
+        (self.destination / ".asha").mkdir(mode=0o775)
+        (self.destination / ".asha" / "workspace.json").write_text("{}\n")
+        (self.destination / "Memory").mkdir(mode=0o775)
+        tracked_active = b"# Objective\n\ncommitted\n"
+        (self.destination / "Memory" / "activeContext.md").write_bytes(tracked_active)
+        created: list[str] = []
+        provision_context(
+            self.source, self.destination, self.marker(),
+            after_entry=lambda relative, _fact: created.append(relative),
+        )
+        # Tracked entries untouched; only the missing private files created.
+        self.assertEqual((self.destination / "Memory" / "activeContext.md").read_bytes(), tracked_active)
+        self.assertEqual((self.destination / ".asha" / "workspace.json").read_text(), "{}\n")
+        self.assertEqual(stat.S_IMODE((self.destination / ".asha").stat().st_mode), 0o775)
+        self.assertTrue((self.destination / ".asha" / "control-task.json").exists())
+        self.assertTrue((self.destination / ".asha" / "config.json").exists())
+        self.assertTrue((self.destination / "Memory" / "decisions.md").exists())
+        self.assertNotIn(".asha", created)
+        self.assertNotIn("Memory", created)
+        self.assertNotIn("Memory/activeContext.md", created)
+        self.assertIn(".asha/control-task.json", created)
+        self.assertIn(".asha/config.json", created)
+        self.assertIn("Memory/decisions.md", created)
+
+    def test_marker_symlink_and_non_directory_paths_still_collide(self) -> None:
+        (self.destination / ".asha").mkdir(mode=0o700)
+        (self.destination / ".asha" / "control-task.json").write_text("{}\n")
+        with self.assertRaisesRegex(ContextError, "collision: .asha/control-task.json"):
+            provision_context(self.source, self.destination, self.marker())
+        (self.destination / ".asha" / "control-task.json").unlink()
+        (self.destination / ".asha").rmdir()
+        (self.destination / ".asha").write_text("not a directory\n")
+        with self.assertRaisesRegex(ContextError, "collision: .asha"):
+            provision_context(self.source, self.destination, self.marker())
+        (self.destination / ".asha").unlink()
+        (self.destination / "Memory").mkdir(mode=0o700)
+        os.symlink("/etc/hostname", self.destination / "Memory" / "decisions.md")
+        with self.assertRaisesRegex(ContextError, "collision: Memory/decisions.md"):
+            provision_context(self.source, self.destination, self.marker())
+
     def test_pending_publication_recovery_fails_without_source_write(self) -> None:
         journal = self.source / "Work" / "session-state" / ".memory-publication-transaction.json"
         journal.write_text("{}", encoding="utf-8")
@@ -531,6 +574,62 @@ class RealJjPreparationTests(unittest.TestCase):
             current = current.parent
         self.config.workspace_root.mkdir(mode=mode)
         self.config.workspace_root.chmod(mode)
+
+    def test_repository_that_tracks_context_paths_still_prepares(self) -> None:
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        (self.source / ".gitignore").write_text(
+            "/.asha/*\n!/.asha/workspace.json\n/Memory/*\n!/Memory/activeContext.md\n"
+            "/Work/\n*.ignored\n", encoding="utf-8",
+        )
+        (self.source / ".asha" / "workspace.json").write_text('{"tracked": true}\n')
+        committed_active = "# Objective\n\ncommitted\n\n# State\n\nS\n\n# Next\n\n- N\n\n# Blockers\n\n- None.\n"
+        (self.source / "Memory" / "activeContext.md").write_text(committed_active)
+        subprocess.run(
+            ["git", "-C", str(self.source), "add", ".gitignore", ".asha/workspace.json",
+             "Memory/activeContext.md"], check=True, env=env,
+        )
+        subprocess.run(["git", "-C", str(self.source), "commit", "-qm", "track context"], check=True, env=env)
+        subprocess.run(["jj", "-R", str(self.source), "status"], check=True, capture_output=True)
+        # The live source Memory now differs from the committed copy.
+        (self.source / "Memory" / "activeContext.md").write_text(
+            committed_active.replace("committed", "uncommitted edit")
+        )
+        request = self.request("tracked-context")
+        result = prepare_task_workspace(self.config, request)
+        workspace = Path(result["jj"]["workspace_path"])
+        self.assertEqual((workspace / ".asha" / "workspace.json").read_text(), '{"tracked": true}\n')
+        self.assertEqual((workspace / "Memory" / "activeContext.md").read_text(), committed_active)
+        self.assertTrue((workspace / ".asha" / "control-task.json").exists())
+        self.assertTrue((workspace / ".asha" / "config.json").exists())
+        self.assertTrue((workspace / "Memory" / "decisions.md").exists())
+        status = subprocess.run(
+            ["jj", "-R", str(workspace), "diff", "--summary"],
+            check=True, capture_output=True, text=True,
+        ).stdout
+        self.assertEqual(status.strip(), "", status)
+        head_before = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        rollback_prelaunch(self.config, request.task_id)
+        self.assertFalse(workspace.exists())
+        # Rollback abandons Control's own empty described commit and leaves
+        # the Git checkout alone.
+        described = subprocess.run(
+            ["jj", "-R", str(self.source), "--ignore-working-copy", "log", "-r",
+             result["jj"]["change_id"], "--no-graph", "-T", "change_id"],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertNotEqual(described.returncode, 0, described.stdout)
+        head_after = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.assertEqual(head_before, head_after)
 
     def test_refusals_lead_with_the_cause_and_name_the_remedy(self) -> None:
         # Preflight refusal: cause first, framing last, no task state.

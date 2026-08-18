@@ -595,6 +595,9 @@ def _mark_preserved(
     _fail_task(tasks, journals, journal)
 
 
+_REMOVAL_JOURNAL_BATCH = 64
+
+
 def _remove_owned_tree(
     destination: Path, journal: dict[str, Any], journals: CreationJournalStore,
     failure_injector: Callable[[str], None] | None,
@@ -629,8 +632,44 @@ def _remove_owned_tree(
                 os.close(fd)
                 raise
 
-        # Infer only the contiguous crash gap immediately after a recorded
-        # removal intent. Missing later entries remain ambiguous.
+        # The journal records how far removal got. Entries after that mark
+        # that are already gone are counted as removed on resume (they were
+        # ours by manifest identity), so the durable save can be batched: one
+        # fsync'd journal write per _REMOVAL_JOURNAL_BATCH entries instead of
+        # per entry, which on a spinning disk turned a 450-entry rollback into
+        # minutes of silence.
+        pending = 0
+        dirty_parents: dict[str, None] = {}
+
+        def sync_parents() -> None:
+            # One fsync per touched directory per checkpoint instead of one per
+            # unlink; a non-durable unlink is harmless because resume re-verifies
+            # any surviving entry against the manifest before removing it.
+            for relative in list(dirty_parents):
+                fd = os.dup(root_fd)
+                try:
+                    try:
+                        for part in Path(relative).parts:
+                            child = os.open(part, _DIRECTORY_FLAGS, dir_fd=fd)
+                            os.close(fd)
+                            fd = child
+                    except FileNotFoundError:
+                        # Already removed itself (deepest-first order); its own
+                        # parent is dirty and will be synced.
+                        continue
+                    os.fsync(fd)
+                finally:
+                    os.close(fd)
+            dirty_parents.clear()
+
+        def checkpoint(force: bool = False) -> None:
+            nonlocal pending
+            journal["removal"]["entries_removed"] = removed
+            if pending and (force or pending >= _REMOVAL_JOURNAL_BATCH):
+                sync_parents()
+                journals.save(journal, expected_phase=journal["phase"])
+                pending = 0
+
         while removed < len(ordered):
             relative = ordered[removed]
             pfd, name = parent(relative)
@@ -639,24 +678,28 @@ def _remove_owned_tree(
                     os.stat(name, dir_fd=pfd, follow_symlinks=False)
                 except FileNotFoundError:
                     removed += 1
-                    journal["removal"]["entries_removed"] = removed
-                    journals.save(journal, expected_phase=journal["phase"])
+                    pending += 1
+                    checkpoint()
                     continue
                 actual = _file_fact_at(pfd, name, [0])
                 if actual != expected[relative]:
+                    checkpoint(force=True)
                     raise PreparationError(f"workspace entry changed at {relative}; preserved")
                 if actual["type"] == "directory":
                     os.rmdir(name, dir_fd=pfd)
                 else:
                     os.unlink(name, dir_fd=pfd)
-                os.fsync(pfd)
+                dirty_parents[str(Path(relative).parent)] = None
             finally:
                 os.close(pfd)
             if failure_injector is not None:
+                # Models a crash after the unlink and before any journal write:
+                # resume must count the missing entry by manifest identity.
                 failure_injector(f"removed:{relative}")
             removed += 1
-            journal["removal"]["entries_removed"] = removed
-            journals.save(journal, expected_phase=journal["phase"])
+            pending += 1
+            checkpoint()
+        checkpoint(force=True)
     finally:
         os.close(root_fd)
 
@@ -910,6 +953,15 @@ def _rollback_locked(
         if failure_injector is not None:
             failure_injector("after-forget")
         journal["jj"]["registration_state"] = "absent-after-forget"
+        change_id = journal["jj"].get("change_id")
+        if change_id is not None:
+            # Best effort: the empty described commit Control created for this
+            # workspace is Control's own; leaving it makes a dead head per
+            # failed start. A non-empty change is never touched.
+            try:
+                adapter.abandon_empty_change(source, change_id)
+            except (JjError, OSError, ValueError):
+                pass
     if journal["phase"] == "rollback-intent":
         _save_phase(journals, journal, "workspace-forgotten", failure_injector)
     if journal["phase"] == "workspace-forgotten":

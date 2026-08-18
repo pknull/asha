@@ -12,6 +12,20 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Control: repositories that track `.asha/` or `Memory/`; fast rollback
+
+- Workspace context provisioning reuses a tracked `.asha/` or `Memory/`
+  directory and leaves tracked `Memory/*.md` or `.asha/*.json` files exactly
+  as checked out (only the task marker, symlinks, and non-regular entries
+  collide), so repositories that commit those paths can start tasks.
+- Pre-launch rollback checkpoints its removal journal every 64 entries and
+  fsyncs touched directories per checkpoint instead of per unlink (a 450-entry
+  rollback on a spinning disk went from 312 s to 8 s), and abandons the empty
+  described working-copy commit it created so a failed start leaves no dead
+  head in the operator's `jj log`.
+- `asha task start` prints terminal-only progress lines around workspace
+  preparation and launch, so a long checkout is not silence.
+
 #### Control: refusals read cause-first and the TUI wraps them
 
 - Preparation refusals now lead with the cause and its remedy and end with
