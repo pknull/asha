@@ -544,6 +544,25 @@ class TmuxAdapter:
             "attach-session", "-t", session,
         ]
 
+    def pane_tail(self, pane_id: str, *, lines: int = 12) -> list[str]:
+        """Last non-empty visible lines of an owned pane (no scrollback).
+
+        Callers verify pane ownership first; this reads the screen only, never
+        writes to it, and bounds the result.
+        """
+        pane = _validate_pane_id(pane_id)
+        if not 1 <= lines <= 200:
+            raise ValueError("pane tail line count must be within 1-200")
+        output = self._run(["capture-pane", "-p", "-t", pane])
+        collected: list[str] = []
+        for raw in output.splitlines():
+            text = "".join(
+                character if character.isprintable() else "?" for character in raw
+            ).rstrip()
+            if text:
+                collected.append(text[:400])
+        return collected[-lines:]
+
     def session_names(self) -> list[str]:
         """Names of every session on this server; empty when no server runs."""
         returncode, stdout, stderr = self._run_status(
