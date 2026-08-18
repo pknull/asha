@@ -1392,6 +1392,31 @@ class Increment3CliGrammarTests(unittest.TestCase):
                 self.assertEqual((status, stdout), (2, ""))
                 self.assertIn("nothing to recover" if verb == "recover" else "archived", stderr)
 
+    def test_failed_rolled_back_task_can_be_archived_and_unarchived(self) -> None:
+        result = self.fake_result()
+        task = copy.deepcopy(result["task"])
+        task["lifecycle"] = "failed"
+        task["runs"] = []
+        store = TaskStore(load_config(self.env))
+        store.save(task)
+        status, stdout, stderr = self.invoke(["task", "archive", task["slug"]])
+        self.assertEqual((status, stderr), (0, ""), stderr)
+        self.assertIn("Archived task", stdout)
+        self.assertEqual(store.read(task["task_id"])["lifecycle"], "archived")
+        status, stdout, stderr = self.invoke(["task", "unarchive", task["slug"]])
+        self.assertEqual((status, stderr), (0, ""), stderr)
+        self.assertEqual(store.read(task["task_id"])["lifecycle"], "failed")
+        # A failed task that still records a preserved live run is refused.
+        live = copy.deepcopy(result["task"])
+        live["lifecycle"] = "failed"
+        live["runs"][-1]["state"] = "working"
+        live["task_id"] = str(uuid.uuid4())
+        live["slug"] = "failed-live"
+        store.save(live)
+        status, stdout, stderr = self.invoke(["task", "archive", live["slug"]])
+        self.assertEqual((status, stdout), (2, ""))
+        self.assertIn("preserved live run", stderr)
+
     def test_archive_then_unarchive_cli_each_prints_one_success_line(self) -> None:
         result = self.fake_result()
         TaskStore(load_config(self.env)).save(result["task"])

@@ -508,10 +508,16 @@ def archive_task(
         current = task_store.read(task_id)
         if current["lifecycle"] == "archived":
             raise LaunchError("task is already archived")
-        if current["lifecycle"] not in {"running", "ended"}:
+        if current["lifecycle"] not in {"running", "ended", "failed"}:
             raise LaunchError(
-                "only a running task whose runs have all exited, or an ended "
-                "task, can be archived"
+                "only a running task whose runs have all exited, an ended task, "
+                "or a failed task without a live run can be archived"
+            )
+        if current["lifecycle"] == "failed" and any(
+                run["state"] not in {"exited", "failed"} for run in current["runs"]):
+            raise LaunchError(
+                "failed task still records a preserved live run; recover or stop "
+                "it before archiving"
             )
         ended = current
         previous_digest = task_digest(current)
@@ -556,7 +562,8 @@ def unarchive_task(
         if current["lifecycle"] != "archived":
             raise LaunchError("only an archived task can be unarchived")
         changed = copy.deepcopy(current)
-        changed["lifecycle"] = "ended"
+        # A task archived without any run was a rolled-back creation.
+        changed["lifecycle"] = "failed" if not current["runs"] else "ended"
         changed["updated_at"] = _now()
         task_store.save(changed, expected_digest=task_digest(current))
         return changed

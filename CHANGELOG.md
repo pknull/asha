@@ -12,6 +12,13 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Control: failed creations can be archived
+
+- `asha task archive` accepts a `failed` task with no run or only terminal
+  runs (a rolled-back or recovered creation), so it leaves the working list;
+  `unarchive` restores `failed` for a task that never had a run. Contract
+  amendment recorded: `archived` admits an empty `runs` list; no key changed.
+
 #### Control: repositories that track `.asha/` or `Memory/`; fast rollback
 
 - Workspace context provisioning reuses a tracked `.asha/` or `Memory/`

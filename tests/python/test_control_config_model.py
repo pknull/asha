@@ -752,8 +752,10 @@ class ControlModelTests(unittest.TestCase):
         self.assertNotIn("archived", RUN_STATE_TRANSITIONS)
         self.assertEqual(RUN_STATE_TRANSITIONS["exited"], frozenset())
         self.assertEqual(RUN_STATE_TRANSITIONS["failed"], frozenset())
-        self.assertEqual(TASK_LIFECYCLE_TRANSITIONS["failed"], frozenset())
-        self.assertEqual(TASK_LIFECYCLE_TRANSITIONS["archived"], frozenset({"ended"}))
+        # 2026-08-18 amendment: a failed task without a live run may be archived
+        # out of the working list, and unarchive restores failed or ended.
+        self.assertEqual(TASK_LIFECYCLE_TRANSITIONS["failed"], frozenset({"archived"}))
+        self.assertEqual(TASK_LIFECYCLE_TRANSITIONS["archived"], frozenset({"ended", "failed"}))
         for state in ("working", "needs-input", "idle", "unknown"):
             self.assertNotIn("starting", RUN_STATE_TRANSITIONS[state])
         self.assertIn("starting", RUN_STATE_TRANSITIONS["stale"])
