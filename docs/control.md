@@ -274,7 +274,7 @@ Run states use a shared vocabulary:
 |---|---|
 | `starting` | The pane and process exist, but no semantic start evidence is available. |
 | `working` | A verified harness event reports active work. |
-| `needs-input` | A verified event reports an operator decision or permission requirement. |
+| `needs-input` | A verified event reports an operator decision or permission requirement, or the owned pane's visible tail shows the harness's known input prompt. |
 | `idle` | A verified stop or completed-turn event occurred while the process remains live. |
 | `exited` | The verified process ended normally. |
 | `failed` | Launch or termination has verified failure evidence, including when the process ended by signal or vanished without a reported exit status while its pane was absent. |
@@ -294,6 +294,17 @@ process reconciles to `unknown` rather than a stale positive, because a harness
 with no wired stop event (Codex today) never supersedes an in-progress
 snapshot. `idle` (a completed turn) is a legitimate resting state and is not
 aged; `exited` and `failed` are durable facts and never age.
+
+Codex raises approval prompts inside its own TUI without any hook, so events
+alone would leave such a run reading `working` until the recency window
+expired. Reconciliation therefore also reads the last twelve visible lines of
+the owned, live pane (never scrollback, never a dead pane) and, when one of
+the harness's known input-prompt markers is on screen
+(`lib/control/harness.py` `INPUT_PROMPT_MARKERS`), reports `needs-input` with
+tmux evidence that says the prompt was seen. A screen observation outranks an
+older event snapshot but never a terminal event or a dead pane, and it is
+labelled as observation in the evidence detail. Harnesses that report
+permission requests through hooks (Claude) carry no markers.
 
 The Increment 4 live-probed semantic claims are:
 

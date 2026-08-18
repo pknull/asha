@@ -7,6 +7,8 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -246,6 +248,21 @@ class PureModelTests(unittest.TestCase):
         self.assertIn("evidence", output)
         self.assertIn("Limitations", output)
         self.assertIn("no destructive removal or automated integration", output)
+
+    def test_age_uses_a_live_clock_after_reload(self) -> None:
+        opened = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+        model = TuiModel([row("old", "working")], now=opened)
+        self.assertEqual(model.now, opened)
+        # An unpinned model refreshes its clock on every reload, so a task
+        # started after the TUI opened does not read 0s forever.
+        live = TuiModel([row("first", "working")])
+        before = live.now
+        time.sleep(0.01)
+        live.replace_rows([row("second", "working")])
+        self.assertGreater(live.now, before)
+        # A pinned clock (tests) stays pinned.
+        model.replace_rows([row("third", "working")])
+        self.assertEqual(model.now, opened)
 
     def test_long_status_message_wraps_and_keeps_its_remedy_visible(self) -> None:
         model = TuiModel([row("wrap", "working")], height=24, width=60)

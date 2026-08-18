@@ -152,6 +152,7 @@ class TuiModel:
         self.height = max(0, int(height))
         self.width = max(0, int(width))
         self.now = now or datetime.now(timezone.utc)
+        self._clock_pinned = now is not None
         self.scroll_offset = 0
         self.diffs: dict[str, DiffSummary] = {}
         self.message: str | None = None
@@ -266,6 +267,10 @@ class TuiModel:
 
     def replace_rows(self, rows: Iterable[TuiRow]) -> None:
         selected_task = None if self.selected_row is None else self.selected_row.task["task_id"]
+        if not self._clock_pinned:
+            # AGE is relative to now; a clock frozen at TUI start showed 0s
+            # forever for any task started afterwards.
+            self.now = datetime.now(timezone.utc)
         self.rows = sort_rows(rows)
         visible = self.filtered_rows
         self.selection = next(

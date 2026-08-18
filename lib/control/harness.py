@@ -15,6 +15,23 @@ from .model import ModelError, canonical_uuid
 
 
 HARNESSES = frozenset({"claude", "codex", "copilot", "opencode"})
+
+# Visible-screen markers that mean the harness is waiting for a person. Codex
+# raises approval prompts in its own TUI without any hook, so Control cannot
+# learn `needs-input` from events for it; the owned pane's visible tail is the
+# only signal. Claude reports permission requests through hooks and needs no
+# marker. Matching is exact substring on the pane's last visible lines.
+INPUT_PROMPT_MARKERS: dict[str, tuple[str, ...]] = {
+    "codex": (
+        "Press enter to confirm or esc to cancel",
+        "Would you like to run the following command?",
+        "Do you trust the contents of this directory",
+    ),
+    "claude": (),
+    "copilot": (),
+    "opencode": (),
+}
+INPUT_PROMPT_TAIL_LINES = 12
 PROC_ROOT = Path("/proc")
 MAX_PROC_BYTES = 64 * 1024
 _BOOT_ID = re.compile(

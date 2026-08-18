@@ -12,6 +12,16 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Control: needs-input from the visible pane; live TUI clock
+
+- Codex approval prompts have no hook, so a run waiting on one read
+  `working`. Reconciliation now reads the last twelve visible lines of the
+  owned, live pane and reports `needs-input` when a known harness input-prompt
+  marker is on screen (tmux evidence names the prompt); a screen observation
+  outranks an older event but never a terminal event or a dead pane.
+- The TUI refreshes its clock on every reload; AGE no longer freezes at the
+  time the TUI opened (a task started afterwards read `0s` forever).
+
 #### Control: failed creations can be archived
 
 - `asha task archive` accepts a `failed` task with no run or only terminal

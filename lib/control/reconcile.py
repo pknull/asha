@@ -13,7 +13,7 @@ from typing import Any, Callable, Literal, Protocol
 from .config import ControlConfig
 from .events import EventError, read_snapshot
 from . import harness as harness_api
-from .harness import HarnessError
+from .harness import INPUT_PROMPT_MARKERS, INPUT_PROMPT_TAIL_LINES, HarnessError
 from .jj import JjAdapter, JjError
 from .model import validate_task
 from .tmux import TmuxAdapter, TmuxError
@@ -61,9 +61,14 @@ class Evidence:
         elif self.source == "process" and self.outcome == "missing":
             if self.state is not None and self.state not in _TERMINAL_STATES:
                 raise ValueError("missing process evidence may carry only a terminal state")
+        elif self.source == "tmux" and self.outcome == "match":
+            # A matched owned pane may report the one state a screen can
+            # prove: a harness input prompt is visible.
+            if self.state is not None and self.state != "needs-input":
+                raise ValueError("matched tmux evidence may carry only needs-input")
         elif self.state is not None:
             raise ValueError(
-                "only matched event or missing process evidence may carry a state"
+                "only matched event, matched tmux, or missing process evidence may carry a state"
             )
         if self.stale and not (
             self.source == "event" and self.outcome == "match" and
@@ -148,6 +153,13 @@ class LiveAdapters:
                 return Evidence(
                     "tmux", "mismatch", "recorded pane belongs to a different tmux target",
                 )
+            prompt = None if facts.dead else self._visible_prompt(run)
+            if prompt is not None:
+                return Evidence(
+                    "tmux", "match",
+                    f"owned tmux session and pane matched; pane shows {prompt}",
+                    state="needs-input",
+                )
             return Evidence("tmux", "match", "owned tmux session and pane matched")
         except TmuxError as exc:
             if _tmux_target_missing(exc):
@@ -156,6 +168,22 @@ class LiveAdapters:
                 "tmux", "unavailable",
                 f"tmux evidence unavailable: {_safe_detail(exc, 'adapter failure')}",
             )
+
+    def _visible_prompt(self, run) -> str | None:
+        """Name the harness input prompt on the pane's visible tail, if any."""
+        markers = INPUT_PROMPT_MARKERS.get(run.get("harness"), ())
+        reader = getattr(self.tmux_adapter, "pane_tail", None)
+        if not markers or reader is None:
+            return None
+        try:
+            tail = reader(run["pane_id"], lines=INPUT_PROMPT_TAIL_LINES)
+        except (TmuxError, ValueError):
+            return None
+        for line in tail:
+            for marker in markers:
+                if marker in line:
+                    return f"the {run['harness']} input prompt {marker[:40]!r}"
+        return None
 
     def process(self, task, run):
         try:
@@ -390,6 +418,12 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
         if event.outcome == "match":
             return result("stale", "event: active state contradicts missing process")
         return result("stale", "process: missing without verified terminal event")
+    if (tmux.state == "needs-input" and process.outcome == "match"
+            and not (event.outcome == "match" and event.state in _TERMINAL_STATES)):
+        # A prompt on the live, owned screen is more current than any event
+        # snapshot: the hook that would have reported it never fires for this
+        # harness, and the last event only says what happened before it.
+        return result("needs-input")
     if event.outcome == "match" and event.state is not None:
         if process.outcome == "match" and event.state in _TERMINAL_STATES:
             return result("stale", "event: terminal state contradicts matched live process")
