@@ -101,21 +101,69 @@ from `asha control` or the non-interactive `asha task` commands.
 
 | Command | Purpose |
 |---|---|
-| `asha task start [--repo PATH] (--pr N \| --issue N \| [--base REVSET]) …` | Create the task, explicit-base jj workspace, tmux session, and primary harness run. |
+| `asha task start [--repo PATH] (--pr N \| --issue N \| [--base REVSET]) [--slug SLUG] …` | Create the task, explicit-base jj workspace, tmux session, and primary harness run. The optional slug separates path identity from the unchanged goal. |
 | `asha task list` / `asha task show` | Inspect registered tasks and reconciled live evidence. |
 | `asha task attach` | Attach to the owned task session or open it in a tmux popup. |
 | `asha task reconcile` | Refresh registry facts from jj, tmux, process identity, and supported harness events. |
 | `asha task stop` | Signal the verified run process without deleting its session, workspace, or change. |
 | `asha task archive` | Hide a task after every reconciled run exits while preserving all task data; archive is reversible (`asha task unarchive`). |
-| `asha task recover` | Recover an interrupted creation transaction from its durable journal. |
+| `asha task recover` | Recover an interrupted creation transaction. The exact historical failed/runless retained shape also supports explicit authenticated forward-adoption with `--adopt --yes` plus reauthorized harness, role, and exact goal. |
 | `asha task prune` | Reclaim what archived tasks leave behind: kill the dead owned tmux session, forget and remove the journaled jj workspace; records and jj changes stay. Confirms once per batch, or `--yes`; `--dry-run` previews. |
 | `asha task doctor` | Report local prerequisites and optional capability limits. |
-| `asha control` | Open the terminal Control TUI. |
+| `asha control` | Open the terminal Control TUI. `A` toggles active/all history; `x` opens revalidated inspect, active-run signal/initiative-stop, archive, retry, reconcile, and prune actions. |
 | `asha control tmux` | Print the optional tmux-format integration snippet; it never edits `.tmux.conf`. |
 
-Control requires a Git-backed jj 0.38 repository, tmux with popup support, an
-installed harness, and an initialized Asha project whose private Control paths
-are ignored. `gh` must be installed and authenticated only for `--pr` and
+Control requires a Git repository, tmux with popup support, an installed
+harness, and an initialized Asha project whose Control-created private paths
+are positively ignored by the immutable base. Regular tracked context files
+are validated and reused without requiring an ignore rule. A supported primary plain-Git root (including submodule gitdir roots,
+but not linked worktrees) is automatically jj 0.38-colocated with semantic Git
+state preservation; verified repository enablement is reported and retained
+if later task preparation fails or is cancelled. Before that enablement,
+Control validates source/workspace ancestry (including existing managed-parent
+ownership/mode), Memory, destination/capacity, PR remote selection, and the
+base before enablement. Existing jj repositories retain arbitrary jj revsets.
+For a new plain-Git root, an omitted base selects one exact remote default or
+the first existing local `main`, `master`, or `trunk`; no unambiguous candidate
+refuses before mutation and requests explicit `--base`. The durable task keeps
+the caller's unchanged default expression while the selected ref remains
+preflight evidence and its immutable OID becomes `base_commit_id`, preserving
+caller-ID replay identity. PR start accepts only a configured HTTPS or SSH URL
+whose repository identity matches the viewed PR; execution-capable local Git
+transport/helper config refuses before colocation. The later fetch uses that
+carried URL under an explicit protocol allowlist, with no named-remote reread.
+Split `extensions.worktreeConfig` repositories must fetch the PR head manually
+because the carried single-file configuration digest cannot bind that plane.
+A verified root binding
+hardened only by removing group/other write bits is narrowly reauthenticated
+after stable all-ref Git and jj-operation checks; doctor reports only a
+resulting path-policy-safe candidate as repairable.
+The TUI task-start form is a stateful, cell-aware five-field editor with a
+frozen bounded repository/base/harness/role candidate snapshot. Up/Down, Tab,
+Enter, Shift-Tab, Escape, resize, and whole-cluster backspace preserve exact
+logical values; wide-character input preserves admitted Unicode and candidate
+raw identity remains separate from sanitized display. One aggregate count/byte
+budget bounds the snapshot, and candidate data never bypasses controller validation. It stays
+active during preparation and accepts `Escape` cancellation until launch wins
+the journal race; long, combining, and emoji-cluster goals use a cell-aware
+suffix viewport without changing their logical text. Once v2 preparation may
+have mutated workspace/root filesystem state, cancellation retains those bytes,
+the jj registration, and any created parents, marks the failed task preserved,
+and requires inspection with `jj workspace list` plus the recorded workspace
+and parent paths. It names archive plus explicit confirmed prune only when the
+existing prune preconditions are durably proven; partial creation may require
+manual cleanup. Frozen v1 journals keep their legacy rollback behavior. A
+narrow retained failed/runless `add-intent` creation can be completed forward
+only with `asha task recover ID --adopt --yes --harness H --role ROLE --goal
+'EXACT LABEL'`. That path authenticates repository, registration, operation,
+root, immutable tree, and raw record evidence before recording ownership,
+provisioning context, and launching; it never forgets or deletes. Doctor and
+the TUI distinguish this exact candidate from ambiguous residue that still
+requires manual inspection. Task
+workspaces use compact Git tree plans and streaming object verification, so
+tracked trees are not limited by the legacy inline creation-journal entry or
+byte ceilings. `gh` must be
+installed and authenticated only for `--pr` and
 `--issue`; ad-hoc tasks do not use it. See the focused
 [Asha Control guide](docs/control.md) for the operating contract, state paths,
 status evidence, and preservation rules.

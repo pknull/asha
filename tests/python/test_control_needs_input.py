@@ -1,4 +1,4 @@
-"""needs-input from the owned pane's visible prompt (Codex has no approval hook)."""
+"""Codex permission events with visible-pane needs-input fallback."""
 
 from __future__ import annotations
 
@@ -9,7 +9,12 @@ import unittest
 from unittest import mock
 
 from lib.control.harness import INPUT_PROMPT_MARKERS
-from lib.control.reconcile import Evidence, LiveAdapters, reconcile_task
+from lib.control.reconcile import (
+    Evidence,
+    LiveAdapters,
+    reconcile_task,
+    reconcile_task_with_observation,
+)
 from lib.control.tmux import PaneFacts, TmuxAdapter, TmuxError
 from tests.python.test_control_config_model import task_record
 
@@ -96,6 +101,32 @@ class VisiblePromptTests(unittest.TestCase):
     def test_visible_prompt_outranks_a_stale_working_event(self) -> None:
         result = self.reconcile(FakeTmux(self.task, tail=CODEX_PROMPT), _working_event(stale=True))
         self.assertEqual(result["state"], "needs-input")
+
+    def test_fresh_permission_event_is_primary_and_pane_detection_is_fallback(self) -> None:
+        permission = Evidence(
+            "event", "match", "permission-requested snapshot",
+            state="needs-input", observed_at="2026-08-18T23:54:20Z",
+        )
+
+        result, observation = reconcile_task_with_observation(
+            self.task,
+            Adapters(FakeTmux(self.task, tail=CODEX_PROMPT), event=permission),
+        )
+
+        self.assertEqual(result["state"], "needs-input")
+        self.assertEqual(observation.state, "needs-input")
+        self.assertEqual(observation.source, "event")
+        self.assertEqual(observation.observed_at, "2026-08-18T23:54:20Z")
+
+    def test_verified_turn_stopped_idle_outranks_a_lingering_prompt(self) -> None:
+        stopped = Evidence(
+            "event", "match", "verified turn-stopped snapshot", state="idle",
+        )
+
+        result = self.reconcile(FakeTmux(self.task, tail=CODEX_PROMPT), stopped)
+
+        self.assertEqual(result["state"], "idle")
+        self.assertIsNone(result["blocker"])
 
     def test_no_prompt_keeps_the_event_state(self) -> None:
         result = self.reconcile(FakeTmux(self.task, tail=["  Working (12s • esc to interrupt)"]))

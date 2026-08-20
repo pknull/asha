@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 import re
 import unicodedata
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
@@ -20,11 +20,11 @@ from .tmux import TmuxAdapter, TmuxError
 
 
 Outcome = Literal["match", "missing", "mismatch", "unavailable"]
+Freshness = Literal["fresh", "stale", "durable", "unknown"]
 _FIELD_NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 _SEMANTIC_EVENT_STATES = frozenset({"working", "needs-input", "idle"})
 _TERMINAL_STATES = frozenset({"exited", "failed"})
 _EVENT_STATES = _SEMANTIC_EVENT_STATES | _TERMINAL_STATES
-_PROVEN_ACTIVE_STATES = frozenset({"starting", "working", "needs-input", "idle", "unknown"})
 # In-progress states imply the harness is mid-turn.  A harness with no wired
 # stop event never supersedes them, so they are only trustworthy while recent.
 # `idle` (turn-stopped) is a legitimate resting state and is NOT aged; terminal
@@ -49,6 +49,9 @@ class Evidence:
     detail: str
     state: str | None = None
     stale: bool = False
+    # Presentation-only metadata. Reconciliation v1 serializes Evidence through
+    # _evidence_payload(), which deliberately preserves its frozen five keys.
+    observed_at: str | None = None
 
     def __post_init__(self) -> None:
         _bounded_field(self.source, "evidence source", 32, pattern=_FIELD_NAME)
@@ -62,10 +65,14 @@ class Evidence:
             if self.state is not None and self.state not in _TERMINAL_STATES:
                 raise ValueError("missing process evidence may carry only a terminal state")
         elif self.source == "tmux" and self.outcome == "match":
-            # A matched owned pane may report the one state a screen can
-            # prove: a harness input prompt is visible.
-            if self.state is not None and self.state != "needs-input":
-                raise ValueError("matched tmux evidence may carry only needs-input")
+            # Exact ownership plus pane_dead is terminal identity evidence;
+            # a live screen can separately prove needs-input.
+            if self.state is not None and self.state not in (
+                {"needs-input"} | _TERMINAL_STATES
+            ):
+                raise ValueError(
+                    "matched tmux evidence may carry only needs-input or terminal state"
+                )
         elif self.state is not None:
             raise ValueError(
                 "only matched event, matched tmux, or missing process evidence may carry a state"
@@ -75,6 +82,44 @@ class Evidence:
             self.state in _AGEABLE_EVENT_STATES
         ):
             raise ValueError("only a matched in-progress event may be marked stale")
+        if self.observed_at is not None:
+            if (not isinstance(self.observed_at, str) or
+                    len(self.observed_at) > 40 or not self.observed_at.endswith("Z")):
+                raise ValueError("evidence observed_at must be bounded RFC3339 UTC")
+            try:
+                observed = datetime.fromisoformat(self.observed_at[:-1] + "+00:00")
+            except ValueError as exc:
+                raise ValueError("evidence observed_at must be bounded RFC3339 UTC") from exc
+            if observed.tzinfo != timezone.utc:
+                raise ValueError("evidence observed_at must be bounded RFC3339 UTC")
+
+
+@dataclass(frozen=True)
+class StateObservation:
+    """Internal state/provenance selected with the frozen-shape v1 result."""
+
+    state: str
+    run_id: str | None
+    source: str
+    observed_at: str | None
+    freshness: Freshness
+    detail: str
+
+
+def _evidence_payload(item: Evidence) -> dict[str, Any]:
+    """Serialize the exact frozen reconciliation-v1 evidence shape."""
+    return {
+        "source": item.source,
+        "outcome": item.outcome,
+        "detail": item.detail,
+        "state": item.state,
+        "stale": item.stale,
+    }
+
+
+def _observed_now(now: Callable[[], datetime]) -> str:
+    observed = now().astimezone(timezone.utc)
+    return observed.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
 class Adapters(Protocol):
@@ -153,14 +198,36 @@ class LiveAdapters:
                 return Evidence(
                     "tmux", "mismatch", "recorded pane belongs to a different tmux target",
                 )
+            if facts.dead:
+                if facts.dead_signal is not None:
+                    terminal = "failed"
+                    detail = f"owned tmux pane was killed by signal {facts.dead_signal}"
+                elif facts.dead_status is not None and facts.dead_status != 0:
+                    terminal = "failed"
+                    detail = f"owned tmux pane exited with status {facts.dead_status}"
+                else:
+                    terminal = "exited"
+                    detail = (
+                        "owned tmux pane is conclusively dead"
+                        if facts.dead_status is None else
+                        "owned tmux pane exited with status 0"
+                    )
+                return Evidence(
+                    "tmux", "match", detail, state=terminal,
+                    observed_at=_observed_now(self._now),
+                )
             prompt = None if facts.dead else self._visible_prompt(run)
             if prompt is not None:
                 return Evidence(
                     "tmux", "match",
                     f"owned tmux session and pane matched; pane shows {prompt}",
                     state="needs-input",
+                    observed_at=_observed_now(self._now),
                 )
-            return Evidence("tmux", "match", "owned tmux session and pane matched")
+            return Evidence(
+                "tmux", "match", "owned tmux session and pane matched",
+                observed_at=_observed_now(self._now),
+            )
         except TmuxError as exc:
             if _tmux_target_missing(exc):
                 return Evidence("tmux", "missing", "recorded tmux pane is absent")
@@ -204,11 +271,13 @@ class LiveAdapters:
                     return Evidence(
                         "process", "match",
                         "recorded tmux pane is absent but the process identity is live",
+                        observed_at=_observed_now(self._now),
                     )
                 return Evidence(
                     "process", "missing",
                     "recorded tmux pane is absent and the process identity is gone",
                     state="failed",
+                    observed_at=_observed_now(self._now),
                 )
             return Evidence(
                 "process", "unavailable",
@@ -222,6 +291,7 @@ class LiveAdapters:
                     "process", "missing",
                     f"tmux pane process was killed by signal {facts.dead_signal}",
                     state="failed",
+                    observed_at=_observed_now(self._now),
                 )
             if facts.dead_status is not None:
                 state = "exited" if facts.dead_status == 0 else "failed"
@@ -229,6 +299,7 @@ class LiveAdapters:
                     "process", "missing",
                     f"tmux pane process exited with status {facts.dead_status}",
                     state=state,
+                    observed_at=_observed_now(self._now),
                 )
             return Evidence("process", "missing", "tmux pane process has exited")
         if facts.pane_pid is None:
@@ -246,7 +317,10 @@ class LiveAdapters:
             )
         if not matched:
             return Evidence("process", "mismatch", "process start identity differs from the run record")
-        return Evidence("process", "match", "pid and process start identity matched")
+        return Evidence(
+            "process", "match", "pid and process start identity matched",
+            observed_at=_observed_now(self._now),
+        )
 
     def jj(self, task):
         workspace = Path(task["jj"]["workspace_path"])
@@ -274,7 +348,10 @@ class LiveAdapters:
             )
         if identity.change_id != task["jj"]["change_id"]:
             return Evidence("jj", "mismatch", "jj workspace change identity differs from the task record")
-        return Evidence("jj", "match", "jj workspace registration and change identity matched")
+        return Evidence(
+            "jj", "match", "jj workspace registration and change identity matched",
+            observed_at=_observed_now(self._now),
+        )
 
     def event(self, task, run):
         if self.config is None:
@@ -314,11 +391,13 @@ class LiveAdapters:
                     f"the {window}s recency window",
                     state=snapshot["state"],
                     stale=True,
+                    observed_at=snapshot["observed_at"],
                 )
         return Evidence(
             "event", "match",
             f"verified {snapshot['event']} event snapshot",
             state=snapshot["state"],
+            observed_at=snapshot["observed_at"],
         )
 
     def _snapshot_age_seconds(self, snapshot: dict[str, Any]) -> float | None:
@@ -338,7 +417,9 @@ def _terminal_from_stored(run: dict[str, Any]) -> str | None:
     return run["state"] if run["state"] in _TERMINAL_STATES else None
 
 
-def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters) -> dict[str, Any]:
+def _reconcile_run(
+    task: dict[str, Any], run: dict[str, Any], adapters: Adapters,
+) -> tuple[dict[str, Any], StateObservation]:
     gathered: list[Evidence] = []
 
     def add(item: Evidence, expected: str) -> Evidence:
@@ -346,7 +427,10 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
             raise ValueError(f"{expected} adapter returned invalid evidence")
         # Revalidate and copy frozen instances because a hostile adapter can
         # still use object.__setattr__ after returning them.
-        safe = Evidence(item.source, item.outcome, item.detail, item.state, item.stale)
+        safe = Evidence(
+            item.source, item.outcome, item.detail, item.state, item.stale,
+            item.observed_at,
+        )
         gathered.append(safe)
         return safe
 
@@ -356,38 +440,76 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
     def run_copy() -> dict[str, Any]:
         return copy.deepcopy(run)
 
-    def result(state: str, blocker: str | None = None) -> dict[str, Any]:
-        return {
+    def result(
+        state: str, blocker: str | None = None, *, winner: Evidence | None = None,
+        provenance: StateObservation | None = None,
+    ) -> tuple[dict[str, Any], StateObservation]:
+        reconciliation = {
             "contract": "asha.control-run-reconciliation.v1",
             "run_id": run["run_id"],
             "state": state,
             "blocker": blocker,
-            "evidence": [asdict(item) for item in gathered],
+            "evidence": [_evidence_payload(item) for item in gathered],
         }
+        if provenance is not None:
+            if provenance.run_id != run["run_id"]:
+                raise ValueError("selected provenance does not match its run")
+            observation = provenance
+        elif winner is None:
+            observation = StateObservation(
+                state, run["run_id"], "unknown", None, "unknown",
+                blocker or "no verified state observation selected",
+            )
+        else:
+            if winner.stale:
+                freshness: Freshness = "stale"
+            elif (winner.source == "event" and winner.outcome == "match" and
+                  winner.state in ({"idle"} | _TERMINAL_STATES)):
+                freshness = "durable"
+            elif (winner.observed_at is not None and
+                  (winner.outcome == "match" or
+                   (winner.source == "process" and winner.outcome == "missing"))):
+                freshness = "fresh"
+            else:
+                freshness = "unknown"
+            observation = StateObservation(
+                state, run["run_id"], winner.source, winner.observed_at,
+                freshness, winner.detail,
+            )
+        if observation.state != reconciliation["state"]:
+            raise ValueError("selected observation state does not match reconciliation")
+        return reconciliation, observation
 
-    def unresolved_stale() -> dict[str, Any]:
+    def unresolved_stale() -> tuple[dict[str, Any], StateObservation]:
         unavailable = ", ".join(
             item.source for item in gathered
             if item.source in {"tmux", "process", "jj"} and item.outcome == "unavailable"
         )
+        winner = next(
+            (item for item in gathered
+             if item.source in {"tmux", "process", "jj"} and
+             item.outcome == "unavailable"),
+            None,
+        )
         return result(
             "stale",
             f"identity: stored stale state remains unresolved because {unavailable} evidence is unavailable",
+            winner=winner,
         )
 
     tmux = add(adapters.tmux(task_copy(), run_copy()), "tmux")
     if tmux.outcome == "mismatch":
-        return result("stale", f"tmux: {tmux.detail}")
+        return result("stale", f"tmux: {tmux.detail}", winner=tmux)
 
     process = add(adapters.process(task_copy(), run_copy()), "process")
     if process.outcome == "mismatch":
-        return result("stale", f"process: {process.detail}")
+        return result("stale", f"process: {process.detail}", winner=process)
     if tmux.outcome == "missing" and process.outcome != "missing":
-        return result("stale", f"tmux: {tmux.detail}")
+        return result("stale", f"tmux: {tmux.detail}", winner=tmux)
 
     jj = add(adapters.jj(task_copy()), "jj")
     if jj.outcome in {"mismatch", "missing"}:
-        return result("stale", f"jj: {jj.detail}")
+        return result("stale", f"jj: {jj.detail}", winner=jj)
 
     if run["state"] == "stale":
         # A stored ownership conflict is cleared only by affirmative identity
@@ -395,43 +517,76 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
         # repair missing or unavailable ownership evidence.
         for identity in (tmux, process, jj):
             if identity.outcome in {"missing", "mismatch"}:
-                return result("stale", f"{identity.source}: {identity.detail}")
+                return result(
+                    "stale", f"{identity.source}: {identity.detail}", winner=identity,
+                )
         if any(identity.outcome == "unavailable" for identity in (tmux, process, jj)):
             return unresolved_stale()
 
     event = add(adapters.event(task_copy(), run_copy()), "event")
     if event.outcome == "mismatch":
-        return result("stale", f"event: {event.detail}")
+        return result("stale", f"event: {event.detail}", winner=event)
     stored_terminal = _terminal_from_stored(run)
     if stored_terminal is not None:
         if process.outcome == "match":
-            return result("stale", "process: live process contradicts stored terminal state")
+            return result(
+                "stale", "process: live process contradicts stored terminal state",
+                winner=process,
+            )
         if (event.outcome == "match" and event.state in _TERMINAL_STATES and
                 event.state != stored_terminal):
-            return result("stale", "event: state contradicts stored terminal state")
-        return result(stored_terminal)
+            return result(
+                "stale", "event: state contradicts stored terminal state", winner=event,
+            )
+        return result(
+            stored_terminal,
+            provenance=StateObservation(
+                stored_terminal, run["run_id"], "stored", run["evidence_at"],
+                "durable", run["evidence"],
+            ),
+        )
     if process.outcome == "missing":
         if process.state in _TERMINAL_STATES:
-            return result(process.state)
+            return result(process.state, winner=process)
+        if tmux.outcome == "match" and tmux.state in _TERMINAL_STATES:
+            return result(tmux.state, winner=tmux)
         if event.outcome == "match" and event.state in _TERMINAL_STATES:
-            return result(event.state)
+            return result(event.state, winner=event)
         if event.outcome == "match":
-            return result("stale", "event: active state contradicts missing process")
-        return result("stale", "process: missing without verified terminal event")
+            return result(
+                "stale", "event: active state contradicts missing process", winner=event,
+            )
+        return result(
+            "stale", "process: missing without verified terminal event", winner=process,
+        )
+    if (event.outcome == "match" and event.state == "idle" and
+            process.outcome == "match"):
+        # Stop is a verified post-turn edge. A prompt left visible in the pane
+        # belongs to the completed turn and must not resurrect needs-input.
+        return result("idle", winner=event)
+    if (event.outcome == "match" and event.state == "needs-input" and
+            not event.stale and process.outcome == "match"):
+        # A direct permission edge is the primary observation. Screen markers
+        # remain the fallback for a missed, delayed, or unsupported hook.
+        return result("needs-input", winner=event)
     if (tmux.state == "needs-input" and process.outcome == "match"
             and not (event.outcome == "match" and event.state in _TERMINAL_STATES)):
-        # A prompt on the live, owned screen is more current than any event
-        # snapshot: the hook that would have reported it never fires for this
-        # harness, and the last event only says what happened before it.
-        return result("needs-input")
+        # A prompt on the live, owned screen is more current than an
+        # earlier in-progress event snapshot when the permission hook did not
+        # report the prompt.
+        return result("needs-input", winner=tmux)
     if event.outcome == "match" and event.state is not None:
         if process.outcome == "match" and event.state in _TERMINAL_STATES:
-            return result("stale", "event: terminal state contradicts matched live process")
+            return result(
+                "stale", "event: terminal state contradicts matched live process",
+                winner=event,
+            )
         if event.stale:
             return result(
                 "unknown",
                 f"event: {event.state} snapshot exceeds the recency window; "
                 "state is not trusted without live confirmation",
+                winner=event,
             )
         unavailable = ", ".join(
             item.source for item in (tmux, process)
@@ -442,18 +597,34 @@ def _reconcile_run(task: dict[str, Any], run: dict[str, Any], adapters: Adapters
                 "unknown",
                 f"{unavailable}: evidence unavailable; event state not trusted "
                 "without live process evidence",
+                winner=next(
+                    item for item in (tmux, process)
+                    if item.outcome == "unavailable"
+                ),
             )
-        return result(event.state)
+        return result(event.state, winner=event)
     if process.outcome == "match":
         if event.outcome == "unavailable":
-            return result("unknown")
+            return result("unknown", winner=event)
         if event.outcome == "missing":
-            if run["state"] in _PROVEN_ACTIVE_STATES:
-                return result(run["state"])
-            if run["state"] == "stale":
-                return result("starting")
-        return result("starting")
-    return result(run["state"])
+            if run["state"] in {"starting", "stale"}:
+                return result("starting", winner=process)
+            return result("unknown", winner=event)
+        return result("starting", winner=process)
+    uncertain = next(
+        (item for item in reversed(gathered)
+         if item.outcome in {"missing", "unavailable"}),
+        None,
+    )
+    return result(
+        "unknown",
+        provenance=StateObservation(
+            "unknown", run["run_id"],
+            "unknown" if uncertain is None else uncertain.source,
+            None, "unknown",
+            "live evidence is uncertain" if uncertain is None else uncertain.detail,
+        ),
+    )
 
 
 _AGGREGATE_ORDER = {
@@ -468,19 +639,36 @@ _AGGREGATE_ORDER = {
 }
 
 
-def reconcile_task(
+def primary_reconciled_run(
+    runs: list[dict[str, Any]],
+) -> tuple[int, dict[str, Any]] | None:
+    """Select the same primary run used by the task reconciliation aggregate."""
+    if not runs:
+        return None
+    index = max(
+        range(len(runs)), key=lambda item: _AGGREGATE_ORDER[runs[item]["state"]],
+    )
+    return index, runs[index]
+
+
+def _reconcile_task_with_observation(
     task: dict[str, Any], adapters: Adapters | None = None, *, creation: Any = _CREATION_UNSET,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], StateObservation]:
     """Return a derived snapshot.  Neither registry nor external state changes."""
     validate_task(task)
     snapshot = copy.deepcopy(task)
     adapters = adapters or UnavailableAdapters()
-    runs = [_reconcile_run(snapshot, run, adapters) for run in snapshot["runs"]]
+    reconciled = [_reconcile_run(snapshot, run, adapters) for run in snapshot["runs"]]
+    runs = [item[0] for item in reconciled]
     if runs:
-        primary = max(runs, key=lambda item: _AGGREGATE_ORDER[item["state"]])
+        selected_primary = primary_reconciled_run(runs)
+        if selected_primary is None:
+            raise ValueError("reconciled runs unexpectedly have no primary")
+        primary_index, primary = selected_primary
         state = primary["state"]
         blocker = primary["blocker"]
         evidence = primary["evidence"]
+        observation = reconciled[primary_index][1]
     elif creation is not _CREATION_UNSET:
         creation_evidence: list[dict[str, Any]] = []
         if creation is None:
@@ -496,7 +684,7 @@ def reconcile_task(
             live_outcome = creation.get("live_outcome")
             live_detail = creation.get("live_detail")
             if live_outcome in {"match", "missing", "mismatch", "unavailable"}:
-                creation_evidence.append(asdict(Evidence(
+                creation_evidence.append(_evidence_payload(Evidence(
                     "jj", live_outcome,
                     live_detail or "prepared workspace live evidence has no detail",
                 )))
@@ -529,15 +717,44 @@ def reconcile_task(
                 state = "stale"
                 blocker = f"creation interrupted at durable phase {phase}"
         evidence = creation_evidence
+        if isinstance(creation, dict) and isinstance(creation.get("phase"), str):
+            # No-run creation facts have no separate journal timestamp. The
+            # task timestamp is the durable creation observation and, unlike a
+            # presentation read time, does not reset AGE on every TUI refresh.
+            observed_at = snapshot["updated_at"]
+            live_outcome = creation.get("live_outcome")
+            if live_outcome in {"match", "missing", "mismatch", "unavailable"}:
+                source = "jj"
+                freshness: Freshness = "fresh" if live_outcome == "match" else "unknown"
+                detail = creation.get("live_detail") or f"jj evidence is {live_outcome}"
+            else:
+                source = "creation"
+                freshness = "durable"
+                detail = blocker or f"durable creation phase {creation['phase']}"
+            observation = StateObservation(
+                state, None, source, observed_at, freshness, detail,
+            )
+        else:
+            observation = StateObservation(
+                state, None, "unknown", None, "unknown",
+                blocker or "pre-launch state has no live observation provenance",
+            )
     else:
         state = snapshot["lifecycle"]
         blocker = None
         evidence = []
+        observation = StateObservation(
+            state, None, "stored", snapshot["created_at"], "durable",
+            "stored task lifecycle",
+        )
     if (snapshot["lifecycle"] == "failed" and state != "stale" and
             creation is _CREATION_UNSET):
         state = "failed"
         blocker = "task lifecycle failed; preserved resources require explicit recovery"
-    return {
+        observation = StateObservation(
+            state, observation.run_id, "unknown", None, "unknown", blocker,
+        )
+    result = {
         "contract": "asha.control-reconciliation.v1",
         "task_id": snapshot["task_id"],
         "state": state,
@@ -545,3 +762,20 @@ def reconcile_task(
         "evidence": evidence,
         "runs": runs,
     }
+    if observation.state != result["state"]:
+        raise ValueError("task observation state does not match reconciliation")
+    return result, observation
+
+
+def reconcile_task(
+    task: dict[str, Any], adapters: Adapters | None = None, *, creation: Any = _CREATION_UNSET,
+) -> dict[str, Any]:
+    """Return the frozen v1 reconciliation without presentation metadata."""
+    return _reconcile_task_with_observation(task, adapters, creation=creation)[0]
+
+
+def reconcile_task_with_observation(
+    task: dict[str, Any], adapters: Adapters | None = None, *, creation: Any = _CREATION_UNSET,
+) -> tuple[dict[str, Any], StateObservation]:
+    """Select v1 reconciliation and its atomic state/provenance together."""
+    return _reconcile_task_with_observation(task, adapters, creation=creation)

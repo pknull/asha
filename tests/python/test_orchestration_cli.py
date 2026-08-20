@@ -20,6 +20,7 @@ from lib.control.jj import (
 )
 from lib.control.orchestration.cli import (
     _approve, _create, _plan, _reject, _repository_scope, _snapshot, main,
+    reconcile_one_initiative,
 )
 from lib.control.orchestration.config import load_config
 from lib.control.orchestration.store import InitiativeStore, StoreError
@@ -58,10 +59,41 @@ class OrchestrationCliTests(unittest.TestCase):
         self.jj.preflight.return_value = RepositoryFacts(root=self.repo, git_root=self.repo / ".git")
         self.jj.working_copy_parent.return_value = "b" * 40
         self.jj.git_head.return_value = "b" * 40
+        self.jj.git_head_exact.return_value = "b" * 40
         self.jj.resolve_base.return_value = "b" * 40
         self.jj.immutable_tree.return_value = ImmutableTree(
             commit_id="b" * 40, digest="c" * 64, entries=(),
         )
+
+    def test_shared_single_initiative_reconcile_uses_cli_order_and_never_dispatches(self) -> None:
+        initiative_id = "12345678-1234-4234-8234-123456789abc"
+        initiative = {"initiative_id": initiative_id}
+        store = mock.Mock(spec=InitiativeStore)
+        store.peek.return_value = initiative
+        events: list[str] = []
+        with mock.patch(
+            "lib.control.orchestration.cli.reconcile_actions",
+            side_effect=lambda *_: events.append("actions") or {"a": 1},
+        ), mock.patch(
+            "lib.control.orchestration.cli.reconcile_live",
+            side_effect=lambda *_: events.append("live") or {"l": 1},
+        ), mock.patch(
+            "lib.control.orchestration.cli._snapshot",
+            side_effect=lambda *_: events.append("snapshot") or {
+                "nodes": [{"node_id": "node-a"}], "superseded_nodes": [],
+            },
+        ), mock.patch(
+            "lib.control.orchestration.cli.reconcile_nodes",
+            side_effect=lambda *_args, **_kwargs: events.append("nodes") or [{"state": "ready"}],
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.dispatch",
+        ) as dispatch:
+            result = reconcile_one_initiative(store, initiative_id)
+
+        self.assertEqual(events, ["actions", "live", "snapshot", "nodes"])
+        self.assertEqual(result["initiative_id"], initiative_id)
+        self.assertEqual(result["results"], [{"state": "ready"}])
+        dispatch.assert_not_called()
 
     def create(self, slug: str = "demo") -> dict:
         return _create([
@@ -122,7 +154,7 @@ class OrchestrationCliTests(unittest.TestCase):
         self.assertEqual(
             [call[0] for call in self.jj.method_calls],
             [
-                "preflight", "working_copy_parent", "git_head", "resolve_base",
+                "preflight", "working_copy_parent", "git_head_exact", "resolve_base",
                 "immutable_tree", "preflight",
             ],
         )
@@ -165,7 +197,7 @@ class OrchestrationCliTests(unittest.TestCase):
         self.assertNotIn("feature--revision", stderr)
 
     def test_baseline_refuses_colocated_divergence_before_resolution(self) -> None:
-        self.jj.git_head.return_value = "d" * 40
+        self.jj.git_head_exact.return_value = "d" * 40
 
         status, stdout, stderr = self.invoke([
             "baseline", "--repo", str(self.repo), "--revision", "main",

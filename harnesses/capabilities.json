@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-08-17",
+  "reviewed": "2026-08-18",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
@@ -96,12 +96,11 @@
         },
         "control-status": {
           "support": "partial",
-          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed",
+          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; PermissionRequest -> permission-requested; Stop -> turn-stopped",
           "verifier": "task doctor:harness-events + task doctor:hooks",
           "limitations": [
             "Some unified_exec shell calls are not intercepted",
-            "turn-stopped is not claimed; Stop exists in the Codex allowlist but has no live-probe evidence and is trust-gated",
-            "permission-requested is not claimed; PermissionRequest exists in the Codex allowlist but has no live-probe evidence and is trust-gated",
+            "PermissionRequest -> permission-requested and Stop -> turn-stopped are live-proven on Codex 0.147.0, but each newly rendered command remains subject to Codex's hash-bound interactive hook trust",
             "session-ended has no equivalent event in Codex"
           ]
         },

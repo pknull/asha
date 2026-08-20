@@ -20,7 +20,7 @@ from lib.control.launch import launch_task
 from lib.control.prepare import PrepareRequest, prepare_task_workspace
 from lib.control.events import read_snapshot
 from lib.control.reconcile import LiveAdapters
-from lib.control.sources import GithubAdapter, SourceError
+from lib.control.sources import GithubAdapter, SourceError, ValidatedPrRemote
 from lib.control.store import TaskStore
 from tests.python.test_control_config_model import task_record
 from tests.python.test_control_increment3 import FakeTmux
@@ -33,6 +33,7 @@ class GithubAdapterTests(unittest.TestCase):
         self.root = Path(self.temp.name).resolve()
         self.source = self.root / "source"
         self.source.mkdir()
+        subprocess.run(["git", "init", "-q", str(self.source)], check=True)
 
     @staticmethod
     def completed(argv, returncode=0, stdout=b"", stderr=b""):
@@ -114,65 +115,209 @@ class GithubAdapterTests(unittest.TestCase):
 
     def test_fetch_and_import_use_only_the_reviewed_mutating_argv(self) -> None:
         calls: list[list[str]] = []
+        environments: list[dict[str, str]] = []
 
         def runner(argv, **kwargs):
             calls.append(list(argv))
+            if Path(argv[0]).name == "git":
+                environments.append(dict(kwargs["env"]))
             return self.completed(argv)
 
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "add", "origin",
+            "https://github.example/owner/repo.git",
+        ], check=True)
+        remote = GithubAdapter().pr_remote(
+            self.source, "https://github.example/owner/repo/pull/34", 34,
+        )
         adapter = GithubAdapter(runner=runner)
-        fetch_report = adapter.fetch_pr_head(self.source, "origin", 34)
+        with mock.patch.dict(os.environ, {
+            "PATH": str(self.root / "hostile"),
+            "LD_PRELOAD": str(self.root / "loader.so"),
+            "GIT_SSH_COMMAND": str(self.root / "evil-ssh"),
+        }, clear=False):
+            fetch_report = adapter.fetch_pr_head(self.source, remote, 34)
         import_report = JjAdapter(runner=runner).import_git(self.source)
 
-        self.assertEqual(calls, [
-            [
-                "git", "-C", str(self.source), "fetch", "origin",
-                "pull/34/head:refs/remotes/origin/asha-control-pr-34",
-            ],
-            ["jj", "-R", str(self.source), "--ignore-working-copy", "git", "import"],
+        self.assertTrue(Path(calls[0][0]).is_absolute())
+        self.assertEqual(calls[0][-5:], [
+            "fetch", "--no-tags", "--no-write-fetch-head",
+            "https://github.example/owner/repo.git",
+            "pull/34/head:refs/remotes/origin/asha-control-pr-34",
         ])
+        self.assertEqual(calls[1], [
+            "jj", "-R", str(self.source), "--ignore-working-copy", "git", "import",
+        ])
+        self.assertEqual(environments[0]["GIT_ALLOW_PROTOCOL"], "https")
+        self.assertTrue(Path(environments[0]["GIT_SSH"]).is_absolute())
+        self.assertNotIn("LD_PRELOAD", environments[0])
+        self.assertNotIn("GIT_SSH_COMMAND", environments[0])
         self.assertIn("fetched Git objects", fetch_report[0]["detail"])
         self.assertIn("refs/remotes/origin/asha-control-pr-34", fetch_report[1]["detail"])
         self.assertIn("jj operation-log", import_report[0]["detail"])
 
     def test_pr_remote_uses_the_configured_name_instead_of_assuming_origin(self) -> None:
-        calls: list[list[str]] = []
-
-        def runner(argv, **kwargs):
-            calls.append(list(argv))
-            if argv[-1] == "remote":
-                return self.completed(argv, stdout=b"upstream\n")
-            return self.completed(argv)
-
-        adapter = GithubAdapter(runner=runner)
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "add", "upstream",
+            "https://github.example/owner/repo.git",
+        ], check=True)
+        adapter = GithubAdapter()
         remote = adapter.pr_remote(
             self.source, "https://github.example/owner/repo/pull/34", 34,
         )
-        adapter.fetch_pr_head(self.source, remote, 34)
-
-        self.assertEqual(remote, "upstream")
-        self.assertEqual(calls, [
-            ["git", "-C", str(self.source), "remote"],
-            [
-                "git", "-C", str(self.source), "fetch", "upstream",
-                "pull/34/head:refs/remotes/upstream/asha-control-pr-34",
-            ],
-        ])
+        self.assertIsInstance(remote, ValidatedPrRemote)
+        self.assertEqual(remote.name, "upstream")
+        self.assertEqual(remote.url, "https://github.example/owner/repo.git")
 
     def test_pr_remote_matches_the_viewed_repository_when_several_exist(self) -> None:
-        outputs = {
-            ("remote",): b"mirror\nupstream\n",
-            ("remote", "get-url", "--all", "mirror"): b"git@example.invalid:elsewhere/repo.git\n",
-            ("remote", "get-url", "--all", "upstream"): b"git@github.example:owner/repo.git\n",
-        }
-
-        def runner(argv, **kwargs):
-            return self.completed(argv, stdout=outputs[tuple(argv[3:])])
-
-        remote = GithubAdapter(runner=runner).pr_remote(
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "add", "mirror",
+            "git@example.invalid:elsewhere/repo.git",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "add", "upstream",
+            "git@github.example:owner/repo.git",
+        ], check=True)
+        remote = GithubAdapter().pr_remote(
             self.source, "https://github.example/owner/repo/pull/34", 34,
         )
 
-        self.assertEqual(remote, "upstream")
+        self.assertEqual(remote.name, "upstream")
+
+    def test_sole_remote_must_match_pr_identity_and_safe_transport(self) -> None:
+        subprocess.run(
+            ["git", "-C", str(self.source), "remote", "add", "origin",
+             "https://github.example/other/repository.git"],
+            check=True,
+        )
+        with self.assertRaisesRegex(SourceError, "remote.*pull request repository"):
+            GithubAdapter().pr_remote(
+                self.source, "https://github.example/owner/repo/pull/34", 34,
+            )
+
+        ext_sentinel = self.root / "ext-transport-executed"
+        ext_command = self.root / "ext-command"
+        ext_command.write_text(
+            f"#!/bin/sh\nprintf x > {ext_sentinel}\nexit 1\n", encoding="utf-8",
+        )
+        ext_command.chmod(0o755)
+        subprocess.run(
+            ["git", "-C", str(self.source), "remote", "set-url", "origin",
+             f"ext::{ext_command}"],
+            check=True,
+        )
+        with self.assertRaisesRegex(SourceError, "transport|URL|remote"):
+            GithubAdapter().pr_remote(
+                self.source, "https://github.example/owner/repo/pull/34", 34,
+            )
+        self.assertFalse(ext_sentinel.exists())
+
+    def test_execution_capable_fetch_config_refuses_without_running_sentinels(self) -> None:
+        sentinel = self.root / "ssh-command-executed"
+        command = self.root / "ssh-command"
+        command.write_text(
+            f"#!/bin/sh\nprintf x > {sentinel}\nexit 1\n", encoding="utf-8",
+        )
+        command.chmod(0o755)
+        subprocess.run(
+            ["git", "-C", str(self.source), "remote", "add", "origin",
+             "git@github.example:owner/repo.git"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "config", "core.sshCommand", str(command)],
+            check=True,
+        )
+
+        with self.assertRaisesRegex(SourceError, "execution-capable|sshCommand"):
+            GithubAdapter().pr_remote(
+                self.source, "https://github.example/owner/repo/pull/34", 34,
+            )
+        self.assertFalse(sentinel.exists())
+
+    def test_split_worktree_config_is_refused_before_it_can_hide_transport_commands(self) -> None:
+        sentinel = self.root / "worktree-ssh-command-executed"
+        command = self.root / "worktree-ssh-command"
+        command.write_text(
+            f"#!/bin/sh\nprintf x > {sentinel}\nexit 1\n", encoding="utf-8",
+        )
+        command.chmod(0o755)
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "add", "origin",
+            "git@github.example:owner/repo.git",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.source), "config",
+            "extensions.worktreeConfig", "true",
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.source), "config", "--worktree",
+            "core.sshCommand", str(command),
+        ], check=True)
+
+        with self.assertRaisesRegex(SourceError, "worktreeConfig|split local config"):
+            GithubAdapter().pr_remote(
+                self.source, "https://github.example/owner/repo/pull/34", 34,
+            )
+        self.assertFalse(sentinel.exists())
+
+    def test_fetch_uses_carried_url_and_refuses_config_retarget_without_execution(self) -> None:
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "add", "origin",
+            "https://github.example/owner/repo.git",
+        ], check=True)
+        selected = GithubAdapter().pr_remote(
+            self.source, "https://github.example/owner/repo/pull/34", 34,
+        )
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "set-url", "origin",
+            "ext::/tmp/foreign-transport",
+        ], check=True)
+        runner = mock.Mock(side_effect=AssertionError("fetch must not execute after config drift"))
+
+        with self.assertRaisesRegex(SourceError, "config changed.*no fetch"):
+            GithubAdapter(runner=runner).fetch_pr_head(
+                self.source, selected, 34,
+            )
+        runner.assert_not_called()
+
+    def test_pr_preflight_refuses_all_execution_capable_transport_config(self) -> None:
+        subprocess.run([
+            "git", "-C", str(self.source), "remote", "add", "origin",
+            "https://github.example/owner/repo.git",
+        ], check=True)
+        cases = (
+            ("protocol.ext.allow", "always"),
+            ("url.ext::evil.insteadOf", "https://github.example/"),
+            ("credential.helper", "/tmp/credential-helper"),
+            ("filter.evil.process", "/tmp/filter-process"),
+            ("diff.evil.command", "/tmp/diff-command"),
+        )
+        for key, value in cases:
+            with self.subTest(key=key):
+                subprocess.run(
+                    ["git", "-C", str(self.source), "config", key, value], check=True,
+                )
+                try:
+                    with self.assertRaisesRegex(SourceError, "execution-capable"):
+                        GithubAdapter().pr_remote(
+                            self.source,
+                            "https://github.example/owner/repo/pull/34", 34,
+                        )
+                finally:
+                    subprocess.run([
+                        "git", "-C", str(self.source), "config", "--unset-all", key,
+                    ], check=False)
+
+    def test_forged_validated_ext_url_is_refused_before_fetch(self) -> None:
+        digest = JjAdapter._git_config_digest(self.source)
+        forged = ValidatedPrRemote(
+            "origin", "ext::/tmp/never", "ssh", digest,
+        )
+        runner = mock.Mock(side_effect=AssertionError("unsafe URL must not execute"))
+
+        with self.assertRaisesRegex(SourceError, "safe transport"):
+            GithubAdapter(runner=runner).fetch_pr_head(self.source, forged, 34)
+        runner.assert_not_called()
 
 
 class Increment6GrammarAndDoctorTests(unittest.TestCase):
@@ -254,6 +399,10 @@ class RealGithubSourceTests(unittest.TestCase):
         subprocess.run(
             ["git", "clone", "-q", str(self.remote), str(self.source)],
             check=True, capture_output=True, env=self.git_env,
+        )
+        self._git(
+            self.source, "remote", "set-url", "origin",
+            "https://github.example/repo.git",
         )
 
         (self.producer / "pr.txt").write_text("pull request head\n")
@@ -402,7 +551,15 @@ class RealGithubSourceTests(unittest.TestCase):
             return {"task": task, "run": {}}
 
         additions = self.gh_environment() if process_env is None else process_env
+
+        def local_fetch(_adapter, root, _url, refspec, **_kwargs):
+            subprocess.run(
+                ["git", "-C", str(root), "fetch", str(self.remote), refspec],
+                check=True, capture_output=True, env=self.git_env,
+            )
+
         with mock.patch.dict(os.environ, additions, clear=False), \
+                mock.patch.object(JjAdapter, "fetch_git_ref_exact", local_fetch), \
                 mock.patch("lib.control.cli.launch_task", side_effect=fake_launch), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             status = control_main(args, env=self.env)
@@ -467,8 +624,10 @@ class RealGithubSourceTests(unittest.TestCase):
         # Production fetches and imports the PR head before preparing, so the
         # commit is visible to jj. Do the same here rather than assuming
         # visibility the adapter is responsible for establishing.
-        sources = GithubAdapter()
-        sources.fetch_pr_head(self.source, "origin", self.PR_NUMBER)
+        subprocess.run([
+            "git", "-C", str(self.source), "fetch", str(self.remote),
+            f"pull/{self.PR_NUMBER}/head:refs/remotes/origin/asha-control-pr-{self.PR_NUMBER}",
+        ], check=True, capture_output=True)
         JjAdapter().import_git(self.source)
 
         adapter = TrackingJj()
@@ -847,7 +1006,7 @@ class DoctorProbeCompletionTests(unittest.TestCase):
         self.assertEqual(
             probed,
             {("workspace", "add"), ("workspace", "forget"),
-             ("operation", "log"), ("git", "import")},
+             ("operation", "log"), ("git", "import"), ("git", "init")},
         )
 
     def test_jj_probe_reports_a_missing_command_as_mismatch(self) -> None:
@@ -891,7 +1050,7 @@ class DoctorProbeCompletionTests(unittest.TestCase):
                 def working_copy_parent(self, source):
                     return "a" * 40
 
-                def git_head(self, git_root):
+                def git_head_exact(self, git_root):
                     return "a" * 40
 
             with mock.patch("lib.control.doctor.shutil.which", return_value="/fake/jj"), \
@@ -923,8 +1082,9 @@ class DoctorProbeCompletionTests(unittest.TestCase):
 
             probe = result["probes"][0]
             self.assertEqual(probe["outcome"], "missing")
-            self.assertIn("jj git init --colocate", probe["detail"])
+            self.assertIn("task start will auto-colocate", probe["detail"])
             self.assertIn(str(root), probe["detail"])
+            self.assertNotIn("revert by removing", probe["detail"])
             self.assertFalse((root / ".jj").exists())
 
     def test_repository_probe_keeps_generic_result_outside_any_repository(self) -> None:

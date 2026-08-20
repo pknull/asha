@@ -70,13 +70,17 @@ python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d == {"contract":
 
 reconcile="$(bash "$ROOT/bin/asha" task reconcile --json)"
 python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d == {"contract":"asha.control-reconcile-list.v1","results":[]}' <<<"$reconcile"
+# Successful batch reads publish the bounded server summary once after their
+# (possibly empty) row set. They may invoke tmux, but never jj or git here.
+[[ -z "$(sort -u "$WORK/invoked" | grep -Ev '^(tmux|)$' || true)" ]]
 
+show_before="$(wc -l < "$WORK/invoked")"
 set +e
 bash "$ROOT/bin/asha" task show missing-task --json >/dev/null 2>&1
 show_rc=$?
 set -e
 [[ $show_rc -eq 2 ]]
-[[ ! -e "$WORK/invoked" ]]
+[[ "$(wc -l < "$WORK/invoked")" -eq "$show_before" ]]
 
 # Assertions below are DELTA-based: each command may only add invocations from
 # its own allowed set. A whole-file equality check silently rots as soon as an
@@ -95,8 +99,9 @@ doctor_rc=$?
 set -e
 [[ $doctor_rc -eq 1 ]]
 python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == "asha.control-doctor.v1"; assert d["ok"] is False; assert any(p["name"] == "tmux" and p["outcome"] == "unavailable" for p in d["probes"])' <<<"$doctor"
-# doctor probes capabilities, so tmux and jj are expected and correct. git is
-# not a capability Control probes and must never be invoked.
+# doctor probes capabilities, so tmux and jj (including `jj git init --help`)
+# are expected. The external Git executable remains a read-only classification
+# dependency here and must never be invoked by doctor.
 allowed_only '^(tmux|jj|)$' "$doctor_before"
 ! grep -Eq '^git$' "$WORK/invoked"
 
@@ -139,6 +144,15 @@ event_before="$(invoked_lines)"
 event="$(bash "$ROOT/bin/asha" control event --event prompt-submitted \
   --harness codex --session-id shell-isolation --pane-id %9 --json)"
 python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == "asha.control-event.v1"; assert d["state"] == "working"' <<<"$event"
+permission="$(bash "$ROOT/bin/asha" control event --event permission-requested \
+  --harness codex --session-id shell-isolation --pane-id %9 --json)"
+python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == "asha.control-event.v1"; assert d["event"] == "permission-requested"; assert d["state"] == "needs-input"' <<<"$permission"
+resumed="$(bash "$ROOT/bin/asha" control event --event tool-completed \
+  --harness codex --session-id shell-isolation --pane-id %9 --json)"
+python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == "asha.control-event.v1"; assert d["event"] == "tool-completed"; assert d["state"] == "working"' <<<"$resumed"
+stopped="$(bash "$ROOT/bin/asha" control event --event turn-stopped \
+  --harness codex --session-id shell-isolation --pane-id %9 --json)"
+python3 -I -c 'import json,sys; d=json.load(sys.stdin); assert d["contract"] == "asha.control-event.v1"; assert d["event"] == "turn-stopped"; assert d["state"] == "idle"' <<<"$stopped"
 # `control event` publishes @asha_state/@asha_summary, so it invokes tmux. The
 # guarantee that matters: the event path touches ONLY tmux -- never jj, never
 # git -- and a failing tmux (exit 97 here) never fails the hook.
@@ -173,11 +187,14 @@ bytecode_after="$(find "$ROOT/lib/control" \( -type d -name __pycache__ -o -type
 [[ "$bytecode_before" == "$bytecode_after" ]]
 [[ ! -e "$POISON_MARKER" ]]
 
-printf 'ok - read-only verbs invoke nothing; doctor probes tmux+jj; event touches tmux only; git never\n'
+printf 'ok - batch reads publish only tmux summary; doctor probes tmux+jj; Codex prompt/permission/tool/Stop events touch tmux only; git never\n'
 
 # The mutating seam runs only against Python-created disposable repositories;
 # restore the real PATH so this section exercises the installed jj 0.38 binary.
 PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
+  tests.python.test_control_finish_increment \
+  tests.python.test_control_terminal_actions \
+  tests.python.test_control_task_start_smoke_fixes \
   tests.python.test_control_create_by_id \
   tests.python.test_control_colocated_sync \
   tests.python.test_control_increment2.RealJjPreparationTests \

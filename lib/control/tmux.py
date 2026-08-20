@@ -12,6 +12,7 @@ from typing import Any, Callable
 
 from .config import is_canonical_absolute_path
 from .process import bounded_process, capture_bytes
+from .text import terminal_text_is_complete
 
 
 MAX_OUTPUT_BYTES = 64 * 1024
@@ -122,7 +123,7 @@ def _validate_start_directory(value: Any) -> str:
 
 def _validate_argv(value: Any) -> list[str]:
     if (not isinstance(value, list) or not value or
-            any(not isinstance(item, str) or _has_unicode_control(item) or
+            any(not isinstance(item, str) or not terminal_text_is_complete(item) or
                 item == ";" or item.endswith(";") for item in value)):
         raise TmuxError("tmux command argv is invalid")
     return list(value)

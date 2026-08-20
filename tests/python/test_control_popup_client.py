@@ -188,6 +188,7 @@ class PopupClientCliTests(unittest.TestCase):
             "TMUX_PANE": "%7",
         }
         self.config = load_config(self.env)
+        (self.root / "source").mkdir(mode=0o700)
         self.task = task_record(
             repository_root=str(self.root / "source"),
             workspace_path=str(
@@ -307,8 +308,10 @@ class TuiPopupClientTests(unittest.TestCase):
             task["runs"][0]["pane_id"],
         )
 
+        reconciled = tui_module.TuiRow.from_records(task, reconciliation(task))
         with mock.patch.object(tui_module, "_adapter_for_task", return_value=adapter), \
                 mock.patch.object(tui_module.view, "attach_target", return_value=target), \
+                mock.patch.object(tui_module, "_read_row", return_value=reconciled) as read_row, \
                 mock.patch("lib.control.cli.subprocess.run") as run:
             keep_running = tui_module._execute_intent(
                 intent,
@@ -323,10 +326,36 @@ class TuiPopupClientTests(unittest.TestCase):
             )
 
         self.assertTrue(keep_running)
-        self.assertEqual(model.message, REFUSAL)
+        self.assertEqual(model.message, REFUSAL + "; live evidence reconciled")
         self.assertEqual(adapter.caller_pane, "%7")
         self.assertFalse(adapter.popup_called)
         run.assert_not_called()
+        read_row.assert_called_once_with(
+            mock.ANY, mock.ANY, mock.ANY, row.task, mock.ANY,
+        )
+
+    def test_popup_close_immediately_reconciles_the_displayed_row(self) -> None:
+        task = task_record()
+        row = tui_module.TuiRow.from_records(task, reconciliation(task))
+        model = tui_module.TuiModel([row])
+        refreshed_task = dict(task)
+        refreshed = tui_module.TuiRow.from_records(
+            refreshed_task, reconciliation(refreshed_task),
+        )
+
+        with mock.patch.object(tui_module, "_open_popup", return_value=None), \
+                mock.patch.object(tui_module, "_read_row", return_value=refreshed) as read_row:
+            keep_running = tui_module._execute_intent(
+                model.dispatch_key("ENTER"),
+                stdscr=self.FakeScreen(), curses_module=self.FakeCurses(),
+                model=model, config=SimpleNamespace(), env={}, store=mock.Mock(),
+                journals=mock.Mock(), jj=mock.Mock(),
+            )
+
+        self.assertTrue(keep_running)
+        read_row.assert_called_once()
+        self.assertEqual(model.rows[0], refreshed)
+        self.assertIn("live evidence reconciled", model.message)
 
 
 @unittest.skipUnless(shutil.which("tmux"), "tmux is required")

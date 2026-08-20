@@ -796,7 +796,7 @@ class RealJjForgetTests(PruneFixture):
         ).stdout.strip()
 
     def test_forget_and_remove_leave_head_and_change_intact(self) -> None:
-        task = self.archived_task(populate=False)
+        task = self.archived_task(populate=False, root_fact=False)
         workspace = Path(task["jj"]["workspace_path"])
         workspace.rmdir()
         subprocess.run(

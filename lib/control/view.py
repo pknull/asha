@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import stat
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .events import expire_terminal_snapshots, publish_server_summary
 from .jj import JjAdapter, JjError
 from .launch import LaunchError, persist_terminal_reconciliation
-from .reconcile import Adapters, reconcile_task
+from .reconcile import (
+    Adapters,
+    StateObservation,
+    reconcile_task,
+    reconcile_task_with_observation,
+)
 from .store import TaskStore, task_digest
-from .tmux import TmuxAdapter
+from .tmux import TmuxAdapter, TmuxError
 from .transaction import CreationJournalStore, JournalError
 
 
@@ -45,13 +51,37 @@ def task_summary(
     }
 
 
-def reconcile_with_creation(
+def archived_lifecycle_projection(
+    task: dict[str, Any],
+) -> tuple[dict[str, Any], StateObservation]:
+    """Project archived history without consulting mutable live resources."""
+    if task.get("lifecycle") != "archived":
+        raise ValueError("lifecycle projection requires an archived task")
+    run_id = task["runs"][-1]["run_id"] if task["runs"] else None
+    reconciliation = {
+        "contract": "asha.control-reconciliation.v1",
+        "task_id": task["task_id"],
+        "state": "archived",
+        "blocker": None,
+        "evidence": [],
+        "runs": [],
+    }
+    observation = StateObservation(
+        "archived", run_id, "task-lifecycle", task.get("updated_at"),
+        "durable", "archived task lifecycle",
+    )
+    return reconciliation, observation
+
+
+def _reconcile_with_creation(
     task: dict[str, Any], adapters: Adapters,
     journals: CreationJournalStore, jj: JjAdapter,
-) -> dict[str, Any]:
+    *, include_observation: bool,
+) -> dict[str, Any] | tuple[dict[str, Any], StateObservation]:
     """Reconcile a task with its durable pre-launch journal when required."""
+    reconcile = reconcile_task_with_observation if include_observation else reconcile_task
     if task["runs"] or task["lifecycle"] not in {"creating", "failed"}:
-        return reconcile_task(task, adapters)
+        return reconcile(task, adapters)
     try:
         creation: Any = journals.read(task["task_id"])
         workspace = Path(creation["workspace"]["path"])
@@ -141,31 +171,141 @@ def reconcile_with_creation(
                 creation["live_detail"] = str(exc)
     except JournalError as exc:
         creation = None if "not found" in str(exc) else {"error": "invalid"}
-    return reconcile_task(task, adapters, creation=creation)
+    return reconcile(task, adapters, creation=creation)
+
+
+def reconcile_with_creation(
+    task: dict[str, Any], adapters: Adapters,
+    journals: CreationJournalStore, jj: JjAdapter,
+) -> dict[str, Any]:
+    """Reconcile one task while preserving the frozen v1 return shape."""
+    result = _reconcile_with_creation(
+        task, adapters, journals, jj, include_observation=False,
+    )
+    if not isinstance(result, dict):
+        raise ValueError("unexpected reconciliation projection")
+    return result
+
+
+def reconcile_with_creation_observation(
+    task: dict[str, Any], adapters: Adapters,
+    journals: CreationJournalStore, jj: JjAdapter,
+) -> tuple[dict[str, Any], StateObservation]:
+    """Reconcile state and TUI provenance from the same adapter reads."""
+    result = _reconcile_with_creation(
+        task, adapters, journals, jj, include_observation=True,
+    )
+    if isinstance(result, dict):
+        raise ValueError("missing reconciliation observation")
+    return result
+
+
+def _persist_and_expire_terminal(
+    store: TaskStore, task: dict[str, Any], reconciliation: dict[str, Any],
+    observation: StateObservation, presentation: TmuxAdapter | None,
+    *, publish_summary: bool,
+    presentation_now: Callable[[], datetime] | None,
+) -> dict[str, Any]:
+    """Apply the shared terminal-edge maintenance inside the caller's lock."""
+    task = persist_terminal_reconciliation(task, reconciliation, store)
+    derived = {run["run_id"]: run for run in reconciliation["runs"]}
+    durable_runs = [
+        {
+            "run_id": run["run_id"],
+            "state": run["state"],
+            "blocker": derived[run["run_id"]]["blocker"],
+        }
+        for run in task["runs"]
+    ]
+    expire_terminal_snapshots(store.config, durable_runs)
+    if presentation is not None:
+        _mirror_primary_run_state(task, observation, presentation)
+        if publish_summary:
+            if presentation_now is None:
+                publish_server_summary(store.config, presentation)
+            else:
+                publish_server_summary(
+                    store.config, presentation, now=presentation_now,
+                )
+    return task
+
+
+def _mirror_primary_run_state(
+    task: dict[str, Any], observation: StateObservation,
+    presentation: TmuxAdapter,
+) -> None:
+    """Best-effort mirror of the atomic state observation to its owned run."""
+    if observation.run_id is None:
+        return
+    stored = next(
+        (run for run in task["runs"] if run["run_id"] == observation.run_id),
+        None,
+    )
+    if stored is None:
+        return
+    session = task["tmux"]["session"]
+    pane = stored["pane_id"]
+    try:
+        if (presentation.session_option(
+                session, "@asha_managed", deadline_seconds=5,
+            ) != "1" or presentation.session_option(
+                session, "@asha_task_id", deadline_seconds=5,
+            ) != task["task_id"] or presentation.pane_option(
+                pane, "@asha_run_id", deadline_seconds=5,
+            ) != stored["run_id"]):
+            return
+        facts = presentation.pane_facts(pane, deadline_seconds=5)
+        if (facts.session != session or
+                facts.window != task["tmux"]["window"]):
+            return
+        presentation.set_pane_option(
+            pane, "@asha_state", observation.state, deadline_seconds=5,
+        )
+        presentation.set_session_option(
+            session, "@asha_state", observation.state, deadline_seconds=5,
+        )
+    except (TmuxError, OSError, ValueError):
+        return
 
 
 def locked_reconciliation(
     store: TaskStore, journals: CreationJournalStore, task_id: str,
     adapters: Adapters, jj: JjAdapter, *, presentation: TmuxAdapter | None = None,
+    publish_summary: bool = True,
+    presentation_now: Callable[[], datetime] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Reconcile under lock, persisting and expiring a terminal edge."""
+    task, reconciliation, _observation = locked_reconciliation_observation(
+        store, journals, task_id, adapters, jj, presentation=presentation,
+        publish_summary=publish_summary, presentation_now=presentation_now,
+    )
+    return task, reconciliation
+
+
+def locked_reconciliation_observation(
+    store: TaskStore, journals: CreationJournalStore, task_id: str,
+    adapters: Adapters, jj: JjAdapter, *, presentation: TmuxAdapter | None = None,
+    publish_summary: bool = True,
+    presentation_now: Callable[[], datetime] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], StateObservation]:
+    """Locked reconciliation with an atomic presentation-only provenance."""
     with store.transaction_lock(task_id):
         task = store.read(task_id)
-        reconciliation = reconcile_with_creation(task, adapters, journals, jj)
-        task = persist_terminal_reconciliation(task, reconciliation, store)
-        derived = {run["run_id"]: run for run in reconciliation["runs"]}
-        durable_runs = [
-            {
-                "run_id": run["run_id"],
-                "state": run["state"],
-                "blocker": derived[run["run_id"]]["blocker"],
-            }
-            for run in task["runs"]
-        ]
-        terminal = expire_terminal_snapshots(store.config, durable_runs)
-        if terminal and presentation is not None:
-            publish_server_summary(store.config, presentation)
-        return task, reconciliation
+        # This is the authoritative lifecycle gate. It uses the record read
+        # under the same task lock as any following reconciliation, so an
+        # unlocked list/model snapshot can never authorize live observation
+        # of a task that has since become archived.
+        if task["lifecycle"] == "archived":
+            reconciliation, observation = archived_lifecycle_projection(task)
+            return task, reconciliation, observation
+        reconciliation, observation = reconcile_with_creation_observation(
+            task, adapters, journals, jj,
+        )
+        task = _persist_and_expire_terminal(
+            store, task, reconciliation, observation, presentation,
+            publish_summary=publish_summary, presentation_now=presentation_now,
+        )
+        return task, reconciliation, observation
 
 
 def _adapter_for_task(task: dict[str, Any]) -> TmuxAdapter:

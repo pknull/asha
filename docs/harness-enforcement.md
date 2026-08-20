@@ -26,21 +26,26 @@ claimed:
 | `session-start` | Wired from `SessionStart` | Wired from `SessionStart` |
 | `prompt-submitted` | Wired from `UserPromptSubmit` | Wired from `UserPromptSubmit` |
 | `tool-completed` | Wired from `PostToolUse` | Wired from `PostToolUse`; interception is known incomplete for `unified_exec` |
-| `permission-requested` | Not claimed. `Notification` is multi-purpose and its payload is unverified. | Not claimed. `PermissionRequest` exists in Codex's allowlist but has no live-probe evidence and is trust-gated. |
-| `turn-stopped` | Wired from `Stop` | Not claimed. `Stop` exists in Codex's allowlist but has no live-probe evidence and is trust-gated. |
+| `permission-requested` | Not claimed. `Notification` is multi-purpose and its payload is unverified. | Wired from `PermissionRequest`; delivery before the operator answers is live-proven on Codex 0.147.0. |
+| `turn-stopped` | Wired from `Stop` | Wired from `Stop`; live-proven on Codex 0.147.0. Delivery remains subject to Codex's hash-bound interactive hook trust. |
 | `session-ended` | Wired from `SessionEnd` | Codex has no equivalent event. |
 
 Copilot and OpenCode provide process liveness only; Asha claims no semantic
 Control events for either harness.
 
-A harness with no wired stop or exit event (Codex, Copilot, OpenCode) never
+A harness with no wired stop or exit event (Copilot and OpenCode) never
 emits a signal that supersedes an in-progress `working`/`needs-input` snapshot.
 Reconciliation therefore ages those states to `unknown` once the snapshot is
 older than `control.event_staleness_seconds` (default 30 minutes): a live
 process with only stale in-progress evidence reads as `unknown`, never as a
 false positive. Observed 2026-08-16: a Codex task otherwise reported `working`
-for 25+ hours while idle at its prompt. Claude, which wires `Stop` and
-`SessionEnd`, refreshes or supersedes its state within the window in normal use.
+for 25+ hours while idle at its prompt before Codex Stop was wired. Claude
+wires `Stop` and `SessionEnd`; Codex now wires the live-proven
+`PermissionRequest` and `Stop` seams but has no session-end equivalent. The
+Codex 0.147.0 permission probe fired before the operator answered a real
+network escalation, and the same managed turn later delivered `tool-completed`
+and `turn-stopped`. A newly rendered Codex hook command requires its own
+interactive trust grant, so installation shape is not itself proof of delivery.
 
 No harness performs automatic semantic publication. Prompt and tool hooks write
 only ignored recovery state under `Work/session-state/`. Session end seals that
@@ -87,7 +92,8 @@ prunes; it does not summarize, commit, or push.
 ### Claude Code
 
 `plugins/session/hooks/hooks.json` is the source of truth. It registers
-SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, and SessionEnd handlers.
+SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, and SessionEnd
+handlers, plus a Codex-only `PermissionRequest` handler.
 
 ### OpenAI Codex
 

@@ -193,6 +193,81 @@ def locate_task_binding(
     return store, initiative, link, attempt, node, task
 
 
+def locate_task_binding_now(
+    config: OrchestrationConfig,
+    task_id: str,
+    *,
+    control_store: TaskStore | None = None,
+) -> tuple[
+    InitiativeStore, dict[str, Any], dict[str, Any], dict[str, Any],
+    dict[str, Any], dict[str, Any],
+] | None:
+    """Nonblocking, fail-closed reverse lookup across every initiative state."""
+    try:
+        task_id = canonical_uuid(task_id, "task_id")
+    except ModelError as exc:
+        raise ResultRefused(str(exc)) from exc
+    store = InitiativeStore(config)
+    try:
+        matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        reservations: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        initiatives = store.list_initiatives()
+        if store.skipped:
+            raise ResultRefused(
+                f"{len(store.skipped)} orchestration initiative record(s) unreadable"
+            )
+        for initiative in initiatives:
+            for attempt in store.list_attempts_snapshot(initiative["initiative_id"]):
+                if attempt.get("task_id") == task_id:
+                    reservations.append((initiative, attempt))
+            for link in store.list_links_snapshot(initiative["initiative_id"]):
+                if link["control_task_id"] == task_id:
+                    matches.append((initiative, link))
+        if store.skipped:
+            raise ResultRefused(
+                f"{len(store.skipped)} orchestration record(s) unreadable"
+            )
+        if len(reservations) > 1:
+            raise ResultRefused(
+                "Control task is reserved by more than one orchestration attempt"
+            )
+        if reservations and not matches:
+            raise ResultRefused(
+                "orchestration attempt reserves the Control task but its durable link is missing"
+            )
+        if not matches:
+            return None
+        if len(matches) != 1:
+            raise ResultRefused("Control task is linked to more than one initiative")
+        initiative, link = matches[0]
+        if reservations:
+            reserved_initiative, reservation = reservations[0]
+            if (
+                reserved_initiative["initiative_id"] != initiative["initiative_id"] or
+                reservation["attempt_id"] != link["attempt_id"]
+            ):
+                raise ResultRefused(
+                    "orchestration task reservation and durable link disagree"
+                )
+        attempt = store.read_attempt(initiative["initiative_id"], link["attempt_id"])
+        node = store.read_node(initiative["initiative_id"], link["node_id"])
+        if (
+            link["initiative_id"] != initiative["initiative_id"] or
+            attempt["task_id"] != task_id or
+            attempt["node_id"] != node["node_id"] or
+            attempt["attempt_id"] != link["attempt_id"]
+        ):
+            raise ResultRefused("orchestration link binding disagrees with its attempt")
+        task = (control_store or TaskStore(config.control)).peek(task_id)
+        if control_task_identity_digest(task) != link["control_task_identity_digest"]:
+            raise ResultRefused("orchestration link Control task identity does not match")
+        return store, initiative, link, attempt, node, task
+    except ResultRefused:
+        raise
+    except (StoreError, OSError, ValueError, KeyError) as exc:
+        raise ResultRefused(f"orchestration state unreadable: {exc}") from exc
+
+
 def _receipt(publication: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "contract": RESULT_RECEIPT_CONTRACT,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 import sys
@@ -17,11 +18,52 @@ if str(_SESSION_TOOLS) not in sys.path:
     sys.path.insert(0, str(_SESSION_TOOLS))
 
 from control_task_marker import canonical_marker_bytes  # type: ignore  # noqa: E402
-from memory_v2 import read_published_snapshot  # type: ignore  # noqa: E402
+from memory_v2 import (  # type: ignore  # noqa: E402
+    ACTIVE_LIMIT, CONFIG_LIMIT, DECISIONS_LIMIT, read_published_snapshot,
+    validate_active_context, validate_decisions,
+)
 
 
 class ContextError(ValueError):
     """Private context could not be read or provisioned safely."""
+
+
+def validate_reusable_context_blob(
+    relative: str, content: bytes, *, project_id: str,
+) -> None:
+    """Validate one base-tracked context file that provisioning will reuse."""
+    limits = {
+        ".asha/config.json": CONFIG_LIMIT,
+        "Memory/activeContext.md": ACTIVE_LIMIT,
+        "Memory/decisions.md": DECISIONS_LIMIT,
+    }
+    if relative not in limits or len(content) > limits[relative]:
+        raise ContextError(f"base-tracked reusable context is oversized or unsupported: {relative}")
+    try:
+        if relative == ".asha/config.json":
+            def strict_object(pairs):
+                value = {}
+                for key, item in pairs:
+                    if key in value:
+                        raise ValueError("duplicate project config key")
+                    value[key] = item
+                return value
+
+            value = json.loads(content.decode("utf-8"), object_pairs_hook=strict_object)
+            if (
+                not isinstance(value, dict) or value.get("memory_version") != 2
+                or not isinstance(value.get("project_id"), str)
+                or value["project_id"].strip() != project_id
+            ):
+                raise ValueError("project identity differs")
+        elif relative == "Memory/activeContext.md":
+            validate_active_context(content.decode("utf-8"))
+        else:
+            validate_decisions(content.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ContextError(
+            f"base-tracked reusable context is invalid: {relative}: {exc}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -40,6 +82,13 @@ DIRECTORY_MODES = {
     "Work": 0o700,
     "Work/session-state": 0o700,
 }
+
+# Context provisioning creates this fixed private subtree even though its
+# session-specific leaf names are not part of the creation-time file plan.
+# Proving the directory itself ignored under Git semantics covers every
+# bounded recovery/publication filename written beneath it without relying on
+# one representative sentinel name.
+DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES = ("Work/session-state/",)
 
 
 def build_context_plan(

@@ -17,6 +17,7 @@ from lib.control.doctor import DEFAULT_PROBES, run_doctor
 from lib.control.jj import (
     JjAdapter, JjError, RepositoryFacts, colocated_sync_remediation,
 )
+from lib.control.sources import ValidatedPrRemote
 
 
 class ColocatedProbeAdapterTests(unittest.TestCase):
@@ -24,6 +25,10 @@ class ColocatedProbeAdapterTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name).resolve()
+        (self.root / ".git").mkdir()
+        (self.root / ".git" / "HEAD").write_text(
+            "ref: refs/heads/main\n", encoding="utf-8",
+        )
 
     @staticmethod
     def completed(argv, returncode=0, stdout=b"", stderr=b""):
@@ -127,7 +132,7 @@ class ColocatedProbeAdapterTests(unittest.TestCase):
 
         def runner(argv, **_kwargs):
             calls.append(list(argv))
-            if argv[0] == "git":
+            if Path(argv[0]).name == "git":
                 return self.completed(argv, stdout=tree)
             if argv[-1] == "root" and argv[-2] != "git":
                 return self.completed(argv, stdout=(str(self.root) + "\n").encode())
@@ -156,10 +161,11 @@ class ColocatedProbeAdapterTests(unittest.TestCase):
         ).encode()
         self.assertEqual(tree.entries, tuple(tuple(item) for item in entries))
         self.assertEqual(tree.digest, hashlib.sha256(canonical).hexdigest())
-        git_calls = [call for call in calls if call[0] == "git"]
-        self.assertEqual(git_calls, [[
-            "git", "-C", str(self.root), "ls-tree", "-rz", "--full-tree", commit,
-        ]])
+        git_calls = [call for call in calls if Path(call[0]).name == "git"]
+        self.assertEqual(len(git_calls), 1)
+        self.assertEqual(git_calls[0][-5:], [
+            "ls-tree", "-rz", "--full-tree", "--end-of-options", commit,
+        ])
         self.assertFalse(any("file" in call and "show" in call for call in calls))
 
     def test_immutable_tree_refuses_conflicts_submodules_entry_and_byte_overflow(self) -> None:
@@ -167,7 +173,7 @@ class ColocatedProbeAdapterTests(unittest.TestCase):
         conflicted, calls = self.immutable_runner(b"", conflict=b"true\n")
         with self.assertRaisesRegex(JjError, "conflicted"):
             JjAdapter(runner=conflicted).immutable_tree(self.root, commit)
-        self.assertFalse(any(call[0] == "git" for call in calls))
+        self.assertFalse(any(Path(call[0]).name == "git" for call in calls))
 
         submodule, _ = self.immutable_runner(
             f"160000 commit {'d' * 40}\tsubmodule\0".encode()
@@ -213,7 +219,7 @@ class RepositorySyncDoctorTests(unittest.TestCase):
             def working_copy_parent(self, source):
                 return jj_parent
 
-            def git_head(self, git_root):
+            def git_head_exact(self, git_root):
                 return git_head
 
         with contextlib.chdir(root), \
@@ -278,7 +284,7 @@ class RepositorySyncDoctorTests(unittest.TestCase):
             def working_copy_parent(self, source):
                 return "b" * 40
 
-            def git_head(self, git_root):
+            def git_head_exact(self, git_root):
                 return "a" * 40
 
         with mock.patch("lib.control.doctor.shutil.which", return_value="/fake/jj"), \
@@ -333,14 +339,17 @@ class StartGuardOrderingTests(unittest.TestCase):
                         "isCrossRepository": False,
                     }
 
-                def pr_remote(self, git_root, url, number):
-                    return "origin"
+                def pr_remote(self, git_root, url, number, *, git=None):
+                    return ValidatedPrRemote(
+                        "origin", "https://example.invalid/repo.git", "https",
+                        "c" * 64,
+                    )
 
-                def fetch_pr_head(self, git_root, remote, number):
+                def fetch_pr_head(self, git_root, remote, number, *, git=None):
                     events.append("fetch")
                     return ({
                         "kind": "fetched-objects", "detail": "fetched",
-                        "remote": remote, "source_ref": f"pull/{number}/head",
+                        "remote": remote.name, "source_ref": f"pull/{number}/head",
                     },)
 
             guard_calls = 0

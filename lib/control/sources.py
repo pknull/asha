@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import unicodedata
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
@@ -40,6 +41,16 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 
 class SourceError(ValueError):
     """A GitHub source could not be read or safely imported."""
+
+
+@dataclass(frozen=True)
+class ValidatedPrRemote:
+    """One preflighted PR fetch URL bound to safe local configuration."""
+
+    name: str
+    url: str
+    transport: str
+    config_digest: str
 
 
 class GithubAdapter:
@@ -185,26 +196,49 @@ class GithubAdapter:
             return None
         return host.lower(), normalized.lower()
 
-    def pr_remote(self, git_root: Path, url: str, number: int) -> str:
-        """Resolve the configured Git remote that owns the viewed PR."""
+    @classmethod
+    def _validated_fetch_url(
+        cls, url: str, expected: tuple[str, str],
+    ) -> tuple[str, str] | None:
+        if (
+            not isinstance(url, str) or not 1 <= len(url) <= MAX_URL_CHARS
+            or any(ord(character) < 32 or ord(character) == 127 for character in url)
+        ):
+            return None
+        parsed = urlsplit(url)
+        if parsed.scheme:
+            if parsed.scheme not in {"https", "ssh"}:
+                return None
+            if (
+                not parsed.hostname or parsed.password is not None
+                or parsed.query or parsed.fragment
+                or (parsed.scheme == "https" and parsed.username is not None)
+                or (parsed.scheme == "ssh" and parsed.username not in {None, "git"})
+            ):
+                return None
+            transport = parsed.scheme
+        else:
+            matched = _SCP_REMOTE.fullmatch(url)
+            if matched is None or not url.startswith("git@"):
+                return None
+            transport = "ssh"
+        if cls._repository_identity(url) != expected:
+            return None
+        return url, transport
+
+    def pr_remote(
+        self, git_root: Path, url: str, number: int, *, git=None,
+    ) -> ValidatedPrRemote:
+        """Select one matching HTTPS/SSH fetch URL without executing config."""
         repository = self._canonical_directory(git_root, "Git backend root")
         requested = self._number(number)
+        if git is None:
+            from .jj import JjAdapter
+            git = JjAdapter(runner=self.runner)
         try:
-            raw = self._run_bytes(
-                "git", ["-C", str(repository), "remote"],
-            ).decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise SourceError("git returned non-UTF-8 remote names") from exc
-        remotes = raw.splitlines()
-        if (
-            not remotes
-            or any(_REMOTE.fullmatch(remote) is None or ".." in remote for remote in remotes)
-            or len(set(remotes)) != len(remotes)
-        ):
-            raise SourceError("Git repository has no unambiguous remote with a safe name")
-        if len(remotes) == 1:
-            return remotes[0]
-
+            configured = git.git_remote_configuration(repository)
+        except ValueError as exc:
+            raise SourceError(str(exc)) from exc
         parsed = urlsplit(url)
         suffix = f"/pull/{requested}"
         if not parsed.path.endswith(suffix):
@@ -212,36 +246,39 @@ class GithubAdapter:
         target = self._repository_identity(
             f"{parsed.scheme}://{parsed.netloc}{parsed.path[:-len(suffix)]}"
         )
-        matches: list[str] = []
-        for remote in remotes:
-            try:
-                urls = self._run_bytes(
-                    "git",
-                    ["-C", str(repository), "remote", "get-url", "--all", remote],
-                ).decode("utf-8").splitlines()
-            except UnicodeDecodeError as exc:
-                raise SourceError("git returned a non-UTF-8 remote URL") from exc
-            if target is not None and any(
-                self._repository_identity(candidate) == target for candidate in urls
-            ):
-                matches.append(remote)
+        if target is None:
+            raise SourceError("GitHub pull request URL has no usable repository identity")
+        matches: list[ValidatedPrRemote] = []
+        for remote, urls in configured.remotes:
+            for candidate in urls:
+                validated = self._validated_fetch_url(candidate, target)
+                if validated is not None:
+                    selected_url, transport = validated
+                    matches.append(ValidatedPrRemote(
+                        name=remote, url=selected_url, transport=transport,
+                        config_digest=configured.config_digest,
+                    ))
+                    break
         if not matches:
             raise SourceError(
-                "could not identify the Git remote for the pull request repository"
+                "could not identify a configured remote with a safe HTTPS/SSH URL "
+                "matching the pull request repository"
             )
-        return "origin" if "origin" in matches else sorted(matches)[0]
+        return next(
+            (candidate for candidate in matches if candidate.name == "origin"),
+            sorted(matches, key=lambda candidate: candidate.name)[0],
+        )
 
     def fetch_pr_head(
-        self, git_root: Path, remote: str, number: int,
+        self, git_root: Path, remote: ValidatedPrRemote, number: int, *, git=None,
     ) -> tuple[dict[str, str], ...]:
         repository = self._canonical_directory(git_root, "Git backend root")
         requested = self._number(number)
         if (
-            not isinstance(remote, str)
-            or _REMOTE.fullmatch(remote) is None
-            or ".." in remote
+            not isinstance(remote, ValidatedPrRemote)
+            or _REMOTE.fullmatch(remote.name) is None or ".." in remote.name
         ):
-            raise SourceError("Git remote name uses an invalid restricted grammar")
+            raise SourceError("validated Git remote is missing or invalid")
         source_ref = f"pull/{requested}/head"
         # jj 0.38 only surfaces refs from namespaces it tracks. Verified
         # directly: a commit reachable solely through refs/asha-control/* stays
@@ -253,19 +290,26 @@ class GithubAdapter:
         # namespace stays empty of controller entries and no existing bookmark
         # of either kind moves. See
         # Work/code-orchestrate/20260815-asha-control-inc6/03-amendment-decision-2.md
-        controller_ref = f"refs/remotes/{remote}/asha-control-pr-{requested}"
-        self._run_bytes(
-            "git",
-            [
-                "-C", str(repository), "fetch", remote,
-                f"{source_ref}:{controller_ref}",
-            ],
-        )
+        controller_ref = f"refs/remotes/{remote.name}/asha-control-pr-{requested}"
+        if git is None:
+            from .jj import JjAdapter
+            git = JjAdapter(runner=self.runner)
+        try:
+            git.fetch_git_ref_exact(
+                repository, remote.url, f"{source_ref}:{controller_ref}",
+                transport=remote.transport, config_digest=remote.config_digest,
+            )
+        except ValueError as exc:
+            raise SourceError(
+                f"safe PR fetch failed without credential helpers or interactive "
+                f"prompts: {exc}. For a private PR, fetch the head into this "
+                "repository manually, verify it, then retry"
+            ) from exc
         return (
             {
                 "kind": "fetched-objects",
-                "detail": f"fetched Git objects from {remote} {source_ref}",
-                "remote": remote,
+                "detail": f"fetched Git objects from {remote.name} {source_ref}",
+                "remote": remote.name,
                 "source_ref": source_ref,
             },
             {

@@ -63,6 +63,35 @@ class PruneResult:
         }
 
 
+@dataclass(frozen=True)
+class PruneContext:
+    bindings: dict[str, list[dict[str, str]]]
+    bindings_error: str | None
+    records: "PruneRecordStore"
+    path_owners: dict[str, set[str]]
+
+
+def assemble_prune_context(
+    config: ControlConfig,
+    *,
+    tasks: TaskStore,
+    env: dict[str, str] | None = None,
+    remove_workspace: bool = True,
+) -> PruneContext:
+    """Read the shared fail-closed inputs for one or more prune calls."""
+    bindings: dict[str, list[dict[str, str]]] = {}
+    binding_error: str | None = None
+    if remove_workspace:
+        try:
+            bindings = orchestration_bindings(env)
+        except PruneError as exc:
+            binding_error = str(exc)
+    return PruneContext(
+        bindings, binding_error, PruneRecordStore(config),
+        workspace_path_owners(tasks) if remove_workspace else {},
+    )
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
@@ -650,6 +679,36 @@ def workspace_path_owners(tasks: TaskStore) -> dict[str, set[str]]:
     for record in tasks.list():
         owners.setdefault(record["jj"]["workspace_path"], set()).add(record["task_id"])
     return owners
+
+
+def prune_one_task(
+    config: ControlConfig,
+    task: dict[str, Any],
+    *,
+    tasks: TaskStore,
+    journals: CreationJournalStore,
+    jj: JjAdapter,
+    env: dict[str, str] | None = None,
+    remove_workspace: bool = True,
+    dry_run: bool = False,
+    context: PruneContext | None = None,
+    tmux: TmuxAdapter | None = None,
+) -> PruneResult:
+    """Assemble and invoke the authoritative controller for one task."""
+    selected = context or assemble_prune_context(
+        config, tasks=tasks, env=env, remove_workspace=remove_workspace,
+    )
+    socket = task["tmux"]["socket"]
+    adapter = tmux or TmuxAdapter(socket=None if socket == "default" else socket)
+    return prune_task(
+        config, task, tasks=tasks, journals=journals, tmux=adapter, jj=jj,
+        bindings=selected.bindings,
+        bindings_error=selected.bindings_error,
+        remove_workspace=remove_workspace,
+        dry_run=dry_run,
+        records=selected.records,
+        path_owners=selected.path_owners,
+    )
 
 
 def prunable_summary(

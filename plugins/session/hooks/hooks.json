@@ -90,9 +90,20 @@
         ]
       }
     ],
+    "PermissionRequest": [
+      {
+        "_asha_harnesses": ["codex"],
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh PermissionRequest"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
-        "_asha_harnesses": ["claude"],
+        "_asha_harnesses": ["claude", "codex"],
         "hooks": [
           {
             "type": "command",

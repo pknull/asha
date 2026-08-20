@@ -248,7 +248,7 @@ def _repository_scope(repo: Path, jj: JjAdapter) -> dict[str, Any]:
 
 def _guard_colocated_sync(jj: JjAdapter, root: Path, git_root: Path) -> None:
     working_copy_parent = jj.working_copy_parent(root)
-    git_head = jj.git_head(git_root)
+    git_head = jj.git_head_exact(root)
     remediation = colocated_sync_remediation(
         root, git_head, working_copy_parent,
     )
@@ -806,6 +806,26 @@ def _snapshot(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, A
     }
 
 
+def reconcile_one_initiative(
+    store: InitiativeStore, initiative_id: str,
+) -> dict[str, Any]:
+    """Run the CLI's reconciliation sequence without dispatching ready work."""
+    action_result = reconcile_actions(store, initiative_id)
+    live_result = reconcile_live(store, initiative_id)
+    initiative = store.peek(initiative_id)
+    snapshot = _snapshot(store, initiative)
+    return {
+        "contract": RECONCILE_LIST_CONTRACT,
+        "initiative_id": initiative["initiative_id"],
+        "action_reconciliation": action_result,
+        "live_reconciliation": live_result,
+        "results": reconcile_nodes(
+            initiative["initiative_id"], snapshot["nodes"], store=store,
+        ),
+        "superseded_nodes": snapshot["superseded_nodes"],
+    }
+
+
 def _submit_convenience_action(
     store: InitiativeStore,
     initiative: dict[str, Any],
@@ -1001,20 +1021,7 @@ def _initiative_command(args: list[str], env: Mapping[str, str], *, jj: JjAdapte
             raise ValueError("snapshot requires --json")
         payload = _snapshot(store, initiative)
     elif command == "reconcile":
-        action_result = reconcile_actions(store, initiative["initiative_id"])
-        live_result = reconcile_live(store, initiative["initiative_id"])
-        initiative = store.peek(initiative["initiative_id"])
-        snapshot = _snapshot(store, initiative)
-        payload = {
-            "contract": RECONCILE_LIST_CONTRACT,
-            "initiative_id": initiative["initiative_id"],
-            "action_reconciliation": action_result,
-            "live_reconciliation": live_result,
-            "results": reconcile_nodes(
-                initiative["initiative_id"], snapshot["nodes"], store=store,
-            ),
-            "superseded_nodes": snapshot["superseded_nodes"],
-        }
+        payload = reconcile_one_initiative(store, initiative["initiative_id"])
     elif command == "storage":
         payload = storage_report(initiative, store=store)
     else:

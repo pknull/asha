@@ -14,16 +14,19 @@ from pathlib import Path
 from unittest import mock
 
 from lib.control import view
+from lib.control.config import load_config
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
 from lib.control.jj import DiffSummary, JjAdapter, JjError, MAX_OUTPUT_BYTES
 from lib.control.launch import LaunchError
 from lib.control.reconcile import UnavailableAdapters, reconcile_task
+from lib.control.reconcile import StateObservation
 from lib.control.tmux import PaneFacts
 from lib.control.tui import (
     IntentKind,
     TuiModel,
     TuiRow,
     filter_rows,
+    lifecycle_row,
     render,
     run_tui,
     sort_rows,
@@ -138,7 +141,7 @@ class PureModelTests(unittest.TestCase):
         model.move_selection(-500)
         self.assertEqual(model.selection, 0)
 
-    def test_all_eight_keys_dispatch_and_unknown_keys_are_inert(self) -> None:
+    def test_task_keys_include_context_actions_and_lifecycle_scope(self) -> None:
         model = TuiModel([row("keys", "working")])
         expected = {
             "ENTER": IntentKind.OPEN,
@@ -148,6 +151,8 @@ class PureModelTests(unittest.TestCase):
             "/": IntentKind.FILTER,
             "q": IntentKind.QUIT,
             "?": IntentKind.HELP,
+            "x": IntentKind.ACTIONS,
+            "A": IntentKind.TOGGLE_SCOPE,
         }
         for key, kind in expected.items():
             with self.subTest(key=key):
@@ -155,7 +160,6 @@ class PureModelTests(unittest.TestCase):
         refused = model.dispatch_key("a")
         self.assertIs(refused.kind, IntentKind.NONE)
         self.assertIn("all exited", refused.reason or "")
-        self.assertIs(model.dispatch_key("x").kind, IntentKind.NONE)
         self.assertIs(model.dispatch_key("DELETE").kind, IntentKind.NONE)
 
         opened = model.dispatch_key("\n")
@@ -165,7 +169,7 @@ class PureModelTests(unittest.TestCase):
     def test_resize_recomputes_visible_rows_including_too_small_height(self) -> None:
         model = TuiModel(
             [row(f"task-{number}", "working") for number in range(20)],
-            height=16,
+            height=19,
         )
         self.assertEqual(model.visible_capacity, 4)
         self.assertEqual(len(model.visible_rows), 4)
@@ -174,10 +178,10 @@ class PureModelTests(unittest.TestCase):
         self.assertEqual(model.visible_capacity, 0)
         self.assertEqual(visible, ())
 
-        model.resize(14, 80)
+        model.resize(17, 80)
         self.assertEqual(model.visible_capacity, 2)
         self.assertEqual(len(model.visible_rows), 2)
-        self.assertEqual((model.height, model.width), (14, 80))
+        self.assertEqual((model.height, model.width), (17, 80))
 
     def test_render_has_required_columns_and_detail_projection_fields(self) -> None:
         selected = row("render-me", "working", repository="/repo/asha")
@@ -199,6 +203,11 @@ class PureModelTests(unittest.TestCase):
         self.assertLessEqual(len(lines), model.height)
         self.assertTrue(all(len(line) <= model.width for line in lines))
 
+        model.help_visible = True
+        help_output = "\n".join(render(model))
+        self.assertIn("synchronous", help_output)
+        self.assertIn("Modal prompts pause automatic reconciliation", help_output)
+
     def test_detail_and_open_intent_project_the_latest_of_multiple_runs(self) -> None:
         selected = row("latest-run", "working")
         first_run = selected.task["runs"][0]
@@ -212,15 +221,41 @@ class PureModelTests(unittest.TestCase):
         selected.task["runs"].append(latest_run)
         selected = TuiRow.from_records(
             selected.task, reconciliation(selected.task, "working"),
+            StateObservation(
+                "working", latest_run["run_id"], "event",
+                "2026-08-18T12:00:00Z", "fresh", "latest live evidence",
+            ),
         )
 
         model = TuiModel([selected])
 
         self.assertEqual(model.detail.run_id, latest_run["run_id"])
         self.assertEqual(model.detail.role, "tdd")
-        self.assertIn("latest evidence", model.detail.evidence)
+        self.assertIn("latest live evidence", model.detail.evidence)
         self.assertNotIn("older evidence", model.detail.evidence)
         self.assertEqual(model.dispatch_key("ENTER").run_id, latest_run["run_id"])
+
+    def test_table_harness_uses_the_observation_run_not_the_last_run(self) -> None:
+        selected = row("primary-run", "working")
+        primary = selected.task["runs"][0]
+        primary["harness"] = "claude"
+        later = copy.deepcopy(primary)
+        later["run_id"] = "22222222-2222-4222-8222-222222222222"
+        later["pane_id"] = "%22"
+        later["harness"] = "codex"
+        selected.task["runs"].append(later)
+        selected = TuiRow.from_records(
+            selected.task, reconciliation(selected.task, "working"),
+            StateObservation(
+                "working", primary["run_id"], "event",
+                "2026-08-18T12:00:00Z", "fresh", "primary run evidence",
+            ),
+        )
+
+        output = "\n".join(render(TuiModel([selected], height=30, width=140)))
+        table_row = next(line for line in output.splitlines() if "primary-run" in line)
+        self.assertIn("claude", table_row)
+        self.assertNotIn("codex", table_row)
 
     def test_archive_intent_uses_derived_terminal_run_state(self) -> None:
         exited = TuiModel([row("exited", "exited")])
@@ -243,11 +278,12 @@ class PureModelTests(unittest.TestCase):
 
         output = "\n".join(render(model))
 
-        for key in ("Enter", "n start", "r reconcile", "d diff", "a archive", "/ filter", "q quit", "? help"):
+        for key in ("Enter", "x context", "A active/all", "n start", "r reconcile", "d diff", "a archive", "/ filter", "q quit", "? help"):
             self.assertIn(key, output)
         self.assertIn("evidence", output)
         self.assertIn("Limitations", output)
-        self.assertIn("no destructive removal or automated integration", output)
+        self.assertIn("prune requires separate confirmation", output)
+        self.assertIn("no automated integration", output)
 
     def test_age_uses_a_live_clock_after_reload(self) -> None:
         opened = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
@@ -292,8 +328,38 @@ class PureModelTests(unittest.TestCase):
         for forbidden in ("remove", "delete", "merge", "rebase", "integrate", "push"):
             self.assertNotIn(forbidden, values)
         model = TuiModel([row("safe", "working")])
-        for key in ("D", "m", "i", "p", "x"):
+        for key in ("D", "m", "i", "p"):
             self.assertIs(model.dispatch_key(key).kind, IntentKind.NONE)
+
+    def test_archived_lifecycle_projection_and_scope_are_explicit(self) -> None:
+        archived = task_record(slug="history")
+        archived["lifecycle"] = "archived"
+        projected = lifecycle_row(archived)
+        model = TuiModel([projected], include_archived=True, height=30, width=120)
+
+        self.assertEqual(projected.display_state, "archived")
+        self.assertEqual(projected.reconciliation["state"], "archived")
+        self.assertTrue(model.include_archived)
+        self.assertIn("Scope: all", "\n".join(render(model)))
+        model.include_archived = False
+        self.assertIn("Scope: active", "\n".join(render(model)))
+
+    def test_replace_rows_preserves_selection_by_task_id_across_scope_reload(self) -> None:
+        first = row("first", "working")
+        selected = row("selected", "working")
+        model = TuiModel([first, selected], include_archived=False)
+        model.selection = next(
+            index for index, item in enumerate(model.filtered_rows)
+            if item.task["task_id"] == selected.task["task_id"]
+        )
+        archived = copy.deepcopy(selected.task)
+        archived["lifecycle"] = "archived"
+        model.include_archived = True
+
+        model.replace_rows([first, lifecycle_row(archived)])
+
+        self.assertEqual(model.selected_row.task["task_id"], selected.task["task_id"])
+        self.assertEqual(model.selected_row.display_state, "archived")
 
 
 class PreflightDegradeTests(unittest.TestCase):
@@ -401,25 +467,37 @@ class PreflightDegradeTests(unittest.TestCase):
                 self.assertIs(signal.getsignal(signum), previous[signum])
 
     def test_start_form_preserves_the_tui_sigterm_handler(self) -> None:
-        from types import SimpleNamespace
         from lib.control import tui as tui_module
-        from lib.control import cli as cli_module
 
-        with mock.patch.object(
-            tui_module, "_prompt_line",
-            side_effect=["/repo", "trunk()", "codex", "implementer", "goal"],
-        ), mock.patch.object(
-            cli_module, "_start_command_inner", return_value=0,
-        ) as start_inner, mock.patch.object(
-            cli_module.signal, "signal",
-            side_effect=AssertionError("TUI SIGTERM handler was replaced"),
-        ), mock.patch.object(tui_module, "_repaint_after_suspend"):
-            tui_module._start_form(
-                mock.Mock(), mock.Mock(), TuiModel([]), {},
-                SimpleNamespace(default_harness="codex"),
-            )
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            env = {
+                "HOME": str(home), "ASHA_CONFIG": str(root / "missing.json"),
+                "XDG_STATE_HOME": str(root / "state"),
+                "XDG_DATA_HOME": str(root / "data"),
+                "XDG_RUNTIME_DIR": str(root / "runtime"),
+            }
+            config = load_config(env)
+            screen = mock.Mock()
+            screen.getmaxyx.return_value = (24, 120)
+            screen.getch.side_effect = [10, 10, 10, 10, *map(ord, "goal"), 10]
+            curses = mock.Mock()
+            curses.error = self.FakeCurses.error
+            with mock.patch.object(
+                tui_module, "_supervise_start_process", return_value="task started",
+            ) as supervise, mock.patch.object(
+                tui_module, "new_uuid",
+                return_value="12345678-1234-4234-8234-123456789abc",
+            ):
+                result = tui_module._start_form(
+                    screen, curses, TuiModel([]), env, config,
+                )
 
-        start_inner.assert_called_once()
+        self.assertEqual(result, "task started")
+        supervise.assert_called_once()
+        curses.endwin.assert_not_called()
 
 
 class DoctorTuiProbeTests(unittest.TestCase):
@@ -497,6 +575,41 @@ class PopupIntegrationTests(unittest.TestCase):
                 self.FakeCurses(), self.FakeCurses(), config, popup_row, None,
                 {"TMUX_PANE": "%7"},
             )
+        run.assert_called_once()
+
+    def test_context_inspect_reaches_the_same_real_popup_signature(self) -> None:
+        from types import SimpleNamespace
+        from lib.control import tui as tui_module
+        from lib.control import cli as cli_module
+
+        popup_row = row("context-popup", "exited", lifecycle="ended")
+        adapter = self.FakeAdapter()
+        target = view.AttachTarget(
+            session=popup_row.task["tmux"]["session"],
+            window=popup_row.task["tmux"]["window"], pane_id=None,
+        )
+        config = SimpleNamespace(popup_width="80%", popup_height="80%")
+        store = mock.Mock()
+        store.read.return_value = popup_row.task
+        model = TuiModel([popup_row])
+        with mock.patch.object(tui_module, "_lookup_task_binding", return_value=None), \
+                mock.patch.object(tui_module, "_prompt_line", return_value="i"), \
+                mock.patch.object(tui_module, "_adapter_for_task", return_value=adapter), \
+                mock.patch.object(tui_module.view, "attach_target", return_value=target), \
+                mock.patch.object(tui_module, "_repaint_after_suspend"), \
+                mock.patch.object(tui_module, "_read_row", return_value=popup_row), \
+                mock.patch.object(
+                    cli_module.subprocess, "run",
+                    return_value=SimpleNamespace(returncode=0),
+                ) as run:
+            result = tui_module._context_actions(
+                stdscr=self.FakeCurses(), curses_module=self.FakeCurses(),
+                model=model, config=config, env={"TMUX_PANE": "%7"},
+                store=store, journals=mock.Mock(), jj=mock.Mock(),
+                task_id=popup_row.task["task_id"],
+            )
+
+        self.assertIn("popup closed", result)
         run.assert_called_once()
 
 

@@ -200,8 +200,8 @@ MALFORMED="$(run_hook post-tool-use.sh 'not-json')"; RC=$?
 [[ $RC -eq 0 && "$MALFORMED" == '{}' ]] && ok "malformed hook payload fails open" || fail "malformed hook payload fails open"
 
 HOOKS="$REPO_ROOT/plugins/session/hooks/hooks.json"
-jq -e '.hooks | has("SessionStart") and has("UserPromptSubmit") and has("PostToolUse") and has("SessionEnd") and has("Stop")' "$HOOKS" >/dev/null \
-  && ok "hook registry carries recovery lifecycle plus Control Stop observation" || fail "hook registry carries recovery lifecycle plus Control Stop observation"
+jq -e '.hooks | has("SessionStart") and has("UserPromptSubmit") and has("PostToolUse") and has("PermissionRequest") and has("SessionEnd") and has("Stop")' "$HOOKS" >/dev/null \
+  && ok "hook registry carries every claimed Control observation" || fail "hook registry carries every claimed Control observation"
 if ! rg -n 'pattern_analyzer|jsonl_reader|event_store|detached-save|save-session|git (commit|push)|Memory/' \
       "$HANDLERS/session-start.sh" "$HANDLERS/user-prompt-submit.sh" \
       "$HANDLERS/post-tool-use.sh" "$HANDLERS/session-end.sh" >/dev/null; then
@@ -348,6 +348,7 @@ done <<'EOF'
 SessionStart session-start
 UserPromptSubmit prompt-submitted
 PostToolUse tool-completed
+PermissionRequest permission-requested
 Stop turn-stopped
 SessionEnd session-ended
 EOF
@@ -369,12 +370,34 @@ CONTROL_STATUS=$?
   && ok "Control event bridge remains fail-open with empty stdin" \
   || fail "Control event bridge remains fail-open with empty stdin"
 
+FAKE_CONTROL_ROOT="$WORK/fake-control-root"
+CONTROL_CAPTURE="$WORK/permission-requested.args"
+mkdir -p "$FAKE_CONTROL_ROOT/bin"
+cat > "$FAKE_CONTROL_ROOT/bin/asha" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "$CONTROL_CAPTURE"
+EOF
+chmod +x "$FAKE_CONTROL_ROOT/bin/asha"
+printf '%s' '{"session_id":"permission-live-gate"}' \
+  | timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$FAKE_CONTROL_ROOT" \
+      ASHA_HARNESS=codex CONTROL_CAPTURE="$CONTROL_CAPTURE" \
+      "$CONTROL_HANDLER" PermissionRequest >/dev/null
+[[ -f "$CONTROL_CAPTURE" \
+   && "$(cat "$CONTROL_CAPTURE")" == *"control event --event permission-requested"* \
+   && "$(cat "$CONTROL_CAPTURE")" == *"--harness codex"* \
+   && "$(cat "$CONTROL_CAPTURE")" == *"--session-id permission-live-gate"* ]] \
+  && ok "Codex PermissionRequest maps to the bounded Control event" \
+  || fail "Codex PermissionRequest maps to the bounded Control event"
+
 if jq -e '[.hooks.SessionStart[], .hooks.UserPromptSubmit[], .hooks.PostToolUse[]]
     | all(.[] | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")));
           has("_asha_harnesses") | not)' "$HOOKS" >/dev/null 2>&1 \
   && jq -e '.hooks.Stop[]
     | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")))
-    | ._asha_harnesses == ["claude"]' "$HOOKS" >/dev/null 2>&1 \
+    | ._asha_harnesses == ["claude", "codex"]' "$HOOKS" >/dev/null 2>&1 \
+  && jq -e '.hooks.PermissionRequest[]
+    | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")))
+    | ._asha_harnesses == ["codex"]' "$HOOKS" >/dev/null 2>&1 \
   && jq -e '.hooks.SessionEnd[]
     | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")))
     | ._asha_harnesses == ["claude"]' "$HOOKS" >/dev/null 2>&1; then
@@ -391,12 +414,22 @@ CODEX_RENDER="$(_codex_emit_hooks_for_plugin \
 [[ "$CODEX_RENDER" == *"control-event.sh SessionStart"* \
    && "$CODEX_RENDER" == *"control-event.sh UserPromptSubmit"* \
    && "$CODEX_RENDER" == *"control-event.sh PostToolUse"* \
-   && "$CODEX_RENDER" != *"control-event.sh Stop"* \
+   && "$CODEX_RENDER" == *"control-event.sh PermissionRequest"* \
+   && "$CODEX_RENDER" == *"control-event.sh Stop"* \
    && "$CODEX_RENDER" != *"control-event.sh SessionEnd"* \
-   && "$CODEX_RENDER" != *"[[hooks.Stop]]"* \
+   && "$CODEX_RENDER" == *"[[hooks.PermissionRequest]]"* \
+   && "$CODEX_RENDER" == *"[[hooks.Stop]]"* \
    && "$CODEX_RENDER" != *"[[hooks.SessionEnd]]"* ]] \
-  && ok "Codex renderer includes only the three claimed Control events" \
-  || fail "Codex renderer includes only the three claimed Control events"
+  && ok "Codex renderer includes the five live-proven Control events" \
+  || fail "Codex renderer includes the five live-proven Control events"
+
+TEST_HOOKS="$REPO_ROOT/plugins/test/hooks/hooks.json"
+if jq -e '.hooks | has("PermissionRequest") | not' "$TEST_HOOKS" >/dev/null 2>&1 \
+    && [[ ! -e "$REPO_ROOT/plugins/test/hooks/permission-request-probe.sh" ]]; then
+  ok "temporary Codex PermissionRequest probe is retired"
+else
+  fail "temporary Codex PermissionRequest probe is retired"
+fi
 
 echo "test-hooks: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
