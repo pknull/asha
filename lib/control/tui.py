@@ -2,27 +2,40 @@
 
 from __future__ import annotations
 
-import contextlib
 import copy
 import importlib
-import io
+import json
 import os
+import selectors
+import shutil
 import signal
+import subprocess
 import sys
+import time
 import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Iterable, Mapping, TextIO
+from typing import Any, Callable, Iterable, Mapping, TextIO
 
 from .config import ControlConfig, load_config
-from .jj import DiffSummary, JjAdapter
-from .launch import archive_task
-from .reconcile import LiveAdapters
-from .store import TaskStore
-from .tmux import TmuxAdapter
-from .transaction import CreationJournalStore
+from .jj import DiffSummary, JjAdapter, JjError, discover_git_root
+from .harness import HARNESSES, validate_role
+from .launch import archive_task, stop_task
+from .model import new_uuid, retry_task_slug
+from .prepare import retained_recovery_guidance, v2_retention_diagnostic
+from .prune import (
+    PruneError, PruneRecordStore, assemble_prune_context, prune_one_task,
+)
+from .reconcile import LiveAdapters, StateObservation
+from .store import StoreError, TaskStore
+from .tmux import TmuxAdapter, TmuxError
+from .transaction import CreationJournalStore, JournalError
+from .text import (
+    prompt_character_allowed as _shared_prompt_character_allowed,
+    terminal_text_is_complete,
+)
 from . import view
 
 
@@ -39,7 +52,13 @@ _STATE_ORDER = {
     "ended": 9,
     "archived": 10,
 }
-_FIXED_SCREEN_LINES = 12
+_FIXED_SCREEN_LINES = 15
+_INPUT_POLL_MS = 200
+_AUTO_REFRESH_SECONDS = 5.0
+_START_OUTPUT_BYTES = 64 * 1024
+_START_DRAIN_SECONDS = 0.25
+_START_CLEANUP_SECONDS = 0.5
+_DEFERRED_START_WORKERS: list[subprocess.Popen] = []
 _DEGRADE_MESSAGE = (
     "asha control: terminal TUI unavailable; use `asha task list --json` "
     "as the non-interactive fallback."
@@ -53,6 +72,8 @@ class IntentKind(Enum):
     RECONCILE = "reconcile"
     DIFF = "diff"
     ARCHIVE = "archive"
+    ACTIONS = "actions"
+    TOGGLE_SCOPE = "toggle-scope"
     FILTER = "filter"
     QUIT = "quit"
     HELP = "help"
@@ -71,16 +92,42 @@ class TuiIntent:
 class TuiRow:
     task: dict[str, Any]
     reconciliation: dict[str, Any]
+    observation: StateObservation
 
     @classmethod
     def from_records(
         cls, task: dict[str, Any], reconciliation: dict[str, Any],
+        observation: StateObservation | None = None,
     ) -> "TuiRow":
-        return cls(copy.deepcopy(task), copy.deepcopy(reconciliation))
+        selected = observation or StateObservation(
+            reconciliation["state"],
+            task["runs"][-1]["run_id"] if task["runs"] else None,
+            "unknown", None, "unknown",
+            "presentation provenance was not supplied",
+        )
+        if (selected.run_id is not None and
+                all(run["run_id"] != selected.run_id for run in task["runs"])):
+            raise ValueError("TUI observation run does not belong to the task")
+        if selected.state != reconciliation["state"]:
+            raise ValueError("TUI observation state does not match reconciliation")
+        return cls(
+            copy.deepcopy(task), copy.deepcopy(reconciliation),
+            copy.deepcopy(selected),
+        )
 
     @property
     def summary(self) -> dict[str, Any]:
         return view.task_summary(self.task, self.reconciliation)
+
+    @property
+    def display_state(self) -> str:
+        return self.observation.state
+
+
+def lifecycle_row(task: dict[str, Any]) -> TuiRow:
+    """Project archived history without consulting mutable live resources."""
+    reconciliation, observation = view.archived_lifecycle_projection(task)
+    return TuiRow.from_records(task, reconciliation, observation)
 
 
 @dataclass(frozen=True)
@@ -91,6 +138,9 @@ class DetailProjection:
     role: str | None
     tmux: str
     evidence: str
+    source: str
+    observed_at: str | None
+    freshness: str
     workspace: str
     change: str
     blocker: str | None
@@ -98,10 +148,44 @@ class DetailProjection:
     diff_refreshed_at: str | None
 
 
+@dataclass(frozen=True)
+class ModalCandidate:
+    """One frozen candidate with distinct raw identity and safe presentation."""
+
+    value: str
+    detail: str = ""
+    display: str | None = None
+
+    @property
+    def display_value(self) -> str:
+        return _safe_text(self.value) if self.display is None else self.display
+
+
+@dataclass(frozen=True)
+class ModalFrame:
+    """Terminal-independent, cell-bounded modal projection."""
+
+    rows: tuple[str, ...]
+    cursor: tuple[int, int] | None
+    visible_start: int
+    visible_end: int
+
+
+@dataclass(frozen=True)
+class StartCandidateSnapshot:
+    repositories: tuple[ModalCandidate, ...]
+    bases: Mapping[str, tuple[ModalCandidate, ...]]
+    harnesses: tuple[ModalCandidate, ...]
+    roles: tuple[str, ...]
+
+    def bases_for(self, repository: str) -> tuple[ModalCandidate, ...]:
+        return self.bases.get(repository, (ModalCandidate("", "default"),))
+
+
 def _row_sort_key(row: TuiRow) -> tuple[Any, ...]:
     summary = row.summary
     return (
-        _STATE_ORDER.get(summary["status"], 99),
+        _STATE_ORDER.get(row.display_state, 99),
         summary["slug"].casefold(),
         summary["repository"]["root"].casefold(),
         summary["task_id"],
@@ -110,7 +194,10 @@ def _row_sort_key(row: TuiRow) -> tuple[Any, ...]:
 
 def sort_rows(rows: Iterable[TuiRow]) -> tuple[TuiRow, ...]:
     """Return detached rows in one stable, evidence-priority order."""
-    detached = [TuiRow.from_records(row.task, row.reconciliation) for row in rows]
+    detached = [
+        TuiRow.from_records(row.task, row.reconciliation, row.observation)
+        for row in rows
+    ]
     return tuple(sorted(detached, key=_row_sort_key))
 
 
@@ -124,7 +211,7 @@ def filter_rows(rows: Iterable[TuiRow], filter_string: str) -> tuple[TuiRow, ...
         summary = row.summary
         harnesses = " ".join(run["harness"] for run in row.task["runs"])
         searchable = " ".join((
-            summary["status"], summary["slug"], summary["label"],
+            row.display_state, summary["slug"], summary["label"],
             summary["repository"]["root"], summary["repository"]["identity"],
             row.task["jj"]["change_id"] or "", harnesses,
         )).casefold()
@@ -145,6 +232,7 @@ class TuiModel:
         height: int = 24,
         width: int = 100,
         now: datetime | None = None,
+        include_archived: bool = False,
     ) -> None:
         self.rows = sort_rows(rows)
         self.selection = selection
@@ -152,10 +240,12 @@ class TuiModel:
         self.height = max(0, int(height))
         self.width = max(0, int(width))
         self.now = now or datetime.now(timezone.utc)
+        self.include_archived = bool(include_archived)
         self._clock_pinned = now is not None
         self.scroll_offset = 0
         self.diffs: dict[str, DiffSummary] = {}
         self.message: str | None = None
+        self.automatic_refresh_error: str | None = None
         self.help_visible = False
         self._clamp_selection()
 
@@ -187,21 +277,12 @@ class TuiModel:
         if row is None:
             return None
         task = row.task
-        run = task["runs"][-1] if task["runs"] else None
-        derived = None
-        if run is not None:
-            derived = next(
-                (item for item in row.reconciliation["runs"]
-                 if item["run_id"] == run["run_id"]),
-                None,
-            )
-        if run is None:
-            evidence = "No run has been recorded."
-        else:
-            evidence = f"{run['evidence']} @ {run['evidence_at']}"
-            if derived is not None and derived["evidence"]:
-                item = derived["evidence"][-1]
-                evidence += f"; {item['source']}={item['outcome']}: {item['detail']}"
+        run = next(
+            (item for item in task["runs"]
+             if item["run_id"] == row.observation.run_id),
+            None,
+        )
+        evidence = row.observation.detail
         diff = self.diffs.get(task["task_id"])
         return DetailProjection(
             task_id=task["task_id"],
@@ -211,6 +292,9 @@ class TuiModel:
             tmux=f"{task['tmux']['session']}:{task['tmux']['window']}"
                  + ("" if run is None else f" {run['pane_id']}"),
             evidence=evidence,
+            source=row.observation.source,
+            observed_at=row.observation.observed_at,
+            freshness=row.observation.freshness,
             workspace=task["jj"]["workspace_path"],
             change=task["jj"]["change_id"] or "not recorded",
             blocker=row.reconciliation["blocker"],
@@ -286,6 +370,14 @@ class TuiModel:
         retained.append(row)
         self.replace_rows(retained)
 
+    def select_task(self, task_id: str) -> bool:
+        for index, row in enumerate(self.filtered_rows):
+            if row.task["task_id"] == task_id:
+                self.selection = index
+                self._ensure_visible()
+                return True
+        return False
+
     def record_diff(self, task_id: str, diff: DiffSummary) -> None:
         if all(row.task["task_id"] != task_id for row in self.rows):
             raise ValueError("diff summary does not belong to a displayed task")
@@ -311,12 +403,17 @@ class TuiModel:
         if normalized == "a":
             if row is None:
                 return TuiIntent(IntentKind.NONE, reason="no task is selected")
-            terminal_runs = bool(row.reconciliation["runs"]) and all(
+            terminal_runs = all(
                 run["state"] in {"exited", "failed"}
                 for run in row.reconciliation["runs"]
             )
-            if (row.task["lifecycle"] not in {"running", "ended"} or
-                    not terminal_runs):
+            eligible = (
+                row.task["lifecycle"] == "ended" or
+                (row.task["lifecycle"] == "running" and
+                 bool(row.reconciliation["runs"]) and terminal_runs) or
+                (row.task["lifecycle"] == "failed" and terminal_runs)
+            )
+            if not eligible:
                 return TuiIntent(
                     IntentKind.NONE, task_id=row.task["task_id"],
                     reason="only a task whose runs have all exited can be archived",
@@ -325,6 +422,10 @@ class TuiModel:
                 IntentKind.ARCHIVE, task_id=row.task["task_id"],
                 requires_confirmation=True,
             )
+        if normalized == "x":
+            return self._selected_intent(IntentKind.ACTIONS)
+        if normalized == "A":
+            return TuiIntent(IntentKind.TOGGLE_SCOPE)
         if normalized == "/":
             return TuiIntent(IntentKind.FILTER)
         if normalized == "q":
@@ -353,7 +454,7 @@ def _safe_text(value: Any) -> str:
     )
 
 
-def _age(value: str, now: datetime) -> str:
+def _age(value: str | None, now: datetime) -> str:
     try:
         observed = datetime.fromisoformat(value[:-1] + "+00:00")
     except (TypeError, ValueError):
@@ -393,16 +494,19 @@ def render(model: TuiModel) -> list[str]:
         lines = [
             "ASHA CONTROL HELP",
             "",
-            "Keys: Enter open popup | n start | r reconcile | d diff refresh",
-            "      a archive task after every run exits | / filter | q quit | ? help",
+            "Keys: Enter inspect | x context actions | A active/all scope",
+            "      n start | r reconcile | d diff | a archive | / filter | q quit | ? help",
             "",
             "Status: every state is derived from qualified tmux, process, jj, and event evidence.",
-            "Limitations: no destructive removal or automated integration; archive preserves data.",
+            "Actions: x offers fresh-state signals or initiative stop; every stop is confirmed.",
+            "Limitations: prune requires separate confirmation; no automated integration.",
+            "Refresh: synchronous bounded adapter calls may delay keys after a pass starts.",
+            "Modal prompts pause automatic reconciliation until they close.",
             "Closing a popup detaches only. SIGKILL and hard crashes cannot restore terminal mode.",
         ]
         return [_clip(line, model.width) for line in lines[:model.height]]
 
-    title = "ASHA TASKS"
+    title = f"ASHA TASKS  Scope: {'all' if model.include_archived else 'active'}"
     if model.filter_string:
         title += f"  Filter: {model.filter_string}"
     lines = [title, ""]
@@ -413,15 +517,21 @@ def render(model: TuiModel) -> list[str]:
     visible = model.visible_rows
     for offset, row in enumerate(visible):
         summary = row.summary
-        run = row.task["runs"][-1] if row.task["runs"] else None
+        run = next(
+            (
+                item for item in row.task["runs"]
+                if item["run_id"] == row.observation.run_id
+            ),
+            None,
+        )
         absolute_index = model.scroll_offset + offset
         marker = ">" if absolute_index == model.selection else " "
         repository = Path(summary["repository"]["root"]).name or "/"
         line = _table_line((
-            summary["status"], summary["slug"], repository,
+            row.display_state, summary["slug"], repository,
             row.task["jj"]["change_id"] or "-",
             "-" if run is None else run["harness"],
-            _age(summary["updated_at"], model.now),
+            _age(row.observation.observed_at, model.now),
         ), max(0, model.width - 2))
         lines.append(f"{marker} {line}")
     if not model.filtered_rows:
@@ -435,6 +545,9 @@ def render(model: TuiModel) -> list[str]:
             + ("" if detail.role is None else f" / {detail.role}"),
             f"Tmux:       {detail.tmux}",
             f"Evidence:   {detail.evidence}",
+            f"Source:     {detail.source}",
+            f"Observed:   {detail.observed_at or 'unknown'}",
+            f"Freshness:  {detail.freshness}",
             f"Workspace:  {detail.workspace}",
             f"Change:     {detail.change}, last explicit refresh: "
             f"{detail.diff_refreshed_at or 'never'}",
@@ -443,20 +556,32 @@ def render(model: TuiModel) -> list[str]:
         if detail.diff_summary is not None:
             diff_lines = detail.diff_summary.splitlines() or ["No changes."]
             lines.extend(f"Diff:       {line}" for line in diff_lines[:3])
-    footer = "Enter open  n start  r reconcile  d diff  a archive  / filter  ? help  q quit"
-    status_lines: list[str] = []
-    if model.message:
-        # Wrap rather than clip: a refusal carries its remedy at the END of
-        # the sentence, which a single clipped line would hide.
-        status_lines = _wrap_status(model.message, model.width)
-    budget = max(0, model.height - len(lines) - 1)
-    if len(status_lines) > budget:
-        status_lines = status_lines[:budget]
-        if status_lines:
-            status_lines[-1] = _clip(status_lines[-1][:-1] + "…", model.width)
-    lines.extend(status_lines)
-    lines.append(footer)
-    return [_clip(line, model.width) for line in lines[:model.height]]
+    footer = "Enter inspect  x actions  A scope  n start  r reconcile  d diff  a archive  / filter  ? help  q quit"
+    # Automatic failures are actionable and must not disappear below a long
+    # task/detail body or operator message. Reserve their lines first, then the
+    # ordinary status, truncating lower-priority body content as needed.
+    error_lines = (
+        _wrap_status(model.automatic_refresh_error, model.width)
+        if model.automatic_refresh_error else []
+    )
+    message_lines = (
+        _wrap_status(model.message, model.width) if model.message else []
+    )
+    available = max(0, model.height - 1)
+    status_limit = min(_STATUS_MAX_LINES, available)
+    all_status_lines = error_lines + message_lines
+    status_lines = all_status_lines[:status_limit]
+    if len(all_status_lines) > status_limit and status_lines:
+        status_lines[-1] = _clip(
+            status_lines[-1][:-1] + "…", model.width,
+        )
+    body_budget = max(0, available - len(status_lines))
+    lines = lines[:body_budget] + status_lines
+    # The footer is the operator's escape route. Preserve it even when the
+    # terminal is shorter than the detail projection.
+    if model.height:
+        lines.append(footer)
+    return [_clip(line, model.width) for line in lines]
 
 
 _STATUS_MAX_LINES = 6
@@ -494,9 +619,10 @@ def _wrap_status(message: str, width: int) -> list[str]:
 
 
 class _TuiShutdown(Exception):
-    def __init__(self, signum: int) -> None:
-        super().__init__(signum)
+    def __init__(self, signum: int, detail: str | None = None) -> None:
+        super().__init__(detail or signum)
         self.signum = signum
+        self.detail = detail
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -514,24 +640,53 @@ def _read_row(
     journals: CreationJournalStore,
     listed: dict[str, Any],
     jj: JjAdapter,
+    *,
+    adapter: TmuxAdapter | None = None,
+    sampled_at: datetime | None = None,
+    publish_summary: bool = True,
 ) -> TuiRow:
-    adapter = _adapter_for_task(listed)
-    live = LiveAdapters(config=config, tmux=adapter, jj=jj)
-    task, reconciliation = view.locked_reconciliation(
-        store, journals, listed["task_id"], live, jj, presentation=adapter,
+    presentation = adapter or _adapter_for_task(listed)
+    observed = sampled_at or datetime.now(timezone.utc)
+    clock: Callable[[], datetime] = lambda: observed
+    live = LiveAdapters(config=config, tmux=presentation, jj=jj, now=clock)
+    task, reconciliation, observation = view.locked_reconciliation_observation(
+        store, journals, listed["task_id"], live, jj,
+        presentation=presentation, publish_summary=publish_summary,
+        presentation_now=clock,
     )
-    return TuiRow.from_records(task, reconciliation)
+    return TuiRow.from_records(task, reconciliation, observation)
 
 
 def _load_rows(
     config: ControlConfig, store: TaskStore,
     journals: CreationJournalStore, jj: JjAdapter,
+    *, include_archived: bool = False,
 ) -> list[TuiRow]:
-    return [
-        _read_row(config, store, journals, listed, jj)
-        for listed in store.list()
-        if listed["lifecycle"] != "archived"
-    ]
+    observed = datetime.now(timezone.utc)
+    clock: Callable[[], datetime] = lambda: observed
+    rows: list[TuiRow] = []
+    summary_adapter: TmuxAdapter | None = None
+    for listed in store.list():
+        if listed["lifecycle"] == "archived":
+            if include_archived:
+                rows.append(lifecycle_row(listed))
+            continue
+        adapter = _adapter_for_task(listed)
+        row = _read_row(
+            config, store, journals, listed, jj, adapter=adapter,
+            sampled_at=observed, publish_summary=False,
+        )
+        if row.task["lifecycle"] == "archived":
+            if include_archived:
+                rows.append(row)
+            continue
+        if summary_adapter is None:
+            summary_adapter = adapter
+        rows.append(row)
+    view.publish_server_summary(
+        config, summary_adapter or TmuxAdapter(), now=clock,
+    )
+    return rows
 
 
 def _surface_skipped(model: TuiModel, store: TaskStore) -> None:
@@ -555,42 +710,648 @@ def _paint(stdscr, curses_module, model: TuiModel) -> None:
     stdscr.refresh()
 
 
+_ZWJ = "\u200d"
+_KEYCAP = "\u20e3"
+
+
+def _is_variation_selector(character: str) -> bool:
+    codepoint = ord(character)
+    return 0xFE00 <= codepoint <= 0xFE0F or 0xE0100 <= codepoint <= 0xE01EF
+
+
+def _is_emoji_modifier(character: str) -> bool:
+    return 0x1F3FB <= ord(character) <= 0x1F3FF
+
+
+def _is_regional_indicator(character: str) -> bool:
+    return 0x1F1E6 <= ord(character) <= 0x1F1FF
+
+
+def _is_emoji_base(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        0x1F000 <= codepoint <= 0x1FAFF or
+        0x2600 <= codepoint <= 0x27FF or
+        codepoint in {0x00A9, 0x00AE, 0x203C, 0x2049, 0x2122, 0x3030, 0x303D}
+    )
+
+
+def _is_emoji_modifier_base(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        codepoint in {0x261D, 0x26F9, 0x1F385, 0x1F3C7, 0x1F47C, 0x1F48F,
+                      0x1F491, 0x1F4AA,
+                      0x1F57A, 0x1F590, 0x1F6A3, 0x1F6C0, 0x1F6CC, 0x1F926,
+                      0x1F90C, 0x1F90F, 0x1F977, 0x1F9BB} or
+        0x270A <= codepoint <= 0x270D or
+        0x1F3C2 <= codepoint <= 0x1F3C4 or
+        0x1F3CA <= codepoint <= 0x1F3CC or
+        0x1F442 <= codepoint <= 0x1F443 or
+        0x1F446 <= codepoint <= 0x1F450 or
+        0x1F466 <= codepoint <= 0x1F478 or
+        0x1F481 <= codepoint <= 0x1F483 or
+        0x1F485 <= codepoint <= 0x1F487 or
+        0x1F574 <= codepoint <= 0x1F575 or
+        0x1F595 <= codepoint <= 0x1F596 or
+        0x1F645 <= codepoint <= 0x1F647 or
+        0x1F64B <= codepoint <= 0x1F64F or
+        0x1F6B4 <= codepoint <= 0x1F6B6 or
+        0x1F918 <= codepoint <= 0x1F91F or
+        0x1F930 <= codepoint <= 0x1F939 or
+        0x1F93C <= codepoint <= 0x1F93E or
+        0x1F9B5 <= codepoint <= 0x1F9B6 or
+        0x1F9B8 <= codepoint <= 0x1F9B9 or
+        0x1F9CD <= codepoint <= 0x1F9CF or
+        0x1F9D1 <= codepoint <= 0x1F9DD or
+        0x1FAC3 <= codepoint <= 0x1FAC5 or
+        0x1FAF0 <= codepoint <= 0x1FAF8
+    )
+
+
+_SUPPORTED_PROFESSION_ZWJ_BASES = frozenset({"👨", "👩", "🧑"})
+_PROFESSION_ZWJ_TARGET = "💻"
+
+
+def _is_supported_zwj_prefix(value: str) -> bool:
+    if value.count(_ZWJ) != 1 or not value.endswith(_ZWJ):
+        return False
+    left = value[:-1]
+    bases = [
+        character for character in left
+        if not _is_variation_selector(character) and
+        not _is_emoji_modifier(character)
+    ]
+    modifiers = [character for character in left if _is_emoji_modifier(character)]
+    return (
+        len(bases) == 1 and bases[0] in _SUPPORTED_PROFESSION_ZWJ_BASES and
+        len(modifiers) <= 1
+    )
+
+
+def _is_supported_zwj_sequence(value: str) -> bool:
+    if value.count(_ZWJ) != 1:
+        return False
+    left, right = value.split(_ZWJ)
+    if not _is_supported_zwj_prefix(left + _ZWJ):
+        return False
+    right_without_selectors = "".join(
+        character for character in right
+        if not _is_variation_selector(character)
+    )
+    return right_without_selectors == _PROFESSION_ZWJ_TARGET
+
+
+def _is_cluster_extension(character: str) -> bool:
+    return (
+        bool(unicodedata.combining(character)) or
+        unicodedata.category(character) in {"Mn", "Me"} or
+        _is_variation_selector(character)
+    )
+
+
+def _display_clusters(value: str) -> list[str]:
+    """Group terminal graphemes needed by Control's sanitized prompt input."""
+    clusters: list[str] = []
+    for character in value:
+        if not clusters:
+            clusters.append(character)
+            continue
+        current = clusters[-1]
+        if _is_emoji_modifier(character):
+            visible = [
+                item for item in current
+                if (
+                    not _is_cluster_extension(item) and item != _ZWJ and
+                    not _is_emoji_modifier(item) and item != _KEYCAP
+                )
+            ]
+            if (
+                _ZWJ not in current and visible and
+                _is_emoji_modifier_base(visible[-1]) and
+                not any(_is_emoji_modifier(item) for item in current)
+            ):
+                clusters[-1] += character
+            else:
+                clusters.append(character)
+            continue
+        if character == _KEYCAP:
+            without_selectors = "".join(
+                item for item in current if not _is_variation_selector(item)
+            )
+            if (
+                not current.endswith(_ZWJ) and _KEYCAP not in current and
+                len(without_selectors) == 1 and
+                without_selectors in "#*0123456789"
+            ):
+                clusters[-1] += character
+            else:
+                clusters.append(character)
+            continue
+        if current.endswith(_ZWJ) and _is_supported_zwj_sequence(current + character):
+            clusters[-1] += character
+            continue
+        if character == _ZWJ:
+            if _is_supported_zwj_prefix(current + character):
+                clusters[-1] += character
+            else:
+                clusters.append(character)
+            continue
+        if _is_cluster_extension(character):
+            clusters[-1] += character
+            continue
+        if _is_regional_indicator(character):
+            regional_count = sum(_is_regional_indicator(item) for item in current)
+            if regional_count % 2 == 1 and all(
+                _is_regional_indicator(item) for item in current
+            ):
+                clusters[-1] += character
+                continue
+        clusters.append(character)
+    return clusters
+
+
+def _cluster_width(cluster: str) -> int:
+    visible = [
+        character for character in cluster
+        if (
+            not _is_cluster_extension(character) and character != _ZWJ and
+            not _is_emoji_modifier(character) and character != _KEYCAP
+        )
+    ]
+    if not visible:
+        return 2 if any(_is_emoji_modifier(item) for item in cluster) else 0
+    if (
+        (_KEYCAP in cluster and visible[0] in "#*0123456789") or
+        sum(_is_regional_indicator(character) for character in visible) >= 2 or
+        (
+            any(_is_emoji_modifier(character) for character in cluster) and
+            any(_is_emoji_modifier_base(character) for character in visible)
+        ) or
+        _is_supported_zwj_sequence(cluster) or
+        ("\ufe0f" in cluster and any(_is_emoji_base(character) for character in visible))
+    ):
+        return 2
+    width = sum(
+        2 if unicodedata.east_asian_width(character) in {"W", "F"} else 1
+        for character in visible
+    )
+    if any(_is_emoji_modifier(character) for character in cluster):
+        width += 2
+    return width
+
+
+def _cell_width(value: str) -> int:
+    """Return terminal cells for prompt-safe extended grapheme clusters."""
+    return sum(_cluster_width(cluster) for cluster in _display_clusters(value))
+
+
+_MAX_MODAL_CANDIDATES = 128
+_MAX_VISIBLE_CANDIDATES = 8
+_MAX_CANDIDATE_BYTES = 256 * 1024
+
+
+def _cell_lines(value: str, budget: int) -> list[str]:
+    """Wrap complete display clusters without exceeding a cell budget."""
+    if budget <= 0:
+        return [""] if value else []
+    rows: list[str] = []
+    current: list[str] = []
+    used = 0
+    for cluster in _display_clusters(value):
+        width = _cluster_width(cluster)
+        if current and used + width > budget:
+            rows.append("".join(current))
+            current = []
+            used = 0
+        if width > budget:
+            # A complete wide cluster cannot be drawn in this viewport.
+            if current:
+                rows.append("".join(current))
+                current = []
+                used = 0
+            continue
+        current.append(cluster)
+        used += width
+    if current or not rows:
+        rows.append("".join(current))
+    return rows
+
+
+def _bounded_modal_candidates(
+    candidates: Iterable[ModalCandidate],
+) -> tuple[ModalCandidate, ...]:
+    retained: list[ModalCandidate] = []
+    used = 0
+    for candidate in candidates:
+        if len(retained) >= _MAX_MODAL_CANDIDATES:
+            break
+        if not isinstance(candidate.value, str):
+            continue
+        value = candidate.value
+        display = _safe_text(candidate.display_value)
+        detail = _safe_text(candidate.detail)
+        size = (
+            len(value.encode("utf-8")) + len(display.encode("utf-8")) +
+            len(detail.encode("utf-8"))
+        )
+        if used + size > _MAX_CANDIDATE_BYTES:
+            break
+        retained.append(ModalCandidate(value, detail, display))
+        used += size
+    return tuple(retained)
+
+
+def modal_frame(
+    *, title: str, context: str, label: str, hint: str, value: str,
+    candidates: Iterable[ModalCandidate] = (), selected: int | None = None,
+    height: int, width: int, prompt: str | None = None,
+) -> ModalFrame:
+    """Return one cell-aware modal frame for forms, menus, and confirmations."""
+    height = max(0, int(height))
+    width = max(0, int(width))
+    budget = max(0, width - 1)
+    if height == 0:
+        return ModalFrame((), None, 0, 0)
+    bounded = _bounded_modal_candidates(candidates)
+    if selected is not None and bounded:
+        selected = min(max(0, int(selected)), len(bounded) - 1)
+    else:
+        selected = None
+
+    prefix = f"{label}: " if label else ""
+    viewport, cursor_x = _prompt_viewport(
+        prefix if prompt is None else prompt,
+        None if prompt is None else hint,
+        value, budget,
+    )
+    # Input is the only modal row whose loss can make the editor unusable.
+    # Reserve it first, then spend remaining rows on explanatory decoration.
+    decoration: list[str] = []
+    for text in (title, context):
+        if text:
+            logical_lines = str(text).splitlines() or [""]
+            for logical_line in logical_lines:
+                decoration.extend(_cell_lines(_safe_text(logical_line), budget))
+    if hint and prompt is None:
+        decoration.extend(_cell_lines(_safe_text(hint), budget))
+
+    decoration_capacity = max(0, height - 1)
+    decoration_omitted = len(decoration) > decoration_capacity
+    if decoration_omitted and decoration_capacity == 0:
+        viewport, cursor_x = _prompt_viewport(
+            "… " + (prefix if prompt is None else prompt),
+            None if prompt is None else hint,
+            value, budget,
+        )
+    if decoration_omitted and decoration_capacity:
+        retained = decoration[:max(0, decoration_capacity - 1)]
+        retained.append(_prefix_cells("… additional context omitted", budget))
+        decoration = retained
+    else:
+        decoration = decoration[:decoration_capacity]
+    header: list[str] = [viewport, *decoration]
+    cursor = (0, min(cursor_x, budget))
+
+    remaining = max(0, height - len(header))
+    visible_count = (
+        0 if decoration_omitted else
+        min(_MAX_VISIBLE_CANDIDATES, remaining, len(bounded))
+    )
+    if visible_count:
+        if selected is None:
+            start = 0
+        else:
+            start = min(
+                max(0, selected - visible_count + 1),
+                len(bounded) - visible_count,
+            )
+        end = start + visible_count
+        candidate_rows: list[str] = []
+        for index in range(start, end):
+            candidate = bounded[index]
+            marker = "> " if index == selected else "  "
+            shown = candidate.display_value or "(default)"
+            if candidate.detail:
+                shown += f"  {candidate.detail}"
+            candidate_rows.append(_prefix_cells(marker + shown, budget))
+        if start and candidate_rows:
+            candidate_rows[0] = _prefix_cells("↑ " + candidate_rows[0], budget)
+        if end < len(bounded) and candidate_rows:
+            candidate_rows[-1] = _prefix_cells("↓ " + candidate_rows[-1], budget)
+        rows = tuple((header + candidate_rows)[:height])
+        return ModalFrame(rows, cursor, start, end)
+    return ModalFrame(tuple(header), cursor, 0, 0)
+
+
+def _dedupe_candidates(
+    values: Iterable[tuple[str, str]],
+) -> tuple[ModalCandidate, ...]:
+    result: list[ModalCandidate] = []
+    seen: set[str] = set()
+    for value, detail in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(ModalCandidate(value, detail))
+    return _bounded_modal_candidates(result)
+
+
+def freeze_start_candidates(
+    config: ControlConfig,
+    store: TaskStore,
+    *,
+    cwd: Path | None = None,
+    executable: Callable[[str], str | None] = shutil.which,
+) -> StartCandidateSnapshot:
+    """Freeze bounded convenience candidates from one task registry snapshot."""
+    current = (cwd or Path.cwd()).resolve()
+    records = store.list()
+    repository_latest: dict[str, str] = {}
+    base_latest_by_repository: dict[str, dict[str, str]] = {}
+    role_latest: dict[str, str] = {}
+    for item in records:
+        root = item["repository"]["root"]
+        repository_latest[root] = max(
+            repository_latest.get(root, ""), item.get("updated_at", ""),
+        )
+        value = item["jj"].get("requested_base")
+        if isinstance(value, str) and not value.startswith("PR #"):
+            bases = base_latest_by_repository.setdefault(root, {})
+            bases[value] = max(bases.get(value, ""), item.get("updated_at", ""))
+        for run in item["runs"]:
+            role = run.get("role")
+            if isinstance(role, str) and role != "implementer":
+                role_latest[role] = max(
+                    role_latest.get(role, ""), item.get("updated_at", ""),
+                )
+    repository_order = sorted(repository_latest)
+    repository_order.sort(key=lambda item: repository_latest[item], reverse=True)
+
+    count = 0
+    used_bytes = 0
+
+    def admit(candidate: ModalCandidate) -> ModalCandidate | None:
+        nonlocal count, used_bytes
+        bounded = _bounded_modal_candidates((candidate,))
+        if not bounded:
+            return None
+        prepared = bounded[0]
+        size = (
+            len(prepared.value.encode("utf-8")) +
+            len(prepared.display_value.encode("utf-8")) +
+            len(prepared.detail.encode("utf-8"))
+        )
+        if count >= _MAX_MODAL_CANDIDATES or used_bytes + size > _MAX_CANDIDATE_BYTES:
+            return None
+        count += 1
+        used_bytes += size
+        return prepared
+
+    harness_names = [config.default_harness] + sorted(
+        HARNESSES - {config.default_harness},
+    )
+    harnesses = tuple(filter(None, (
+        admit(ModalCandidate(
+            name,
+            "installed" if executable(name) is not None else "not installed",
+        ))
+        for name in harness_names
+    )))
+    roles: list[str] = []
+    implementer = admit(ModalCandidate("implementer", "default role"))
+    if implementer is not None:
+        roles.append(implementer.value)
+
+    repository_inputs = [(str(current), "current directory")]
+    repository_inputs.extend(
+        (root, f"last used {repository_latest[root]}")
+        for root in repository_order if root != str(current)
+    )
+    repositories_list: list[ModalCandidate] = []
+    by_repository: dict[str, tuple[ModalCandidate, ...]] = {}
+    seen_repositories: set[str] = set()
+    for root, detail in repository_inputs:
+        if root in seen_repositories:
+            continue
+        seen_repositories.add(root)
+        repository = admit(ModalCandidate(root, detail))
+        if repository is None:
+            continue
+        default = admit(ModalCandidate("", "default"))
+        if default is None:
+            # Do not expose a repository whose required default base candidate
+            # was not included in the aggregate frozen snapshot.
+            count -= 1
+            used_bytes -= (
+                len(repository.value.encode("utf-8")) +
+                len(repository.display_value.encode("utf-8")) +
+                len(repository.detail.encode("utf-8"))
+            )
+            continue
+        repositories_list.append(repository)
+        bases_for_repository = [default]
+        base_latest = base_latest_by_repository.get(root, {})
+        stored = sorted(base_latest)
+        stored.sort(key=lambda item: base_latest[item], reverse=True)
+        for value in stored:
+            if value == "":
+                continue
+            candidate = admit(ModalCandidate(value, "recorded"))
+            if candidate is None:
+                break
+            bases_for_repository.append(candidate)
+        by_repository[root] = tuple(bases_for_repository)
+
+    ordered_roles = sorted(role_latest)
+    ordered_roles.sort(key=lambda item: role_latest[item], reverse=True)
+    for role in ordered_roles:
+        candidate = admit(ModalCandidate(role, "recorded role"))
+        if candidate is None:
+            break
+        roles.append(candidate.value)
+    return StartCandidateSnapshot(
+        tuple(repositories_list), by_repository, harnesses, tuple(roles),
+    )
+
+
+def _prompt_character_allowed(value: list[str], character: str) -> bool:
+    return _shared_prompt_character_allowed("".join(value), character)
+
+
+def _prefix_cells(value: str, budget: int) -> str:
+    result: list[str] = []
+    used = 0
+    for cluster in _display_clusters(value):
+        width = _cell_width(cluster)
+        if used + width > budget:
+            break
+        result.append(cluster)
+        used += width
+    return "".join(result)
+
+
+def _suffix_cells(value: str, budget: int) -> str:
+    result: list[str] = []
+    used = 0
+    for cluster in reversed(_display_clusters(value)):
+        width = _cell_width(cluster)
+        if used + width > budget:
+            break
+        result.append(cluster)
+        used += width
+    return "".join(reversed(result))
+
+
+def _prompt_viewport(
+    prompt: str, hint: str | None, value: str, budget: int,
+) -> tuple[str, int]:
+    """Render an append-only prompt with its active suffix and caret visible."""
+    budget = max(0, budget)
+    if hint:
+        stripped = prompt.rstrip()
+        if stripped.endswith(":"):
+            full_prompt = f"{stripped[:-1]} ({hint}): "
+        else:
+            full_prompt = f"{prompt}{hint}: "
+    else:
+        full_prompt = prompt
+    full = full_prompt + value
+    if _cell_width(full) <= budget:
+        return full, _cell_width(full)
+    if budget == 0:
+        return "", 0
+
+    if value:
+        last = _display_clusters(value)[-1]
+        last_width = _cell_width(last)
+        if last_width <= budget and budget <= last_width:
+            return last, last_width
+
+    marker = "…"
+    marker_width = _cell_width(marker)
+    if marker_width > budget:
+        return "", 0
+    label_budget = max(0, budget - marker_width)
+    compact = _prefix_cells(prompt, label_budget)
+    if value:
+        last = _display_clusters(value)[-1]
+        needed = _cell_width(last)
+        if budget - _cell_width(compact) - marker_width < needed:
+            compact = _prefix_cells(
+                prompt, max(0, budget - marker_width - needed),
+            )
+    suffix = _suffix_cells(
+        value, max(0, budget - _cell_width(compact) - marker_width),
+    )
+    line = compact + marker + suffix
+    return line, _cell_width(line)
+
+
+def _read_modal_key(stdscr, curses_module) -> int | str:
+    """Read one wide curses key while retaining narrow test-double support."""
+    # `Mock` fabricates any requested attribute. Inspect the concrete type so
+    # a narrow legacy/test double cannot accidentally become an infinite
+    # wide-input source merely because `getattr()` manufactured `get_wch`.
+    wide_method = getattr(type(stdscr), "get_wch", None)
+    reader = stdscr.get_wch if callable(wide_method) else stdscr.getch
+    try:
+        key = reader()
+    except curses_module.error:
+        return -1
+    if isinstance(key, str):
+        if len(key) != 1:
+            return -1
+        if ord(key) < 32 or key == "\x7f":
+            return ord(key)
+        return key
+    return key if isinstance(key, int) else -1
+
+
 def _prompt_line(
     stdscr, curses_module, model: TuiModel, prompt: str,
-    *, initial: str = "", maximum: int = 500,
+    *, initial: str = "", maximum: int = 500, hint: str | None = None,
+    candidates: Iterable[ModalCandidate] = (), selected: int | None = None,
+    title: str = "", context: str = "",
 ) -> str | None:
     value = list(initial[:maximum])
+    bounded_candidates = _bounded_modal_candidates(candidates)
+    candidate_selection = selected
     while True:
         _paint(stdscr, curses_module, model)
         height, width = stdscr.getmaxyx()
         if height:
-            line = _clip(prompt + "".join(value), max(0, width - 1))
+            frame = modal_frame(
+                title=title, context=context, label="", hint=hint or "",
+                value="".join(value), candidates=bounded_candidates,
+                selected=candidate_selection, height=height, width=width,
+                prompt=prompt,
+            )
             try:
-                stdscr.move(height - 1, 0)
-                stdscr.clrtoeol()
-                stdscr.addnstr(height - 1, 0, line, max(0, width - 1))
+                start = max(0, height - len(frame.rows))
+                for offset, line in enumerate(frame.rows):
+                    y = start + offset
+                    stdscr.move(y, 0)
+                    stdscr.clrtoeol()
+                    if line and width > 1:
+                        stdscr.addnstr(y, 0, line, len(line))
+                if frame.cursor is not None:
+                    cursor_y, cursor_x = frame.cursor
+                    stdscr.move(start + cursor_y, cursor_x)
                 stdscr.refresh()
             except curses_module.error:
                 pass
-        key = stdscr.getch()
+        key = _read_modal_key(stdscr, curses_module)
         if key == -1:
             continue
         if key in {10, 13, getattr(curses_module, "KEY_ENTER", -999)}:
-            return "".join(value)
+            if candidate_selection is not None and bounded_candidates:
+                return bounded_candidates[candidate_selection].value
+            logical = "".join(value)
+            if terminal_text_is_complete(logical):
+                return logical
+            continue
         if key == 27:
             return None
         if key == getattr(curses_module, "KEY_RESIZE", -998):
             continue
+        if key in {
+            getattr(curses_module, "KEY_UP", -996),
+            getattr(curses_module, "KEY_DOWN", -995),
+        } and bounded_candidates:
+            delta = (
+                -1 if key == getattr(curses_module, "KEY_UP", -996) else 1
+            )
+            if candidate_selection is None:
+                candidate_selection = (
+                    len(bounded_candidates) - 1 if delta < 0 else 0
+                )
+            else:
+                candidate_selection = min(
+                    max(0, candidate_selection + delta),
+                    len(bounded_candidates) - 1,
+                )
+            continue
+        if key == 9 and bounded_candidates:
+            prefix = "".join(value)
+            matches = [
+                index for index, item in enumerate(bounded_candidates)
+                if item.value.startswith(prefix)
+            ]
+            if matches:
+                candidate_selection = matches[0]
+                value = list(bounded_candidates[candidate_selection].value[:maximum])
+            continue
         if key in {8, 127, getattr(curses_module, "KEY_BACKSPACE", -997)}:
             if value:
-                value.pop()
+                value = list("".join(_display_clusters("".join(value))[:-1]))
+            candidate_selection = None
             continue
-        if 0 <= key <= 0x10FFFF and len(value) < maximum:
-            character = chr(key)
-            if character.isprintable() and unicodedata.category(character) not in {
-                "Cc", "Cf", "Cs",
-            }:
+        if ((isinstance(key, str) and len(key) == 1) or
+                (isinstance(key, int) and 0 <= key <= 0x10FFFF)) and len(value) < maximum:
+            character = key if isinstance(key, str) else chr(key)
+            if _prompt_character_allowed(value, character):
                 value.append(character)
+                candidate_selection = None
 
 
 def _repaint_after_suspend(stdscr) -> None:
@@ -624,59 +1385,1040 @@ def _open_popup(
         _repaint_after_suspend(stdscr)
 
 
+def _start_worker_argv(arguments: list[str], env: Mapping[str, str]) -> list[str]:
+    raw_root = env.get("ASHA_ROOT")
+    root = Path(__file__).resolve().parents[2] if raw_root is None else Path(raw_root)
+    if not root.is_absolute() or root.resolve() != root:
+        raise ValueError("ASHA_ROOT must be an exact canonical absolute path")
+    # This is the same isolated bootstrap as lib/control.sh, executed directly
+    # as one Python argv. It neither trusts cwd/PYTHONPATH nor creates a shell
+    # process between the TUI and the signal-owned worker group.
+    return [
+        sys.executable, "-B", "-I", "-c",
+        (
+            "import runpy,sys; sys.path.insert(0, sys.argv.pop(1)); "
+            'runpy.run_module("control.cli", run_name="__main__")'
+        ),
+        str(root / "lib"), "task", "start", *arguments,
+    ]
+
+
+def _start_progress(stdscr, curses_module, model: TuiModel, *, cancelling: bool) -> None:
+    previous = model.message
+    model.message = (
+        "Esc cancel requested; waiting for durable recovery..."
+        if cancelling else
+        "Preparing task in isolated worker... Esc cancel"
+    )
+    try:
+        _paint(stdscr, curses_module, model)
+    finally:
+        model.message = previous
+
+
+def _read_worker_state(
+    config: ControlConfig, task_id: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    tasks = TaskStore(config)
+    journals = CreationJournalStore(config)
+    task: dict[str, Any] | None = None
+    journal: dict[str, Any] | None = None
+    with tasks.transaction_lock(task_id):
+        try:
+            task = tasks.read(task_id)
+        except StoreError as exc:
+            if str(exc) != f"task not found: {task_id}":
+                raise
+        try:
+            journal = journals.read(task_id)
+        except JournalError as exc:
+            if str(exc) != f"creation journal not found: {task_id}":
+                raise
+    return task, journal
+
+
+def _successful_worker_message(stdout: bytes, task_id: str) -> str:
+    try:
+        payload = json.loads(stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("task start worker returned invalid JSON") from exc
+    if (not isinstance(payload, dict) or
+            payload.get("contract") != "asha.control-task-start.v1"):
+        raise ValueError("task start worker returned the wrong JSON contract")
+    task = payload.get("task")
+    if (not isinstance(task, dict) or task.get("task_id") != task_id or
+            not isinstance(task.get("slug"), str)):
+        raise ValueError("task start worker returned a mismatched task identity")
+    mutations = payload.get("source_mutations")
+    enabled = isinstance(mutations, list) and any(
+        isinstance(item, dict) and item.get("operation") == "git init --colocate"
+        for item in mutations
+    )
+    suffix = "; repository jj-enabled and retained" if enabled else ""
+    return f"task started: {task['slug']} ({task_id}){suffix}"
+
+
+def _classify_start_worker_exit(
+    config: ControlConfig,
+    task_id: str,
+    returncode: int,
+    stdout: bytes,
+    stderr: bytes,
+    *,
+    cancelled: bool,
+    output_truncated: bool = False,
+    source: Path | None = None,
+    source_was_plain_git: bool = False,
+) -> str:
+    """Classify cancellation only from the durable creation boundary."""
+    task, journal = _read_worker_state(config, task_id)
+
+    # A recorded normal completion wins over a late Escape already read from
+    # the terminal input buffer.
+    if returncode == 0:
+        if output_truncated:
+            raise ValueError("task start worker output exceeded the bounded capture limit")
+        return _successful_worker_message(stdout, task_id)
+
+    phase = None if journal is None else journal.get("phase")
+    launch_attempted = bool(
+        journal is not None and journal.get("launch_attempted") is True
+    )
+    if launch_attempted or phase in {"launch-attempted", "run-recorded"}:
+        source_note = (
+            "; jj repository enablement retained"
+            if source_was_plain_git else ""
+        )
+        return (
+            f"task launch may have occurred; resources preserved{source_note}; "
+            f"attach with `asha task attach {task_id}`; inspect/recover with "
+            f"`asha task recover {task_id}`"
+        )
+    if phase == "preserved":
+        outcome = "task start cancelled" if cancelled else "task start failed"
+        source_note = (
+            "; jj repository enablement retained"
+            if source_was_plain_git else ""
+        )
+        return (
+            f"{outcome}; workspace retained for safety{source_note}; "
+            f"{v2_retention_diagnostic(task_id, journal)}"
+        )
+    if cancelled and source_was_plain_git:
+        location = "the selected repository" if source is None else str(source)
+        return (
+            "task start cancelled; jj repository enablement may be partial and "
+            f"was retained at {location}; run `jj status` there and inspect "
+            "Git status/refs before retrying"
+        )
+    if cancelled and (journal is None or phase == "rolled-back"):
+        return "task start cancelled"
+    if cancelled:
+        return (
+            f"task start was interrupted during {phase or 'unknown'} recovery; "
+            f"run `asha task recover {task_id}`"
+        )
+
+    detail = stderr.decode("utf-8", errors="replace").strip()
+    if output_truncated:
+        detail = (detail + "; " if detail else "") + "worker output was truncated"
+    if task is not None or journal is not None:
+        recovery = f"; inspect with `asha task recover {task_id}`"
+    else:
+        recovery = ""
+    raise ValueError(
+        f"task start exited with status {returncode}: {detail or 'no diagnostic'}{recovery}"
+    )
+
+
+def _supervise_start_process(
+    stdscr,
+    curses_module,
+    model: TuiModel,
+    config: ControlConfig,
+    argv: list[str],
+    task_id: str,
+    env: Mapping[str, str],
+    *,
+    source: Path | None = None,
+    source_was_plain_git: bool = False,
+) -> str:
+    """Run one isolated task-start worker while curses polls for Escape."""
+    _reap_deferred_start_workers()
+    try:
+        process = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            shell=False,
+            start_new_session=True,
+            env=dict(env),
+        )
+    except OSError as exc:
+        raise ValueError(f"task start worker could not be invoked: {exc}") from exc
+    assert process.stdout is not None and process.stderr is not None
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+    captured = {"stdout": bytearray(), "stderr": bytearray()}
+    output_truncated = False
+    cancellation_attempted = False
+    cancellation_sent = False
+
+    def drain(timeout: float = 0.0) -> None:
+        nonlocal output_truncated
+        for key, _mask in selector.select(timeout):
+            try:
+                chunk = os.read(key.fileobj.fileno(), 65536)
+            except OSError:
+                chunk = b""
+            if not chunk:
+                selector.unregister(key.fileobj)
+                continue
+            target = captured[key.data]
+            remaining = max(0, _START_OUTPUT_BYTES - len(target))
+            target.extend(chunk[:remaining])
+            if len(chunk) > remaining:
+                output_truncated = True
+
+    def close_pipes() -> None:
+        for key in tuple(selector.get_map().values()):
+            try:
+                selector.unregister(key.fileobj)
+            except (KeyError, ValueError):
+                pass
+        process.stdout.close()
+        process.stderr.close()
+
+    def drain_after_exit() -> None:
+        deadline = time.monotonic() + _START_DRAIN_SECONDS
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            drain(min(0.05, remaining))
+        close_pipes()
+
+    try:
+        try:
+            stdscr.timeout(_INPUT_POLL_MS)
+        except AttributeError:
+            pass
+        while True:
+            drain()
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            _start_progress(
+                stdscr, curses_module, model, cancelling=cancellation_sent,
+            )
+            key = _read_modal_key(stdscr, curses_module)
+            # Completion wins if it occurred while getch was waiting, even if
+            # that read returned a late buffered Escape.
+            returncode = process.poll()
+            if returncode is not None:
+                break
+            if key == 27 and not cancellation_attempted:
+                cancellation_attempted = True
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                else:
+                    cancellation_sent = True
+        process.wait(timeout=_START_CLEANUP_SECONDS)
+        drain_after_exit()
+        return _classify_start_worker_exit(
+            config, task_id, process.returncode,
+            bytes(captured["stdout"]), bytes(captured["stderr"]),
+            cancelled=cancellation_sent, output_truncated=output_truncated,
+            source=source, source_was_plain_git=source_was_plain_git,
+        )
+    except BaseException as exc:
+        leader_reaped = process.poll() is not None
+        if process.poll() is None:
+            if not cancellation_attempted:
+                cancellation_attempted = True
+                try:
+                    os.killpg(process.pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+            try:
+                process.wait(timeout=_START_CLEANUP_SECONDS)
+            except subprocess.TimeoutExpired:
+                leader_reaped = False
+            else:
+                leader_reaped = True
+        if leader_reaped:
+            drain_after_exit()
+        else:
+            _DEFERRED_START_WORKERS.append(process)
+            close_pipes()
+            if isinstance(exc, _TuiShutdown):
+                raise _TuiShutdown(
+                    exc.signum,
+                    "task start supervisor shutdown left owned worker "
+                    "termination unconfirmed; state may still be changing. "
+                    f"Do not retry; inspect `asha task recover {task_id}` and "
+                    "the selected repository before acting",
+                ) from exc
+            raise ValueError(
+                "task start supervisor failed and owned worker termination "
+                f"unconfirmed; state may still be changing. Do not retry; "
+                f"inspect `asha task recover {task_id}` and the selected "
+                "repository before acting"
+            ) from exc
+        raise
+    finally:
+        if not process.stdout.closed or not process.stderr.closed:
+            close_pipes()
+        selector.close()
+
+
+def _reap_deferred_start_workers() -> None:
+    """Non-blockingly reap leaders whose one-shot cleanup deadline elapsed."""
+    retained: list[subprocess.Popen] = []
+    for process in _DEFERRED_START_WORKERS:
+        if process.poll() is None:
+            retained.append(process)
+    _DEFERRED_START_WORKERS[:] = retained
+
+
+def _source_colocation_watch(
+    value: str, config: ControlConfig,
+) -> tuple[Path | None, bool]:
+    if value == "~":
+        candidate = config.home
+    elif value.startswith("~/"):
+        candidate = config.home / value[2:]
+    else:
+        candidate = Path(value)
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+    try:
+        candidate = candidate.resolve()
+        git_root = discover_git_root(candidate)
+        if git_root is None:
+            return candidate, False
+        try:
+            (git_root / ".jj").lstat()
+        except FileNotFoundError:
+            return git_root, True
+        return git_root, False
+    except (JjError, OSError):
+        return None, False
+
+
+_START_FIELDS = ("Repo", "Base", "Harness", "Role", "Goal")
+_START_MAXIMUMS = (4096, 500, 32, 64, 200)
+
+
+def _ascii_prefix(candidate: str, prefix: str) -> bool:
+    try:
+        return candidate.encode("ascii").lower().startswith(
+            prefix.encode("ascii").lower(),
+        )
+    except UnicodeEncodeError:
+        return False
+
+
+def _draw_modal_frame(stdscr, curses_module, frame: ModalFrame) -> None:
+    height, width = stdscr.getmaxyx()
+    stdscr.erase()
+    if width > 1:
+        for y, row in enumerate(frame.rows[:height]):
+            try:
+                stdscr.addnstr(y, 0, row, len(row))
+            except curses_module.error:
+                pass
+    if frame.cursor is not None and height and width:
+        y, x = frame.cursor
+        if y < height:
+            try:
+                stdscr.move(y, min(x, max(0, width - 1)))
+            except curses_module.error:
+                pass
+    try:
+        stdscr.refresh()
+    except curses_module.error:
+        pass
+
+
+def _start_field_candidates(
+    snapshot: StartCandidateSnapshot, values: list[str], field: int,
+) -> tuple[ModalCandidate, ...]:
+    if field == 0:
+        return snapshot.repositories
+    if field == 1:
+        return snapshot.bases_for(values[0])
+    if field == 2:
+        return snapshot.harnesses
+    if field == 3:
+        return tuple(ModalCandidate(item, "recorded role") for item in snapshot.roles)
+    return ()
+
+
+def _canonical_field_value(
+    field: int, value: str, candidates: tuple[ModalCandidate, ...],
+) -> str | None:
+    if field == 2:
+        try:
+            folded = value.encode("ascii").lower()
+        except UnicodeEncodeError:
+            return None
+        return next(
+            (item.value for item in candidates
+             if item.value.encode("ascii").lower() == folded),
+            None,
+        )
+    if field == 3:
+        matched = next(
+            (item.value for item in candidates if _ascii_prefix(item.value, value)
+             and len(item.value) == len(value)),
+            value,
+        )
+        try:
+            return validate_role(matched)
+        except ValueError:
+            return None
+    return value
+
+
 def _start_form(
     stdscr, curses_module, model: TuiModel,
     env: Mapping[str, str], config: ControlConfig,
 ) -> str:
-    repo = _prompt_line(
-        stdscr, curses_module, model, "Repository: ",
-        initial=str(Path.cwd()), maximum=4096,
-    )
-    if repo is None:
-        return "task start cancelled"
-    base = _prompt_line(
-        stdscr, curses_module, model, "Base (empty = default trunk/main): ",
-        initial="", maximum=500,
-    )
-    if base is None:
-        return "task start cancelled"
-    harness = _prompt_line(
-        stdscr, curses_module, model, "Harness: ",
-        initial=config.default_harness, maximum=32,
-    )
-    if harness is None:
-        return "task start cancelled"
-    role = _prompt_line(
-        stdscr, curses_module, model, "Role: ",
-        initial="implementer", maximum=64,
-    )
-    if role is None:
-        return "task start cancelled"
-    goal = _prompt_line(
-        stdscr, curses_module, model, "Goal: ", maximum=200,
-    )
-    if goal is None:
-        return "task start cancelled"
+    snapshot = freeze_start_candidates(config, TaskStore(config))
+    values = [str(Path.cwd().resolve()), "", config.default_harness, "implementer", ""]
+    accepted_repository = values[0]
+    field = 0
+    selected: int | None = None
+    while field < len(_START_FIELDS):
+        candidates = _start_field_candidates(snapshot, values, field)
+        height, width = stdscr.getmaxyx()
+        frame = modal_frame(
+            title="Start task",
+            context=(
+                f"Field {field + 1}/5  Up/Down select  Tab complete  "
+                "Shift-Tab back  Esc cancel"
+            ),
+            label=_START_FIELDS[field], hint="Enter accepts",
+            value=values[field], candidates=candidates, selected=selected,
+            height=height, width=width,
+        )
+        _draw_modal_frame(stdscr, curses_module, frame)
+        key = _read_modal_key(stdscr, curses_module)
+        if key == -1 or key == getattr(curses_module, "KEY_RESIZE", -998):
+            continue
+        if key == 27:
+            return "task start cancelled"
+        if key == getattr(curses_module, "KEY_BTAB", -994):
+            if field:
+                field -= 1
+            selected = None
+            continue
+        if key in {
+            getattr(curses_module, "KEY_UP", -997),
+            getattr(curses_module, "KEY_DOWN", -996),
+        } and candidates:
+            delta = -1 if key == getattr(curses_module, "KEY_UP", -997) else 1
+            if selected is None:
+                selected = len(candidates) - 1 if delta < 0 else 0
+            else:
+                selected = min(max(0, selected + delta), len(candidates) - 1)
+            continue
+        if key == 9 and candidates:
+            matches = [
+                index for index, item in enumerate(candidates)
+                if (
+                    _ascii_prefix(item.value, values[field])
+                    if field in {2, 3} else
+                    item.value.startswith(values[field])
+                )
+            ]
+            if matches:
+                selected = matches[0] if selected not in matches else selected
+                values[field] = candidates[selected].value
+            continue
+        if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
+            accepted = (
+                candidates[selected].value if selected is not None and candidates
+                else values[field]
+            )
+            canonical = _canonical_field_value(field, accepted, candidates)
+            if field == 4 and not terminal_text_is_complete(accepted):
+                canonical = None
+            if canonical is None:
+                model.message = (
+                    "Harness must be one installed-status candidate from the closed allowlist."
+                    if field == 2 else
+                    "Role uses an invalid restricted grammar."
+                    if field == 3 else
+                    "Goal ends with an unsupported Unicode cluster."
+                )
+                selected = None
+                continue
+            if field == 0:
+                if canonical != accepted_repository:
+                    values[1] = ""
+                accepted_repository = canonical
+            values[field] = canonical
+            field += 1
+            selected = None
+            continue
+        if key in {8, 127, getattr(curses_module, "KEY_BACKSPACE", -997)}:
+            clusters = _display_clusters(values[field])
+            if clusters:
+                values[field] = "".join(clusters[:-1])
+            selected = None
+            continue
+        if ((isinstance(key, str) and len(key) == 1) or
+                (isinstance(key, int) and 0 <= key <= 0x10FFFF)) and \
+                len(values[field]) < _START_MAXIMUMS[field]:
+            character = key if isinstance(key, str) else chr(key)
+            logical = list(values[field])
+            if _prompt_character_allowed(logical, character):
+                values[field] += character
+                selected = None
+    repo, base, harness, role, goal = values
     arguments = ["--repo", repo]
     if base.strip():
         arguments.extend(["--base", base.strip()])
+    task_id = new_uuid()
     arguments.extend([
-        "--harness", harness, "--role", role, "--goal", goal, "--detach",
+        "--harness", harness, "--role", role, "--goal", goal,
+        "--task-id", task_id, "--detach", "--json",
     ])
-    output = io.StringIO()
-    curses_module.endwin()
+    source, source_was_plain_git = _source_colocation_watch(repo, config)
+    return _supervise_start_process(
+        stdscr, curses_module, model, config,
+        _start_worker_argv(arguments, env), task_id, env,
+        source=source, source_was_plain_git=source_was_plain_git,
+    )
+
+
+def _retry_arguments(task: dict[str, Any], task_id: str) -> list[str]:
+    """Reconstruct one recorded task request under a fresh path identity."""
+    arguments = ["--repo", task["repository"]["root"]]
+    source = task["source"]
+    if source["kind"] in {"pr", "issue"}:
+        arguments.extend([f"--{source['kind']}", str(source["number"])])
+    # PR start resolves its current head and owns its generated requested-base
+    # description; the public CLI intentionally refuses --pr plus --base.
+    if source["kind"] != "pr":
+        arguments.extend(["--base", task["jj"]["requested_base"]])
+    if not task["runs"]:
+        raise ValueError("task without a recorded primary run cannot be retried")
+    primary = task["runs"][0]
+    arguments.extend([
+        "--harness", primary["harness"], "--role", primary["role"],
+        "--goal", task["label"], "--slug", retry_task_slug(task["slug"], task_id),
+        "--task-id", task_id, "--detach", "--json",
+    ])
+    return arguments
+
+
+def _lookup_task_binding(
+    env: Mapping[str, str], task_id: str, store: TaskStore,
+):
+    """Resolve durable orchestration ownership once, without a grace wait."""
+    from .orchestration.config import load_config as load_orchestration_config
+    from .orchestration.results import locate_task_binding_now
+
+    orchestration = load_orchestration_config(env)
+    return locate_task_binding_now(
+        orchestration, task_id, control_store=store,
+    )
+
+
+def _archived_resources_remain(config: ControlConfig, task: dict[str, Any]) -> bool:
+    record = PruneRecordStore(config).read(task["task_id"])
+    if record is not None and record.get("workspace_removed"):
+        return False
     try:
-        from .cli import _start_command
-        with contextlib.redirect_stdout(output):
-            status = _start_command(
-                arguments, env, preserve_sigterm_handler=True,
+        return _adapter_for_task(task).has_session(task["tmux"]["session"])
+    except (TmuxError, OSError, ValueError):
+        return False
+
+
+def _replace_loaded_rows(
+    model: TuiModel, config: ControlConfig, store: TaskStore,
+    journals: CreationJournalStore, jj: JjAdapter,
+) -> None:
+    model.replace_rows(_load_rows(
+        config, store, journals, jj,
+        include_archived=model.include_archived,
+    ))
+    _surface_skipped(model, store)
+
+
+def _retry_task(
+    *,
+    stdscr, curses_module, model: TuiModel, config: ControlConfig,
+    env: Mapping[str, str], store: TaskStore, journals: CreationJournalStore,
+    jj: JjAdapter, task_id: str,
+) -> str:
+    def revalidate() -> dict[str, Any]:
+        selected = store.read(task_id)
+        if selected["lifecycle"] not in {"ended", "failed", "archived"}:
+            raise ValueError("only a terminal task can be retried")
+        if selected["lifecycle"] == "failed" and any(
+            run["state"] not in {"exited", "failed"} for run in selected["runs"]
+        ):
+            raise ValueError(
+                "failed task still records a preserved live run and cannot be retried"
             )
-        if status != 0:
-            raise ValueError(f"task start exited with status {status}")
-    finally:
-        _repaint_after_suspend(stdscr)
-    first = output.getvalue().splitlines()
-    return first[0] if first else "task started"
+        if _lookup_task_binding(env, task_id, store) is not None:
+            raise ValueError(
+                "initiative-owned tasks cannot use ordinary retry; reconcile the initiative"
+            )
+        return selected
+
+    current = revalidate()
+    source_note = (
+        " This reconstructs the recorded PR request and resolves its current PR head."
+        if current["source"]["kind"] == "pr" else
+        " This reconstructs the recorded task request."
+    )
+    answer = _prompt_line(
+        stdscr, curses_module, model,
+        "Confirm [yes/N]: ",
+        title="Retry task",
+        context=(
+            f"Task: {current['slug']} ({current['task_id']})\n"
+            f"Action: create a distinct task.{source_note}\n"
+            "Authorization: type exact yes (lowercase)."
+        ),
+        maximum=4,
+    )
+    if answer != "yes":
+        return "retry cancelled"
+    current = revalidate()
+    fresh_id = new_uuid()
+    arguments = _retry_arguments(current, fresh_id)
+    source, plain_git = _source_colocation_watch(
+        current["repository"]["root"], config,
+    )
+    message = _supervise_start_process(
+        stdscr, curses_module, model, config,
+        _start_worker_argv(arguments, env), fresh_id, env,
+        source=source, source_was_plain_git=plain_git,
+    )
+    _replace_loaded_rows(model, config, store, journals, jj)
+    if message.startswith("task started"):
+        model.select_task(fresh_id)
+    return message
+
+
+def _prune_archived_task(
+    *,
+    stdscr, curses_module, model: TuiModel, config: ControlConfig,
+    env: Mapping[str, str], store: TaskStore, journals: CreationJournalStore,
+    jj: JjAdapter, task_id: str,
+) -> str:
+    current = store.read(task_id)
+    preview_context = assemble_prune_context(
+        config, tasks=store, env=dict(env), remove_workspace=True,
+    )
+    preview = prune_one_task(
+        config, current, tasks=store, journals=journals, jj=jj,
+        remove_workspace=True, dry_run=True, context=preview_context,
+    )
+    if preview.outcome in {"refused", "partial"}:
+        return (
+            f"prune {preview.outcome}: session {preview.session.action} "
+            f"({preview.session.detail}); workspace {preview.workspace.action} "
+            f"({preview.workspace.detail})"
+        )
+    answer = _prompt_line(
+        stdscr, curses_module, model,
+        "Confirm [yes/N]: ",
+        title="Prune archived task",
+        context=(
+            f"Task: {current['slug']} ({current['task_id']})\n"
+            f"Preview: session {preview.session.action}; "
+            f"workspace {preview.workspace.action}.\n"
+            "Preservation: task record, change, links, and seals remain.\n"
+            "Authorization: type exact yes (lowercase)."
+        ),
+        maximum=4,
+    )
+    if answer != "yes":
+        return "prune cancelled"
+    # Reassemble every external binding and path-owner input. The destructive
+    # controller also re-reads the task under its task lock.
+    real_context = assemble_prune_context(
+        config, tasks=store, env=dict(env), remove_workspace=True,
+    )
+    result = prune_one_task(
+        config, current, tasks=store, journals=journals, jj=jj,
+        remove_workspace=True, dry_run=False, context=real_context,
+    )
+    _replace_loaded_rows(model, config, store, journals, jj)
+    model.select_task(task_id)
+    return (
+        f"prune {result.outcome}: session {result.session.action} "
+        f"({result.session.detail}); workspace {result.workspace.action} "
+        f"({result.workspace.detail})"
+    )
+
+
+def _reconcile_task_initiative(
+    *, env: Mapping[str, str], store: TaskStore, task_id: str,
+) -> str:
+    # Re-read both Control identity and durable link immediately before the
+    # mutating reconciliation sequence.
+    store.read(task_id)
+    binding = _lookup_task_binding(env, task_id, store)
+    if binding is None:
+        raise ValueError("task is not owned by an initiative")
+    initiative_store, initiative, link, attempt, _node, _task = binding
+    from .orchestration.cli import reconcile_one_initiative
+
+    result = reconcile_one_initiative(
+        initiative_store, initiative["initiative_id"],
+    )
+    after_node = initiative_store.read_node(
+        initiative["initiative_id"], link["node_id"],
+    )
+    live = result.get("live_reconciliation", {})
+    retries = live.get("retries", []) if isinstance(live, dict) else []
+    allocated = sum(
+        1 for item in retries
+        if isinstance(item, dict) and item.get("state") == "allocated"
+    )
+    ready = 1 if after_node.get("state") == "ready" else 0
+    action_reconciliation = result.get("action_reconciliation", {})
+    reconciled_actions = (
+        action_reconciliation.get("actions", [])
+        if isinstance(action_reconciliation, dict) else []
+    )
+    action_evidence = ", ".join(
+        f"{item.get('action_class', '?')}:{item.get('action_id', '?')}:"
+        f"{item.get('state', '?')}"
+        for item in reconciled_actions if isinstance(item, dict)
+    ) or "no pending action records"
+    return (
+        f"initiative {initiative.get('slug', initiative['initiative_id'])} reconciled; "
+        f"node {link['node_id']}; attempt {link['attempt_id']} was "
+        f"{attempt['state']}; allocated {allocated}; ready {ready}; "
+        f"action evidence: {action_evidence}"
+    )
+
+
+_UNOWNED_SIGNAL_ACTIONS: dict[str, tuple[tuple[str, str, bool], ...]] = {
+    "starting": (("I", "Interrupt", False), ("t", "Terminate", True)),
+    "working": (("I", "Interrupt", False), ("t", "Terminate", True)),
+    "needs-input": (("I", "Interrupt", False), ("t", "Terminate", True)),
+    "idle": (("f", "Finish", True),),
+    "unknown": (("t", "Terminate", True),),
+}
+
+
+def _fresh_active_row(
+    *, model: TuiModel, config: ControlConfig, store: TaskStore,
+    journals: CreationJournalStore, jj: JjAdapter, task_id: str,
+) -> TuiRow:
+    current = store.read(task_id)
+    row = _read_row(config, store, journals, current, jj)
+    model.replace_row(row)
+    return row
+
+
+def _signal_task_action(
+    *, key: str, expected_run_id: str, stdscr, curses_module,
+    model: TuiModel, config: ControlConfig, env: Mapping[str, str],
+    store: TaskStore, journals: CreationJournalStore, jj: JjAdapter,
+    task_id: str,
+) -> str:
+    row = _fresh_active_row(
+        model=model, config=config, store=store, journals=journals, jj=jj,
+        task_id=task_id,
+    )
+    if _lookup_task_binding(env, task_id, store) is not None:
+        raise ValueError(
+            "initiative ownership changed; use Stop attempt via initiative"
+        )
+    action = next(
+        (item for item in _UNOWNED_SIGNAL_ACTIONS.get(row.display_state, ())
+         if item[0] == key),
+        None,
+    )
+    if action is None or row.observation.run_id != expected_run_id:
+        raise ValueError("task run/state changed before signal confirmation")
+    _key, label, terminate = action
+    signal_name = "SIGTERM" if terminate else "SIGINT"
+    answer = _prompt_line(
+        stdscr, curses_module, model,
+        "Confirm [yes/N]: ",
+        title=f"{label} task",
+        context=(
+            f"Task: {row.task['slug']} ({row.task['task_id']})\n"
+            f"Run: {expected_run_id}\n"
+            f"Signal: {signal_name}\n"
+            "Preservation: this signal does not archive the task and does not "
+            "remove its workspace or change.\n"
+            "Authorization: type exact yes (lowercase)."
+        ),
+        maximum=4,
+    )
+    if answer != "yes":
+        return "signal cancelled"
+
+    # Re-read ownership, lifecycle, observation, and run identity after the
+    # modal. stop_task performs the final locked ownership/process validation.
+    row = _fresh_active_row(
+        model=model, config=config, store=store, journals=journals, jj=jj,
+        task_id=task_id,
+    )
+    if _lookup_task_binding(env, task_id, store) is not None:
+        raise ValueError(
+            "initiative ownership changed; no raw signal was sent"
+        )
+    allowed = next(
+        (item for item in _UNOWNED_SIGNAL_ACTIONS.get(row.display_state, ())
+         if item[0] == key),
+        None,
+    )
+    if allowed is None or row.observation.run_id != expected_run_id:
+        raise ValueError("task run/state changed; no signal was sent")
+    result = stop_task(
+        config, row.task, tmux=_adapter_for_task(row.task), tasks=store,
+        terminate=terminate,
+    )
+    observed = _fresh_active_row(
+        model=model, config=config, store=store, journals=journals, jj=jj,
+        task_id=task_id,
+    )
+    message = (
+        f"{signal_name} requested for {row.task['slug']} run {result['run_id']}; "
+        f"current observed state: {observed.display_state}"
+    )
+    model.message = message
+    return message
+
+
+def _stop_owned_attempt(
+    *, initial_binding, stdscr, curses_module, model: TuiModel,
+    config: ControlConfig, env: Mapping[str, str], store: TaskStore,
+    journals: CreationJournalStore, jj: JjAdapter, task_id: str,
+) -> str:
+    _initiative_store, initiative, link, attempt, _node, task = initial_binding
+    answer = _prompt_line(
+        stdscr, curses_module, model,
+        "Confirm [yes/N]: ",
+        title="Stop attempt via initiative",
+        context=(
+            f"Task: {task['slug']} ({task['task_id']})\n"
+            f"Initiative: {initiative.get('slug', initiative['initiative_id'])}\n"
+            f"Node: {link['node_id']}\n"
+            f"Attempt: {link['attempt_id']}\n"
+            "Authorization: type exact yes (lowercase)."
+        ),
+        maximum=4,
+    )
+    if answer != "yes":
+        return "initiative stop cancelled"
+    current_binding = _lookup_task_binding(env, task_id, store)
+    if current_binding is None:
+        raise ValueError("initiative ownership changed; no stop action was submitted")
+    initiative_store, current_initiative, current_link, current_attempt, _node, _task = (
+        current_binding
+    )
+    if (
+        current_initiative["initiative_id"] != initiative["initiative_id"]
+        or current_link["attempt_id"] != link["attempt_id"]
+        or current_link["node_id"] != link["node_id"]
+    ):
+        raise ValueError("initiative attempt binding changed; no stop action was submitted")
+    if current_attempt["state"] in {"cancelled", "succeeded", "failed", "superseded"}:
+        raise ValueError("initiative attempt became terminal before stop submission")
+    from .orchestration.actions import (
+        action_outcome, build_action_document, submit_action,
+    )
+
+    document = build_action_document(
+        current_initiative, "stop-attempt",
+        {"attempt_id": current_link["attempt_id"]}, actor_id="tui",
+    )
+    action = submit_action(
+        initiative_store, current_initiative["initiative_id"], document,
+    )
+    outcome = action_outcome(action)
+    action_id = action["action_id"]
+    latest_attempt = initiative_store.read_attempt(
+        current_initiative["initiative_id"], current_link["attempt_id"],
+    )
+    observed = _fresh_active_row(
+        model=model, config=config, store=store, journals=journals, jj=jj,
+        task_id=task_id,
+    )
+    os_evidence = f"OS state observed: {observed.display_state}"
+    refusal = latest_attempt.get("refusal")
+    if refusal is None:
+        refusal = outcome.get("reason") or outcome.get("refusal")
+    refusal_evidence = (
+        "refusal: none" if refusal is None else f"refusal: {_safe_text(refusal)[:500]}"
+    )
+    attempt_evidence = f"attempt {latest_attempt['state']}"
+    if action["state"] == "indeterminate":
+        return (
+            f"stop action {action_id} action indeterminate; {attempt_evidence}; "
+            f"{refusal_evidence}; explicitly reconcile initiative "
+            f"{current_initiative['initiative_id']}; {os_evidence}"
+        )
+    return (
+        f"stop action {action_id} action {action['state']}; {attempt_evidence}; "
+        f"{refusal_evidence}; {os_evidence}"
+    )
+
+
+def _context_actions(
+    *,
+    stdscr, curses_module, model: TuiModel, config: ControlConfig,
+    env: Mapping[str, str], store: TaskStore, journals: CreationJournalStore,
+    jj: JjAdapter, task_id: str,
+) -> str | None:
+    current = store.read(task_id)
+    archived = current["lifecycle"] == "archived"
+    terminal = (
+        archived or current["lifecycle"] == "ended" or
+        (
+            current["lifecycle"] == "failed" and
+            all(run["state"] in {"exited", "failed"} for run in current["runs"])
+        )
+    )
+    active_row: TuiRow | None = None
+    if not terminal:
+        active_row = _fresh_active_row(
+            model=model, config=config, store=store, journals=journals, jj=jj,
+            task_id=task_id,
+        )
+        current = active_row.task
+        archived = current["lifecycle"] == "archived"
+        terminal = (
+            archived or current["lifecycle"] == "ended" or
+            (
+                current["lifecycle"] == "failed" and
+                all(run["state"] in {"exited", "failed"} for run in current["runs"])
+            )
+        )
+    binding = _lookup_task_binding(env, task_id, store)
+    owned = binding is not None
+    actions: list[tuple[str, str]] = []
+    if not archived or _archived_resources_remain(config, current):
+        actions.append(("i", "inspect"))
+    if not terminal and active_row is not None:
+        if owned:
+            actions.append(("s", "Stop attempt via initiative"))
+        else:
+            actions.extend(
+                (key, label)
+                for key, label, _terminate in
+                _UNOWNED_SIGNAL_ACTIONS.get(active_row.display_state, ())
+            )
+    if terminal and not archived:
+        actions.append(("a", "archive"))
+    if terminal:
+        if owned:
+            actions.append(("c", "reconcile initiative"))
+        elif current["runs"]:
+            actions.append(("r", "retry"))
+    if archived:
+        actions.append(("p", "prune"))
+    context = ""
+    if binding is not None:
+        _initiative_store, initiative, link, attempt, _node, _task = binding
+        context = (
+            f" initiative={initiative.get('slug', initiative['initiative_id'])}"
+            f" node={link['node_id']} attempt={link['attempt_id']}"
+            f" state={attempt['state']}"
+        )
+    choices = " | ".join(f"{key} {label}" for key, label in actions)
+    answer = _prompt_line(
+        stdscr, curses_module, model,
+        "Action: ",
+        title="Task actions",
+        context=(
+            f"Task: {current['slug']} ({current['task_id']}){context}\n"
+            f"Choices: {choices}"
+        ),
+        maximum=1,
+        candidates=tuple(ModalCandidate(key, label) for key, label in actions),
+    )
+    if answer is None:
+        return "actions cancelled"
+    allowed = {key for key, _label in actions}
+    if answer not in allowed:
+        return "action unavailable; task state was revalidated"
+    if answer == "i":
+        selected = model.selected_row
+        if selected is None or selected.task["task_id"] != task_id:
+            raise ValueError("selected task changed before inspection")
+        if not current["runs"]:
+            try:
+                journal = journals.read(task_id)
+            except JournalError as exc:
+                if current["lifecycle"] == "failed":
+                    return (
+                        "retained creation journal cannot be authenticated; manual "
+                        f"inspection only: {exc}"
+                    )
+            else:
+                guidance = retained_recovery_guidance(current, journal)
+                if guidance is not None:
+                    return guidance
+        refusal = _open_popup(
+            stdscr, curses_module, config, selected,
+            selected.observation.run_id, env,
+        )
+        model.replace_row(_read_row(config, store, journals, current, jj))
+        return refusal or "popup closed; task resources were left untouched"
+    if answer in {"I", "t", "f"}:
+        if active_row is None or active_row.observation.run_id is None:
+            raise ValueError("task has no fresh run identity to signal")
+        return _signal_task_action(
+            key=answer, expected_run_id=active_row.observation.run_id,
+            stdscr=stdscr, curses_module=curses_module, model=model,
+            config=config, env=env, store=store, journals=journals, jj=jj,
+            task_id=task_id,
+        )
+    if answer == "s":
+        if binding is None:
+            raise ValueError("task is no longer owned by an initiative")
+        return _stop_owned_attempt(
+            initial_binding=binding, stdscr=stdscr,
+            curses_module=curses_module, model=model, config=config, env=env,
+            store=store, journals=journals, jj=jj, task_id=task_id,
+        )
+    if answer == "a":
+        archive_intent = TuiIntent(
+            IntentKind.ARCHIVE, task_id=task_id, requires_confirmation=True,
+        )
+        _execute_intent(
+            archive_intent, stdscr=stdscr, curses_module=curses_module,
+            model=model, config=config, env=env, store=store,
+            journals=journals, jj=jj,
+        )
+        return None
+    if answer == "r":
+        return _retry_task(
+            stdscr=stdscr, curses_module=curses_module, model=model,
+            config=config, env=env, store=store, journals=journals, jj=jj,
+            task_id=task_id,
+        )
+    if answer == "c":
+        return _reconcile_task_initiative(
+            env=env, store=store, task_id=task_id,
+        )
+    if answer == "p":
+        return _prune_archived_task(
+            stdscr=stdscr, curses_module=curses_module, model=model,
+            config=config, env=env, store=store, journals=journals, jj=jj,
+            task_id=task_id,
+        )
+    return "action unavailable"
 
 
 def _execute_intent(
@@ -701,6 +2443,14 @@ def _execute_intent(
     if intent.kind is IntentKind.HELP:
         model.help_visible = not model.help_visible
         return True
+    if intent.kind is IntentKind.TOGGLE_SCOPE:
+        model.include_archived = not model.include_archived
+        model.replace_rows(_load_rows(
+            config, store, journals, jj,
+            include_archived=model.include_archived,
+        ))
+        _surface_skipped(model, store)
+        return True
     if intent.kind is IntentKind.FILTER:
         value = _prompt_line(
             stdscr, curses_module, model, "Filter: ",
@@ -711,23 +2461,46 @@ def _execute_intent(
         return True
     if intent.kind is IntentKind.START:
         model.message = _start_form(stdscr, curses_module, model, env, config)
-        model.replace_rows(_load_rows(config, store, journals, jj))
+        model.replace_rows(_load_rows(
+            config, store, journals, jj,
+            include_archived=model.include_archived,
+        ))
         _surface_skipped(model, store)
         return True
     if row is None:
         model.message = "no task is selected"
         return True
+    if intent.kind is IntentKind.ACTIONS:
+        message = _context_actions(
+            stdscr=stdscr, curses_module=curses_module, model=model,
+            config=config, env=env, store=store, journals=journals, jj=jj,
+            task_id=row.task["task_id"],
+        )
+        if message is not None:
+            model.message = message
+        return True
     if intent.kind is IntentKind.OPEN:
         refusal = _open_popup(
             stdscr, curses_module, config, row, intent.run_id, env,
         )
+        refreshed = _read_row(config, store, journals, row.task, jj)
+        model.replace_row(refreshed)
+        if refreshed.task["lifecycle"] == "archived":
+            suffix = "archived lifecycle refreshed; live resources were not reconciled"
+        else:
+            suffix = "live evidence reconciled"
         model.message = (
-            refusal or "popup closed; task resources were left untouched"
+            f"{refusal}; {suffix}" if refusal else
+            f"popup closed; {suffix}; task resources were left untouched"
         )
         return True
     if intent.kind is IntentKind.RECONCILE:
-        model.replace_row(_read_row(config, store, journals, row.task, jj))
-        model.message = "live evidence reconciled"
+        refreshed = _read_row(config, store, journals, row.task, jj)
+        model.replace_row(refreshed)
+        if refreshed.task["lifecycle"] == "archived":
+            model.message = "archived lifecycle refreshed; live resources were not reconciled"
+        else:
+            model.message = "live evidence reconciled"
         return True
     if intent.kind is IntentKind.DIFF:
         diff = jj.diff_summary(Path(row.task["jj"]["workspace_path"]))
@@ -737,8 +2510,14 @@ def _execute_intent(
     if intent.kind is IntentKind.ARCHIVE:
         answer = _prompt_line(
             stdscr, curses_module, model,
-            f"Archive {row.task['slug']} and preserve its workspace/change? [yes/N] ",
-            maximum=3,
+            "Confirm [yes/N]: ",
+            title="Archive task",
+            context=(
+                f"Task: {row.task['slug']} ({row.task['task_id']})\n"
+                "Preservation: archive retains the workspace and change.\n"
+                "Authorization: type exact yes (lowercase)."
+            ),
+            maximum=4,
         )
         if answer != "yes":
             model.message = "archive cancelled"
@@ -751,7 +2530,10 @@ def _execute_intent(
             ),
             journals=journals, jj=jj, presentation=presentation,
         )
-        model.replace_rows(_load_rows(config, store, journals, jj))
+        model.replace_rows(_load_rows(
+            config, store, journals, jj,
+            include_archived=model.include_archived,
+        ))
         model.message = "task archived; workspace and change preserved"
         _surface_skipped(model, store)
         return True
@@ -768,38 +2550,59 @@ def _curses_loop(
     journals: CreationJournalStore,
     jj: JjAdapter,
 ) -> int:
-    stdscr.timeout(200)
+    stdscr.timeout(_INPUT_POLL_MS)
+    next_refresh = time.monotonic() + _AUTO_REFRESH_SECONDS
     while True:
+        _reap_deferred_start_workers()
         _paint(stdscr, curses_module, model)
         key = stdscr.getch()
-        if key == -1:
+        if key != -1:
+            if key == getattr(curses_module, "KEY_RESIZE", -998):
+                height, width = stdscr.getmaxyx()
+                model.resize(height, width)
+                continue
+            if key == getattr(curses_module, "KEY_UP", -997):
+                model.move_selection(-1)
+                continue
+            if key == getattr(curses_module, "KEY_DOWN", -996):
+                model.move_selection(1)
+                continue
+            if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
+                value = "ENTER"
+            elif 0 <= key <= 0x10FFFF:
+                value = chr(key)
+            else:
+                value = ""
+            intent = model.dispatch_key(value)
+            try:
+                if not _execute_intent(
+                    intent, stdscr=stdscr, curses_module=curses_module,
+                    model=model, config=config, env=env, store=store,
+                    journals=journals, jj=jj,
+                ):
+                    return 0
+            except (PruneError, ValueError, OSError) as exc:
+                model.message = _safe_error(exc)
             continue
-        if key == getattr(curses_module, "KEY_RESIZE", -998):
-            height, width = stdscr.getmaxyx()
-            model.resize(height, width)
-            continue
-        if key == getattr(curses_module, "KEY_UP", -997):
-            model.move_selection(-1)
-            continue
-        if key == getattr(curses_module, "KEY_DOWN", -996):
-            model.move_selection(1)
-            continue
-        if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
-            value = "ENTER"
-        elif 0 <= key <= 0x10FFFF:
-            value = chr(key)
-        else:
-            value = ""
-        intent = model.dispatch_key(value)
-        try:
-            if not _execute_intent(
-                intent, stdscr=stdscr, curses_module=curses_module,
-                model=model, config=config, env=env, store=store,
-                journals=journals, jj=jj,
-            ):
-                return 0
-        except (ValueError, OSError) as exc:
-            model.message = _safe_error(exc)
+        if time.monotonic() >= next_refresh:
+            # One refresh per elapsed boundary: no catch-up loop and no
+            # background worker. A slow adapter cannot create an unbounded
+            # queue of pending reconciliations.
+            try:
+                model.replace_rows(_load_rows(
+                    config, store, journals, jj,
+                    include_archived=model.include_archived,
+                ))
+                _surface_skipped(model, store)
+                model.automatic_refresh_error = None
+            except (ValueError, OSError) as exc:
+                model.automatic_refresh_error = (
+                    f"automatic reconciliation failed: {_safe_error(exc)}"
+                )
+            finally:
+                # Schedule from completion, not the pre-load boundary. A slow
+                # pass must not trigger an immediate continuous refresh loop.
+                next_refresh = time.monotonic() + _AUTO_REFRESH_SECONDS
 
 
 def _degrade(stderr: TextIO) -> int:
@@ -855,6 +2658,8 @@ def run_tui(
                 store, journals, jj,
             )
         except _TuiShutdown as exc:
+            if exc.detail is not None:
+                print(f"asha control: {exc.detail}", file=errors)
             return 128 + exc.signum
         except curses_module.error as exc:
             print(
@@ -869,6 +2674,8 @@ def run_tui(
 
 
 __all__ = [
-    "DetailProjection", "IntentKind", "TuiIntent", "TuiModel", "TuiRow",
-    "filter_rows", "render", "run_tui", "sort_rows",
+    "DetailProjection", "IntentKind", "ModalCandidate", "ModalFrame",
+    "StartCandidateSnapshot", "TuiIntent", "TuiModel", "TuiRow",
+    "filter_rows", "freeze_start_candidates", "modal_frame", "render",
+    "run_tui", "sort_rows",
 ]

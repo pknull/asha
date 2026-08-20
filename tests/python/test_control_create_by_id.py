@@ -83,6 +83,9 @@ class ExistingTaskCliTests(unittest.TestCase):
     def discovery_only_jj(self):
         adapter = mock.Mock()
         adapter.discover_root.return_value = self.source
+        adapter.init_colocated.side_effect = AssertionError(
+            "existing task must not initialize jj"
+        )
         adapter.preflight.side_effect = AssertionError("existing task must not run jj preflight")
         adapter.import_git.side_effect = AssertionError("existing task must not import Git")
         return adapter
@@ -128,7 +131,7 @@ class ExistingTaskCliTests(unittest.TestCase):
         jj.discover_root.return_value = self.source
         jj.preflight.return_value = RepositoryFacts(root=self.source, git_root=self.source)
         jj.working_copy_parent.return_value = "a" * 40
-        jj.git_head.return_value = "a" * 40
+        jj.git_head_exact.return_value = "a" * 40
         jj.import_git.return_value = ()
         with mock.patch(
             "lib.control.cli.prepare_task_workspace", side_effect=prepare,
@@ -151,6 +154,76 @@ class ExistingTaskCliTests(unittest.TestCase):
         self.assertTrue((self.config.tasks_dir / f"{TASK_ID}.json").is_file())
         self.assertEqual(task["jj"]["workspace_name"], f"asha-create-by-id-{TASK_ID[:8]}")
         self.assertEqual(task["tmux"]["session"], f"asha-create-by-id-{TASK_ID[:8]}")
+
+    def test_supplied_slug_separates_workspace_identity_from_label(self) -> None:
+        task = self.record()
+        task["slug"] = "create-by-id-retry-12345678"
+        task["jj"]["workspace_path"] = str(
+            self.config.workspace_root / "repo-key" / task["slug"]
+        )
+        captured = {}
+
+        def prepare(config, request, jj=None):
+            captured["request"] = request
+            return task
+
+        def launch(config, prepared, **kwargs):
+            self.store.save(task)
+            return {
+                "task": task, "run": task["runs"][0],
+                "session": task["tmux"]["session"],
+                "pane": task["runs"][0]["pane_id"],
+                "workspace": {
+                    "path": task["jj"]["workspace_path"],
+                    "name": task["jj"]["workspace_name"],
+                    "change_id": task["jj"]["change_id"],
+                },
+            }
+
+        jj = mock.Mock()
+        jj.discover_root.return_value = self.source
+        jj.preflight.return_value = RepositoryFacts(root=self.source, git_root=self.source)
+        jj.working_copy_parent.return_value = "a" * 40
+        jj.git_head_exact.return_value = "a" * 40
+        jj.import_git.return_value = ()
+        with mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
+                mock.patch("lib.control.cli.launch_task", side_effect=launch):
+            status, _stdout, stderr, _tmux = self.invoke([
+                "task", "start", "--repo", str(self.source), "--task-id", TASK_ID,
+                "--slug", task["slug"], "--harness", "codex",
+                "--goal", "Create by id", "--json",
+            ], jj)
+
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(captured["request"].slug, task["slug"])
+        self.assertEqual(captured["request"].label, "Create by id")
+
+    def test_supplied_slug_is_replay_identity_and_invalid_values_refuse_early(self) -> None:
+        record = self.record()
+        self.store.save(record)
+        jj = self.discovery_only_jj()
+
+        status, stdout, stderr, _tmux = self.invoke([
+            "task", "start", "--repo", str(self.source), "--task-id", TASK_ID,
+            "--slug", "different-retry-slug", "--harness", "codex",
+            "--goal", "Create by id", "--json",
+        ], jj)
+        self.assertEqual((status, stdout), (2, ""))
+        self.assertIn("different parameters: slug", stderr)
+        jj.preflight.assert_not_called()
+
+        for invalid in ("Upper", "-leading", "materializations", "x" * 65):
+            with self.subTest(invalid=invalid):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    status = control_main([
+                        "task", "start", "--repo", str(self.source),
+                        "--task-id", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "--slug", invalid, "--harness", "codex",
+                        "--goal", "Create by id", "--json",
+                    ], env=self.env)
+                self.assertEqual(status, 2)
+                self.assertIn("slug", stderr.getvalue())
 
     def test_identical_request_returns_stored_task_without_mutation(self) -> None:
         record = self.record()

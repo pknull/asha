@@ -21,6 +21,7 @@ from lib.control.orchestration.results import (
     ResultError,
     ResultRefused,
     locate_task_binding,
+    locate_task_binding_now,
     publish_result,
     reconcile_publications,
 )
@@ -316,6 +317,148 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
                 ResultRefused, "not yet linked.*report may be retried",
             ):
                 locate_task_binding(self.store.config, self.task["task_id"])
+
+    def test_nonblocking_binding_lookup_returns_owned_or_none_without_grace_wait(self) -> None:
+        binding = locate_task_binding_now(
+            self.store.config, self.task["task_id"],
+            control_store=TaskStore(self.config.control),
+        )
+        self.assertEqual(binding[1]["initiative_id"], self.initiative_id)
+        self.assertEqual(binding[2]["control_task_id"], self.task["task_id"])
+
+        missing = str(uuid.uuid4())
+        started = time.monotonic()
+        self.assertIsNone(locate_task_binding_now(self.store.config, missing))
+        self.assertLess(time.monotonic() - started, 0.25)
+
+    def test_nonblocking_binding_lookup_refuses_skipped_and_identity_drift(self) -> None:
+        link = self.store.read_link(self.initiative_id, self.attempt["attempt_id"])
+        changed = copy.deepcopy(self.task)
+        changed["label"] = "foreign replacement"
+        with self.assertRaisesRegex(ResultRefused, "identity"):
+            locate_task_binding_now(
+                self.store.config, self.task["task_id"],
+                control_store=mock.Mock(peek=mock.Mock(return_value=changed)),
+            )
+        self.assertIsNotNone(link)
+
+        fake = mock.Mock()
+        fake.list_initiatives.return_value = []
+        fake.skipped = [{"name": "bad", "reason": "malformed"}]
+        with mock.patch(
+            "lib.control.orchestration.results.InitiativeStore", return_value=fake,
+        ):
+            with self.assertRaisesRegex(ResultRefused, "unreadable"):
+                locate_task_binding_now(self.store.config, str(uuid.uuid4()))
+
+        duplicate_store = mock.Mock()
+        duplicate_store.skipped = []
+        duplicate_store.list_initiatives.return_value = [
+            {"initiative_id": self.initiative_id},
+        ]
+        duplicate_store.list_attempts_snapshot.return_value = [self.attempt]
+        duplicate_store.list_links_snapshot.return_value = [link, copy.deepcopy(link)]
+        with mock.patch(
+            "lib.control.orchestration.results.InitiativeStore",
+            return_value=duplicate_store,
+        ):
+            with self.assertRaisesRegex(ResultRefused, "more than one"):
+                locate_task_binding_now(self.store.config, self.task["task_id"])
+
+        interrupted = mock.Mock()
+        interrupted.skipped = []
+        interrupted.list_initiatives.return_value = [
+            {"initiative_id": self.initiative_id},
+        ]
+        interrupted.list_links_snapshot.return_value = []
+        interrupted.list_attempts_snapshot.return_value = [self.attempt]
+        with mock.patch(
+            "lib.control.orchestration.results.InitiativeStore",
+            return_value=interrupted,
+        ):
+            with self.assertRaisesRegex(ResultRefused, "link is missing"):
+                locate_task_binding_now(self.store.config, self.task["task_id"])
+
+    def test_nonblocking_binding_lookup_binds_the_observed_reservation_to_its_link(self) -> None:
+        link = self.store.read_link(self.initiative_id, self.attempt["attempt_id"])
+        node = self.store.read_node(self.initiative_id, self.attempt["node_id"])
+        later_attempt = copy.deepcopy(self.attempt)
+        later_attempt["attempt_id"] = str(uuid.uuid4())
+        later_link = copy.deepcopy(link)
+        later_link["attempt_id"] = later_attempt["attempt_id"]
+
+        interleaved = mock.Mock()
+        interleaved.skipped = []
+        interleaved.list_initiatives.return_value = [
+            {"initiative_id": self.initiative_id},
+        ]
+        interleaved.list_attempts_snapshot.return_value = [self.attempt]
+        interleaved.list_links_snapshot.return_value = [later_link]
+        interleaved.read_attempt.return_value = later_attempt
+        interleaved.read_node.return_value = node
+        with mock.patch(
+            "lib.control.orchestration.results.InitiativeStore",
+            return_value=interleaved,
+        ):
+            with self.assertRaisesRegex(
+                ResultRefused, "reservation.*link.*disagree",
+            ):
+                locate_task_binding_now(
+                    self.store.config, self.task["task_id"],
+                    control_store=TaskStore(self.config.control),
+                )
+
+        later_initiative_id = str(uuid.uuid4())
+        initiative_interleaved = mock.Mock()
+        initiative_interleaved.skipped = []
+        initiative_interleaved.list_initiatives.return_value = [
+            {"initiative_id": self.initiative_id},
+            {"initiative_id": later_initiative_id},
+        ]
+        initiative_interleaved.list_attempts_snapshot.side_effect = (
+            lambda initiative_id: (
+                [self.attempt] if initiative_id == self.initiative_id else []
+            )
+        )
+        cross_initiative_link = copy.deepcopy(later_link)
+        cross_initiative_link["initiative_id"] = later_initiative_id
+        initiative_interleaved.list_links_snapshot.side_effect = (
+            lambda initiative_id: (
+                [cross_initiative_link]
+                if initiative_id == later_initiative_id else []
+            )
+        )
+        with mock.patch(
+            "lib.control.orchestration.results.InitiativeStore",
+            return_value=initiative_interleaved,
+        ):
+            with self.assertRaisesRegex(
+                ResultRefused, "reservation.*link.*disagree",
+            ):
+                locate_task_binding_now(
+                    self.store.config, self.task["task_id"],
+                    control_store=TaskStore(self.config.control),
+                )
+
+        corresponding = mock.Mock()
+        corresponding.skipped = []
+        corresponding.list_initiatives.return_value = [
+            {"initiative_id": self.initiative_id},
+        ]
+        corresponding.list_attempts_snapshot.return_value = [later_attempt]
+        corresponding.list_links_snapshot.return_value = [later_link]
+        corresponding.read_attempt.return_value = later_attempt
+        corresponding.read_node.return_value = node
+        with mock.patch(
+            "lib.control.orchestration.results.InitiativeStore",
+            return_value=corresponding,
+        ):
+            binding = locate_task_binding_now(
+                self.store.config, self.task["task_id"],
+                control_store=TaskStore(self.config.control),
+            )
+
+        self.assertEqual(binding[2]["attempt_id"], later_attempt["attempt_id"])
 
     def test_path_validation_refuses_noncanonical_and_symlink_traversal(self) -> None:
         outside = self.root / "outside"

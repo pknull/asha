@@ -230,7 +230,45 @@ class EventSnapshotTests(Increment4Fixture):
 
         self.assertEqual(
             summary,
-            "asha last-event-only: 2 working, 2 total (truncated: 1 snapshot omitted)",
+            "asha last-event-only: 2 working, 2 total "
+            "(bounded sample: directory scan cap reached)",
+        )
+
+    def test_summary_ages_active_snapshots_but_keeps_idle_and_terminal_durable(self) -> None:
+        active = []
+        for event in ("prompt-submitted", "permission-requested"):
+            run_id = str(uuid.uuid4())
+            self.write(event, run_id=run_id)
+            active.append(read_snapshot(self.config, run_id))
+        self.write("turn-stopped", run_id=str(uuid.uuid4()))
+        self.write("session-ended", run_id=str(uuid.uuid4()), exit_status=0)
+        latest = max(
+            datetime.fromisoformat(snapshot["observed_at"])
+            for snapshot in active if snapshot is not None
+        )
+        now = lambda: latest + timedelta(
+            seconds=self.config.event_staleness_seconds + 1,
+        )
+
+        self.assertEqual(
+            summarize(self.config, now=now),
+            "asha last-event-only: 2 unknown, 1 idle, 1 exited, 4 total",
+        )
+
+    def test_summary_keeps_active_snapshot_fresh_at_exact_window_boundary(self) -> None:
+        self.write("prompt-submitted")
+        snapshot = read_snapshot(self.config, self.run_id)
+        assert snapshot is not None
+        observed = datetime.fromisoformat(snapshot["observed_at"])
+
+        self.assertEqual(
+            summarize(
+                self.config,
+                now=lambda: observed + timedelta(
+                    seconds=self.config.event_staleness_seconds,
+                ),
+            ),
+            "asha last-event-only: 1 working, 1 total",
         )
 
     def test_summary_scopes_unvalidated_cap_and_reports_observation_failure(self) -> None:
@@ -243,7 +281,7 @@ class EventSnapshotTests(Increment4Fixture):
             self.assertEqual(
                 summarize(self.config),
                 "asha last-event-only: no valid inspected snapshots "
-                "(truncated: 1 snapshot omitted)",
+                "(bounded sample: directory scan cap reached)",
             )
         with mock.patch(
             "lib.control.events.events_dir", side_effect=EventError("unavailable"),
@@ -252,6 +290,138 @@ class EventSnapshotTests(Increment4Fixture):
                 summarize(self.config),
                 "asha last-event-only: snapshot status unavailable",
             )
+
+    def test_summary_consumes_only_a_bounded_directory_sample(self) -> None:
+        run_ids = [
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        ]
+
+        class Entry:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_file(self) -> bool:
+                return True
+
+        class Directory:
+            yielded = 0
+
+            def iterdir(self):
+                for run_id in run_ids:
+                    self.yielded += 1
+                    yield Entry(f"{run_id}.json")
+                raise AssertionError("summary enumerated beyond its bounded lookahead")
+
+        directory = Directory()
+        snapshot = {
+            "state": "working",
+            "observed_at": "2026-08-18T12:00:00Z",
+        }
+        with mock.patch("lib.control.events.MAX_SUMMARY_SNAPSHOTS", 2), \
+                mock.patch("lib.control.events.events_dir", return_value=directory), \
+                mock.patch(
+                    "lib.control.events.read_snapshot", return_value=snapshot,
+                ) as read:
+            summary = summarize(
+                self.config,
+                now=lambda: datetime(2026, 8, 18, 12, 0, 1),
+            )
+
+        self.assertEqual(directory.yielded, 3)
+        self.assertEqual(
+            [call.args[1] for call in read.call_args_list],
+            sorted(run_ids)[:2],
+        )
+        self.assertEqual(
+            summary,
+            "asha last-event-only: 2 working, 2 total "
+            "(bounded sample: directory scan cap reached)",
+        )
+
+    def test_summary_cap_wording_is_true_for_an_exact_non_json_lookahead(self) -> None:
+        run_ids = [
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        ]
+
+        class Entry:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_file(self) -> bool:
+                return True
+
+        entries = [*(Entry(f"{run_id}.json") for run_id in run_ids), Entry("note")]
+        directory = mock.Mock()
+        directory.iterdir.return_value = iter(entries)
+        snapshot = {
+            "state": "working",
+            "observed_at": "2026-08-18T12:00:00Z",
+        }
+        with mock.patch("lib.control.events.MAX_SUMMARY_SNAPSHOTS", 2), \
+                mock.patch("lib.control.events.events_dir", return_value=directory), \
+                mock.patch(
+                    "lib.control.events.read_snapshot", return_value=snapshot,
+                ) as read:
+            summary = summarize(
+                self.config,
+                now=lambda: datetime(2026, 8, 18, 12, 0, 1),
+            )
+
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(
+            summary,
+            "asha last-event-only: 2 working, 2 total "
+            "(bounded sample: directory scan cap reached)",
+        )
+
+    def test_summary_selection_is_a_sorted_filesystem_order_partial_sample(self) -> None:
+        run_ids = [
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        ]
+
+        class Entry:
+            def __init__(self, name: str) -> None:
+                self.name = name
+
+            def is_file(self) -> bool:
+                return True
+
+        visited = []
+
+        def entries():
+            for run_id in run_ids:
+                visited.append(run_id)
+                yield Entry(f"{run_id}.json")
+
+        directory = mock.Mock()
+        directory.iterdir.return_value = entries()
+        snapshot = {
+            "state": "working",
+            "observed_at": "2026-08-18T12:00:00Z",
+        }
+        with mock.patch("lib.control.events.MAX_SUMMARY_SNAPSHOTS", 2), \
+                mock.patch("lib.control.events.events_dir", return_value=directory), \
+                mock.patch(
+                    "lib.control.events.read_snapshot", return_value=snapshot,
+                ) as read:
+            summary = summarize(
+                self.config,
+                now=lambda: datetime(2026, 8, 18, 12, 0, 1),
+            )
+
+        self.assertEqual(visited, run_ids[:3])
+        self.assertEqual(
+            [call.args[1] for call in read.call_args_list],
+            sorted(run_ids[:3])[:2],
+        )
+        self.assertNotIn(run_ids[-1], [call.args[1] for call in read.call_args_list])
+        self.assertIn("bounded sample: directory scan cap reached", summary)
 
     def test_terminal_reconciliation_persists_before_expiry_and_refreshes_summary(self) -> None:
         source = self.root / "source"
@@ -910,7 +1080,10 @@ class Increment4DoctorTests(Increment4Fixture):
             json.dumps({"hooks": claude_hooks}), encoding="utf-8",
         )
         codex_lines = []
-        for event in ("SessionStart", "UserPromptSubmit", "PostToolUse"):
+        for event in (
+            "SessionStart", "UserPromptSubmit", "PostToolUse",
+            "PermissionRequest", "Stop",
+        ):
             codex_lines.extend([
                 f"[[hooks.{event}]]",
                 f"[[hooks.{event}.hooks]]",
@@ -933,6 +1106,46 @@ class Increment4DoctorTests(Increment4Fixture):
         self.assertEqual(
             before,
             {path: path.read_bytes() for path in before},
+        )
+
+        codex_without_permission = []
+        for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"):
+            codex_without_permission.extend([
+                f"[[hooks.{event}]]",
+                f"[[hooks.{event}.hooks]]",
+                'type = "command"',
+                f'command = "env ASHA_HARNESS=codex {handler} {event}"',
+            ])
+        (codex / "config.toml").write_text(
+            "\n".join(codex_without_permission) + "\n", encoding="utf-8",
+        )
+        result = run_doctor(
+            self.config, probes={"hooks": DEFAULT_PROBES["hooks"]},
+        )["probes"][0]
+        self.assertEqual(result["outcome"], "missing")
+        self.assertIn("codex:PermissionRequest", result["detail"])
+
+        codex_without_stop = []
+        for event in (
+            "SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest",
+        ):
+            codex_without_stop.extend([
+                f"[[hooks.{event}]]",
+                f"[[hooks.{event}.hooks]]",
+                'type = "command"',
+                f'command = "env ASHA_HARNESS=codex {handler} {event}"',
+            ])
+        (codex / "config.toml").write_text(
+            "\n".join(codex_without_stop) + "\n", encoding="utf-8",
+        )
+        result = run_doctor(
+            self.config, probes={"hooks": DEFAULT_PROBES["hooks"]},
+        )["probes"][0]
+        self.assertEqual(result["outcome"], "missing")
+        self.assertIn("codex:Stop", result["detail"])
+
+        (codex / "config.toml").write_text(
+            "\n".join(codex_lines) + "\n", encoding="utf-8",
         )
 
         (claude / "settings.json").write_text('{"hooks":{}}', encoding="utf-8")

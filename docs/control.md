@@ -12,10 +12,13 @@ detached tmux session, and its harness runs. Closing the TUI, popup, or shell
 does not end the task.
 
 The source must already be an initialized Asha project and the exact root of a
-Git-backed jj repository. Control targets the jj 0.38 workspace surface and
-requires tmux with `display-popup`, plus the selected installed harness. The
-source revision must ignore `.asha/`, `Memory/`, and `Work/` paths that Control
-copies privately into the task workspace. GitHub source modes additionally
+Git repository. An existing Git-backed jj repository is used as-is; a plain
+Git root is automatically colocated before task preparation. Control targets
+the jj 0.38 workspace surface and requires tmux with `display-popup`, plus the selected installed harness. The
+selected revision must positively ignore each task-private `.asha/`, `Memory/`,
+or `Work/` path that Control will create. A regular context file already tracked
+by that revision is reused byte-for-byte and does not need an ignore rule.
+GitHub source modes additionally
 require an installed, authenticated `gh`; ordinary ad-hoc tasks do not.
 
 `asha task doctor` reports these local capabilities. Its `gh` probe is always
@@ -28,7 +31,7 @@ because those harnesses claim process liveness only.
 
 ```text
 asha task start [--repo PATH] (--pr N | --issue N | [--base REVSET])
-                [--task-id UUID]
+                [--task-id UUID] [--slug SLUG]
                 [--harness H|--agent H] (--goal TEXT | -- TEXT...)
                 [--role ROLE] [--detach] [--json]
 asha task list [--json]
@@ -38,6 +41,7 @@ asha task stop <task-id|exact-slug> [--terminate]
 asha task archive <task-id|exact-slug>
 asha task unarchive <task-id|exact-slug>
 asha task recover <task-id|exact-slug>
+                  [--adopt --yes --harness H --role ROLE --goal TEXT]
 asha task prune (<task-id|exact-slug>... | --all) [--keep-workspace]
                 [--dry-run] [--yes] [--json]
 asha task reconcile [task-id|exact-slug] [--json]
@@ -48,7 +52,7 @@ asha control tmux
 asha control event ...       internal hook-facing route
 ```
 
-`--repo` defaults to the jj repository containing the current directory.
+`--repo` defaults to the jj or Git repository containing the current directory.
 `--harness` defaults to Asha's configured harness; `--agent` is its CLI alias.
 Without `--detach`, a start inside tmux opens the new session in a popup. From
 outside tmux it prints the exact attach command. `--json` keeps stdout to one
@@ -70,6 +74,18 @@ with both `--issue` and `--base`. `--issue` may be paired with `--base`; without
 one it uses the default base: jj's `trunk()` when the repository has a remote
 trunk, otherwise the local `main`, `master`, or `trunk` bookmark
 (`coalesce(trunk() ~ root(), present(main), present(master), present(trunk))`).
+For the first start from a plain Git root, an explicitly supplied ad-hoc or
+issue `--base` must resolve through exact, config-sanitized Git as one commit;
+Control carries that immutable object ID through colocation and never
+reinterprets the original text as a jj revset. Existing valid jj repositories
+continue to accept arbitrary jj revsets. For an omitted base on the first
+plain-Git start, exact Git selects one unambiguous remote-default ref, then the
+first existing local `main`, `master`, or `trunk`. The ref is retained only as
+preflight evidence: the task records the caller's unchanged default expression
+as `requested_base` and the immutable selected OID as `base_commit_id`. Thus an
+identical caller-ID replay matches before preflight, while an explicit different
+base does not alias it. If no candidate exists (for example a dev-only
+repository), start refuses before mutation and requests explicit `--base`.
 
 ## Terminal TUI
 
@@ -79,6 +95,8 @@ and down arrow keys to move between tasks. The remaining keys are:
 | Key | Action |
 |---|---|
 | `Enter` | Open the selected task and run in a tmux popup. |
+| `x` | Open controller-revalidated actions for the selected task. |
+| `A` | Toggle the explicit `active` / `all` lifecycle scope. |
 | `n` | Open the task-start form. |
 | `r` | Reconcile the selected task from live state. |
 | `d` | Refresh and display a read-only jj diff summary. |
@@ -87,24 +105,176 @@ and down arrow keys to move between tasks. The remaining keys are:
 | `q` | Exit the TUI without affecting tasks. |
 | `?` | Toggle help for the keys, status evidence, and limitations. |
 
-The `n` form prompts for repository, base, harness, role, and goal. Its defaults
-are the current directory, an empty base (meaning the default base described
-above), the configured default harness, and the
-`implementer` role. It invokes the same controller validation as `asha task
+The default `active` scope does not load or reconcile archived tasks. `A`
+switches to `all`; archived records use their durable lifecycle projection and
+display `archived` even after their session and workspace have been pruned.
+The title always names the current scope. Scope reloads preserve the selected
+task when it remains visible, and the text filter remains independent.
+Every reconciliation path re-reads lifecycle under the task lock immediately
+before consulting live adapters. If archive wins after an earlier list or
+selection snapshot, the path returns the durable archived projection instead.
+
+`x` builds its menu only after re-reading the task and its durable
+task-to-initiative link. A terminal unowned task offers inspect, archive, and
+retry. A terminal initiative-owned task replaces ordinary retry with
+single-initiative reconciliation. Archived tasks offer prune, plus inspect
+while their owned tmux session remains and either retry or initiative reconciliation
+according to ownership. A runless failed creation has no recorded primary
+harness/role to reconstruct, so it can be archived and pruned but does not
+offer retry. Ambiguous or unreadable orchestration bindings refuse
+the menu. Reconciliation runs actions, live evidence, then node reconciliation
+in the CLI's order; it never dispatches ready work or merges, integrates,
+pushes, or resurrects a coordinator. Its result names the action IDs and states
+it actually reconciled: it does not claim that an earlier authorized dispatch
+could not have been replayed.
+
+For an unowned active run, `x` offers only state-valid signals. `starting`,
+`working`, and `needs-input` offer **Interrupt** (SIGINT) and **Terminate**
+(SIGTERM); `idle` offers **Finish** (SIGTERM, which ends the interactive
+harness); `unknown` offers **Terminate**. Every signal modal names the task,
+run, and signal and requires exact lowercase `yes`. Control then re-reads task,
+run, ownership, and evidence before calling the shared locked `stop_task`
+controller. The confirmation states that signaling neither archives the task
+nor removes its workspace or change. Confirmations render the bounded action,
+task/run identity, signal, preservation consequence, and exact-`yes`
+instruction as wrapped context above a short active input row; at ordinary
+24x80 and 24x120 geometry none of those safety facts is cropped. Tiny views
+retain the input first and mark omitted context explicitly. The TUI never signals a PID directly and reports only that the
+signal was requested plus the newly observed state, not that the process has
+exited. An initiative-owned active task instead offers **Stop attempt via
+initiative**. That path re-resolves the all-state binding and submits exactly
+one versioned `stop-attempt` action with actor `tui`; it exposes no raw-signal
+escape and does not run broad initiative reconciliation afterward. Completed,
+refused, and indeterminate action state is reported separately from the freshly
+read attempt state, its refusal reason, and observed OS exit, with the action ID
+retained for explicit reconciliation.
+
+Archive and prune remain separate operations. Archive requires exact `yes` and
+retains resources. An archived task's prune action first runs the shared
+`prune_task` controller in dry-run mode, displays the planned session/workspace
+outcome, requires a second exact `yes`, then reassembles bindings and ownership
+facts before the real controller call. The archived record, digest, jj change,
+orchestration links, and seals remain. The TUI performs no direct tmux, jj, or
+filesystem removal.
+Malformed, oversized, non-regular, or unreadable prune history fails closed as
+a bounded TUI status error; it does not terminate the curses session or permit
+an action from incomplete cleanup evidence.
+
+Ordinary retry creates a distinct task with a fresh UUID and a bounded
+`<old-slug>-retry-<uuidhex>` workspace slug. The suffix encodes all 128 bits
+of the fresh canonical UUID without hyphens, so distinct retry task IDs cannot
+alias after slug truncation. Repository, source kind/number,
+requested base, primary harness/role, and the exact stored label are
+reconstructed; the old task is unchanged. PR retry intentionally re-resolves
+the recorded PR's current head, which the confirmation modal states. It uses
+the same detached JSON worker, cancellation, and recovery boundary as `n`.
+Initiative-owned or ambiguously owned tasks cannot use ordinary retry. After
+confirmation and before allocating the fresh UUID, starting a worker, or
+watching source state, retry repeats both the terminal lifecycle and all-state
+ownership checks.
+
+The `n` form is one stateful repository, base, harness, role, and goal editor.
+Its frozen convenience snapshot orders the current directory before unique
+registry repositories by newest task use. Base candidates are the empty default
+then recorded admissible bases for the selected repository; changing repository
+recomputes that list. Harness candidates are the configured default then the
+closed supported allowlist with installed status. Roles begin with
+`implementer`, then observed roles, and still accept a grammar-valid custom
+value. Candidate data is never authorization. Up/Down selects, Tab completes a
+selected prefix, Enter accepts the selection or typed value, Shift-Tab moves
+back without discarding values, and Escape cancels the entire form without a
+worker. Harness and role prefix matching is ASCII-insensitive with canonical
+candidate insertion; the typed harness value must be wholly ASCII before that
+match. Repository and base matching remains case-sensitive. Candidate raw
+identity is distinct from sanitized display text: exact raw values govern
+deduplication, matching, completion, and submission, so display sanitization
+cannot retarget a path.
+Printable command keys are field text while the form is open. Its defaults are
+the current directory, empty base, configured harness, and `implementer`. It
+invokes the same controller validation as `asha task
 start` and always supplies `--detach`, so creation does not replace the TUI
 with the new task's session. Select the created task and press `Enter` to open
-it. Press `Escape` at any prompt to cancel the form.
+it. The shared cell/grapheme-aware modal clears and redraws safely across
+resizes, shows at most eight candidates, and enforces one aggregate snapshot
+limit of 128 raw identities plus 256 KiB of raw/display UTF-8 data. It reserves
+the active input/cursor before dropping titles, context, hints, or candidates
+at narrow heights, and preserves logical values even at zero- or one-column/row geometry. After all five fields are submitted,
+the TUI keeps curses active while a detached JSON task start runs in an
+isolated Python child process. It displays preparation progress and polls for
+`Escape` every 200 ms. Escape sends one SIGTERM to that owned worker process
+group and waits for the creation journal to settle; it never escalates to
+SIGKILL. Cancellation before any workspace/root filesystem mutation rolls the
+creation claim back. Once a v2 preparation mutation may exist, cancellation
+retains the jj registration, workspace, and created-parent state, marks the task
+failed and journal preserved, and names the exact `jj -R SOURCE workspace list`
+and path inspection required. It names the explicit `asha task archive ID` then
+`asha task prune ID --yes` route only when existing prune preconditions are
+durably proven; a partial add or created-parent residue requires manual cleanup.
+If possible process execution already won the race, the TUI instead
+reports retained resources and attach/recovery commands. A normal completion
+wins over a late buffered Escape. Once the owned worker
+leader exits, pipe draining is short and bounded: descendants cannot freeze
+the modal by retaining inherited descriptors. Exceptional cleanup waits have a
+finite deadline and report unconfirmed termination conservatively without a
+second signal or automatic SIGKILL.
 
-The TUI offers `a` only for a `running` or `ended` task that has runs and whose
-reconciled runs are all `exited` or `failed`. For a running task, final archive
-reconciliation also refuses any run blocker.
+Modal input uses curses wide-character reads rather than decoding byte-oriented
+key events. Prompt editing is logical-text based and renders a cell-width-aware suffix
+viewport. Long ASCII, wide CJK, combining characters, variation-selector and
+keycap emoji, modifiers, flags, and valid ZWJ emoji remain intact as whole
+display clusters. The visible line and cursor stay within the terminal's
+reserved final column across resizes, including one- and two-column terminals.
+Control accepts the supported person/man/woman plus laptop profession ZWJ
+sequence (with an optional valid modifier). Unsupported typed ZWJ sequences
+and dangling joiners are rejected at submission; preloaded unknown sequences
+are measured as their separate visible glyphs rather than collapsed, but are
+not accepted as durable task labels.
+Every ordinary visible code point must also satisfy Python's terminal-printable
+predicate at the editor, durable task model, harness argv, and tmux argv
+boundaries. Line/paragraph separators and Unicode noncharacters are therefore
+rejected rather than persisted and later displayed as `?`. Only validated
+cluster-local joiner, selector, keycap, modifier, and regional-indicator cases
+remain exceptions.
+
+The TUI offers `a` for an ended task, a running task whose reconciled runs are
+all terminal, or a failed task with no live preserved run (including a runless
+failed creation). The archive controller re-reads and revalidates under the
+task lock; for a running task, final reconciliation also refuses any blocker.
 
 `Enter` selects the target pane and attaches to its persistent task session in
 a popup. Closing the popup only detaches that popup client: it does not stop
 the harness, archive the task, or alter the jj workspace or change. The TUI
-then redraws.
+then immediately reconciles that active task before redrawing. Archived rows
+retain their lifecycle projection rather than consulting removed live state.
 The popup is bound to the client attached to the caller's own tmux session and
 never opens on another client.
+
+While open and outside a modal prompt, the TUI schedules reconciliation of all
+displayed tasks at a five-second monotonic cadence. An already-read key is
+dispatched before a due refresh. The refresh itself runs synchronously in the
+TUI loop: each external adapter call has a deadline, but the length of the
+whole pass scales with the displayed task and run count, so a key arriving
+after a pass begins waits for that finite pass to finish. The TUI creates no
+daemon, thread, or runtime supervisor for automatic reconciliation, never
+queues missed refreshes, and reports adapter failures in the status line. The
+task-start modal's bounded, signal-owned child is the deliberate exception.
+Filter input, task actions, the task-start form, and confirmations pause automatic
+reconciliation until the modal closes. A later successful automatic pass clears only its stale
+automatic-refresh diagnostic; operator action and skipped-registry messages
+remain. `r` remains the explicit selected-task refresh.
+For an archived row, `r` refreshes only the durable lifecycle projection and
+does not probe removed live resources.
+
+The displayed state and its provenance are selected by the same reconciliation
+pass. Detail names the winning source, its observation timestamp, and whether
+that observation is `fresh`, `stale`, `durable`, or `unknown`; AGE is computed
+from that observation timestamp, never a running task's mutation time. A
+no-run creation uses its durable task timestamp because the creation journal
+has no separate timestamp. If evidence is missing, malformed, unreadable,
+stale past its trust window, or otherwise cannot support a current state, the
+reconciliation contract, list/show output, mirrored tmux state, and TUI all
+report `unknown` rather than reusing a task mutation time or old positive
+state.
 
 The TUI requires stdout attached to a TTY and importable curses support whose
 `setupterm()` check succeeds. If any preflight check fails, `asha control`
@@ -129,10 +299,10 @@ and current evidence state. A task may outlive the launching CLI, TUI, popup,
 and ordinary tmux clients.
 
 Names are display aids, not ownership. UUIDs, record digests, jj identities,
-tmux user options, and live process facts establish ownership. GitHub task
-slugs are derived only from repository name, source kind, and number, such as
-`thallus-pr-34`; GitHub titles never enter a slug, prompt, tmux value, harness
-argv, or record.
+tmux user options, and live process facts establish ownership. Without an
+explicit `--slug`, GitHub task slugs are derived only from repository name,
+source kind, and number, such as `thallus-pr-34`; GitHub titles never enter a
+slug, prompt, tmux value, harness argv, or record.
 
 ### Idempotent creation
 
@@ -140,14 +310,113 @@ argv, or record.
 UUID. Under the task's transaction lock, Control creates the task when both its
 record and creation journal are absent. An identical registered task is
 returned unchanged without fetching a PR, importing Git state, creating a jj
-workspace or tmux session, launching a harness, or adding a run. A different
-request is refused; an interrupted `creating` task must be recovered explicitly
+repository, creating a jj workspace or tmux session, launching a harness, or
+adding a run. A different request is refused; an interrupted `creating` task
+must be recovered explicitly
 with `asha task recover UUID` before retrying.
+
+`--slug` is an optional public path-identity override. It accepts the same
+1-64 character lowercase ASCII slug grammar as stored tasks and refuses the
+reserved `materializations` namespace. It does not change the goal/label.
+When supplied with `--task-id`, it is part of replay identity: a different
+stored slug refuses before source mutation. The TUI uses this seam only to
+give a distinct retry its collision-free workspace path.
 
 ## jj contract
 
 Control accepts only the canonical jj repository root and a usable Git
-backend. Before any source mutation, task start compares Git `HEAD` with jj
+backend after repository enablement. Selection of a plain Git root is read-only
+until caller-supplied task-ID replay and interrupted-journal checks finish.
+For a new task, Control serializes starts for that source, rechecks under the
+lock, and first applies the shared source/workspace ancestry policy (including
+exact uid/0700 for every existing managed destination parent), validates
+published Memory, the explicit or conventional Git base, PR remote selection,
+prospective destination, and bounded materialization/context/journal capacity.
+A refusal leaves the intent, `.jj`, task/journal, workspace, and source
+semantics unchanged. Control then runs exactly one bounded argv equivalent of:
+
+```text
+jj --config 'snapshot.auto-track="none()"' git init --colocate SOURCE
+```
+
+Pre-enable authorization carries the exact source dev/inode/type/mode/owner
+and complete Git marker/target facts. Control revalidates them before the
+intent, immediately before invoking colocation, and afterward. All
+authoritative Git reads in this transaction use the trusted absolute system
+Git executable with a minimal explicit exec environment, exact git-dir/work-tree,
+and read-safe overrides including disabled `core.fsmonitor`, hooks, unsafe
+protocols, credentials, and paging. Inherited `PATH`, loader, Git repository,
+index, object-store, and counted-config variables are not forwarded. PR remote
+configuration is selected through this seam before colocation. Only an HTTPS
+or SSH URL whose repository identity matches the viewed PR is carried with the
+already-read metadata and exact local-config digest; a sole mismatched remote
+does not bypass this check. Execution-capable `url.*.insteadOf`, `protocol.ext`,
+`core.sshCommand`, credential, filter, diff, merge, include, proxy, and custom
+upload-pack configuration refuses before colocation. Git's split
+`extensions.worktreeConfig` local-config plane is also refused because one
+digest cannot otherwise bind the later fetch configuration. Only the fetch
+remains a later reported mutation.
+
+The command-scoped setting prevents untracked files from becoming
+intent-to-add index entries. Strict jj preflight follows immediately. Control
+verifies Git HEAD and symbolic branch, semantic index entries and their exact
+normalized flags, every selected ref's object ID and symbolic target, and
+descriptor-checked tracked/untracked filesystem state. It does not run Git
+status or diff: those can invoke repository attribute filters. Bounded
+plumbing lists index stages, flags, and cache facts; clean tracked content remains bound
+by an exact cache match and index OID without rereading it, while changed
+regular files and symlinks are hashed directly in Python. Missing paths,
+tracked POSIX modes/types, staged entries, bounded untracked bytes, non-jj refs,
+and (during reauthentication) `refs/jj` are all compared. Skip-worktree,
+assume-unchanged, intent-to-add, conflict-stage, sparse-checkout, and same-OID
+symbolic-ref target changes therefore differ. Raw Git index
+bookkeeping bytes may change; operator-visible staged/unstaged and filesystem
+state may not. Before mutation, Control durably writes an exact-root-bound
+repository-init intent under the Control state directory and marks it verified
+only after semantic comparison. For a `.git` directory it binds the directory
+inode. For a regular `gitdir:` marker it additionally binds the bounded exact
+marker digest, parsed canonical target path, and target inode/type/mode/owner;
+editing the marker in place therefore invalidates the record. Verified state
+also requires an inode-bound real `.jj` directory, never a symlink or file. A
+usable `.jj` with an ambiguous Control intent is never adopted; inspect `jj
+status`, Git status/refs, and the named intent record before repairing it. A
+manually pre-existing valid jj repository with no Control intent remains
+accepted. `KeyboardInterrupt` or SIGTERM during init/verification prints this
+retained ambiguous-state diagnostic and remains an interruption (exit 130),
+not a refusal. Verified colocation is a durable,
+reported `jj-operation` (`git init --colocate`) retained across later task
+failure or cancellation. Failed or ambiguous partial initialization is also
+preserved for inspection, never recursively removed; use `jj status` and Git
+status/ref inspection before retrying.
+
+Automatic colocation refuses linked Git worktrees before writing an intent:
+jj 0.38 cannot create a colocated repository there. Use the named primary
+worktree as `--repo`, or manually create a supported jj repository and pass its
+exact root. Regular `gitdir:` roots without a valid `commondir` marker, such as
+Git submodules, remain supported. Doctor performs the same filesystem-only
+classification and reads the private intent record without creating or
+modifying it; ambiguous, stale, or binding-mismatched records report
+`mismatch`, while verified usable state is accepted.
+
+A verified Control record whose repository root changed only by removing a
+nonempty subset of group/other write bits is reported by doctor as repairable,
+without a write, only when the resulting path passes task-start path policy.
+On the next task start, after the pre-enable checks, Control
+requires the exact root/Git-marker/`.jj` identities, strict jj root/backend,
+Git-HEAD/jj-parent synchronization, two identical config-sanitized Git semantic
+captures including every ref (also `refs/jj`), and a stable jj operation ID.
+It then compares the exact record bytes/digest again and rewrites `root_fact`
+only while holding the exclusive source lock used by every Control intent
+writer. Any loosening, mixed mode change, inode/owner/type/binding drift,
+unstable semantic state, operation drift, intent state, or cooperative writer
+race refuses and preserves the record bytes. POSIX provides no byte-conditional
+rename, so this is not a filesystem-atomic CAS against a noncooperating same-UID
+process able to rename the private source or state paths; that process is
+outside Control's enforcement boundary. The remedy is to inspect `jj status`,
+Git status/refs, and the named record; Control never asks the operator to delete
+`.jj` or edit JSON.
+
+Before any later source mutation, task start compares Git `HEAD` with jj
 `@-` and refuses a committed divergence with a `jj status` remediation. Once
 they agree (or Git `HEAD` is positively confirmed unborn while jj `@-` is the
 zero root), every source mode runs one
@@ -156,7 +425,9 @@ base resolution; the import is reported in `source_mutations` as a
 `jj-operation` with operation `git import`. Base resolution is deterministic:
 
 1. `--pr N` uses the fetched immutable PR head.
-2. `--base REVSET` must resolve to exactly one full commit ID.
+2. In an existing jj repository, `--base REVSET` must resolve to exactly one
+   full commit ID. On the first plain-Git start, explicit ad-hoc/issue text must
+   resolve as a Git ref/tag/OID before colocation; that exact OID is used later.
 3. `--issue N` or ad-hoc work without `--base` resolves the default base
    (remote `trunk()`, else the local `main`/`master`/`trunk` bookmark).
 4. Missing, ambiguous, or invalid commits refuse creation.
@@ -180,6 +451,19 @@ tracked directory is reused and an existing tracked file is left alone, so the
 change stays empty. Only the task marker itself, a symlink, or a non-regular
 entry at one of those paths is a collision, and the source must ignore whatever
 Control does create there or the workspace identity check refuses the task.
+Before plain-Git colocation, task-state creation, destination-parent creation,
+and workspace registration, Control proves that disposition from the immutable
+base tree. It validates reusable tracked file bytes and schemas, requires
+positive selected-tree ignore coverage for every exact file in the generated
+context plan and the complete fixed `Work/session-state/` private subtree, and
+refuses task-marker, symlink, or file-ancestor collisions. One representative
+session filename never proves coverage for its siblings. The proof runs in a
+private temporary Git namespace with empty repository/global/default excludes, so the
+mutable worktree `.gitignore`, `.git/info/exclude`, global excludes, and verbose
+negation records cannot authorize a private path. The same immutable evidence
+is rechecked immediately before registration. After a successful workspace add,
+root, registration, operation ancestry, materialization, and sidecar facts are
+persisted before later context work can fail.
 Explicit diff refresh may snapshot the task workspace; background list and
 reconciliation reads do not.
 
@@ -208,10 +492,23 @@ Popups are bound to the client attached to the caller's own session and never
 fall back to another tmux client.
 
 The server summary labels itself `last-event-only`: it does not claim process
-liveness, and it reports when more than 256 snapshots exist. Terminal
-reconciliation persists the terminal run evidence before expiring the
-corresponding runtime snapshots; archive does the same. Both refresh the
-cached server summary after cleanup, and a late hook write rechecks the durable
+liveness. It consumes a filesystem-order sample of at most 257 directory
+entries, sorts only that partial sample by UUID filename, inspects at most 256
+snapshots, and reports when the directory scan cap is reached. The lookahead
+entry may be non-JSON or the final entry, so this marker does not claim a known
+omitted count. UUID snapshot names carry no recency, so this is neither a
+globally deterministic selection nor a newest-run claim. Valid `working` and
+`needs-input` snapshots older than `control.event_staleness_seconds` count as
+`unknown`, using the same strict age boundary as live reconciliation; `idle`,
+`exited`, and `failed` remain durable. Terminal reconciliation persists
+the terminal run evidence before expiring the corresponding runtime snapshots;
+archive does the same. A successful list, show, reconcile, or TUI refresh also
+best-effort mirrors the derived primary run state to the pane and session only
+after the managed task, exact run, session, window, and pane ownership all
+match. Batch list, reconcile, and TUI refreshes publish the cached server
+summary once after all rows; single-task show, manual refresh, and popup-close
+paths publish it once. One sampled reconciliation time is shared by evidence
+aging and summary aging for the pass. A late hook write rechecks the durable
 run state before it may survive.
 
 ## State and XDG locations
@@ -221,6 +518,7 @@ Defaults follow XDG paths:
 ```text
 ${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.json
 ${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.lock
+${XDG_STATE_HOME:-~/.local/state}/asha/control/repository-inits/<root-sha256>.json
 ${XDG_STATE_HOME:-~/.local/state}/asha/control/prunes/<task-id>.json
 ${XDG_DATA_HOME:-~/.local/share}/asha/workspaces/<repo-key>/<task-slug>/
 ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/
@@ -278,7 +576,7 @@ Run states use a shared vocabulary:
 | `idle` | A verified stop or completed-turn event occurred while the process remains live. |
 | `exited` | The verified process ended normally. |
 | `failed` | Launch or termination has verified failure evidence, including when the process ended by signal or vanished without a reported exit status while its pane was absent. |
-| `unknown` | The process is live but the harness has no proven semantic event seam. |
+| `unknown` | The process is live but current semantic evidence is missing, stale, unreadable, unavailable, or unsupported. |
 | `stale` | Registry, tmux, process, event, or jj identities disagree. |
 
 Reconciliation prefers live owned tmux evidence, verified process identity and
@@ -290,31 +588,41 @@ old record appear current.
 "Recent" is enforced, not decorative. An in-progress event state (`working`,
 `needs-input`) is trusted only while its snapshot is newer than
 `control.event_staleness_seconds` (default `1800`). Past that window a live
-process reconciles to `unknown` rather than a stale positive, because a harness
-with no wired stop event (Codex today) never supersedes an in-progress
-snapshot. `idle` (a completed turn) is a legitimate resting state and is not
-aged; `exited` and `failed` are durable facts and never age.
+process reconciles to `unknown` rather than a stale positive when no later
+event has superseded the snapshot. `idle` (a completed turn) is a legitimate
+resting state and is not aged; `exited` and `failed` are durable facts and
+never age. Missing, malformed, or unreadable semantic event evidence produces
+`unknown` in the frozen-shape CLI reconciliation and the TUI rather than
+presenting an old stored positive as a current live observation; durable
+terminal evidence remains terminal. A verified live process plus a stored
+`starting` state and a verified missing semantic event (including
+`SessionStart`, which carries no semantic state) remains `starting` with
+process provenance. An unavailable event adapter produces `unknown`, including
+for stored `starting`; neither missing nor unavailable semantic evidence can
+preserve a stored `working`, `needs-input`, or `idle` positive.
 
-Codex raises approval prompts inside its own TUI without any hook, so events
-alone would leave such a run reading `working` until the recency window
-expired. Reconciliation therefore also reads the last twelve visible lines of
-the owned, live pane (never scrollback, never a dead pane) and, when one of
-the harness's known input-prompt markers is on screen
-(`lib/control/harness.py` `INPUT_PROMPT_MARKERS`), reports `needs-input` with
-tmux evidence that says the prompt was seen. A screen observation outranks an
-older event snapshot but never a terminal event or a dead pane, and it is
-labelled as observation in the evidence detail. Harnesses that report
-permission requests through hooks (Claude) carry no markers.
+Codex reports approval prompts through its live-proven `PermissionRequest`
+hook, which is the primary `needs-input` observation. Reconciliation also
+reads the last twelve visible lines of the owned, live pane (never scrollback,
+never a dead pane) as a fallback when that hook is missed, delayed, untrusted,
+or unavailable. When one of the harness's known input-prompt markers is on
+screen (`lib/control/harness.py` `INPUT_PROMPT_MARKERS`), reconciliation
+reports `needs-input` with tmux evidence that says the prompt was seen. A
+screen observation outranks an older in-progress event snapshot but never a
+verified `turn-stopped` idle, a fresh `permission-requested` event, a terminal
+event, or a dead pane, and it is labelled as observation in the evidence
+detail. Claude carries no screen markers; Codex retains them only for this
+fallback.
 
-The Increment 4 live-probed semantic claims are:
+The live-probed semantic claims are:
 
 | Control event | Claude Code | OpenAI Codex |
 |---|---|---|
 | `session-start` | Wired from `SessionStart` | Wired from `SessionStart` |
 | `prompt-submitted` | Wired from `UserPromptSubmit` | Wired from `UserPromptSubmit` |
 | `tool-completed` | Wired from `PostToolUse` | Wired from `PostToolUse`; interception is known incomplete for `unified_exec` |
-| `permission-requested` | Not claimed. `Notification` is multi-purpose and its payload is unverified. | Not claimed. `PermissionRequest` exists in Codex's allowlist but has no live-probe evidence and is trust-gated. |
-| `turn-stopped` | Wired from `Stop` | Not claimed. `Stop` exists in Codex's allowlist but has no live-probe evidence and is trust-gated. |
+| `permission-requested` | Not claimed. `Notification` is multi-purpose and its payload is unverified. | Wired from `PermissionRequest`; delivery before the operator answers is live-proven on Codex 0.147.0. |
+| `turn-stopped` | Wired from `Stop` | Wired from `Stop`; live-proven on Codex 0.147.0. Delivery remains subject to Codex's hash-bound interactive hook trust. |
 | `session-ended` | Wired from `SessionEnd` | Codex has no equivalent event. |
 
 Copilot and OpenCode provide process liveness only; no semantic Control event
@@ -338,11 +646,15 @@ once as transient display text and discarded.
 
 PR mode performs and reports exactly these repository mutations:
 
-1. `git -C GIT_ROOT fetch REMOTE
-   pull/N/head:refs/remotes/REMOTE/asha-control-pr-N` adds the fetched objects
-   and updates one controller-owned remote-tracking ref. `REMOTE` is the sole
-   configured remote, or the configured remote whose URL matches the viewed
-   pull-request repository when more than one exists.
+1. Trusted absolute Git fetches the carried, identity-matching HTTPS/SSH URL
+   with only that protocol allowed and writes
+   `pull/N/head:refs/remotes/REMOTE/asha-control-pr-N`. The remote name is used
+   only to name the controller ref, not reread for transport. The exact local
+   config digest must still match preflight; credential helpers/prompts,
+   `protocol.ext`, URL rewrites, repository SSH commands, custom upload-pack,
+   filter/diff/merge helpers, and includes are disabled or refused. A private
+   PR that needs a credential helper fails closed and asks the operator to
+   fetch and verify the head manually before retrying.
 2. `jj -R SOURCE --ignore-working-copy git import` records the Git import in
    the jj operation log and surfaces the head as an untracked *remote*
    bookmark.
@@ -389,10 +701,26 @@ session or harness, and receives no task context marker. Success returns only
 Failure preserves the journal and any ambiguous materialization for inspection.
 There is no materialization deletion route.
 
+Task creation and controller materialization inspect the selected Git tree
+with one bounded metadata read. Verification streams workspace files through
+the repository's Git object algorithm and compares their object IDs; it does
+not invoke Git once per blob or retain tracked content in the creation journal.
+Creation journal v2 stores only a compact tree-plan digest and summary. Exact
+per-entry inode ownership is held in a private, atomic, digest-bound binary
+sidecar under the Control transactions directory. This supports trees above
+the v1 1,024-entry and 16/64 MiB hashing ceilings while preserving exact
+content, mode, inode, and foreign-file evidence. V2 automatic recovery retains
+that evidence, the jj registration, and all workspace/root state for manual
+inspection rather than using it to mutate names or delete filesystem entries.
+Archive and explicit prune are suggested only when their existing preconditions
+are durably proven. Existing v1 inline journals
+remain readable under their frozen automatic-recovery behavior.
+
 Archive requires an ended task, a running task whose reconciled runs are all
 terminal (`exited` or `failed`) and unblocked, or a failed task with no run or
 only terminal runs (a creation that rolled back, or an interrupted creation
-recovered without a live process). At that terminal edge Control persists the
+recovered without a live process, including a v2 workspace retained for
+explicit cleanup). At that terminal edge Control persists the
 reconciled run state and bounded evidence, then changes only the task's
 registry lifecycle. Archive is reversible with
 `asha task unarchive <selector>`, which restores `ended` (or `failed` for a
@@ -457,13 +785,25 @@ was refused or only partially pruned, `0` otherwise. `asha task doctor` reports
 how many archived tasks still hold a session or workspace in its `prunable`
 probe; that is information, never a failed check.
 
-Before a harness process may have started, transaction rollback removes only
-artifacts whose exact ownership was journaled and reverified. After launch is
-possible, every failure path preserves the workspace and records recovery
-facts. Outside `asha task prune`, Control never substitutes raw recursive
-deletion, destructive Git, or unreviewed jj abandonment for a removal design;
-prune itself removes only a journaled workspace root through the ownership
-checks above.
+Before any workspace/root filesystem mutation may have occurred, transaction
+recovery can discard the creation claim without retaining filesystem state.
+Once a v2 mutation may exist, automatic recovery does not unlink or rmdir
+workspace entries, the workspace root, or created parents. It may authenticate
+the observed jj workspace registration for diagnostic purposes, but never
+forgets it; name-based forget has no atomic identity predicate. Recovery marks
+the journal `preserved` and task `failed` and retains the registration, bytes,
+root, and created parents for manual inspection. The diagnostic names
+`jj -R SOURCE workspace list`, the workspace path, and every recorded created
+parent. It suggests archiving the failed task and running explicit,
+user-confirmed prune only when the existing prune preconditions are durably
+proven. Partial-add state without a root fact and created-parent residue require
+manual cleanup instead.
+Frozen v1 journals retain their historical ownership-checked automatic removal
+behavior. After launch is possible, every failure path also preserves the
+workspace and records recovery facts. Outside `asha task prune`, Control never
+substitutes raw recursive deletion, destructive Git, or unreviewed jj
+abandonment for a removal design; prune itself removes only a journaled
+workspace root through the ownership checks above.
 
 ### Interrupted creation
 
@@ -476,9 +816,40 @@ explicitly with:
 asha task recover <task-id|exact-slug>
 ```
 
-Pre-launch phases remove only reverified transaction-owned artifacts. A phase
-at or after `launch-attempted` never kills the session or process: Control marks
-the task failed, preserves the workspace, reports the exact attach/show
-commands, and requires the operator to stop any live harness manually. The
-`transactions` doctor probe names interrupted creation records and the command
-for each.
+V2 pre-launch phases retain workspace/root filesystem mutations and the jj
+registration, then report exact registration/path inspection. Archive/prune
+commands appear only when their existing preconditions are durably proven;
+partial-add and created-parent residue instead report manual cleanup. Only
+claims that cannot yet have mutated those paths finish as clean rollback. A
+phase at or after `launch-attempted`
+never kills the session or process: Control marks the task failed, preserves
+the workspace, reports the exact attach/show commands, and requires the
+operator to stop any live harness manually. The `transactions` doctor probe
+names interrupted creation records and the command for each. Frozen v1
+journals continue their original ownership-checked rollback path.
+
+One historical retained shape has a separate forward-only recovery path: a
+failed, runless v2 task whose preserved journal is still `add-intent`, has no
+root/registration/materialization/context ownership facts, and never reached a
+launch attempt. It is not adopted automatically. The operator must reauthorize
+the exact durable goal and first-run harness/role:
+
+```text
+asha task recover <task-id|exact-slug> --adopt --yes \
+  --harness H --role ROLE --goal 'the exact durable task label'
+```
+
+Under the same task, source, then repository lock order used by ordinary task
+creation, this command authenticates the
+exact source/Git/jj bindings, verified colocation record, immutable base plan,
+mode-0700 root, registration/change/commit/parent/description, empty change,
+public jj operation ancestry, streamed workspace bytes, and raw task/journal
+digests. It then durably records an adoption intent and ownership sidecar,
+provisions context forward, narrowly reopens only that failed creation, and
+launches through the ordinary launch controller using the operator-supplied
+parameters. Every intermediate adoption phase is resumable by the same exact
+command. It never forgets a workspace registration or removes a path. A shape
+or evidence mismatch remains preserved for manual inspection, and ordinary
+`recover` plus all other failed tasks remain terminal. Doctor and the TUI show
+the adoption command only for the exact durable candidate; ambiguous retained
+residue is labelled manual inspection only.

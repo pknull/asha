@@ -12,15 +12,228 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
-#### Control: needs-input from the visible pane; live TUI clock
+#### Control: immutable context preflight and retained-creation adoption
 
-- Codex approval prompts have no hook, so a run waiting on one read
-  `working`. Reconciliation now reads the last twelve visible lines of the
-  owned, live pane and reports `needs-input` when a known harness input-prompt
-  marker is on screen (tmux evidence names the prompt); a screen observation
-  outranks an older event but never a terminal event or a dead pane.
-- The TUI refreshes its clock on every reload; AGE no longer freezes at the
-  time the TUI opened (a task started afterwards read `0s` forever).
+- Task start now proves context compatibility from the immutable selected base
+  before colocation, task state, destination parents, or workspace registration.
+  Regular tracked `.asha`/Memory context files are schema-checked and reused
+  without an ignore requirement; every path Control will create requires
+  positive selected-tree ignore coverage. The proof binds each exact generated
+  plan path and the complete fixed `Work/session-state/` private subtree rather
+  than one sentinel filename. Nested rules, negations, spaces, and Unicode are
+  evaluated in a private synthetic Git namespace with mutable worktree, info,
+  global, and default excludes disabled.
+- Immediately after a successful workspace add, Control persists the exact
+  private root, change/commit, registration, public add/checkout operation
+  ancestry, streamed materialization, and ownership sidecar before later
+  context work. The same observation is attempted when jj reports an error
+  after exact registration, without claiming an unregistered collision.
+- The one historical failed/runless v2 `preserved`/`add-intent`/no-launch shape
+  can be completed forward only through `task recover --adopt --yes` with an
+  explicitly reauthorized harness, role, and exact durable goal. Adoption
+  binds raw task/journal and verified-colocation digests, exact repository,
+  immutable tree, private root, registration, empty change, and operation
+  evidence before recording ownership and provisioning context. Its durable
+  phases resume with the same command, then use the ordinary launch controller.
+  Adoption takes task, source, and repository locks in ordinary creation order
+  and rechecks its exploratory records under all three. It never forgets or
+  deletes. Ordinary failed tasks remain terminal; doctor
+  and the TUI distinguish the exact candidate from manual-inspection residue.
+- Control task, source, and repository transactions now use domain-separated
+  deterministic physical lock keys with enforced task/source/repository
+  nesting. A caller-chosen task UUID cannot alias an internal repository or
+  source lock.
+
+#### Control: terminal task lifecycle actions
+
+- The TUI defaults to an explicit active scope; `A` toggles all history, where
+  archived records retain an `archived` lifecycle projection even after prune.
+  Default refresh no longer reads archived live resources.
+- `x` opens a controller-revalidated context menu for inspect, archive, retry,
+  owning-initiative reconciliation, and archived-task prune. Archive and prune
+  are separate exact-confirmation operations; prune uses the shared dry-run and
+  real `prune_task` assembly. No menu action implicitly dispatches, merges,
+  integrates, or pushes.
+- Ordinary terminal retry creates a fresh task UUID and bounded retry slug while
+  preserving the recorded request and exact label. The slug encodes the full
+  fresh UUID so distinct retry identities cannot alias. PR retries intentionally
+  resolve the current PR head. Initiative-owned or ambiguous tasks refuse this
+  retry and instead expose the shared single-initiative reconciliation order.
+- Archived lifecycle is rechecked under the task lock before every live
+  reconciliation; mismatched reservation/link scans and unreadable prune
+  history now fail closed with bounded operator-visible errors.
+- Active unowned task actions now expose only the evidence-valid signal matrix:
+  SIGINT Interrupt plus SIGTERM Terminate while active, SIGTERM Finish while
+  idle, and SIGTERM Terminate for unknown state. Exact confirmation and a
+  second task/run/ownership read precede the shared `stop_task` controller.
+  Initiative-owned active tasks instead journal one `stop-attempt` action with
+  actor `tui`; action state, freshly read attempt state/refusal, and observed
+  exit are reported separately. Signal confirmation states that it does not
+  archive or remove the retained workspace/change.
+- Exact confirmations now render safety-critical action/task/run identity,
+  signal, preservation consequences, and exact-`yes` authorization as wrapped
+  modal context above a short active input. Ordinary 24x80 and 24x120 views no
+  longer crop that context; tiny views retain input and mark omitted detail.
+- The task-start surface is now one resize-safe, grapheme/cell-aware stateful
+  editor with frozen bounded repository, repository-base, closed harness, and
+  observed-role candidates. Shift-Tab preserves earlier values, Escape starts
+  no worker, and candidates remain suggestions subject to the existing
+  controller authorization.
+- Modal input now uses curses wide-character reads. Candidate raw identity is
+  never replaced by sanitized display text, harness matching rejects any
+  non-ASCII typed value, and one aggregate entry/UTF-8 budget bounds the frozen
+  snapshot. Tiny frames reserve the active input before decorative rows.
+- Exact owned `pane_dead` evidence now persists a terminal run even when tmux
+  retained no exit status, overriding an older idle event. Missing, foreign,
+  or unavailable pane evidence remains fail-closed.
+- Initiative reconcile status now reports the actual reconciled action IDs and
+  states instead of claiming that no dispatch occurred; recovery may replay an
+  already-authorized indeterminate dispatch.
+- `asha task start --slug SLUG` now separates workspace path identity from the
+  unchanged task label. Its validated value participates in caller-ID replay
+  identity and adds no record field.
+
+#### Control: large-tree materialization and cell-aware task goals
+
+- Task-start prompts now render the active logical suffix by terminal cell
+  width, keep the cursor inside the reserved final column across narrow resizes,
+  and preserve exact ASCII, CJK, combining, variation-selector/keycap,
+  modifier, flag, and ZWJ-cluster goal text.
+- New creation journals use a compact metadata-only Git tree plan plus a
+  private atomic digest-bound inode sidecar. Workspace verification streams
+  Git-object hashes without per-blob subprocesses or the legacy 1,024-entry
+  and 16/64 MiB content ceilings. V2 automatic recovery now fails closed once
+  any workspace/root filesystem mutation may exist: it retains the jj
+  registration as well as workspace/root/created-parent state, performs no
+  name-based forget or filesystem deletion, marks the task failed and journal
+  preserved, and requires exact registration/path inspection. It names archive
+  plus explicit confirmed prune only when existing prune preconditions are
+  durably proven; partial-add and created-parent residue require manual cleanup.
+  V1 journals retain their frozen 64-entry-checkpoint
+  recovery behavior. Controller materialization and orchestration review
+  consume the same metadata plan.
+- Prompt cluster handling covers the complete bundled Emoji_Modifier_Base set,
+  preserves supported person/man/woman laptop profession sequences, rejects
+  unsupported typed ZWJ sequences and duplicate/standalone modifiers, and
+  measures preloaded unknown ZWJ text conservatively. Solitary regional
+  indicators occupy one cell and complete pairs occupy two.
+- Terminal-text validation now rejects every nonprintable ordinary code point,
+  including line/paragraph separators and Unicode noncharacters, consistently
+  across editor, durable task, harness argv, and tmux argv boundaries. The
+  narrow valid ZWJ/selector/keycap/modifier/flag clusters remain exact.
+
+#### Control: cancellable TUI creation and automatic plain-Git colocation
+
+- Plain-Git task start now runs every feasible read-only refusal before the
+  durable colocation intent: shared source/workspace ancestry policy, published
+  Memory, explicit Git base, prospective destination, and bounded capacity.
+  Exact Git reads bind the inspected git-dir/work-tree and discard inherited
+  repository-selection/config environment. The trusted absolute Git executable
+  receives a minimal explicit exec environment, with read-time helpers such as
+  `core.fsmonitor` disabled. Explicit ad-hoc/issue bases carry one immutable Git
+  OID without jj reinterpretation. Omitted plain-Git bases choose an exact
+  unambiguous remote default or local `main`/`master`/`trunk` before mutation;
+  `requested_base` retains the caller's unchanged default expression while the
+  selected ref remains preflight evidence and its immutable OID is carried.
+  Existing jj revsets remain unchanged. PR metadata and one exact
+  repository-matching HTTPS/SSH URL are also carried across colocation instead
+  of rereading a named remote. Execution-capable transport/helper config and
+  config drift fail closed; private-PR credentials requiring a helper must be
+  fetched and verified manually. Split `extensions.worktreeConfig` local
+  configuration also refuses automatic fetch because it is outside the carried
+  single-file config digest.
+- Semantic colocation authentication no longer runs Git status or diff, closing
+  repository `.gitattributes` filter execution. It compares plumbing
+  HEAD/branch/index/all-ref evidence, including normalized per-stage index
+  flags and symbolic-ref targets, with descriptor-checked raw hashes for changed
+  tracked and bounded untracked paths, while clean tracked content stays bound
+  by exact index-cache facts without an AAS-scale content walk.
+- A verified colocation record hardened only by removing group/other write bits
+  can be reauthenticated on task start after strict root/backend/sync checks,
+  stable two-pass Git semantics including all refs, stable jj operation identity,
+  and an exact-byte/digest comparison under the exclusive Control source lock.
+  Only `root_fact` changes. Doctor reports safe candidates read-only; all wider
+  changes and cooperative Control races refuse without rewriting the record.
+  A noncooperating same-UID process able to rename private source/state paths is
+  outside this lock-based enforcement boundary.
+
+- After the five-field TUI start form, creation runs as detached JSON in one
+  signal-owned Python child while curses remains active. The modal shows
+  `Esc cancel`, polls at 200 ms, sends at most one SIGTERM to the worker group,
+  and classifies the result from the preallocated task ID's record/journal.
+  Cancellation before any possible workspace/root mutation rolls back cleanly;
+  later v2 pre-launch cancellation retains the registration and filesystem
+  state and reports manual inspection (plus archive/prune only when already
+  eligible). Possible process execution preserves resources and
+  reports attach/recovery; normal completion wins over a late buffered Escape.
+- New tasks accept an exact canonical plain Git root. After caller-ID replay
+  checks and under a deterministic source lock, Control runs command-scoped
+  no-auto-track `jj git init --colocate`, strict-preflights it, and reports a
+  `jj-operation`. HEAD/branch, semantic index and staged/unstaged state,
+  non-jj refs, dirty tracked content, every tracked path's lstat POSIX mode,
+  and untracked bytes/modes are verified without reading clean tracked
+  content. A durable root binding records `.git` directory identity or the
+  exact `gitdir:` marker digest, canonical target, and target identity; verified
+  state also binds a real `.jj` directory. It prevents waiters or retries from
+  adopting an interrupted or retargeted repository. Linked Git worktrees are
+  refused before intent creation, while submodule gitdir roots remain
+  supported. Interruptions retain status 130 after their retained-state
+  diagnostic. Raw index bookkeeping
+  may change. Verified or ambiguous repository
+  enablement is retained across later failure/cancellation and never removed
+  by task rollback.
+- Doctor remains read-only, probes `jj git init` capability, and tells supported
+  plain-Git operators that task start will auto-colocate. It applies linked-
+  worktree classification and the same ambiguous/stale intent refusal as task
+  start without creating state. The historical no-auto-init proposal policy is
+  preserved with an explicit superseding note.
+
+#### Control: live Codex permission/Stop state and observation-driven TUI refresh
+
+- Wired the live-proven Codex 0.147.0 `PermissionRequest` and `Stop` hooks to
+  Control's existing `permission-requested -> needs-input` and
+  `turn-stopped -> idle` event bridge without changing Codex trust or fence
+  handling. The permission hook fired before the operator answered a real
+  network escalation; the same turn subsequently delivered `tool-completed`
+  and production `turn-stopped`.
+- A verified Stop-derived `idle` now outranks approval text left visible from
+  the completed turn. Missing, stale, malformed, or unreadable semantic
+  evidence projects `unknown` rather than presenting an old active state as a
+  current live observation; durable terminal evidence remains terminal.
+- A verified process plus an actual missing/SessionStart semantic event may
+  remain `starting`; an unavailable event adapter reports `unknown` rather
+  than treating unsupported observation as proof of startup state.
+- State and winning provenance are selected in one reconciliation pass while
+  the frozen v1 evidence shape remains unchanged. The TUI names source,
+  observation time, and freshness; running-task AGE uses observation time
+  rather than task mutation time.
+- The TUI schedules reconciliation on a five-second monotonic local cadence
+  and immediately after popup closure. Already-read input wins before a due
+  refresh; a synchronous pass can still delay later keys by its bounded
+  external adapter calls and task count. Modal prompts pause automatic
+  reconciliation. Automatic refresh adds no daemon, thread, subprocess worker,
+  or runtime supervisor; the task-start modal's bounded cancellation worker is
+  separate. Refresh failures remain visible without ending the TUI.
+- The bounded last-event server summary applies the same active-event age
+  window as reconciliation, counting stale `working` or `needs-input` as
+  `unknown` while preserving durable idle and terminal facts. Successful live
+  list/show/reconcile/TUI passes mirror the derived primary state to an
+  exactly owned pane/session and refresh the server summary once per batch, so
+  cached tmux presentation cannot retain a stale positive after Control derives
+  unknown. Each pass shares one sampled time across evidence and summary aging.
+  Summary ingestion consumes a filesystem-order sample of at most 257
+  directory entries and reports when the scan cap is reached; UUID snapshot
+  names support neither a globally deterministic selection nor a newest-run
+  claim.
+
+#### Control: visible-pane needs-input fallback
+
+- Reconciliation reads the last twelve visible lines of the owned, live Codex
+  pane and reports `needs-input` when a known input-prompt marker is on screen
+  (tmux evidence names the prompt). This remains the fallback when a
+  `PermissionRequest` hook is missed or unavailable; a screen observation
+  outranks an older working event but never a fresh permission event, a
+  terminal event, or a dead pane.
 
 #### Control: failed creations can be archived
 

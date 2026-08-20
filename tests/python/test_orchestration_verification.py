@@ -14,7 +14,9 @@ from pathlib import Path
 from unittest import mock
 
 from lib.control.orchestration import actions as action_module
-from lib.control.jj import ImmutableTree, RepositoryFacts, WorkspaceIdentity
+from lib.control.jj import (
+    ImmutableTree, MaterializationPlan, RepositoryFacts, WorkspaceIdentity,
+)
 from lib.control.prepare import plan_materialization
 from lib.control.orchestration.actions import (
     _parse_document, action_outcome, build_action_document, reconcile_actions,
@@ -52,8 +54,8 @@ class VerificationJj:
     def preflight(self, source):
         return RepositoryFacts(root=self.source, git_root=self.source / ".git")
 
-    def expected_materialization(self, git_root, commit_id):
-        return {}
+    def materialization_plan(self, git_root, commit_id, *, exact_root):
+        return MaterializationPlan(commit_id, "0" * 64, (), 0, 0, 0)
 
     def inspect_workspace(self, path, name, *, snapshot=False, require_empty=True):
         self.inspections += 1

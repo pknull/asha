@@ -14,7 +14,9 @@ from .config import ControlConfig
 from .events import expire_terminal_snapshots, publish_server_summary
 from .jj import JjAdapter
 from .model import RUN_CONTRACT, canonical_uuid, new_uuid
-from .prepare import PreparationError, rollback_prelaunch
+from .prepare import (
+    PreparationError, adopt_preserved_task_workspace, rollback_prelaunch,
+)
 from .reconcile import Adapters, LiveAdapters
 from .store import TaskStore, task_digest
 from .tmux import TmuxAdapter, TmuxError
@@ -34,6 +36,24 @@ def _now() -> str:
 def _adapter_for_task(task: dict[str, Any]) -> TmuxAdapter:
     socket = task["tmux"]["socket"]
     return TmuxAdapter(socket=None if socket == "default" else socket)
+
+
+def _validate_launch_request(
+    harness: str, role: str, goal_args: tuple[str, ...] | list[str],
+) -> tuple[str, str, list[str]]:
+    """Validate every operator-controlled launch argument without state mutation."""
+    selected_harness = harness_api.validate_harness(harness)
+    selected_role = harness_api.validate_role(role)
+    raw_root = os.environ.get("ASHA_ROOT")
+    if raw_root is None:
+        asha_root = Path(__file__).resolve().parents[2]
+    else:
+        supplied = Path(raw_root)
+        if not supplied.is_absolute():
+            raise LaunchError("ASHA_ROOT must be an absolute path")
+        asha_root = supplied.resolve()
+    command = harness_api.launch_argv(asha_root, selected_harness, goal_args)
+    return selected_harness, selected_role, command
 
 
 def _inject(failure_injector: Callable[[str], None] | None, boundary: str) -> None:
@@ -293,21 +313,13 @@ def launch_task(
                 "task launch requires lifecycle creating and journal phase ready-for-launch"
             )
         try:
-            selected_harness = harness_api.validate_harness(harness)
-            selected_role = harness_api.validate_role(role)
+            selected_harness, selected_role, command = _validate_launch_request(
+                harness, role, tuple(goal_args),
+            )
             run_id = new_uuid()
             environment = harness_api.controller_env(
                 task_id=task_id, run_id=run_id, state_dir=config.tasks_dir,
             )
-            raw_root = os.environ.get("ASHA_ROOT")
-            if raw_root is None:
-                asha_root = Path(__file__).resolve().parents[2]
-            else:
-                supplied = Path(raw_root)
-                if not supplied.is_absolute():
-                    raise LaunchError("ASHA_ROOT must be an absolute path")
-                asha_root = supplied.resolve()
-            command = harness_api.launch_argv(asha_root, selected_harness, goal_args)
             _inject(failure_injector, "validated")
 
             session = current["tmux"]["session"]
@@ -586,12 +598,42 @@ def recover_task(
     journals: CreationJournalStore,
     tmux: TmuxAdapter | None = None,
     jj: JjAdapter | None = None,
+    adopt: bool = False,
+    harness: str | None = None,
+    role: str | None = None,
+    goal: str | None = None,
 ) -> dict[str, Any]:
     """Recover one durable task-creation transaction without adopting state."""
     task_id = canonical_uuid(task["task_id"])
     adapter = tmux or _adapter_for_task(task)
     jj_adapter = jj or JjAdapter()
     recovery_commands: str | None = None
+    if adopt:
+        if harness is None or role is None or goal is None:
+            raise LaunchError("retained-state adoption requires explicit launch authorization")
+        if goal != task.get("label"):
+            raise LaunchError("adoption --goal must exactly match the durable task label")
+        try:
+            _validate_launch_request(harness, role, (goal,))
+        except harness_api.HarnessError as exc:
+            raise LaunchError(str(exc)) from exc
+        try:
+            prepared = adopt_preserved_task_workspace(
+                config, task_id, harness=harness, role=role, goal=goal,
+                jj=jj_adapter,
+            )
+        except PreparationError as exc:
+            raise LaunchError(str(exc)) from exc
+        launched = launch_task(
+            config, prepared, tmux=adapter, tasks=tasks, journals=journals,
+            harness=harness, role=role, goal_args=(goal,),
+        )
+        return {
+            "task": launched["task"],
+            "journal": journals.read(task_id),
+            "message": "retained workspace authenticated, adopted, and launched",
+            "recovery_commands": None,
+        }
     with tasks.transaction_lock(task_id):
         current = tasks.read(task_id)
         if current["lifecycle"] != "creating":

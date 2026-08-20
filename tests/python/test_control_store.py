@@ -14,7 +14,10 @@ from pathlib import Path
 from unittest import mock
 
 from lib.control.config import load_config
-from lib.control.store import StoreCommittedError, StoreError, TaskStore, task_digest
+from lib.control.store import (
+    StoreCommittedError, StoreError, TaskStore, TransactionCoordinator,
+    task_digest,
+)
 from tests.python.test_control_config_model import task_record
 
 
@@ -32,6 +35,10 @@ class ControlStoreTests(unittest.TestCase):
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         })
         self.store = TaskStore(self.config)
+
+    @staticmethod
+    def task_lock_id(task_id: str) -> str:
+        return TransactionCoordinator.lock_key("task", task_id)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -73,9 +80,10 @@ class ControlStoreTests(unittest.TestCase):
         ):
             self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o700, directory)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
-        durable_lock = self.config.tasks_dir / f"{record['task_id']}.lock"
+        lock_id = self.task_lock_id(record["task_id"])
+        durable_lock = self.config.tasks_dir / f"{lock_id}.lock"
         self.assertEqual(stat.S_IMODE(durable_lock.stat().st_mode), 0o600)
-        lock = self.config.runtime_dir / "tasks" / f"{record['task_id']}.lock"
+        lock = self.config.runtime_dir / "tasks" / f"{lock_id}.lock"
         self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
 
     def test_private_state_root_accepts_group_readable_asha_parent_without_read_side_effects(self) -> None:
@@ -133,7 +141,7 @@ class ControlStoreTests(unittest.TestCase):
             self.store.save(record)
 
         record_path.unlink()
-        lock = self.config.runtime_dir / "tasks" / f"{record['task_id']}.lock"
+        lock = self.config.runtime_dir / "tasks" / f"{self.task_lock_id(record['task_id'])}.lock"
         lock.unlink()
         lock.symlink_to(self.root / "outside-lock")
         with self.assertRaisesRegex(StoreError, "symlink"):
@@ -290,7 +298,7 @@ class ControlStoreTests(unittest.TestCase):
     def test_hard_linked_existing_lock_is_rejected_without_changing_its_mode(self) -> None:
         record = self.record()
         self.store.save(record)
-        lock = self.config.runtime_dir / "tasks" / f"{record['task_id']}.lock"
+        lock = self.config.runtime_dir / "tasks" / f"{self.task_lock_id(record['task_id'])}.lock"
         lock.unlink()
         target = self.root / "outside-lock"
         target.write_text("owned elsewhere")
@@ -328,7 +336,7 @@ class ControlStoreTests(unittest.TestCase):
     def test_production_lock_reports_deterministic_cross_process_contention(self) -> None:
         record = self.record()
         self.store.save(record)
-        lock = self.config.runtime_dir / "tasks" / f"{record['task_id']}.lock"
+        lock = self.config.runtime_dir / "tasks" / f"{self.task_lock_id(record['task_id'])}.lock"
         code = """
 import fcntl, os, sys
 fd = os.open(os.environ['LOCK'], os.O_RDWR | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
@@ -1002,7 +1010,7 @@ print(len(s.list()), len(s.skipped))
 
         second = self.record(slug="fifo-lock")
         self.store.save(second)
-        lock = self.config.runtime_dir / "tasks" / f"{second['task_id']}.lock"
+        lock = self.config.runtime_dir / "tasks" / f"{self.task_lock_id(second['task_id'])}.lock"
         lock.unlink()
         os.mkfifo(lock, 0o600)
         with self.assertRaisesRegex(StoreError, "regular file"):

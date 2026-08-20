@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
 import secrets
+import stat
+import struct
+import uuid
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -21,11 +25,25 @@ from .store import (
     _managed_start,
     _open_existing_file,
     _task_lock,
+    _transaction_lock_key,
 )
 
 
-JOURNAL_CONTRACT = "asha.control-creation-journal.v1"
+JOURNAL_V1_CONTRACT = "asha.control-creation-journal.v1"
+JOURNAL_CONTRACT = "asha.control-creation-journal.v2"
 MAX_JOURNAL_BYTES = 256 * 1024
+OWNERSHIP_SIDECAR_CONTRACT = "asha.control-materialization-ownership.v1"
+RECOVERY_ADOPTION_CONTRACT = "asha.control-recovery-adoption.v1"
+MAX_OWNERSHIP_SIDECAR_ENTRIES = 200000
+_OWNERSHIP_MAGIC = b"ASHAOWN2"
+_OWNERSHIP_HEADER_BYTES = 64
+_OWNERSHIP_FACT_BYTES = 32
+_OWNERSHIP_TRAILER_BYTES = 32
+MAX_OWNERSHIP_SIDECAR_BYTES = (
+    _OWNERSHIP_HEADER_BYTES +
+    MAX_OWNERSHIP_SIDECAR_ENTRIES * _OWNERSHIP_FACT_BYTES +
+    _OWNERSHIP_TRAILER_BYTES
+)
 PHASES = frozenset({
     "intent", "task-recorded", "parent-intent", "parent-ready",
     "workspace-add-intent", "workspace-added", "workspace-recorded",
@@ -137,20 +155,63 @@ def _validate_materialized_ownership(value: Any) -> None:
 
 def _ownership_fact(value: Any, label: str) -> dict[str, Any]:
     value = _exact(value, {"dev", "ino", "mode", "uid"}, label)
-    if any(not isinstance(value[key], int) or value[key] < 0 for key in value):
+    if any(type(value[key]) is not int or value[key] < 0 for key in value):
         raise JournalError(f"{label} inode facts are invalid")
     return value
 
 
-def validate_journal(value: Any, *, config: ControlConfig | None = None) -> dict[str, Any]:
+def _inode_fact_for_sidecar(metadata: os.stat_result) -> dict[str, int]:
+    return {
+        "dev": metadata.st_dev,
+        "ino": metadata.st_ino,
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "uid": metadata.st_uid,
+    }
+
+
+def _validate_sidecar_binding(value: Any, label: str) -> dict[str, Any]:
+    value = _exact(value, {
+        "contract", "path", "digest", "plan_digest", "entry_count", "size", "state",
+        "file_fact",
+    }, label)
+    if value["contract"] != OWNERSHIP_SIDECAR_CONTRACT:
+        raise JournalError(f"{label} contract is invalid")
+    raw_path = value["path"]
+    if (
+        not isinstance(raw_path, str) or not raw_path.startswith("/") or
+        os.path.normpath(raw_path) != raw_path
+    ):
+        raise JournalError(f"{label} path must be an exact absolute path")
+    for key in ("digest", "plan_digest"):
+        if not isinstance(value[key], str) or _DIGEST.fullmatch(value[key]) is None:
+            raise JournalError(f"{label} {key.replace('_', ' ')} is invalid")
+    if (
+        type(value["entry_count"]) is not int or
+        not 0 <= value["entry_count"] <= MAX_OWNERSHIP_SIDECAR_ENTRIES
+    ):
+        raise JournalError(f"{label} entry count is invalid")
+    expected_size = (
+        _OWNERSHIP_HEADER_BYTES +
+        value["entry_count"] * _OWNERSHIP_FACT_BYTES +
+        _OWNERSHIP_TRAILER_BYTES
+    )
+    if value["size"] != expected_size:
+        raise JournalError(f"{label} size is invalid")
+    if value["state"] != "bound":
+        raise JournalError(f"{label} state is invalid")
+    _ownership_fact(value["file_fact"], f"{label} file fact")
+    return value
+
+
+def _validate_journal_v1(value: Any, *, config: ControlConfig | None = None) -> dict[str, Any]:
     journal = _exact(value, {
         "contract", "task_id", "invocation_id", "phase", "launch_attempted",
         "config", "repository", "task", "workspace", "jj",
         "expected_materialization", "materialized_owned", "recovery_owned", "planned_context",
         "context_owned", "removal",
     }, "creation journal")
-    if journal["contract"] != JOURNAL_CONTRACT:
-        raise JournalError(f"journal contract must be {JOURNAL_CONTRACT}")
+    if journal["contract"] != JOURNAL_V1_CONTRACT:
+        raise JournalError(f"journal contract must be {JOURNAL_V1_CONTRACT}")
     try:
         canonical_uuid(journal["task_id"])
     except ValueError as exc:
@@ -315,6 +376,376 @@ def validate_journal(value: Any, *, config: ControlConfig | None = None) -> dict
     return journal
 
 
+def _validate_materialization_plan(value: Any, base_commit_id: str) -> dict[str, Any]:
+    value = _exact(value, {
+        "contract", "base_commit_id", "digest", "blob_count", "directory_count",
+        "entry_count", "total_blob_bytes",
+    }, "materialization plan")
+    if value["contract"] != "asha.control-materialization-plan.v1":
+        raise JournalError("materialization plan contract is invalid")
+    if value["base_commit_id"] != base_commit_id:
+        raise JournalError("materialization plan is not bound to the journal base commit")
+    if not isinstance(value["digest"], str) or _DIGEST.fullmatch(value["digest"]) is None:
+        raise JournalError("materialization plan digest is invalid")
+    for key in ("blob_count", "directory_count", "entry_count", "total_blob_bytes"):
+        if type(value[key]) is not int or value[key] < 0:
+            raise JournalError(f"materialization plan {key.replace('_', ' ')} is invalid")
+    if (
+        value["entry_count"] > MAX_OWNERSHIP_SIDECAR_ENTRIES or
+        value["entry_count"] != value["blob_count"] + value["directory_count"] or
+        value["total_blob_bytes"] > 0x7fff_ffff_ffff_ffff
+    ):
+        raise JournalError("materialization plan summary is inconsistent")
+    return value
+
+
+def _validate_journal_v2(value: Any, *, config: ControlConfig | None = None) -> dict[str, Any]:
+    """Validate the compact plan/sidecar journal contract independently of v1."""
+    required_fields = {
+        "contract", "task_id", "invocation_id", "phase", "launch_attempted",
+        "config", "repository", "task", "workspace", "jj",
+        "materialization_plan", "materialization_ownership", "recovery_owned",
+        "planned_context", "context_owned", "removal",
+    }
+    if not isinstance(value, dict) or set(value) not in {
+        frozenset(required_fields), frozenset(required_fields | {"adoption"}),
+    }:
+        raise JournalError("creation journal must contain exactly the v2 fields")
+    journal = value
+
+    # The common task/config/workspace state machine is identical. Feed only
+    # that common shape through the frozen v1 validator; plan and sidecar
+    # fields are validated below and are never reinterpreted as v1 content.
+    common = copy.deepcopy(journal)
+    common["contract"] = JOURNAL_V1_CONTRACT
+    common["expected_materialization"] = {}
+    common["materialized_owned"] = None
+    common.pop("materialization_plan")
+    common.pop("materialization_ownership")
+    adoption = common.pop("adoption", None)
+    operation_keys = {
+        "workspace_add_operation_id", "checkout_operation_id",
+    }
+    present_operation_keys = operation_keys & set(common["jj"])
+    if present_operation_keys and present_operation_keys != operation_keys:
+        raise JournalError("journal workspace operation identity is incomplete")
+    if present_operation_keys:
+        for key in operation_keys:
+            value = common["jj"].pop(key)
+            if value is not None and (
+                not isinstance(value, str) or _OP.fullmatch(value) is None
+            ):
+                raise JournalError("journal workspace operation identity is invalid")
+        if (
+            journal["jj"]["workspace_add_operation_id"] is None
+        ) != (journal["jj"]["checkout_operation_id"] is None):
+            raise JournalError("journal workspace operation identity must be one exact pair")
+    common["removal"]["entries_removed"] = 0
+    _validate_journal_v1(common, config=config)
+
+    if adoption is not None:
+        adoption = _exact(adoption, {
+            "contract", "state", "original_task_digest", "original_journal_digest",
+            "colocation_intent_digest", "authorization", "root_fact", "registration",
+            "operations", "context_plan_digest",
+        }, "recovery adoption")
+        if adoption["contract"] != RECOVERY_ADOPTION_CONTRACT:
+            raise JournalError("recovery adoption contract is invalid")
+        if adoption["state"] not in {
+            "intent", "context-provisioning", "context-provisioned", "ready-for-launch",
+        }:
+            raise JournalError("recovery adoption state is invalid")
+        for key in (
+            "original_task_digest", "original_journal_digest",
+            "colocation_intent_digest", "context_plan_digest",
+        ):
+            if not isinstance(adoption[key], str) or _DIGEST.fullmatch(adoption[key]) is None:
+                raise JournalError(f"recovery adoption {key.replace('_', ' ')} is invalid")
+        authorization = _exact(
+            adoption["authorization"], {"harness", "role", "goal"},
+            "recovery adoption authorization",
+        )
+        for key, maximum in (("harness", 32), ("role", 64), ("goal", 200)):
+            if not isinstance(authorization[key], str) or not authorization[key] or len(authorization[key]) > maximum:
+                raise JournalError(f"recovery adoption {key} is invalid")
+        _ownership_fact(adoption["root_fact"], "recovery adoption root fact")
+        registration = _exact(
+            adoption["registration"], {"change_id", "working_commit_id"},
+            "recovery adoption registration",
+        )
+        if (
+            not isinstance(registration["change_id"], str)
+            or _CHANGE.fullmatch(registration["change_id"]) is None
+            or not isinstance(registration["working_commit_id"], str)
+            or _COMMIT.fullmatch(registration["working_commit_id"]) is None
+        ):
+            raise JournalError("recovery adoption registration is invalid")
+        operations = _exact(
+            adoption["operations"], {"workspace_add", "checkout"},
+            "recovery adoption operations",
+        )
+        if any(not isinstance(item, str) or _OP.fullmatch(item) is None for item in operations.values()):
+            raise JournalError("recovery adoption operation identity is invalid")
+
+    plan = _validate_materialization_plan(
+        journal["materialization_plan"], journal["jj"]["base_commit_id"],
+    )
+    ownership = journal["materialization_ownership"]
+    if ownership is not None:
+        ownership = _exact(
+            ownership, {"sidecar", "private"}, "materialization ownership",
+        )
+        _validate_manifest(
+            ownership["private"], "materialized private ownership", optional=False,
+        )
+        if set(ownership["private"]) != _JJ_PRIVATE_PATHS:
+            raise JournalError(
+                "materialized private ownership is not the exact jj binding shape"
+            )
+        sidecar = _validate_sidecar_binding(
+            ownership["sidecar"], "materialization ownership sidecar",
+        )
+        if (
+            sidecar["plan_digest"] != plan["digest"] or
+            sidecar["entry_count"] != plan["entry_count"]
+        ):
+            raise JournalError("materialization ownership is not bound to its plan")
+        expected_name = f"{journal['task_id']}.ownership"
+        if Path(sidecar["path"]).name != expected_name:
+            raise JournalError("materialization ownership is not bound to its task")
+        if config is not None:
+            expected_path = config.tasks_dir.parent / "transactions" / expected_name
+            if sidecar["path"] != str(expected_path):
+                raise JournalError("materialization ownership path is outside transactions")
+    maximum_removed = plan["entry_count"] + len(_JJ_PRIVATE_PATHS) + 8192
+    removed = journal["removal"]["entries_removed"]
+    if type(removed) is not int or not 0 <= removed <= maximum_removed:
+        raise JournalError("journal removal entries_removed is invalid")
+    return journal
+
+
+def validate_journal(value: Any, *, config: ControlConfig | None = None) -> dict[str, Any]:
+    """Validate a creation journal without reinterpreting older contracts."""
+    if not isinstance(value, dict):
+        raise JournalError("creation journal must be an object")
+    contract = value.get("contract")
+    if contract == JOURNAL_V1_CONTRACT:
+        return _validate_journal_v1(value, config=config)
+    if contract == JOURNAL_CONTRACT:
+        return _validate_journal_v2(value, config=config)
+    raise JournalError("creation journal contract is unsupported")
+
+
+class MaterializationOwnershipStore:
+    """Private fixed-width inode vectors bound to a task and tree plan."""
+
+    def __init__(self, config: ControlConfig):
+        self.directory = config.tasks_dir.parent / "transactions"
+        self._managed_start = _managed_start(
+            self.directory, ("control", "transactions"),
+        )
+
+    def path(self, task_id: str) -> Path:
+        try:
+            canonical_uuid(task_id)
+        except ValueError as exc:
+            raise JournalError(str(exc)) from exc
+        return self.directory / f"{task_id}.ownership"
+
+    @staticmethod
+    def _raw(task_id: str, plan_digest: str, facts: list[list[int]]) -> bytes:
+        try:
+            task_bytes = uuid.UUID(canonical_uuid(task_id)).bytes
+        except ValueError as exc:
+            raise JournalError(str(exc)) from exc
+        if not isinstance(plan_digest, str) or _DIGEST.fullmatch(plan_digest) is None:
+            raise JournalError("ownership sidecar plan digest is invalid")
+        if not isinstance(facts, list) or len(facts) > MAX_OWNERSHIP_SIDECAR_ENTRIES:
+            raise JournalError("ownership sidecar entry count is invalid")
+        payload = bytearray()
+        payload.extend(_OWNERSHIP_MAGIC)
+        payload.extend(task_bytes)
+        payload.extend(bytes.fromhex(plan_digest))
+        payload.extend(struct.pack(">Q", len(facts)))
+        for fact in facts:
+            if (
+                not isinstance(fact, list) or len(fact) != 4 or
+                any(type(item) is not int or not 0 <= item <= 0xffff_ffff_ffff_ffff
+                    for item in fact)
+            ):
+                raise JournalError("ownership sidecar inode facts are invalid")
+            payload.extend(struct.pack(">QQQQ", *fact))
+        payload.extend(hashlib.sha256(payload).digest())
+        if len(payload) > MAX_OWNERSHIP_SIDECAR_BYTES:
+            raise JournalError("ownership sidecar exceeds its bounded size")
+        return bytes(payload)
+
+    def _binding(
+        self, task_id: str, plan_digest: str, raw: bytes,
+        entry_count: int, file_fact: dict[str, int],
+    ) -> dict[str, Any]:
+        return {
+            "contract": OWNERSHIP_SIDECAR_CONTRACT,
+            "path": str(self.path(task_id)),
+            "digest": hashlib.sha256(raw).hexdigest(),
+            "plan_digest": plan_digest,
+            "entry_count": entry_count,
+            "size": len(raw),
+            "state": "bound",
+            "file_fact": file_fact,
+        }
+
+    @staticmethod
+    def _read_raw(directory_fd: int, name: str) -> tuple[bytes, dict[str, int]]:
+        try:
+            fd = _open_existing_file(directory_fd, name, "materialization ownership sidecar")
+        except FileNotFoundError as exc:
+            raise JournalError("materialization ownership sidecar is missing") from exc
+        except StoreError as exc:
+            raise JournalError(str(exc)) from exc
+        try:
+            metadata = os.fstat(fd)
+            if metadata.st_size > MAX_OWNERSHIP_SIDECAR_BYTES:
+                raise JournalError("materialization ownership sidecar exceeds its bounded size")
+            remaining = metadata.st_size + 1
+            chunks: list[bytes] = []
+            while remaining:
+                chunk = os.read(fd, min(65536, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            raw = b"".join(chunks)
+        finally:
+            _close_quietly(fd)
+        if len(raw) != metadata.st_size:
+            raise JournalError("materialization ownership sidecar changed during read")
+        try:
+            visible = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise JournalError(
+                "materialization ownership sidecar changed during read"
+            ) from exc
+        if (
+            (visible.st_dev, visible.st_ino, visible.st_mode, visible.st_uid) !=
+            (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid)
+        ):
+            raise JournalError("materialization ownership sidecar changed during read")
+        return raw, _inode_fact_for_sidecar(metadata)
+
+    def write(
+        self, task_id: str, plan_digest: str, facts: list[list[int]], *,
+        failure_injector=None,
+    ) -> dict[str, Any]:
+        raw = self._raw(task_id, plan_digest, facts)
+        name = f"{canonical_uuid(task_id)}.ownership"
+        temporary = f".{name}.tmp.{secrets.token_hex(8)}"
+        try:
+            with _directory_fd(
+                self.directory, create=True, managed_start=self._managed_start,
+            ) as directory_fd:
+                assert directory_fd is not None
+                try:
+                    existing, existing_fact = self._read_raw(directory_fd, name)
+                except JournalError as exc:
+                    if "is missing" not in str(exc):
+                        raise
+                else:
+                    if existing != raw:
+                        raise JournalError(
+                            "existing materialization ownership sidecar is foreign or corrupt"
+                        )
+                    return self._binding(
+                        task_id, plan_digest, raw, len(facts), existing_fact,
+                    )
+                fd = -1
+                replaced = False
+                try:
+                    fd = os.open(
+                        temporary,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL |
+                        getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+                        0o600, dir_fd=directory_fd,
+                    )
+                    os.fchmod(fd, 0o600)
+                    offset = 0
+                    while offset < len(raw):
+                        count = os.write(fd, raw[offset:])
+                        if count <= 0:
+                            raise JournalError("short write while saving ownership sidecar")
+                        offset += count
+                    os.fsync(fd)
+                    os.close(fd)
+                    fd = -1
+                    if failure_injector is not None:
+                        failure_injector("sidecar:temp-written")
+                    os.replace(
+                        temporary, name,
+                        src_dir_fd=directory_fd, dst_dir_fd=directory_fd,
+                    )
+                    replaced = True
+                    os.fsync(directory_fd)
+                    if failure_injector is not None:
+                        failure_injector("sidecar:renamed")
+                finally:
+                    _close_quietly(fd)
+                    if not replaced:
+                        try:
+                            os.unlink(temporary, dir_fd=directory_fd)
+                        except FileNotFoundError:
+                            pass
+                written, written_fact = self._read_raw(directory_fd, name)
+                if written != raw:
+                    raise JournalError("materialization ownership sidecar changed after replace")
+                return self._binding(
+                    task_id, plan_digest, raw, len(facts), written_fact,
+                )
+        except StoreError as exc:
+            raise JournalError(str(exc)) from exc
+        except OSError as exc:
+            raise JournalError(f"materialization ownership sidecar write failed: {exc}") from exc
+
+    def read(self, binding: dict[str, Any]) -> list[list[int]]:
+        binding = _validate_sidecar_binding(binding, "materialization ownership")
+        path = Path(binding["path"])
+        if path.parent != self.directory:
+            raise JournalError("materialization ownership sidecar path is outside transactions")
+        try:
+            canonical_uuid(path.stem)
+        except ValueError as exc:
+            raise JournalError("materialization ownership sidecar task identity is invalid") from exc
+        with _directory_fd(
+            self.directory, create=False, managed_start=self._managed_start,
+        ) as directory_fd:
+            if directory_fd is None:
+                raise JournalError("materialization ownership sidecar is missing")
+            raw, file_fact = self._read_raw(directory_fd, path.name)
+        if file_fact != binding["file_fact"]:
+            raise JournalError("materialization ownership sidecar identity changed")
+        if len(raw) != binding["size"] or hashlib.sha256(raw).hexdigest() != binding["digest"]:
+            raise JournalError("materialization ownership sidecar digest or size changed")
+        expected_size = (
+            _OWNERSHIP_HEADER_BYTES +
+            binding["entry_count"] * _OWNERSHIP_FACT_BYTES +
+            _OWNERSHIP_TRAILER_BYTES
+        )
+        if len(raw) != expected_size or raw[:8] != _OWNERSHIP_MAGIC:
+            raise JournalError("materialization ownership sidecar framing is invalid")
+        if raw[8:24] != uuid.UUID(path.stem).bytes:
+            raise JournalError("materialization ownership sidecar task identity changed")
+        if raw[24:56] != bytes.fromhex(binding["plan_digest"]):
+            raise JournalError("materialization ownership sidecar plan digest changed")
+        count = struct.unpack(">Q", raw[56:64])[0]
+        if count != binding["entry_count"]:
+            raise JournalError("materialization ownership sidecar count changed")
+        if hashlib.sha256(raw[:-32]).digest() != raw[-32:]:
+            raise JournalError("materialization ownership sidecar checksum is invalid")
+        facts = []
+        for offset in range(64, len(raw) - 32, 32):
+            facts.append(list(struct.unpack(">QQQQ", raw[offset:offset + 32])))
+        return facts
+
+
 class CreationJournalStore:
     def __init__(self, config: ControlConfig):
         self.config = config
@@ -388,12 +819,23 @@ class CreationJournalStore:
             if transactions_fd is None or locks_fd is None:
                 raise JournalError(f"creation journal not found: {task_id}")
             try:
-                with _task_lock(locks_fd, task_id):
+                with _task_lock(locks_fd, _transaction_lock_key("task", task_id)):
                     return self._read_fd(transactions_fd, task_id)
             except StoreError as exc:
                 raise JournalError(str(exc)) from exc
 
-    def save(self, value: dict[str, Any], *, expected_phase: str | None = None) -> Path:
+    @staticmethod
+    def digest(value: dict[str, Any]) -> str:
+        validated = validate_journal(copy.deepcopy(value))
+        raw = json.dumps(
+            validated, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        return hashlib.sha256(raw).hexdigest()
+
+    def save(
+        self, value: dict[str, Any], *, expected_phase: str | None = None,
+        expected_digest: str | None = None, allow_recovery_adoption: bool = False,
+    ) -> Path:
         journal = copy.deepcopy(value)
         try:
             validate_journal(journal, config=self.config)
@@ -407,7 +849,7 @@ class CreationJournalStore:
         with self._locked_directories(create=True) as (transactions_fd, locks_fd):
             assert transactions_fd is not None and locks_fd is not None
             try:
-                with _task_lock(locks_fd, task_id):
+                with _task_lock(locks_fd, _transaction_lock_key("task", task_id)):
                     current = None
                     try:
                         current = self._read_fd(transactions_fd, task_id)
@@ -422,16 +864,31 @@ class CreationJournalStore:
                     else:
                         if expected_phase is None or current["phase"] != expected_phase:
                             raise JournalError("creation journal phase changed; reload before update")
+                        if expected_digest is not None and not secrets.compare_digest(
+                            self.digest(current), expected_digest,
+                        ):
+                            raise JournalError("creation journal digest changed; reload before adoption")
                         if (journal["phase"] != current["phase"] and
-                                journal["phase"] not in PHASE_TRANSITIONS[current["phase"]]):
+                                journal["phase"] not in PHASE_TRANSITIONS[current["phase"]] and not (
+                                    allow_recovery_adoption
+                                    and current["contract"] == JOURNAL_CONTRACT
+                                    and current["phase"] == "preserved"
+                                    and journal["phase"] == "ready-for-launch"
+                                    and journal.get("adoption", {}).get("state") == "ready-for-launch"
+                                )):
                             raise JournalError(
                                 f"illegal creation journal phase transition: "
                                 f"{current['phase']} -> {journal['phase']}"
                             )
-                        for key in (
+                        immutable = [
                             "contract", "task_id", "invocation_id", "config", "repository",
-                            "expected_materialization",
-                        ):
+                            (
+                                "expected_materialization"
+                                if journal["contract"] == JOURNAL_V1_CONTRACT
+                                else "materialization_plan"
+                            ),
+                        ]
+                        for key in immutable:
                             if journal[key] != current[key]:
                                 raise JournalError(f"immutable creation journal field changed: {key}")
                         for key in ("path", "name"):
@@ -458,6 +915,16 @@ class CreationJournalStore:
                         for key in ("change_id", "working_commit_id", "last_registration"):
                             if current["jj"][key] is not None and journal["jj"][key] != current["jj"][key]:
                                 raise JournalError(f"jj ownership identity cannot change: {key}")
+                        for key in (
+                            "workspace_add_operation_id", "checkout_operation_id",
+                        ):
+                            if (
+                                current["jj"].get(key) is not None
+                                and journal["jj"].get(key) != current["jj"].get(key)
+                            ):
+                                raise JournalError(
+                                    f"jj operation identity cannot change: {key}"
+                                )
                         registration_transitions = {
                             "absent": {"absent", "add-intent"},
                             "add-intent": {"add-intent", "present", "absent", "unknown"},
@@ -470,9 +937,37 @@ class CreationJournalStore:
                             current["jj"]["registration_state"]
                         ]:
                             raise JournalError("jj registration state cannot move backward")
-                        for key in ("materialized_owned", "recovery_owned", "planned_context"):
+                        ownership_key = (
+                            "materialized_owned"
+                            if journal["contract"] == JOURNAL_V1_CONTRACT
+                            else "materialization_ownership"
+                        )
+                        for key in (ownership_key, "recovery_owned", "planned_context"):
                             if current[key] is not None and journal[key] != current[key]:
                                 raise JournalError(f"journal ownership facts cannot change: {key}")
+                        current_adoption = current.get("adoption")
+                        new_adoption = journal.get("adoption")
+                        if current_adoption is not None:
+                            if new_adoption is None:
+                                raise JournalError("recovery adoption evidence cannot be cleared")
+                            immutable_adoption = dict(current_adoption)
+                            immutable_adoption.pop("state")
+                            comparable = dict(new_adoption)
+                            comparable.pop("state")
+                            if comparable != immutable_adoption:
+                                raise JournalError("recovery adoption evidence cannot change")
+                            states = [
+                                "intent", "context-provisioning", "context-provisioned",
+                                "ready-for-launch",
+                            ]
+                            if states.index(new_adoption["state"]) < states.index(current_adoption["state"]):
+                                raise JournalError("recovery adoption state cannot move backward")
+                        elif new_adoption is not None and not (
+                            allow_recovery_adoption
+                            and current["contract"] == JOURNAL_CONTRACT
+                            and current["phase"] == "preserved"
+                        ):
+                            raise JournalError("recovery adoption requires the explicit adoption seam")
                         old_context = current["context_owned"]
                         new_context = journal["context_owned"]
                         if any(new_context.get(key) != fact for key, fact in old_context.items()):

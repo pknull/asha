@@ -89,6 +89,12 @@ fi
 [[ -f "$SANDBOX/.codex/rules/asha.rules" ]] \
   && ok "Codex native rules file exists" \
   || fail "Codex native rules file exists"
+if grep -Fq "control-event.sh PermissionRequest" "$SANDBOX/.codex/config.toml" \
+    && grep -Fq "control-event.sh Stop" "$SANDBOX/.codex/config.toml"; then
+  ok "Codex install renders live-proven PermissionRequest and Stop"
+else
+  fail "Codex install renders live-proven PermissionRequest and Stop"
+fi
 [[ -f "$SANDBOX/.config/opencode/plugins/asha.js" ]] \
   && ok "OpenCode native integration plugin exists" \
   || fail "OpenCode native integration plugin exists"

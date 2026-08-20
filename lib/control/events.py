@@ -8,8 +8,9 @@ import re
 import secrets
 import unicodedata
 from datetime import datetime, timezone
+from itertools import islice
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .config import ControlConfig
 from .harness import HarnessError, validate_harness
@@ -377,32 +378,45 @@ def expire_terminal_snapshots(
 
 
 MAX_SUMMARY_SNAPSHOTS = 256
-_SUMMARY_ORDER = ("needs-input", "working", "idle", "exited", "failed")
+_SUMMARY_ORDER = (
+    "needs-input", "working", "unknown", "idle", "exited", "failed",
+)
 _SUMMARY_LABELS = {"needs-input": "needs-you"}
+_AGEABLE_SUMMARY_STATES = frozenset({"working", "needs-input"})
 
 
-def summarize(config: ControlConfig) -> str:
+def summarize(
+    config: ControlConfig, *, now: Callable[[], datetime] | None = None,
+) -> str:
     """Aggregate last-event-only run snapshots into one bounded status string.
 
     Reads only the runtime snapshot directory, never the task registry, so the
-    hook path takes no lock and contends with no controller transaction. Bounded
-    by MAX_SUMMARY_SNAPSHOTS; a malformed or unreadable snapshot is skipped
-    rather than raising, because this feeds a status line and must never be the
-    reason a hook fails.
+    hook path takes no lock and contends with no controller transaction. It
+    consumes a filesystem-order sample of at most MAX_SUMMARY_SNAPSHOTS plus
+    one directory entry, then sorts only that partial sample by UUID
+    filename. Snapshot names carry no time ordering, so this is deliberately
+    not a claim to select the globally smallest names or newest runs. A
+    malformed or unreadable snapshot is skipped rather than raising, because
+    this feeds a status line and must never be the reason a hook fails.
     """
+    observed_now = (now or (lambda: datetime.now(timezone.utc)))()
+    if observed_now.tzinfo is None:
+        observed_now = observed_now.replace(tzinfo=timezone.utc)
     counts: dict[str, int] = {}
     total = 0
     try:
         directory = events_dir(config)
+        entries = list(islice(
+            directory.iterdir(), MAX_SUMMARY_SNAPSHOTS + 1,
+        ))
+        truncated = len(entries) > MAX_SUMMARY_SNAPSHOTS
         names = sorted(
-            entry.name for entry in directory.iterdir()
+            entry.name for entry in entries
             if entry.is_file() and entry.name.endswith(".json")
-        )
+        )[:MAX_SUMMARY_SNAPSHOTS]
     except (EventError, OSError):
         return "asha last-event-only: snapshot status unavailable"
-    inspected = names[:MAX_SUMMARY_SNAPSHOTS]
-    omitted = len(names) - len(inspected)
-    for name in inspected:
+    for name in names:
         try:
             snapshot = read_snapshot(config, name[: -len(".json")])
         except (EventError, OSError, ValueError):
@@ -412,11 +426,17 @@ def summarize(config: ControlConfig) -> str:
         total += 1
         state = snapshot.get("state")
         if isinstance(state, str):
+            if state in _AGEABLE_SUMMARY_STATES:
+                observed = datetime.fromisoformat(snapshot["observed_at"])
+                if observed.tzinfo is None:
+                    observed = observed.replace(tzinfo=timezone.utc)
+                if ((observed_now - observed).total_seconds() >
+                        config.event_staleness_seconds):
+                    state = "unknown"
             counts[state] = counts.get(state, 0) + 1
     suffix = ""
-    if omitted:
-        noun = "snapshot" if omitted == 1 else "snapshots"
-        suffix = f" (truncated: {omitted} {noun} omitted)"
+    if truncated:
+        suffix = " (bounded sample: directory scan cap reached)"
     if not total:
         detail = "no snapshots" if not names else "no valid inspected snapshots"
         return f"asha last-event-only: {detail}{suffix}"
@@ -429,9 +449,14 @@ def summarize(config: ControlConfig) -> str:
     return "asha last-event-only: " + ", ".join(parts) + suffix
 
 
-def publish_server_summary(config: ControlConfig, adapter: TmuxAdapter) -> None:
+def publish_server_summary(
+    config: ControlConfig, adapter: TmuxAdapter, *,
+    now: Callable[[], datetime] | None = None,
+) -> None:
     """Best-effort refresh of the cached tmux server presentation value."""
     try:
-        adapter.set_server_summary(summarize(config), deadline_seconds=5)
+        adapter.set_server_summary(
+            summarize(config, now=now), deadline_seconds=5,
+        )
     except (EventError, OSError, ValueError):
         return

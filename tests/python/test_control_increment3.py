@@ -952,7 +952,7 @@ class RecoverTaskTests(unittest.TestCase):
             self.config, self.fixture.request(slug), jj=JjAdapter(),
         )
 
-    def test_recover_prelaunch_tmux_phases_kills_only_owned_session_and_rolls_back(self) -> None:
+    def test_recover_prelaunch_tmux_phases_kills_only_owned_session_and_preserves_v2(self) -> None:
         for index, boundary in enumerate(("tmux-intent", "tmux-session-created")):
             with self.subTest(boundary=boundary):
                 task = self.prepared(f"recover-tmux-{index}")
@@ -978,9 +978,9 @@ class RecoverTaskTests(unittest.TestCase):
                     journals=CreationJournalStore(self.config),
                     tmux=adapter, jj=JjAdapter(),
                 )
-                self.assertEqual(result["message"], "rolled back")
+                self.assertIn("manual inspection and cleanup required", result["message"])
                 self.assertEqual(result["task"]["lifecycle"], "failed")
-                self.assertEqual(result["journal"]["phase"], "rolled-back")
+                self.assertEqual(result["journal"]["phase"], "preserved")
                 self.assertEqual(
                     adapter.killed, boundary == "tmux-session-created",
                 )
@@ -1127,6 +1127,7 @@ class Increment3CliGrammarTests(unittest.TestCase):
             "XDG_RUNTIME_DIR": str(root / "runtime"),
         }
         self.root = root
+        (self.root / "source").mkdir(mode=0o700)
 
     def invoke(self, args):
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -1167,7 +1168,7 @@ class Increment3CliGrammarTests(unittest.TestCase):
             def working_copy_parent(inner, requested):
                 return "a" * 40
 
-            def git_head(inner, requested):
+            def git_head_exact(inner, requested):
                 return "a" * 40
 
             def import_git(inner, requested):
@@ -1577,17 +1578,26 @@ class RealTmuxLaunchTests(unittest.TestCase):
         )
         self.assertEqual(identity.parent_commit_ids, (stored["jj"]["base_commit_id"],))
 
-    def test_prelaunch_failure_removes_only_verified_owned_artifacts(self) -> None:
+    def test_prelaunch_failure_removes_tmux_but_retains_v2_workspace(self) -> None:
         prepared = self.prepare("live-pre-failure")
 
         def inject(phase):
             if phase == "tmux-session-created":
                 raise RuntimeError("injected")
 
-        with self.assertRaises(LaunchError):
+        with self.assertRaisesRegex(
+                LaunchError, "manual inspection and cleanup required",
+        ):
             self.launch(prepared, failure_injector=inject)
         self.assertFalse(self.adapter.has_session(prepared["tmux"]["session"]))
-        self.assertFalse(Path(prepared["jj"]["workspace_path"]).exists())
+        self.assertTrue(Path(prepared["jj"]["workspace_path"]).exists())
+        self.assertEqual(
+            TaskStore(self.config).read(prepared["task_id"])["lifecycle"], "failed",
+        )
+        self.assertEqual(
+            CreationJournalStore(self.config).read(prepared["task_id"])["phase"],
+            "preserved",
+        )
 
     def test_recover_after_interrupted_respawn_reports_live_process_via_real_tmux(self) -> None:
         prepared = self.prepare("live-recover")

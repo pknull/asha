@@ -18,9 +18,13 @@ from typing import Callable, Mapping, Any
 
 from .events import EventError, read_snapshot
 from .prune import prunable_summary
-from .jj import JjAdapter, JjError, colocated_sync_remediation
+from .jj import (
+    ColocationIntentStore, JjAdapter, JjError, LinkedGitWorktreeError,
+    colocated_sync_remediation, discover_git_root,
+)
 from .process import capture_bytes
-from .store import StoreError, TaskStore
+from .prepare import retained_recovery_guidance
+from .store import StoreError, TaskStore, validate_task_paths
 from .tmux import TmuxAdapter, TmuxError
 from .transaction import CreationJournalStore, JournalError
 
@@ -51,6 +55,7 @@ _JJ_REQUIRED_COMMANDS = (
     ("workspace", "add"),
     ("workspace", "forget"),
     ("operation", "log"),
+    ("git", "init"),
     ("git", "import"),
 )
 _CONTROL_EVENT_HANDLER = (
@@ -356,7 +361,9 @@ def _hooks_probe(config) -> Probe:
     expected_claude = {
         "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
     }
-    expected_codex = {"SessionStart", "UserPromptSubmit", "PostToolUse"}
+    expected_codex = {
+        "SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest", "Stop",
+    }
     missing: list[str] = []
     try:
         if "claude" in installed:
@@ -447,7 +454,7 @@ def _jj_probe(config) -> Probe:
         )
     return Probe(
         "jj", "match",
-        f"{_safe_detail(version)} exposes workspace add/forget, operation log, and git import",
+        f"{_safe_detail(version)} exposes workspace add/forget, operation log, and git init/import",
     )
 
 
@@ -469,36 +476,65 @@ def _repository_probe(config) -> Probe:
     try:
         root = adapter.discover_root(start)
     except (JjError, ValueError):
-        if shutil.which("git") is not None:
-            for git_root in (start, *start.parents):
-                marker = git_root / ".git"
-                try:
-                    is_git_root = marker.is_dir() and (marker / "HEAD").is_file()
-                    if marker.is_file():
-                        with marker.open("rb") as stream:
-                            is_git_root = stream.read(8) == b"gitdir: "
-                except OSError:
-                    is_git_root = False
-                git_root_text = str(git_root)
-                if is_git_root and git_root_text and git_root.is_absolute():
-                    safe_root = _safe_detail(git_root_text)
-                    return Probe(
-                        "repository", "missing",
-                        _safe_detail(
-                            f"{safe_root} is a Git repository but is not jj-colocated; "
-                            f"run `jj git init --colocate {safe_root}` so Control can manage it "
-                            "(creates .jj/ only; revert by removing .jj/)"
-                        ),
-                    )
+        try:
+            git_root = discover_git_root(start)
+        except LinkedGitWorktreeError as exc:
+            return Probe(
+                "repository", "mismatch",
+                _safe_detail(f"{exc}; Control made no repository changes"),
+            )
+        except JjError:
+            git_root = None
+        if git_root is not None:
+            intent_problem = _colocation_intent_problem(config, git_root)
+            if intent_problem is not None:
+                return intent_problem
+            try:
+                (git_root / ".jj").lstat()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                return Probe(
+                    "repository", "mismatch",
+                    f"existing .jj metadata could not be inspected: {_safe_detail(exc)}",
+                )
+            else:
+                return Probe(
+                    "repository", "mismatch",
+                    _safe_detail(
+                        f"{git_root} has existing .jj metadata that strict jj discovery "
+                        "could not use; task start will refuse rather than overwrite it"
+                    ),
+                )
+            initialized = (git_root / ".asha" / "config.json").is_file() and (
+                git_root / "Memory" / "activeContext.md"
+            ).is_file()
+            outcome = "match" if initialized else "missing"
+            memory = (
+                "Memory v2 appears initialized"
+                if initialized else
+                "Memory v2 is not initialized, so task creation will still refuse"
+            )
+            return Probe(
+                "repository", outcome,
+                _safe_detail(
+                    f"{git_root} is a plain Git repository; task start will auto-colocate "
+                    "it with command-scoped no-auto-track preservation, retain the verified "
+                    f"repository enablement, and then run strict jj preflight; {memory}"
+                ),
+            )
         return Probe(
             "repository", "unavailable",
             "the working directory is not inside a jj repository; "
             "run `asha task start --repo PATH` or change directory",
         )
+    intent_problem = _colocation_intent_problem(config, root)
+    if intent_problem is not None:
+        return intent_problem
     try:
         facts = adapter.preflight(root)
         working_copy_parent = adapter.working_copy_parent(root)
-        git_head = adapter.git_head(facts.git_root)
+        git_head = adapter.git_head_exact(facts.root)
     except (JjError, ValueError) as exc:
         return Probe("repository", "mismatch", f"jj repository is unusable: {_safe_detail(str(exc))}")
     remediation = colocated_sync_remediation(root, git_head, working_copy_parent)
@@ -526,6 +562,64 @@ def _repository_probe(config) -> Probe:
     )
 
 
+def _colocation_intent_problem(config, root: Path) -> Probe | None:
+    """Mirror task-start's read-only Control colocation authentication gate."""
+    if config is None:
+        return None
+    store = ColocationIntentStore(config)
+    try:
+        assessment = store.classify(root)
+    except JjError as exc:
+        return Probe(
+            "repository", "mismatch",
+            _safe_detail(
+                "Control colocation intent is stale or binding-mismatched; "
+                f"task start will refuse. Inspect {store.path(root)}, `jj status`, "
+                f"and Git status/refs before repair: {exc}"
+            ),
+        )
+    if assessment.kind == "verified_root_hardening_candidate":
+        probe_workspace = config.workspace_root / ".doctor-pre-enable" / store._key(root)
+        try:
+            validate_task_paths(config, root, probe_workspace)
+        except StoreError as exc:
+            return Probe(
+                "repository", "mismatch",
+                _safe_detail(
+                    "verified colocation root hardening remains unsafe under the "
+                    f"task-start path policy and is ineligible for automatic repair: {exc}"
+                ),
+            )
+        return Probe(
+            "repository", "mismatch",
+            _safe_detail(
+                "repairable verified colocation root hardening detected by a "
+                "read-only check; task start will reauthenticate repository/Git/jj "
+                "identity, stable semantics, Memory, base, and destination before "
+                "rewriting only the stored root fact"
+            ),
+        )
+    if assessment.kind == "mismatch":
+        return Probe(
+            "repository", "mismatch",
+            _safe_detail(
+                "Control colocation intent is stale or binding-mismatched; task "
+                f"start will refuse. Inspect {store.path(root)}, `jj status`, and "
+                f"Git status/refs; the record remains unchanged: {assessment.detail}"
+            ),
+        )
+    if assessment.kind == "intent":
+        return Probe(
+            "repository", "mismatch",
+            _safe_detail(
+                "ambiguous Control colocation intent is retained; task start "
+                f"will refuse. Inspect {store.path(root)}, `jj status`, and Git "
+                "status/refs before repair"
+            ),
+        )
+    return None
+
+
 def _transactions_probe(config) -> Probe:
     if config is None:
         return Probe(
@@ -533,23 +627,30 @@ def _transactions_probe(config) -> Probe:
             "configuration was not supplied to the creation transaction probe",
         )
     try:
-        tasks = TaskStore(config).list()
+        task_store = TaskStore(config)
+        tasks = task_store.list()
         journals = CreationJournalStore(config)
         interrupted: list[str] = []
-        for task in tasks:
-            if task["lifecycle"] != "creating":
-                continue
-            try:
-                journals.read(task["task_id"])
-            except JournalError:
-                continue
-            interrupted.append(task["task_id"])
+        retained: list[str] = []
+        for listed in tasks:
+            task_id = listed["task_id"]
+            with task_store.transaction_lock(task_id):
+                task = task_store.read(task_id)
+                try:
+                    journal = journals.read(task_id)
+                except JournalError:
+                    continue
+                guidance = retained_recovery_guidance(task, journal)
+                if guidance is not None:
+                    retained.append(guidance)
+                elif task["lifecycle"] == "creating":
+                    interrupted.append(task_id)
     except (StoreError, JournalError) as exc:
         return Probe(
             "transactions", "unavailable",
             f"creation transactions could not be inspected: {_safe_detail(exc)}",
         )
-    if not interrupted:
+    if not interrupted and not retained:
         return Probe(
             "transactions", "match",
             "no interrupted creation transactions are registered",
@@ -558,9 +659,13 @@ def _transactions_probe(config) -> Probe:
         f"asha task recover {task_id}"
         for task_id in interrupted[:5]
     )
+    details = [
+        f"{len(interrupted)} interrupted creation transaction(s); run: {commands}"
+    ] if interrupted else []
+    details.extend(retained[:5])
     return Probe(
         "transactions", "mismatch",
-        f"{len(interrupted)} interrupted creation transaction(s); run: {commands}",
+        _safe_detail("; ".join(details)),
     )
 
 

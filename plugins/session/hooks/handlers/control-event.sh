@@ -7,6 +7,7 @@ case "${1:-}" in
   SessionStart)     CONTROL_EVENT="session-start" ;;
   UserPromptSubmit) CONTROL_EVENT="prompt-submitted" ;;
   PostToolUse)      CONTROL_EVENT="tool-completed" ;;
+  PermissionRequest) CONTROL_EVENT="permission-requested" ;;
   Stop)             CONTROL_EVENT="turn-stopped" ;;
   SessionEnd)       CONTROL_EVENT="session-ended" ;;
   *) echo '{}'; exit 0 ;;

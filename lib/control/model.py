@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping
 
 from .config import is_canonical_absolute_path
+from .text import terminal_text_is_complete
 
 
 TASK_CONTRACT = "asha.control-task.v1"
@@ -80,6 +81,23 @@ def validate_slug(value: Any) -> str:
     return value
 
 
+def validate_task_slug(value: Any) -> str:
+    slug = validate_slug(value)
+    if slug == "materializations":
+        raise ModelError(
+            "task slug 'materializations' is reserved for controller materializations"
+        )
+    return slug
+
+
+def retry_task_slug(previous_slug: Any, task_id: Any) -> str:
+    """Build a collision-free retry path identity without changing its label."""
+    previous = validate_task_slug(previous_slug)
+    suffix = f"-retry-{canonical_uuid(task_id).replace('-', '')}"
+    prefix = previous[:64 - len(suffix)].rstrip("-")
+    return validate_task_slug(prefix + suffix)
+
+
 def _object(value: Any, name: str, keys: frozenset[str]) -> Mapping[str, Any]:
     if not isinstance(value, dict):
         raise ModelError(f"{name} must be an object")
@@ -92,10 +110,14 @@ def _object(value: Any, name: str, keys: frozenset[str]) -> Mapping[str, Any]:
     return value
 
 
-def _text(value: Any, name: str, *, minimum: int = 1, maximum: int = 200, pattern=None) -> str:
+def _text(
+    value: Any, name: str, *, minimum: int = 1, maximum: int = 200,
+    pattern=None, terminal_clusters: bool = False,
+) -> str:
     if not isinstance(value, str) or not minimum <= len(value) <= maximum:
         raise ModelError(f"{name} must contain {minimum}-{maximum} characters")
-    if any(unicodedata.category(char) in {"Cc", "Cf", "Cs"} for char in value):
+    forbidden = {"Cc", "Cs"} if terminal_clusters else {"Cc", "Cf", "Cs"}
+    if any(unicodedata.category(char) in forbidden for char in value):
         raise ModelError(f"{name} must not contain Unicode control characters")
     if pattern is not None and pattern.fullmatch(value) is None:
         raise ModelError(f"{name} uses an invalid restricted grammar")
@@ -153,7 +175,9 @@ def validate_task(task: Any) -> dict[str, Any]:
         raise ModelError(f"task contract must be {TASK_CONTRACT}")
     canonical_uuid(task["task_id"])
     validate_slug(task["slug"])
-    _text(task["label"], "task label", maximum=200)
+    _text(task["label"], "task label", maximum=200, terminal_clusters=True)
+    if not terminal_text_is_complete(task["label"]):
+        raise ModelError("task label contains an unsupported terminal text cluster")
     created = _timestamp(task["created_at"], "task created_at")
     updated = _timestamp(task["updated_at"], "task updated_at")
     if updated < created:

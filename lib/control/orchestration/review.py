@@ -16,6 +16,7 @@ from ..jj import JjAdapter, JjError
 from ..prepare import (
     PreparationError,
     _JJ_PATHS,
+    _verify_plan_entry,
 )
 from .actions import append_event
 from .links import control_task_identity_digest
@@ -214,7 +215,9 @@ def tracked_workspace_status(
     the tracked-tree verdict.
     """
     facts = adapter.preflight(source)
-    expected = adapter.expected_materialization(facts.git_root, target_commit_id)
+    plan = adapter.materialization_plan(
+        facts.git_root, target_commit_id, exact_root=facts.root,
+    )
     root_flags = (
         os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
         | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
@@ -224,26 +227,23 @@ def tracked_workspace_status(
         root_metadata = os.fstat(root_fd)
         if not stat.S_ISDIR(root_metadata.st_mode) or root_metadata.st_uid != os.geteuid():
             raise PreparationError("review workspace root identity is invalid")
-        actual = {
-            path: _tracked_path_fact(
-                root_fd,
-                path,
-                expected.get(path),
-                kind_only=path in _JJ_PATHS and path not in expected,
-            )
-            for path in sorted(set(expected) | set(_JJ_PATHS))
+        try:
+            for entry in plan.entries:
+                _verify_plan_entry(root_fd, entry, require_ownership=False)
+        except PreparationError:
+            return False, [], False
+        actual_jj = {
+            path: _tracked_path_fact(root_fd, path, None, kind_only=True)
+            for path in sorted(_JJ_PATHS)
         }
     finally:
         os.close(root_fd)
-    for path, projected in expected.items():
-        if actual[path] != projected:
-            return False, [], False
     for path, kind in _JJ_PATHS.items():
-        fact = actual[path]
+        fact = actual_jj[path]
         if fact is None or fact["type"] != kind:
             return False, [], False
     non_tracked, truncated = _bounded_non_tracked_paths(
-        workspace, set(expected), set(_JJ_PATHS),
+        workspace, {entry.path for entry in plan.entries}, set(_JJ_PATHS),
     )
     return True, non_tracked, truncated
 

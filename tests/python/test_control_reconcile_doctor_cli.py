@@ -188,13 +188,19 @@ class ControlReconciliationTests(unittest.TestCase):
             for name in ("tmux", "process", "jj", "event")
         }
         result = reconcile_task(task, FakeAdapters(unavailable))
-        self.assertEqual(result["state"], "starting")
+        self.assertEqual(result["state"], "unknown")
         self.assertIsNone(result["blocker"])
         self.assertTrue(all(item["outcome"] == "unavailable" for item in result["evidence"]))
 
     def test_live_process_with_unavailable_semantic_adapter_is_unknown(self) -> None:
-        adapters = FakeAdapters(evidence(event=Evidence("event", "unavailable", "unsupported harness")))
-        self.assertEqual(reconcile_task(task_record(), adapters)["state"], "unknown")
+        for stored in ("starting", "working"):
+            task = task_record()
+            task["runs"][0]["state"] = stored
+            adapters = FakeAdapters(evidence(
+                event=Evidence("event", "unavailable", "unsupported harness"),
+            ))
+            with self.subTest(stored=stored):
+                self.assertEqual(reconcile_task(task, adapters)["state"], "unknown")
 
     def test_active_event_is_not_trusted_when_live_process_evidence_is_unavailable(self) -> None:
         unavailable = FakeAdapters(evidence(
@@ -213,7 +219,7 @@ class ControlReconciliationTests(unittest.TestCase):
         self.assertEqual(matched["state"], "working")
         self.assertIsNone(matched["blocker"])
 
-    def test_missing_event_preserves_proven_active_state_when_jj_is_match_or_unavailable(self) -> None:
+    def test_missing_event_preserves_only_verified_starting_and_declines_old_positives(self) -> None:
         for stored in ("starting", "working", "needs-input", "idle", "unknown"):
             for jj_outcome in ("match", "unavailable"):
                 task = task_record()
@@ -224,7 +230,10 @@ class ControlReconciliationTests(unittest.TestCase):
                 ))
                 with self.subTest(stored=stored, jj_outcome=jj_outcome):
                     result = reconcile_task(task, adapters)
-                    self.assertEqual(result["state"], stored)
+                    self.assertEqual(
+                        result["state"],
+                        "starting" if stored == "starting" else "unknown",
+                    )
                     self.assertIsNone(result["blocker"])
 
     def test_missing_event_resolves_or_blocks_a_stored_stale_state(self) -> None:
@@ -465,13 +474,33 @@ class ControlCliTests(unittest.TestCase):
         # recorded session resolves as `missing`, and a missing tmux session
         # with a non-missing process is the first and reported blocker, before
         # jj is consulted (see the isolated tmux socket in setUp). Verified
-        # empirically against a machine with tmux installed; codex's sandbox,
-        # which has no tmux binary, degrades tmux to `unavailable` and would
-        # otherwise mislead this assertion toward the jj blocker.
+        # empirically against the host tmux runtime; a sandbox that makes tmux
+        # unavailable or denies its socket degrades that probe to `unavailable`
+        # and would otherwise mislead this assertion toward the jj blocker.
         self.assertEqual(data["tasks"][0]["status"], "stale")
         self.assertEqual(
             data["tasks"][0]["blocker"], "tmux: recorded tmux session is absent",
         )
+
+    def test_list_and_reconcile_batches_publish_server_summary_once(self) -> None:
+        second = task_record(
+            task_id=str(uuid.uuid4()), slug="cli-second",
+            repository_root=self.record["repository"]["root"],
+            workspace_path=str(self.config.workspace_root / "repo-key/cli-second"),
+        )
+        TaskStore(self.config).save(second)
+
+        for args in (
+            ["task", "list", "--json"],
+            ["task", "reconcile", "--json"],
+        ):
+            with self.subTest(args=args), \
+                    mock.patch("lib.control.view.publish_server_summary") as publish:
+                rc, _stdout, stderr = self.invoke(args)
+
+            self.assertEqual((rc, stderr), (0, ""))
+            self.assertEqual(publish.call_count, 1)
+            self.assertIn("now", publish.call_args.kwargs)
 
     def test_show_json_has_narrow_versioned_contract(self) -> None:
         rc, stdout, stderr = self.invoke(["task", "show", "cli-test", "--json"])

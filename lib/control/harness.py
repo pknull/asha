@@ -12,6 +12,7 @@ from typing import Any
 
 from .config import is_canonical_absolute_path
 from .model import ModelError, canonical_uuid
+from .text import terminal_text_is_complete
 
 
 HARNESSES = frozenset({"claude", "codex", "copilot", "opencode"})
@@ -106,7 +107,7 @@ def launch_argv(
     if isinstance(extra, (str, bytes)) or not isinstance(extra, Sequence):
         raise HarnessError("harness extra arguments are invalid")
     arguments = list(extra)
-    if any(not isinstance(item, str) or _has_unicode_control(item)
+    if any(not isinstance(item, str) or not terminal_text_is_complete(item)
            for item in arguments):
         raise HarnessError("harness extra arguments are invalid")
     if arguments and arguments[0].startswith("-"):

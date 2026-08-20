@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import contextlib
+import hashlib
 import io
 import json
+import multiprocessing
 import os
 import shutil
 import stat
@@ -17,17 +19,27 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
+from lib.control import tui as tui_module
+from lib.control import prepare as prepare_module
 from lib.control.config import load_config
 from lib.control.context import ContextError, provision_context
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
-from lib.control.jj import DEFAULT_BASE_REVSET, JjAdapter, JjError, WorkspaceIdentity
+from lib.control.jj import (
+    DEFAULT_BASE_REVSET, JjAdapter, JjError, MaterializationEntry,
+    MaterializationPlan, MAX_IMMUTABLE_TREE_ENTRIES, WorkspaceIdentity,
+)
 from lib.control.launch import recover_task
 from lib.control.prepare import derive_repository_identity
 from lib.control.prepare import (
-    PrepareRequest, PreparationError, plan_materialization, prepare_materialization,
-    prepare_task_workspace, rollback_prelaunch,
+    PrepareRequest, PreparationError, _capture_tree, _compact_materialized_ownership,
+    adopt_preserved_task_workspace,
+    plan_materialization, prepare_materialization, prepare_task_workspace,
+    rollback_prelaunch,
 )
-from lib.control.store import StoreCommittedError, TaskStore, task_digest
+from lib.control.store import (
+    StoreCommittedError, StoreError, TaskStore, TransactionCoordinator,
+    task_digest,
+)
 from lib.control.transaction import CreationJournalStore, JournalError
 
 
@@ -306,7 +318,8 @@ class JournalStoreTests(unittest.TestCase):
         self.assertEqual(self.store.read(self.task_id), first)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertEqual(stat.S_IMODE(path.parent.stat().st_mode), 0o700)
-        lock = self.config.runtime_dir / "tasks" / f"{self.task_id}.lock"
+        lock_id = TransactionCoordinator.lock_key("task", self.task_id)
+        lock = self.config.runtime_dir / "tasks" / f"{lock_id}.lock"
         self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
         changed = json.loads(json.dumps(first))
         changed["phase"] = "task-recorded"
@@ -472,12 +485,13 @@ class RealJjPreparationTests(unittest.TestCase):
         (self.source / "Memory" / "decisions.md").write_text(
             "# Decisions\n\n- One.\n", encoding="utf-8")
         self.source.chmod(0o755)
-        self.config = load_config({
+        self.env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
             "XDG_STATE_HOME": str(self.root / "state"),
             "XDG_DATA_HOME": str(self.root / "data"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
-        })
+        }
+        self.config = load_config(self.env)
 
     def jj(self, *args: str) -> str:
         return subprocess.run(["jj", "-R", str(self.source), "--ignore-working-copy", *args],
@@ -566,6 +580,50 @@ class RealJjPreparationTests(unittest.TestCase):
             slug=slug, label="Task one",
         )
 
+    def prepare_nested_workspace(self, relative: str, slug: str) -> tuple[PrepareRequest, dict]:
+        path = self.source / relative
+        path.parent.mkdir(parents=True)
+        path.write_text("owned bytes\n", encoding="utf-8")
+        env = {
+            **os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        subprocess.run(
+            ["git", "-C", str(self.source), "add", relative], check=True, env=env,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "commit", "-qm", slug],
+            check=True, env=env,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["jj", "-R", str(self.source), "--ignore-working-copy", "git", "import"],
+            check=True, capture_output=True, text=True,
+        )
+        request = PrepareRequest(
+            repository=self.source, requested_base=base, task_id=str(uuid.uuid4()),
+            slug=slug, label="Nested rollback race",
+        )
+        return request, prepare_task_workspace(self.config, request)
+
+    @staticmethod
+    def removal_quarantine_name(task_id: str, relative: str) -> str:
+        digest = hashlib.sha256(
+            task_id.encode("ascii") + b"\0" + relative.encode("utf-8"),
+        ).hexdigest()[:32]
+        return f".asha-control-remove-{digest}"
+
+    def assert_no_workspace_removal_calls(self, unlink, rmdir) -> None:
+        workspace_unlinks = [
+            call for call in unlink.call_args_list
+            if ".json.tmp." not in os.fspath(call.args[0])
+        ]
+        self.assertEqual(workspace_unlinks, [])
+        rmdir.assert_not_called()
+
     def create_workspace_root(self, mode: int) -> None:
         self.config.workspace_root.parent.mkdir(parents=True, mode=0o700)
         current = self.config.workspace_root.parent
@@ -615,16 +673,17 @@ class RealJjPreparationTests(unittest.TestCase):
             ["git", "-C", str(self.source), "rev-parse", "HEAD"],
             check=True, capture_output=True, text=True,
         ).stdout.strip()
-        rollback_prelaunch(self.config, request.task_id)
-        self.assertFalse(workspace.exists())
-        # Rollback abandons Control's own empty described commit and leaves
-        # the Git checkout alone.
-        described = subprocess.run(
-            ["jj", "-R", str(self.source), "--ignore-working-copy", "log", "-r",
-             result["jj"]["change_id"], "--no-graph", "-T", "change_id"],
-            check=False, capture_output=True, text=True,
+        with self.assertRaisesRegex(
+                PreparationError, "manual inspection and cleanup required",
+        ):
+            rollback_prelaunch(self.config, request.task_id)
+        self.assertTrue(workspace.exists())
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertIn(
+            result["jj"]["workspace_name"],
+            JjAdapter().workspace_identities(self.source),
         )
-        self.assertNotEqual(described.returncode, 0, described.stdout)
         head_after = subprocess.run(
             ["git", "-C", str(self.source), "rev-parse", "HEAD"],
             check=True, capture_output=True, text=True,
@@ -894,7 +953,7 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertEqual(result["status"], "stale")
         self.assertIn("unavailable", result["blocker"])
 
-    def test_failure_after_owned_manifest_rolls_back_only_owned_workspace(self) -> None:
+    def test_failure_after_owned_manifest_retains_v2_workspace(self) -> None:
         request = self.request("rollback")
         before = self.source_facts()
         with self.assertRaises(PreparationError):
@@ -907,11 +966,11 @@ class RealJjPreparationTests(unittest.TestCase):
         task = __import__("lib.control.store", fromlist=["TaskStore"]).TaskStore(self.config).read(request.task_id)
         self.assertEqual(task["lifecycle"], "failed")
         journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "rolled-back")
-        self.assertFalse(Path(journal["workspace"]["path"]).exists())
-        self.assertNotIn(journal["workspace"]["name"], JjAdapter().workspace_identities(self.source))
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertTrue(Path(journal["workspace"]["path"]).exists())
+        self.assertIn(journal["workspace"]["name"], JjAdapter().workspace_identities(self.source))
 
-    def test_failure_after_add_before_ownership_capture_recovers_expected_materialization(self) -> None:
+    def test_first_post_add_boundary_has_durable_exact_ownership_facts(self) -> None:
         request = self.request("ambiguous")
         with self.assertRaises(PreparationError):
             prepare_task_workspace(
@@ -920,10 +979,912 @@ class RealJjPreparationTests(unittest.TestCase):
                 if phase == "workspace-added" else None,
             )
         journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "rolled-back")
-        self.assertFalse(Path(journal["workspace"]["path"]).exists())
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertIsNotNone(journal["workspace"]["root_fact"])
+        self.assertIsNotNone(journal["materialization_ownership"])
+        self.assertIsNotNone(journal["jj"]["change_id"])
+        self.assertIsNotNone(journal["jj"]["working_commit_id"])
+        self.assertIsNotNone(journal["jj"]["last_registration"])
+        self.assertIsNotNone(journal["jj"]["workspace_add_operation_id"])
+        self.assertIsNotNone(journal["jj"]["checkout_operation_id"])
+        self.assertEqual(journal["jj"]["registration_state"], "present")
+        self.assertTrue(Path(journal["workspace"]["path"]).exists())
+        self.assertIn(
+            journal["workspace"]["name"], JjAdapter().workspace_identities(self.source),
+        )
 
-    def test_keyboard_interrupt_after_workspace_add_rolls_back_and_propagates(self) -> None:
+    def test_public_operation_chain_authenticates_the_exact_workspace_add(self) -> None:
+        request = self.request("operation-proof")
+        prepared = prepare_task_workspace(self.config, request)
+        journal = CreationJournalStore(self.config).read(request.task_id)
+
+        proof = JjAdapter().workspace_add_operation_proof(
+            self.source,
+            pinned_operation_id=journal["jj"]["pinned_operation_id"],
+            workspace_name=journal["workspace"]["name"],
+            base_commit_id=journal["jj"]["base_commit_id"],
+            description=journal["jj"]["description"],
+            destination=Path(journal["workspace"]["path"]),
+        )
+
+        self.assertEqual(
+            proof.workspace_add_operation_id,
+            journal["jj"]["workspace_add_operation_id"],
+        )
+        self.assertEqual(
+            proof.checkout_operation_id,
+            journal["jj"]["checkout_operation_id"],
+        )
+        with self.assertRaisesRegex(JjError, "operation ancestry"):
+            JjAdapter().workspace_add_operation_proof(
+                self.source,
+                pinned_operation_id=journal["jj"]["pinned_operation_id"],
+                workspace_name=journal["workspace"]["name"],
+                base_commit_id=journal["jj"]["base_commit_id"],
+                description="different",
+                destination=Path(prepared["jj"]["workspace_path"]),
+            )
+
+    def test_add_error_after_exact_registration_persists_recovery_identity(self) -> None:
+        class ErrorAfterAddAdapter(JjAdapter):
+            def add_workspace(inner_self, *args, **kwargs):
+                super().add_workspace(*args, **kwargs)
+                raise JjError("reported failure after successful add")
+
+        request = self.request("add-error-observed")
+        with self.assertRaisesRegex(PreparationError, "reported failure"):
+            prepare_task_workspace(self.config, request, jj=ErrorAfterAddAdapter())
+
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertEqual(journal["jj"]["registration_state"], "present")
+        self.assertIsNotNone(journal["workspace"]["root_fact"])
+        self.assertIsNotNone(journal["materialization_ownership"])
+        self.assertIsNotNone(journal["jj"]["workspace_add_operation_id"])
+        self.assertIsNotNone(journal["jj"]["checkout_operation_id"])
+
+    def test_explicit_adoption_authenticates_retained_null_fact_shape_forward(self) -> None:
+        class UnprovableDuringStart(JjAdapter):
+            def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                raise JjError("synthetic post-add proof interruption")
+
+        request = self.request("retained-adopt")
+        intents = __import__(
+            "lib.control.jj", fromlist=["ColocationIntentStore"],
+        ).ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+        with self.assertRaisesRegex(PreparationError, "synthetic post-add"):
+            prepare_task_workspace(self.config, request, jj=UnprovableDuringStart())
+        retained = CreationJournalStore(self.config).read(request.task_id)
+        self.assertEqual(retained["phase"], "preserved")
+        self.assertEqual(retained["jj"]["registration_state"], "add-intent")
+        self.assertIsNone(retained["workspace"]["root_fact"])
+        self.assertIsNone(retained["materialization_ownership"])
+
+        with mock.patch.object(
+            JjAdapter, "forget_workspace",
+            side_effect=AssertionError("adoption must never forget"),
+        ):
+            adopted = adopt_preserved_task_workspace(
+                self.config, request.task_id, harness="codex",
+                role="implementer", goal="Task one",
+            )
+
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        self.assertEqual(adopted["lifecycle"], "creating")
+        self.assertEqual(journal["phase"], "ready-for-launch")
+        self.assertEqual(journal["adoption"]["state"], "ready-for-launch")
+        self.assertIsNotNone(journal["workspace"]["root_fact"])
+        self.assertIsNotNone(journal["materialization_ownership"])
+        workspace = Path(journal["workspace"]["path"])
+        self.assertTrue((workspace / ".asha" / "control-task.json").is_file())
+        self.assertEqual(
+            JjAdapter().inspect_workspace(
+                workspace, journal["workspace"]["name"], require_empty=True,
+            ).change_id,
+            adopted["jj"]["change_id"],
+        )
+
+    def test_doctor_and_tui_identify_only_the_exact_forward_adoption_candidate(self) -> None:
+        class UnprovableDuringStart(JjAdapter):
+            def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                raise JjError("synthetic post-add proof interruption")
+
+        request = self.request("retained-guidance")
+        intents = __import__(
+            "lib.control.jj", fromlist=["ColocationIntentStore"],
+        ).ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+        with self.assertRaises(PreparationError):
+            prepare_task_workspace(self.config, request, jj=UnprovableDuringStart())
+
+        task = TaskStore(self.config).read(request.task_id)
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        doctor = run_doctor(
+            self.config, probes={"transactions": DEFAULT_PROBES["transactions"]},
+        )["probes"][0]
+        self.assertEqual(doctor["outcome"], "mismatch")
+        self.assertIn("--adopt --yes --harness <harness> --role <role>", doctor["detail"])
+        self.assertIn("--goal 'Task one'", doctor["detail"])
+
+        guidance = tui_module.retained_recovery_guidance(task, journal)
+        self.assertIn("explicit authenticated forward-adoption", guidance)
+        self.assertIn("--adopt --yes", guidance)
+
+        ambiguous = copy.deepcopy(journal)
+        ambiguous["jj"]["registration_state"] = "present"
+        self.assertIn(
+            "manual inspection only",
+            tui_module.retained_recovery_guidance(task, ambiguous),
+        )
+
+    def test_recovery_controller_validates_direct_adoption_authorization_before_mutation(self) -> None:
+        class UnprovableDuringStart(JjAdapter):
+            def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                raise JjError("synthetic post-add proof interruption")
+
+        request = self.request("retained-direct-auth")
+        intents = __import__(
+            "lib.control.jj", fromlist=["ColocationIntentStore"],
+        ).ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+        with self.assertRaises(PreparationError):
+            prepare_task_workspace(self.config, request, jj=UnprovableDuringStart())
+        tasks = TaskStore(self.config)
+        journals = CreationJournalStore(self.config)
+        task = tasks.read(request.task_id)
+        before_task = task_digest(task)
+        before_journal = journals.digest(journals.read(request.task_id))
+
+        with self.assertRaisesRegex(ValueError, "unsupported harness"):
+            recover_task(
+                self.config, task, tasks=tasks, journals=journals,
+                adopt=True, harness="bad harness", role="implementer", goal="Task one",
+            )
+        self.assertEqual(task_digest(tasks.read(request.task_id)), before_task)
+        self.assertEqual(journals.digest(journals.read(request.task_id)), before_journal)
+
+        with self.assertRaisesRegex(ValueError, "exactly match"):
+            recover_task(
+                self.config, task, tasks=tasks, journals=journals,
+                adopt=True, harness="codex", role="implementer", goal="different",
+            )
+        self.assertEqual(task_digest(tasks.read(request.task_id)), before_task)
+        self.assertEqual(journals.digest(journals.read(request.task_id)), before_journal)
+
+    def test_recovery_adoption_resumes_after_every_forward_durable_boundary(self) -> None:
+        intents = __import__(
+            "lib.control.jj", fromlist=["ColocationIntentStore"],
+        ).ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+
+        class UnprovableDuringStart(JjAdapter):
+            def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                raise JjError("synthetic post-add proof interruption")
+
+        boundaries = (
+            "sidecar:temp-written",
+            "sidecar:renamed",
+            "adoption:intent",
+            "adoption:context-owned:",
+            "adoption:context-provisioned",
+            "adoption:ready-for-launch",
+        )
+        for index, boundary in enumerate(boundaries):
+            with self.subTest(boundary=boundary):
+                request = self.request(f"adoption-resume-{index}")
+                with self.assertRaises(PreparationError):
+                    prepare_task_workspace(
+                        self.config, request, jj=UnprovableDuringStart(),
+                    )
+                fired = False
+
+                def interrupt(observed: str) -> None:
+                    nonlocal fired
+                    if not fired and (
+                        observed == boundary
+                        or (boundary.endswith(":") and observed.startswith(boundary))
+                    ):
+                        fired = True
+                        raise RuntimeError(f"interrupted at {observed}")
+
+                with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                    adopt_preserved_task_workspace(
+                        self.config, request.task_id, harness="codex",
+                        role="implementer", goal="Task one",
+                        failure_injector=interrupt,
+                    )
+                self.assertTrue(fired)
+
+                resumed = adopt_preserved_task_workspace(
+                    self.config, request.task_id, harness="codex",
+                    role="implementer", goal="Task one",
+                )
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                self.assertEqual(resumed["lifecycle"], "creating")
+                self.assertEqual(journal["phase"], "ready-for-launch")
+                self.assertEqual(journal["adoption"]["state"], "ready-for-launch")
+
+    def test_recovery_adoption_mismatch_matrix_preserves_retained_bytes_and_registration(self) -> None:
+        intents = __import__(
+            "lib.control.jj", fromlist=["ColocationIntentStore"],
+        ).ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+
+        class UnprovableDuringStart(JjAdapter):
+            def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                raise JjError("synthetic post-add proof interruption")
+
+        cases = ("foreign-content", "public-root", "operation-ancestry")
+        for index, case in enumerate(cases):
+            with self.subTest(case=case):
+                request = self.request(f"adoption-refuse-{index}")
+                with self.assertRaises(PreparationError):
+                    prepare_task_workspace(
+                        self.config, request, jj=UnprovableDuringStart(),
+                    )
+                journal_store = CreationJournalStore(self.config)
+                journal = journal_store.read(request.task_id)
+                workspace = Path(journal["workspace"]["path"])
+                adapter: JjAdapter = JjAdapter()
+                if case == "foreign-content":
+                    (workspace / "foreign.ignored").write_bytes(b"foreign bytes\n")
+                elif case == "public-root":
+                    workspace.chmod(0o755)
+                else:
+                    class RefusingOperationAdapter(JjAdapter):
+                        def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                            raise JjError("operation ancestry mismatch")
+                    adapter = RefusingOperationAdapter()
+                task_path = self.config.tasks_dir / f"{request.task_id}.json"
+                journal_path = journal_store.path(request.task_id)
+                if case != "public-root":
+                    self.assertEqual(stat.S_IMODE(workspace.stat().st_mode), 0o700)
+                before_task = task_path.read_bytes()
+                before_journal = journal_path.read_bytes()
+                before_workspace = self.workspace_bytes(workspace)
+                before_registrations = JjAdapter().workspace_identities(self.source)
+
+                with mock.patch.object(
+                    JjAdapter, "forget_workspace",
+                    side_effect=AssertionError("refusal must never forget"),
+                ), self.assertRaises(PreparationError):
+                    adopt_preserved_task_workspace(
+                        self.config, request.task_id, harness="codex",
+                        role="implementer", goal="Task one", jj=adapter,
+                    )
+
+                self.assertEqual(task_path.read_bytes(), before_task)
+                self.assertEqual(journal_path.read_bytes(), before_journal)
+                self.assertEqual(self.workspace_bytes(workspace), before_workspace)
+                self.assertEqual(
+                    JjAdapter().workspace_identities(self.source), before_registrations,
+                )
+
+    def test_distinct_task_can_start_while_retained_candidate_stays_exact(self) -> None:
+        class UnprovableDuringStart(JjAdapter):
+            def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                raise JjError("synthetic post-add proof interruption")
+
+        retained_request = self.request("retained-old")
+        with self.assertRaises(PreparationError):
+            prepare_task_workspace(
+                self.config, retained_request, jj=UnprovableDuringStart(),
+            )
+        tasks = TaskStore(self.config)
+        journals = CreationJournalStore(self.config)
+        retained = journals.read(retained_request.task_id)
+        retained_workspace = Path(retained["workspace"]["path"])
+        before_task = task_digest(tasks.read(retained_request.task_id))
+        before_journal = journals.digest(retained)
+        before_workspace = self.workspace_bytes(retained_workspace)
+        retained_registration = JjAdapter().workspace_identities(self.source)[
+            retained["workspace"]["name"]
+        ]
+
+        fresh = prepare_task_workspace(self.config, self.request("retained-new"))
+
+        self.assertEqual(fresh["lifecycle"], "creating")
+        self.assertEqual(task_digest(tasks.read(retained_request.task_id)), before_task)
+        self.assertEqual(
+            journals.digest(journals.read(retained_request.task_id)), before_journal,
+        )
+        self.assertEqual(self.workspace_bytes(retained_workspace), before_workspace)
+        self.assertEqual(
+            JjAdapter().workspace_identities(self.source)[retained["workspace"]["name"]],
+            retained_registration,
+        )
+
+    def test_transaction_lock_domains_are_distinct_and_serialize_same_identity(self) -> None:
+        coordinator = TransactionCoordinator(self.config)
+        identity = str(uuid.uuid4())
+        keyed = {
+            domain: coordinator.lock_key(domain, identity)
+            for domain in ("task", "source", "repository")
+        }
+        keys = set(keyed.values())
+        self.assertEqual(len(keys), 3)
+        self.assertTrue(all(keyed[domain].startswith(f"{domain}-") for domain in keyed))
+        with coordinator.source_lock(self.source), self.assertRaisesRegex(
+            StoreError, "task -> source -> repository",
+        ):
+            with coordinator.task_lock(identity):
+                self.fail("lock inversion must be refused before acquisition")
+
+        for domain, value in (
+            ("source", str(self.source)),
+            ("repository", "repo:" + "a" * 64),
+        ):
+            with self.subTest(domain=domain):
+                entered = threading.Event()
+                release = threading.Event()
+                second_entered = threading.Event()
+
+                def first() -> None:
+                    with coordinator.lock(domain, value):
+                        entered.set()
+                        release.wait(5)
+
+                def second() -> None:
+                    entered.wait(5)
+                    with TransactionCoordinator(self.config).lock(domain, value):
+                        second_entered.set()
+
+                first_thread = threading.Thread(target=first)
+                second_thread = threading.Thread(target=second)
+                first_thread.start()
+                second_thread.start()
+                self.assertTrue(entered.wait(5))
+                self.assertFalse(second_entered.wait(0.1))
+                release.set()
+                first_thread.join(5)
+                second_thread.join(5)
+                self.assertFalse(first_thread.is_alive())
+                self.assertFalse(second_thread.is_alive())
+                self.assertTrue(second_entered.is_set())
+
+    def test_actual_start_and_adoption_separate_caller_task_from_repository_lock(self) -> None:
+        class UnprovableDuringStart(JjAdapter):
+            def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                raise JjError("synthetic post-add proof interruption")
+
+        request = self.request("retained-lock-order")
+        intents = __import__(
+            "lib.control.jj", fromlist=["ColocationIntentStore"],
+        ).ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+        with self.assertRaises(PreparationError):
+            prepare_task_workspace(self.config, request, jj=UnprovableDuringStart())
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        repository_lock_id = prepare_module._repository_lock_id(
+            journal["repository"]["identity"],
+        )
+        context = multiprocessing.get_context("fork")
+        adoption_source_held = context.Event()
+        start_waiting_source = context.Event()
+        errors = context.Queue()
+        outcomes = context.Queue()
+
+        def normal_start() -> None:
+            try:
+                from lib.control import cli as cli_module
+                from lib.control.jj import ColocationIntentStore
+
+                original = ColocationIntentStore.mutation_lock
+
+                @contextlib.contextmanager
+                def observed_source_wait(inner_self, source):
+                    start_waiting_source.set()
+                    with original(inner_self, source):
+                        yield
+
+                with mock.patch.object(
+                    ColocationIntentStore, "mutation_lock", observed_source_wait,
+                ), mock.patch.object(
+                    cli_module.shutil, "which", return_value="/usr/bin/codex",
+                ), mock.patch.object(
+                    cli_module.harness_api, "launch_argv", return_value=["codex"],
+                ), mock.patch.object(
+                    cli_module, "_repo_argument",
+                    return_value=cli_module.RepositorySelection(
+                        self.source, plain_git=False,
+                    ),
+                ), mock.patch.object(
+                    cli_module, "_ensure_colocated", return_value=(),
+                ), mock.patch.object(
+                    cli_module, "_start_new_task",
+                    side_effect=ValueError("bounded lock-order test refusal"),
+                ):
+                    try:
+                        cli_module._start_command_inner([
+                            "--repo", str(self.source), "--task-id", repository_lock_id,
+                            "--harness", "codex", "--role", "implementer",
+                            "--goal", "Collision contender",
+                        ], self.env)
+                    except ValueError as exc:
+                        if str(exc) != "bounded lock-order test refusal":
+                            raise
+                outcomes.put("start-refused")
+            except BaseException as exc:
+                errors.put(f"start: {type(exc).__name__}: {exc}")
+
+        def recovery_adoption() -> None:
+            try:
+                from lib.control.jj import ColocationIntentStore
+
+                original = ColocationIntentStore.mutation_lock
+
+                @contextlib.contextmanager
+                def observed_source_lock(inner_self, source):
+                    with original(inner_self, source):
+                        adoption_source_held.set()
+                        if not start_waiting_source.wait(5):
+                            raise RuntimeError("start never reached the source-lock boundary")
+                        yield
+
+                with mock.patch.object(
+                    ColocationIntentStore, "mutation_lock", observed_source_lock,
+                ):
+                    adopt_preserved_task_workspace(
+                        self.config, request.task_id, harness="codex",
+                        role="implementer", goal="Task one",
+                    )
+                outcomes.put("adoption-complete")
+            except BaseException as exc:
+                errors.put(f"adoption: {type(exc).__name__}: {exc}")
+
+        adopter = context.Process(target=recovery_adoption)
+        adopter.start()
+        self.assertTrue(adoption_source_held.wait(5))
+        starter = context.Process(target=normal_start)
+        starter.start()
+        starter.join(15)
+        adopter.join(15)
+        if starter.is_alive():
+            starter.terminate()
+        if adopter.is_alive():
+            adopter.terminate()
+        starter.join(5)
+        adopter.join(5)
+
+        self.assertFalse(starter.is_alive(), "normal start lock contender deadlocked")
+        self.assertFalse(adopter.is_alive(), "adoption lock contender deadlocked")
+        observed_errors = []
+        while not errors.empty():
+            observed_errors.append(errors.get())
+        self.assertEqual(observed_errors, [])
+        observed_outcomes = []
+        while not outcomes.empty():
+            observed_outcomes.append(outcomes.get())
+        self.assertCountEqual(
+            observed_outcomes, ["start-refused", "adoption-complete"],
+        )
+        with self.assertRaisesRegex(StoreError, f"task not found: {repository_lock_id}"):
+            TaskStore(self.config).read(repository_lock_id)
+        with self.assertRaisesRegex(
+            JournalError, f"creation journal not found: {repository_lock_id}",
+        ):
+            CreationJournalStore(self.config).read(repository_lock_id)
+        self.assertEqual(
+            TaskStore(self.config).read(request.task_id)["lifecycle"], "creating",
+        )
+        self.assertEqual(
+            CreationJournalStore(self.config).read(request.task_id)["phase"],
+            "ready-for-launch",
+        )
+
+    def test_sidecar_temp_and_rename_interruptions_retain_exact_workspace(self) -> None:
+        for index, boundary in enumerate(("sidecar:temp-written", "sidecar:renamed")):
+            with self.subTest(boundary=boundary):
+                request = self.request(f"sidecar-{index}")
+
+                def interrupt(phase: str) -> None:
+                    if phase == boundary:
+                        raise RuntimeError(boundary)
+
+                with self.assertRaisesRegex(PreparationError, boundary):
+                    prepare_task_workspace(
+                        self.config, request, failure_injector=interrupt,
+                    )
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                self.assertEqual(journal["phase"], "preserved")
+                self.assertTrue(Path(journal["workspace"]["path"]).exists())
+                self.assertIn(
+                    journal["workspace"]["name"],
+                    JjAdapter().workspace_identities(self.source),
+                )
+
+    def test_recovery_reads_and_rolls_back_a_v1_inline_ownership_journal(self) -> None:
+        request = self.request("legacy-v1")
+        prepared = prepare_task_workspace(self.config, request)
+        store = CreationJournalStore(self.config)
+        journal = store.read(request.task_id)
+        workspace = Path(prepared["jj"]["workspace_path"])
+        expected = JjAdapter().expected_materialization(
+            self.source, prepared["jj"]["base_commit_id"],
+        )
+        actual, _root = _capture_tree(workspace, journal["workspace"]["root_fact"])
+        journal["contract"] = "asha.control-creation-journal.v1"
+        journal["expected_materialization"] = expected
+        journal["materialized_owned"] = _compact_materialized_ownership(actual, expected)
+        journal.pop("materialization_plan")
+        journal.pop("materialization_ownership")
+        journal["jj"].pop("workspace_add_operation_id")
+        journal["jj"].pop("checkout_operation_id")
+        raw = json.dumps(
+            journal, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode() + b"\n"
+        store.path(request.task_id).write_bytes(raw)
+        store.path(request.task_id).chmod(0o600)
+
+        rollback_prelaunch(self.config, request.task_id)
+
+        recovered = store.read(request.task_id)
+        self.assertEqual(recovered["contract"], "asha.control-creation-journal.v1")
+        self.assertEqual(recovered["phase"], "rolled-back")
+        self.assertFalse(workspace.exists())
+
+    def test_corrupt_or_replaced_v2_sidecar_preserves_before_forget(self) -> None:
+        for index, replace in enumerate((False, True)):
+            with self.subTest(replace=replace):
+                request = self.request(f"sidecar-corrupt-{index}")
+                prepared = prepare_task_workspace(self.config, request)
+                store = CreationJournalStore(self.config)
+                journal = store.read(request.task_id)
+                sidecar = Path(
+                    journal["materialization_ownership"]["sidecar"]["path"],
+                )
+                if replace:
+                    replacement = sidecar.with_suffix(".replacement")
+                    replacement.write_bytes(sidecar.read_bytes())
+                    replacement.chmod(0o600)
+                    os.replace(replacement, sidecar)
+                else:
+                    sidecar.write_bytes(sidecar.read_bytes()[:-1])
+
+                with self.assertRaisesRegex(PreparationError, "retained"):
+                    rollback_prelaunch(self.config, request.task_id)
+
+                recovered = store.read(request.task_id)
+                self.assertEqual(recovered["phase"], "preserved")
+                self.assertTrue(Path(prepared["jj"]["workspace_path"]).exists())
+                self.assertIn(
+                    recovered["workspace"]["name"],
+                    JjAdapter().workspace_identities(self.source),
+                )
+
+    def test_v2_recovery_never_forgets_a_same_name_replacement_registration(self) -> None:
+        request = self.request("replacement-registration")
+        prepared = prepare_task_workspace(self.config, request)
+        foreign = self.root / "foreign-registration"
+
+        class ReplacingAdapter(JjAdapter):
+            production_forget_calls = 0
+            replacement: WorkspaceIdentity | None = None
+
+            def inspect_workspace(
+                inner_self, destination, expected_name, **kwargs,
+            ):
+                authenticated = JjAdapter.inspect_workspace(
+                    inner_self, destination, expected_name, **kwargs,
+                )
+                JjAdapter.forget_workspace(
+                    inner_self, self.source, prepared["jj"]["workspace_name"],
+                )
+                operation = JjAdapter.pin_operation(inner_self, self.source)
+                JjAdapter.add_workspace(
+                    inner_self, self.source, foreign,
+                    prepared["jj"]["workspace_name"],
+                    prepared["jj"]["base_commit_id"],
+                    "Foreign replacement", operation,
+                )
+                foreign.chmod(0o700)
+                inner_self.replacement = JjAdapter.inspect_workspace(
+                    inner_self, foreign, prepared["jj"]["workspace_name"],
+                )
+                return authenticated
+
+            def forget_workspace(inner_self, source, name):
+                inner_self.production_forget_calls += 1
+                return JjAdapter.forget_workspace(inner_self, source, name)
+
+        adapter = ReplacingAdapter()
+        with self.assertRaisesRegex(PreparationError, "retained"):
+            rollback_prelaunch(self.config, request.task_id, jj=adapter)
+
+        self.assertEqual(adapter.production_forget_calls, 0)
+        self.assertIsNotNone(adapter.replacement)
+        self.assertEqual(
+            JjAdapter().workspace_identities(self.source)[
+                prepared["jj"]["workspace_name"]
+            ],
+            (adapter.replacement.change_id, adapter.replacement.commit_id),
+        )
+        self.assertTrue(foreign.is_dir())
+
+    def test_partial_add_retention_requires_truthful_manual_cleanup(self) -> None:
+        class PartialAddAdapter(JjAdapter):
+            def add_workspace(inner_self, source, destination, name, base, message, operation):
+                super().add_workspace(source, destination, name, base, message, operation)
+                raise JjError("injected after partial add")
+
+        request = self.request("partial-manual-cleanup")
+        with self.assertRaises(PreparationError) as caught:
+            prepare_task_workspace(self.config, request, jj=PartialAddAdapter())
+
+        message = str(caught.exception)
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        self.assertIn("manual inspection and cleanup required", message)
+        self.assertIn(f"jj -R {self.source} workspace list", message)
+        self.assertIn(journal["workspace"]["path"], message)
+        self.assertNotIn("task prune", message)
+        self.assertIsNotNone(journal["workspace"]["root_fact"])
+        self.assertIsNotNone(journal["materialization_ownership"])
+        self.assertIsNotNone(journal["jj"]["workspace_add_operation_id"])
+        self.assertIsNotNone(journal["jj"]["checkout_operation_id"])
+        self.assertTrue(journal["workspace"]["created_parents"])
+        self.assertIn(
+            journal["workspace"]["name"], JjAdapter().workspace_identities(self.source),
+        )
+
+    def test_v2_recovery_interruptions_preserve_task_and_registration(self) -> None:
+        boundaries = (
+            "preflight", "enumeration", "path-evidence", "inspection", "comparison",
+            "mutation-evidence",
+        )
+        for index, boundary in enumerate(boundaries):
+            with self.subTest(boundary=boundary):
+                request = self.request(f"interrupt-retention-{index}")
+                prepared = prepare_task_workspace(self.config, request)
+                workspace = Path(prepared["jj"]["workspace_path"])
+                actual = JjAdapter().inspect_workspace(
+                    workspace, prepared["jj"]["workspace_name"],
+                )
+
+                class InterruptedAdapter(JjAdapter):
+                    def preflight(inner_self, repository):
+                        if boundary == "preflight":
+                            raise KeyboardInterrupt
+                        return super().preflight(repository)
+
+                    def workspace_identities(inner_self, repository):
+                        if boundary == "enumeration":
+                            raise KeyboardInterrupt
+                        return super().workspace_identities(repository)
+
+                    def inspect_workspace(inner_self, destination, expected_name, **kwargs):
+                        if boundary == "inspection":
+                            raise KeyboardInterrupt
+                        if boundary == "comparison":
+                            class InterruptedIdentity:
+                                @property
+                                def parent_commit_ids(self):
+                                    raise KeyboardInterrupt
+
+                                description = actual.description
+                                change_id = actual.change_id
+                                commit_id = actual.commit_id
+                            return InterruptedIdentity()
+                        return super().inspect_workspace(
+                            destination, expected_name, **kwargs,
+                        )
+
+                fired = False
+                real_exists = Path.exists
+                real_is_dir = Path.is_dir
+
+                def interrupted_exists(path):
+                    nonlocal fired
+                    if boundary == "mutation-evidence" and path == workspace and not fired:
+                        fired = True
+                        raise KeyboardInterrupt
+                    return real_exists(path)
+
+                def interrupted_is_dir(path):
+                    nonlocal fired
+                    if boundary == "path-evidence" and path == workspace and not fired:
+                        fired = True
+                        raise KeyboardInterrupt
+                    return real_is_dir(path)
+
+                adapter = InterruptedAdapter()
+                exists_patch = mock.patch.object(Path, "exists", new=interrupted_exists)
+                is_dir_patch = mock.patch.object(Path, "is_dir", new=interrupted_is_dir)
+                with exists_patch, is_dir_patch, self.assertRaises(KeyboardInterrupt):
+                    rollback_prelaunch(self.config, request.task_id, jj=adapter)
+
+                self.assertEqual(
+                    CreationJournalStore(self.config).read(request.task_id)["phase"],
+                    "preserved",
+                )
+                self.assertEqual(
+                    TaskStore(self.config).read(request.task_id)["lifecycle"], "failed",
+                )
+                self.assertIn(
+                    prepared["jj"]["workspace_name"],
+                    JjAdapter().workspace_identities(self.source),
+                )
+
+    def test_original_baseexception_survives_preservation_persistence_failures(self) -> None:
+        cases = (
+            ("keyboard-once", KeyboardInterrupt("original-keyboard-once"), False),
+            ("keyboard-always", KeyboardInterrupt("original-keyboard-always"), True),
+            ("system-exit-once", SystemExit(71), False),
+            ("system-exit-always", SystemExit(72), True),
+        )
+        original_save = CreationJournalStore.save
+        for slug, interruption, persistent in cases:
+            with self.subTest(slug=slug):
+                request = self.request(slug)
+                prepared = prepare_task_workspace(self.config, request)
+
+                class InterruptingAdapter(JjAdapter):
+                    def workspace_identities(inner_self, repository):
+                        raise interruption
+
+                attempts = 0
+
+                def fail_preserved_save(store, journal, *, expected_phase=None):
+                    nonlocal attempts
+                    if journal["phase"] == "preserved":
+                        attempts += 1
+                        if persistent or attempts == 1:
+                            raise JournalError("injected preservation persistence failure")
+                    return original_save(store, journal, expected_phase=expected_phase)
+
+                with mock.patch.object(
+                    CreationJournalStore, "save", new=fail_preserved_save,
+                ):
+                    try:
+                        rollback_prelaunch(
+                            self.config, request.task_id, jj=InterruptingAdapter(),
+                        )
+                    except BaseException as raised:
+                        self.assertIs(raised, interruption)
+                        notes = getattr(raised, "__notes__", [])
+                        if persistent:
+                            self.assertEqual(len(notes), 1)
+                            self.assertIn("could not confirm", notes[0])
+                        else:
+                            self.assertEqual(notes, [])
+                    else:
+                        self.fail("the original interruption was not propagated")
+
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                task = TaskStore(self.config).read(request.task_id)
+                if persistent:
+                    self.assertNotEqual(journal["phase"], "preserved")
+                    self.assertNotEqual(task["lifecycle"], "failed")
+                else:
+                    self.assertEqual(journal["phase"], "preserved")
+                    self.assertEqual(task["lifecycle"], "failed")
+                self.assertIn(
+                    prepared["jj"]["workspace_name"],
+                    JjAdapter().workspace_identities(self.source),
+                )
+
+    def test_recover_and_cli_preserve_baseexception_exit_semantics_when_storage_fails(self) -> None:
+        from lib.control.cli import main as control_main
+
+        cli_env = {
+            "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
+            "XDG_STATE_HOME": str(self.root / "state"),
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+        }
+        cases = (
+            ("recover-keyboard", "recover", KeyboardInterrupt("recover-keyboard"), True),
+            ("recover-system-exit", "recover", SystemExit(73), False),
+            ("cli-keyboard", "cli", KeyboardInterrupt("cli-keyboard"), False),
+            ("cli-system-exit", "cli", SystemExit(74), True),
+        )
+        original_save = CreationJournalStore.save
+        for slug, route, interruption, persistent in cases:
+            with self.subTest(slug=slug):
+                request = self.request(slug)
+                prepared = prepare_task_workspace(self.config, request)
+
+                class InterruptingAdapter(JjAdapter):
+                    def workspace_identities(inner_self, repository):
+                        raise interruption
+
+                attempts = 0
+
+                def fail_preserved_save(store, journal, *, expected_phase=None):
+                    nonlocal attempts
+                    if journal["phase"] == "preserved":
+                        attempts += 1
+                        if persistent or attempts == 1:
+                            raise JournalError("injected preservation persistence failure")
+                    return original_save(store, journal, expected_phase=expected_phase)
+
+                with mock.patch.object(
+                    CreationJournalStore, "save", new=fail_preserved_save,
+                ):
+                    if route == "recover":
+                        try:
+                            recover_task(
+                                self.config, prepared,
+                                tasks=TaskStore(self.config),
+                                journals=CreationJournalStore(self.config),
+                                tmux=mock.Mock(), jj=InterruptingAdapter(),
+                            )
+                        except BaseException as raised:
+                            self.assertIs(raised, interruption)
+                        else:
+                            self.fail("explicit recovery replaced the original interruption")
+                    elif isinstance(interruption, KeyboardInterrupt):
+                        stderr = io.StringIO()
+                        with mock.patch(
+                            "lib.control.cli.JjAdapter", return_value=InterruptingAdapter(),
+                        ), contextlib.redirect_stderr(stderr):
+                            self.assertEqual(
+                                control_main(["task", "recover", request.task_id], env=cli_env),
+                                130,
+                            )
+                        self.assertIn("interrupted", stderr.getvalue())
+                    else:
+                        with mock.patch(
+                            "lib.control.cli.JjAdapter", return_value=InterruptingAdapter(),
+                        ):
+                            try:
+                                control_main(["task", "recover", request.task_id], env=cli_env)
+                            except BaseException as raised:
+                                self.assertIs(raised, interruption)
+                            else:
+                                self.fail("CLI replaced the original SystemExit")
+
+    def test_ordinary_recovery_persistence_message_matches_final_store_outcome(self) -> None:
+        original_save = CreationJournalStore.save
+        for persistent in (False, True):
+            with self.subTest(persistent=persistent):
+                request = self.request(
+                    "ordinary-persistent" if persistent else "ordinary-once",
+                )
+                prepare_task_workspace(self.config, request)
+
+                class FailingAdapter(JjAdapter):
+                    def workspace_identities(inner_self, repository):
+                        raise JjError("injected ordinary recovery failure")
+
+                attempts = 0
+
+                def fail_preserved_save(store, journal, *, expected_phase=None):
+                    nonlocal attempts
+                    if journal["phase"] == "preserved":
+                        attempts += 1
+                        if persistent or attempts == 1:
+                            raise JournalError("injected preservation persistence failure")
+                    return original_save(store, journal, expected_phase=expected_phase)
+
+                with mock.patch.object(
+                    CreationJournalStore, "save", new=fail_preserved_save,
+                ), self.assertRaises(PreparationError) as caught:
+                    rollback_prelaunch(self.config, request.task_id, jj=FailingAdapter())
+
+                message = str(caught.exception)
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                task = TaskStore(self.config).read(request.task_id)
+                if persistent:
+                    self.assertIn(
+                        "durable preserved/failed state is not confirmed", message,
+                    )
+                    self.assertNotIn("v2 automatic recovery retained", message)
+                    self.assertNotEqual(journal["phase"], "preserved")
+                    self.assertNotEqual(task["lifecycle"], "failed")
+                else:
+                    self.assertIn("v2 automatic recovery retained", message)
+                    self.assertNotIn("not confirmed", message)
+                    self.assertEqual(journal["phase"], "preserved")
+                    self.assertEqual(task["lifecycle"], "failed")
+
+    def test_keyboard_interrupt_after_workspace_add_retains_and_propagates(self) -> None:
         request = self.request("keyboard-interrupt")
 
         def interrupt(phase: str) -> None:
@@ -937,13 +1898,14 @@ class RealJjPreparationTests(unittest.TestCase):
         task = TaskStore(self.config).read(request.task_id)
         journal = CreationJournalStore(self.config).read(request.task_id)
         self.assertEqual(task["lifecycle"], "failed")
-        self.assertEqual(journal["phase"], "rolled-back")
-        self.assertNotIn(
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertTrue(Path(journal["workspace"]["path"]).exists())
+        self.assertIn(
             journal["workspace"]["name"],
             JjAdapter().workspace_identities(self.source),
         )
 
-    def test_recover_ready_for_launch_rolls_back_and_doctor_clears_transaction(self) -> None:
+    def test_recover_ready_for_launch_retains_workspace_as_terminal_recovery(self) -> None:
         request = self.request("recover-ready")
         prepared = prepare_task_workspace(self.config, request)
         before = run_doctor(
@@ -957,28 +1919,26 @@ class RealJjPreparationTests(unittest.TestCase):
             journals=CreationJournalStore(self.config), jj=JjAdapter(),
         )
 
-        self.assertEqual(result["message"], "rolled back")
+        self.assertIn("manual inspection and cleanup required", result["message"])
         self.assertEqual(result["task"]["lifecycle"], "failed")
-        self.assertEqual(result["journal"]["phase"], "rolled-back")
+        self.assertEqual(result["journal"]["phase"], "preserved")
+        self.assertTrue(Path(prepared["jj"]["workspace_path"]).exists())
         after = run_doctor(
             self.config, probes={"transactions": DEFAULT_PROBES["transactions"]},
         )["probes"][0]
-        self.assertEqual(after["outcome"], "match")
+        self.assertEqual(after["outcome"], "mismatch")
+        self.assertIn("manual inspection only", after["detail"])
+        self.assertNotIn("--adopt --yes", after["detail"])
 
-    def test_rollback_forgets_from_source_when_destination_jj_disappears(self) -> None:
+    def test_rollback_retains_registration_when_destination_jj_disappears(self) -> None:
         request = self.request("missing-destination-jj")
         prepared = prepare_task_workspace(self.config, request)
         destination = Path(prepared["jj"]["workspace_path"])
 
-        def remove_destination_jj(phase: str) -> None:
-            if phase == "before-forget":
-                shutil.rmtree(destination / ".jj")
-
+        shutil.rmtree(destination / ".jj")
         with self.assertRaises(PreparationError):
-            rollback_prelaunch(
-                self.config, request.task_id, failure_injector=remove_destination_jj,
-            )
-        self.assertNotIn(
+            rollback_prelaunch(self.config, request.task_id)
+        self.assertIn(
             prepared["jj"]["workspace_name"],
             JjAdapter().workspace_identities(self.source),
         )
@@ -989,10 +1949,12 @@ class RealJjPreparationTests(unittest.TestCase):
         workspace = Path(result["jj"]["workspace_path"])
         (workspace / "foreign.ignored").write_text("user data", encoding="utf-8")
         from lib.control.prepare import rollback_prelaunch
-        with self.assertRaisesRegex(PreparationError, "preserved"):
+        with self.assertRaisesRegex(PreparationError, "retained"):
             rollback_prelaunch(self.config, request.task_id)
         self.assertTrue((workspace / "foreign.ignored").exists())
-        self.assertIn(result["jj"]["workspace_name"], JjAdapter().workspace_identities(self.source))
+        self.assertIn(
+            result["jj"]["workspace_name"], JjAdapter().workspace_identities(self.source),
+        )
 
     def test_same_change_different_working_commit_preserves_before_forget_or_removal(self) -> None:
         request = self.request("commit-evolved")
@@ -1021,7 +1983,7 @@ class RealJjPreparationTests(unittest.TestCase):
                 raise AssertionError("forget must not be reached for commit drift")
 
         adapter = EvolvedMetadataAdapter()
-        with self.assertRaisesRegex(PreparationError, "preserved"):
+        with self.assertRaisesRegex(PreparationError, "retained"):
             rollback_prelaunch(self.config, request.task_id, jj=adapter)
 
         journal = CreationJournalStore(self.config).read(request.task_id)
@@ -1073,7 +2035,7 @@ class RealJjPreparationTests(unittest.TestCase):
                     )
                 self.assertEqual(before, self.source_facts())
 
-    def test_every_prelaunch_durable_phase_rolls_back_to_terminal_recovery_facts(self) -> None:
+    def test_every_prelaunch_durable_phase_is_clean_before_mutation_or_retained_after(self) -> None:
         phases = (
             "intent", "task-recorded", "parent-intent", "parent-ready",
             "workspace-add-intent", "workspace-added", "workspace-recorded",
@@ -1092,15 +2054,39 @@ class RealJjPreparationTests(unittest.TestCase):
                     prepare_task_workspace(self.config, request, failure_injector=inject)
 
                 journal = CreationJournalStore(self.config).read(request.task_id)
-                self.assertEqual(journal["phase"], "rolled-back")
-                self.assertIn(
-                    journal["jj"]["registration_state"], {"absent", "absent-after-forget"},
+                expected_phase = (
+                    "rolled-back"
+                    if durable_phase in {"intent", "task-recorded"}
+                    else "preserved"
                 )
-                self.assertTrue(journal["removal"]["root_removed"])
-                self.assertFalse(Path(journal["workspace"]["path"]).exists())
-                self.assertNotIn(
-                    journal["workspace"]["name"], JjAdapter().workspace_identities(self.source),
+                self.assertEqual(journal["phase"], expected_phase)
+                expected_registration_state = (
+                    "present"
+                    if durable_phase in {
+                        "workspace-added", "workspace-recorded", "context-intent", "context-provisioning",
+                        "context-provisioned", "task-identity-intent",
+                        "task-identity-recorded", "ready-for-launch",
+                    }
+                    else "add-intent" if durable_phase == "workspace-add-intent"
+                    else "absent"
                 )
+                self.assertEqual(
+                    journal["jj"]["registration_state"], expected_registration_state,
+                )
+                mutation_was_completed = durable_phase in {
+                    "workspace-added", "workspace-recorded", "context-intent",
+                    "context-provisioning", "context-provisioned",
+                    "task-identity-intent", "task-identity-recorded",
+                    "ready-for-launch",
+                }
+                self.assertEqual(
+                    Path(journal["workspace"]["path"]).exists(), mutation_was_completed,
+                )
+                registrations = JjAdapter().workspace_identities(self.source)
+                if mutation_was_completed:
+                    self.assertIn(journal["workspace"]["name"], registrations)
+                else:
+                    self.assertNotIn(journal["workspace"]["name"], registrations)
                 if durable_phase == "intent":
                     with self.assertRaisesRegex(Exception, "not found"):
                         TaskStore(self.config).read(request.task_id)
@@ -1125,9 +2111,9 @@ class RealJjPreparationTests(unittest.TestCase):
                 prepare_task_workspace(self.config, request)
 
         journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "rolled-back")
-        self.assertEqual(journal["jj"]["registration_state"], "absent-after-forget")
-        self.assertFalse(Path(journal["workspace"]["path"]).exists())
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertEqual(journal["jj"]["registration_state"], "present")
+        self.assertTrue(Path(journal["workspace"]["path"]).exists())
         self.assertEqual(TaskStore(self.config).read(request.task_id)["lifecycle"], "failed")
 
     def test_indeterminate_failed_task_replace_resumes_rollback_after_restart(self) -> None:
@@ -1149,12 +2135,13 @@ class RealJjPreparationTests(unittest.TestCase):
                 rollback_prelaunch(self.config, request.task_id)
 
         self.assertEqual(TaskStore(self.config).read(request.task_id)["lifecycle"], "failed")
-        rollback_prelaunch(self.config, request.task_id)
+        with self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
+            rollback_prelaunch(self.config, request.task_id)
         journal = CreationJournalStore(self.config).read(request.task_id)
         task = TaskStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "rolled-back")
+        self.assertEqual(journal["phase"], "preserved")
         self.assertEqual(journal["task"]["digest"], task_digest(task))
-        self.assertFalse(Path(prepared["jj"]["workspace_path"]).exists())
+        self.assertTrue(Path(prepared["jj"]["workspace_path"]).exists())
 
     def test_indeterminate_preserved_task_replace_reconciles_exact_failure_on_restart(self) -> None:
         request = self.request("preserved-failed-replace")
@@ -1176,7 +2163,7 @@ class RealJjPreparationTests(unittest.TestCase):
             with self.assertRaises(PreparationError):
                 rollback_prelaunch(self.config, request.task_id)
 
-        with self.assertRaisesRegex(PreparationError, "preserved"):
+        with self.assertRaisesRegex(PreparationError, "retained"):
             rollback_prelaunch(self.config, request.task_id)
         journal = CreationJournalStore(self.config).read(request.task_id)
         task = TaskStore(self.config).read(request.task_id)
@@ -1208,8 +2195,8 @@ class RealJjPreparationTests(unittest.TestCase):
                 rollback_prelaunch(self.config, request.task_id)
 
         self.assertEqual(CreationJournalStore(self.config).read(request.task_id)["phase"], "preserved")
-        self.assertEqual(TaskStore(self.config).read(request.task_id)["lifecycle"], "creating")
-        with self.assertRaisesRegex(PreparationError, "preserved"):
+        self.assertEqual(TaskStore(self.config).read(request.task_id)["lifecycle"], "failed")
+        with self.assertRaisesRegex(PreparationError, "retained"):
             rollback_prelaunch(self.config, request.task_id)
 
         journal = CreationJournalStore(self.config).read(request.task_id)
@@ -1218,7 +2205,9 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertEqual(journal["task"]["digest"], task_digest(task))
         self.assertIsNotNone(journal["task"]["failure"])
         self.assertEqual((workspace / "foreign.ignored").read_text(), "user bytes")
-        self.assertIn(prepared["jj"]["workspace_name"], JjAdapter().workspace_identities(self.source))
+        self.assertIn(
+            prepared["jj"]["workspace_name"], JjAdapter().workspace_identities(self.source),
+        )
 
     def test_restart_after_preserved_phase_does_not_touch_conflicting_task_bytes(self) -> None:
         request = self.request("preserved-phase-conflict")
@@ -1256,9 +2245,11 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertEqual(task_digest(tasks.read(request.task_id)), conflicting_digest)
         journal = CreationJournalStore(self.config).read(request.task_id)
         self.assertEqual(journal["phase"], "preserved")
-        self.assertIsNone(journal["task"]["failure"])
+        self.assertIsNotNone(journal["task"]["failure"])
         self.assertEqual((workspace / "foreign.ignored").read_text(), "user bytes")
-        self.assertIn(prepared["jj"]["workspace_name"], JjAdapter().workspace_identities(self.source))
+        self.assertIn(
+            prepared["jj"]["workspace_name"], JjAdapter().workspace_identities(self.source),
+        )
 
     def test_foreign_ignored_file_created_before_add_returns_is_never_adopted(self) -> None:
         class InjectingAdapter(JjAdapter):
@@ -1321,9 +2312,10 @@ class RealJjPreparationTests(unittest.TestCase):
         journal = CreationJournalStore(config).read(request.task_id)
         self.assertEqual(len(journal["workspace"]["created_parents"]), 8)
         self.assertEqual(before, self.source_facts())
-        rollback_prelaunch(config, request.task_id)
-        self.assertEqual(list(anchor.iterdir()), [])
-        self.assertFalse(Path(prepared["jj"]["workspace_path"]).exists())
+        with self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
+            rollback_prelaunch(config, request.task_id)
+        self.assertTrue(list(anchor.iterdir()))
+        self.assertTrue(Path(prepared["jj"]["workspace_path"]).exists())
 
     def test_nine_missing_destination_ancestors_reject_before_all_mutation(self) -> None:
         anchor = self.root / "nine-parent-anchor"
@@ -1403,23 +2395,27 @@ class RealJjPreparationTests(unittest.TestCase):
 
         self.assertEqual(list(repository_parent.iterdir()), [])
 
-    def test_base_without_private_ignore_rules_fails_and_leaves_no_registered_workspace(self) -> None:
+    def test_base_without_private_ignore_rules_refuses_before_all_creation_state(self) -> None:
         before = self.source_facts()
+        before_registrations = JjAdapter().workspace_identities(self.source)
         request = PrepareRequest(
             repository=self.source, requested_base=self.no_ignore_git_commit,
             task_id=str(uuid.uuid4()), slug="base-no-ignore", label="Base no ignore",
         )
-        with self.assertRaises(PreparationError):
+        with self.assertRaisesRegex(PreparationError, "not positively ignored"):
             prepare_task_workspace(self.config, request)
         self.assertEqual(before, self.source_facts())
-        journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertNotEqual(journal["phase"], "ready-for-launch")
-        self.assertNotIn(journal["workspace"]["name"], JjAdapter().workspace_identities(self.source))
+        self.assertEqual(
+            before_registrations, JjAdapter().workspace_identities(self.source),
+        )
+        self.assertFalse(CreationJournalStore(self.config).path(request.task_id).exists())
+        self.assertFalse((self.config.tasks_dir / f"{request.task_id}.json").exists())
+        self.assertFalse(self.config.workspace_root.exists())
 
-    def test_thousand_file_revision_is_capacity_checked_before_mutation_and_prepares(self) -> None:
+    def test_more_than_v1_entry_limit_is_compact_and_prepares(self) -> None:
         bulk = self.source / "bulk"
         bulk.mkdir()
-        for index in range(1000):
+        for index in range(1100):
             (bulk / f"controller-capacity-boundary-file-{index:04d}.txt").write_text(
                 f"{index}\n", encoding="utf-8",
             )
@@ -1429,7 +2425,7 @@ class RealJjPreparationTests(unittest.TestCase):
         }
         subprocess.run(["git", "-C", str(self.source), "add", "bulk"], check=True, env=env)
         subprocess.run(
-            ["git", "-C", str(self.source), "commit", "-qm", "thousand files"],
+            ["git", "-C", str(self.source), "commit", "-qm", "large tree"],
             check=True, env=env,
         )
         base = subprocess.run(
@@ -1444,8 +2440,10 @@ class RealJjPreparationTests(unittest.TestCase):
             repository=self.source, requested_base=base, task_id=str(uuid.uuid4()),
             slug="thousand-files", label="Thousand files",
         )
-        expected = JjAdapter().expected_materialization(self.source, base)
-        self.assertGreaterEqual(len(expected), 1002)
+        plan = JjAdapter().materialization_plan(
+            self.source / ".git", base, exact_root=self.source,
+        )
+        self.assertGreater(plan.entry_count, 1024)
         before = self.source_facts()
 
         prepared = prepare_task_workspace(self.config, request)
@@ -1456,17 +2454,24 @@ class RealJjPreparationTests(unittest.TestCase):
             journal_path.stat().st_size,
             __import__("lib.control.transaction", fromlist=["MAX_JOURNAL_BYTES"]).MAX_JOURNAL_BYTES,
         )
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        self.assertEqual(journal["contract"], "asha.control-creation-journal.v2")
+        self.assertGreater(journal["materialization_plan"]["entry_count"], 1024)
+        self.assertNotIn("expected_materialization", journal)
+        sidecar = Path(journal["materialization_ownership"]["sidecar"]["path"])
+        self.assertEqual(stat.S_IMODE(sidecar.stat().st_mode), 0o600)
         self.assertTrue(Path(prepared["jj"]["workspace_path"]).is_dir())
 
     def test_unsupported_materialization_is_rejected_before_any_creation_mutation(self) -> None:
         class OversizedAdapter(JjAdapter):
             add_called = False
 
-            def expected_materialization(inner_self, git_root, base):
-                return {
-                    f"entry-{index:04d}": {"type": "directory"}
-                    for index in range(1025)
-                }
+            def materialization_plan(inner_self, git_root, base, *, exact_root):
+                entry = MaterializationEntry("entry", "040000", None, 0)
+                entries = (entry,) * (MAX_IMMUTABLE_TREE_ENTRIES + 1)
+                return MaterializationPlan(
+                    base, "a" * 64, entries, 0, len(entries), 0,
+                )
 
             def add_workspace(inner_self, *args):
                 inner_self.add_called = True
@@ -1484,28 +2489,22 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertFalse(self.config.workspace_root.exists())
 
     def test_serialized_capacity_overflow_is_rejected_before_any_creation_mutation(self) -> None:
-        class OversizedAdapter(JjAdapter):
-            add_called = False
-
-            def expected_materialization(inner_self, git_root, base):
-                return {"x" * (260 * 1024): {"type": "directory"}}
-
-            def add_workspace(inner_self, *args):
-                inner_self.add_called = True
-                return super().add_workspace(*args)
-
-        adapter = OversizedAdapter()
         request = self.request("unsupported-bytes")
+        context_item = type("ContextItem", (), {
+            "mode": 0o600, "sha256": "a" * 64, "content": b"",
+        })()
 
-        with self.assertRaisesRegex(PreparationError, "byte capacity"):
-            prepare_task_workspace(self.config, request, jj=adapter)
+        with mock.patch(
+            "lib.control.prepare.build_context_plan",
+            return_value={"x" * (260 * 1024): context_item},
+        ), self.assertRaisesRegex(PreparationError, "byte (?:limit|capacity)"):
+            prepare_task_workspace(self.config, request)
 
-        self.assertFalse(adapter.add_called)
         self.assertFalse((self.config.tasks_dir / f"{request.task_id}.json").exists())
         self.assertFalse(CreationJournalStore(self.config).path(request.task_id).exists())
         self.assertFalse(self.config.workspace_root.exists())
 
-    def test_partial_add_exception_is_recovered_from_expected_materialization(self) -> None:
+    def test_partial_add_exception_retains_expected_materialization(self) -> None:
         class PartialAddAdapter(JjAdapter):
             def add_workspace(inner_self, source, destination, name, base, message, operation):
                 super().add_workspace(source, destination, name, base, message, operation)
@@ -1515,9 +2514,9 @@ class RealJjPreparationTests(unittest.TestCase):
         with self.assertRaises(PreparationError):
             prepare_task_workspace(self.config, request, jj=PartialAddAdapter())
         journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "rolled-back")
-        self.assertFalse(Path(journal["workspace"]["path"]).exists())
-        self.assertNotIn(journal["workspace"]["name"], JjAdapter().workspace_identities(self.source))
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertTrue(Path(journal["workspace"]["path"]).exists())
+        self.assertIn(journal["workspace"]["name"], JjAdapter().workspace_identities(self.source))
 
     def test_unregistered_add_collision_is_preserved_without_chmod(self) -> None:
         class CollidingAdapter(JjAdapter):
@@ -1552,9 +2551,9 @@ class RealJjPreparationTests(unittest.TestCase):
         with self.assertRaises(PreparationError):
             prepare_task_workspace(self.config, request, jj=MissingDestinationAdapter())
         journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "workspace-add-intent")
-        self.assertEqual(journal["jj"]["registration_state"], "present")
-        self.assertIsNotNone(journal["jj"]["last_registration"])
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertEqual(journal["jj"]["registration_state"], "add-intent")
+        self.assertIsNone(journal["jj"]["last_registration"])
         self.assertEqual(
             __import__("lib.control.store", fromlist=["TaskStore"]).TaskStore(self.config)
             .read(request.task_id)["lifecycle"],
@@ -1562,25 +2561,25 @@ class RealJjPreparationTests(unittest.TestCase):
         )
         self.assertTrue(moved_paths[0].is_dir())
 
-    def test_rollback_resumes_after_forget_returned_but_journal_did_not_advance(self) -> None:
+    def test_v2_recovery_never_calls_forget_and_retry_is_stable(self) -> None:
         request = self.request("forget-resume")
         prepared = prepare_task_workspace(self.config, request)
 
-        class ForgetThenFail(JjAdapter):
-            failed = False
-
+        class ForbidForget(JjAdapter):
             def forget_workspace(inner_self, source, name):
-                super().forget_workspace(source, name)
-                if not inner_self.failed:
-                    inner_self.failed = True
-                    raise JjError("interrupted after forget")
+                self.fail("v2 recovery must not call jj workspace forget")
 
-        with self.assertRaises(PreparationError):
-            rollback_prelaunch(self.config, request.task_id, jj=ForgetThenFail())
-        rollback_prelaunch(self.config, request.task_id)
+        with self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
+            rollback_prelaunch(self.config, request.task_id, jj=ForbidForget())
+        with self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
+            rollback_prelaunch(self.config, request.task_id, jj=ForbidForget())
         journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "rolled-back")
-        self.assertFalse(Path(prepared["jj"]["workspace_path"]).exists())
+        self.assertEqual(journal["phase"], "preserved")
+        self.assertTrue(Path(prepared["jj"]["workspace_path"]).exists())
+        self.assertIn(
+            prepared["jj"]["workspace_name"],
+            JjAdapter().workspace_identities(self.source),
+        )
 
     def test_transaction_lock_serializes_prepare_and_rollback(self) -> None:
         entered = threading.Event()
@@ -1636,8 +2635,9 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertEqual(prepare_error, [])
         self.assertEqual(len(rollback_error), 1)
         self.assertIn("not bound to the current Control config", str(rollback_error[0]))
-        rollback_prelaunch(self.config, request.task_id)
-        self.assertEqual(CreationJournalStore(self.config).read(request.task_id)["phase"], "rolled-back")
+        with self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
+            rollback_prelaunch(self.config, request.task_id)
+        self.assertEqual(CreationJournalStore(self.config).read(request.task_id)["phase"], "preserved")
 
     def test_dirty_source_tracked_state_is_byte_and_revision_stable(self) -> None:
         (self.source / "tracked.txt").write_text("dirty source bytes\n", encoding="utf-8")
@@ -1706,53 +2706,176 @@ class RealJjPreparationTests(unittest.TestCase):
             prepare_task_workspace(self.config, request, failure_injector=inject)
         self.assertEqual(list(outside.iterdir()), [])
 
-    def test_rollback_resumes_after_each_owned_removal_boundary(self) -> None:
-        request = self.request("remove-resume")
-        prepare_task_workspace(self.config, request)
+    def test_v1_rollback_resumes_after_an_owned_removal_boundary(self) -> None:
+        request = self.request("legacy-remove-resume")
+        prepared = prepare_task_workspace(self.config, request)
+        store = CreationJournalStore(self.config)
+        journal = store.read(request.task_id)
+        workspace = Path(prepared["jj"]["workspace_path"])
+        expected = JjAdapter().expected_materialization(
+            self.source, prepared["jj"]["base_commit_id"],
+        )
+        actual, _root = _capture_tree(workspace, journal["workspace"]["root_fact"])
+        journal["contract"] = "asha.control-creation-journal.v1"
+        journal["expected_materialization"] = expected
+        journal["materialized_owned"] = _compact_materialized_ownership(actual, expected)
+        journal.pop("materialization_plan")
+        journal.pop("materialization_ownership")
+        journal["jj"].pop("workspace_add_operation_id")
+        journal["jj"].pop("checkout_operation_id")
+        raw = json.dumps(
+            journal, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode() + b"\n"
+        store.path(request.task_id).write_bytes(raw)
+        store.path(request.task_id).chmod(0o600)
         fired = False
 
-        def interrupt(event):
+        def interrupt(event: str) -> None:
             nonlocal fired
-            if not fired and (event.startswith("removed:") or event.startswith("removed-parent:")):
+            if not fired and event.startswith("removed:"):
                 fired = True
-                raise RuntimeError("interrupted removal")
+                raise RuntimeError("interrupted legacy removal")
 
-        with self.assertRaises(PreparationError):
+        with self.assertRaisesRegex(PreparationError, "durable recovery"):
             rollback_prelaunch(
                 self.config, request.task_id, failure_injector=interrupt,
             )
+        self.assertTrue(fired)
+
         rollback_prelaunch(self.config, request.task_id)
-        journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "rolled-back")
-        self.assertFalse(Path(journal["workspace"]["path"]).exists())
 
-    def test_foreign_data_during_removal_records_terminal_preserved_absent_registration(self) -> None:
-        request = self.request("foreign-during-removal")
-        prepared = prepare_task_workspace(self.config, request)
+        recovered = store.read(request.task_id)
+        self.assertEqual(recovered["contract"], "asha.control-creation-journal.v1")
+        self.assertEqual(recovered["phase"], "rolled-back")
+        self.assertFalse(workspace.exists())
+
+    def test_v2_retention_never_deletes_a_replaced_tracked_leaf(self) -> None:
+        request, prepared = self.prepare_nested_workspace(
+            "retained/file.txt", "retain-leaf",
+        )
         workspace = Path(prepared["jj"]["workspace_path"])
-        injected = False
+        visible = workspace / "retained" / "file.txt"
+        owned_away = self.root / "retained-owned-leaf"
+        foreign_staging = self.root / "retained-foreign-leaf"
+        foreign_staging.write_text("foreign leaf\n", encoding="utf-8")
+        plan = JjAdapter().materialization_plan(
+            self.source / ".git", prepared["jj"]["base_commit_id"],
+            exact_root=self.source,
+        )
+        entry = next(item for item in plan.entries if item.path == "retained/file.txt")
+        parent_fd = os.open(visible.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            prepare_module._verify_plan_entry_at(parent_fd, visible.name, entry)
+        finally:
+            os.close(parent_fd)
+        visible.rename(owned_away)
+        foreign_staging.rename(visible)
+        real_unlink = os.unlink
+        real_rmdir = os.rmdir
 
-        def interrupt_with_foreign(event):
-            nonlocal injected
-            if not injected and event.startswith("removed:"):
-                injected = True
-                (workspace / "foreign.ignored").write_text("user bytes", encoding="utf-8")
-                raise RuntimeError("interrupted after foreign data arrived")
-
-        with self.assertRaises(PreparationError):
-            rollback_prelaunch(
-                self.config, request.task_id, failure_injector=interrupt_with_foreign,
-            )
-        with self.assertRaisesRegex(PreparationError, "preserved"):
+        with mock.patch(
+                "lib.control.prepare.os.unlink", side_effect=real_unlink,
+        ) as unlink, mock.patch(
+                "lib.control.prepare.os.rmdir", side_effect=real_rmdir,
+        ) as rmdir, \
+                self.assertRaisesRegex(
+                    PreparationError, "manual inspection and cleanup required",
+                ):
             rollback_prelaunch(self.config, request.task_id)
 
-        journal = CreationJournalStore(self.config).read(request.task_id)
-        self.assertEqual(journal["phase"], "preserved")
-        self.assertEqual(journal["jj"]["registration_state"], "absent-after-forget")
+        self.assert_no_workspace_removal_calls(unlink, rmdir)
+        self.assertEqual(owned_away.read_text(encoding="utf-8"), "owned bytes\n")
+        self.assertEqual(visible.read_text(encoding="utf-8"), "foreign leaf\n")
+        self.assertEqual(
+            CreationJournalStore(self.config).read(request.task_id)["phase"],
+            "preserved",
+        )
         self.assertEqual(TaskStore(self.config).read(request.task_id)["lifecycle"], "failed")
-        self.assertEqual((workspace / "foreign.ignored").read_text(), "user bytes")
-        with self.assertRaisesRegex(PreparationError, "preserved"):
+
+    def test_v2_retention_never_deletes_a_replaced_quarantine_leaf(self) -> None:
+        request, prepared = self.prepare_nested_workspace(
+            "retained-q/file.txt", "retain-quarantine",
+        )
+        workspace = Path(prepared["jj"]["workspace_path"])
+        original = workspace / "retained-q" / "file.txt"
+        owned_away = self.root / "retained-owned-quarantine"
+        quarantine = original.parent / self.removal_quarantine_name(
+            request.task_id, "retained-q/file.txt",
+        )
+        foreign_staging = self.root / "retained-foreign-quarantine"
+        foreign_staging.write_text("foreign quarantine\n", encoding="utf-8")
+        plan = JjAdapter().materialization_plan(
+            self.source / ".git", prepared["jj"]["base_commit_id"],
+            exact_root=self.source,
+        )
+        entry = next(item for item in plan.entries if item.path == "retained-q/file.txt")
+        original.rename(quarantine)
+        parent_fd = os.open(quarantine.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            prepare_module._verify_plan_entry_at(parent_fd, quarantine.name, entry)
+        finally:
+            os.close(parent_fd)
+        quarantine.rename(owned_away)
+        foreign_staging.rename(quarantine)
+        real_unlink = os.unlink
+        real_rmdir = os.rmdir
+
+        with mock.patch(
+                "lib.control.prepare.os.unlink", side_effect=real_unlink,
+        ) as unlink, mock.patch(
+                "lib.control.prepare.os.rmdir", side_effect=real_rmdir,
+        ) as rmdir, \
+                self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
             rollback_prelaunch(self.config, request.task_id)
+
+        self.assert_no_workspace_removal_calls(unlink, rmdir)
+        self.assertEqual(owned_away.read_text(encoding="utf-8"), "owned bytes\n")
+        self.assertEqual(
+            quarantine.read_text(encoding="utf-8"), "foreign quarantine\n",
+        )
+        self.assertEqual(
+            CreationJournalStore(self.config).read(request.task_id)["phase"],
+            "preserved",
+        )
+
+    def test_v2_retention_never_deletes_a_replaced_workspace_root(self) -> None:
+        request, prepared = self.prepare_nested_workspace(
+            "root/file.txt", "retain-root",
+        )
+        workspace = Path(prepared["jj"]["workspace_path"])
+        owned_root = self.root / "retained-owned-root"
+        foreign_staging = self.root / "retained-foreign-root"
+        foreign_staging.mkdir()
+        foreign_staging.chmod(0o700)
+        real_unlink = os.unlink
+        real_rmdir = os.rmdir
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        self.assertEqual(
+            prepare_module._inode_fact(os.lstat(workspace)),
+            journal["workspace"]["root_fact"],
+        )
+        workspace.rename(owned_root)
+        foreign_staging.rename(workspace)
+
+        with mock.patch(
+                "lib.control.prepare.os.unlink", side_effect=real_unlink,
+        ) as unlink, \
+                mock.patch(
+                    "lib.control.prepare.os.rmdir", side_effect=real_rmdir,
+                ) as rmdir, \
+                self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
+            rollback_prelaunch(self.config, request.task_id)
+
+        self.assert_no_workspace_removal_calls(unlink, rmdir)
+        self.assertEqual(
+            (owned_root / "root" / "file.txt").read_text(encoding="utf-8"),
+            "owned bytes\n",
+        )
+        self.assertTrue(workspace.is_dir())
+        self.assertEqual(
+            CreationJournalStore(self.config).read(request.task_id)["phase"],
+            "preserved",
+        )
 
     @staticmethod
     def _capture_error(target: list[BaseException], function, *args, **kwargs) -> None:

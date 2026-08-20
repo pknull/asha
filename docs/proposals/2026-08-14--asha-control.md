@@ -40,6 +40,33 @@ journaled workspace root behind ownership, path, live-pane, and orchestration
 binding checks, with batch confirmation or `--yes`. Records, digests, and jj
 changes stay untouched; see `docs/control.md`.
 
+Amendment (2026-08-19): the terminal TUI now exposes that reviewed prune
+controller behind archived history (`A`) and contextual actions (`x`). This
+supersedes the initial statement below that removal has no TUI binding: archive
+and exact-confirmed prune remain separate, and the TUI performs no removal
+itself. The same menu adds distinct-task retry through an optional validated
+`task start --slug` path identity, and unique initiative ownership replaces
+ordinary retry with one reconciliation pass. Reconciliation never dispatches,
+merges, integrates, or pushes.
+
+Repair amendment (2026-08-19): live reconciliation rechecks archived lifecycle
+under the task lock; lock-free orchestration ownership scans require the
+reservation and link to name the same initiative attempt; retry slugs encode
+the complete fresh UUID; unreadable prune history is a bounded fail-closed TUI
+status rather than an escaped curses exception.
+
+Completion amendment (2026-08-20): active task context actions use only shared
+controllers. Unowned starting/working/needs-input runs expose SIGINT Interrupt
+and SIGTERM Terminate, idle exposes SIGTERM Finish, and unknown exposes SIGTERM
+Terminate, all after exact confirmation and fresh identity/state checks. An
+initiative-owned active task exposes one journaled `stop-attempt` action and no
+raw-signal escape. Broad reconcile still creates no new dispatch, but may
+complete an already-authorized indeterminate dispatch, so its status reports
+actual action evidence rather than the older global “nothing dispatched”
+claim. The start form is now a stateful cell-aware editor over one frozen,
+bounded convenience-candidate snapshot; controller validation remains the
+authorization boundary.
+
 ## Problem
 
 Asha can launch a harness and coordinate work inside one process, but it does
@@ -332,6 +359,41 @@ Git-backed. `asha task start` requires all of these:
 The controller never runs `jj git init`, never colocates a Git repository, and
 never rewrites user jj configuration. A missing jj setup is a preflight error
 with an exact manual remediation command.
+
+> **Superseded 2026-08-18:** the delivered implementation now accepts an exact
+> canonical plain Git root for a new task and runs a bounded, shell-free
+> `jj --config 'snapshot.auto-track="none()"' git init --colocate ROOT` after
+> caller-supplied task-ID replay/interrupted-journal checks. The override is
+> command-scoped, not persisted configuration. Verified colocation is a
+> reported, durable repository-enablement mutation retained across later task
+> failure or cancellation; failed or ambiguous partial initialization is
+> preserved for inspection. Doctor remains read-only and reports this behavior.
+
+> **Amended 2026-08-19:** automatic enablement now follows a read-only
+> pre-enable gate under the source lock: source/workspace ancestry, published
+> Memory, explicit Git base, prospective destination, and bounded capacity all
+> refuse before the intent or `.jj`. Explicit plain-Git ad-hoc/issue bases are
+> resolved by exact config-sanitized Git and carried as immutable OIDs. The
+> omitted initial default now resolves before mutation to one unambiguous
+> remote-default ref or the first existing local `main`/`master`/`trunk`; a
+> dev-only or otherwise ambiguous repository must pass explicit `--base`.
+> The task retains the caller's original default expression for replay identity;
+> the conventional ref is preflight evidence and its immutable OID is the task
+> base. PR preflight likewise carries one repository-identity-matching HTTPS/SSH
+> URL plus exact safe-config evidence. The later fetch uses that URL under a
+> protocol allowlist and refuses transport/helper config or config drift;
+> split `extensions.worktreeConfig` local configuration requires manual fetch
+> because it is not bound by the carried single-file digest.
+> Semantic source authentication uses plumbing index stages/flags and ref
+> object/symbolic-target identity plus direct filesystem hashes, never Git
+> status/diff or repository filters. Existing jj revsets remain
+> unchanged. A prior verified record may update only `root_fact` after a
+> pure removal subset of `0022`, exact identity/binding checks, stable all-ref
+> Git semantics and jj operation identity, and an exact-byte/digest comparison
+> under the exclusive Control source lock. Doctor reports only a path-policy-safe
+> narrow case as repairable; broader mismatches remain refused. POSIX has no
+> byte-conditional rename, so a noncooperating same-UID process able to replace
+> private source/state paths is explicitly outside this cooperative lock boundary.
 
 The command contract targets the installed jj 0.38 workspace surface. Doctor
 probes required commands and semantics instead of trusting a version string
@@ -652,9 +714,37 @@ and emptiness. Once a user process has started or the workspace may contain
 changes, failure handling preserves everything, marks the task `failed`, and
 reports exact recovery commands.
 
+> **Superseded 2026-08-19 for v2 creation recovery:** automatic recovery can
+> discard a claim only before workspace/root filesystem mutation may have
+> occurred. Once such a v2 mutation is possible, Control retains both the jj
+> registration and every workspace/root/created-parent filesystem mutation:
+> neither name-based forget nor filesystem deletion has an atomic identity
+> predicate. It marks the journal `preserved` and task `failed`, then requires
+> exact registration/path inspection and manual cleanup. Archive plus explicit
+> confirmed prune is named only when its existing preconditions are durably
+> proven; partial-add and created-parent residue are not claimed prunable.
+> Existing v1 journals retain their frozen historical automatic-removal
+> behavior.
+
 Task start must not change the source working-copy revision, source workspace,
 bookmark positions, or index. PR fetching may add fetched objects or a
 controller-owned temporary ref, and that mutation is reported.
+
+> **Superseded 2026-08-18 for plain-Git enablement:** the semantic Git index,
+> staged/unstaged distinctions and content, HEAD/branch, non-jj refs, and
+> tracked/untracked bytes and modes remain unchanged. jj may rewrite raw index
+> bookkeeping bytes and creates `.jj` plus private jj Git refs. Those
+> repository-enablement mutations are reported and retained, not rolled back
+> by the task workspace transaction.
+>
+> The automatic path is limited to primary Git worktrees and supported
+> `gitdir:` roots such as submodules. A valid `commondir` marker identifies a
+> linked worktree and is refused before intent creation with primary-worktree
+> and manual-jj remediation. A private pre-init intent binds exact `.git`
+> marker contents and its canonical target as well as root/marker inode facts;
+> verification adds the real `.jj` directory binding. Interrupted init keeps
+> its ambiguous record and exit 130. Doctor reads this state without mutation
+> and reports the same refusal that task start would enforce.
 
 `task stop` first requests graceful termination through the harness adapter.
 It never sends a signal to a PID that fails process identity and tmux ancestry

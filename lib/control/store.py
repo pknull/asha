@@ -55,6 +55,10 @@ _HELD_TASK_LOCKS: contextvars.ContextVar[frozenset[tuple[int, int, str]]] = cont
 _HELD_REGISTRY_LOCKS: contextvars.ContextVar[frozenset[tuple[int, int]]] = contextvars.ContextVar(
     "asha_control_held_registry_locks", default=frozenset()
 )
+_HELD_TRANSACTION_LOCKS: contextvars.ContextVar[tuple[tuple[int, str], ...]] = (
+    contextvars.ContextVar("asha_control_held_transaction_locks", default=())
+)
+_TRANSACTION_DOMAINS = {"task": 0, "source": 1, "repository": 2}
 
 
 class StoreError(ValueError):
@@ -63,6 +67,115 @@ class StoreError(ValueError):
 
 class StoreCommittedError(StoreError):
     """The replacement is visible, but its directory entry may not be durable."""
+
+
+def _transaction_lock_key(domain: str, identity: str) -> str:
+    if domain not in _TRANSACTION_DOMAINS:
+        raise StoreError(f"unknown transaction lock domain: {domain}")
+    try:
+        encoded = identity.encode("utf-8") if isinstance(identity, str) else b""
+    except UnicodeError as exc:
+        raise StoreError("transaction lock identity must be valid UTF-8") from exc
+    if (
+        not isinstance(identity, str) or not identity or len(encoded) > 4096
+        or "\x00" in identity
+    ):
+        raise StoreError("transaction lock identity must be a bounded nonempty string")
+    digest = hashlib.sha256(
+        b"asha-control-transaction-lock-v1\0"
+        + domain.encode("ascii") + b"\0" + encoded
+    ).hexdigest()
+    return f"{domain}-{digest}"
+
+
+@contextmanager
+def _coordinated_transaction_lock(
+    config: ControlConfig, domain: str, identity: str,
+) -> Iterator[None]:
+    rank = _TRANSACTION_DOMAINS.get(domain)
+    lock_id = _transaction_lock_key(domain, identity)
+    held = _HELD_TRANSACTION_LOCKS.get()
+    if any(key == lock_id for _held_rank, key in held):
+        yield
+        return
+    if rank is None:
+        raise StoreError(f"unknown transaction lock domain: {domain}")
+    if held and max(held_rank for held_rank, _key in held) > rank:
+        raise StoreError(
+            "transaction lock order inversion refused; required order is "
+            "task -> source -> repository"
+        )
+    managed_start = _managed_start(config.tasks_dir, ("control", "tasks"))
+    with _directory_fd(
+        config.tasks_dir, create=True, managed_start=managed_start,
+    ) as tasks_fd:
+        if tasks_fd is None:
+            raise StoreError("failed to create Control task registry")
+        with _task_lock(tasks_fd, lock_id):
+            token = _HELD_TRANSACTION_LOCKS.set((*held, (rank, lock_id)))
+            try:
+                yield
+            finally:
+                _HELD_TRANSACTION_LOCKS.reset(token)
+
+
+class TransactionCoordinator:
+    """Domain-separated Control transaction locks in one global order."""
+
+    def __init__(self, config: ControlConfig):
+        self.config = config
+
+    @staticmethod
+    def lock_key(domain: str, identity: str) -> str:
+        return _transaction_lock_key(domain, identity)
+
+    @contextmanager
+    def lock(self, domain: str, identity: str) -> Iterator[None]:
+        if domain == "task":
+            identity = canonical_uuid(identity)
+        elif domain == "source":
+            path = Path(identity)
+            if (
+                not path.is_absolute() or os.path.realpath(path) != str(path)
+                or path.is_symlink() or not path.is_dir()
+            ):
+                raise StoreError("source transaction lock requires an exact canonical directory")
+            identity = str(path)
+        elif domain == "repository":
+            if re.fullmatch(r"repo:[0-9a-f]{64}", identity, re.ASCII) is None:
+                raise StoreError("repository transaction lock requires an exact repository identity")
+        with _coordinated_transaction_lock(self.config, domain, identity):
+            yield
+
+    def task_lock(self, task_id: str):
+        return self.lock("task", task_id)
+
+    def source_lock(self, root: Path):
+        return self.lock("source", str(Path(root)))
+
+    def repository_lock(self, repository_identity: str):
+        return self.lock("repository", repository_identity)
+
+
+def validate_task_paths(
+    config: ControlConfig, repository: Path, workspace: Path,
+) -> None:
+    """Apply the shared source/workspace namespace policy without mutation."""
+    root = config.workspace_root
+    try:
+        validate_workspace_root(root, home=config.home, repository=repository)
+        reject_symlink_components(repository, "task repository root")
+        reject_symlink_components(workspace, "jj workspace_path")
+        require_existing_directory_components(repository, "task repository root")
+        require_existing_directory_components(workspace, "jj workspace_path")
+        reject_unsafe_writable_ancestors(repository, "task repository root")
+        reject_unsafe_writable_ancestors(workspace, "jj workspace_path")
+    except ConfigError as exc:
+        raise StoreError(str(exc)) from exc
+    if workspace == root or not workspace.is_relative_to(root):
+        raise StoreError(
+            "jj workspace_path must be a strict descendant of control.workspace_root"
+        )
 
 
 class _DuplicateJsonKey(ValueError):
@@ -361,19 +474,7 @@ class TaskStore:
     def _validate_record_paths(self, task: dict[str, Any]) -> None:
         repository = Path(task["repository"]["root"])
         workspace = Path(task["jj"]["workspace_path"])
-        root = self.config.workspace_root
-        try:
-            validate_workspace_root(root, home=self.config.home, repository=repository)
-            reject_symlink_components(repository, "task repository root")
-            reject_symlink_components(workspace, "jj workspace_path")
-            require_existing_directory_components(repository, "task repository root")
-            require_existing_directory_components(workspace, "jj workspace_path")
-            reject_unsafe_writable_ancestors(repository, "task repository root")
-            reject_unsafe_writable_ancestors(workspace, "jj workspace_path")
-        except ConfigError as exc:
-            raise StoreError(str(exc)) from exc
-        if workspace == root or not workspace.is_relative_to(root):
-            raise StoreError("jj workspace_path must be a strict descendant of control.workspace_root")
+        validate_task_paths(self.config, repository, workspace)
 
     @contextmanager
     def _directories(self, *, create_state: bool) -> Iterator[tuple[int | None, int | None]]:
@@ -397,9 +498,10 @@ class TaskStore:
     @contextmanager
     def _locked(self, task_id: str, locks_fd: int | None = None) -> Iterator[None]:
         """Hold the production per-task lock; the no-FD form supports probes/tests."""
-        canonical_uuid(task_id)
+        task_id = canonical_uuid(task_id)
+        lock_id = _transaction_lock_key("task", task_id)
         if locks_fd is not None:
-            with _task_lock(locks_fd, task_id, self._lock_wait_hook):
+            with _task_lock(locks_fd, lock_id, self._lock_wait_hook):
                 yield
             return
         with _directory_fd(
@@ -407,7 +509,7 @@ class TaskStore:
         ) as opened:
             if opened is None:
                 raise StoreError("failed to create Control lock directory")
-            with _task_lock(opened, task_id, self._lock_wait_hook):
+            with _task_lock(opened, lock_id, self._lock_wait_hook):
                 yield
 
     @contextmanager
@@ -428,22 +530,18 @@ class TaskStore:
         writes nest this lock before taking the short-lived registry flock;
         keeping that order prevents a task/registry lock inversion.
         """
-        canonical_uuid(task_id)
-        with _directory_fd(
-            self.config.tasks_dir,
-            create=True,
-            managed_start=self._tasks_managed_start,
-        ) as tasks_fd:
-            if tasks_fd is None:
-                raise StoreError("failed to create Control task registry")
-            with _task_lock(tasks_fd, task_id):
-                yield
+        task_id = canonical_uuid(task_id)
+        with TransactionCoordinator(self.config).task_lock(task_id):
+            yield
 
     @staticmethod
     def _time(value: str) -> datetime:
         return datetime.fromisoformat(value[:-1] + "+00:00")
 
-    def _validate_update(self, current: dict[str, Any], requested: dict[str, Any]) -> None:
+    def _validate_update(
+        self, current: dict[str, Any], requested: dict[str, Any], *,
+        recovery_adoption: dict[str, Any] | None = None,
+    ) -> None:
         immutable_task = (
             "contract", "task_id", "slug", "label", "created_at", "repository",
             "source", "tmux",
@@ -458,10 +556,24 @@ class TaskStore:
                 requested["jj"]["change_id"] != current["jj"]["change_id"]):
             raise StoreError("immutable jj field changed: change_id")
         if requested["lifecycle"] != current["lifecycle"]:
-            try:
-                require_task_transition(current["lifecycle"], requested["lifecycle"])
-            except ModelError as exc:
-                raise StoreError(str(exc)) from exc
+            adoption_reopen = bool(
+                current["lifecycle"] == "failed"
+                and requested["lifecycle"] == "creating"
+                and not current["runs"] and not requested["runs"]
+                and isinstance(recovery_adoption, dict)
+                and recovery_adoption.get("contract") == "asha.control-recovery-adoption.v1"
+                and recovery_adoption.get("state") == "ready-for-launch"
+                and recovery_adoption.get("original_task_digest") == task_digest(current)
+                and requested["jj"]["change_id"]
+                == recovery_adoption.get("registration", {}).get("change_id")
+                and requested["jj"]["working_commit_id"]
+                == recovery_adoption.get("registration", {}).get("working_commit_id")
+            )
+            if not adoption_reopen:
+                try:
+                    require_task_transition(current["lifecycle"], requested["lifecycle"])
+                except ModelError as exc:
+                    raise StoreError(str(exc)) from exc
         if self._time(requested["updated_at"]) < self._time(current["updated_at"]):
             raise StoreError("task updated_at must not move backward")
 
@@ -504,7 +616,10 @@ class TaskStore:
             if self._time(new_run["evidence_at"]) < self._time(old_run["evidence_at"]):
                 raise StoreError("run evidence_at must not move backward")
 
-    def save(self, task: dict[str, Any], *, expected_digest: str | None = None) -> Path:
+    def save(
+        self, task: dict[str, Any], *, expected_digest: str | None = None,
+        recovery_adoption: dict[str, Any] | None = None,
+    ) -> Path:
         # Caller-owned mappings are mutable.  Pin one authoritative snapshot
         # before any validation, transition comparison, or serialization.
         task = copy.deepcopy(task)
@@ -521,7 +636,7 @@ class TaskStore:
 
         with self._directories(create_state=True) as (tasks_fd, locks_fd):
             assert tasks_fd is not None and locks_fd is not None
-            with _task_lock(tasks_fd, task_id):
+            with _task_lock(tasks_fd, _transaction_lock_key("task", task_id)):
                 with self._registry_locked(tasks_fd):
                     with self._locked(task_id, locks_fd):
                         current = self._read_if_exists(tasks_fd, task_id)
@@ -536,7 +651,10 @@ class TaskStore:
                                 raise StoreError("expected digest must be 64 lowercase hexadecimal characters")
                             if not hmac.compare_digest(task_digest(current), expected_digest):
                                 raise StoreError("task digest mismatch; reload the current record")
-                            self._validate_update(current, validated)
+                            self._validate_update(
+                                current, validated,
+                                recovery_adoption=recovery_adoption,
+                            )
                         temporary_name = f".{record_name}.tmp.{secrets.token_hex(8)}"
                         fd = -1
                         replaced = False
@@ -674,7 +792,7 @@ class TaskStore:
             ) as locks_fd:
                 if locks_fd is None:
                     raise StoreError("failed to create Control lock directory")
-                with _task_lock(tasks_fd, task_id):
+                with _task_lock(tasks_fd, _transaction_lock_key("task", task_id)):
                     with self._registry_locked(tasks_fd):
                         with self._locked(task_id, locks_fd):
                             return self._read_unlocked(tasks_fd, task_id)

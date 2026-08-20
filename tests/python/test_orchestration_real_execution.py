@@ -128,7 +128,7 @@ class RealOrchestrationExecutionTests(unittest.TestCase):
         (self.repo / "Memory/decisions.md").write_text("# Decisions\n\n- Test.\n")
         (self.repo / ".gitignore").write_text(
             ".asha/config.json\n.asha/control-task.json\nMemory/activeContext.md\n"
-            "Memory/decisions.md\nWork/session-state/.asha-control-probe\n"
+            "Memory/decisions.md\nWork/session-state/\n"
             "__pycache__/\n"
         )
         (self.repo / "seed.txt").write_text("base\n")
