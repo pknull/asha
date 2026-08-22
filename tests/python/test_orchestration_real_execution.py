@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -14,6 +15,7 @@ from pathlib import Path
 from lib.control.jj import JjAdapter
 from lib.control.prepare import prepare_materialization
 from lib.control.orchestration.config import load_config
+from lib.control.orchestration.actions import build_action_document
 from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.store import InitiativeStore
 from lib.control.orchestration.review import tracked_workspace_status
@@ -667,6 +669,177 @@ RESULTPY
             source_identity,
         )
         self.assertFalse((self.repo / "scope").exists(), "candidate was integrated into source")
+
+    # --- Increment 4: Asha claims the coordinator role from a tmux pane ---
+
+    def _start_coordinator_pane(self, name: str) -> tuple[Path, str, str]:
+        """One long-lived pane process that runs queued commands as its children."""
+        runner = self.root / f"coord-{name}"
+        runner.mkdir()
+        loop = runner / "loop.sh"
+        loop.write_text(
+            "#!/bin/sh\n"
+            "dir=\"$1\"\n"
+            "while :; do\n"
+            "  if [ -f \"$dir/next.sh\" ]; then\n"
+            "    sh \"$dir/next.sh\" >\"$dir/out\" 2>\"$dir/err\"; echo $? >\"$dir/rc.tmp\"\n"
+            "    mv \"$dir/next.sh\" \"$dir/done.sh\"; mv \"$dir/rc.tmp\" \"$dir/rc\"\n"
+            "  fi\n"
+            "  sleep 0.1\n"
+            "done\n"
+        )
+        session = f"{self.session_prefix}coord-{name}"
+        self._run_command([
+            "tmux", "new-session", "-d", "-s", session, "-x", "160", "-y", "40",
+            "sh", str(loop), str(runner),
+        ])
+        self.addCleanup(lambda: subprocess.run(
+            ["tmux", "kill-session", "-t", session], env=self.env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        ))
+        pane = self._run_command(
+            ["tmux", "display-message", "-p", "-t", session, "#{pane_id}"]
+        ).stdout.strip()
+        return runner, session, pane
+
+    def _in_pane(self, runner: Path, *args: str) -> tuple[int, str, str]:
+        for name in ("out", "err", "rc", "done.sh"):
+            (runner / name).unlink(missing_ok=True)
+        command = shlex.join([sys.executable, "-m", "lib.control.cli", *args])
+        (runner / "next.sh").write_text(f"exec {command}\n")
+        deadline = time.monotonic() + 60
+        while not (runner / "rc").exists():
+            if time.monotonic() > deadline:
+                self.fail(f"pane command did not finish: {args!r}")
+            time.sleep(0.1)
+        return (
+            int((runner / "rc").read_text().strip()),
+            (runner / "out").read_text(),
+            (runner / "err").read_text(),
+        )
+
+    def test_real_coordinator_claim_propose_wait_and_replacement(self) -> None:
+        created = self.asha_json(
+            "initiative", "create", "--repo", str(self.repo),
+            "--slug", "real-coordinator", "--label", "Real coordinator",
+            "--objective", "Coordinator claim from a live pane",
+            "--acceptance", "The coordinator proposes; the operator approves.",
+            "--max-parallel", "1", "--max-total-tasks", "3",
+            "--max-attempts-per-node", "1", "--max-repair-cycles", "1", "--json",
+        )["initiative"]
+        initiative_id = created["initiative_id"]
+        plan = valid_plan()
+        plan["initiative_id"] = initiative_id
+        plan["repositories"] = [copy.deepcopy(created["scope"]["repository"])]
+        plan["limits"] = copy.deepcopy(created["limits"])
+        repository_id = created["scope"]["repository"]["repository_id"]
+        for node in plan["nodes"]:
+            if node["repository_id"] is not None:
+                node["repository_id"] = repository_id
+        writer = plan["nodes"][0]
+        writer["goal"] = "IN_SCOPE"
+        writer["base"]["scope_origin"] = {
+            "jj_commit_id": self.base_commit, "tree_digest": self.base_tree_digest,
+        }
+        writer["hard_write_scope"] = ["scope"]
+        writer["advisory_path_ownership"] = ["scope"]
+        plan_path = self.root / "plan-coordinator.json"
+        plan_path.write_text(json.dumps(plan))
+        jj_before = self._run_command(["jj", "status"], cwd=self.repo).stdout
+
+        runner, session, pane = self._start_coordinator_pane("one")
+        rc, out, err = self._in_pane(runner, "initiative", "coordinator", "claim", initiative_id, "--json")
+        self.assertEqual(rc, 0, err)
+        claimed = json.loads(out)["coordinator"]
+        self.assertEqual(claimed["generation"], 1)
+        self.assertEqual(claimed["state"], "active")
+        self.assertEqual(claimed["anchor"]["pane_id"], pane)
+        marker = self._run_command(
+            ["tmux", "show-options", "-p", "-v", "-t", pane, "@asha_coordinator_id"]
+        ).stdout.strip()
+        self.assertEqual(marker, claimed["coordinator_id"])
+
+        rc, out, err = self._in_pane(
+            runner, "initiative", "propose-plan", initiative_id, "--file", str(plan_path), "--json",
+        )
+        self.assertEqual(rc, 0, err)
+        proposed = json.loads(out)
+        store = InitiativeStore(self.config)
+        events = store.list_events_snapshot(initiative_id)
+        self.assertEqual(events[-1]["type"], "plan-proposed")
+        self.assertEqual(events[-1]["actor_kind"], "coordinator")
+
+        rc, out, err = self._in_pane(
+            runner, "initiative", "approve", initiative_id, "--digest", proposed["digest"], "--json",
+        )
+        self.assertEqual(rc, 2)
+        self.assertIn("refused from the coordinator's pane", err)
+
+        approved = self.asha_json(
+            "initiative", "approve", initiative_id, "--digest", proposed["digest"], "--json",
+        )
+        self.assertEqual(approved["initiative"]["state"], "approved")
+
+        rc, out, err = self._in_pane(
+            runner, "initiative", "wait", initiative_id,
+            "--after", str(claimed["event_cursor"]), "--timeout", "5", "--json",
+        )
+        self.assertEqual(rc, 0, err)
+        waited = json.loads(out)
+        self.assertFalse(waited["timed_out"])
+        self.assertIn("plan-approved", [event["type"] for event in waited["events"]])
+        self.assertEqual(
+            store.read_coordinator(initiative_id, claimed["coordinator_id"])["event_cursor"],
+            waited["events"][-1]["sequence"],
+        )
+
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session], env=self.env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        reconciled = self.asha_json("initiative", "reconcile", initiative_id, "--json")
+        self.assertEqual(reconciled["coordinator_reconciliation"]["state"], "stale")
+
+        runner_two, _session_two, pane_two = self._start_coordinator_pane("two")
+        rc, out, err = self._in_pane(runner_two, "initiative", "coordinator", "claim", initiative_id, "--json")
+        self.assertEqual(rc, 0, err)
+        second = json.loads(out)["coordinator"]
+        self.assertEqual(second["generation"], 2)
+        self.assertEqual(second["anchor"]["pane_id"], pane_two)
+        self.assertEqual(second["predecessor_coordinator_id"], claimed["coordinator_id"])
+        self.assertEqual(
+            store.read_coordinator(initiative_id, claimed["coordinator_id"])["state"], "fenced",
+        )
+
+        stale_document = build_action_document(
+            store.peek(initiative_id), "pause", {}, actor_id="coordinator:old", coordinator=claimed,
+        )
+        stale_path = self.root / "stale-pause.json"
+        stale_path.write_text(json.dumps(stale_document))
+        rc, out, err = self._in_pane(
+            runner_two, "initiative", "action", initiative_id, "--file", str(stale_path), "--json",
+        )
+        self.assertEqual(rc, 2, err)
+        refused = json.loads(out)
+        self.assertEqual(refused["state"], "refused")
+        self.assertIn("generation 1 is fenced", refused["outcome"])
+
+        rc, out, err = self._in_pane(
+            runner_two, "initiative", "wait", initiative_id,
+            "--after", str(second["event_cursor"]), "--timeout", "0", "--json",
+        )
+        self.assertEqual(rc, 0, err)
+        later = json.loads(out)
+        self.assertTrue(all(event["sequence"] > second["event_cursor"] for event in later["events"]))
+        self.assertEqual(
+            [event["type"] for event in later["events"]][-2:],
+            ["action-received", "action-refused"],
+        )
+
+        rc, out, err = self._in_pane(runner_two, "initiative", "coordinator", "release", initiative_id, "--json")
+        self.assertEqual(rc, 0, err)
+        self.assertEqual(json.loads(out)["coordinator"]["state"], "exited")
+        self.assertEqual(self._run_command(["jj", "status"], cwd=self.repo).stdout, jj_before)
 
     def test_real_jj_commands_accept_ignored_artifacts_and_reject_tracked_edits(self) -> None:
         materialization = prepare_materialization(
