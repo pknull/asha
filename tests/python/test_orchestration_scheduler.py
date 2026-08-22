@@ -7,16 +7,20 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
-from lib.control.orchestration.actions import build_action_document, submit_action
+from lib.control.orchestration.actions import (
+    _parse_document, build_action_document, submit_action,
+)
 from lib.control.orchestration.model import ATTEMPT_CONTRACT, record_digest
 from lib.control.orchestration.scheduler import (
     SchedulerError,
     _goal,
     assignment_bytes,
     consecutive_failures,
+    dispatch,
     pause_for_breaker,
     readiness,
 )
+from lib.control.orchestration.store import ObservationOnlyPlanError
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 
 
@@ -64,6 +68,31 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
             "review-a": "blocked",
             "verify-a": "blocked",
         })
+
+    def test_direct_work_and_review_dispatch_refuse_historical_plan_before_preparation(self) -> None:
+        self.install_historical_active_plan()
+        before_attempts = self.store.list_attempts_snapshot(self.initiative_id)
+
+        for node_id in ("implementation-a", "review-a"):
+            with self.subTest(node_id=node_id):
+                document = build_action_document(
+                    self.initiative(), "dispatch-node", {"node_id": node_id},
+                )
+                action, _ = _parse_document(document)
+                with self.assertRaises(ObservationOnlyPlanError), mock.patch(
+                    "lib.control.orchestration.scheduler.capture_bytes",
+                ) as launch, mock.patch.object(
+                    self.store, "save_attempt",
+                ) as save_attempt:
+                    dispatch(
+                        self.store, self.config, self.initiative_id, node_id,
+                        action=action,
+                    )
+                launch.assert_not_called()
+                save_attempt.assert_not_called()
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id), before_attempts,
+        )
 
     def test_assignment_embeds_bounded_upstream_result_summary(self) -> None:
         initiative = self.initiative()

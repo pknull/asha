@@ -15,6 +15,8 @@ from lib.control.orchestration import model
 from lib.control.orchestration.cli import main as orchestration_main
 from lib.control.orchestration.actions import (
     ActionRefused,
+    _continue_node,
+    _parse_document,
     action_outcome,
     append_event,
     approve_salvage,
@@ -34,7 +36,7 @@ from lib.control.orchestration.reconcile import _failure_target
 from lib.control.orchestration.seals import prepare_and_publish_seal
 from lib.control.orchestration.scheduler import _exact_base
 from lib.control.orchestration.scheduler import readiness
-from lib.control.orchestration.store import InitiativeStore
+from lib.control.orchestration.store import InitiativeStore, ObservationOnlyPlanError
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 from tests.python.test_orchestration_seals import SealJj, _entry
 from tests.python.test_orchestration_store import contract_record
@@ -780,6 +782,52 @@ class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(second["state"], "refused")
         self.assertIn("already been continued", action_outcome(second)["reason"])
         self.assertEqual(len(self.store.list_attempts_snapshot(self.initiative_id)), 1)
+
+    def test_direct_continuation_retains_strict_historical_plan_defense(self) -> None:
+        paused = self.seal("paused")
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        needs = copy.deepcopy(node)
+        needs["state"] = "needs-input"
+        self.store.save_node(
+            self.initiative_id, needs, expected_digest=record_digest(node),
+        )
+        initiative = self.initiative()
+        waiting = copy.deepcopy(initiative)
+        waiting.update({
+            "state": "needs-input",
+            "state_revision": initiative["state_revision"] + 1,
+            "updated_at": now_text(),
+        })
+        self.store.save_initiative(
+            waiting, expected_digest=record_digest(initiative),
+        )
+        decision = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(self.initiative(), "decide", {
+                "paused_seal_id": paused["seal_id"],
+                "decision": "Continue with the retained candidate.",
+            }),
+        )
+        self.install_historical_active_plan()
+        document = build_action_document(
+            self.initiative(), "continue-node", {
+                "node_id": "implementation-a",
+                "paused_seal_id": paused["seal_id"],
+                "decision_action_id": decision["action_id"],
+            },
+        )
+        action, payload = _parse_document(document)
+        before_attempts = self.store.list_attempts_snapshot(self.initiative_id)
+
+        with self.assertRaises(ObservationOnlyPlanError), mock.patch.object(
+            self.store, "save_attempt",
+        ) as save_attempt:
+            _continue_node(self.store, action, payload)
+
+        save_attempt.assert_not_called()
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id), before_attempts,
+        )
 
 
 if __name__ == "__main__":

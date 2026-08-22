@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import io
 import json
 import os
@@ -24,6 +25,7 @@ from lib.control.orchestration.cli import (
     reconcile_one_initiative,
 )
 from lib.control.orchestration.config import load_config
+from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.store import InitiativeStore, StoreError
 from lib.control.orchestration.scheduler import SchedulerError
 from lib.control.orchestration.storage import storage_report
@@ -117,6 +119,58 @@ class OrchestrationCliTests(unittest.TestCase):
         path = self.root / name
         path.write_text(json.dumps(value))
         return path
+
+    def install_historical_plan(self, initiative: dict) -> tuple[dict, Path, bytes]:
+        source = self.write_plan(initiative, "historical-source.json")
+        current, _ = _plan(
+            [initiative["initiative_id"], "--file", str(source)],
+            self.store, self.config, jj=self.jj,
+        )
+        retained = copy.deepcopy(current)
+        for gate in retained["declared_gates"]:
+            if gate["kind"] == "verification":
+                gate.pop("commands")
+                gate.pop("environment_policy")
+        content = dict(retained)
+        content.pop("digest")
+        content.pop("status")
+        retained["digest"] = hashlib.sha256(json.dumps(
+            content, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest()
+        raw = json.dumps(
+            retained, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode() + b"\n"
+        path = (
+            self.config.initiatives_dir / initiative["initiative_id"]
+            / "plans" / "0001.json"
+        )
+        path.write_bytes(raw)
+        path.chmod(0o600)
+        return retained, path, raw
+
+    def activate_historical_plan_for_observation(
+        self, initiative: dict, retained: dict,
+    ) -> dict:
+        current = self.store.peek(initiative["initiative_id"])
+        updated_at = (
+            datetime.fromisoformat(current["updated_at"].replace("Z", "+00:00"))
+            + timedelta(seconds=1)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        active = copy.deepcopy(current)
+        active.update({
+            "state": "approved",
+            "active_plan": {
+                "revision": retained["revision"],
+                "digest": retained["digest"],
+                "approval_id": "33333333-3333-4333-8333-333333333333",
+            },
+            "state_revision": current["state_revision"] + 1,
+            "updated_at": updated_at,
+        })
+        self.store.save_initiative(
+            active, expected_digest=record_digest(current),
+        )
+        return active
 
     def write_plan_value(self, value: dict, name: str) -> Path:
         path = self.root / name
@@ -263,6 +317,116 @@ class OrchestrationCliTests(unittest.TestCase):
         self.assertFalse(report["workspaces"])
         self.jj.add_workspace.assert_not_called()
         self.jj.forget_workspace.assert_not_called()
+
+    def test_historical_plan_is_shown_verbatim_by_all_observation_routes(self) -> None:
+        initiative = self.create("historical-observation")
+        retained, path, raw = self.install_historical_plan(initiative)
+        active = self.activate_historical_plan_for_observation(initiative, retained)
+
+        for args in (
+            ["plan", active["initiative_id"], "--show", "--json"],
+            ["plan", active["initiative_id"], "--show", "--revision", "1", "--json"],
+        ):
+            with self.subTest(args=args):
+                status, stdout, stderr = self.invoke(args)
+                self.assertEqual((status, stderr), (0, ""))
+                self.assertEqual(json.loads(stdout), retained)
+
+        status, stdout, stderr = self.invoke([
+            "show", active["initiative_id"], "--json",
+        ])
+        self.assertEqual((status, stderr), (0, ""))
+        shown = json.loads(stdout)
+        self.assertEqual(shown["graph"]["plan"], retained)
+        self.assertEqual(shown["gates"], retained["declared_gates"])
+
+        status, stdout, stderr = self.invoke([
+            "snapshot", active["initiative_id"], "--json",
+        ])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(json.loads(stdout)["active_plan"], retained)
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_historical_plan_approval_refuses_before_mutation(self) -> None:
+        initiative = self.create("historical-approval")
+        retained, path, raw = self.install_historical_plan(initiative)
+        before_initiative = self.store.peek(initiative["initiative_id"])
+        before_nodes = self.store.list_nodes_snapshot(initiative["initiative_id"])
+
+        status, stdout, stderr = self.invoke([
+            "approve", initiative["initiative_id"],
+            "--digest", retained["digest"], "--json",
+        ])
+
+        self.assertEqual((status, stdout), (2, ""))
+        self.assertIn("is observation-only", stderr)
+        self.assertIn("execution authority cannot be inferred", stderr)
+        self.assertEqual(self.store.peek(initiative["initiative_id"]), before_initiative)
+        self.assertEqual(
+            self.store.list_nodes_snapshot(initiative["initiative_id"]), before_nodes,
+        )
+        self.assertEqual(
+            self.store.list_approvals_snapshot(initiative["initiative_id"]), [],
+        )
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_historical_plan_can_be_rejected_then_replaced_by_strict_revision_two(self) -> None:
+        initiative = self.create("historical-replan")
+        retained, first_path, first_raw = self.install_historical_plan(initiative)
+        first_digest = retained["digest"]
+
+        status, stdout, stderr = self.invoke([
+            "reject", initiative["initiative_id"], "--digest", first_digest,
+            "--reason", "Re-author with immutable verification authority.", "--json",
+        ])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(json.loads(stdout)["plan_digest"], first_digest)
+        self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "planning")
+
+        replacement = valid_plan()
+        replacement["initiative_id"] = initiative["initiative_id"]
+        replacement["revision"] = 2
+        replacement["repositories"] = [
+            copy.deepcopy(initiative["scope"]["repository"]),
+        ]
+        repository_id = initiative["scope"]["repository"]["repository_id"]
+        renames = {
+            "implementation-a": "implementation-b",
+            "review-a": "review-b",
+            "verify-a": "verify-b",
+        }
+        for node in replacement["nodes"]:
+            node["node_id"] = renames[node["node_id"]]
+            node["dependencies"] = [renames[item] for item in node["dependencies"]]
+            if node["repository_id"] is not None:
+                node["repository_id"] = repository_id
+        for gate in replacement["declared_gates"]:
+            gate["node_id"] = renames[gate["node_id"]]
+        replacement_path = self.write_plan_value(replacement, "strict-revision-two.json")
+
+        status, stdout, stderr = self.invoke([
+            "plan", initiative["initiative_id"], "--file", str(replacement_path),
+            "--json",
+        ])
+        self.assertEqual((status, stderr), (0, ""))
+        second = json.loads(stdout)
+        self.assertEqual(second["revision"], 2)
+        self.assertEqual(
+            set(second["declared_gates"][1]),
+            {"kind", "node_id", "required", "commands", "environment_policy"},
+        )
+        self.assertEqual(self.store.read_plan(initiative["initiative_id"], 2), second)
+        status, stdout, stderr = self.invoke([
+            "plan", initiative["initiative_id"], "--show", "--revision", "2",
+            "--json",
+        ])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertEqual(json.loads(stdout), second)
+        self.assertEqual(
+            self.store.read_plan_snapshot(initiative["initiative_id"], 1)["digest"],
+            first_digest,
+        )
+        self.assertEqual(first_path.read_bytes(), first_raw)
 
     def test_list_all_includes_archived_initiatives(self) -> None:
         archived = self.create("archived-list")

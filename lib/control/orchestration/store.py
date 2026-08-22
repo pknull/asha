@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import errno
+import hashlib
 import hmac
 import json
 import os
@@ -36,6 +37,7 @@ from .model import (
     RESULT_PUBLICATION_TRANSITIONS,
     VERIFICATION_TRANSITIONS,
     ModelError,
+    _validate_retained_plan_observation,
     canonical_uuid,
     plan_digest,
     record_digest,
@@ -76,6 +78,10 @@ _INVENTORY_CLASSES = ("initiative",) + _LAYOUT_DIRECTORIES
 
 class _DuplicateJsonKey(ValueError):
     pass
+
+
+class ObservationOnlyPlanError(StoreError):
+    """A retained plan is readable evidence but lacks execution authority."""
 
 
 def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -683,10 +689,74 @@ class InitiativeStore:
             identity_field="revision", identity_value=revision,
         )
 
+    def read_plan_snapshot(self, initiative_id: str, revision: int) -> dict[str, Any]:
+        """Read one retained plan without locks, writes, or residue cleanup."""
+        if isinstance(revision, bool) or not isinstance(revision, int) or revision <= 0:
+            raise StoreError("plan revision must be a positive integer")
+        with self._initiative_directory(
+            initiative_id, create_root=False, create_initiative=False,
+        ) as (_, initiative_fd):
+            plans_fd = self._subdirectory(initiative_fd, "plans")
+            try:
+                record = self._validated_read(
+                    plans_fd, f"{revision:04d}.json", "plans record",
+                    self._validate_stored_plan_observation,
+                )
+            finally:
+                _close(plans_fd)
+        if record["initiative_id"] != initiative_id:
+            raise StoreError("record initiative_id does not match destination initiative")
+        if record["revision"] != revision:
+            raise StoreError("record revision does not match its filename")
+        return record
+
     @staticmethod
-    def _validate_stored_plan(record: Any) -> dict[str, Any]:
-        value = validate_plan_record(record)
-        if value["digest"] is None or value["digest"] != plan_digest(value):
+    def _validated_plan_content_digest(value: dict[str, Any]) -> str:
+        content = dict(value)
+        content.pop("digest")
+        content.pop("status")
+        raw = json.dumps(
+            content, ensure_ascii=False, sort_keys=True,
+            separators=(",", ":"), allow_nan=False,
+        ).encode("utf-8")
+        return hashlib.sha256(raw).hexdigest()
+
+    @classmethod
+    def _validate_stored_plan_observation(cls, record: Any) -> dict[str, Any]:
+        value = _validate_retained_plan_observation(record)
+        if (
+            value["digest"] is None
+            or value["digest"] != cls._validated_plan_content_digest(value)
+        ):
+            raise ModelError("stored plan digest does not match canonical plan bytes")
+        return value
+
+    @classmethod
+    def _validate_stored_plan(cls, record: Any) -> dict[str, Any]:
+        try:
+            value = validate_plan_record(record)
+        except ModelError as strict_error:
+            try:
+                retained = _validate_retained_plan_observation(record)
+            except ModelError:
+                raise strict_error
+            if (
+                retained["digest"] is None
+                or retained["digest"] != cls._validated_plan_content_digest(retained)
+            ):
+                raise ModelError(
+                    "stored plan digest does not match canonical plan bytes"
+                ) from strict_error
+            raise ObservationOnlyPlanError(
+                f"retained asha.orchestration-plan.v1 revision "
+                f"{retained['revision']} is observation-only: one or more historical "
+                "verification gates lack immutable commands and environment_policy; "
+                "execution authority cannot be inferred"
+            ) from strict_error
+        if (
+            value["digest"] is None
+            or value["digest"] != cls._validated_plan_content_digest(value)
+        ):
             raise ModelError("stored plan digest does not match canonical plan bytes")
         return value
 
@@ -1194,7 +1264,7 @@ class InitiativeStore:
 
     def list_plans_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
         records = self._list_subrecords_snapshot(
-            initiative_id, "plans", self._validate_stored_plan,
+            initiative_id, "plans", self._validate_stored_plan_observation,
             re.compile(r"([0-9]{4})\.json"), "revision", int,
         )
         if [record["revision"] for record in records] != list(range(1, len(records) + 1)):
@@ -1604,5 +1674,6 @@ class InitiativeStore:
         return result
 
 __all__ = [
-    "MAX_RECORD_BYTES", "InitiativeStore", "StoreError", "StoreCommittedError",
+    "MAX_RECORD_BYTES", "InitiativeStore", "ObservationOnlyPlanError",
+    "StoreError", "StoreCommittedError",
 ]

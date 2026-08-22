@@ -791,7 +791,9 @@ _PLAN_KEYS = frozenset({
 })
 
 
-def validate_plan_record(value: Any) -> dict[str, Any]:
+def _validate_plan_record(
+    value: Any, *, historical_verification_gates: bool,
+) -> dict[str, Any]:
     plan = _object(value, "plan", _PLAN_KEYS)
     if plan["contract"] != PLAN_CONTRACT:
         raise ModelError(f"plan contract must be {PLAN_CONTRACT}")
@@ -811,7 +813,7 @@ def validate_plan_record(value: Any) -> dict[str, Any]:
     for index, gate_value in enumerate(gates):
         gate_kind = gate_value.get("kind") if isinstance(gate_value, dict) else None
         gate_keys = {"kind", "node_id", "required"}
-        if gate_kind == "verification":
+        if gate_kind == "verification" and not historical_verification_gates:
             gate_keys.update({"commands", "environment_policy"})
         gate = _object(
             gate_value, f"plan declared_gates[{index}]",
@@ -822,7 +824,7 @@ def validate_plan_record(value: Any) -> dict[str, Any]:
         validate_slug(gate["node_id"], "declared gate node_id")
         if not isinstance(gate["required"], bool):
             raise ModelError("declared gate required must be boolean")
-        if gate["kind"] == "verification":
+        if gate["kind"] == "verification" and not historical_verification_gates:
             if gate["environment_policy"] != "minimal":
                 raise ModelError("verification environment_policy must be minimal")
             commands = _array(
@@ -875,6 +877,18 @@ def validate_plan_record(value: Any) -> dict[str, Any]:
     for item in nodes:
         validate_node(item)
     return copy.deepcopy(plan)
+
+
+def validate_plan_record(value: Any) -> dict[str, Any]:
+    return _validate_plan_record(value, historical_verification_gates=False)
+
+
+def _validate_retained_plan_observation(value: Any) -> dict[str, Any]:
+    """Validate current plans or the exact retained Increment 1 gate shape."""
+    try:
+        return validate_plan_record(value)
+    except ModelError:
+        return _validate_plan_record(value, historical_verification_gates=True)
 
 
 validate_plan = validate_plan_record

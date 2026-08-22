@@ -5,6 +5,7 @@ import hashlib
 import json
 import unittest
 import uuid
+from pathlib import Path
 
 from lib.control.orchestration import model
 
@@ -14,6 +15,17 @@ REPOSITORY_ID = "22222222-2222-4222-8222-222222222222"
 NODE_ID = "implementation-a"
 DIGEST = "a" * 64
 TIMESTAMP = "2026-08-17T16:00:00Z"
+HISTORICAL_PLAN_FIXTURE = (
+    Path(__file__).resolve().parents[1]
+    / "fixtures"
+    / "orchestration-plan-v1-increment1.json"
+)
+HISTORICAL_PLAN_RAW_SHA256 = (
+    "1ee50479c385cab51dbbfe23c51d0c3e567dc034a599ce8d854d808c217e9d12"
+)
+HISTORICAL_PLAN_DIGEST = (
+    "164c446670583730b2ec360d0b5b108ad80d268c9ead385052693e8c8da3595a"
+)
 
 
 def repository() -> dict:
@@ -116,6 +128,66 @@ def plan() -> dict:
 
 
 class OrchestrationModelTests(unittest.TestCase):
+    def historical_plan(self) -> dict:
+        raw = HISTORICAL_PLAN_FIXTURE.read_bytes()
+        self.assertEqual(hashlib.sha256(raw).hexdigest(), HISTORICAL_PLAN_RAW_SHA256)
+        value = json.loads(raw)
+        self.assertEqual(value["digest"], HISTORICAL_PLAN_DIGEST)
+        return value
+
+    def test_exact_increment_one_plan_is_observable_but_never_strict_authority(self) -> None:
+        retained = self.historical_plan()
+
+        self.assertEqual(model._validate_retained_plan_observation(retained), retained)
+        for validator in (
+            model.validate_plan_record,
+            model.validate_plan,
+            model.validate_record,
+            model.record_digest,
+            model.plan_digest,
+        ):
+            with self.subTest(validator=validator.__name__), self.assertRaises(model.ModelError):
+                validator(retained)
+
+    def test_retained_plan_fallback_accepts_only_the_exact_historical_gate_shape(self) -> None:
+        retained = self.historical_plan()
+        current_gate = copy.deepcopy(plan()["declared_gates"][1])
+        cases = {}
+
+        missing_commands = copy.deepcopy(current_gate)
+        missing_commands.pop("commands")
+        cases["missing-commands"] = missing_commands
+        missing_policy = copy.deepcopy(current_gate)
+        missing_policy.pop("environment_policy")
+        cases["missing-policy"] = missing_policy
+        extra = copy.deepcopy(retained["declared_gates"][1])
+        extra["unexpected"] = True
+        cases["historical-extra"] = extra
+        malformed = copy.deepcopy(retained["declared_gates"][1])
+        malformed["required"] = "yes"
+        cases["malformed"] = malformed
+
+        for name, gate in cases.items():
+            candidate = copy.deepcopy(retained)
+            candidate["declared_gates"][1] = gate
+            with self.subTest(name=name), self.assertRaises(model.ModelError):
+                model._validate_retained_plan_observation(candidate)
+
+        mixed = copy.deepcopy(retained)
+        mixed["declared_gates"].append(current_gate)
+        with self.assertRaises(model.ModelError):
+            model._validate_retained_plan_observation(mixed)
+
+        future = copy.deepcopy(retained)
+        future["contract"] = "asha.orchestration-plan.v2"
+        with self.assertRaises(model.ModelError):
+            model._validate_retained_plan_observation(future)
+
+        malformed_nested = copy.deepcopy(retained)
+        malformed_nested["nodes"][0]["base"]["scope_origin"]["tree_digest"] = 7
+        with self.assertRaises(model.ModelError):
+            model._validate_retained_plan_observation(malformed_nested)
+
     def contract_records(self) -> list[tuple[object, dict]]:
         attempt_id = "33333333-3333-4333-8333-333333333333"
         task_id = "44444444-4444-4444-8444-444444444444"
@@ -407,6 +479,10 @@ class OrchestrationModelTests(unittest.TestCase):
         self.assertEqual(validated_plan["revision"], 1)
         self.assertEqual(model.validate_node(node())["node_id"], NODE_ID)
         self.assertRegex(model.record_digest(initiative()), r"^[0-9a-f]{64}$")
+        self.assertEqual(
+            model.plan_digest(plan()),
+            "c01aac49bcdb693c4cc676be9ea791bc46cbe3e9bc025e6137bb12fde627082b",
+        )
         self.assertEqual(model.plan_digest(plan()), model.plan_digest(copy.deepcopy(plan())))
         approved = copy.deepcopy(plan())
         approved["status"] = "approved"

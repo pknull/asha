@@ -26,11 +26,15 @@ from lib.control.orchestration.model import (
 )
 from lib.control.orchestration.store import (
     InitiativeStore,
+    ObservationOnlyPlanError,
     StoreCommittedError,
     StoreError,
 )
 from tests.python.test_orchestration_model import (
     DIGEST,
+    HISTORICAL_PLAN_DIGEST,
+    HISTORICAL_PLAN_FIXTURE,
+    HISTORICAL_PLAN_RAW_SHA256,
     INITIATIVE_ID,
     NODE_ID,
     TIMESTAMP,
@@ -88,6 +92,78 @@ class OrchestrationStoreTests(unittest.TestCase):
 
     def create(self) -> None:
         self.store.save_initiative(self.record)
+
+    def install_historical_plan(self, raw: bytes | None = None) -> Path:
+        self.create()
+        path = self.config.initiatives_dir / INITIATIVE_ID / "plans" / "0001.json"
+        path.write_bytes(HISTORICAL_PLAN_FIXTURE.read_bytes() if raw is None else raw)
+        path.chmod(0o600)
+        return path
+
+    def test_increment_one_plan_observation_preserves_exact_bytes_and_digest(self) -> None:
+        path = self.install_historical_plan()
+        before = path.read_bytes()
+        self.assertEqual(hashlib.sha256(before).hexdigest(), HISTORICAL_PLAN_RAW_SHA256)
+
+        listed = self.store.list_plans_snapshot(INITIATIVE_ID)
+        explicit = self.store.read_plan_snapshot(INITIATIVE_ID, 1)
+
+        self.assertEqual(listed, [explicit])
+        self.assertEqual(explicit["digest"], HISTORICAL_PLAN_DIGEST)
+        self.assertEqual(
+            set(explicit["declared_gates"][1]), {"kind", "node_id", "required"},
+        )
+        self.assertEqual(path.read_bytes(), before)
+        with self.assertRaisesRegex(
+            ObservationOnlyPlanError,
+            r"retained asha\.orchestration-plan\.v1 revision 1 is observation-only: "
+            r"one or more historical verification gates lack immutable commands and "
+            r"environment_policy; execution authority cannot be inferred",
+        ):
+            self.store.read_plan(INITIATIVE_ID, 1)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_increment_one_plan_cannot_be_saved_as_new_authority(self) -> None:
+        self.create()
+        retained = json.loads(HISTORICAL_PLAN_FIXTURE.read_bytes())
+        with self.assertRaisesRegex(StoreError, "missing 2 required field"):
+            self.store.save_plan(INITIATIVE_ID, retained)
+
+    def test_historical_observation_wrong_digest_is_corrupt_not_observation_only(self) -> None:
+        value = json.loads(HISTORICAL_PLAN_FIXTURE.read_bytes())
+        value["digest"] = "0" * 64
+        raw = json.dumps(value, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+        self.install_historical_plan(raw)
+
+        with self.assertRaisesRegex(StoreError, "stored plan digest does not match") as caught:
+            self.store.read_plan_snapshot(INITIATIVE_ID, 1)
+        self.assertNotIsInstance(caught.exception, ObservationOnlyPlanError)
+        with self.assertRaisesRegex(StoreError, "stored plan digest does not match") as caught:
+            self.store.read_plan(INITIATIVE_ID, 1)
+        self.assertNotIsInstance(caught.exception, ObservationOnlyPlanError)
+
+    def test_explicit_plan_observation_does_not_create_layout_or_sweep_residue(self) -> None:
+        path = self.install_historical_plan()
+        initiative_dir = path.parents[1]
+        assignments = initiative_dir / "assignments"
+        assignments.rmdir()
+        residue = path.parent / ".0002.json.test.tmp"
+        residue.write_bytes(b"retained residue")
+        residue.chmod(0o600)
+
+        self.store.read_plan_snapshot(INITIATIVE_ID, 1)
+
+        self.assertFalse(assignments.exists())
+        self.assertEqual(residue.read_bytes(), b"retained residue")
+
+    def test_current_plan_snapshot_and_executable_read_remain_identical(self) -> None:
+        self.create()
+        path = self.store.save_plan(INITIATIVE_ID, plan())
+        before = path.read_bytes()
+        observed = self.store.read_plan_snapshot(INITIATIVE_ID, 1)
+        executable = self.store.read_plan(INITIATIVE_ID, 1)
+        self.assertEqual(observed, executable)
+        self.assertEqual(path.read_bytes(), before)
 
     def test_layout_modes_and_lock_reentrancy(self) -> None:
         self.create()

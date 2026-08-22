@@ -8,6 +8,8 @@ from unittest import mock
 
 from lib.control.orchestration.actions import (
     ActionRefused,
+    _parse_document,
+    _repair_node,
     build_action_document,
     payload_digest,
     reconcile_actions,
@@ -15,6 +17,7 @@ from lib.control.orchestration.actions import (
 )
 from lib.control.orchestration.scheduler import SchedulerError
 from lib.control.orchestration.model import ATTEMPT_CONTRACT, record_digest
+from lib.control.orchestration.store import ObservationOnlyPlanError
 from lib.control.jj import RepositoryFacts
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 
@@ -40,6 +43,115 @@ class OrchestrationActionTests(ExecutionFixture, unittest.TestCase):
         ):
             submit_action(self.store, self.initiative_id, document)
         return self.store.list_attempts_snapshot(self.initiative_id)[0]
+
+    def test_historical_execution_actions_refuse_before_any_execution_effect(self) -> None:
+        retained, raw = self.install_historical_active_plan()
+        plan_path = (
+            self.config.initiatives_dir / self.initiative_id / "plans" / "0001.json"
+        )
+        identity = "33333333-3333-4333-8333-333333333333"
+        cases = (
+            ("activate-initiative", {}),
+            ("dispatch-node", {"node_id": "implementation-a"}),
+            ("dispatch-node", {"node_id": "review-a"}),
+            ("dispatch-node", {"node_id": "verify-a"}),
+            ("resume", {}),
+            ("repair-node", {"node_id": "implementation-a", "seal_id": identity}),
+            ("continue-node", {
+                "node_id": "implementation-a", "paused_seal_id": identity,
+                "decision_action_id": "44444444-4444-4444-8444-444444444444",
+            }),
+        )
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.dispatch",
+        ) as dispatch, mock.patch(
+            "lib.control.orchestration.verification.prevalidate_verification",
+        ) as verify, mock.patch(
+            "lib.control.orchestration.verification.prepare_verification_intent",
+        ) as prepare, mock.patch(
+            "lib.control.orchestration.verification.run_verification",
+        ) as run:
+            for action_class, payload in cases:
+                with self.subTest(action_class=action_class, payload=payload):
+                    before_attempts = self.store.list_attempts_snapshot(self.initiative_id)
+                    action = submit_action(
+                        self.store, self.initiative_id,
+                        build_action_document(
+                            self.initiative(), action_class, payload,
+                        ),
+                    )
+                    self.assertEqual(action["state"], "refused")
+                    reason = json.loads(action["outcome"])["reason"]
+                    self.assertIn("is observation-only", reason)
+                    self.assertIn("execution authority cannot be inferred", reason)
+                    self.assertEqual(
+                        self.store.list_attempts_snapshot(self.initiative_id),
+                        before_attempts,
+                    )
+        dispatch.assert_not_called()
+        verify.assert_not_called()
+        prepare.assert_not_called()
+        run.assert_not_called()
+        self.assertEqual(plan_path.read_bytes(), raw)
+        self.assertEqual(self.initiative()["active_plan"]["digest"], retained["digest"])
+
+    def test_historical_cancel_action_remains_safe_terminal_containment(self) -> None:
+        _, raw = self.install_historical_active_plan()
+        path = (
+            self.config.initiatives_dir / self.initiative_id / "plans" / "0001.json"
+        )
+        before_attempts = self.store.list_attempts_snapshot(self.initiative_id)
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.dispatch",
+        ) as dispatch, mock.patch(
+            "lib.control.orchestration.actions._stop_task",
+        ) as stop_task, mock.patch(
+            "lib.control.orchestration.verification.run_verification",
+        ) as verify:
+            action = submit_action(
+                self.store, self.initiative_id,
+                build_action_document(
+                    self.initiative(), "cancel-node",
+                    {"node_id": "implementation-a"},
+                ),
+            )
+
+        self.assertEqual(action["state"], "completed")
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "cancelled",
+        )
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id), before_attempts,
+        )
+        self.assertEqual(path.read_bytes(), raw)
+        dispatch.assert_not_called()
+        stop_task.assert_not_called()
+        verify.assert_not_called()
+
+    def test_direct_repair_retains_strict_historical_plan_defense(self) -> None:
+        self.install_historical_active_plan()
+        identity = "33333333-3333-4333-8333-333333333333"
+        document = build_action_document(
+            self.initiative(), "repair-node",
+            {"node_id": "implementation-a", "seal_id": identity},
+        )
+        action, _ = _parse_document(document)
+        before_attempts = self.store.list_attempts_snapshot(self.initiative_id)
+
+        with self.assertRaises(ObservationOnlyPlanError), mock.patch.object(
+            self.store, "save_attempt",
+        ) as save_attempt:
+            _repair_node(
+                self.store, action, "implementation-a", identity,
+            )
+
+        save_attempt.assert_not_called()
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id), before_attempts,
+        )
 
     def test_same_id_same_digest_returns_stored_outcome_without_effect(self) -> None:
         document = build_action_document(self.initiative(), "pause", {})
