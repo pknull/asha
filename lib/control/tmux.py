@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -23,6 +24,11 @@ _ENVIRONMENT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}", re.ASCII)
 _PERCENT = re.compile(r"(?:[1-9][0-9]?|100)%", re.ASCII)
 _SESSION_PREFIX = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30})?", re.ASCII)
 _CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+_POPUP_CHILD_EXEC = (
+    "(__import__('os').environ.__setitem__('TMUX',''))or"
+    "(__import__('os').execvp(__import__('sys').argv[1],"
+    "__import__('sys').argv[1:]))"
+)
 _PANE_FORMAT = (
     "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}\t"
     "#{pane_dead_signal}\t#{session_name}\t#{window_name}\t#{pane_title}"
@@ -541,6 +547,7 @@ class TmuxAdapter:
             self.executable, *socket_args,
             "display-popup", "-c", client, "-E",
             "-w", width, "-h", height, "--",
+            sys.executable, "-I", "-S", "-c", _POPUP_CHILD_EXEC,
             self.executable, *socket_args,
             "attach-session", "-t", session,
         ]

@@ -12,7 +12,72 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Control: popup attachment keeps child tmux outside nesting state
+
+- Popup argv now clears `TMUX` only in the `display-popup` child before its
+  inner `tmux attach-session`. A fixed `sys.executable` wrapper clears the
+  child variable and immediately `exec`s the unchanged tmux argv, avoiding the
+  newer `display-popup -e` option so tmux 3.2/3.2a popup support remains valid.
+  The Control process, caller client binding, socket selection, and
+  `TMUX_PANE` handling remain unchanged. A failed popup
+  attach returns one actionable manual-attach diagnostic to CLI or TUI callers
+  instead of being reported as a normal popup close. Successful operator
+  detach remains a normal close and never stops the task.
+
+#### Control: omitted bases follow the current local branch
+
+- Omitted task bases and initiative baselines now share one read-only exact-Git
+  resolver: the current attached local branch wins, followed by remote symbolic
+  `*/HEAD` targets that agree on one OID, then conventional local
+  `main`/`master`/`trunk` refs that agree on one OID. Different fallback OIDs
+  refuse before mutation. This prevents a stale packed remote branch from
+  overriding the operator's current loose local branch. Explicit bases remain
+  verbatim, while the legacy default revset string remains only the durable v1
+  omitted-request/replay identity.
+- The TUI resolves the empty Base row after repository selection, displays
+  bounded ref name(s) and an abbreviated OID, and passes the full OID only as a
+  freshness assertion. Controller re-resolution remains authoritative and a
+  preview race refuses before launch. A failed preview cannot submit an empty
+  Base, and resizing while editing Base refreshes the preview. Successful
+  CLI/TUI starts name the full authoritative base OID. Retry omits `--base` only
+  for the stored legacy default sentinel.
+- Exact Git now disables promisor-object lazy fetching for every sanitized and
+  bound read, preventing partial-clone configuration from turning default or
+  baseline inspection into network access. Default refs use a bounded complete
+  Git-ref grammar validator, and commit output must be one unpadded ASCII line.
+
+#### Control: verified colocation survives device renumbering
+
+- Strict v1 `verified` colocation records now recover from coherent filesystem
+  device-number changes after reboot or remount. Control requires exact
+  non-device root/Git-marker/target/`.jj` facts and an injective device map,
+  then runs the existing path, Memory, base, destination, strict jj/sync,
+  stable all-ref semantic, and stable-operation authentication chain before a
+  source-locked exact-record rewrite refreshes only the stored device values.
+  Doctor reports safe candidates read-only. Intent records, partial or
+  collapsing maps, mixed permission/device drift, and all other mismatches
+  still fail closed. The refresh mutates neither Git nor jj state; device and
+  inode remain exact authority within each live transaction.
+
 #### Control: immutable context preflight and retained-creation adoption
+
+- A missing committed `/.asha/control-task.json` ignore now produces typed
+  immutable-base evidence before every Git-backed start mutation, including
+  existing-jj Git import. The TUI offers an explicit source-only `.gitignore`
+  patch, instructions, or cancel without parsing stderr or losing its form;
+  apply revalidates repository/base/project/proof/preimage facts, creates no
+  task or jj state, never commits or retries, and keeps the old base refused.
+  `/session:init`, drift, and `task doctor` now install or diagnose the rule.
+  PR heads already local use the same early proof; remote-only heads are proved
+  in a disposable object plane before any source fetch, colocation, or jj
+  import, then re-proved in source before import. Apply rejects oversized or
+  nested-negated intended patches before rename, creates its temporary with
+  authenticated dirfd-relative operations, and classifies every ordinary
+  rename-attempt exception as indeterminate. Apply/default/worker refusals retain the iterative
+  five-field TUI draft and render a bounded form-local result before the next
+  key can acknowledge it; blank-default changes require a second acceptance.
+  SIGTERM/SIGHUP still exit with their signal status and warning across the
+  rename boundary, while KeyboardInterrupt/SystemExit propagate unchanged.
 
 - Task start now proves context compatibility from the immutable selected base
   before colocation, task state, destination parents, or workspace registration.

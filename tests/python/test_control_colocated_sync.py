@@ -324,6 +324,9 @@ class StartGuardOrderingTests(unittest.TestCase):
                     events.append("import")
                     raise AssertionError("import must not run after the second guard refuses")
 
+                def resolve_git_commit(self, requested, revision):
+                    return "d" * 40
+
             class FakeGithub:
                 def preflight(self):
                     pass
@@ -362,10 +365,20 @@ class StartGuardOrderingTests(unittest.TestCase):
                     raise ValueError("mutation-window divergence")
 
             stdout, stderr = io.StringIO(), io.StringIO()
+            def retained_preflight(
+                _parsed, _config, _jj, _source, _task_id, *, request=None, **_kwargs,
+            ):
+                self.assertIsNotNone(request)
+                return request, mock.sentinel.pre_enable_plan
+
             with mock.patch("lib.control.cli._repo_argument", return_value=source), \
                     mock.patch("lib.control.cli.JjAdapter", return_value=FakeJj()), \
                     mock.patch("lib.control.cli.GithubAdapter", FakeGithub), \
                     mock.patch("lib.control.cli._guard_colocated_sync", side_effect=guard), \
+                    mock.patch("lib.control.cli._preflight_plain_git_start",
+                               side_effect=retained_preflight), \
+                    mock.patch("lib.control.cli.revalidate_plain_git_pre_enable_plan"), \
+                    mock.patch("lib.control.cli.revalidate_pr_source_proof_after_fetch"), \
                     mock.patch("lib.control.cli.shutil.which", return_value="/fake/codex"), \
                     mock.patch(
                         "lib.control.cli.prepare_task_workspace",

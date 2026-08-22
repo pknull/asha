@@ -28,6 +28,7 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from path_safety import secure_path, secure_project_root
+from control_task_marker import CONTROL_IGNORE_BLOCK, CONTROL_IGNORE_RULE
 
 
 ACTIVE_LIMIT = 4096
@@ -448,7 +449,8 @@ def _ensure_ignore(project_dir: Path) -> None:
     git_dir = project_dir / ".git"
     if git_dir.exists():
         probes = (project_dir / "Work/session-state/.asha-ignore-probe.json",
-                  project_dir / "Work/memory-migration/.asha-ignore-probe.json")
+                  project_dir / "Work/memory-migration/.asha-ignore-probe.json",
+                  project_dir / ".asha/control-task.json")
         for probe in probes:
             result = subprocess.run(
                 ["git", "check-ignore", "--no-index", "--quiet", "--", str(probe)],
@@ -460,15 +462,21 @@ def _ensure_ignore(project_dir: Path) -> None:
 
 
 def managed_ignore_text(existing: str) -> str:
-    managed = f"{IGNORE_MARKER}\n{MIGRATION_IGNORE_RULE}\n{IGNORE_RULE}\n"
-    if not existing.endswith(managed):
-        separator = "" if not existing or existing.endswith("\n") else "\n"
-        return f"{existing}{separator}{managed}"
-    return existing
+    memory = f"{IGNORE_MARKER}\n{MIGRATION_IGNORE_RULE}\n{IGNORE_RULE}\n"
+    managed = memory + CONTROL_IGNORE_BLOCK
+    if existing.endswith(managed):
+        return existing
+    separator = "" if not existing or existing.endswith("\n") else "\n"
+    if existing.endswith(memory):
+        return f"{existing}{CONTROL_IGNORE_BLOCK}"
+    # A nonterminal managed block can have been defeated by a later negation.
+    # Reassert the complete suffix at EOF, where Git's last-match semantics
+    # make all three private paths effective.
+    return f"{existing}{separator}{managed}"
 
 
 def ensure_private_ignores(project_dir: Path) -> None:
-    """Install and verify only the two v2 private-work ignore rules."""
+    """Install and verify Memory recovery plus Control private marker rules."""
     root = secure_project_root(project_dir)
     _assert_persistence_enabled(root)
     secure_path(root, ".gitignore", create_parents=True)

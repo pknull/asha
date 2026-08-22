@@ -16,7 +16,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from lib.control.jj import (
-    DEFAULT_BASE_REVSET, ImmutableTree, JjAdapter, JjError, RepositoryFacts,
+    DEFAULT_BASE_REVSET, DefaultBaseResolution, ImmutableTree, JjAdapter,
+    JjError, RepositoryFacts,
 )
 from lib.control.orchestration.cli import (
     _approve, _create, _plan, _reject, _repository_scope, _snapshot, main,
@@ -61,6 +62,10 @@ class OrchestrationCliTests(unittest.TestCase):
         self.jj.git_head.return_value = "b" * 40
         self.jj.git_head_exact.return_value = "b" * 40
         self.jj.resolve_base.return_value = "b" * 40
+        self.jj.resolve_default_base.return_value = DefaultBaseResolution(
+            ("refs/heads/master",), "b" * 40, "attached-local",
+        )
+        self.jj.require_visible_commit.return_value = None
         self.jj.immutable_tree.return_value = ImmutableTree(
             commit_id="b" * 40, digest="c" * 64, entries=(),
         )
@@ -150,30 +155,30 @@ class OrchestrationCliTests(unittest.TestCase):
             stdout,
             f"Commit: {'b' * 40}\nTree digest: {'c' * 64}\n",
         )
-        self.jj.resolve_base.assert_called_once_with(self.repo, DEFAULT_BASE_REVSET)
+        self.jj.resolve_default_base.assert_called_once_with(self.repo)
+        self.jj.resolve_base.assert_not_called()
         self.assertEqual(
             [call[0] for call in self.jj.method_calls],
             [
-                "preflight", "working_copy_parent", "git_head_exact", "resolve_base",
+                "preflight", "working_copy_parent", "git_head_exact",
+                "resolve_default_base", "require_visible_commit",
                 "immutable_tree", "preflight",
             ],
         )
         self.jj.import_git.assert_not_called()
 
     def test_baseline_default_trunk_error_translates_only_supported_guidance(self) -> None:
-        self.jj.resolve_base.side_effect = JjError(
-            "the default base resolved to the empty root commit; this repository "
-            "has neither a remote trunk nor a local main, master, or trunk "
-            "bookmark. Pass an explicit --base naming a bookmark or commit, "
-            "for example --base main."
+        self.jj.resolve_default_base.side_effect = JjError(
+            "Git has no attached local branch, remote default, or conventional "
+            "local main/master/trunk; pass an explicit --base"
         )
         status, stdout, stderr = self.invoke([
             "baseline", "--repo", str(self.repo),
         ])
         self.assertEqual((status, stdout), (2, ""))
         self.assertIn("could not resolve revision the default base", stderr)
-        self.assertIn("empty root commit", stderr)
-        self.assertIn("--revision main", stderr)
+        self.assertIn("no attached local branch", stderr)
+        self.assertIn("explicit --revision", stderr)
         self.assertNotIn("--base", stderr)
         self.assertNotIn("Pass an explicit --base", stderr)
         self.assertNotIn("for example --base main", stderr)
@@ -195,6 +200,18 @@ class OrchestrationCliTests(unittest.TestCase):
         self.assertEqual((status, stdout), (2, ""))
         self.assertIn("revision 'feature--base' does not exist", stderr)
         self.assertNotIn("feature--revision", stderr)
+
+    def test_explicit_legacy_default_expression_is_not_reclassified_as_omitted(self) -> None:
+        status, _stdout, stderr = self.invoke([
+            "baseline", "--repo", str(self.repo),
+            "--revision", DEFAULT_BASE_REVSET,
+        ])
+
+        self.assertEqual((status, stderr), (0, ""))
+        self.jj.resolve_base.assert_called_once_with(
+            self.repo, DEFAULT_BASE_REVSET,
+        )
+        self.jj.resolve_default_base.assert_not_called()
 
     def test_baseline_refuses_colocated_divergence_before_resolution(self) -> None:
         self.jj.git_head_exact.return_value = "d" * 40

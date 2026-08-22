@@ -37,8 +37,13 @@ from .launch import (
 from .model import canonical_uuid, new_uuid, validate_task_slug
 from .prepare import (
     PlainGitPreEnablePlan, PrepareRequest, PreparationError,
+    PreparationPrerequisiteError,
     preflight_plain_git_enablement, prepare_task_workspace,
-    revalidate_plain_git_pre_enable_plan,
+    revalidate_plain_git_pre_enable_plan, revalidate_pr_source_proof_after_fetch,
+)
+from .prerequisites import (
+    StartPrerequisiteRefusal, capture_prerequisite_offer,
+    encode_worker_refusal,
 )
 from .prune import (
     PRUNE_CONTRACT, assemble_prune_context, prune_one_task,
@@ -313,7 +318,8 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
     values: dict[str, Any] = {
         "repo": None, "base": DEFAULT_BASE_REVSET, "harness": None, "role": "implementer",
         "goal": None, "pr": None, "issue": None, "task_id": None, "slug": None,
-        "detach": False, "json": False,
+        "expected_default": None, "detach": False, "json": False,
+        "tui_worker": False,
     }
     seen: set[str] = set()
     index = 0
@@ -323,8 +329,8 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         if argument == "--":
             trailing = args[index + 1:]
             break
-        if argument in {"--detach", "--json"}:
-            key = argument[2:]
+        if argument in {"--detach", "--json", "--tui-worker"}:
+            key = argument[2:].replace("-", "_")
             if key in seen:
                 raise ValueError(f"{argument} may be specified only once")
             seen.add(key)
@@ -332,7 +338,8 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
             index += 1
             continue
         if argument in {"--repo", "--base", "--harness", "--agent", "--goal", "--role",
-                        "--pr", "--issue", "--task-id", "--slug"}:
+                        "--pr", "--issue", "--task-id", "--slug",
+                        "--expected-default"}:
             if index + 1 >= len(args):
                 raise ValueError(f"{argument} requires a value")
             key = argument[2:]
@@ -351,6 +358,12 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
                 values["task_id"] = canonical_uuid(raw_value)
             elif key == "slug":
                 values["slug"] = validate_task_slug(raw_value)
+            elif key == "expected-default":
+                if re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", raw_value) is None:
+                    raise ValueError(
+                        "--expected-default requires one full Git object ID"
+                    )
+                values["expected_default"] = raw_value
             else:
                 values[destination] = raw_value
             index += 2
@@ -360,6 +373,12 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         raise ValueError("--pr and --issue are mutually exclusive")
     if values["pr"] is not None and "base" in seen:
         raise ValueError("--pr and --base are mutually exclusive")
+    if values["expected_default"] is not None and (
+        "base" in seen or values["pr"] is not None
+    ):
+        raise ValueError(
+            "--expected-default is valid only when --base and --pr are omitted"
+        )
     if trailing is not None:
         if values["goal"] is not None:
             raise ValueError("--goal and goal arguments after -- are mutually exclusive")
@@ -382,6 +401,10 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         raise ValueError("task goal must contain 1-200 characters")
     values["label"] = label
     values["base_explicit"] = "base" in seen
+    if values["tui_worker"] and not {"json", "detach", "task-id"}.issubset(seen):
+        raise ValueError(
+            "--tui-worker requires explicit --json, --detach, and --task-id"
+        )
     if values["json"]:
         values["detach"] = True
     return values
@@ -417,10 +440,9 @@ def _run_popup(
         raise LaunchError(f"tmux popup could not be invoked: {exc}") from exc
     if result.returncode != 0:
         attach = shlex.join(_attach_tokens(adapter, session))
-        print(
-            f"asha control: popup closed with status {result.returncode}; task "
-            f"{slug} is still running (attach: {attach})",
-            file=sys.stderr,
+        return (
+            f"asha control: popup attach failed with status {result.returncode}; "
+            f"task {slug} is still running; attach with: {attach}"
         )
     return None
 
@@ -441,6 +463,12 @@ def _path_entry_exists(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return True
+
+
+_VERIFIED_COLOCATION_REAUTH_KINDS = {
+    "verified_root_hardening_candidate",
+    "verified_device_rebind_candidate",
+}
 
 
 def _ensure_colocated(
@@ -472,8 +500,9 @@ def _ensure_colocated(
         )
     if (
         assessment is not None
-        and assessment.kind == "verified_root_hardening_candidate"
+        and assessment.kind in _VERIFIED_COLOCATION_REAUTH_KINDS
     ):
+        device_rebind = assessment.kind == "verified_device_rebind_candidate"
         try:
             operation_before = (
                 reauth_operation
@@ -509,20 +538,37 @@ def _ensure_colocated(
                 raise JjError(
                     "repository semantics or jj operation changed during reauthentication"
                 )
-            intents.reauthenticate_root_hardening(selection.root, assessment)
+            if device_rebind:
+                intents.reauthenticate_device_rebind(selection.root, assessment)
+            else:
+                intents.reauthenticate_root_hardening(selection.root, assessment)
         except JjError as exc:
             intent_path = intents.path(selection.root)
+            cause = (
+                "verified colocation filesystem device renumbering"
+                if device_rebind else "verified colocation root hardening"
+            )
             raise ValueError(
-                "verified colocation root hardening could not be reauthenticated; "
+                f"{cause} could not be reauthenticated; "
                 f"the retained intent at {intent_path} was not rewritten. Inspect "
                 f"`jj status` and Git status/refs before retrying: {exc}"
             ) from exc
+        assessment = intents.classify(selection.root)
+        if assessment.kind != "verified":
+            raise ValueError(
+                "verified colocation reauthentication did not produce an exact "
+                "binding; the repository remains unavailable to task start"
+            )
         print(
-            "Control reauthenticated verified jj colocation after safe repository "
-            "root permission hardening",
+            (
+                "Control reauthenticated verified jj colocation after coherent "
+                "filesystem device renumbering"
+                if device_rebind else
+                "Control reauthenticated verified jj colocation after safe "
+                "repository root permission hardening"
+            ),
             file=sys.stderr, flush=True,
         )
-        assessment = intents.classify(selection.root)
     intent = (
         None if assessment is None or assessment.kind == "missing"
         else assessment.value
@@ -717,6 +763,7 @@ def _emit_start_result(
     print(f"Workspace: {launched['jj']['workspace_path']}")
     print(f"jj name: {launched['jj']['workspace_name']}")
     print(f"Change: {launched['jj']['change_id']}")
+    print(f"Base commit: {launched['jj']['base_commit_id']}")
     print(
         f"Tmux: {launched['tmux']['session']}:{launched['tmux']['window']} "
         f"{run['pane_id']}"
@@ -744,9 +791,13 @@ def _start_new_task(
     selected_role: str,
     initial_source_mutations: Sequence[dict[str, str]] = (),
     preflight_request: PrepareRequest | None = None,
+    pre_enable_plan: PlainGitPreEnablePlan | None = None,
 ) -> int:
     repository = jj.preflight(source)
-    _guard_colocated_sync(jj, repository)
+    if pre_enable_plan is None:
+        # Compatibility for direct/internal callers. Normal starts already
+        # crossed this guard immediately before universal immutable preflight.
+        _guard_colocated_sync(jj, repository)
     task_source = (
         {"kind": "ad-hoc", "number": None, "url": None}
         if preflight_request is None else dict(preflight_request.source)
@@ -786,8 +837,50 @@ def _start_new_task(
             ):
                 source_mutations.append(mutation)
                 print(f"Source mutation: {mutation['detail']}", file=sys.stderr)
+            controller_ref = (
+                f"refs/remotes/{remote.name}/asha-control-pr-{github_number}"
+            )
+            fetched_head = jj.resolve_git_commit(source, controller_ref)
+            if fetched_head != resolved_base_commit_id:
+                raise ValueError(
+                    "pull-request head changed after metadata inspection; the "
+                    "controller ref was retained for inspection, but no jj import, "
+                    "task, or workspace mutation was attempted"
+                )
+            if pre_enable_plan is None:
+                raise ValueError("pull-request start lacks retained prerequisite proof")
+            revalidate_pr_source_proof_after_fetch(pre_enable_plan, jj=jj)
             requested_base = f"PR #{github_number} head"
     _guard_colocated_sync(jj, repository)
+    default_resolution = None
+    if not parsed["base_explicit"] and parsed["pr"] is None:
+        default_resolution = jj.resolve_default_base(source)
+        if (
+            parsed.get("expected_default") is not None
+            and parsed["expected_default"] != default_resolution.commit_id
+        ):
+            raise ValueError(
+                "default base changed after the TUI preview; review the new "
+                "default or select/type an explicit --base"
+            )
+        if (
+            pre_enable_plan is not None
+            and pre_enable_plan.default_base_resolution is not None
+            and default_resolution != pre_enable_plan.default_base_resolution
+        ):
+            raise ValueError(
+                "default base changed after preflight; review the new default "
+                "or pass an explicit --base"
+            )
+        if (
+            resolved_base_commit_id is not None
+            and resolved_base_commit_id != default_resolution.commit_id
+        ):
+            raise ValueError(
+                "default base changed after preflight; review the new default "
+                "or pass an explicit --base"
+            )
+        resolved_base_commit_id = default_resolution.commit_id
     for mutation in jj.import_git(source):
         source_mutations.append(mutation)
         print(f"Source mutation: {mutation['detail']}", file=sys.stderr)
@@ -803,9 +896,16 @@ def _start_new_task(
         label=parsed["label"],
         source=task_source,
         resolved_base_commit_id=resolved_base_commit_id,
+        expected_default_commit_id=parsed.get("expected_default"),
     )
+    base_progress = requested_base
+    if default_resolution is not None:
+        base_progress = (
+            f"{', '.join(default_resolution.references)} "
+            f"@ {default_resolution.commit_id}"
+        )
     _progress(
-        f"Preparing jj workspace for {source} at {requested_base} "
+        f"Preparing jj workspace for {source} at {base_progress} "
         "(checking out the base tree; a large repository takes a while)..."
     )
     prepared = prepare_task_workspace(config, request, jj=jj)
@@ -851,13 +951,17 @@ def _build_start_preflight_request(
             pr_remote = github.pr_remote(
                 source, metadata["url"], github_number, git=jj,
             )
-            requested_base = f"PR #{github_number} head"
             resolved_base_commit_id = metadata["headRefOid"]
+            # The pre-mutation proof and repair offer bind the exact immutable
+            # object ID. The durable task record restores the human PR label
+            # only after the selected head is fetched and re-proved in source.
+            requested_base = resolved_base_commit_id
     return PrepareRequest(
         repository=source, requested_base=requested_base, task_id=task_id,
         slug=parsed["slug"] or _slug(slug_input), label=parsed["label"],
         source=task_source, resolved_base_commit_id=resolved_base_commit_id,
         github_title=github_title, pr_remote=pr_remote,
+        expected_default_commit_id=parsed.get("expected_default"),
     )
 
 
@@ -871,7 +975,10 @@ def _preflight_plain_git_start(
         parsed, config, jj, source, task_id,
     )
     plan = preflight_plain_git_enablement(
-        config, request, jj=jj, base_explicit=parsed["base_explicit"],
+        config, request, jj=jj,
+        base_explicit=(
+            parsed["base_explicit"] or request.source.get("kind") == "pr"
+        ),
         existing_jj=existing_jj,
     )
     if (
@@ -884,6 +991,7 @@ def _preflight_plain_git_start(
         source=request.source,
         resolved_base_commit_id=plan.resolved_base_commit_id,
         github_title=request.github_title, pr_remote=request.pr_remote,
+        expected_default_commit_id=request.expected_default_commit_id,
     ), plan
 
 
@@ -968,17 +1076,27 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
             preflight_request = None
             pre_enable_plan = None
             assessment = colocation_intents.classify(source)
+            if not selection.plain_git:
+                # Repository coherence is itself read-only and precedes base
+                # resolution, so a pending/unborn Git HEAD gets its exact
+                # remediation instead of an incidental revset failure.
+                _guard_colocated_sync(jj, jj.preflight(source))
             reauth_operation = None
             reauth_semantic = None
-            if assessment.kind == "verified_root_hardening_candidate":
+            if assessment.kind in _VERIFIED_COLOCATION_REAUTH_KINDS:
+                device_rebind = assessment.kind == "verified_device_rebind_candidate"
                 try:
                     reauth_operation = jj.pin_operation(source)
                     reauth_semantic = jj._git_semantic_state(
                         source, include_jj_refs=True,
                     )
                 except JjError as exc:
+                    cause = (
+                        "verified colocation device renumbering"
+                        if device_rebind else "verified colocation hardening"
+                    )
                     raise ValueError(
-                        "verified colocation hardening could not begin stable "
+                        f"{cause} could not begin stable "
                         "reauthentication; the retained intent was not rewritten. "
                         f"Inspect `jj status` and Git status/refs before retrying: {exc}"
                     ) from exc
@@ -986,13 +1104,20 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
                 preflight_request = _build_start_preflight_request(
                     parsed, config, jj, source, task_id,
                 )
-            if selection.plain_git or assessment.kind == "verified_root_hardening_candidate":
+            try:
+                # Every Git-backed start crosses the immutable context gate
+                # before colocation, import, task state, or workspace mutation.
                 preflight_request, pre_enable_plan = _preflight_plain_git_start(
                     parsed, config, jj, source, task_id,
                     existing_jj=not selection.plain_git,
                     request=preflight_request,
                 )
                 revalidate_plain_git_pre_enable_plan(pre_enable_plan, jj=jj)
+            except PreparationPrerequisiteError as exc:
+                offer = capture_prerequisite_offer(config, exc)
+                raise StartPrerequisiteRefusal(
+                    offer, task_id=task_id, tui_worker=parsed["tui_worker"],
+                ) from exc
             initial_mutations = _ensure_colocated(
                 jj, selection, colocation_intents,
                 reauth_operation=reauth_operation,
@@ -1004,6 +1129,7 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
                 selected_harness=selected_harness, selected_role=selected_role,
                 initial_source_mutations=initial_mutations,
                 preflight_request=preflight_request,
+                pre_enable_plan=pre_enable_plan,
             )
 
 
@@ -1489,6 +1615,12 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             _control_usage(sys.stderr)
             return 2
         print("unknown Control route", file=sys.stderr)
+        return 2
+    except StartPrerequisiteRefusal as exc:
+        if exc.tui_worker and exc.task_id is not None:
+            print(encode_worker_refusal(exc.offer, exc.task_id).decode("utf-8"), end="")
+        else:
+            print(f"asha control: {exc}", file=sys.stderr)
         return 2
     except (ConfigError, StoreError, PreparationError, SourceError, LaunchError,
             TmuxError, JournalError, ValueError) as exc:

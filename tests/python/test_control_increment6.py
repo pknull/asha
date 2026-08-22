@@ -149,6 +149,7 @@ class GithubAdapterTests(unittest.TestCase):
             "jj", "-R", str(self.source), "--ignore-working-copy", "git", "import",
         ])
         self.assertEqual(environments[0]["GIT_ALLOW_PROTOCOL"], "https")
+        self.assertEqual(environments[0]["GIT_NO_LAZY_FETCH"], "1")
         self.assertTrue(Path(environments[0]["GIT_SSH"]).is_absolute())
         self.assertNotIn("LD_PRELOAD", environments[0])
         self.assertNotIn("GIT_SSH_COMMAND", environments[0])
@@ -558,8 +559,19 @@ class RealGithubSourceTests(unittest.TestCase):
                 check=True, capture_output=True, env=self.git_env,
             )
 
+        @contextlib.contextmanager
+        def local_prerequisite(
+            _adapter, _source, _url, _source_ref, *, transport,
+            config_digest, expected_commit_id,
+        ):
+            self.assertEqual(expected_commit_id, self.pr_commit)
+            yield self.producer
+
         with mock.patch.dict(os.environ, additions, clear=False), \
                 mock.patch.object(JjAdapter, "fetch_git_ref_exact", local_fetch), \
+                mock.patch.object(
+                    JjAdapter, "prerequisite_pr_head", local_prerequisite,
+                ), \
                 mock.patch("lib.control.cli.launch_task", side_effect=fake_launch), \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             status = control_main(args, env=self.env)

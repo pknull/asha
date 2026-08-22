@@ -13,7 +13,8 @@ from unittest import mock
 
 from lib.control.cli import main as control_main
 from lib.control.config import load_config
-from lib.control.jj import DEFAULT_BASE_REVSET, RepositoryFacts
+from lib.control.jj import DEFAULT_BASE_REVSET, DefaultBaseResolution, RepositoryFacts
+from lib.control.prepare import PrepareRequest
 from lib.control.store import TaskStore
 from tests.python.test_control_config_model import task_record
 from tests.python.test_control_increment3 import FakeTmux
@@ -90,6 +91,18 @@ class ExistingTaskCliTests(unittest.TestCase):
         adapter.import_git.side_effect = AssertionError("existing task must not import Git")
         return adapter
 
+    def retained_preflight(self, parsed, _config, _jj, source, task_id, **_kwargs):
+        request = PrepareRequest(
+            repository=source, requested_base=parsed["base"], task_id=task_id,
+            slug=parsed["slug"] or "create-by-id", label=parsed["label"],
+            source={"kind": "ad-hoc", "number": None, "url": None},
+            resolved_base_commit_id="a" * 40,
+            expected_default_commit_id=parsed.get("expected_default"),
+        )
+        plan = mock.Mock()
+        plan.default_base_resolution = None
+        return request, plan
+
     def test_bad_task_id_is_a_usage_error(self) -> None:
         for value in ("not-a-uuid", TASK_ID.upper()):
             with self.subTest(value=value):
@@ -132,6 +145,9 @@ class ExistingTaskCliTests(unittest.TestCase):
         jj.preflight.return_value = RepositoryFacts(root=self.source, git_root=self.source)
         jj.working_copy_parent.return_value = "a" * 40
         jj.git_head_exact.return_value = "a" * 40
+        jj.resolve_default_base.return_value = DefaultBaseResolution(
+            ("refs/heads/main",), "a" * 40, "attached-local",
+        )
         jj.import_git.return_value = ()
         with mock.patch(
             "lib.control.cli.prepare_task_workspace", side_effect=prepare,
@@ -140,6 +156,11 @@ class ExistingTaskCliTests(unittest.TestCase):
         ), mock.patch(
             "lib.control.cli.new_uuid",
             side_effect=AssertionError("supplied ID must replace new_uuid"),
+        ), mock.patch(
+            "lib.control.cli._preflight_plain_git_start",
+            side_effect=self.retained_preflight,
+        ), mock.patch(
+            "lib.control.cli.revalidate_plain_git_pre_enable_plan",
         ):
             status, stdout, stderr, _tmux = self.invoke([
                 "task", "start", "--repo", str(self.source), "--task-id", TASK_ID,
@@ -185,9 +206,15 @@ class ExistingTaskCliTests(unittest.TestCase):
         jj.preflight.return_value = RepositoryFacts(root=self.source, git_root=self.source)
         jj.working_copy_parent.return_value = "a" * 40
         jj.git_head_exact.return_value = "a" * 40
+        jj.resolve_default_base.return_value = DefaultBaseResolution(
+            ("refs/heads/main",), "a" * 40, "attached-local",
+        )
         jj.import_git.return_value = ()
         with mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
-                mock.patch("lib.control.cli.launch_task", side_effect=launch):
+                mock.patch("lib.control.cli.launch_task", side_effect=launch), \
+                mock.patch("lib.control.cli._preflight_plain_git_start",
+                           side_effect=self.retained_preflight), \
+                mock.patch("lib.control.cli.revalidate_plain_git_pre_enable_plan"):
             status, _stdout, stderr, _tmux = self.invoke([
                 "task", "start", "--repo", str(self.source), "--task-id", TASK_ID,
                 "--slug", task["slug"], "--harness", "codex",

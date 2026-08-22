@@ -11,6 +11,7 @@ import re
 import shutil
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 import uuid
@@ -33,13 +34,16 @@ from lib.control.harness import (
     stop_signal_allowed,
     verify_process,
 )
-from lib.control.jj import DEFAULT_BASE_REVSET, JjAdapter, RepositoryFacts, WorkspaceIdentity
+from lib.control.jj import (
+    DEFAULT_BASE_REVSET, DefaultBaseResolution, JjAdapter, RepositoryFacts,
+    WorkspaceIdentity,
+)
 from lib.control.launch import (
     LaunchError, archive_task, launch_task, recover_task, stop_task,
     unarchive_task,
 )
 from lib.control.model import RUN_CONTRACT, validate_run, validate_task
-from lib.control.prepare import prepare_task_workspace
+from lib.control.prepare import PrepareRequest, prepare_task_workspace
 from lib.control.reconcile import Evidence, LiveAdapters, reconcile_task
 from lib.control.store import StoreError, TaskStore, task_digest
 from lib.control.tmux import (
@@ -152,8 +156,11 @@ class TmuxAdapterTests(unittest.TestCase):
             argv,
             [
                 "tmux", "-L", "asha-control", "display-popup",
-                "-c", "/dev/pts/7", "-E",
-                "-w", "90%", "-h", "85%", "--",
+                "-c", "/dev/pts/7", "-E", "-w", "90%", "-h", "85%", "--",
+                sys.executable, "-I", "-S", "-c",
+                "(__import__('os').environ.__setitem__('TMUX',''))or"
+                "(__import__('os').execvp(__import__('sys').argv[1],"
+                "__import__('sys').argv[1:]))",
                 "tmux", "-L", "asha-control", "attach-session", "-t",
                 "asha-task-12345678",
             ],
@@ -1171,10 +1178,27 @@ class Increment3CliGrammarTests(unittest.TestCase):
             def git_head_exact(inner, requested):
                 return "a" * 40
 
+            def resolve_default_base(inner, requested):
+                return DefaultBaseResolution(
+                    ("refs/heads/main",), "a" * 40, "attached-local",
+                )
+
             def import_git(inner, requested):
                 return ()
 
         return FakeJj()
+
+    def retained_preflight(self, parsed, _config, _jj, source, task_id, **_kwargs):
+        request = PrepareRequest(
+            repository=source, requested_base=parsed["base"], task_id=task_id,
+            slug="do-work", label=parsed["label"],
+            source={"kind": "ad-hoc", "number": None, "url": None},
+            resolved_base_commit_id="a" * 40,
+            expected_default_commit_id=parsed.get("expected_default"),
+        )
+        plan = mock.Mock()
+        plan.default_base_resolution = None
+        return request, plan
 
     def test_mutual_exclusion_and_missing_goal(self) -> None:
         cases = (
@@ -1259,8 +1283,12 @@ class Increment3CliGrammarTests(unittest.TestCase):
             mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare),
             mock.patch("lib.control.cli.launch_task", side_effect=launch),
             mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"),
+            mock.patch("lib.control.cli._preflight_plain_git_start",
+                       side_effect=self.retained_preflight),
+            mock.patch("lib.control.cli.revalidate_plain_git_pre_enable_plan"),
         )
-        with patches[0], patches[1], patches[2], patches[3], patches[4]:
+        with patches[0], patches[1], patches[2], patches[3], patches[4], \
+                patches[5], patches[6]:
             status, stdout, stderr = self.invoke([
                 "task", "start", "--goal", "Do work", "--detach", "--json",
             ])
@@ -1278,14 +1306,18 @@ class Increment3CliGrammarTests(unittest.TestCase):
                 mock.patch("lib.control.cli.JjAdapter", return_value=self.fake_start_jj()), \
                 mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
                 mock.patch("lib.control.cli.launch_task", side_effect=launch), \
-                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"):
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("lib.control.cli._preflight_plain_git_start",
+                           side_effect=self.retained_preflight), \
+                mock.patch("lib.control.cli.revalidate_plain_git_pre_enable_plan"):
             status, stdout, stderr = self.invoke([
                 "task", "start", "--goal", "Do work", "--detach",
             ])
         self.assertEqual((status, stderr), (0, ""))
         fields = [line.split(":", 1)[0] + ":" for line in stdout.splitlines()]
         self.assertEqual(fields, [
-            "Task:", "Task ID:", "Workspace:", "jj name:", "Change:", "Tmux:", "Run:",
+            "Task:", "Task ID:", "Workspace:", "jj name:", "Change:",
+            "Base commit:", "Tmux:", "Run:",
         ])
 
     def test_json_start_implies_detach_and_never_opens_popup(self) -> None:
@@ -1301,6 +1333,9 @@ class Increment3CliGrammarTests(unittest.TestCase):
                 mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
                 mock.patch("lib.control.cli.launch_task", return_value=result), \
                 mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/claude"), \
+                mock.patch("lib.control.cli._preflight_plain_git_start",
+                           side_effect=self.retained_preflight), \
+                mock.patch("lib.control.cli.revalidate_plain_git_pre_enable_plan"), \
                 mock.patch("lib.control.cli._run_popup") as popup, \
                 contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             status = control_main([
@@ -1316,19 +1351,19 @@ class Increment3CliGrammarTests(unittest.TestCase):
         adapter.socket = None
         adapter.caller_client.return_value = "/dev/pts/7"
         adapter.popup_argv.return_value = ["tmux", "display-popup"]
-        stderr = io.StringIO()
         with mock.patch(
             "lib.control.cli.subprocess.run",
             return_value=subprocess.CompletedProcess(["tmux"], 1),
-        ), contextlib.redirect_stderr(stderr):
-            _run_popup(
+        ):
+            refusal = _run_popup(
                 adapter, load_config(self.env), "asha-task-12345678", "do-work",
                 {"TMUX_PANE": "%7"},
             )
         self.assertEqual(
-            stderr.getvalue(),
-            "asha control: popup closed with status 1; task do-work is still "
-            "running (attach: tmux attach-session -t asha-task-12345678)\n",
+            refusal,
+            "asha control: popup attach failed with status 1; task do-work is "
+            "still running; attach with: tmux attach-session -t "
+            "asha-task-12345678",
         )
 
     def test_control_tmux_prints_only_the_snippet(self) -> None:

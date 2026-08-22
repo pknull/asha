@@ -277,14 +277,18 @@ The TUI must restore terminal mode on normal exit, signal, or handled error.
 `Enter` invokes a dynamic equivalent of the existing persistent scratch-popup
 pattern:
 
-```bash
-tmux display-popup -E -w 90% -h 85% \
-  "tmux attach-session -t asha-thallus-pr-34"
+```text
+[tmux, display-popup, -c, CLIENT, -E, -w, 90%, -h, 85%, --,
+ SYS_EXECUTABLE, -I, -S, -c, FIXED_CHILD_EXEC,
+ tmux, attach-session, -t, asha-thallus-pr-34]
 ```
 
 The controller selects the requested window and pane before attaching. The
 popup command is constructed as an argument vector or through a fixed wrapper;
-task data is never interpolated into an evaluable shell string.
+task data is never interpolated into an evaluable shell string. The fixed
+Python wrapper clears `TMUX` only in the popup child, then `exec`s the unchanged
+inner tmux argv. It deliberately avoids `display-popup -e`, which was added
+after tmux 3.2/3.2a's otherwise sufficient popup implementation.
 
 When the popup client detaches, `tmux display-popup` returns and the control TUI
 redraws. The task session, panes, processes, and jj workspace remain alive.
@@ -395,6 +399,60 @@ with an exact manual remediation command.
 > byte-conditional rename, so a noncooperating same-UID process able to replace
 > private source/state paths is explicitly outside this cooperative lock boundary.
 
+> **Amended 2026-08-21:** persisted device numbers are cached mount
+> observations rather than durable repository lineage. A strict v1 `verified`
+> record may be reauthenticated after reboot/remount only when canonical paths,
+> inodes, full modes/types, owners, Git marker digest/target, and `.jj` remain
+> exact and every root/marker/target/`.jj` device pair forms one coherent
+> injective old-to-current map with at least one change. The ordinary
+> source/Memory/base/destination gate and the complete strict jj, sync,
+> two-pass all-ref semantic, and operation-stability chain run before a
+> source-locked exact-byte/current-binding recheck refreshes every nested `dev`.
+> Device/inode stays exact transient authority within each operation. Intent,
+> partial/collapsing maps, mixed mode/device changes, and all non-device drift
+> still refuse without rewriting; the refresh performs no Git or jj mutation.
+
+> **Default-resolution repair amendment (2026-08-21):** the durable
+> `DEFAULT_BASE_REVSET` text remains the v1 identity of an omitted request, but
+> is no longer the executable selection policy. Omitted task starts and
+> initiative baselines share one read-only exact-Git resolver: current attached
+> local branch, then remote symbolic `*/HEAD` targets that agree on one OID,
+> then conventional local `main`/`master`/`trunk` refs that agree on one OID.
+> Different fallback OIDs refuse before mutation. Explicit Git/jj bases remain
+> verbatim. The TUI displays bounded ref/OID preview evidence and carries its
+> full OID only as a freshness assertion; controller re-resolution supplies the
+> authoritative immutable base and refuses a preview race. A failed preview
+> cannot submit the empty Base, and Base-field resize refreshes the preview.
+> Exact Git disables promisor lazy fetching and validates complete ref grammar
+> plus exact unpadded OID output without executing a repository helper. Legacy
+> retry omits `--base` only for the stored v1 default sentinel.
+
+> **Private-context prerequisite remediation amendment (2026-08-21):** every
+> Git-backed start now runs the immutable context proof before colocation or jj
+> import. The exact missing positive ignore for `.asha/control-task.json` is a
+> typed, repairable refusal; tracked-marker, parent collision, invalid context,
+> and all other proof failures remain nonrepairable. The TUI carries that result
+> through a strict private worker contract and offers Apply, instructions, or
+> cancel while retaining all form values. Apply patches only the current
+> `.gitignore` under a source-locked binding/preimage transaction. It never
+> commits, moves refs, imports/enables jj, creates task state, or retries. The
+> operator must commit the managed rule or select a containing commit before
+> the ordinary immutable proof can authorize a later start. `/session:init`,
+> drift checks, and the named default-context doctor probe surface readiness
+> before another task attempt.
+> A PR OID absent from the source is first fetched into a disposable isolated
+> object plane and proved before source colocation/fetch/import; after the
+> ordinary source fetch, the exact OID/materialization/context proof is checked
+> again before jj import. Apply prevalidates the resulting byte bound and nested
+> ignore semantics, creates and cleans its temporary through one authenticated
+> root descriptor, and treats every ordinary rename-attempt error as indeterminate.
+> Expected Apply or worker revalidation refusals remain inside the iterative
+> form and are drawn there until a subsequent operator key acknowledges them;
+> a changed blank default requires explicit second acceptance. Process-control
+> termination crosses the rename boundary without being converted into a
+> recoverable form refusal, while the TUI also reports the possibly-visible
+> replacement warning.
+
 The command contract targets the installed jj 0.38 workspace surface. Doctor
 probes required commands and semantics instead of trusting a version string
 alone.
@@ -410,8 +468,9 @@ Resolution order:
 
 1. `--pr N`: the fetched immutable PR head commit;
 2. `--base REVSET`: exactly one commit resolved from that revset;
-3. `--issue N` or ad hoc work without `--base`: exactly one commit resolved
-   from `trunk()`;
+3. `--issue N` or ad hoc work without `--base`: the current attached local
+   branch, otherwise one same-OID remote symbolic `*/HEAD` tier, otherwise one
+   same-OID conventional local `main`/`master`/`trunk` tier;
 4. any ambiguous, missing, or immutable-base failure: refuse creation.
 
 The resolved commit ID and the human input revset are both recorded. Creation

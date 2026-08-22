@@ -1002,6 +1002,9 @@ PY
     git -C "$PWD" check-ignore --no-index -q -- 'Work/memory-migration/.asha-ignore-probe.json' \
       && pass "current project actually ignores Work/memory-migration reviews" \
       || nope "current project leaves Work/memory-migration reviews trackable (run /session:init)"
+    git -C "$PWD" check-ignore --no-index -q -- '.asha/control-task.json' \
+      && pass "current project working tree is ready to keep the Control task marker private" \
+      || nope "current project working tree leaves .asha/control-task.json trackable (run /session:init, commit the rule before using that immutable base)"
   else
     grep -Fxq '/Work/session-state/' "$PWD/.gitignore" 2>/dev/null \
       && pass "current non-Git project declares /Work/session-state/ ignored" \
@@ -1009,6 +1012,9 @@ PY
     grep -Fxq '/Work/memory-migration/' "$PWD/.gitignore" 2>/dev/null \
       && pass "current non-Git project declares /Work/memory-migration/ ignored" \
       || nope "current project does not declare /Work/memory-migration/ ignored (run /session:init)"
+    grep -Fxq '/.asha/control-task.json' "$PWD/.gitignore" 2>/dev/null \
+      && pass "current non-Git project declares the Control task marker ignored" \
+      || nope "current project does not declare /.asha/control-task.json ignored (run /session:init)"
   fi
 else
   info_line "current directory is not an initialized Asha project; project_id/ignore checks skipped"

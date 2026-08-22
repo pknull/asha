@@ -71,21 +71,25 @@ usage/refusal; and `130` interrupted.
 A goal is mandatory in every mode and is the only instruction authority.
 `--pr` and `--issue` provide source context, never a prompt. `--pr` conflicts
 with both `--issue` and `--base`. `--issue` may be paired with `--base`; without
-one it uses the default base: jj's `trunk()` when the repository has a remote
-trunk, otherwise the local `main`, `master`, or `trunk` bookmark
-(`coalesce(trunk() ~ root(), present(main), present(master), present(trunk))`).
+one it uses the same omitted-base policy as ad-hoc work. Exact Git first uses
+the current attached local branch. With a detached or unborn `HEAD`, it next
+uses remote symbolic `*/HEAD` targets, then conventional local
+`main`/`master`/`trunk` refs. A fallback tier is accepted when all candidate
+names resolve to the same immutable commit; differing OIDs require an explicit
+base.
 For the first start from a plain Git root, an explicitly supplied ad-hoc or
 issue `--base` must resolve through exact, config-sanitized Git as one commit;
 Control carries that immutable object ID through colocation and never
 reinterprets the original text as a jj revset. Existing valid jj repositories
-continue to accept arbitrary jj revsets. For an omitted base on the first
-plain-Git start, exact Git selects one unambiguous remote-default ref, then the
-first existing local `main`, `master`, or `trunk`. The ref is retained only as
-preflight evidence: the task records the caller's unchanged default expression
-as `requested_base` and the immutable selected OID as `base_commit_id`. Thus an
-identical caller-ID replay matches before preflight, while an explicit different
-base does not alias it. If no candidate exists (for example a dev-only
-repository), start refuses before mutation and requests explicit `--base`.
+continue to accept arbitrary jj revsets. Omitted-base resolution is shared by
+existing jj and first-time plain-Git starts and runs before import or colocation
+mutation. Ref names are retained only as transaction/preview evidence: the task
+records the legacy omitted request identity as `requested_base` and the
+selected OID as `base_commit_id`. Thus identical caller-ID replay matches before
+preflight, while an explicit different base does not alias it. A valid attached
+branch such as `dev` is a default candidate; a detached repository with missing
+or conflicting fallback candidates refuses before mutation and requests an
+explicit `--base`.
 
 ## Terminal TUI
 
@@ -190,8 +194,16 @@ identity is distinct from sanitized display text: exact raw values govern
 deduplication, matching, completion, and submission, so display sanitization
 cannot retarget a path.
 Printable command keys are field text while the form is open. Its defaults are
-the current directory, empty base, configured harness, and `implementer`. It
-invokes the same controller validation as `asha task
+the current directory, empty base, configured harness, and `implementer`. The
+empty Base row resolves after Repo is accepted and displays bounded ref name(s)
+plus an abbreviated OID. This preview is not authority: the worker independently
+resolves under the controller transaction and uses the preview OID only as a
+freshness assertion, refusing a race before launch. Reaccepting or changing
+Repo recomputes the preview; resizing while editing Base refreshes it as well.
+If no default can be previewed, Enter cannot accept the empty Base: select or
+type an explicit base before continuing. Success names the authoritative full
+base OID.
+The form invokes the same controller validation as `asha task
 start` and always supplies `--detach`, so creation does not replace the TUI
 with the new task's session. Select the created task and press `Enter` to open
 it. The shared cell/grapheme-aware modal clears and redraws safely across
@@ -247,7 +259,18 @@ the harness, archive the task, or alter the jj workspace or change. The TUI
 then immediately reconciles that active task before redrawing. Archived rows
 retain their lifecycle projection rather than consulting removed live state.
 The popup is bound to the client attached to the caller's own tmux session and
-never opens on another client.
+never opens on another client. Control clears inherited `TMUX` only for the
+popup child before its inner attach, so tmux does not reject that client as a
+nested session. It uses the running absolute Python executable as a fixed
+argv-only wrapper, mutates the child environment, and immediately `exec`s the
+unchanged tmux/socket/session argv. This preserves tmux 3.2/3.2a support rather
+than requiring the newer `display-popup -e` option. The parent Control
+environment and `TMUX_PANE` are unchanged.
+A nonzero popup result is not a normal close: `asha task attach` prints the
+refusal and returns 2, while the TUI retains the numeric status plus exact
+manual attach command after its immediate reconciliation. A successful
+non-detached `asha task start` whose advisory popup fails still prints that
+diagnostic and returns 0; the newly created task remains live.
 
 While open and outside a modal prompt, the TUI schedules reconciliation of all
 displayed tasks at a five-second monotonic cadence. An already-read key is
@@ -330,7 +353,7 @@ until caller-supplied task-ID replay and interrupted-journal checks finish.
 For a new task, Control serializes starts for that source, rechecks under the
 lock, and first applies the shared source/workspace ancestry policy (including
 exact uid/0700 for every existing managed destination parent), validates
-published Memory, the explicit or conventional Git base, PR remote selection,
+published Memory, the explicit or omitted-policy Git base, PR remote selection,
 prospective destination, and bounded materialization/context/journal capacity.
 A refusal leaves the intent, `.jj`, task/journal, workspace, and source
 semantics unchanged. Control then runs exactly one bounded argv equivalent of:
@@ -345,7 +368,8 @@ intent, immediately before invoking colocation, and afterward. All
 authoritative Git reads in this transaction use the trusted absolute system
 Git executable with a minimal explicit exec environment, exact git-dir/work-tree,
 and read-safe overrides including disabled `core.fsmonitor`, hooks, unsafe
-protocols, credentials, and paging. Inherited `PATH`, loader, Git repository,
+protocols, credentials, paging, and promisor-object lazy fetching. Inherited
+`PATH`, loader, Git repository,
 index, object-store, and counted-config variables are not forwarded. PR remote
 configuration is selected through this seam before colocation. Only an HTTPS
 or SSH URL whose repository identity matches the viewed PR is carried with the
@@ -416,20 +440,41 @@ outside Control's enforcement boundary. The remedy is to inspect `jj status`,
 Git status/refs, and the named record; Control never asks the operator to delete
 `.jj` or edit JSON.
 
+Filesystem device numbers in that durable record are cached mount observations,
+not repository lineage. Device and inode remain an exact pair within every
+inspection, source mutation, workspace operation, and cleanup transaction. If a
+reboot or remount changes one or more device numbers in an already `verified`
+record, doctor reports a repairable read-only device-renumbering candidate only
+when every canonical path, inode, full mode/type, owner, Git marker digest and
+target, and `.jj` fact is otherwise exact. The complete old-to-current device
+mapping must be coherent and one-to-one across root, marker, marker target, and
+`.jj`, with at least one changed group. Task start then runs the same path,
+Memory, base, destination, strict jj identity/sync, two-pass all-ref semantic,
+and stable-operation authentication used for root hardening. Under the source
+lock it re-reads the exact record bytes/digest and current binding immediately
+before replacing only all four stored `dev` values. An `intent`, partial or
+collapsing device map, mixed permission/device change, or any other fact drift
+remains a refusal with the record unchanged. No Git or jj mutation is required
+for this record maintenance.
+
 Before any later source mutation, task start compares Git `HEAD` with jj
 `@-` and refuses a committed divergence with a `jj status` remediation. Once
 they agree (or Git `HEAD` is positively confirmed unborn while jj `@-` is the
 zero root), every source mode runs one
-`jj -R SOURCE --ignore-working-copy git import` after any PR fetch and before
-base resolution; the import is reported in `source_mutations` as a
-`jj-operation` with operation `git import`. Base resolution is deterministic:
+`jj -R SOURCE --ignore-working-copy git import` after any PR fetch. Omitted
+bases and explicit existing-jj revsets are resolved and pinned during universal
+read-only preflight before this mutation. Existing-jj input retains arbitrary
+jj revset syntax and semantics; the pinned OID is revalidated later. The import
+is reported in `source_mutations` as a `jj-operation` with operation
+`git import`. Base resolution is deterministic:
 
 1. `--pr N` uses the fetched immutable PR head.
 2. In an existing jj repository, `--base REVSET` must resolve to exactly one
    full commit ID. On the first plain-Git start, explicit ad-hoc/issue text must
    resolve as a Git ref/tag/OID before colocation; that exact OID is used later.
-3. `--issue N` or ad-hoc work without `--base` resolves the default base
-   (remote `trunk()`, else the local `main`/`master`/`trunk` bookmark).
+3. `--issue N` or ad-hoc work without `--base` resolves through exact Git:
+   current attached local branch, then same-OID remote symbolic `*/HEAD`
+   targets, then same-OID conventional local `main`/`master`/`trunk` refs.
 4. Missing, ambiguous, or invalid commits refuse creation.
 
 The task record stores both the human request (`PR #N head` or the literal
@@ -453,7 +498,9 @@ entry at one of those paths is a collision, and the source must ignore whatever
 Control does create there or the workspace identity check refuses the task.
 Before plain-Git colocation, task-state creation, destination-parent creation,
 and workspace registration, Control proves that disposition from the immutable
-base tree. It validates reusable tracked file bytes and schemas, requires
+base tree. The same early proof runs for an existing jj/Git repository before
+`jj git import`, including when pending Git refs would otherwise make import
+observable. It validates reusable tracked file bytes and schemas, requires
 positive selected-tree ignore coverage for every exact file in the generated
 context plan and the complete fixed `Work/session-state/` private subtree, and
 refuses task-marker, symlink, or file-ancestor collisions. One representative
@@ -464,6 +511,29 @@ negation records cannot authorize a private path. The same immutable evidence
 is rechecked immediately before registration. After a successful workspace add,
 root, registration, operation ancestry, materialization, and sidecar facts are
 persisted before later context work can fail.
+If the sole missing positive rule is `/.asha/control-task.json`, the hidden TUI
+worker returns a strict task-bound refusal object on stdout. The TUI never
+classifies stderr prose. Its Apply action revalidates the canonical root/Git
+binding, project identity, selected ref/OID, immutable failure, working ignore
+semantics, and exact `.gitignore` preimage under the source lock, then appends
+one final managed block by atomic replacement. It preserves unrelated bytes
+and file mode, creates no task/journal/workspace/tmux/jj state, never commits or
+retries, and leaves the old immutable base unauthorized. Before creating its
+descriptor-bound temporary, Apply rejects oversized intended bytes and proves
+that the exact root result remains effective under a safe nested
+`.asha/.gitignore`; a nested negation therefore cannot cause a knowingly
+ineffective visible replacement. The rename attempt begins the indeterminate
+boundary, including a syscall wrapper that reports an error after the kernel
+made the replacement visible. A visible replacement
+whose durability/final verification fails is reported as indeterminate. Cancel,
+Escape, instructions, clean Apply refusals, and worker revalidation refusals do
+not discard the filled start form. Each result is drawn as a bounded form-local
+notice before a later key can acknowledge it; in particular, an indeterminate
+result tells the operator to inspect `.gitignore` before retrying. SIGTERM and
+SIGHUP still terminate the TUI with `128 + signal` while reporting that warning,
+and `KeyboardInterrupt`/`SystemExit` retain their process-control semantics
+across the rename boundary. Blank default bases are re-resolved on Enter; a
+changed OID is drawn and must be accepted a second time.
 Explicit diff refresh may snapshot the task workspace; background list and
 reconciliation reads do not.
 
@@ -646,6 +716,12 @@ once as transient display text and discarded.
 
 PR mode performs and reports exactly these repository mutations:
 
+Before these source mutations, a head OID absent locally is fetched into an
+isolated temporary Git object plane using the carried URL and restricted
+transport. Control verifies the advertised OID, bounded tree, and immutable
+context policy there, then deletes the plane. Failure changes no source ref or
+jj operation. A locally present OID takes the same proof path without a fetch.
+
 1. Trusted absolute Git fetches the carried, identity-matching HTTPS/SSH URL
    with only that protocol allowed and writes
    `pull/N/head:refs/remotes/REMOTE/asha-control-pr-N`. The remote name is used
@@ -673,8 +749,11 @@ The fetch never checks out a tree. The pre-mutation Git `HEAD`/jj `@-` guard is
 what makes the following import safe and keeps Git `HEAD`, staged content, and
 source `@` untouched; Control refuses and asks the operator to run `jj status`
 when those positions diverge. Issue mode performs its bounded `gh issue view`
-read and the common reported import, then resolves the explicit base or the
-default base; it does not fetch.
+read, resolves an omitted default from exact Git before the common reported
+import, and then prepares from the pinned OID. An explicit existing-jj base
+likewise resolves its arbitrary jj revset during universal preflight before
+import and prepares only after the pinned OID is revalidated. Issue mode does
+not fetch.
 
 Control has no GitHub write route. It does not comment, edit, label, close,
 review, merge, create a PR, or push. Subprocesses are argv-only, shell-free,

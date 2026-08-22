@@ -113,10 +113,29 @@ from `asha control` or the non-interactive `asha task` commands.
 | `asha control` | Open the terminal Control TUI. `A` toggles active/all history; `x` opens revalidated inspect, active-run signal/initiative-stop, archive, retry, reconcile, and prune actions. |
 | `asha control tmux` | Print the optional tmux-format integration snippet; it never edits `.tmux.conf`. |
 
+Popup attachment uses a fixed argv-only exec wrapper to clear inherited tmux
+nesting state only in the popup child; it does not depend on the newer
+`display-popup -e` option. Successful detach leaves the task running; a popup
+failure remains visible in the TUI or CLI with its status and exact manual
+attach command.
+
 Control requires a Git repository, tmux with popup support, an installed
 harness, and an initialized Asha project whose Control-created private paths
 are positively ignored by the immutable base. Regular tracked context files
-are validated and reused without requiring an ignore rule. A supported primary plain-Git root (including submodule gitdir roots,
+are validated and reused without requiring an ignore rule. `/session:init`
+installs the narrow `/.asha/control-task.json` rule for new projects, but that
+working-tree patch must be committed before an immutable base gains it. When
+only that rule is missing, the TUI offers Apply patch, instructions, or cancel;
+Apply is source-only, explicitly selected, CAS-revalidated, and never commits,
+moves a ref, enables/imports jj, creates task state, or retries automatically.
+The exact intended bytes and nested ignore policy are proved before rename;
+unsafe or ineffective root-only patches refuse without writing. Apply and
+worker revalidation refusals keep the filled five-field form intact and return
+to Base. Their bounded notice is drawn inside that retained form before Escape
+or Base acceptance can replace it. A changed blank-base preview requires a
+second Enter. `asha task doctor` names the exact
+resolved default ref/OID and reports its immutable context readiness. A
+supported primary plain-Git root (including submodule gitdir roots,
 but not linked worktrees) is automatically jj 0.38-colocated with semantic Git
 state preservation; verified repository enablement is reported and retained
 if later task preparation fails or is cancelled. Before that enablement,
@@ -132,6 +151,12 @@ caller-ID replay identity. PR start accepts only a configured HTTPS or SSH URL
 whose repository identity matches the viewed PR; execution-capable local Git
 transport/helper config refuses before colocation. The later fetch uses that
 carried URL under an explicit protocol allowlist, with no named-remote reread.
+If the selected PR OID is not local, Control first fetches it into an isolated
+temporary object plane, proves the immutable tree and ignore policy there, and
+removes that plane. A prerequisite refusal therefore precedes source
+colocation, source fetch, and jj import. A successful proof still requires the
+later source fetch to reproduce the same OID, materialization, and context
+proof before jj import.
 Split `extensions.worktreeConfig` repositories must fetch the PR head manually
 because the carried single-file configuration digest cannot bind that plane.
 A verified root binding

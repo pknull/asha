@@ -265,16 +265,16 @@ RESULTPY
         launcher.write_text(
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
-            "if [[ ${1:-} == codex ]]; then\n"
-            "  shift\n"
-            f"  exec {script} \"$@\"\n"
-            "fi\n"
             f"export HOME={self.env['HOME']}\n"
             f"export XDG_STATE_HOME={self.env['XDG_STATE_HOME']}\n"
             f"export XDG_DATA_HOME={self.env['XDG_DATA_HOME']}\n"
             f"export XDG_RUNTIME_DIR={self.env['XDG_RUNTIME_DIR']}\n"
             f"export ASHA_CONFIG={self.env['ASHA_CONFIG']}\n"
             f"export PYTHONPATH={self.project_root}\n"
+            "if [[ ${1:-} == codex ]]; then\n"
+            "  shift\n"
+            f"  exec {script} \"$@\"\n"
+            "fi\n"
             f"exec {sys.executable} -m lib.control.cli \"$@\"\n"
         )
         launcher.chmod(0o700)

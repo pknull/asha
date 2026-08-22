@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import http.server
 import io
 import json
 import os
@@ -24,22 +25,27 @@ from lib.control.cli import (
 from lib.control.config import load_config
 from lib.control.doctor import DEFAULT_PROBES, run_doctor
 from lib.control.jj import (
-    ColocationIntentStore, DEFAULT_BASE_REVSET, JjAdapter, JjError, RepositoryFacts,
-    discover_git_root, inspect_pre_enable_binding,
+    ColocationIntentStore, DEFAULT_BASE_REVSET, DefaultBaseResolution, JjAdapter,
+    JjError, RepositoryFacts,
+    discover_git_root, inspect_pre_enable_binding, require_pre_enable_binding,
 )
 from lib.control.prepare import PreparationError
 from lib.control.prepare import (
     PlainGitPreEnablePlan, PrepareRequest, preflight_plain_git_enablement,
+    revalidate_plain_git_pre_enable_plan,
 )
 from lib.control.sources import GithubAdapter, ValidatedPrRemote
 from lib.control.store import StoreError, TaskStore
-from lib.control.transaction import JournalError
+from lib.control.transaction import CreationJournalStore, JournalError
 from lib.control.tui import (
-    TuiModel,
+    ModalCandidate, StartCandidateSnapshot, TuiModel,
     _TuiShutdown,
     _classify_start_worker_exit,
+    _default_base_candidate,
     _reap_deferred_start_workers,
+    _retry_arguments,
     _start_form,
+    _successful_worker_message,
     _supervise_start_process,
 )
 from tests.python.test_control_config_model import task_record
@@ -48,12 +54,419 @@ from tests.python.test_control_config_model import task_record
 TASK_ID = "12345678-1234-4234-8234-123456789abc"
 
 
+class DefaultBaseResolutionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name).resolve()
+        self.repo = self.root / "repo"
+        subprocess.run(["git", "init", "-q", "-b", "master", str(self.repo)], check=True)
+        self.git_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        self.first = self.commit("first")
+
+    def git(self, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(self.repo), *args], check=True,
+            capture_output=True, text=True, env=self.git_env,
+        ).stdout.strip()
+
+    def commit(self, label: str) -> str:
+        (self.repo / "tracked.txt").write_text(label + "\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.repo), "add", "tracked.txt"],
+            check=True, env=self.git_env,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", label],
+            check=True, env=self.git_env,
+        )
+        return self.git("rev-parse", "HEAD")
+
+    def remote_default(self, remote: str, oid: str, branch: str = "master") -> None:
+        self.git("update-ref", f"refs/remotes/{remote}/{branch}", oid)
+        self.git(
+            "symbolic-ref", f"refs/remotes/{remote}/HEAD",
+            f"refs/remotes/{remote}/{branch}",
+        )
+
+    @staticmethod
+    def completed(
+        argv: list[str], *, returncode: int = 0, stdout: bytes = b"",
+        stderr: bytes = b"",
+    ) -> SimpleNamespace:
+        return SimpleNamespace(
+            args=argv, returncode=returncode, stdout=stdout, stderr=stderr,
+        )
+
+    def scripted_default_runner(
+        self, *, symbolic: bytes, remotes: bytes = b"",
+        ref_stdout: bytes | None = None,
+    ):
+        oid_output = (self.first + "\n").encode() if ref_stdout is None else ref_stdout
+
+        def runner(argv, **_kwargs):
+            if "symbolic-ref" in argv:
+                return self.completed(
+                    list(argv), returncode=1 if symbolic == b"" else 0,
+                    stdout=symbolic,
+                )
+            if "for-each-ref" in argv:
+                return self.completed(list(argv), stdout=remotes)
+            if "show-ref" in argv:
+                return self.completed(list(argv))
+            if "rev-parse" in argv:
+                return self.completed(list(argv), stdout=oid_output)
+            raise AssertionError(f"unexpected exact-Git argv: {argv!r}")
+
+        return runner
+
+    def test_attached_local_branch_wins_over_stale_packed_and_current_remote_defaults(self) -> None:
+        self.remote_default("origin", self.first)
+        self.git("pack-refs", "--all")
+        current = self.commit("current")
+        self.remote_default("keybase", current)
+
+        resolution = JjAdapter().resolve_default_base(self.repo)
+
+        self.assertEqual(resolution, DefaultBaseResolution(
+            references=("refs/heads/master",),
+            commit_id=current,
+            tier="attached-local",
+        ))
+
+        candidate, expected = _default_base_candidate(self.repo)
+        self.assertEqual(expected, current)
+        self.assertEqual(candidate.value, "")
+        self.assertIn("refs/heads/master", candidate.detail)
+        self.assertIn(current[:12], candidate.detail)
+
+    def test_tui_submits_preview_oid_as_assertion_without_making_it_the_base(self) -> None:
+        current = self.git("rev-parse", "HEAD")
+        home = self.root / "home"
+        home.mkdir()
+        env = {
+            "HOME": str(home), "ASHA_CONFIG": str(self.root / "missing.json"),
+            "XDG_STATE_HOME": str(self.root / "state"),
+            "XDG_DATA_HOME": str(self.root / "data"),
+            "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+        }
+        config = load_config(env)
+        snapshot = StartCandidateSnapshot(
+            repositories=(ModalCandidate(str(self.repo), "test"),),
+            bases={str(self.repo): (ModalCandidate("", "default"),)},
+            harnesses=(ModalCandidate(config.default_harness, "installed"),),
+            roles=("implementer",),
+        )
+        screen = ProgressScreen([
+            FakeCurses.KEY_DOWN, 10, 10, 10, 10, *map(ord, "goal"), 10,
+        ])
+        with mock.patch(
+            "lib.control.tui.freeze_start_candidates", return_value=snapshot,
+        ), mock.patch(
+            "lib.control.tui._source_colocation_watch", return_value=(None, False),
+        ), mock.patch(
+            "lib.control.tui._supervise_start_process", return_value="started",
+        ) as supervise:
+            self.assertEqual(
+                _start_form(screen, FakeCurses(), TuiModel([]), env, config),
+                "started",
+            )
+
+        argv = supervise.call_args.args[4]
+        self.assertNotIn("--base", argv)
+        self.assertEqual(argv[argv.index("--expected-default") + 1], current)
+
+    def test_detached_head_accepts_multiple_remote_defaults_at_the_same_oid(self) -> None:
+        self.remote_default("origin", self.first)
+        self.remote_default("keybase", self.first)
+        self.git("checkout", "--detach", "-q", self.first)
+
+        resolution = JjAdapter().resolve_default_base(self.repo)
+
+        self.assertEqual(resolution.commit_id, self.first)
+        self.assertEqual(resolution.tier, "remote-head")
+        self.assertEqual(resolution.references, (
+            "refs/remotes/keybase/master", "refs/remotes/origin/master",
+        ))
+
+    def test_detached_head_refuses_remote_defaults_at_different_oids(self) -> None:
+        second = self.commit("second")
+        self.remote_default("origin", self.first)
+        self.remote_default("keybase", second)
+        self.git("checkout", "--detach", "-q", second)
+
+        with self.assertRaisesRegex(
+            JjError, r"different commits.*--base",
+        ) as caught:
+            JjAdapter().resolve_default_base(self.repo)
+
+        self.assertIn("refs/remotes/keybase/master", str(caught.exception))
+        self.assertIn("refs/remotes/origin/master", str(caught.exception))
+
+    def test_unborn_head_falls_through_to_one_remote_default(self) -> None:
+        unborn = self.root / "unborn"
+        subprocess.run(["git", "init", "-q", "-b", "work", str(unborn)], check=True)
+        self.git("update-ref", "refs/remotes/origin/master", self.first)
+        self.git(
+            "symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/master",
+        )
+        # Copy only the object/ref backend into a repository whose attached HEAD
+        # names an unborn branch.
+        subprocess.run(
+            ["git", f"--git-dir={self.repo / '.git'}", "bundle", "create",
+             str(self.root / "one.bundle"), "refs/remotes/origin/master"], check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(unborn), "fetch", "-q", str(self.root / "one.bundle"),
+             "refs/remotes/origin/master:refs/remotes/origin/master"], check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(unborn), "symbolic-ref", "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/master",
+        ], check=True)
+
+        resolution = JjAdapter().resolve_default_base(unborn)
+
+        self.assertEqual(resolution.commit_id, self.first)
+        self.assertEqual(resolution.tier, "remote-head")
+
+    def test_conventional_local_refs_are_ambiguous_only_when_oids_differ(self) -> None:
+        self.git("checkout", "--detach", "-q", self.first)
+        self.git("branch", "-D", "master")
+        self.git("branch", "main", self.first)
+        self.git("branch", "trunk", self.first)
+
+        agreeing = JjAdapter().resolve_default_base(self.repo)
+
+        self.assertEqual(agreeing.tier, "conventional-local")
+        self.assertEqual(agreeing.references, ("refs/heads/main", "refs/heads/trunk"))
+        second = self.commit("detached-second")
+        self.git("branch", "-f", "trunk", second)
+        with self.assertRaisesRegex(JjError, r"different commits.*--base"):
+            JjAdapter().resolve_default_base(self.repo)
+
+    def test_detached_repository_without_candidates_refuses_explicitly(self) -> None:
+        self.git("checkout", "--detach", "-q", self.first)
+        self.git("branch", "-D", "master")
+
+        with self.assertRaisesRegex(JjError, r"no attached.*explicit --base"):
+            JjAdapter().resolve_default_base(self.repo)
+
+    def test_existing_remote_default_that_is_not_a_commit_fails_closed(self) -> None:
+        self.git("checkout", "--detach", "-q", self.first)
+        self.git("branch", "-D", "master")
+        blob = subprocess.run(
+            ["git", "-C", str(self.repo), "hash-object", "-w", "--stdin"],
+            input="blob\n", check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        self.git("update-ref", "refs/remotes/origin/master", blob)
+        self.git(
+            "symbolic-ref", "refs/remotes/origin/HEAD",
+            "refs/remotes/origin/master",
+        )
+
+        with self.assertRaisesRegex(JjError, r"does not name a commit"):
+            JjAdapter().resolve_default_base(self.repo)
+
+    def test_exact_git_disables_lazy_promisor_fetch_for_default_and_ref_reads(self) -> None:
+        requests: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(handler_self) -> None:
+                requests.append(handler_self.path)
+                handler_self.send_response(404)
+                handler_self.send_header("Content-Length", "0")
+                handler_self.end_headers()
+
+            def do_POST(handler_self) -> None:
+                requests.append(handler_self.path)
+                handler_self.send_response(404)
+                handler_self.send_header("Content-Length", "0")
+                handler_self.end_headers()
+
+            def log_message(self, _format: str, *_args) -> None:
+                return
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        observed_environments: list[dict[str, str]] = []
+
+        def runner(argv, **kwargs):
+            observed_environments.append(dict(kwargs["env"]))
+            return subprocess.run(argv, **kwargs)
+
+        try:
+            port = server.server_address[1]
+            self.git("config", "core.repositoryformatversion", "1")
+            self.git("config", "extensions.partialClone", "origin")
+            self.git("config", "remote.origin.promisor", "true")
+            self.git("config", "remote.origin.partialCloneFilter", "blob:none")
+            self.git(
+                "config", "remote.origin.url",
+                f"http://127.0.0.1:{port}/internal.git",
+            )
+            missing = "1" * 40
+            (self.repo / ".git" / "refs" / "heads" / "master").write_text(
+                missing + "\n", encoding="ascii",
+            )
+            adapter = JjAdapter(runner=runner)
+
+            with self.assertRaises(JjError):
+                adapter.resolve_default_base(self.repo)
+            with self.assertRaises(JjError):
+                adapter._default_ref_commit(self.repo, "refs/heads/master")
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        self.assertEqual(requests, [])
+        self.assertTrue(observed_environments)
+        self.assertTrue(all(
+            environment.get("GIT_NO_LAZY_FETCH") == "1"
+            for environment in observed_environments
+        ))
+
+    def test_attached_ref_requires_complete_git_ref_grammar(self) -> None:
+        malformed = (
+            b"refs/heads/foo~bar\n",
+            b"refs/heads/foo..bar\n",
+            b"refs/heads/.hidden\n",
+            b"refs/heads/foo.lock\n",
+            b"refs/heads/foo@{bar\n",
+            b"refs/heads/foo.\n",
+            b"refs/heads/foo//bar\n",
+            b"refs/heads/foo\\bar\n",
+            b"refs/heads/" + b"x" * 301 + b"\n",
+            b"refs/heads/non-ascii-\xff\n",
+        )
+        for output in malformed:
+            with self.subTest(output=output), self.assertRaisesRegex(
+                JjError, "symbolic HEAD was malformed",
+            ):
+                JjAdapter(runner=self.scripted_default_runner(
+                    symbolic=output,
+                )).resolve_default_base(self.repo)
+
+    def test_exact_ref_oid_rejects_padding_and_extra_blank_lines(self) -> None:
+        malformed = (
+            (" " + self.first + "\n").encode(),
+            (self.first + " \n").encode(),
+            (self.first + "\n\n").encode(),
+            (self.first + "\n \n").encode(),
+            (self.first + "\nother\n").encode(),
+            self.first.encode() + b"\xff\n",
+        )
+        for output in malformed:
+            with self.subTest(output=output), self.assertRaises(JjError):
+                JjAdapter(runner=self.scripted_default_runner(
+                    symbolic=b"refs/heads/master\n", ref_stdout=output,
+                )).resolve_default_base(self.repo)
+
+    def test_remote_default_fields_require_complete_git_ref_grammar(self) -> None:
+        malformed = (
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/foo~bar\n",
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/foo..bar\n",
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/.hidden\n",
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/foo.lock\n",
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/foo@{bar\n",
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/foo\\bar\n",
+            b"refs/remotes/origin/HE~AD\0refs/remotes/origin/main\n",
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/non-ascii-\xff\n",
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/"
+            + b"x" * 301 + b"\n",
+        )
+        for output in malformed:
+            with self.subTest(output=output), self.assertRaisesRegex(
+                JjError, "remote-default refs were malformed",
+            ):
+                JjAdapter(runner=self.scripted_default_runner(
+                    symbolic=b"", remotes=output,
+                )).resolve_default_base(self.repo)
+
+    def test_dangling_and_direct_remote_heads_fail_closed(self) -> None:
+        dangling_row = (
+            b"refs/remotes/origin/HEAD\0refs/remotes/origin/missing\n"
+        )
+
+        def dangling_runner(argv, **_kwargs):
+            if "symbolic-ref" in argv:
+                return self.completed(list(argv), returncode=1)
+            if "for-each-ref" in argv:
+                return self.completed(list(argv), stdout=dangling_row)
+            if "show-ref" in argv:
+                return self.completed(list(argv), returncode=1)
+            raise AssertionError(f"unexpected exact-Git argv: {argv!r}")
+
+        with self.assertRaisesRegex(JjError, "missing target"):
+            JjAdapter(runner=dangling_runner).resolve_default_base(self.repo)
+
+        direct_row = b"refs/remotes/origin/HEAD\0\n"
+        with self.assertRaisesRegex(JjError, "remote-default refs were malformed"):
+            JjAdapter(runner=self.scripted_default_runner(
+                symbolic=b"", remotes=direct_row,
+            )).resolve_default_base(self.repo)
+
+    def test_attached_and_conventional_noncommit_refs_fail_closed(self) -> None:
+        def noncommit_runner(*, attached: bool):
+            def runner(argv, **_kwargs):
+                if "symbolic-ref" in argv:
+                    return self.completed(
+                        list(argv), returncode=0 if attached else 1,
+                        stdout=b"refs/heads/master\n" if attached else b"",
+                    )
+                if "for-each-ref" in argv:
+                    return self.completed(list(argv))
+                if "show-ref" in argv:
+                    ref = argv[-1]
+                    exists = attached or ref == "refs/heads/main"
+                    return self.completed(
+                        list(argv), returncode=0 if exists else 1,
+                    )
+                if "rev-parse" in argv:
+                    return self.completed(list(argv), returncode=1)
+                raise AssertionError(f"unexpected exact-Git argv: {argv!r}")
+
+            return runner
+
+        for attached in (True, False):
+            with self.subTest(attached=attached), self.assertRaisesRegex(
+                JjError, "does not name a commit",
+            ):
+                JjAdapter(runner=noncommit_runner(
+                    attached=attached,
+                )).resolve_default_base(self.repo)
+
+    def test_remote_default_count_is_bounded_before_target_resolution(self) -> None:
+        rows = b"".join(
+            f"refs/remotes/r{index}/HEAD\0refs/remotes/r{index}/main\n".encode()
+            for index in range(129)
+        )
+        calls: list[list[str]] = []
+        delegate = self.scripted_default_runner(symbolic=b"", remotes=rows)
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            return delegate(argv, **kwargs)
+
+        with self.assertRaisesRegex(JjError, "too many remote default refs"):
+            JjAdapter(runner=runner).resolve_default_base(self.repo)
+
+        self.assertFalse(any("show-ref" in call for call in calls))
+
+
 class FakeCurses:
     class error(Exception):
         pass
 
     KEY_ENTER = 343
     KEY_RESIZE = 410
+    KEY_DOWN = 258
 
 
 class ProgressScreen:
@@ -103,6 +516,17 @@ class TuiStartCancellationTests(unittest.TestCase):
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)
+        preview = mock.patch(
+            "lib.control.tui._default_base_candidate",
+            return_value=(
+                ModalCandidate(
+                    "", "current refs/heads/main @ " + "a" * 12,
+                ),
+                "a" * 40,
+            ),
+        )
+        preview.start()
+        self.addCleanup(preview.stop)
 
     def test_escape_at_each_field_never_starts_a_worker_and_affordance_is_visible(self) -> None:
         for cancelled_index in range(5):
@@ -130,10 +554,119 @@ class TuiStartCancellationTests(unittest.TestCase):
 
         self.assertEqual(message, "task started: goal")
         arguments = supervise.call_args.args[4]
-        self.assertEqual(arguments[-6:], [
+        self.assertEqual(arguments[-7:], [
             "--goal", "goal", "--task-id", TASK_ID, "--detach", "--json",
+            "--tui-worker",
         ])
         self.assertNotIn("--shell", arguments)
+
+    def test_unavailable_default_keeps_operator_on_base_and_never_starts_worker(self) -> None:
+        model = TuiModel([])
+
+        class AdaptiveScreen(ProgressScreen):
+            def getch(screen_self):
+                screen_self.getch_calls += 1
+                if screen_self.getch_calls <= 2:
+                    return 10
+                if model.message:
+                    return 27
+                sequence = [10, 10, *map(ord, "goal"), 10]
+                offset = screen_self.getch_calls - 3
+                return sequence[offset] if offset < len(sequence) else 27
+
+        unavailable = ModalCandidate(
+            "", "unavailable; select/type explicit base: no candidate",
+        )
+        with mock.patch(
+            "lib.control.tui._default_base_candidate",
+            return_value=(unavailable, None),
+        ), mock.patch(
+            "lib.control.tui._supervise_start_process",
+        ) as supervise:
+            message = _start_form(
+                AdaptiveScreen([]), FakeCurses(), model, self.env, self.config,
+            )
+
+        self.assertEqual(message, "task start cancelled")
+        self.assertIn("explicit Base", model.message)
+        supervise.assert_not_called()
+
+    def test_explicit_base_can_proceed_after_default_preview_failure(self) -> None:
+        model = TuiModel([])
+
+        class AdaptiveScreen(ProgressScreen):
+            def __init__(screen_self) -> None:
+                super().__init__([])
+                screen_self.followup: list[int] = []
+
+            def getch(screen_self):
+                screen_self.getch_calls += 1
+                if screen_self.getch_calls <= 2:
+                    return 10
+                if not screen_self.followup:
+                    if not model.message:
+                        return 27
+                    screen_self.followup = [
+                        *map(ord, "main"), 10, 10, 10,
+                        *map(ord, "goal"), 10,
+                    ]
+                return screen_self.followup.pop(0)
+
+        unavailable = ModalCandidate(
+            "", "unavailable; select/type explicit base: no candidate",
+        )
+        with mock.patch(
+            "lib.control.tui._default_base_candidate",
+            return_value=(unavailable, None),
+        ), mock.patch(
+            "lib.control.tui._source_colocation_watch", return_value=(None, False),
+        ), mock.patch(
+            "lib.control.tui._supervise_start_process", return_value="started",
+        ) as supervise:
+            message = _start_form(
+                AdaptiveScreen(), FakeCurses(), model, self.env, self.config,
+            )
+
+        self.assertEqual(message, "started")
+        argv = supervise.call_args.args[4]
+        self.assertEqual(argv[argv.index("--base") + 1], "main")
+        self.assertNotIn("--expected-default", argv)
+
+    def test_resize_on_base_recomputes_default_preview_assertion(self) -> None:
+        first = DefaultBaseResolution(
+            ("refs/heads/main",), "a" * 40, "attached-local",
+        )
+        second = DefaultBaseResolution(
+            ("refs/heads/main",), "b" * 40, "attached-local",
+        )
+        screen = ProgressScreen([
+            10, FakeCurses.KEY_RESIZE, 10, 10, 10, *map(ord, "goal"), 10,
+        ])
+        with mock.patch(
+            "lib.control.tui._default_base_candidate",
+            side_effect=(
+                (ModalCandidate("", f"current refs/heads/main @ {first.commit_id[:12]}"),
+                 first.commit_id),
+                (ModalCandidate("", f"current refs/heads/main @ {second.commit_id[:12]}"),
+                 second.commit_id),
+                (ModalCandidate("", f"current refs/heads/main @ {second.commit_id[:12]}"),
+                 second.commit_id),
+            ),
+        ) as preview, mock.patch(
+            "lib.control.tui._source_colocation_watch", return_value=(None, False),
+        ), mock.patch(
+            "lib.control.tui._supervise_start_process", return_value="started",
+        ) as supervise:
+            self.assertEqual(
+                _start_form(screen, FakeCurses(), TuiModel([]), self.env, self.config),
+                "started",
+            )
+
+        self.assertEqual(preview.call_count, 3)
+        argv = supervise.call_args.args[4]
+        self.assertEqual(
+            argv[argv.index("--expected-default") + 1], second.commit_id,
+        )
 
     def test_ongoing_worker_is_polled_and_escape_sends_one_group_sigterm(self) -> None:
         screen = ProgressScreen([27, 27])
@@ -160,7 +693,10 @@ class TuiStartCancellationTests(unittest.TestCase):
     def test_normal_completion_wins_over_escape_read_during_worker_exit(self) -> None:
         payload = {
             "contract": "asha.control-task-start.v1",
-            "task": {"task_id": TASK_ID, "slug": "done"},
+            "task": {
+                "task_id": TASK_ID, "slug": "done",
+                "jj": {"base_commit_id": "b" * 40},
+            },
         }
         script = f"import json; print(json.dumps({payload!r}))"
         screen = ProgressScreen([27], key_delay=0.2)
@@ -170,8 +706,42 @@ class TuiStartCancellationTests(unittest.TestCase):
                 [sys.executable, "-c", script], TASK_ID, self.env,
             )
 
-        self.assertEqual(message, f"task started: done ({TASK_ID})")
+        self.assertEqual(
+            message, f"task started: done ({TASK_ID}); base {'b' * 40}",
+        )
         killpg.assert_not_called()
+
+    def test_success_message_requires_and_names_authoritative_full_base_oid(self) -> None:
+        payload = json.dumps({
+            "contract": "asha.control-task-start.v1",
+            "task": {
+                "task_id": TASK_ID, "slug": "done",
+                "jj": {"base_commit_id": "c" * 40},
+            },
+            "source_mutations": [],
+        }).encode()
+
+        self.assertEqual(
+            _successful_worker_message(payload, TASK_ID),
+            f"task started: done ({TASK_ID}); base {'c' * 40}",
+        )
+        bad = json.loads(payload)
+        bad["task"]["jj"]["base_commit_id"] = "short"
+        with self.assertRaisesRegex(ValueError, "base commit"):
+            _successful_worker_message(json.dumps(bad).encode(), TASK_ID)
+
+    def test_retry_omits_base_only_for_legacy_default_sentinel(self) -> None:
+        omitted = task_record()
+        omitted["jj"]["requested_base"] = DEFAULT_BASE_REVSET
+        explicit = task_record()
+        explicit["jj"]["requested_base"] = "bookmarks(exact:\"release\")"
+
+        self.assertNotIn("--base", _retry_arguments(omitted, TASK_ID))
+        explicit_arguments = _retry_arguments(explicit, TASK_ID)
+        base_index = explicit_arguments.index("--base")
+        self.assertEqual(
+            explicit_arguments[base_index + 1], 'bookmarks(exact:"release")',
+        )
 
     def test_worker_exit_classification_uses_terminal_journal_boundary(self) -> None:
         tasks = mock.Mock()
@@ -314,7 +884,10 @@ class TuiStartCancellationTests(unittest.TestCase):
         pid_file = self.root / "descendant.pid"
         payload = {
             "contract": "asha.control-task-start.v1",
-            "task": {"task_id": TASK_ID, "slug": "done"},
+            "task": {
+                "task_id": TASK_ID, "slug": "done",
+                "jj": {"base_commit_id": "b" * 40},
+            },
         }
         script = (
             "import json,subprocess,sys; "
@@ -992,6 +1565,21 @@ class PlainGitPreEnableTests(unittest.TestCase):
         self.assertTrue(explicit["base_explicit"])
         self.assertEqual(explicit["base"], omitted["base"])
 
+    def test_expected_default_is_a_private_omitted_base_race_assertion(self) -> None:
+        oid = "a" * 40
+        parsed = _parse_start(["--expected-default", oid, "--goal", "x"])
+        self.assertEqual(parsed["expected_default"], oid)
+        self.assertFalse(parsed["base_explicit"])
+        for conflicting in (("--base", "main"), ("--pr", "7")):
+            with self.subTest(conflicting=conflicting), self.assertRaisesRegex(
+                ValueError, "--expected-default",
+            ):
+                _parse_start([
+                    "--expected-default", oid, *conflicting, "--goal", "x",
+                ])
+        with self.assertRaisesRegex(ValueError, "full Git object ID"):
+            _parse_start(["--expected-default", "short", "--goal", "x"])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -1317,7 +1905,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
         self.assertFalse(plan.default_base_deferred)
         self.assertFalse((self.source / ".jj").exists())
 
-    def test_omitted_default_resolves_master_and_refuses_dev_only_without_mutation(self) -> None:
+    def test_omitted_default_resolves_any_attached_local_branch_without_mutation(self) -> None:
         subprocess.run(
             ["git", "-C", str(self.source), "branch", "-m", "master"], check=True,
         )
@@ -1330,13 +1918,53 @@ class PlainGitPreEnableTests(unittest.TestCase):
         subprocess.run(
             ["git", "-C", str(self.source), "branch", "-m", "dev"], check=True,
         )
-        with self.assertRaisesRegex(PreparationError, "explicit --base"):
-            preflight_plain_git_enablement(
-                self.config, self.request(base="ignored jj default"),
-                jj=JjAdapter(), base_explicit=False,
-            )
+        dev = preflight_plain_git_enablement(
+            self.config, self.request(base="ignored jj default"),
+            jj=JjAdapter(), base_explicit=False,
+        )
+        self.assertEqual(dev.selected_base, "refs/heads/dev")
         self.assertFalse((self.source / ".jj").exists())
         self.assertFalse(ColocationIntentStore(self.config).path(self.source).exists())
+
+    def test_existing_jj_omitted_preflight_uses_exact_git_default_not_jj_revset(self) -> None:
+        head = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        real = JjAdapter()
+        adapter = mock.Mock(spec=JjAdapter)
+        adapter.resolve_default_base.return_value = DefaultBaseResolution(
+            ("refs/heads/main",), head, "attached-local",
+        )
+        adapter.materialization_plan.return_value = real.materialization_plan(
+            self.source / ".git", head, exact_root=self.source,
+        )
+
+        plan = preflight_plain_git_enablement(
+            self.config, self.request(base=DEFAULT_BASE_REVSET), jj=adapter,
+            base_explicit=False, existing_jj=True,
+        )
+
+        self.assertEqual(plan.resolved_base_commit_id, head)
+        self.assertEqual(plan.default_base_resolution, DefaultBaseResolution(
+            ("refs/heads/main",), head, "attached-local",
+        ))
+        adapter.resolve_base.assert_not_called()
+
+    def test_pre_enable_revalidation_refuses_a_default_ref_race(self) -> None:
+        plan = preflight_plain_git_enablement(
+            self.config, self.request(base=DEFAULT_BASE_REVSET), jj=JjAdapter(),
+            base_explicit=False,
+        )
+        adapter = mock.Mock(spec=JjAdapter)
+        adapter.resolve_default_base.return_value = DefaultBaseResolution(
+            plan.default_base_resolution.references,
+            "f" * 40,
+            plan.default_base_resolution.tier,
+        )
+
+        with self.assertRaisesRegex(PreparationError, "default base changed"):
+            revalidate_plain_git_pre_enable_plan(plan, jj=adapter)
 
     def test_omitted_default_prefers_one_unambiguous_remote_head(self) -> None:
         head = subprocess.run(
@@ -1351,6 +1979,10 @@ class PlainGitPreEnableTests(unittest.TestCase):
             "git", "-C", str(self.source), "symbolic-ref",
             "refs/remotes/origin/HEAD", "refs/remotes/origin/release",
         ], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.source), "checkout", "--detach", "-q", head],
+            check=True,
+        )
 
         plan = preflight_plain_git_enablement(
             self.config, self.request(base="ignored jj default"),
@@ -1359,6 +1991,77 @@ class PlainGitPreEnableTests(unittest.TestCase):
 
         self.assertEqual(plan.selected_base, "refs/remotes/origin/release")
         self.assertEqual(plan.resolved_base_commit_id, head)
+
+    def test_aas_shaped_stale_packed_origin_cannot_override_attached_local_tree(self) -> None:
+        subprocess.run([
+            "git", "-C", str(self.source), "add", "-f",
+            ".asha/config.json", "Memory/activeContext.md", "Memory/decisions.md",
+        ], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.source), "commit", "-qm", "current identity"],
+            check=True, env=self.git_env,
+        )
+        current = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(self.source), "checkout", "--orphan", "legacy"],
+            check=True, capture_output=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "rm", "-rf", "--cached", "."],
+            check=True, capture_output=True,
+        )
+        (self.source / ".asha/config.json").write_text(json.dumps({
+            "initialized": True, "memory_version": 2,
+            "project_id": "stale-project",
+        }) + "\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.source), "add", "-f", ".asha/config.json",
+             ".gitignore", "tracked.txt", "Memory/activeContext.md",
+             "Memory/decisions.md"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "commit", "-qm", "legacy identity"],
+            check=True, env=self.git_env,
+        )
+        stale = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(self.source), "checkout", "-q", "main"], check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(self.source), "update-ref",
+            "refs/remotes/origin/master", stale,
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.source), "symbolic-ref",
+            "refs/remotes/origin/HEAD", "refs/remotes/origin/master",
+        ], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.source), "pack-refs", "--all"], check=True,
+        )
+        subprocess.run([
+            "git", "-C", str(self.source), "update-ref",
+            "refs/remotes/keybase/master", current,
+        ], check=True)
+        subprocess.run([
+            "git", "-C", str(self.source), "symbolic-ref",
+            "refs/remotes/keybase/HEAD", "refs/remotes/keybase/master",
+        ], check=True)
+
+        plan = preflight_plain_git_enablement(
+            self.config, self.request(base=DEFAULT_BASE_REVSET), jj=JjAdapter(),
+            base_explicit=False,
+        )
+
+        self.assertEqual(plan.selected_base, "refs/heads/main")
+        self.assertEqual(plan.resolved_base_commit_id, current)
+        self.assertNotEqual(plan.resolved_base_commit_id, stale)
 
     def test_pre_enable_plan_binds_root_and_git_marker_against_path_replacement(self) -> None:
         plan = preflight_plain_git_enablement(
@@ -1603,6 +2306,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
         adapter.preflight.return_value = repository
         adapter.working_copy_parent.return_value = head
         adapter.git_head_exact.return_value = head
+        adapter.resolve_git_commit.return_value = head
         adapter.import_git.return_value = ()
         github.reset_mock()
         github.fetch_pr_head.return_value = ()
@@ -1613,11 +2317,13 @@ class PlainGitPreEnableTests(unittest.TestCase):
         with mock.patch("lib.control.cli.GithubAdapter", return_value=github), \
                 mock.patch("lib.control.cli.prepare_task_workspace", return_value=prepared), \
                 mock.patch("lib.control.cli.launch_task", return_value={}), \
+                mock.patch("lib.control.cli.revalidate_pr_source_proof_after_fetch"), \
                 mock.patch("lib.control.cli._emit_start_result", return_value=0):
             status = _start_new_task(
                 parsed, {}, self.config, adapter, self.source, task_id=TASK_ID,
                 selected_harness="codex", selected_role="implementer",
                 preflight_request=request,
+                pre_enable_plan=mock.sentinel.pre_enable_plan,
             )
         self.assertEqual(status, 0)
         github.preflight.assert_not_called()
@@ -1626,6 +2332,118 @@ class PlainGitPreEnableTests(unittest.TestCase):
         github.fetch_pr_head.assert_called_once_with(
             self.source, selected_remote, 7, git=adapter,
         )
+
+    def test_existing_jj_omitted_start_pins_default_before_git_import(self) -> None:
+        parsed = _parse_start([
+            "--harness", "codex", "--goal", "Pin current default",
+        ])
+        head = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        events: list[str] = []
+        adapter = mock.Mock(spec=JjAdapter)
+        adapter.preflight.return_value = RepositoryFacts(
+            self.source, self.source / ".git",
+        )
+        adapter.working_copy_parent.return_value = head
+        adapter.git_head_exact.return_value = head
+        adapter.resolve_default_base.side_effect = lambda _root: (
+            events.append("resolve") or DefaultBaseResolution(
+                ("refs/heads/main",), head, "attached-local",
+            )
+        )
+        adapter.import_git.side_effect = lambda _root: events.append("import") or ()
+        prepared = {
+            "tmux": {"socket": "default"},
+            "jj": {"workspace_path": str(self.root / "workspace")},
+        }
+        captured: list[PrepareRequest] = []
+
+        def prepare(_config, request, *, jj):
+            events.append("prepare")
+            captured.append(request)
+            return prepared
+
+        with mock.patch(
+            "lib.control.cli.prepare_task_workspace", side_effect=prepare,
+        ), mock.patch(
+            "lib.control.cli.launch_task", return_value={},
+        ), mock.patch(
+            "lib.control.cli._emit_start_result", return_value=0,
+        ):
+            self.assertEqual(_start_new_task(
+                parsed, {}, self.config, adapter, self.source, task_id=TASK_ID,
+                selected_harness="codex", selected_role="implementer",
+            ), 0)
+
+        self.assertEqual(events, ["resolve", "import", "prepare"])
+        self.assertEqual(captured[0].requested_base, DEFAULT_BASE_REVSET)
+        self.assertEqual(captured[0].resolved_base_commit_id, head)
+        adapter.resolve_base.assert_not_called()
+
+    def test_preview_race_refuses_before_import(self) -> None:
+        parsed = _parse_start([
+            "--expected-default", "a" * 40,
+            "--harness", "codex", "--goal", "Refuse raced default",
+        ])
+        adapter = mock.Mock(spec=JjAdapter)
+        adapter.preflight.return_value = RepositoryFacts(
+            self.source, self.source / ".git",
+        )
+        adapter.working_copy_parent.return_value = "b" * 40
+        adapter.git_head_exact.return_value = "b" * 40
+        adapter.resolve_default_base.return_value = DefaultBaseResolution(
+            ("refs/heads/main",), "b" * 40, "attached-local",
+        )
+
+        with self.assertRaisesRegex(ValueError, "TUI preview"):
+            _start_new_task(
+                parsed, {}, self.config, adapter, self.source, task_id=TASK_ID,
+                selected_harness="codex", selected_role="implementer",
+            )
+
+        adapter.import_git.assert_not_called()
+
+    def test_explicit_legacy_default_text_remains_a_verbatim_jj_revset(self) -> None:
+        parsed = _parse_start([
+            "--base", DEFAULT_BASE_REVSET,
+            "--harness", "codex", "--goal", "Explicit legacy expression",
+        ])
+        adapter = mock.Mock(spec=JjAdapter)
+        adapter.preflight.return_value = RepositoryFacts(
+            self.source, self.source / ".git",
+        )
+        adapter.working_copy_parent.return_value = "a" * 40
+        adapter.git_head_exact.return_value = "a" * 40
+        adapter.import_git.return_value = ()
+        adapter.resolve_default_base.side_effect = AssertionError(
+            "an explicit revset must not enter omitted-base resolution"
+        )
+        captured: list[PrepareRequest] = []
+        prepared = {
+            "tmux": {"socket": "default"},
+            "jj": {"workspace_path": str(self.root / "workspace")},
+        }
+
+        with mock.patch(
+            "lib.control.cli.prepare_task_workspace",
+            side_effect=lambda _config, request, **_kwargs: (
+                captured.append(request) or prepared
+            ),
+        ), mock.patch(
+            "lib.control.cli.launch_task", return_value={},
+        ), mock.patch(
+            "lib.control.cli._emit_start_result", return_value=0,
+        ):
+            self.assertEqual(_start_new_task(
+                parsed, {}, self.config, adapter, self.source, task_id=TASK_ID,
+                selected_harness="codex", selected_role="implementer",
+            ), 0)
+
+        self.assertEqual(captured[0].requested_base, DEFAULT_BASE_REVSET)
+        self.assertIsNone(captured[0].resolved_base_commit_id)
+        adapter.resolve_default_base.assert_not_called()
 
     def test_omitted_default_keeps_requested_identity_while_carrying_oid(self) -> None:
         parsed = _parse_start([
@@ -1713,6 +2531,27 @@ class ColocationIntentTests(unittest.TestCase):
         }
         self.config = load_config(self.env)
 
+    @staticmethod
+    def _fact_positions(binding: dict) -> tuple[dict, ...]:
+        return (
+            binding["root_fact"],
+            binding["git_binding"]["marker_fact"],
+            binding["git_binding"]["target_fact"],
+            binding["jj_fact"],
+        )
+
+    def _rewrite_stored_devices(self, store: ColocationIntentStore, old_dev: int) -> bytes:
+        path = store.path(self.source)
+        value = json.loads(path.read_bytes())
+        for fact in self._fact_positions(value):
+            fact["dev"] = old_dev
+        raw = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        path.write_bytes(raw)
+        os.chmod(path, 0o600)
+        return raw
+
     def test_usable_jj_with_unverified_control_intent_is_never_adopted(self) -> None:
         store = ColocationIntentStore(self.config)
         store.begin(self.source)
@@ -1771,6 +2610,261 @@ class ColocationIntentTests(unittest.TestCase):
         self.assertEqual(after_value["root_fact"]["mode"] & 0o777, 0o755)
         for field in ("contract", "root", "git_binding", "jj_fact", "state"):
             self.assertEqual(after_value[field], before_value[field])
+
+    def test_verified_device_rebind_candidate_refreshes_every_device_only(self) -> None:
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        (self.source / ".jj").mkdir()
+        store.mark_verified(self.source)
+        current = json.loads(store.path(self.source).read_bytes())
+        live_dev = current["root_fact"]["dev"]
+        before = self._rewrite_stored_devices(store, live_dev + 1000)
+        before_value = json.loads(before)
+
+        assessment = store.classify(self.source)
+
+        self.assertEqual(assessment.kind, "verified_device_rebind_candidate")
+        self.assertEqual(assessment.device_remap, ((live_dev + 1000, live_dev),))
+        self.assertEqual(assessment.raw, before)
+        store.reauthenticate_device_rebind(self.source, assessment)
+        after_value = json.loads(store.path(self.source).read_bytes())
+        self.assertEqual(store.classify(self.source).kind, "verified")
+        for before_fact, after_fact, current_fact in zip(
+            self._fact_positions(before_value),
+            self._fact_positions(after_value),
+            self._fact_positions(current),
+        ):
+            self.assertEqual(after_fact["dev"], current_fact["dev"])
+            self.assertEqual(
+                {key: value for key, value in after_fact.items() if key != "dev"},
+                {key: value for key, value in before_fact.items() if key != "dev"},
+            )
+        for field in ("contract", "root", "state"):
+            self.assertEqual(after_value[field], before_value[field])
+        self.assertEqual(
+            {key: value for key, value in after_value["git_binding"].items()
+             if key not in {"marker_fact", "target_fact"}},
+            {key: value for key, value in before_value["git_binding"].items()
+             if key not in {"marker_fact", "target_fact"}},
+        )
+
+    def test_device_rebind_mapping_is_coherent_injective_and_requires_a_change(self) -> None:
+        def binding(devices: tuple[int, int, int, int]) -> dict:
+            facts = [
+                {"dev": device, "ino": index + 1, "mode": 0o40755, "uid": 1000}
+                for index, device in enumerate(devices)
+            ]
+            return {
+                "contract": "asha.control-colocation-intent.v1",
+                "root": "/repo",
+                "root_fact": facts[0],
+                "git_binding": {
+                    "kind": "gitdir", "marker_fact": facts[1],
+                    "marker_digest": "a" * 64, "target": "/metadata",
+                    "target_fact": facts[2],
+                },
+                "jj_fact": facts[3],
+            }
+
+        stored = binding((1, 1, 2, 1))
+        coherent = binding((11, 11, 22, 11))
+        split = binding((11, 12, 22, 11))
+        collapse = binding((11, 11, 11, 11))
+
+        self.assertEqual(
+            ColocationIntentStore._coherent_device_remap(stored, coherent),
+            ((1, 11), (2, 22)),
+        )
+        self.assertIsNone(ColocationIntentStore._coherent_device_remap(stored, split))
+        self.assertIsNone(ColocationIntentStore._coherent_device_remap(stored, collapse))
+        self.assertIsNone(ColocationIntentStore._coherent_device_remap(stored, stored))
+        changes = (
+            ("root path", lambda value: value.__setitem__("root", "/other")),
+            ("marker kind", lambda value: value["git_binding"].__setitem__(
+                "kind", "directory",
+            )),
+            ("marker digest", lambda value: value["git_binding"].__setitem__(
+                "marker_digest", "b" * 64,
+            )),
+            ("marker target", lambda value: value["git_binding"].__setitem__(
+                "target", "/other-metadata",
+            )),
+            ("inode", lambda value: value["root_fact"].__setitem__("ino", 99)),
+            ("mode", lambda value: value["root_fact"].__setitem__("mode", 0o40750)),
+            ("uid", lambda value: value["root_fact"].__setitem__("uid", 99)),
+        )
+        for label, mutate in changes:
+            changed = json.loads(json.dumps(coherent))
+            mutate(changed)
+            with self.subTest(non_device_change=label):
+                self.assertIsNone(
+                    ColocationIntentStore._coherent_device_remap(stored, changed)
+                )
+
+    def test_device_rebind_refuses_intent_and_mixed_non_device_change(self) -> None:
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        intent_path = store.path(self.source)
+        intent_value = json.loads(intent_path.read_bytes())
+        old_dev = intent_value["root_fact"]["dev"] + 1000
+        for fact in (
+            intent_value["root_fact"],
+            intent_value["git_binding"]["marker_fact"],
+            intent_value["git_binding"]["target_fact"],
+        ):
+            fact["dev"] = old_dev
+        intent_raw = json.dumps(
+            intent_value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        intent_path.write_bytes(intent_raw)
+        self.assertEqual(store.classify(self.source).kind, "mismatch")
+        self.assertEqual(intent_path.read_bytes(), intent_raw)
+
+        intent_path.unlink()
+        self.source.chmod(0o775)
+        store.begin(self.source)
+        (self.source / ".jj").mkdir()
+        store.mark_verified(self.source)
+        verified = json.loads(store.path(self.source).read_bytes())
+        live_dev = verified["root_fact"]["dev"]
+        mixed_raw = self._rewrite_stored_devices(store, live_dev + 1000)
+        self.source.chmod(0o755)
+        self.assertEqual(store.classify(self.source).kind, "mismatch")
+        self.assertEqual(store.path(self.source).read_bytes(), mixed_raw)
+
+    def test_strict_intent_decoder_rejects_boolean_in_every_filesystem_fact(self) -> None:
+        fact_paths = (
+            ("root_fact",),
+            ("git_binding", "marker_fact"),
+            ("git_binding", "target_fact"),
+            ("jj_fact",),
+        )
+        for fact_path in fact_paths:
+            for field in ("dev", "ino", "mode", "uid"):
+                with self.subTest(fact_path=fact_path, field=field):
+                    source = self.root / ("bool-" + "-".join(fact_path) + "-" + field)
+                    source.mkdir()
+                    subprocess.run(["git", "init", "-q", str(source)], check=True)
+                    store = ColocationIntentStore(self.config)
+                    store.begin(source)
+                    (source / ".jj").mkdir()
+                    store.mark_verified(source)
+                    path = store.path(source)
+                    value = json.loads(path.read_bytes())
+                    fact = value
+                    for component in fact_path:
+                        fact = fact[component]
+                    fact[field] = True
+                    raw = json.dumps(
+                        value, ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8") + b"\n"
+                    path.write_bytes(raw)
+                    os.chmod(path, 0o600)
+
+                    with self.assertRaisesRegex(JjError, "invalid"):
+                        store.classify(source)
+
+                    self.assertEqual(path.read_bytes(), raw)
+
+    def test_boolean_device_record_never_classifies_or_reaches_repair(self) -> None:
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        (self.source / ".jj").mkdir()
+        store.mark_verified(self.source)
+        path = store.path(self.source)
+        value = json.loads(path.read_bytes())
+        for fact in self._fact_positions(value):
+            fact["dev"] = True
+        raw = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        path.write_bytes(raw)
+        os.chmod(path, 0o600)
+        adapter = mock.Mock()
+
+        with mock.patch.object(
+            store, "reauthenticate_device_rebind",
+            side_effect=AssertionError("malformed record must never repair"),
+        ) as repair, self.assertRaisesRegex(ValueError, "stale or binding-mismatched"):
+            _ensure_colocated(
+                adapter, RepositorySelection(self.source, plain_git=False), store,
+            )
+
+        repair.assert_not_called()
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_ensure_colocated_reauthenticates_device_rebind_through_stable_chain(self) -> None:
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        (self.source / ".jj").mkdir()
+        store.mark_verified(self.source)
+        current = json.loads(store.path(self.source).read_bytes())
+        self._rewrite_stored_devices(store, current["root_fact"]["dev"] + 1000)
+        state = object()
+        adapter = mock.Mock()
+        adapter.preflight.return_value = RepositoryFacts(
+            self.source, self.source / ".git",
+        )
+        adapter.pin_operation.side_effect = ["a" * 128, "a" * 128]
+        adapter._git_semantic_state.side_effect = [state, state]
+        adapter.working_copy_parent.return_value = "b" * 40
+        adapter.git_head_exact.return_value = "b" * 40
+
+        mutations = _ensure_colocated(
+            adapter, RepositorySelection(self.source, plain_git=False), store,
+        )
+
+        self.assertEqual(mutations, ())
+        self.assertEqual(store.classify(self.source).kind, "verified")
+        self.assertEqual(
+            adapter._git_semantic_state.call_args_list,
+            [mock.call(self.source, include_jj_refs=True)] * 2,
+        )
+        self.assertEqual(adapter.pin_operation.call_count, 2)
+        adapter.init_colocated.assert_not_called()
+        adapter.import_git.assert_not_called()
+
+    def test_device_rebind_rechecks_exact_current_binding_before_replace(self) -> None:
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        (self.source / ".jj").mkdir()
+        store.mark_verified(self.source)
+        current = json.loads(store.path(self.source).read_bytes())
+        before = self._rewrite_stored_devices(
+            store, current["root_fact"]["dev"] + 1000,
+        )
+        assessment = store.classify(self.source)
+        changed_binding = json.loads(json.dumps(assessment.current_binding))
+        changed_binding["root_fact"]["dev"] += 1
+        raced = SimpleNamespace(
+            kind=assessment.kind, current_binding=changed_binding,
+        )
+
+        with mock.patch.object(
+            store, "_assessment", side_effect=[assessment, raced],
+        ), self.assertRaisesRegex(JjError, "facts changed.*preserved"):
+            store.reauthenticate_device_rebind(self.source, assessment)
+
+        self.assertEqual(store.path(self.source).read_bytes(), before)
+        self.assertEqual(list(store.directory.glob(".*.tmp.*")), [])
+
+    def test_device_rebind_refuses_oversized_rewrite_without_replacement(self) -> None:
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        (self.source / ".jj").mkdir()
+        store.mark_verified(self.source)
+        current = json.loads(store.path(self.source).read_bytes())
+        before = self._rewrite_stored_devices(
+            store, current["root_fact"]["dev"] + 1000,
+        )
+        assessment = store.classify(self.source)
+
+        with mock.patch("lib.control.jj.MAX_COLOCATION_INTENT_BYTES", len(before) - 1), \
+                self.assertRaisesRegex(JjError, "bounded size"):
+            store.reauthenticate_device_rebind(self.source, assessment)
+
+        self.assertEqual(store.path(self.source).read_bytes(), before)
 
     def test_verified_root_hardening_classifier_refuses_loosening_mixed_and_intent(self) -> None:
         cases = ((0o755, 0o775), (0o777, 0o754))
@@ -1954,6 +3048,73 @@ class ColocationIntentTests(unittest.TestCase):
         self.assertEqual((self.source / "mixed.txt").read_text(), "working\n")
         self.assertEqual((self.source / "untracked.txt").read_text(), "untracked\n")
 
+    @unittest.skipUnless(shutil.which("jj"), "jj is required")
+    def test_real_device_rebind_preserves_semantics_operation_and_workspaces(self) -> None:
+        git_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        (self.source / "tracked.txt").write_text("base\n", encoding="utf-8")
+        subprocess.run(
+            ["git", "-C", str(self.source), "add", "tracked.txt"],
+            check=True, env=git_env,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "commit", "-qm", "base"],
+            check=True, env=git_env,
+        )
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        adapter = JjAdapter()
+        adapter.init_colocated(self.source)
+        store.mark_verified(self.source)
+        current = json.loads(store.path(self.source).read_bytes())
+        old_record = self._rewrite_stored_devices(
+            store, current["root_fact"]["dev"] + 1000,
+        )
+        (self.source / "tracked.txt").write_text("dirty\n", encoding="utf-8")
+        (self.source / "untracked.txt").write_text("untracked\n", encoding="utf-8")
+        head = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(self.source), "update-ref", "refs/jj/test-device", head],
+            check=True,
+        )
+        semantic_before = adapter._git_semantic_state(
+            self.source, include_jj_refs=True,
+        )
+        operation_before = adapter.pin_operation(self.source)
+        workspaces_before = subprocess.run(
+            ["jj", "-R", str(self.source), "--ignore-working-copy",
+             "workspace", "list"], check=True,
+            capture_output=True, text=True,
+        ).stdout
+
+        _ensure_colocated(
+            adapter, RepositorySelection(self.source, plain_git=False), store,
+        )
+
+        self.assertNotEqual(store.path(self.source).read_bytes(), old_record)
+        self.assertEqual(store.classify(self.source).kind, "verified")
+        self.assertEqual(
+            adapter._git_semantic_state(self.source, include_jj_refs=True),
+            semantic_before,
+        )
+        self.assertEqual(adapter.pin_operation(self.source), operation_before)
+        self.assertEqual(
+            subprocess.run(
+                ["jj", "-R", str(self.source), "--ignore-working-copy",
+                 "workspace", "list"], check=True,
+                capture_output=True, text=True,
+            ).stdout,
+            workspaces_before,
+        )
+        self.assertEqual((self.source / "tracked.txt").read_text(), "dirty\n")
+        self.assertEqual((self.source / "untracked.txt").read_text(), "untracked\n")
+
     def test_manual_preexisting_valid_jj_without_control_intent_is_accepted(self) -> None:
         (self.source / ".jj").mkdir()
         adapter = mock.Mock()
@@ -2060,6 +3221,75 @@ class CliColocationTests(unittest.TestCase):
             },
         }
 
+    def verified_device_candidate(self):
+        git_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        (self.source / "tracked.txt").write_text("base\n", encoding="utf-8")
+        (self.source / ".gitignore").write_text(
+            "/.asha/\n/Memory/\n/Work/\n", encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "add", "tracked.txt", ".gitignore"],
+            check=True, env=git_env,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "commit", "-qm", "base"],
+            check=True, env=git_env,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.source), "branch", "-M", "main"],
+            check=True, env=git_env,
+        )
+        (self.source / ".asha").mkdir()
+        (self.source / "Memory").mkdir()
+        (self.source / ".asha" / "config.json").write_text(json.dumps({
+            "initialized": True,
+            "memory_version": 2,
+            "project_id": "device-rebind-outer",
+        }) + "\n", encoding="utf-8")
+        (self.source / "Memory" / "activeContext.md").write_text(
+            "# Objective\n\nO\n\n# State\n\nS\n\n# Next\n\n- N\n\n"
+            "# Blockers\n\n- None.\n",
+            encoding="utf-8",
+        )
+        (self.source / "Memory" / "decisions.md").write_text(
+            "# Decisions\n\n- One.\n", encoding="utf-8",
+        )
+        store = ColocationIntentStore(self.config)
+        store.begin(self.source)
+        adapter = JjAdapter()
+        adapter.init_colocated(self.source)
+        store.mark_verified(self.source)
+        path = store.path(self.source)
+        value = json.loads(path.read_bytes())
+        old_dev = value["root_fact"]["dev"] + 1000
+        for fact in (
+            value["root_fact"],
+            value["git_binding"]["marker_fact"],
+            value["git_binding"]["target_fact"],
+            value["jj_fact"],
+        ):
+            fact["dev"] = old_dev
+        raw = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        path.write_bytes(raw)
+        os.chmod(path, 0o600)
+        self.assertEqual(store.classify(self.source).kind,
+                         "verified_device_rebind_candidate")
+        return adapter, store, raw
+
+    def workspace_inventory(self) -> list[str]:
+        if not self.config.workspace_root.exists():
+            return []
+        return sorted(
+            str(path.relative_to(self.config.workspace_root))
+            for path in self.config.workspace_root.rglob("*")
+        )
+
     def adapter(self):
         adapter = mock.Mock()
         adapter.discover_root.side_effect = JjError("not jj")
@@ -2083,6 +3313,9 @@ class CliColocationTests(unittest.TestCase):
             "kind": "jj-operation", "operation": "git import",
             "detail": "recorded a jj operation-log entry for git import",
         },)
+        adapter.resolve_default_base.return_value = DefaultBaseResolution(
+            ("refs/heads/main",), "b" * 40, "attached-local",
+        )
         return adapter
 
     def invoke(self, adapter, *, prepare=None):
@@ -2158,6 +3391,269 @@ class CliColocationTests(unittest.TestCase):
         self.assertFalse(ColocationIntentStore(self.config).path(self.source).exists())
         with self.assertRaisesRegex(StoreError, "task not found"):
             TaskStore(self.config).read(TASK_ID)
+
+    @unittest.skipUnless(shutil.which("jj"), "jj is required")
+    def test_device_rebind_omitted_base_resolves_before_complete_gate_and_rewrite(self) -> None:
+        adapter, store, before_record = self.verified_device_candidate()
+        expected_default = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "refs/heads/main^{commit}"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        before_semantic = adapter._git_semantic_state(
+            self.source, include_jj_refs=True,
+        )
+        before_operation = adapter.pin_operation(self.source)
+        before_workspaces = subprocess.run(
+            ["jj", "-R", str(self.source), "--ignore-working-copy",
+             "workspace", "list"], check=True, capture_output=True, text=True,
+        ).stdout
+        before_inventory = self.workspace_inventory()
+        order: list[str] = []
+        captured_plan: list[PlainGitPreEnablePlan] = []
+        real_task_read = TaskStore.read
+        real_journal_read = CreationJournalStore.read
+        real_preflight = preflight_plain_git_enablement
+        real_revalidate = revalidate_plain_git_pre_enable_plan
+        real_rebind = ColocationIntentStore.reauthenticate_device_rebind
+
+        def task_read(instance, task_id):
+            order.append("caller-replay")
+            return real_task_read(instance, task_id)
+
+        def journal_read(instance, task_id):
+            order.append("journal-replay")
+            return real_journal_read(instance, task_id)
+
+        def gate(*args, **kwargs):
+            order.append("pre-enable-enter")
+            self.assertTrue(kwargs["existing_jj"])
+            plan = real_preflight(*args, **kwargs)
+            self.assertIsNotNone(plan.materialization_plan)
+            self.assertIsNotNone(plan.context_compatibility)
+            self.assertFalse(plan.destination.exists())
+            captured_plan.append(plan)
+            order.append("pre-enable-complete")
+            return plan
+
+        def revalidate(plan, *, jj=None):
+            order.append("plan-revalidate")
+            return real_revalidate(plan, jj=jj)
+
+        def rebind(instance, root, assessment):
+            order.append("record-rewrite")
+            self.assertEqual(order[:4], [
+                "caller-replay", "journal-replay", "pre-enable-enter",
+                "pre-enable-complete",
+            ])
+            self.assertGreaterEqual(order.count("plan-revalidate"), 1)
+            return real_rebind(instance, root, assessment)
+
+        def stop_after_rebind(*_args, **kwargs):
+            order.append("later-start-boundary")
+            self.assertEqual(store.classify(self.source).kind, "verified")
+            self.assertEqual(kwargs["initial_source_mutations"], ())
+            request = kwargs["preflight_request"]
+            self.assertIsInstance(request, PrepareRequest)
+            self.assertEqual(request.repository, self.source)
+            self.assertEqual(request.task_id, TASK_ID)
+            self.assertEqual(request.requested_base, DEFAULT_BASE_REVSET)
+            self.assertEqual(
+                captured_plan[0].default_base_resolution,
+                DefaultBaseResolution(
+                    ("refs/heads/main",), expected_default, "attached-local",
+                ),
+            )
+            self.assertEqual(
+                request.resolved_base_commit_id,
+                expected_default,
+            )
+            self.assertFalse((self.config.tasks_dir / f"{TASK_ID}.json").exists())
+            self.assertFalse(
+                CreationJournalStore(self.config).path(TASK_ID).exists()
+            )
+            self.assertFalse(captured_plan[0].destination.exists())
+            raise PreparationError("forced refusal after authenticated rebind")
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("lib.control.cli.JjAdapter", return_value=adapter), \
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/codex"), \
+                mock.patch.object(TaskStore, "read", autospec=True,
+                                  side_effect=task_read), \
+                mock.patch.object(CreationJournalStore, "read", autospec=True,
+                                  side_effect=journal_read), \
+                mock.patch("lib.control.cli.preflight_plain_git_enablement",
+                           side_effect=gate), \
+                mock.patch("lib.control.cli.revalidate_plain_git_pre_enable_plan",
+                           side_effect=revalidate), \
+                mock.patch.object(
+                    ColocationIntentStore, "reauthenticate_device_rebind",
+                    autospec=True, side_effect=rebind,
+                ), mock.patch("lib.control.cli._start_new_task",
+                              side_effect=stop_after_rebind) as start, \
+                mock.patch("lib.control.cli.TmuxAdapter",
+                           side_effect=AssertionError(
+                               "tmux must remain unreachable",
+                           )) as tmux, \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = control_main([
+                "task", "start", "--repo", str(self.source),
+                "--task-id", TASK_ID, "--slug", "device-rebind-outer",
+                "--harness", "codex", "--goal", "Outer rebind", "--json",
+            ], env=self.env)
+
+        self.assertEqual((status, stdout.getvalue()), (2, ""))
+        self.assertIn("forced refusal after authenticated rebind", stderr.getvalue())
+        self.assertIn("record-rewrite", order)
+        self.assertLess(order.index("record-rewrite"), order.index("later-start-boundary"))
+        start.assert_called_once()
+        tmux.assert_not_called()
+        self.assertNotEqual(store.path(self.source).read_bytes(), before_record)
+        self.assertEqual(store.classify(self.source).kind, "verified")
+        self.assertEqual(self.workspace_inventory(), before_inventory)
+        self.assertEqual(
+            adapter._git_semantic_state(self.source, include_jj_refs=True),
+            before_semantic,
+        )
+        self.assertEqual(adapter.pin_operation(self.source), before_operation)
+        self.assertEqual(subprocess.run(
+            ["jj", "-R", str(self.source), "--ignore-working-copy",
+             "workspace", "list"], check=True, capture_output=True, text=True,
+        ).stdout, before_workspaces)
+
+    @unittest.skipUnless(shutil.which("jj"), "jj is required")
+    def test_device_rebind_outer_pre_enable_refusal_preserves_record_and_state(self) -> None:
+        adapter, store, before_record = self.verified_device_candidate()
+        before_inventory = self.workspace_inventory()
+        before_operation = adapter.pin_operation(self.source)
+        (self.source / "Memory" / "decisions.md").unlink()
+        before_semantic = adapter._git_semantic_state(
+            self.source, include_jj_refs=True,
+        )
+        stdout, stderr = io.StringIO(), io.StringIO()
+
+        with mock.patch("lib.control.cli.JjAdapter", return_value=adapter), \
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/codex"), \
+                mock.patch("lib.control.cli.preflight_plain_git_enablement",
+                           wraps=preflight_plain_git_enablement) as preflight, \
+                mock.patch.object(
+                    ColocationIntentStore, "reauthenticate_device_rebind",
+                    autospec=True,
+                    side_effect=AssertionError("refused gate must not rewrite"),
+                ) as rebind, \
+                mock.patch("lib.control.cli._start_new_task",
+                           side_effect=AssertionError("refused gate must not start")) as start, \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = control_main([
+                "task", "start", "--repo", str(self.source), "--base", "main",
+                "--task-id", TASK_ID, "--slug", "device-rebind-refusal",
+                "--harness", "codex", "--goal", "Outer refusal", "--json",
+            ], env=self.env)
+
+        self.assertEqual((status, stdout.getvalue()), (2, ""))
+        self.assertIn("Memory", stderr.getvalue())
+        self.assertTrue(preflight.called)
+        self.assertTrue(preflight.call_args.kwargs["existing_jj"])
+        rebind.assert_not_called()
+        start.assert_not_called()
+        self.assertEqual(store.path(self.source).read_bytes(), before_record)
+        self.assertEqual(self.workspace_inventory(), before_inventory)
+        self.assertFalse((self.config.tasks_dir / f"{TASK_ID}.json").exists())
+        self.assertFalse(CreationJournalStore(self.config).path(TASK_ID).exists())
+        self.assertEqual(
+            adapter._git_semantic_state(self.source, include_jj_refs=True),
+            before_semantic,
+        )
+        self.assertEqual(adapter.pin_operation(self.source), before_operation)
+
+    @unittest.skipUnless(shutil.which("jj"), "jj is required")
+    def test_device_rebind_outer_start_revalidates_forwarded_plan_against_late_git_replacement(
+        self,
+    ) -> None:
+        adapter, store, before_record = self.verified_device_candidate()
+        before_inventory = self.workspace_inventory()
+        before_operation = adapter.pin_operation(self.source)
+        before_semantic = adapter._git_semantic_state(
+            self.source, include_jj_refs=True,
+        )
+        before_workspaces = subprocess.run(
+            ["jj", "-R", str(self.source), "--ignore-working-copy",
+             "workspace", "list"], check=True, capture_output=True, text=True,
+        ).stdout
+        real_require = require_pre_enable_binding
+        outer_binding_validated = False
+        replacement_observed = False
+        git_marker = self.source / ".git"
+        held_git_marker = self.root / "authenticated-git-marker"
+
+        def replace_git_marker_at_inner_boundary(root, expected):
+            nonlocal outer_binding_validated, replacement_observed
+            if not outer_binding_validated:
+                result = real_require(root, expected)
+                outer_binding_validated = True
+                return result
+
+            git_marker.rename(held_git_marker)
+            shutil.copytree(held_git_marker, git_marker, symlinks=True)
+            replacement_observed = True
+            try:
+                return real_require(root, expected)
+            finally:
+                shutil.rmtree(git_marker)
+                held_git_marker.rename(git_marker)
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("lib.control.cli.JjAdapter", return_value=adapter), \
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/codex"), \
+                mock.patch(
+                    "lib.control.prepare.require_pre_enable_binding",
+                    side_effect=replace_git_marker_at_inner_boundary,
+                ), mock.patch.object(
+                    ColocationIntentStore, "reauthenticate_device_rebind",
+                    autospec=True,
+                    side_effect=AssertionError(
+                        "late Git replacement must refuse before record rewrite",
+                    ),
+                ) as rebind, mock.patch(
+                    "lib.control.cli._start_new_task",
+                    side_effect=AssertionError(
+                        "late Git replacement must refuse before task start",
+                    ),
+                ) as start, mock.patch(
+                    "lib.control.cli.TmuxAdapter",
+                    side_effect=AssertionError("tmux must remain unreachable"),
+                ) as tmux, contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            status = control_main([
+                "task", "start", "--repo", str(self.source), "--base", "main",
+                "--task-id", TASK_ID, "--slug", "device-rebind-late-binding",
+                "--harness", "codex", "--goal", "Late binding refusal", "--json",
+            ], env=self.env)
+
+        self.assertEqual((status, stdout.getvalue()), (2, ""))
+        self.assertTrue(outer_binding_validated)
+        self.assertTrue(replacement_observed)
+        self.assertIn("pre-enable repository binding changed", stderr.getvalue())
+        self.assertIn("pre-enable plan invalidated", stderr.getvalue())
+        rebind.assert_not_called()
+        start.assert_not_called()
+        tmux.assert_not_called()
+        self.assertEqual(store.path(self.source).read_bytes(), before_record)
+        self.assertEqual(
+            store.classify(self.source).kind,
+            "verified_device_rebind_candidate",
+        )
+        self.assertEqual(self.workspace_inventory(), before_inventory)
+        self.assertFalse((self.config.tasks_dir / f"{TASK_ID}.json").exists())
+        self.assertFalse(CreationJournalStore(self.config).path(TASK_ID).exists())
+        self.assertEqual(
+            adapter._git_semantic_state(self.source, include_jj_refs=True),
+            before_semantic,
+        )
+        self.assertEqual(adapter.pin_operation(self.source), before_operation)
+        self.assertEqual(subprocess.run(
+            ["jj", "-R", str(self.source), "--ignore-working-copy",
+             "workspace", "list"], check=True, capture_output=True, text=True,
+        ).stdout, before_workspaces)
 
     def test_plain_git_explicit_base_oid_is_carried_without_jj_reinterpretation(self) -> None:
         adapter = self.adapter()
@@ -2584,6 +4080,37 @@ class DoctorColocationIntentTests(unittest.TestCase):
         self.assertIn("task start", probe["detail"])
         self.assertIn("read-only", probe["detail"])
         self.assertEqual(store.path(self.source).read_bytes(), before)
+
+    def test_doctor_reports_device_rebind_candidate_as_repairable_without_rewrite(self) -> None:
+        store = ColocationIntentStore(self.config)
+        self.source.chmod(0o755)
+        store.begin(self.source)
+        (self.source / ".jj").mkdir()
+        store.mark_verified(self.source)
+        path = store.path(self.source)
+        value = json.loads(path.read_bytes())
+        old_dev = value["root_fact"]["dev"] + 1000
+        for fact in (
+            value["root_fact"],
+            value["git_binding"]["marker_fact"],
+            value["git_binding"]["target_fact"],
+            value["jj_fact"],
+        ):
+            fact["dev"] = old_dev
+        before = json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ).encode("utf-8") + b"\n"
+        path.write_bytes(before)
+        os.chmod(path, 0o600)
+
+        probe = self.doctor(self.source, usable_jj=True)
+
+        self.assertEqual(probe["outcome"], "mismatch")
+        self.assertIn("device renumbering", probe["detail"])
+        self.assertIn("repairable", probe["detail"])
+        self.assertIn("read-only", probe["detail"])
+        self.assertIn("only stored device observations", probe["detail"])
+        self.assertEqual(path.read_bytes(), before)
 
     def test_doctor_does_not_call_unsafe_remaining_permissions_repairable(self) -> None:
         store = ColocationIntentStore(self.config)

@@ -115,6 +115,9 @@ out="$(cd "$IGNORE_PROJECT" && run --target copilot 2>&1 || true)"
 grep -q 'leaves Work/session-state JSON trackable' <<<"$out" \
   && ok "doctor verifies Git ignore semantics rather than a literal line" \
   || fail "doctor verifies Git ignore semantics rather than a literal line"
+grep -q 'working tree leaves .asha/control-task.json trackable' <<<"$out" \
+  && ok "doctor reports missing Control marker working-tree readiness" \
+  || fail "doctor reports missing Control marker working-tree readiness"
 
 printf '{"initialized":true,"memory_version":2,"project_id":"   "}\n' > "$IGNORE_PROJECT/.asha/config.json"
 out="$(cd "$IGNORE_PROJECT" && run --target copilot 2>&1 || true)"
@@ -126,7 +129,7 @@ MEMORY_LIMIT_PROJECT="$SANDBOX/memory-limit-project"
 mkdir -p "$MEMORY_LIMIT_PROJECT/.asha" "$MEMORY_LIMIT_PROJECT/Memory"
 printf '{"initialized":true,"memory_version":2,"project_id":"memory-limit-test"}\n' \
   > "$MEMORY_LIMIT_PROJECT/.asha/config.json"
-printf '/Work/session-state/\n/Work/memory-migration/\n' \
+printf '/Work/session-state/\n/Work/memory-migration/\n/.asha/control-task.json\n' \
   > "$MEMORY_LIMIT_PROJECT/.gitignore"
 python3 - "$MEMORY_LIMIT_PROJECT/Memory/decisions.md" <<'PY'
 from pathlib import Path
