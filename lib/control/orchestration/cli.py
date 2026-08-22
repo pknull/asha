@@ -364,6 +364,13 @@ def _latest_plan(store: InitiativeStore, initiative_id: str) -> dict[str, Any]:
     return plan
 
 
+def _latest_executable_plan(
+    store: InitiativeStore, initiative_id: str,
+) -> dict[str, Any]:
+    observed = _latest_plan(store, initiative_id)
+    return store.read_plan(initiative_id, observed["revision"])
+
+
 def _has_plan_event(
     events: list[dict[str, Any]], event_type: str, digest: str
 ) -> bool:
@@ -464,7 +471,13 @@ def _plan(
         if options.get("file") is not None:
             raise ValueError("--show and --file are mutually exclusive")
         revision = options.get("revision")
-        plan = _latest_plan(store, initiative["initiative_id"]) if revision is None else store.read_plan(initiative["initiative_id"], _positive(revision, "revision"))
+        plan = (
+            _latest_plan(store, initiative["initiative_id"])
+            if revision is None
+            else store.read_plan_snapshot(
+                initiative["initiative_id"], _positive(revision, "revision"),
+            )
+        )
         return plan, bool(options["json"])
     _required(options, "file")
     if options.get("revision") is not None:
@@ -565,7 +578,7 @@ def _approve(args: list[str], store: InitiativeStore) -> tuple[dict[str, Any], b
     options = _parse_options(args[1:], flags={"json"})
     _only(options, {"digest", "json"}, "approve")
     _required(options, "digest")
-    plan = _latest_plan(store, initiative["initiative_id"])
+    plan = _latest_executable_plan(store, initiative["initiative_id"])
     if initiative["state"] not in {"awaiting-plan-approval", "approved"}:
         raise ValueError("initiative is not awaiting plan approval")
     if not re.fullmatch(r"[0-9a-f]{64}", options["digest"]) or options["digest"] != plan["digest"]:

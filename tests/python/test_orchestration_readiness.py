@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import unittest
 import uuid
 from pathlib import Path
@@ -13,6 +14,7 @@ from lib.control.orchestration.actions import (
     submit_action,
 )
 from lib.control.orchestration.model import record_digest
+from lib.control.orchestration.store import StoreError
 from lib.control.orchestration.readiness import (
     ReadinessError,
     archive_initiative,
@@ -134,6 +136,38 @@ class OrchestrationReadinessTests(ExecutionFixture, unittest.TestCase):
             self.store, self.initiative_id, "failed", "No candidate can qualify.",
         )
         self.assertEqual(finalized["state"], "failed")
+
+    def test_finalize_historical_plan_allows_terminal_containment_and_archive(self) -> None:
+        _, raw = self.install_historical_active_plan()
+        path = (
+            self.config.initiatives_dir / self.initiative_id / "plans" / "0001.json"
+        )
+
+        finalized = finalize_initiative(
+            self.store, self.initiative_id, "failed",
+            "Historical plan cannot carry immutable execution authority.",
+        )
+        archived, _ = archive_initiative(self.store, self.initiative_id)
+
+        self.assertEqual(finalized["state"], "failed")
+        self.assertEqual(archived["state"], "archived")
+        self.assertEqual(path.read_bytes(), raw)
+
+    def test_finalize_corrupt_historical_plan_does_not_bypass_store_failure(self) -> None:
+        _, _ = self.install_historical_active_plan()
+        path = (
+            self.config.initiatives_dir / self.initiative_id / "plans" / "0001.json"
+        )
+        corrupt = json.loads(path.read_bytes())
+        corrupt["digest"] = "0" * 64
+        path.write_text(json.dumps(corrupt, sort_keys=True, separators=(",", ":")) + "\n")
+        path.chmod(0o600)
+
+        with self.assertRaisesRegex(StoreError, "stored plan digest does not match"):
+            finalize_initiative(
+                self.store, self.initiative_id, "failed", "Corrupt plan refuses.",
+            )
+        self.assertEqual(self.initiative()["state"], "running")
 
     def test_failure_only_partial_is_refused(self) -> None:
         with self.assertRaisesRegex(ReadinessError, "success seal"):

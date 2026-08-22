@@ -22,6 +22,7 @@ from lib.control.orchestration.graph import (
     RULE_NESTED_WORKFLOW,
     RULE_REPOSITORY_MEMBERSHIP,
     RULE_REQUIRED_GATES,
+    RULE_SCHEMA,
     RULE_SUPPORTED_CLAIMS,
     RULE_TERMINAL_CANDIDATE,
     RULE_UNIQUE_NODE_IDS,
@@ -208,6 +209,13 @@ class OrchestrationGraphTests(unittest.TestCase):
     def test_valid_plan_returns_computed_digest(self) -> None:
         value = validate_plan(valid_plan(), config=self.config, initiative=self.initiative)
         self.assertRegex(value["digest"], r"^[0-9a-f]{64}$")
+
+    def test_historical_verification_gate_is_never_accepted_as_a_new_plan(self) -> None:
+        historical = valid_plan()
+        verification = historical["declared_gates"][1]
+        verification.pop("commands")
+        verification.pop("environment_policy")
+        self.assert_rule(RULE_SCHEMA, historical)
 
     def test_missing_dependencies_and_cycles_refuse(self) -> None:
         missing = valid_plan()

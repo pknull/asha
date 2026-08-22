@@ -49,6 +49,10 @@ SUPPORTED_ACTION_KINDS = frozenset({
     "stop-attempt", "cancel-node", "repair-node", "request-salvage",
     "decide", "continue-node", "finalize", "archive", "unarchive",
 })
+_EXECUTION_AUTHORITY_ACTIONS = frozenset({
+    "activate-initiative", "dispatch-node", "resume", "repair-node",
+    "continue-node",
+})
 _ACTION_DOCUMENT_KEYS = frozenset({
     "contract", "action_id", "initiative_id", "actor_kind", "actor_id",
     "action_class", "payload", "payload_digest", "active_plan_digest",
@@ -1316,6 +1320,18 @@ def submit_action(
             payload = _validate_payload(action["action_class"], payload)
         except (ActionRefused, ModelError) as exc:
             return _refuse(store, action, str(exc))
+        if action["action_class"] in _EXECUTION_AUTHORITY_ACTIONS:
+            try:
+                executable_plan = store.read_plan(
+                    initiative_id, initiative["active_plan"]["revision"],
+                )
+            except StoreError as exc:
+                return _refuse(store, action, str(exc))
+            if executable_plan["digest"] != initiative["active_plan"]["digest"]:
+                return _refuse(
+                    store, action,
+                    "active plan digest does not match retained executable plan",
+                )
         if action["action_class"] == "finalize" and initiative["state"] != "running":
             return _refuse(store, action, "only a running initiative may be finalized")
         if action["action_class"] == "finalize":

@@ -25,10 +25,10 @@ from lib.control.orchestration.actions import (
 from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.links import build_link
 from lib.control.orchestration.results import publish_result
-from lib.control.orchestration.store import StoreError
+from lib.control.orchestration.store import ObservationOnlyPlanError, StoreError
 from lib.control.orchestration.verification import (
     candidate_bundle_digest, command_denial, prepare_verification_intent,
-    run_verification,
+    prevalidate_verification, run_verification,
 )
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 from tests.python.orchestration_increment3_fixtures import (
@@ -182,6 +182,30 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
                 materializer=self._materializer,
             )
         return record
+
+    def test_direct_verification_boundaries_refuse_historical_plan_before_effects(self) -> None:
+        self.install_historical_active_plan()
+        before = self.store.list_verifications_snapshot(self.initiative_id)
+
+        with self.assertRaises(ObservationOnlyPlanError):
+            prevalidate_verification(
+                self.store, self.initiative_id, "verify-a",
+            )
+        with self.assertRaises(ObservationOnlyPlanError), mock.patch(
+            "lib.control.orchestration.verification.prepare_materialization",
+        ) as materialize, mock.patch(
+            "lib.control.orchestration.verification._capture_truncated",
+        ) as execute:
+            run_verification(
+                self.store, self.initiative_id, "verify-a",
+                materializer=materialize,
+            )
+
+        materialize.assert_not_called()
+        execute.assert_not_called()
+        self.assertEqual(
+            self.store.list_verifications_snapshot(self.initiative_id), before,
+        )
 
     def test_fresh_materialization_records_equal_pre_post_identity_and_passes(self) -> None:
         record = self._run()

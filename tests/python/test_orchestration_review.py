@@ -18,6 +18,7 @@ from lib.control.orchestration.actions import (
 from lib.control.orchestration.model import RESULT_CONTRACT, record_digest, validate_result
 from lib.control.orchestration.review import _tracked_path_fact, complete_review_attempt
 from lib.control.orchestration.scheduler import refresh_readiness
+from lib.control.orchestration.store import ObservationOnlyPlanError
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 from tests.python.orchestration_increment3_fixtures import (
     advance_node,
@@ -166,6 +167,32 @@ class OrchestrationReviewTests(ExecutionFixture, unittest.TestCase):
             "completed-readonly",
         )
         self.assertEqual(self.store.read_node(self.initiative_id, "review-a")["state"], "succeeded")
+
+    def test_direct_review_completion_refuses_historical_plan_before_inspection(self) -> None:
+        self.install_historical_active_plan()
+        before_attempt = self.store.read_attempt(
+            self.initiative_id, self.attempt["attempt_id"],
+        )
+        before_review = self.store.read_review(
+            self.initiative_id, self.review["review_id"],
+        )
+        jj = mock.Mock()
+
+        with self.assertRaises(ObservationOnlyPlanError):
+            complete_review_attempt(
+                self.store, self.initiative_id, self.attempt["attempt_id"],
+                self.task, {"state": "exited", "blocker": None}, jj=jj,
+            )
+
+        jj.assert_not_called()
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, self.attempt["attempt_id"]),
+            before_attempt,
+        )
+        self.assertEqual(
+            self.store.read_review(self.initiative_id, self.review["review_id"]),
+            before_review,
+        )
 
     def test_review_assignment_forbids_workspace_writes_and_snapshotting_commands(self) -> None:
         assignment = (

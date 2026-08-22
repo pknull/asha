@@ -12,6 +12,17 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration: exact retained-plan observation compatibility
+
+- Digest-valid Increment 1 `asha.orchestration-plan.v1` records whose
+  verification gates have exactly `{kind,node_id,required}` can again be read
+  through `plan --show`, `show`, and `snapshot` without rewriting their bytes,
+  changing their digest, or extending the closed output contracts. They remain
+  observation-only: current plan creation, save, approval, activation,
+  dispatch, resume, repair, continuation, and controller verification require
+  immutable commands and the minimal environment policy and refuse before any
+  execution effect. Ordinary terminal containment remains available.
+
 #### Control: popup attachment keeps child tmux outside nesting state
 
 - Popup argv now clears `TMUX` only in the `display-popup` child before its

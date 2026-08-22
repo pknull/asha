@@ -409,6 +409,17 @@ reentrant initiative lock.
 All payloads below are closed. Adding a field requires a new contract version,
 except the explicitly conditional `skipped` member on the list payload.
 
+One retained Increment 1 form of `asha.orchestration-plan.v1` predates
+controller verification command authority: every verification gate has exactly
+`{kind,node_id,required}`. A digest-valid record with that exact historical
+shape remains stored byte-for-byte and readable through `plan --show`, `show`, and
+`snapshot`; no compatibility marker is added to their closed payloads. It is
+observation-only. Approval, activation, dispatch, resume, repair, continuation,
+and verification refuse it because commands and `environment_policy` cannot be
+inferred. New plan validation and persistence remain on the current closed gate
+schema below. Existing terminal cancellation, finalization, and archive paths
+remain available where their ordinary lifecycle rules permit containment.
+
 | Command | Exact payload |
 |---|---|
 | `baseline` | `asha.orchestration-baseline.v1` `{contract, repository: {root, control_repository_id}, jj_commit_id, tree_digest, entry_count}` |

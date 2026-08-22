@@ -23,8 +23,7 @@ from .model import (
 )
 from .review import specification_digest
 from .storage import storage_report
-from .store import InitiativeStore
-from .store import StoreError
+from .store import InitiativeStore, ObservationOnlyPlanError, StoreError
 from .verification import candidate_bundle_digest
 
 
@@ -320,7 +319,7 @@ def prevalidate_finalization(
         raise ReadinessError("finalize requires a terminal graph")
     try:
         _qualification(store, initiative_id)
-    except ReadinessError:
+    except (ReadinessError, ObservationOnlyPlanError):
         pass
     else:
         raise ReadinessError("qualifying exact-seal evidence must bind readiness, not finalize")

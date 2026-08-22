@@ -43,6 +43,17 @@ are enumerated. The panel decision and the two step-4 cold reviews are retained
 as private review evidence in the originating workspace; they are review
 evidence, not a repository dependency or runtime authority.
 
+> **Retained-plan compatibility (2026-08-22).** Increment 1 persisted an exact
+> `asha.orchestration-plan.v1` verification-gate shape containing only
+> `{kind,node_id,required}` before executable commands and the minimal
+> environment policy were added under the same contract identifier. Exact,
+> digest-valid records of that historical shape are retained observation only:
+> plan/show/snapshot return their original record and digest shape, while every
+> approval or execution-authority read refuses without synthesizing commands or
+> policy. Current authoring, persistence, graph validation, approval, and
+> execution continue to require the full closed schema. Lifecycle-authorized
+> terminal containment remains available.
+
 Implementation of this proposal begins only after that release has met its
 ship gates and the repository has a reviewed Control baseline. At that point,
 the following are treated as existing, tested infrastructure rather than work

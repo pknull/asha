@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import tempfile
 from datetime import datetime, timezone
@@ -101,6 +102,40 @@ class ExecutionFixture:
 
     def initiative(self) -> dict:
         return self.store.peek(self.initiative_id)
+
+    def install_historical_active_plan(self) -> tuple[dict, bytes]:
+        """Replace the fixture plan with the retained Increment 1 gate shape."""
+        retained = copy.deepcopy(self.plan)
+        for gate in retained["declared_gates"]:
+            if gate["kind"] == "verification":
+                gate.pop("commands")
+                gate.pop("environment_policy")
+        content = dict(retained)
+        content.pop("digest")
+        content.pop("status")
+        retained["digest"] = hashlib.sha256(json.dumps(
+            content, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest()
+        raw = json.dumps(
+            retained, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode() + b"\n"
+        path = (
+            self.config.initiatives_dir / self.initiative_id / "plans" / "0001.json"
+        )
+        path.write_bytes(raw)
+        path.chmod(0o600)
+        initiative = self.initiative()
+        changed = copy.deepcopy(initiative)
+        changed["active_plan"]["digest"] = retained["digest"]
+        changed.update({
+            "state_revision": initiative["state_revision"] + 1,
+            "updated_at": now_text(),
+        })
+        self.store.save_initiative(
+            changed, expected_digest=record_digest(initiative),
+        )
+        self.plan = retained
+        return retained, raw
 
     def control_payload(self, argv: list[str], *, existing: bool = False) -> dict:
         task_id = argv[argv.index("--task-id") + 1]
