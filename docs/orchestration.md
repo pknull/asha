@@ -1,9 +1,12 @@
-# Orchestration Core: Increments 1-3
+# Orchestration Core: Increments 1-4
 
 Orchestration Core stores one bounded initiative and approved dependency graph
 beside Asha Control. Increment 3 adds ordered composition, independent
 exact-seal review, controller-owned verification, compatible candidate bundles,
-terminal readiness, finalization, and retained archive. Control remains the
+terminal readiness, finalization, and retained archive. Increment 4 adds the
+coordinator claim: the operator's own Asha session, running inside a tmux pane,
+claims one fenced coordinator generation per initiative and proposes plans;
+approval stays an operator act from another terminal. Control remains the
 only owner of worker jj workspace and tmux task creation; its run-less
 materialization seam owns fresh controller verification workspaces.
 
@@ -39,6 +42,10 @@ asha initiative doctor [--json]
 asha task report --file PATH [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
+asha initiative coordinator claim ID [--harness H] [--json]     (from the Asha pane)
+asha initiative coordinator release|show ID [--json]
+asha initiative propose-plan ID --file PLAN.json [--json]       (coordinator actor)
+asha initiative wait ID --after SEQUENCE --timeout SECONDS --json
 ```
 
 ## Plan authoring and baseline identity
@@ -139,6 +146,49 @@ and expected revision. Replaying the same binding returns the stored phase and
 outcome without repeating a side effect. Reusing the UUID with changed payload,
 plan, actor, or expected revision is refused. Every configured forbidden action
 class is refused before any approval lookup.
+
+## Coordinator claims (Increment 4)
+
+The controller never launches a coordinator. The operator's Asha session runs
+`asha initiative coordinator claim ID` from inside a tmux pane. The claim
+records one `asha.orchestration-coordinator.v1` generation under
+`coordinators/<coordinator-id>.json`: the calling pane's id, pid, process start
+identity, session, and server pid form the anchor; the caller must descend from
+the pane process. A replay from the same pane and process is idempotent. A
+claim from a different pane persists generation N+1, fences a live or stale
+predecessor (`coordinator-generation-fenced`), and leaves an exited or failed
+predecessor untouched. The claim appends `coordinator-handshake-accepted` with
+the coordinator actor and returns `ASHA_ORCHESTRATION_INITIATIVE_ID`,
+`ASHA_ORCHESTRATION_COORDINATOR_ID`, and
+`ASHA_ORCHESTRATION_COORDINATOR_GENERATION` for the session to export. Those
+variables select records; the document plus the live anchor authorize.
+
+Every coordinator-actor verb (`wait`, `propose-plan`, `coordinator release`,
+and coordinator action documents through `action --file`) re-proves: the record
+is the current generation in a live state, the caller's `TMUX_PANE` is the
+anchor pane, the pane still holds the same process identity, and the caller
+descends from it. `reconcile` marks a live generation `stale` when its anchor
+pane or process is gone (`reconciliation-conflict` event); stale keeps running
+workers and dispatches nothing until a new claim fences it.
+
+`wait --after SEQUENCE --timeout SECONDS` polls `list_events_snapshot` without
+a lock and writes no events; when events arrive it advances this generation's
+durable `event_cursor` once. The timeout is capped by
+`coordinator_wait_seconds`. `propose-plan` runs the same validation as `plan
+--file` and records `plan-proposed` under the coordinator actor.
+
+Coordinator-actor action documents carry `coordinator_id` and
+`coordinator_generation`; `submit_action` journals them, refuses a fenced or
+unknown generation, and in Increment 4 refuses every action class for the
+coordinator actor. `approve`, `reject`, `approve-salvage`, and `decide` refuse
+the coordinator actor, the coordinator's anchor pane, and any session carrying
+`ASHA_ORCHESTRATION_COORDINATOR_ID`; the Keeper approves from his own terminal.
+The session plugin's policy guard denies the same verbs inside coordinator
+sessions (`require_env`), as a belt over the controller's braces.
+
+Honest boundary: Control has no UID-level boundary. Fencing binds
+coordinator-actor documents, waits, and claims; it is not containment against a
+deliberate local process.
 
 ## Assignment and dispatch
 
@@ -435,10 +485,15 @@ remain available where their ordinary lifecycle rules permit containment.
 | `list` | `asha.orchestration-initiative-list.v1` `{contract, initiatives, skipped?}` |
 | `show` | `asha.orchestration-initiative-show.v1` `{contract, initiative, graph, action_outcomes, gates, limits, evidence_counts, node_reconciliation, superseded_nodes}` |
 | `events` | `asha.orchestration-event-list.v1` `{contract, initiative_id, events}` |
-| `reconcile` | `asha.orchestration-reconcile-list.v1` `{contract, initiative_id, action_reconciliation, live_reconciliation, results, superseded_nodes}` |
+| `reconcile` | `asha.orchestration-reconcile-list.v1` `{contract, initiative_id, action_reconciliation, live_reconciliation, coordinator_reconciliation, results, superseded_nodes}` |
 | `storage` | `asha.orchestration-storage-report.v1` `{contract, initiative_id, inventory, workspaces, totals, thresholds, pause_recommended}` |
-| `snapshot` | `asha.orchestration-snapshot.v1` `{contract, initiative, active_plan, nodes, superseded_nodes, attempts, links, actions, last_event_sequence, state_revision}` |
+| `snapshot` | `asha.orchestration-snapshot.v1` `{contract, initiative, active_plan, nodes, superseded_nodes, attempts, links, actions, coordinator, last_event_sequence, state_revision}` |
 | `doctor` | `asha.orchestration-doctor.v1` `{contract, ok, probes, limitations}` |
+| `coordinator claim` | `asha.orchestration-coordinator-claim.v1` `{contract, initiative_id, coordinator, environment}` |
+| `coordinator release` | `asha.orchestration-coordinator-release.v1` `{contract, initiative_id, coordinator}` |
+| `coordinator show` | `asha.orchestration-coordinator-show.v1` `{contract, initiative_id, coordinator, anchor_live, anchor_detail, generations}` |
+| `propose-plan` | stored `asha.orchestration-plan.v1` record (event actor `coordinator`) |
+| `wait` | `asha.orchestration-event-wait.v1` `{contract, initiative_id, coordinator_id, generation, after, events, last_event_sequence, state_revision, timed_out}` |
 
 The closed `asha.orchestration-seal.v1` path representation includes
 `changed_paths`, `changed_paths_truncated`, and `changed_paths_digest`.

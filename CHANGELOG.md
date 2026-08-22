@@ -12,6 +12,20 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration Increment 4: Asha claims the coordinator role
+
+- `asha initiative coordinator claim|release|show`, `wait`, and `propose-plan`.
+  The operator's Asha session claims one coordinator generation per initiative
+  from its own tmux pane; the pane's pid and process identity anchor the
+  generation, a newer claim fences the predecessor, and every coordinator-actor
+  verb re-proves the anchor. Coordinator action documents carry the generation,
+  are fenced in the action journal, and are refused for every class until
+  Increment 5. `approve`, `reject`, `approve-salvage`, and `decide` refuse the
+  coordinator actor and pane; the policy guard gained `require_env` and a
+  matching deny rule. Reconcile marks a vanished anchor stale; the doctor's
+  `coordinator-seam` probe is advisory. Session plugin 2.1.0 adds the
+  `orchestrate-initiative` skill (Asha as the front door).
+
 #### Orchestration: exact retained-plan observation compatibility
 
 - Digest-valid Increment 1 `asha.orchestration-plan.v1` records whose
@@ -473,7 +487,6 @@ the active instruction surface loses no release detail.
   task-selected cold references exposed by the `asha-reference` skill.
 - Repaired fresh identity provisioning across all four harnesses and removed
   live `communicationStyle.md` and retired memory-search instructions.
-
 
 Entries below v2.7.0 describe the mechanisms shipped by those historical
 releases. Where they name transcript synthesis, retrieval, generic nudges,
@@ -973,7 +986,6 @@ Full-project audit (goals, effectiveness, 88-script inventory, reachability) fol
 - Initial marketplace release
 
 ## Engineering release history
-
 
 Entries below v2.7.0 are release records, not current instructions. Memory v2
 supersedes their transcript synthesis, automatic save, retrieval, generic nudge,
