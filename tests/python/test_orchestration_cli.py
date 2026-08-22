@@ -495,7 +495,7 @@ class OrchestrationCliTests(unittest.TestCase):
                         "links", "result-publications", "results", "seals",
                         "seal-preparations",
                         "reviews", "verifications", "bundles", "approvals",
-                        "actions", "evidence", "events",
+                        "actions", "evidence", "events", "coordinators",
                     })
                     self.assertEqual(value["evidence_counts"]["evidence"], 0)
                 self.assertEqual(stdout.count("\n"), 1)

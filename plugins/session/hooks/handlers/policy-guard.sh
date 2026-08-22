@@ -16,7 +16,8 @@
 # matched tool call — strictly worse than the gap it closes.
 #
 # Harness is read from ASHA_HARNESS (set by the asha dispatcher); absent => claude.
-# Rule schema: {id, tool, command_regex|file_path_regex, exclude_regex?, action: deny|ask|warn, reason, override_env?}
+# Rule schema: {id, tool, command_regex|file_path_regex, exclude_regex?, action: deny|ask|warn, reason, override_env?, require_env?}
+#   require_env: the rule is evaluated only when that variable is non-empty in the session.
 # action=warn => awareness-only; this guard does not block.
 
 # fail-open by design: no set -e — a handler crash must never block the session
@@ -88,9 +89,16 @@ while [[ $i -lt $COUNT ]]; do
   r_action="$(printf '%s' "$rule" | jq -r '.action // "deny"' 2>/dev/null || echo deny)"
   r_reason="$(printf '%s' "$rule" | jq -r '.reason // "blocked by policy"' 2>/dev/null || echo "blocked by policy")"
   r_oenv="$(printf '%s' "$rule" | jq -r '.override_env // empty' 2>/dev/null || true)"
+  r_reqenv="$(printf '%s' "$rule" | jq -r '.require_env // empty' 2>/dev/null || true)"
   r_exclude="$(printf '%s' "$rule" | jq -r '.exclude_regex // empty' 2>/dev/null || true)"
 
   [[ -n "$r_tool" ]] || continue
+  # require_env: the rule applies only inside sessions that carry this variable
+  # (non-empty), e.g. a coordinator session; elsewhere it is inert.
+  if [[ -n "$r_reqenv" ]]; then
+    reqval="$(printenv "$r_reqenv" 2>/dev/null || true)"
+    [[ -n "$reqval" ]] || continue
+  fi
   printf '%s' "$TOOL_NAME" | grep -Eq -- "^($r_tool)\$" 2>/dev/null || continue
 
   matched=0

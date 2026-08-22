@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import shutil
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -85,6 +86,37 @@ def _root_probe(path: Path) -> Probe:
         return Probe("initiatives-root", "unavailable", f"initiatives root could not be inspected: {exc}")
 
 
+# Advisory probes inform `limitations` but never block `ok`: `activate-initiative`
+# refuses on a false `ok`, and coordinator support must not gate operator-only use.
+_ADVISORY_PROBES = frozenset({"coordinator-seam"})
+
+
+def _coordinator_seam_probe() -> Probe:
+    """Live producers for the coordinator verbs and a callable tmux executable."""
+    try:
+        from . import coordinator as coordinator_module
+        from . import cli as orchestration_cli
+
+        source = inspect.getsource(orchestration_cli) + inspect.getsource(coordinator_module)
+    except (ImportError, OSError) as exc:
+        return Probe("coordinator-seam", "unavailable", f"coordinator verbs could not be inspected: {exc}")
+    required = {
+        "coordinator claim": ('"coordinator"', "asha.orchestration-coordinator-claim.v1"),
+        "wait": ('"wait"', coordinator_module.WAIT_CONTRACT),
+        "coordinator show": ('"show"', coordinator_module.COORDINATOR_SHOW_CONTRACT),
+        "propose-plan": ('"propose-plan"', "plan-proposed"),
+    }
+    missing = [
+        verb for verb, markers in required.items()
+        if any(marker not in source for marker in markers)
+    ]
+    if missing:
+        return Probe("coordinator-seam", "mismatch", f"coordinator verbs lack live producers: {', '.join(missing)}")
+    if shutil.which("tmux") is None:
+        return Probe("coordinator-seam", "unavailable", "tmux is not on PATH; coordinator claim needs a tmux pane")
+    return Probe("coordinator-seam", "match", "coordinator claim, wait, and show have live producers and tmux is present")
+
+
 def run_orchestration_doctor(config: OrchestrationConfig) -> dict[str, Any]:
     probes = [
         Probe("orchestration-config", "match", "orchestration configuration parsed and passed static safety validation"),
@@ -107,10 +139,13 @@ def run_orchestration_doctor(config: OrchestrationConfig) -> dict[str, Any]:
         ))
     except (OSError, ValueError) as exc:
         probes.append(Probe("control-doctor", "unavailable", f"Control doctor failed: {exc}"))
+    probes.append(_coordinator_seam_probe())
     limitations = [probe.detail for probe in probes if probe.outcome != "match"]
     return {
         "contract": DOCTOR_CONTRACT,
-        "ok": all(probe.outcome == "match" for probe in probes),
+        "ok": all(
+            probe.outcome == "match" for probe in probes if probe.name not in _ADVISORY_PROBES
+        ),
         "probes": [asdict(probe) for probe in probes],
         "limitations": limitations,
     }
