@@ -1398,14 +1398,25 @@ _ACTION_KEYS = frozenset({
 })
 
 
+_ACTION_COORDINATOR_KEYS = frozenset({"coordinator_id", "coordinator_generation"})
+
+
 def validate_action(value: Any) -> dict[str, Any]:
-    record = _object(value, "action", _ACTION_KEYS)
+    if not isinstance(value, dict):
+        raise ModelError("action must be an object")
+    coordinator_keys = (
+        _ACTION_COORDINATOR_KEYS if value.get("actor_kind") == "coordinator" else frozenset()
+    )
+    record = _object(value, "action", _ACTION_KEYS | coordinator_keys)
     if record["contract"] != ACTION_CONTRACT:
         raise ModelError(f"action contract must be {ACTION_CONTRACT}")
     canonical_uuid(record["action_id"], "action_id")
     canonical_uuid(record["initiative_id"], "action initiative_id")
-    if record["actor_kind"] != "operator":
-        raise ModelError("Core action actor_kind must be operator")
+    if record["actor_kind"] not in {"operator", "coordinator"}:
+        raise ModelError("action actor_kind must be operator or coordinator")
+    if record["actor_kind"] == "coordinator":
+        canonical_uuid(record["coordinator_id"], "action coordinator_id")
+        _integer(record["coordinator_generation"], "action coordinator_generation", minimum=1)
     _text(record["actor_id"], "action actor_id", maximum=MAX_ACTOR_ID_BYTES)
     _token(record["action_class"], "action class")
     _digest(record["payload_digest"], "action payload_digest")

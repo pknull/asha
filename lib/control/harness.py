@@ -210,6 +210,29 @@ def pane_ancestry_ok(pane_pid: int, server_pid: int) -> bool:
     return _stat_integer(fields, 1) == server_pid
 
 
+def caller_descends_from(
+    ancestor_pid: int, *, start_pid: int | None = None, limit: int = 64,
+) -> bool:
+    """True when the calling process has ``ancestor_pid`` in its parent chain.
+
+    Walks ``/proc`` parent links from ``start_pid`` (default: this process) for
+    at most ``limit`` hops; a missing process or reaching init ends the walk.
+    """
+    ancestor_pid = _validate_pid(ancestor_pid)
+    pid = os.getpid() if start_pid is None else _validate_pid(start_pid)
+    for _ in range(limit):
+        if pid == ancestor_pid:
+            return True
+        fields = _process_stat_fields(pid)
+        if fields is None:
+            return False
+        parent = _stat_integer(fields, 1)
+        if parent <= 1 or parent == pid:
+            return False
+        pid = parent
+    return False
+
+
 def stop_signal_allowed(
     *,
     pid: int,

@@ -57,6 +57,15 @@
       "action": "warn",
       "reason": "File written into a content root (Vault/Lore/Wiki/Codex/Compendium/Archive) outside its expected top-level buckets (World/Books/Sessions/Characters/Templates/Resources). Warn-only: this is a scatter check, not a block.",
       "_comment": "The content root must stay a named anchor, not a wildcard. The root list is portable and extensible; the taxonomy is project-specific. Warn-only by design: a wrong root list never blocks a write."
+    },
+    {
+      "id": "coordinator-no-operator-approval",
+      "tool": "Bash",
+      "command_regex": "\\basha[[:space:]]+initiative[[:space:]]+(approve|reject|approve-salvage)([[:space:]]|$)",
+      "action": "deny",
+      "require_env": "ASHA_ORCHESTRATION_COORDINATOR_ID",
+      "_comment": "Structural approval split (Keeper ruling 2026-08-22): the Asha session that claimed a coordinator generation exports ASHA_ORCHESTRATION_COORDINATOR_ID; plan approval, rejection, and salvage approval are operator acts run from the Keeper's own terminal. The controller refuses these verbs from the coordinator's pane as well; this rule is the belt, the controller is the braces.",
+      "reason": "Operator approval verbs are refused inside a coordinator session. Approve, reject, or approve salvage from your own terminal (asha control or the CLI outside the coordinator pane)."
     }
   ]
 }

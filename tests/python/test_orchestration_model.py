@@ -916,7 +916,7 @@ class OrchestrationModelTests(unittest.TestCase):
                 with self.assertRaises(model.ModelError):
                     model.require_transition(name, source, target)
 
-    def test_action_coordinator_fields_are_absent_not_nullable(self) -> None:
+    def test_action_coordinator_fields_are_conditional_on_actor_kind(self) -> None:
         action = {
             "contract": model.ACTION_CONTRACT,
             "action_id": str(uuid.uuid4()),
@@ -933,12 +933,24 @@ class OrchestrationModelTests(unittest.TestCase):
             "updated_at": TIMESTAMP,
         }
         model.validate_action(action)
+        # Operator documents never carry coordinator fields, not even null ones.
         action["coordinator_generation"] = None
         with self.assertRaises(model.ModelError):
             model.validate_action(action)
-
         action.pop("coordinator_generation")
+
+        # Coordinator documents require both fencing fields.
         action["actor_kind"] = "coordinator"
+        with self.assertRaises(model.ModelError):
+            model.validate_action(action)
+        action["coordinator_id"] = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        action["coordinator_generation"] = 1
+        model.validate_action(action)
+        action["coordinator_generation"] = 0
+        with self.assertRaises(model.ModelError):
+            model.validate_action(action)
+        action["coordinator_generation"] = 1
+        action["actor_kind"] = "worker"
         with self.assertRaises(model.ModelError):
             model.validate_action(action)
 

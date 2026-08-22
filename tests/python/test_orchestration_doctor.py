@@ -34,8 +34,34 @@ class OrchestrationDoctorTests(unittest.TestCase):
             self.assertEqual(payload["contract"], "asha.orchestration-doctor.v1")
             self.assertEqual([probe["name"] for probe in payload["probes"]], [
                 "orchestration-config", "initiatives-root", "control-contracts",
-                "create-by-id", "control-doctor",
+                "create-by-id", "control-doctor", "coordinator-seam",
             ])
+
+    def test_coordinator_seam_probe_is_advisory_and_never_blocks_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
+                   "XDG_STATE_HOME": str(root / "state"), "XDG_DATA_HOME": str(root / "data"),
+                   "XDG_RUNTIME_DIR": str(root / "runtime")}
+            for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+                Path(env[key]).mkdir(mode=0o700)
+            config = load_config(env)
+            config.initiatives_dir.mkdir(parents=True, mode=0o700)
+            for path in (config.initiatives_dir.parent, config.initiatives_dir.parent.parent):
+                path.chmod(0o700)
+            with mock.patch("lib.control.orchestration.doctor.run_control_doctor", return_value={"ok": True}), \
+                 mock.patch("lib.control.orchestration.doctor.shutil.which", return_value=None):
+                payload = run_orchestration_doctor(config)
+            seam = next(probe for probe in payload["probes"] if probe["name"] == "coordinator-seam")
+            self.assertEqual(seam["outcome"], "unavailable")
+            self.assertIn("tmux", seam["detail"])
+            self.assertTrue(payload["ok"])
+            self.assertIn(seam["detail"], payload["limitations"])
+            with mock.patch("lib.control.orchestration.doctor.run_control_doctor", return_value={"ok": True}), \
+                 mock.patch("lib.control.orchestration.doctor.shutil.which", return_value="/usr/bin/tmux"):
+                payload = run_orchestration_doctor(config)
+            seam = next(probe for probe in payload["probes"] if probe["name"] == "coordinator-seam")
+            self.assertEqual(seam["outcome"], "match")
 
     def test_private_existing_root_and_control_ok_make_doctor_ok(self) -> None:
         with tempfile.TemporaryDirectory() as td:

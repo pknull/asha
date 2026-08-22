@@ -26,6 +26,7 @@ from .model import (
     ATTEMPT_CONTRACT,
     ATTEMPT_NONTERMINAL_STATES,
     ATTEMPT_TERMINAL_STATES,
+    COORDINATOR_LIVE_STATES,
     EVENT_CONTRACT,
     FORBIDDEN_ACTION_CLASSES,
     ModelError,
@@ -58,6 +59,10 @@ _ACTION_DOCUMENT_KEYS = frozenset({
     "action_class", "payload", "payload_digest", "active_plan_digest",
     "expected_state_revision",
 })
+_COORDINATOR_DOCUMENT_KEYS = frozenset({"coordinator_id", "coordinator_generation"})
+# Action classes a fenced, live coordinator generation may submit. Increment 4
+# journals and refuses every class; Increment 5 opens the bounded set.
+COORDINATOR_ACTION_KINDS: frozenset[str] = frozenset()
 _MAX_ACTION_PAYLOAD_BYTES = 4096
 _MAX_STOP_OUTPUT_BYTES = 64 * 1024
 
@@ -129,16 +134,18 @@ def build_action_document(
     *,
     actor_id: str = "cli",
     action_id: str | None = None,
+    coordinator: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Build one exact action document; a coordinator record makes it coordinator-actor."""
     active = initiative.get("active_plan")
     if not isinstance(active, Mapping):
         raise ActionError("initiative has no active plan")
     body = copy.deepcopy(dict(payload))
-    return {
+    document = {
         "contract": ACTION_CONTRACT,
         "action_id": action_id or new_uuid(),
         "initiative_id": initiative["initiative_id"],
-        "actor_kind": "operator",
+        "actor_kind": "operator" if coordinator is None else "coordinator",
         "actor_id": actor_id,
         "action_class": action_class,
         "payload": body,
@@ -146,6 +153,10 @@ def build_action_document(
         "active_plan_digest": active["digest"],
         "expected_state_revision": initiative["state_revision"],
     }
+    if coordinator is not None:
+        document["coordinator_id"] = coordinator["coordinator_id"]
+        document["coordinator_generation"] = coordinator["generation"]
+    return document
 
 
 def _safe_outcome(value: Mapping[str, Any]) -> str:
@@ -286,7 +297,12 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
 
 
 def _parse_document(value: Any) -> tuple[dict[str, Any], dict[str, Any]]:
-    if not isinstance(value, dict) or set(value) != _ACTION_DOCUMENT_KEYS:
+    if not isinstance(value, dict):
+        raise ActionError("action document is not the closed Core 2b schema")
+    expected = _ACTION_DOCUMENT_KEYS | (
+        _COORDINATOR_DOCUMENT_KEYS if value.get("actor_kind") == "coordinator" else frozenset()
+    )
+    if set(value) != expected:
         raise ActionError("action document is not the closed Core 2b schema")
     if value["contract"] != ACTION_CONTRACT:
         raise ActionError(f"action contract must be {ACTION_CONTRACT}")
@@ -316,7 +332,31 @@ def _stored_matches_document(
         "contract", "action_id", "initiative_id", "actor_kind", "actor_id",
         "action_class", "payload_digest", "active_plan_digest",
         "expected_state_revision",
-    ))
+    )) and all(
+        stored.get(field) == requested.get(field) for field in _COORDINATOR_DOCUMENT_KEYS
+    )
+
+
+def _coordinator_fence(
+    store: InitiativeStore, initiative_id: str, action: Mapping[str, Any]
+) -> str | None:
+    """Refusal reason when a coordinator-actor action is not from the live generation."""
+    current = store.current_coordinator(initiative_id)
+    if current is None:
+        return "no coordinator generation has claimed this initiative"
+    if (
+        current["coordinator_id"] != action["coordinator_id"]
+        or current["generation"] != action["coordinator_generation"]
+    ):
+        return (
+            f"coordinator generation {action['coordinator_generation']} is fenced; "
+            f"current generation is {current['generation']}"
+        )
+    if current["state"] not in COORDINATOR_LIVE_STATES:
+        return f"coordinator generation {current['generation']} is {current['state']}"
+    if action["action_class"] not in COORDINATOR_ACTION_KINDS:
+        return "action class is not available to the coordinator actor"
+    return None
 
 
 def _refuse(
@@ -1306,6 +1346,10 @@ def submit_action(
             return _refuse(store, action, "action class is forbidden in Core v1")
         if action["action_class"] not in SUPPORTED_ACTION_KINDS:
             return _refuse(store, action, "action class is unsupported in Core 2b")
+        if action["actor_kind"] == "coordinator":
+            fence = _coordinator_fence(store, initiative_id, action)
+            if fence is not None:
+                return _refuse(store, action, fence)
         if initiative["active_plan"] is None:
             return _refuse(store, action, "initiative has no active approved plan")
         if action["active_plan_digest"] != initiative["active_plan"]["digest"]:

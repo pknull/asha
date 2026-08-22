@@ -240,6 +240,23 @@ policy_case rp-invariants-edit '{"tool_name":"Write","tool_input":{"file_path":"
 policy_case rp-canon-layout-edit '{"tool_name":"Edit","tool_input":{"file_path":"/p/Memory/canon-layout.md"}}' allow
 [[ $POLICY_OK -eq 1 ]] && ok "policy matrix preserves destructive guards and v2 Memory boundary"
 
+# require_env rules are inert outside the session that carries the variable.
+coordinator_decision() {
+  local rc=0
+  printf '%s' "$2" | HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+    CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
+    ASHA_ORCHESTRATION_COORDINATOR_ID="$1" \
+    "$HANDLERS/policy-guard.sh" >/dev/null 2>&1 || rc=$?
+  [[ $rc -eq 2 ]] && printf deny || printf allow
+}
+COORD_OK=1
+APPROVE='{"tool_name":"Bash","tool_input":{"command":"asha initiative approve 1b853ddc-38bf-4cb8-aff3-816e550684dc --digest abc"}}'
+CLAIM='{"tool_name":"Bash","tool_input":{"command":"asha initiative coordinator claim 1b853ddc-38bf-4cb8-aff3-816e550684dc --json"}}'
+[[ "$(coordinator_decision "" "$APPROVE")" == allow ]] || { COORD_OK=0; fail "approve outside a coordinator session is allowed by policy"; }
+[[ "$(coordinator_decision "dddddddd-dddd-4ddd-8ddd-dddddddddddd" "$APPROVE")" == deny ]] || { COORD_OK=0; fail "approve inside a coordinator session is denied by policy"; }
+[[ "$(coordinator_decision "dddddddd-dddd-4ddd-8ddd-dddddddddddd" "$CLAIM")" == allow ]] || { COORD_OK=0; fail "coordinator verbs stay allowed inside a coordinator session"; }
+[[ $COORD_OK -eq 1 ]] && ok "require_env scopes the coordinator approval rule to coordinator sessions"
+
 WARN_OUT="$WORK/policy-warn.out"
 WARN_ERR="$WORK/policy-warn.err"
 printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/Random/x.md"}}' \
