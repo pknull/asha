@@ -458,7 +458,31 @@ class OrchestrationModelTests(unittest.TestCase):
             "outcome": "compatible",
             "bound_at": TIMESTAMP,
         }
+        coordinator = {
+            "contract": model.COORDINATOR_CONTRACT,
+            "initiative_id": INITIATIVE_ID,
+            "coordinator_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            "generation": 1,
+            "state": "active",
+            "harness": "claude",
+            "anchor": {
+                "tmux_socket": None,
+                "session": "keeper",
+                "pane_id": "%7",
+                "pane_pid": 4242,
+                "process_start_identity": "boot:test:start:1234",
+                "server_pid": 4000,
+            },
+            "protocol_version": model.COORDINATOR_PROTOCOL_VERSION,
+            "claimed_at": TIMESTAMP,
+            "event_cursor": 0,
+            "last_accepted_action_id": None,
+            "predecessor_coordinator_id": None,
+            "created_at": TIMESTAMP,
+            "updated_at": TIMESTAMP,
+        }
         return [
+            (model.validate_coordinator, coordinator),
             (model.validate_attempt, attempt),
             (model.validate_result_publication, publication),
             (model.validate_result, result),

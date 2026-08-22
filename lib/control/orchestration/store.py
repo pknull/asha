@@ -34,6 +34,8 @@ from .model import (
     BUNDLE_TRANSITIONS,
     NODE_TRANSITIONS,
     REVIEW_TRANSITIONS,
+    COORDINATOR_TERMINAL_STATES,
+    COORDINATOR_TRANSITIONS,
     RESULT_PUBLICATION_TRANSITIONS,
     VERIFICATION_TRANSITIONS,
     ModelError,
@@ -46,6 +48,7 @@ from .model import (
     validate_approval,
     validate_attempt,
     validate_bundle,
+    validate_coordinator,
     validate_evidence,
     validate_event,
     validate_initiative,
@@ -71,7 +74,7 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CL
 _LAYOUT_DIRECTORIES = (
     "plans", "nodes", "attempts", "assignments", "links", "result-publications", "results",
     "seal-preparations", "seals", "reviews", "verifications", "bundles", "approvals", "actions",
-    "evidence", "outputs", "events", "locks",
+    "evidence", "outputs", "events", "locks", "coordinators",
 )
 _INVENTORY_CLASSES = ("initiative",) + _LAYOUT_DIRECTORIES
 
@@ -1059,6 +1062,66 @@ class InitiativeStore:
             terminal_states=frozenset({"completed", "refused"}),
         )
 
+    _COORDINATOR_MUTABLE_FIELDS = frozenset({
+        "state", "event_cursor", "last_accepted_action_id", "updated_at",
+    })
+
+    def save_coordinator(
+        self, initiative_id: str, record: Any, *, expected_digest: str | None = None
+    ) -> Path:
+        """Persist one coordinator generation; identity, generation, and anchor are fixed.
+
+        A new record must carry exactly the next generation and name an existing
+        predecessor (or none). Mutable fields: state, event_cursor,
+        last_accepted_action_id, updated_at. Terminal generations are write-once.
+        """
+        try:
+            value = validate_coordinator(record)
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        with self._locked_fds(initiative_id):
+            existing = self.list_coordinators_snapshot(initiative_id)
+            if value["coordinator_id"] not in {item["coordinator_id"] for item in existing}:
+                self._check_new_coordinator(existing, value)
+            return self._save_subrecord(
+                initiative_id, "coordinators", f"{value['coordinator_id']}.json", record,
+                validate_coordinator, immutable=False, expected_digest=expected_digest,
+                transition_machine=COORDINATOR_TRANSITIONS,
+                immutable_fields=tuple(
+                    field for field in value if field not in self._COORDINATOR_MUTABLE_FIELDS
+                ),
+                terminal_states=COORDINATOR_TERMINAL_STATES,
+            )
+
+    @staticmethod
+    def _check_new_coordinator(existing: list[dict[str, Any]], value: dict[str, Any]) -> None:
+        highest = max((item["generation"] for item in existing), default=0)
+        if value["generation"] != highest + 1:
+            raise StoreError(f"coordinator generation must be {highest + 1}")
+        known = {item["coordinator_id"] for item in existing}
+        predecessor = value["predecessor_coordinator_id"]
+        if predecessor is not None and predecessor not in known:
+            raise StoreError("coordinator predecessor_coordinator_id is unknown")
+        if predecessor is None and existing:
+            raise StoreError("a replacement coordinator must name its predecessor")
+
+    def read_coordinator(self, initiative_id: str, coordinator_id: str) -> dict[str, Any]:
+        return self._read_uuid_record(
+            initiative_id, "coordinators", coordinator_id, validate_coordinator
+        )
+
+    def list_coordinators_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        records = self._list_subrecords_snapshot(
+            initiative_id, "coordinators", validate_coordinator,
+            re.compile(r"([0-9a-f-]{36})\.json"), "coordinator_id",
+        )
+        return sorted(records, key=lambda item: item["generation"])
+
+    def current_coordinator(self, initiative_id: str) -> dict[str, Any] | None:
+        """The highest-generation coordinator record, or None when never claimed."""
+        records = self.list_coordinators_snapshot(initiative_id)
+        return records[-1] if records else None
+
     def save_evidence(self, initiative_id: str, record: Any) -> Path:
         return self._save_uuid_immutable(
             initiative_id, "evidence", record, validate_evidence, "evidence_id"
@@ -1373,6 +1436,7 @@ class InitiativeStore:
             "approvals": "request_id",
             "actions": "action_id",
             "evidence": "evidence_id",
+            "coordinators": "coordinator_id",
         }
         return self._read_subrecord(
             initiative_id, directory, f"{record_id}.json", validator,
@@ -1560,6 +1624,7 @@ class InitiativeStore:
             "approvals": (validate_approval, "request_id"),
             "actions": (validate_action, "action_id"),
             "evidence": (validate_evidence, "evidence_id"),
+            "coordinators": (validate_coordinator, "coordinator_id"),
         }
         counts = {
             "links": len(self.list_links_snapshot(initiative_id)),

@@ -35,6 +35,8 @@ EVENT_CONTRACT = "asha.orchestration-event.v1"
 LINK_CONTRACT = "asha.orchestration-link.v1"
 EVIDENCE_CONTRACT = "asha.orchestration-evidence.v1"
 BUNDLE_CONTRACT = "asha.orchestration-bundle.v1"
+COORDINATOR_CONTRACT = "asha.orchestration-coordinator.v1"
+COORDINATOR_PROTOCOL_VERSION = 1
 
 # Text byte caps.
 MAX_SLUG_BYTES = 64
@@ -1588,8 +1590,69 @@ def validate_bundle(value: Any) -> dict[str, Any]:
     return copy.deepcopy(bundle)
 
 
+_COORDINATOR_KEYS = frozenset({
+    "contract", "initiative_id", "coordinator_id", "generation", "state", "harness",
+    "anchor", "protocol_version", "claimed_at", "event_cursor",
+    "last_accepted_action_id", "predecessor_coordinator_id", "created_at", "updated_at",
+})
+_COORDINATOR_ANCHOR_KEYS = frozenset({
+    "tmux_socket", "session", "pane_id", "pane_pid", "process_start_identity", "server_pid",
+})
+_PANE_ID = re.compile(r"%[0-9]+", re.ASCII)
+MAX_PID = 2**22
+MAX_PROCESS_IDENTITY_BYTES = 200
+MAX_SESSION_NAME_BYTES = 200
+
+
+def validate_coordinator(value: Any) -> dict[str, Any]:
+    """Validate one retained coordinator-generation record.
+
+    The anchor binds the generation to the claiming tmux pane and its process
+    identity; every coordinator-actor verb re-verifies it before acting.
+    """
+    record = _object(value, "coordinator", _COORDINATOR_KEYS)
+    if record["contract"] != COORDINATOR_CONTRACT:
+        raise ModelError(f"coordinator contract must be {COORDINATOR_CONTRACT}")
+    canonical_uuid(record["initiative_id"], "coordinator initiative_id")
+    coordinator_id = canonical_uuid(record["coordinator_id"], "coordinator_id")
+    _integer(record["generation"], "coordinator generation", minimum=1)
+    if record["state"] == "absent" or record["state"] not in COORDINATOR_TRANSITIONS:
+        raise ModelError("coordinator state is invalid")
+    _token(record["harness"], "coordinator harness")
+    anchor = _object(record["anchor"], "coordinator anchor", _COORDINATOR_ANCHOR_KEYS)
+    _optional_text(anchor["tmux_socket"], "coordinator anchor tmux_socket", maximum=MAX_PATH_BYTES)
+    _text(anchor["session"], "coordinator anchor session", maximum=MAX_SESSION_NAME_BYTES)
+    _text(anchor["pane_id"], "coordinator anchor pane_id", maximum=24, pattern=_PANE_ID)
+    _integer(anchor["pane_pid"], "coordinator anchor pane_pid", minimum=1, maximum=MAX_PID)
+    _text(
+        anchor["process_start_identity"], "coordinator anchor process_start_identity",
+        maximum=MAX_PROCESS_IDENTITY_BYTES,
+    )
+    _integer(anchor["server_pid"], "coordinator anchor server_pid", minimum=1, maximum=MAX_PID)
+    if record["protocol_version"] != COORDINATOR_PROTOCOL_VERSION:
+        raise ModelError(f"coordinator protocol_version must be {COORDINATOR_PROTOCOL_VERSION}")
+    claimed = _timestamp(record["claimed_at"], "coordinator claimed_at")
+    _integer(record["event_cursor"], "coordinator event_cursor", maximum=MAX_EVENT_SEQUENCE)
+    if record["last_accepted_action_id"] is not None:
+        canonical_uuid(record["last_accepted_action_id"], "coordinator last_accepted_action_id")
+    if record["predecessor_coordinator_id"] is not None:
+        predecessor = canonical_uuid(
+            record["predecessor_coordinator_id"], "coordinator predecessor_coordinator_id"
+        )
+        if predecessor == coordinator_id:
+            raise ModelError("coordinator predecessor_coordinator_id must differ from coordinator_id")
+    created = _timestamp(record["created_at"], "coordinator created_at")
+    updated = _timestamp(record["updated_at"], "coordinator updated_at")
+    if updated < created:
+        raise ModelError("coordinator updated_at must not precede created_at")
+    if claimed < created:
+        raise ModelError("coordinator claimed_at must not precede created_at")
+    return copy.deepcopy(record)
+
+
 _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     INITIATIVE_CONTRACT: validate_initiative,
+    COORDINATOR_CONTRACT: validate_coordinator,
     PLAN_CONTRACT: validate_plan_record,
     NODE_CONTRACT: validate_node,
     ATTEMPT_CONTRACT: validate_attempt,
@@ -1645,6 +1708,6 @@ __all__ = [name for name in globals() if name.isupper()] + [
     "validate_attempt", "validate_result_publication", "validate_result",
     "validate_seal", "validate_review", "validate_verification", "validate_approval",
     "validate_action", "validate_event", "validate_link", "validate_evidence",
-    "validate_bundle", "validate_record", "record_digest", "plan_digest",
-    "require_transition",
+    "validate_bundle", "validate_coordinator", "validate_record", "record_digest",
+    "plan_digest", "require_transition",
 ]
