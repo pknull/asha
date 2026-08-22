@@ -1,7 +1,7 @@
 ---
 title: Asha Orchestration
 type: proposal
-status: panel-reviewed and step-4 cold-reviewed; Control soak (runway Phase 3) and contract freeze (Phase 4) completed 2026-08-17; prerequisite gate satisfied; implementation not started
+status: Core (Increments 1-3) delivered 2026-08-18; Increments 4-7 in progress from 2026-08-22; the coordinator is the operator's Asha session claiming each initiative (Keeper ruling 2026-08-22), not a controller-launched agent; current operating surface is docs/orchestration.md
 date: 2026-08-15
 depends_on: docs/proposals/2026-08-14--asha-control.md
 origin: Keeper design session after comparing Asha Control with persistent multi-agent supervisors
