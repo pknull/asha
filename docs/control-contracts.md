@@ -46,19 +46,26 @@ after semantic source comparison. A remaining `intent`, stale binding, or
 binding mismatch makes later task starts refuse rather than silently adopt a
 usable but unauthenticated `.jj`. Interruption retains exit 130 after printing
 the ambiguous-state diagnostic; ordinary repository refusals remain exit 2.
-The only automatic binding update is a typed `verified` root-hardening case:
-same canonical root/dev/inode/uid/type, exact Git marker/target and `.jj` facts,
-and only a nonempty subset of `0022` removed from the root mode. Task start
-must first pass source/Memory/base/destination/capacity policy, strict jj
-identity and sync, stable all-ref Git semantics, and stable jj operation
-identity. It then rechecks the exact raw bytes/digest and rewrites only
-`root_fact` under the exclusive source lock shared by every Control intent
-writer. Doctor classifies the case read-only as repairable only when the
-resulting root passes path policy. Every other mismatch, including state
-`intent`, mode loosening, a mixed change, or a cooperative writer race,
-preserves the record bytes and refuses. This is deliberately not described as
-filesystem-atomic CAS: a noncooperating same-UID process able to rename private
-source/state paths is outside the enforcement boundary.
+The only automatic binding updates are two typed `verified` cases. Root
+hardening requires the same canonical root/dev/inode/uid/type, exact Git
+marker/target and `.jj` facts, and only a nonempty subset of `0022` removed
+from the root mode. Device rebinding treats persisted `dev` values as cached
+mount observations: every non-device fact and Git binding must be exact, at
+least one device must change, and all root/marker/target/`.jj` pairs must form
+one coherent injective old-to-current device map. Device/inode equality remains
+exact transient authority inside every inspection, mutation, and cleanup
+transaction. Task start must first pass source/Memory/base/destination/capacity
+policy, strict jj identity and sync, stable all-ref Git semantics, and stable
+jj operation identity. It then rechecks the exact raw bytes/digest and exact
+current binding under the exclusive source lock shared by every Control intent
+writer, rewriting only `root_fact` for hardening or every nested `dev` for a
+device rebind. Doctor classifies either case read-only as repairable only when
+the resulting root passes path policy. Every other mismatch, including state
+`intent`, mode loosening, mixed mode/device drift, a split or collapsing device
+map, or a cooperative writer race, preserves the record bytes and refuses.
+This is deliberately not described as filesystem-atomic CAS: a noncooperating
+same-UID process able to rename private source/state paths is outside the
+enforcement boundary.
 
 `status` and `state` values everywhere use the run vocabulary from
 `docs/control.md` (`starting`, `working`, `needs-input`, `idle`, `exited`,
@@ -74,6 +81,7 @@ source/state paths is outside the enforcement boundary.
 | `asha.control-reconciliation.v1` | `lib/control/reconcile.py` `reconcile_task` | `contract, task_id, state, blocker, evidence[], runs[]`; each run is `asha.control-run-reconciliation.v1` `{contract, run_id, state, blocker, evidence[]}`; each evidence item is `{source, outcome, detail, state, stale}` with source in `tmux, process, jj, event` and outcome in `match, mismatch, missing, unavailable`; `state` is set on matched `event` evidence, on `missing` `process` evidence (terminal only), and on matched `tmux` evidence as `needs-input` when the owned pane shows a harness input prompt or as terminal when the exact owned pane is conclusively dead. Missing, foreign, or unavailable pane evidence is not terminal. Derived on every read; persisted into the task record only at a terminal edge (archive, or any reconciliation whose runs are all `exited`/`failed` and unblocked, which also expires those runs' event snapshots). |
 | `asha.control-event.v1` | `lib/control/events.py` (`write_snapshot`/`read_snapshot`), written by `plugins/session/hooks/handlers/control-event.sh` | Exact keys: `contract, task_id, run_id, event, state, harness, harness_session_id, exit_status, pane_id, observed_at`; events `session-start, prompt-submitted, tool-completed, permission-requested, turn-stopped, session-ended`; `exit_status` only with `session-ended`. One bounded (4 KiB) current snapshot per run under `$XDG_RUNTIME_DIR/asha-control/events/<run-id>.json`. Trust window: `control.event_staleness_seconds` (default 1800) for in-progress states. |
 | `asha.control-task-context.v1` | `lib/control/prepare.py` via `plugins/session/tools/control_task_marker.py` | The `.asha/control-task.json` marker inside a task workspace: `contract, task_id, repository{root, identity}, jj{workspace_name, workspace_path, change_id, working_commit_id}`; canonical bytes are sorted-key compact JSON + `\n`. |
+| `asha.control-task-start-worker-refusal.v1` | `lib/control/prerequisites.py` | Private TUI-worker-only refusal transport for the exact `missing-positive-ignore` marker prerequisite. It is strict, bounded, duplicate-key rejecting, task-ID bound, and carries repository/Git binding, selected default/explicit base, source-or-quarantine proof provenance, immutable failure evidence, and `.gitignore` CAS facts. It is emitted only with hidden `--tui-worker` plus explicit `--json --detach --task-id`; human stderr is not a machine contract. |
 | `asha.control-creation-journal.v2` | `lib/control/transaction.py` | Current internal recovery journal. It binds a compact `asha.control-materialization-plan.v1` summary to a private `asha.control-materialization-ownership.v1` fixed-width sidecar; tracked paths and contents are not embedded in the JSON. New exact post-add operation IDs and the optional `asha.control-recovery-adoption.v1` object are additive internal v2 fields; older v2 records remain readable. Once any workspace/root filesystem mutation may exist, automatic recovery retains the jj registration, every workspace entry, the root, and created parents, then records `preserved`; it performs no name-based forget or filesystem deletion. Diagnostics require `jj workspace list` plus path inspection and name archive/confirmed prune only when existing prune preconditions are durably proven; partial-add and parent residue require manual cleanup. Not an orchestration surface. |
 | `asha.control-creation-journal.v1` | `lib/control/transaction.py` | Legacy inline-tree recovery journal. It remains strictly readable and recoverable under its frozen ownership-checked automatic-removal behavior but is not produced for new tasks. Not an orchestration surface. |
 | `asha.control-prune-record.v1` | `lib/control/prune.py` `PruneRecordStore` | Internal removal journal for a task's workspace root (`task_id, recorded_at, workspace_removed` false at intent and true at completion, `workspace_path, workspace_name, root_fact{dev, ino, uid}, entries_removed`); consulted so a repeat prune never re-matches a reused inode and can finish an interrupted removal, and by the orchestration seal-drift reconciler to recognize a pruned sealed workspace. Not an orchestration surface. |
@@ -133,19 +141,32 @@ lock by the read-only source/workspace policy, published Memory, prospective
 destination/capacity, PR remote selection, and base checks. An explicit
 ad-hoc/issue base is resolved with exact config-sanitized Git and its immutable
 OID is carried through import; existing jj revset behavior is unchanged. An
-omitted initial plain-Git base selects one unambiguous remote-default ref or
-the first existing local `main`, `master`, or `trunk`. The selected ref is
-preflight evidence only: `requested_base` retains the caller's unchanged
-default expression and `base_commit_id` carries the immutable selected OID.
-This keeps identical caller-ID replay stable and makes an explicit different
-base a mismatch. If no candidate exists, start refuses before colocation and
-requests explicit `--base`.
+omitted base uses the same exact-Git resolver for plain Git, existing jj, and
+verified-colocation reauthentication: current attached local branch first,
+then remote symbolic `*/HEAD` targets, then conventional local
+`main`/`master`/`trunk` refs. Fallback names may agree on one OID; different
+OIDs are ambiguous. Selected refs are preflight evidence only:
+`requested_base` retains the legacy omitted-request expression and
+`base_commit_id` carries the immutable selected OID. This keeps identical
+caller-ID replay stable and makes an explicit different base a mismatch. A
+missing or ambiguous candidate refuses before colocation and requests explicit
+`--base`.
+
+Default evidence is re-resolved before source mutation and workspace
+preparation. The TUI may pass its displayed full OID as a private freshness
+assertion, but the controller never accepts it as base authority; a changed
+default refuses. The TUI cannot submit an empty Base when preview resolution
+failed; repository reacceptance and Base-field resize refresh the preview, and
+an unavailable default requires an explicit value. Legacy retry omits `--base`
+only when the stored request equals
+the v1 omitted sentinel. Every ordinary explicit base remains exact.
 
 The pre-enable plan binds the source root and complete Git marker/target facts,
 then revalidates that binding before intent creation, immediately before
 colocation, and afterward. Transaction Git reads use a trusted absolute Git
-executable with a minimal explicit environment, exact git-dir/work-tree, and
-execution-capable read helpers disabled. Semantic authentication uses plumbing
+executable with a minimal explicit environment, exact git-dir/work-tree,
+execution-capable read helpers disabled, and promisor-object lazy fetching
+disabled. Semantic authentication uses plumbing
 index entries with normalized per-stage flags, ref object IDs plus symbolic
 targets, and descriptor-checked raw filesystem hashes for changed tracked and
 bounded untracked paths; it never invokes Git status, diff,

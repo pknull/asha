@@ -100,6 +100,17 @@ class ControlFinishIncrementTests(unittest.TestCase):
         self.config = load_config(self.env)
         self.tasks = TaskStore(self.config)
         self.journals = CreationJournalStore(self.config)
+        preview = mock.patch.object(
+            tui, "_default_base_candidate",
+            return_value=(
+                tui.ModalCandidate(
+                    "", "current refs/heads/main @ " + "a" * 12,
+                ),
+                "a" * 40,
+            ),
+        )
+        preview.start()
+        self.addCleanup(preview.stop)
 
     def task(self, slug="work", *, state="working"):
         task = task_record(
@@ -352,6 +363,15 @@ class ControlFinishIncrementTests(unittest.TestCase):
             "\n", *"goal", "\n",
         ])
         with mock.patch.object(tui, "freeze_start_candidates", return_value=snapshot), \
+                mock.patch.object(
+                    tui, "_default_base_candidate",
+                    return_value=(
+                        tui.ModalCandidate(
+                            "", "current refs/heads/main @ " + "a" * 12,
+                        ),
+                        "a" * 40,
+                    ),
+                ), \
                 mock.patch.object(tui, "_source_colocation_watch", return_value=(None, False)), \
                 mock.patch.object(tui, "_supervise_start_process", return_value="started") as supervise:
             self.assertEqual(tui._start_form(

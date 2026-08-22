@@ -45,13 +45,18 @@ asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
 
 Use `asha initiative baseline --repo PATH [--revision REVSET]` to obtain the
 exact immutable scope origin for an `approved-baseline` node. The revision
-defaults to Control's default base (remote `trunk()`, else the local `main`,
-`master`, or `trunk` bookmark). The command preflights the canonical repository, applies
-Control task start's colocated Git HEAD/jj `@-` synchronization guard, resolves
-the revision from jj's current read-only view, and computes its immutable tree.
+defaults through Control's shared exact-Git omitted-base resolver: current
+attached local branch, then same-OID remote symbolic `*/HEAD` targets, then
+same-OID conventional local `main`/`master`/`trunk` refs. The command preflights
+the canonical repository, applies Control task start's colocated Git HEAD/jj
+`@-` synchronization guard, confirms the selected OID is visible in jj, and
+computes its immutable tree. An explicit `--revision` remains a verbatim jj
+revset.
 It never imports Git refs or otherwise mutates the repository. If Git knows a
 bookmark that jj cannot yet see, the refusal points to `jj status` rather than
-importing it. Human output is the commit and tree digest on two labelled lines;
+importing it. Exact Git reads disable promisor-object lazy fetching, so a
+repository-configured partial-clone remote cannot turn baseline inspection into
+network access. Human output is the commit and tree digest on two labelled lines;
 `--json` returns the closed `asha.orchestration-baseline.v1` contract.
 
 When `asha initiative plan ID --file PLAN.json` validates a proposed plan, it

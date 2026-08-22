@@ -262,21 +262,26 @@ def _baseline(
     options = _parse_options(args, flags={"json"})
     _only(options, {"repo", "revision", "json"}, "baseline")
     _required(options, "repo")
-    revision = DEFAULT_BASE_REVSET if options.get("revision") is None else options["revision"]
+    revision_omitted = options.get("revision") is None
+    revision = DEFAULT_BASE_REVSET if revision_omitted else options["revision"]
     root = Path(options["repo"]).expanduser().resolve()
     facts = jj.preflight(root)
     _guard_colocated_sync(jj, facts.root, facts.git_root)
     try:
-        commit_id = jj.resolve_base(facts.root, revision)
+        if revision_omitted:
+            commit_id = jj.resolve_default_base(facts.root).commit_id
+            jj.require_visible_commit(facts.root, commit_id)
+        else:
+            commit_id = jj.resolve_base(facts.root, revision)
     except JjError as exc:
-        detail = str(exc).replace(
-            "Pass an explicit --base, for example --base main, or add a remote.",
-            "Pass an explicit --revision, for example --revision main, or add a remote.",
-        ).replace(
-            "Pass an explicit --base naming a bookmark or commit, for example --base main.",
-            "Pass an explicit --revision naming a bookmark or commit, for example --revision main.",
-        )
-        shown = "the default base" if revision == DEFAULT_BASE_REVSET else repr(revision)
+        detail = str(exc)
+        if revision_omitted:
+            detail = detail.replace(
+                "Pass an explicit --base", "Pass an explicit --revision",
+            ).replace(
+                "pass an explicit --base", "pass an explicit --revision",
+            )
+        shown = "the default base" if revision_omitted else repr(revision)
         raise JjError(
             f"could not resolve revision {shown} from jj's read-only "
             f"repository view: {detail}; no import was attempted. If Git knows "

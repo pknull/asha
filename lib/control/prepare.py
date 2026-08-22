@@ -22,7 +22,9 @@ from .context import (
     provision_context, read_published_snapshot,
 )
 from .jj import (
-    ColocationIntentStore, ContextCompatibilityProof, DEFAULT_BASE_REVSET, JjAdapter, JjError, MaterializationEntry,
+    ColocationIntentStore, ContextCompatibilityError, ContextCompatibilityProof,
+    DEFAULT_BASE_REVSET,
+    DefaultBaseResolution, JjAdapter, JjError, MaterializationEntry,
     MaterializationPlan, MAX_IMMUTABLE_TREE_ENTRIES, MAX_MATERIALIZATION_ENTRIES,
     MAX_TRACKED_BLOB_BYTES, MAX_TRACKED_TOTAL_BYTES, inspect_git_marker,
     RepositoryPreEnableBinding, inspect_pre_enable_binding,
@@ -79,6 +81,38 @@ class PreparationError(ValueError):
     pass
 
 
+class PreparationPrerequisiteError(PreparationError):
+    """Repairable immutable-base refusal with the planning facts still bound."""
+
+    def __init__(
+        self, *, request: "PrepareRequest", base_explicit: bool,
+        existing_jj: bool, source_binding: RepositoryPreEnableBinding,
+        selected_base: str, resolved_base_commit_id: str,
+        default_base_resolution: DefaultBaseResolution | None,
+        materialization_plan: MaterializationPlan,
+        source_object_available: bool,
+        pr_remote_config_digest: str | None,
+        error: ContextCompatibilityError,
+    ) -> None:
+        self.request = request
+        self.base_explicit = base_explicit
+        self.existing_jj = existing_jj
+        self.source_binding = source_binding
+        self.selected_base = selected_base
+        self.resolved_base_commit_id = resolved_base_commit_id
+        self.default_base_resolution = default_base_resolution
+        self.materialization_plan = materialization_plan
+        self.source_object_available = source_object_available
+        self.pr_remote_config_digest = pr_remote_config_digest
+        self.evidence = error.evidence
+        super().__init__(
+            f"{error}; add /.asha/control-task.json to .gitignore, commit the "
+            "rule or select a commit that contains it, then retry "
+            f"(selected immutable base {resolved_base_commit_id}; pre-enable "
+            "preflight refused; repository and task state were unchanged)"
+        )
+
+
 @dataclass(frozen=True)
 class PrepareRequest:
     repository: Path
@@ -92,6 +126,7 @@ class PrepareRequest:
     resolved_base_commit_id: str | None = None
     github_title: str | None = None
     pr_remote: ValidatedPrRemote | None = None
+    expected_default_commit_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -107,6 +142,9 @@ class PlainGitPreEnablePlan:
     default_base_deferred: bool
     materialization_plan: MaterializationPlan | None
     context_compatibility: ContextCompatibilityProof | None = None
+    default_base_resolution: DefaultBaseResolution | None = None
+    source_object_available: bool = True
+    pr_remote_config_digest: str | None = None
 
 
 def revalidate_plain_git_pre_enable_plan(
@@ -117,7 +155,19 @@ def revalidate_plain_git_pre_enable_plan(
         raise PreparationError("plain-Git pre-enable plan is missing or invalid")
     try:
         require_pre_enable_binding(plan.source_binding.root, plan.source_binding)
-        if plan.materialization_plan is not None and plan.context_compatibility is not None:
+        if plan.default_base_resolution is not None:
+            adapter = jj or JjAdapter()
+            observed_default = adapter.resolve_default_base(plan.source_binding.root)
+            if observed_default != plan.default_base_resolution:
+                raise JjError(
+                    "default base changed after preflight; review the new default "
+                    "or pass an explicit --base"
+                )
+        if (
+            plan.materialization_plan is not None
+            and plan.context_compatibility is not None
+            and plan.source_object_available
+        ):
             adapter = jj or JjAdapter()
             observed = adapter.prove_context_compatibility(
                 plan.source_binding.root, plan.source_binding.git_binding.target,
@@ -128,6 +178,13 @@ def revalidate_plain_git_pre_enable_plan(
             )
             if observed != plan.context_compatibility:
                 raise JjError("immutable context compatibility evidence changed")
+        elif not plan.source_object_available:
+            if plan.pr_remote_config_digest is None:
+                raise JjError("isolated PR prerequisite plan lacks remote binding")
+            adapter = jj or JjAdapter()
+            configured = adapter.git_remote_configuration(plan.source_binding.root)
+            if configured.config_digest != plan.pr_remote_config_digest:
+                raise JjError("Git remote configuration changed after PR prerequisite proof")
     except JjError as exc:
         raise PreparationError(
             f"{exc} (pre-enable plan invalidated; no replacement was initialized)"
@@ -173,29 +230,27 @@ def preflight_plain_git_enablement(
                 "workspace destination requires more than eight created ancestors"
             )
         selected_base = request.requested_base
+        default_base_resolution = None
         if request.resolved_base_commit_id is not None:
             resolved = request.resolved_base_commit_id
             if GIT_OBJECT_ID_PATTERN.fullmatch(resolved) is None:
                 raise ValueError("resolved base commit ID must be a full Git object ID")
+        elif not base_explicit:
+            default_base_resolution = jj.resolve_default_base(source)
+            selected_base = default_base_resolution.references[0]
+            resolved = default_base_resolution.commit_id
+            if (
+                request.expected_default_commit_id is not None
+                and request.expected_default_commit_id != resolved
+            ):
+                raise ValueError(
+                    "default base changed after the TUI preview; review the new "
+                    "default or select/type an explicit --base"
+                )
         elif existing_jj:
             resolved = jj.resolve_base(source, request.requested_base)
-        elif not base_explicit:
-            selected_base, resolved = jj.resolve_plain_git_default(source)
         else:
             resolved = jj.resolve_git_commit(source, request.requested_base)
-        materialization = (
-            jj.materialization_plan(
-                git_binding.target, resolved, exact_root=source,
-            )
-            if resolved is not None and request.source.get("kind") != "pr" else None
-        )
-        if (
-            materialization is not None
-            and materialization.entry_count > MAX_IMMUTABLE_TREE_ENTRIES
-        ):
-            raise ValueError(
-                f"tracked revision exceeds the {MAX_IMMUTABLE_TREE_ENTRIES}-entry capacity"
-            )
         marker = {
             "contract": "asha.control-task-context.v1", "task_id": request.task_id,
             "repository": {"root": str(source), "identity": repository_identity},
@@ -209,15 +264,54 @@ def preflight_plain_git_enablement(
             source, destination, marker, snapshot=snapshot,
         )
         capacity_plan = _planned_manifest(capacity_context_plan)
-        context_compatibility = (
-            jj.prove_context_compatibility(
-                source, git_binding.target, materialization,
+        materialization = None
+        context_compatibility = None
+        source_object_available = True
+        pr_remote_config_digest = None
+
+        def immutable_proof(proof_root: Path) -> tuple[
+            MaterializationPlan, ContextCompatibilityProof,
+        ]:
+            nonlocal materialization
+            proof_binding = inspect_pre_enable_binding(proof_root)
+            materialization = jj.materialization_plan(
+                proof_binding.git_binding.target, resolved, exact_root=proof_root,
+            )
+            if materialization.entry_count > MAX_IMMUTABLE_TREE_ENTRIES:
+                raise ValueError(
+                    f"tracked revision exceeds the {MAX_IMMUTABLE_TREE_ENTRIES}-entry capacity"
+                )
+            proof = jj.prove_context_compatibility(
+                proof_root, proof_binding.git_binding.target, materialization,
                 project_id=snapshot.project_id,
                 planned_context_paths=tuple(capacity_context_plan),
                 private_directory_paths=DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES,
             )
-            if materialization is not None else None
-        )
+            return materialization, proof
+
+        if request.source.get("kind") == "pr":
+            remote = request.pr_remote
+            number = request.source.get("number")
+            if remote is None or type(number) is not int or not 1 <= number <= 9_999_999_999:
+                raise ValueError("pull-request prerequisite proof lacks a validated remote")
+            try:
+                local_commit = jj.resolve_git_commit(source, resolved)
+            except JjError:
+                source_object_available = False
+                pr_remote_config_digest = remote.config_digest
+                with jj.prerequisite_pr_head(
+                    source, remote.url, f"pull/{number}/head",
+                    transport=remote.transport,
+                    config_digest=remote.config_digest,
+                    expected_commit_id=resolved,
+                ) as proof_root:
+                    materialization, context_compatibility = immutable_proof(proof_root)
+            else:
+                if local_commit != resolved:
+                    raise ValueError("local pull-request object differs from selected head")
+                materialization, context_compatibility = immutable_proof(source)
+        else:
+            materialization, context_compatibility = immutable_proof(source)
         materialization_record = (
             materialization.record() if materialization is not None else {
                 "contract": "asha.control-materialization-plan.v1",
@@ -267,6 +361,19 @@ def preflight_plain_git_enablement(
             },
         }
         _ensure_creation_journal_capacity(prospective_journal, capacity_plan)
+    except ContextCompatibilityError as exc:
+        assert materialization is not None
+        assert resolved is not None
+        raise PreparationPrerequisiteError(
+            request=request, base_explicit=base_explicit, existing_jj=existing_jj,
+            source_binding=source_binding, selected_base=selected_base,
+            resolved_base_commit_id=resolved,
+            default_base_resolution=default_base_resolution,
+            materialization_plan=materialization,
+            source_object_available=source_object_available,
+            pr_remote_config_digest=pr_remote_config_digest,
+            error=exc,
+        ) from exc
     except (OSError, ValueError, JjError, StoreError) as exc:
         raise PreparationError(
             f"{exc} (pre-enable preflight refused; repository and task state were unchanged)"
@@ -276,7 +383,57 @@ def preflight_plain_git_enablement(
         selected_base, resolved, default_base_deferred=False,
         materialization_plan=materialization,
         context_compatibility=context_compatibility,
+        default_base_resolution=default_base_resolution,
+        source_object_available=source_object_available,
+        pr_remote_config_digest=pr_remote_config_digest,
     )
+
+
+def revalidate_pr_source_proof_after_fetch(
+    plan: PlainGitPreEnablePlan, *, jj: JjAdapter | None = None,
+) -> None:
+    """Bind fetched source objects to the already-authorized PR proof before import."""
+    if (
+        not isinstance(plan, PlainGitPreEnablePlan)
+        or plan.materialization_plan is None
+        or plan.context_compatibility is None
+        or plan.resolved_base_commit_id is None
+    ):
+        raise PreparationError("pull-request start lacks an immutable prerequisite proof")
+    adapter = jj or JjAdapter()
+    root = plan.source_binding.root
+    try:
+        current = inspect_pre_enable_binding(root)
+        expected_git = plan.source_binding.git_binding
+        if (
+            current.git_binding.target != expected_git.target
+            or current.git_binding.target_fact != expected_git.target_fact
+        ):
+            raise JjError("Git backend changed after pull-request prerequisite proof")
+        snapshot = read_published_snapshot(root)
+        if snapshot.project_id != plan.context_compatibility.project_id:
+            raise JjError("project identity changed after pull-request prerequisite proof")
+        observed_plan = adapter.materialization_plan(
+            current.git_binding.target, plan.resolved_base_commit_id,
+            exact_root=root,
+        )
+        if observed_plan != plan.materialization_plan:
+            raise JjError("fetched pull-request materialization differs from prerequisite proof")
+        observed_proof = adapter.prove_context_compatibility(
+            root, current.git_binding.target, observed_plan,
+            project_id=plan.context_compatibility.project_id,
+            planned_context_paths=plan.context_compatibility.planned_context_paths,
+            private_directory_paths=plan.context_compatibility.private_directory_paths,
+        )
+        if observed_proof != plan.context_compatibility:
+            raise JjError("fetched pull-request context differs from prerequisite proof")
+    except (OSError, ValueError, JjError, StoreError) as exc:
+        if isinstance(exc, PreparationError):
+            raise
+        raise PreparationError(
+            f"{exc} (pull-request source proof invalidated before jj import; "
+            "no task or workspace state was created)"
+        ) from exc
 
 
 def _now() -> str:

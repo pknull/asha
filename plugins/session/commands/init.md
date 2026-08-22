@@ -23,11 +23,15 @@ This creates only:
 Memory/activeContext.md              # four-section, 4 KiB publication
 Memory/decisions.md                  # current binding decisions
 Work/session-state/                  # ignored unpublished recovery snapshots
+.gitignore                           # managed Memory + Control private rules
 ```
 
 Initialization preserves an existing `project_id`, existing published v2
 files, and all legacy material. If either published path contains a legacy or
 invalid v2 handoff, initialization fails before changing the config and routes
 that material to explicit `/session:consolidate`; it never deletes or silently
-republishes it. It adds narrow ignores for `/Work/session-state/` and the durable
-private `/Work/memory-migration/` review plan.
+republishes it. It adds narrow ignores for `/Work/session-state/`, the durable
+private `/Work/memory-migration/` review plan, and
+`/.asha/control-task.json`. The Control rule must be committed before an
+immutable task base gains that authority; changing only the working tree does
+not authorize an older selected commit.

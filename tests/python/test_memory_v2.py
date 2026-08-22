@@ -230,6 +230,7 @@ class PublishedMemoryTests(unittest.TestCase):
             memory_v2.initialize(root)
             self.assertEqual(first, memory_v2.read_project_config(root)["project_id"])
             self.assertIn("/Work/session-state/", (root / ".gitignore").read_text())
+            self.assertIn("/.asha/control-task.json", (root / ".gitignore").read_text())
             self.assertEqual(
                 ["# Objective", "# State", "# Next", "# Blockers"],
                 [line for line in (root / "Memory/activeContext.md").read_text().splitlines()
@@ -237,6 +238,44 @@ class PublishedMemoryTests(unittest.TestCase):
             )
             self.assertTrue((root / "Memory/decisions.md").is_file())
             self.assertFalse((root / "Memory/events").exists())
+
+    def test_managed_ignore_migrates_terminal_memory_suffix_without_duplication(self):
+        old = (
+            f"{memory_v2.IGNORE_MARKER}\n"
+            f"{memory_v2.MIGRATION_IGNORE_RULE}\n"
+            f"{memory_v2.IGNORE_RULE}\n"
+        )
+        migrated = memory_v2.managed_ignore_text(old)
+        self.assertEqual(migrated.count(memory_v2.IGNORE_MARKER), 1)
+        self.assertEqual(migrated.count("# Asha Control private context (managed)"), 1)
+        self.assertTrue(migrated.endswith(
+            "# Asha Control private context (managed)\n"
+            "/.asha/control-task.json\n"
+        ))
+        self.assertEqual(memory_v2.managed_ignore_text(migrated), migrated)
+
+    def test_initialize_repairs_later_marker_negation_and_verifies_effective_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            memory_v2.initialize(root)
+            ignore = root / ".gitignore"
+            ignore.write_text(
+                ignore.read_text() + "!/.asha/control-task.json\n",
+                encoding="utf-8",
+            )
+            memory_v2.initialize(root)
+            result = subprocess.run(
+                ["git", "-C", str(root), "check-ignore", "--no-index", "--quiet",
+                 "--", ".asha/control-task.json"], check=False,
+            )
+            self.assertEqual(result.returncode, 0)
+            self.assertTrue(ignore.read_text().endswith(
+                "# Asha Memory v2 recovery (managed)\n"
+                "/Work/memory-migration/\n/Work/session-state/\n"
+                "# Asha Control private context (managed)\n"
+                "/.asha/control-task.json\n"
+            ))
 
     def test_initialize_fails_closed_on_malformed_existing_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -407,7 +446,9 @@ class PublishedMemoryTests(unittest.TestCase):
                 cwd=root,
             )
             self.assertEqual(0, result.returncode)
-            self.assertTrue((root / ".gitignore").read_text().rstrip().endswith("/Work/session-state/"))
+            self.assertTrue((root / ".gitignore").read_text().rstrip().endswith(
+                "/.asha/control-task.json"
+            ))
 
     def test_atomic_writer_replaces_from_destination_directory(self):
         with tempfile.TemporaryDirectory() as tmp:

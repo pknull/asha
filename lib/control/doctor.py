@@ -17,13 +17,19 @@ from pathlib import Path
 from typing import Callable, Mapping, Any
 
 from .events import EventError, read_snapshot
+from .context import (
+    DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES, build_context_plan,
+    read_published_snapshot,
+)
 from .prune import prunable_summary
 from .jj import (
-    ColocationIntentStore, JjAdapter, JjError, LinkedGitWorktreeError,
+    ColocationIntentStore, ContextCompatibilityError, JjAdapter, JjError,
+    LinkedGitWorktreeError, inspect_pre_enable_binding,
     colocated_sync_remediation, discover_git_root,
 )
 from .process import capture_bytes
 from .prepare import retained_recovery_guidance
+from .prepare import derive_repository_identity
 from .store import StoreError, TaskStore, validate_task_paths
 from .tmux import TmuxAdapter, TmuxError
 from .transaction import CreationJournalStore, JournalError
@@ -562,6 +568,105 @@ def _repository_probe(config) -> Probe:
     )
 
 
+def _default_context_probe(config) -> Probe:
+    """Prove the resolved default's immutable Control context without mutation."""
+    if config is None:
+        return Probe(
+            "default-context", "unavailable",
+            "configuration was not supplied; no default immutable base was inspected",
+        )
+    if shutil.which("git") is None:
+        return Probe(
+            "default-context", "unavailable",
+            "Git is unavailable; no default immutable base was inspected",
+        )
+    try:
+        start = Path.cwd().resolve()
+    except OSError as exc:
+        return Probe(
+            "default-context", "unavailable",
+            f"working directory is unreadable: {_safe_detail(exc)}",
+        )
+    adapter = JjAdapter()
+    existing_jj = True
+    try:
+        root = adapter.discover_root(start)
+    except JjError:
+        try:
+            root = discover_git_root(start)
+        except (JjError, LinkedGitWorktreeError):
+            root = None
+        existing_jj = False
+    if root is None:
+        return Probe(
+            "default-context", "unavailable",
+            "the working directory is not inside a supported Git-backed repository",
+        )
+    try:
+        snapshot = read_published_snapshot(root)
+        binding = inspect_pre_enable_binding(root)
+        default = adapter.resolve_default_base(root)
+        materialization = adapter.materialization_plan(
+            binding.git_binding.target, default.commit_id, exact_root=root,
+        )
+        repository_identity, repo_key = derive_repository_identity(
+            snapshot.project_id, root, binding.git_binding.target,
+        )
+        destination = config.workspace_root / repo_key / "doctor-default-context"
+        marker = {
+            "contract": "asha.control-task-context.v1",
+            "task_id": "00000000-0000-4000-8000-000000000001",
+            "repository": {"root": str(root), "identity": repository_identity},
+            "jj": {
+                "workspace_name": "asha-doctor-default-context-00000000",
+                "workspace_path": str(destination), "change_id": "k" * 32,
+                "working_commit_id": "f" * 64,
+            },
+        }
+        context = build_context_plan(root, destination, marker, snapshot=snapshot)
+        adapter.prove_context_compatibility(
+            root, binding.git_binding.target, materialization,
+            project_id=snapshot.project_id,
+            planned_context_paths=tuple(context),
+            private_directory_paths=DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES,
+        )
+    except ContextCompatibilityError as exc:
+        selected = f"{', '.join(default.references)} @ {default.commit_id}"
+        if exc.evidence.missing_paths != (".asha/control-task.json",):
+            return Probe(
+                "default-context", "mismatch",
+                _safe_detail(
+                    f"resolved default only ({selected}) lacks immutable context "
+                    f"coverage for {', '.join(exc.evidence.missing_paths)}; no "
+                    "repository or task state was changed"
+                ),
+            )
+        return Probe(
+            "default-context", "mismatch",
+            _safe_detail(
+                f"resolved default only ({selected}) lacks the committed positive "
+                "ignore for .asha/control-task.json; run /session:init, commit "
+                "the rule, then retry. No repository or task state was changed"
+            ),
+        )
+    except (JjError, ValueError, OSError) as exc:
+        return Probe(
+            "default-context", "mismatch",
+            _safe_detail(
+                f"resolved default immutable context is not ready: {exc}; "
+                "no repository or task state was changed"
+            ),
+        )
+    selected = f"{', '.join(default.references)} @ {default.commit_id}"
+    return Probe(
+        "default-context", "match",
+        _safe_detail(
+            f"resolved default only ({selected}) has immutable Control context "
+            "compatibility; explicit future bases are not certified"
+        ),
+    )
+
+
 def _colocation_intent_problem(config, root: Path) -> Probe | None:
     """Mirror task-start's read-only Control colocation authentication gate."""
     if config is None:
@@ -597,6 +702,28 @@ def _colocation_intent_problem(config, root: Path) -> Probe | None:
                 "read-only check; task start will reauthenticate repository/Git/jj "
                 "identity, stable semantics, Memory, base, and destination before "
                 "rewriting only the stored root fact"
+            ),
+        )
+    if assessment.kind == "verified_device_rebind_candidate":
+        probe_workspace = config.workspace_root / ".doctor-pre-enable" / store._key(root)
+        try:
+            validate_task_paths(config, root, probe_workspace)
+        except StoreError as exc:
+            return Probe(
+                "repository", "mismatch",
+                _safe_detail(
+                    "verified colocation device renumbering remains unsafe under "
+                    "the task-start path policy and is ineligible for automatic "
+                    f"repair: {exc}"
+                ),
+            )
+        return Probe(
+            "repository", "mismatch",
+            _safe_detail(
+                "repairable verified colocation filesystem device renumbering "
+                "detected by a read-only check; task start will reauthenticate "
+                "repository/Git/jj identity, stable semantics, Memory, base, and "
+                "destination before refreshing only stored device observations"
             ),
         )
     if assessment.kind == "mismatch":
@@ -709,6 +836,7 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "gh": _gh_probe,
     "jj": _jj_probe,
     "repository": _repository_probe,
+    "default-context": _default_context_probe,
     "transactions": _transactions_probe,
     "prunable": _prunable_probe,
     "harness-events": _harness_events_probe,
@@ -734,7 +862,8 @@ def run_doctor(config, probes: Mapping[str, ProbeFunction] | None = None) -> dic
     blocking = [
         result for result in results
         if (result.outcome != "match" and result.name != "gh" and
-            not (result.name == "repository" and result.outcome == "unavailable"))
+            not (result.name in {"repository", "default-context"} and
+                 result.outcome == "unavailable"))
     ]
     return {
         "contract": "asha.control-doctor.v1",

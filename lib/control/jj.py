@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -48,6 +49,7 @@ MAX_GIT_MARKER_BYTES = 4096
 MAX_GIT_CONFIG_BYTES = 1024 * 1024
 MAX_CONTEXT_PROOF_PATHS = 64
 MAX_CONTEXT_PROOF_PATH_BYTES = 16 * 1024
+MAX_EXACT_GIT_REF_BYTES = 300
 TRUSTED_GIT_EXECUTABLE = "/usr/bin/git"
 TRUSTED_SSH_EXECUTABLE = "/usr/bin/ssh"
 _EXACT_GIT_CONFIG = (
@@ -71,10 +73,10 @@ def _strict_intent_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
-# jj's built-in `trunk()` considers only REMOTE bookmarks, so in a repository
-# without a remote it resolves to the empty root commit. Control's default base
-# therefore falls back to the local main/master/trunk bookmark; an explicit
-# --base is always used verbatim.
+# Durable v1 identity for a request that omitted --base. New starts resolve the
+# actual default through exact Git; retaining this text preserves task replay
+# and caller-ID compatibility. An operator who explicitly supplied this exact
+# legacy expression remains indistinguishable from omission in v1 records.
 DEFAULT_BASE_REVSET = (
     "coalesce(trunk() ~ root(), present(main), present(master), present(trunk))"
 )
@@ -89,6 +91,51 @@ class JjError(ValueError):
     """A jj precondition, invocation, or identity check failed."""
 
 
+def _exact_ascii_line(raw: bytes, label: str) -> str:
+    """Decode exactly one unpadded ASCII line, with one optional final LF."""
+    try:
+        value = raw.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise JjError(f"{label} returned non-ASCII output") from exc
+    if value.endswith("\n"):
+        value = value[:-1]
+    if not value or "\n" in value or "\r" in value:
+        raise JjError(f"{label} was not exactly one unpadded line")
+    return value
+
+
+def _valid_exact_git_ref(value: str, *, namespace: str) -> bool:
+    """Validate complete Git ref grammar without repository-configured code."""
+    if (
+        not isinstance(value, str)
+        or not value.startswith(namespace)
+        or not 1 <= len(value) <= MAX_EXACT_GIT_REF_BYTES
+        or value == "@"
+        or value.endswith("/")
+        or value.endswith(".")
+        or "//" in value
+        or ".." in value
+        or "@{" in value
+        or any(
+            ord(character) < 32
+            or ord(character) >= 127
+            or character in " ~^:?*[\\"
+            for character in value
+        )
+    ):
+        return False
+    components = value.split("/")
+    return bool(
+        len(components) >= 3
+        and all(
+            component
+            and not component.startswith(".")
+            and not component.endswith(".lock")
+            for component in components
+        )
+    )
+
+
 class LinkedGitWorktreeError(JjError):
     """Automatic colocation was requested for a linked Git worktree."""
 
@@ -97,6 +144,15 @@ class LinkedGitWorktreeError(JjError):
 class RepositoryFacts:
     root: Path
     git_root: Path
+
+
+@dataclass(frozen=True)
+class DefaultBaseResolution:
+    """One read-only omitted-base decision from exact Git facts."""
+
+    references: tuple[str, ...]
+    commit_id: str
+    tier: str
 
 
 @dataclass(frozen=True)
@@ -210,6 +266,33 @@ class ContextCompatibilityProof:
 
 
 @dataclass(frozen=True)
+class MissingPositiveIgnoreEvidence:
+    """Typed immutable evidence for one unambiguously missing ignore rule."""
+
+    base_commit_id: str
+    materialization_digest: str
+    project_id: str
+    planned_context_paths: tuple[str, ...]
+    private_directory_paths: tuple[str, ...]
+    reused_paths: tuple[str, ...]
+    required_ignored_paths: tuple[str, ...]
+    missing_paths: tuple[str, ...]
+    info_exclude_digest: str
+    digest: str
+
+
+class ContextCompatibilityError(JjError):
+    """A typed positive-ignore failure; other proof failures remain generic."""
+
+    def __init__(self, evidence: MissingPositiveIgnoreEvidence):
+        self.evidence = evidence
+        super().__init__(
+            "controller-created context path is not positively ignored by the "
+            f"immutable base: {', '.join(evidence.missing_paths)}"
+        )
+
+
+@dataclass(frozen=True)
 class WorkspaceAddOperationProof:
     """Public jj operation ancestry for one exact workspace-add argv."""
 
@@ -264,6 +347,7 @@ class ColocationIntentAssessment:
     digest: str | None = None
     current_binding: dict[str, Any] | None = None
     detail: str | None = None
+    device_remap: tuple[tuple[int, int], ...] | None = None
 
 
 def _path_fact(path: Path, label: str) -> dict[str, int]:
@@ -540,7 +624,7 @@ class ColocationIntentStore:
         for name in ("root_fact",):
             fact = value[name]
             if (not isinstance(fact, dict) or set(fact) != {"dev", "ino", "mode", "uid"} or
-                    any(not isinstance(item, int) or item < 0 for item in fact.values())):
+                    any(type(item) is not int or item < 0 for item in fact.values())):
                 raise JjError(f"colocation intent {name} is invalid")
         git_binding = value["git_binding"]
         if (not isinstance(git_binding, dict) or set(git_binding) != {
@@ -552,7 +636,7 @@ class ColocationIntentStore:
         for name in ("marker_fact", "target_fact"):
             fact = git_binding[name]
             if (not isinstance(fact, dict) or set(fact) != {"dev", "ino", "mode", "uid"} or
-                    any(not isinstance(item, int) or item < 0 for item in fact.values())):
+                    any(type(item) is not int or item < 0 for item in fact.values())):
                 raise JjError(f"colocation intent Git {name} is invalid")
         target = git_binding["target"]
         if (not isinstance(target, str) or not target or
@@ -567,7 +651,7 @@ class ColocationIntentStore:
         if value["jj_fact"] is not None:
             fact = value["jj_fact"]
             if (not isinstance(fact, dict) or set(fact) != {"dev", "ino", "mode", "uid"} or
-                    any(not isinstance(item, int) or item < 0 for item in fact.values())):
+                    any(type(item) is not int or item < 0 for item in fact.values())):
                 raise JjError("colocation intent jj_fact is invalid")
         if (value["state"] == "intent") != (value["jj_fact"] is None):
             raise JjError("colocation intent jj binding does not match its state")
@@ -643,6 +727,50 @@ class ColocationIntentStore:
         added = new_mode & ~old_mode
         return removed != 0 and added == 0 and removed & ~0o022 == 0
 
+    @staticmethod
+    def _binding_facts(binding: dict[str, Any]) -> tuple[dict[str, int], ...]:
+        return (
+            binding["root_fact"],
+            binding["git_binding"]["marker_fact"],
+            binding["git_binding"]["target_fact"],
+            binding["jj_fact"],
+        )
+
+    @classmethod
+    def _coherent_device_remap(
+        cls, stored: dict[str, Any], current: dict[str, Any],
+    ) -> tuple[tuple[int, int], ...] | None:
+        """Return one strict injective device remap, or reject all other drift."""
+        if any(stored[field] != current[field] for field in ("contract", "root")):
+            return None
+        old_git = stored["git_binding"]
+        new_git = current["git_binding"]
+        if any(old_git[field] != new_git[field] for field in (
+            "kind", "marker_digest", "target",
+        )):
+            return None
+        if stored["jj_fact"] is None or current["jj_fact"] is None:
+            return None
+        old_facts = cls._binding_facts(stored)
+        new_facts = cls._binding_facts(current)
+        mapping: dict[int, int] = {}
+        inverse: dict[int, int] = {}
+        changed = False
+        for old, new in zip(old_facts, new_facts):
+            if any(old[field] != new[field] for field in ("ino", "mode", "uid")):
+                return None
+            old_dev, new_dev = old["dev"], new["dev"]
+            if old_dev in mapping and mapping[old_dev] != new_dev:
+                return None
+            if new_dev in inverse and inverse[new_dev] != old_dev:
+                return None
+            mapping[old_dev] = new_dev
+            inverse[new_dev] = old_dev
+            changed = changed or old_dev != new_dev
+        if not changed:
+            return None
+        return tuple(sorted(mapping.items()))
+
     def _assessment(
         self, root: Path, raw: bytes, value: dict[str, Any],
     ) -> ColocationIntentAssessment:
@@ -667,6 +795,15 @@ class ColocationIntentStore:
         ):
             return ColocationIntentAssessment(
                 "verified_root_hardening_candidate", value, raw, digest, current,
+            )
+        device_remap = (
+            self._coherent_device_remap(value, current)
+            if value["state"] == "verified" else None
+        )
+        if device_remap is not None:
+            return ColocationIntentAssessment(
+                "verified_device_rebind_candidate", value, raw, digest, current,
+                device_remap=device_remap,
             )
         return ColocationIntentAssessment(
             "mismatch", value, raw, digest, current,
@@ -705,24 +842,55 @@ class ColocationIntentStore:
     ) -> None:
         """Rewrite one exact record under Control's exclusive source lock."""
         with self.mutation_lock(root):
-            self._reauthenticate_root_hardening_locked(root, expected)
+            self._reauthenticate_verified_candidate_locked(root, expected)
+
+    def reauthenticate_device_rebind(
+        self, root: Path, expected: ColocationIntentAssessment,
+    ) -> None:
+        """Refresh cached device observations after caller reauthentication."""
+        with self.mutation_lock(root):
+            self._reauthenticate_verified_candidate_locked(root, expected)
 
     def _reauthenticate_root_hardening_locked(
+        self, root: Path, expected: ColocationIntentAssessment,
+    ) -> None:
+        self._reauthenticate_verified_candidate_locked(root, expected)
+
+    def _reauthenticate_verified_candidate_locked(
         self, root: Path, expected: ColocationIntentAssessment,
     ) -> None:
         root = Path(root)
         if (
             not isinstance(expected, ColocationIntentAssessment)
-            or expected.kind != "verified_root_hardening_candidate"
+            or expected.kind not in {
+                "verified_root_hardening_candidate",
+                "verified_device_rebind_candidate",
+            }
             or expected.raw is None or expected.digest is None
             or expected.current_binding is None or expected.value is None
         ):
-            raise JjError("colocation reauthentication requires a verified hardening candidate")
-        value = dict(expected.value)
-        value["root_fact"] = dict(expected.current_binding["root_fact"])
+            raise JjError("colocation reauthentication requires a verified typed candidate")
+        if hashlib.sha256(expected.raw).hexdigest() != expected.digest:
+            raise JjError("colocation reauthentication assessment digest is invalid")
+        decoded_expected = self._decode(expected.raw)
+        if decoded_expected != expected.value:
+            raise JjError("colocation reauthentication assessment value is invalid")
+        value = copy.deepcopy(decoded_expected)
+        if expected.kind == "verified_root_hardening_candidate":
+            value["root_fact"] = dict(expected.current_binding["root_fact"])
+        else:
+            if expected.device_remap is None:
+                raise JjError("device reauthentication requires a coherent device remap")
+            for stored_fact, current_fact in zip(
+                self._binding_facts(value),
+                self._binding_facts(expected.current_binding),
+            ):
+                stored_fact["dev"] = current_fact["dev"]
         raw = json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
         ).encode("utf-8") + b"\n"
+        if len(raw) > MAX_COLOCATION_INTENT_BYTES:
+            raise JjError("colocation intent exceeds its bounded size")
         name = f"{self._key(root)}.json"
         temporary = f".{name}.tmp.{secrets.token_hex(8)}"
         try:
@@ -735,11 +903,13 @@ class ColocationIntentStore:
                 if current is None:
                     raise JjError("colocation intent changed; preserved without repair")
                 current_raw, current_value = current
+                current_assessment = self._assessment(root, current_raw, current_value)
                 if (
                     current_raw != expected.raw
                     or hashlib.sha256(current_raw).hexdigest() != expected.digest
-                    or self._assessment(root, current_raw, current_value).kind
-                    != "verified_root_hardening_candidate"
+                    or current_assessment.kind != expected.kind
+                    or current_assessment.current_binding != expected.current_binding
+                    or current_assessment.device_remap != expected.device_remap
                 ):
                     raise JjError("colocation intent changed; preserved without cooperative repair")
                 fd = -1
@@ -764,7 +934,12 @@ class ColocationIntentStore:
                     if final is None or final[0] != expected.raw:
                         raise JjError("colocation intent changed; preserved without cooperative repair")
                     final_assessment = self._assessment(root, final[0], final[1])
-                    if final_assessment.kind != "verified_root_hardening_candidate":
+                    if (
+                        hashlib.sha256(final[0]).hexdigest() != expected.digest
+                        or final_assessment.kind != expected.kind
+                        or final_assessment.current_binding != expected.current_binding
+                        or final_assessment.device_remap != expected.device_remap
+                    ):
                         raise JjError("repository facts changed; intent preserved without cooperative repair")
                     os.replace(
                         temporary, name,
@@ -929,6 +1104,7 @@ class JjAdapter:
             "PATH": "/usr/bin:/bin",
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": "/dev/null",
+            "GIT_NO_LAZY_FETCH": "1",
             "GIT_OPTIONAL_LOCKS": "0",
             "GIT_PAGER": "cat",
             "GIT_TERMINAL_PROMPT": "0",
@@ -1498,10 +1674,7 @@ class JjAdapter:
             root, ["rev-parse", "--verify", "--end-of-options", "HEAD^{commit}"],
         )
         if returncode == 0:
-            try:
-                value = stdout.decode("ascii").strip()
-            except UnicodeDecodeError as exc:
-                raise JjError("exact Git HEAD output was not ASCII") from exc
+            value = _exact_ascii_line(stdout, "exact Git HEAD")
             if _COMMIT_ID.fullmatch(value) is None:
                 raise JjError("exact Git HEAD was not one full object ID")
             return value
@@ -1510,10 +1683,12 @@ class JjAdapter:
         )
         if symbolic_code == 0:
             try:
-                branch_ref = symbolic_stdout.decode("ascii").strip()
-            except UnicodeDecodeError:
+                branch_ref = _exact_ascii_line(
+                    symbolic_stdout, "exact Git HEAD symbolic ref",
+                )
+            except JjError:
                 branch_ref = ""
-            if _GIT_BRANCH_REF.fullmatch(branch_ref):
+            if _valid_exact_git_ref(branch_ref, namespace="refs/heads/"):
                 ref_code, _out, _err = self._exact_git_status(
                     root, ["show-ref", "--verify", "--quiet", "--end-of-options", branch_ref],
                 )
@@ -1569,52 +1744,133 @@ class JjAdapter:
             return None
         if returncode != 0:
             raise JjError(f"Git ref {ref!r} could not be inspected exactly")
-        try:
-            value = stdout.decode("ascii").strip()
-        except UnicodeDecodeError as exc:
-            raise JjError("Git ref resolution returned non-ASCII output") from exc
+        value = _exact_ascii_line(stdout, "Git ref resolution")
         if _COMMIT_ID.fullmatch(value) is None:
             raise JjError("Git ref resolution was not one full object ID")
         return value
 
-    def resolve_plain_git_default(self, root: Path) -> tuple[str, str]:
-        """Choose one deterministic conventional Git base before colocation."""
+    @staticmethod
+    def _bounded_default_candidates(
+        candidates: Sequence[tuple[str, str]], *, tier: str,
+    ) -> DefaultBaseResolution:
+        unique = sorted(set(candidates))
+        by_oid: dict[str, list[str]] = {}
+        for ref, oid in unique:
+            by_oid.setdefault(oid, []).append(ref)
+        if len(by_oid) != 1:
+            shown = ", ".join(ref for ref, _oid in unique[:8])
+            if len(unique) > 8:
+                shown += f", ... ({len(unique)} candidates)"
+            raise JjError(
+                f"default-base {tier} candidates resolve to different commits "
+                f"({shown}); pass an explicit --base"
+            )
+        commit_id, refs = next(iter(by_oid.items()))
+        return DefaultBaseResolution(tuple(refs), commit_id, tier)
+
+    def _default_ref_commit(self, root: Path, ref: str) -> str | None:
+        """Resolve an existing candidate and distinguish missing from non-commit."""
+        returncode, _stdout, _stderr = self._exact_git_status(root, [
+            "show-ref", "--verify", "--quiet", "--end-of-options", ref,
+        ])
+        if returncode == 1:
+            return None
+        if returncode != 0:
+            raise JjError(f"Git ref {ref!r} could not be inspected exactly")
+        commit_id = self._exact_ref_commit(root, ref)
+        if commit_id is None:
+            raise JjError(f"Git ref {ref!r} exists but does not name a commit")
+        return commit_id
+
+    def resolve_default_base(self, root: Path) -> DefaultBaseResolution:
+        """Resolve an omitted base without jj, imports, fetches, or writes."""
+        symbolic_code, symbolic_stdout, symbolic_stderr = self._exact_git_status(
+            root, ["symbolic-ref", "--quiet", "HEAD"],
+        )
+        if symbolic_code == 0:
+            try:
+                attached_ref = _exact_ascii_line(
+                    symbolic_stdout, "Git symbolic HEAD",
+                )
+            except JjError as exc:
+                raise JjError("Git symbolic HEAD was malformed") from exc
+            if not _valid_exact_git_ref(
+                attached_ref, namespace="refs/heads/",
+            ):
+                raise JjError("Git symbolic HEAD was malformed")
+            attached_oid = self._default_ref_commit(root, attached_ref)
+            if attached_oid is not None:
+                return DefaultBaseResolution(
+                    (attached_ref,), attached_oid, "attached-local",
+                )
+            # A valid attached branch with no ref is an unborn HEAD. Fall through.
+        elif symbolic_code != 1:
+            detail = symbolic_stderr[:1024].decode(
+                "utf-8", errors="replace",
+            ).strip()
+            raise JjError(
+                f"Git symbolic HEAD could not be inspected: {detail or 'no diagnostic'}"
+            )
+
         raw = self._exact_git_bytes(root, [
             "for-each-ref", "--format=%(refname)%00%(symref)", "refs/remotes",
         ])
-        remote_defaults: list[tuple[str, str]] = []
-        for line in raw.splitlines():
+        records = raw.split(b"\n")
+        if records and records[-1] == b"":
+            records.pop()
+        remote_targets: list[tuple[str, str]] = []
+        for line in records:
             if not line:
-                continue
+                raise JjError("Git remote-default refs were malformed")
             try:
                 ref_raw, target_raw = line.split(b"\0", 1)
                 ref = ref_raw.decode("ascii")
                 target = target_raw.decode("ascii")
             except (ValueError, UnicodeDecodeError) as exc:
                 raise JjError("Git remote-default refs were malformed") from exc
-            if not ref.startswith("refs/remotes/") or not target.startswith("refs/remotes/"):
+            if not _valid_exact_git_ref(ref, namespace="refs/remotes/"):
+                raise JjError("Git remote-default refs were malformed")
+            if not ref.endswith("/HEAD"):
                 continue
-            if not ref.endswith("/HEAD") or target.endswith("/HEAD"):
-                continue
-            oid = self._exact_ref_commit(root, target)
-            if oid is not None:
-                remote_defaults.append((target, oid))
-        remote_defaults = sorted(set(remote_defaults))
-        if len(remote_defaults) == 1:
-            return remote_defaults[0]
-        if len(remote_defaults) > 1:
-            raise JjError(
-                "plain Git has multiple remote default branches; pass an explicit --base"
+            if (
+                not _valid_exact_git_ref(target, namespace="refs/remotes/")
+                or target.endswith("/HEAD")
+            ):
+                raise JjError("Git remote-default refs were malformed")
+            remote_targets.append((ref, target))
+            if len(remote_targets) > 128:
+                raise JjError("Git has too many remote default refs")
+
+        remote_defaults: list[tuple[str, str]] = []
+        for ref, target in remote_targets:
+            oid = self._default_ref_commit(root, target)
+            if oid is None:
+                raise JjError(f"Git remote default {ref!r} has a missing target")
+            remote_defaults.append((target, oid))
+        if remote_defaults:
+            return self._bounded_default_candidates(
+                remote_defaults, tier="remote-head",
             )
+
+        conventional: list[tuple[str, str]] = []
         for branch in ("main", "master", "trunk"):
             ref = f"refs/heads/{branch}"
-            oid = self._exact_ref_commit(root, ref)
+            oid = self._default_ref_commit(root, ref)
             if oid is not None:
-                return ref, oid
+                conventional.append((ref, oid))
+        if conventional:
+            return self._bounded_default_candidates(
+                conventional, tier="conventional-local",
+            )
         raise JjError(
-            "plain Git has no unambiguous remote default or local main/master/trunk; "
-            "pass an explicit --base naming an existing Git ref, tag, or commit"
+            "Git has no attached local branch, remote default, or conventional "
+            "local main/master/trunk; pass an explicit --base"
         )
+
+    def resolve_plain_git_default(self, root: Path) -> tuple[str, str]:
+        """Compatibility wrapper for callers that only consume one ref."""
+        resolution = self.resolve_default_base(root)
+        return resolution.references[0], resolution.commit_id
 
     @staticmethod
     def _execution_capable_config_key(key: str) -> bool:
@@ -1794,6 +2050,87 @@ class JjAdapter:
             cwd=None, limit=MAX_OUTPUT_BYTES, runner=self.runner,
             error_type=JjError, env=environment,
         )
+
+    @contextmanager
+    def prerequisite_pr_head(
+        self, source: Path, url: str, source_ref: str, *, transport: str,
+        config_digest: str, expected_commit_id: str,
+    ):
+        """Fetch one PR head into an isolated object plane for read-only proof.
+
+        The source repository is inspected before and after the fetch, but no
+        source ref, object, config, jj operation, or working-tree path is
+        written. The yielded repository is temporary and exists only while the
+        caller builds and verifies its immutable materialization proof.
+        """
+        source = Path(source)
+        if (
+            _COMMIT_ID.fullmatch(expected_commit_id) is None
+            or re.fullmatch(r"pull/[1-9][0-9]{0,9}/head", source_ref) is None
+            or not isinstance(url, str) or not 1 <= len(url) <= 2048
+            or any(ord(character) < 32 or ord(character) == 127 for character in url)
+            or transport not in {"https", "ssh"}
+            or re.fullmatch(r"[0-9a-f]{64}", config_digest or "") is None
+        ):
+            raise JjError("PR prerequisite fetch parameters are invalid")
+        parsed = urlsplit(url)
+        if transport == "https":
+            safe_url = (
+                parsed.scheme == "https" and parsed.hostname is not None
+                and parsed.username is None and parsed.password is None
+                and not parsed.query and not parsed.fragment
+            )
+        else:
+            safe_url = re.fullmatch(
+                r"git@[^/:\s]+:[^\s]+", url, re.ASCII,
+            ) is not None or (
+                parsed.scheme == "ssh" and parsed.hostname is not None
+                and parsed.username in {None, "git"} and parsed.password is None
+                and not parsed.query and not parsed.fragment
+            )
+        if not safe_url:
+            raise JjError("PR prerequisite fetch URL does not match its safe transport")
+        if self._git_config_digest(source) != config_digest:
+            raise JjError(
+                "Git local config changed after PR metadata preflight; no "
+                "prerequisite fetch was attempted"
+            )
+        environment = self._exact_git_environment()
+        environment["GIT_ALLOW_PROTOCOL"] = transport
+        with tempfile.TemporaryDirectory(prefix="asha-control-pr-proof-") as temporary:
+            root = Path(temporary).resolve() / "repository"
+            checked_bytes(
+                [
+                    TRUSTED_GIT_EXECUTABLE, "--no-pager", "--no-optional-locks",
+                    "--no-replace-objects", *_EXACT_GIT_CONFIG,
+                    "init", "--quiet", "--template=", str(root),
+                ],
+                cwd="/", limit=MAX_OUTPUT_BYTES, runner=self.runner,
+                error_type=JjError, env=environment,
+            )
+            os.chmod(root, 0o700)
+            proof_ref = "refs/heads/asha-control-prerequisite"
+            checked_bytes(
+                self._exact_git_args(root, [
+                    "fetch", "--no-tags", "--no-write-fetch-head", "--depth=1",
+                    f"--filter=blob:limit={MAX_TRACKED_BLOB_BYTES}",
+                    url, f"{source_ref}:{proof_ref}",
+                ]),
+                cwd=None, limit=MAX_OUTPUT_BYTES, runner=self.runner,
+                error_type=JjError, env=environment,
+            )
+            observed = self.resolve_git_commit(root, proof_ref)
+            if observed != expected_commit_id:
+                raise JjError(
+                    "pull-request head changed after metadata inspection; no "
+                    "source repository state was changed"
+                )
+            if self._git_config_digest(source) != config_digest:
+                raise JjError(
+                    "Git local config changed during isolated PR prerequisite fetch; "
+                    "no source repository state was changed"
+                )
+            yield root
 
     def resolve_base(self, source: Path, revset: str) -> str:
         if not isinstance(revset, str) or not 1 <= len(revset) <= 500:
@@ -2188,12 +2525,23 @@ class JjAdapter:
             raise JjError("immutable context ignore proof returned non-UTF-8 paths") from exc
         if len(set(matched)) != len(matched) or any(path not in required_tuple for path in matched):
             raise JjError("immutable context ignore proof returned ambiguous paths")
-        missing = sorted(set(required_tuple) - set(matched))
+        missing = tuple(sorted(set(required_tuple) - set(matched)))
         if missing:
-            raise JjError(
-                "controller-created context path is not positively ignored by the "
-                f"immutable base: {', '.join(missing)}"
+            info_exclude_digest = hashlib.sha256(info_exclude).hexdigest()
+            failure_digest = hashlib.sha256(
+                b"asha-control-context-missing-positive-ignore-v1\0"
             )
+            for value in (
+                plan.base_commit_id, plan.digest, project_id,
+                *planned, *private_directories, *sorted(reused), *required_tuple,
+                *missing, info_exclude_digest,
+            ):
+                failure_digest.update(value.encode("utf-8") + b"\0")
+            raise ContextCompatibilityError(MissingPositiveIgnoreEvidence(
+                plan.base_commit_id, plan.digest, project_id, planned,
+                private_directories, tuple(sorted(reused)), required_tuple,
+                missing, info_exclude_digest, failure_digest.hexdigest(),
+            ))
         digest = hashlib.sha256(b"asha-control-context-compatibility-v1\0")
         for value in (
             plan.base_commit_id, plan.digest, project_id,

@@ -490,6 +490,14 @@ class PreflightDegradeTests(unittest.TestCase):
             ) as supervise, mock.patch.object(
                 tui_module, "new_uuid",
                 return_value="12345678-1234-4234-8234-123456789abc",
+            ), mock.patch.object(
+                tui_module, "_default_base_candidate",
+                return_value=(
+                    tui_module.ModalCandidate(
+                        "", "current refs/heads/main @ " + "a" * 12,
+                    ),
+                    "a" * 40,
+                ),
             ):
                 result = tui_module._start_form(
                     screen, curses, TuiModel([]), env, config,

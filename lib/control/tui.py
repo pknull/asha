@@ -20,11 +20,18 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, TextIO
 
 from .config import ControlConfig, load_config
-from .jj import DiffSummary, JjAdapter, JjError, discover_git_root
+from .jj import (
+    DEFAULT_BASE_REVSET, DiffSummary, JjAdapter, JjError, discover_git_root,
+)
 from .harness import HARNESSES, validate_role
 from .launch import archive_task, stop_task
-from .model import new_uuid, retry_task_slug
+from .model import GIT_OBJECT_ID_PATTERN, new_uuid, retry_task_slug
 from .prepare import retained_recovery_guidance, v2_retention_diagnostic
+from .prerequisites import (
+    ControlTermination, PrerequisiteApplyIndeterminate, StartPrerequisiteOffer,
+    StartPrerequisiteRefusal,
+    apply_ignore_prerequisite, decode_worker_refusal,
+)
 from .prune import (
     PruneError, PruneRecordStore, assemble_prune_context, prune_one_task,
 )
@@ -618,7 +625,7 @@ def _wrap_status(message: str, width: int) -> list[str]:
     ]
 
 
-class _TuiShutdown(Exception):
+class _TuiShutdown(ControlTermination):
     def __init__(self, signum: int, detail: str | None = None) -> None:
         super().__init__(detail or signum)
         self.signum = signum
@@ -1137,7 +1144,7 @@ def freeze_start_candidates(
         repository = admit(ModalCandidate(root, detail))
         if repository is None:
             continue
-        default = admit(ModalCandidate("", "default"))
+        default = admit(ModalCandidate("", "resolve after repository selection"))
         if default is None:
             # Do not expose a repository whose required default base candidate
             # was not included in the aggregate frozen snapshot.
@@ -1154,7 +1161,7 @@ def freeze_start_candidates(
         stored = sorted(base_latest)
         stored.sort(key=lambda item: base_latest[item], reverse=True)
         for value in stored:
-            if value == "":
+            if value in {"", DEFAULT_BASE_REVSET}:
                 continue
             candidate = admit(ModalCandidate(value, "recorded"))
             if candidate is None:
@@ -1172,6 +1179,39 @@ def freeze_start_candidates(
     return StartCandidateSnapshot(
         tuple(repositories_list), by_repository, harnesses, tuple(roles),
     )
+
+
+def _default_base_candidate(
+    repository: str | Path, *, jj: JjAdapter | None = None,
+) -> tuple[ModalCandidate, str | None]:
+    """Build bounded advisory default detail and its non-authoritative OID."""
+    try:
+        candidate = Path(repository).expanduser()
+        if not candidate.is_absolute():
+            candidate = Path.cwd() / candidate
+        candidate = candidate.resolve()
+        root = discover_git_root(candidate)
+        if root is None:
+            raise JjError("no Git repository was found")
+        resolution = (jj or JjAdapter()).resolve_default_base(root)
+        tier = {
+            "attached-local": "current",
+            "remote-head": "remote default",
+            "conventional-local": "local fallback",
+        }.get(resolution.tier, "default")
+        references = ", ".join(resolution.references)
+        detail = f"{tier} {references} @ {resolution.commit_id[:12]}"
+        bounded = _bounded_modal_candidates((ModalCandidate("", detail),))
+        return bounded[0], resolution.commit_id
+    except (OSError, ValueError, JjError) as exc:
+        detail = _safe_text(str(exc))
+        if len(detail) > 180:
+            detail = detail[:177] + "..."
+        candidate = ModalCandidate(
+            "", f"unavailable; select/type explicit base: {detail}",
+        )
+        bounded = _bounded_modal_candidates((candidate,))
+        return (bounded[0] if bounded else ModalCandidate("", "unavailable")), None
 
 
 def _prompt_character_allowed(value: list[str], character: str) -> bool:
@@ -1400,6 +1440,7 @@ def _start_worker_argv(arguments: list[str], env: Mapping[str, str]) -> list[str
             'runpy.run_module("control.cli", run_name="__main__")'
         ),
         str(root / "lib"), "task", "start", *arguments,
+        "--tui-worker",
     ]
 
 
@@ -1449,13 +1490,24 @@ def _successful_worker_message(stdout: bytes, task_id: str) -> str:
     if (not isinstance(task, dict) or task.get("task_id") != task_id or
             not isinstance(task.get("slug"), str)):
         raise ValueError("task start worker returned a mismatched task identity")
+    task_jj = task.get("jj")
+    base_commit_id = (
+        task_jj.get("base_commit_id") if isinstance(task_jj, dict) else None
+    )
+    if (
+        not isinstance(base_commit_id, str)
+        or GIT_OBJECT_ID_PATTERN.fullmatch(base_commit_id) is None
+    ):
+        raise ValueError("task start worker returned an invalid base commit")
     mutations = payload.get("source_mutations")
     enabled = isinstance(mutations, list) and any(
         isinstance(item, dict) and item.get("operation") == "git init --colocate"
         for item in mutations
     )
     suffix = "; repository jj-enabled and retained" if enabled else ""
-    return f"task started: {task['slug']} ({task_id}){suffix}"
+    return (
+        f"task started: {task['slug']} ({task_id}); base {base_commit_id}{suffix}"
+    )
 
 
 def _classify_start_worker_exit(
@@ -1518,6 +1570,17 @@ def _classify_start_worker_exit(
             f"task start was interrupted during {phase or 'unknown'} recovery; "
             f"run `asha task recover {task_id}`"
         )
+
+    if (
+        not output_truncated and task is None and journal is None
+        and returncode == 2 and stdout
+    ):
+        try:
+            offer = decode_worker_refusal(stdout, task_id)
+        except ValueError:
+            pass
+        else:
+            raise StartPrerequisiteRefusal(offer, task_id=task_id, tui_worker=True)
 
     detail = stderr.decode("utf-8", errors="replace").strip()
     if output_truncated:
@@ -1785,16 +1848,168 @@ def _canonical_field_value(
     return value
 
 
+def _prerequisite_action_modal(
+    stdscr, curses_module, model: TuiModel, offer: StartPrerequisiteOffer,
+) -> str:
+    """Return an explicit repair action; instructions and Escape never mutate."""
+    candidates = (
+        ModalCandidate("Apply patch", "patch only the source working tree"),
+        ModalCandidate("Show instructions", "show commit/select guidance"),
+        ModalCandidate("Cancel", "return to the filled start form"),
+    )
+    selected = 2
+    instruction_note = ""
+    references = (
+        offer.requested_base if offer.default_base_resolution is None else
+        ", ".join(offer.default_base_resolution.references)
+    )
+    while True:
+        height, width = stdscr.getmaxyx()
+        frame = modal_frame(
+            title="Control prerequisite missing",
+            context=(
+                f"Repository: {offer.root}\n"
+                f"Selected base: {references} @ {offer.base_commit_id}\n"
+                f"File: {offer.target}\nAdd: {offer.rules[0]}\n"
+                "Effect: patches only the source working tree. It does not "
+                "commit, move a ref, retry task creation, enable jj, import "
+                "Git, or authorize the old base."
+                f"{instruction_note}"
+            ),
+            label="Action", hint="Enter selects; Esc returns to form",
+            value=candidates[selected].value, candidates=candidates,
+            selected=selected, height=height, width=width,
+        )
+        _draw_modal_frame(stdscr, curses_module, frame)
+        key = _read_modal_key(stdscr, curses_module)
+        if key == -1:
+            continue
+        if key == 27:
+            return "cancel"
+        if key == getattr(curses_module, "KEY_RESIZE", -998):
+            continue
+        if key in {
+            getattr(curses_module, "KEY_UP", -997),
+            getattr(curses_module, "KEY_DOWN", -996),
+        }:
+            selected = min(max(
+                0, selected + (-1 if key == getattr(curses_module, "KEY_UP", -997) else 1),
+            ), len(candidates) - 1)
+            continue
+        if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
+            if selected == 0:
+                return "apply"
+            if selected == 1:
+                instruction_note = (
+                    f"\nInstructions: add {offer.rules[0]} to {offer.target}; "
+                    "commit it on the branch or select a containing commit, then "
+                    f"retry. The old base {offer.base_commit_id} remains unauthorized."
+                )
+                continue
+            return "cancel"
+
+
 def _start_form(
     stdscr, curses_module, model: TuiModel,
-    env: Mapping[str, str], config: ControlConfig,
+    env: Mapping[str, str], config: ControlConfig, *,
+    _retained_values: tuple[str, str, str, str, str] | None = None,
 ) -> str:
     snapshot = freeze_start_candidates(config, TaskStore(config))
-    values = [str(Path.cwd().resolve()), "", config.default_harness, "implementer", ""]
+    values = list(_retained_values) if _retained_values is not None else [
+        str(Path.cwd().resolve()), "", config.default_harness, "implementer", "",
+    ]
     accepted_repository = values[0]
-    field = 0
+    expected_default_commit_id: str | None = None
+    field = 1 if _retained_values is not None else 0
     selected: int | None = None
-    while field < len(_START_FIELDS):
+    form_notice = ""
+
+    def set_form_notice(message: str) -> None:
+        nonlocal form_notice
+        form_notice = _safe_text(message)[:1200]
+        model.message = form_notice
+
+    def install_default_preview(
+        repository: str, candidate: ModalCandidate, commit_id: str | None,
+    ) -> None:
+        nonlocal expected_default_commit_id, snapshot, selected
+        expected_default_commit_id = commit_id
+        bases = dict(snapshot.bases)
+        explicit_candidates = tuple(
+            item for item in bases.get(repository, ()) if item.value
+        )
+        bases[repository] = (candidate, *explicit_candidates)
+        snapshot = StartCandidateSnapshot(
+            snapshot.repositories, bases, snapshot.harnesses, snapshot.roles,
+        )
+        selected = None
+
+    def refresh_default_preview(repository: str) -> None:
+        candidate, commit_id = _default_base_candidate(repository)
+        install_default_preview(repository, candidate, commit_id)
+
+    if _retained_values is not None:
+        refresh_default_preview(accepted_repository)
+
+    while True:
+        if field >= len(_START_FIELDS):
+            repo, base, harness, role, goal = values
+            arguments = ["--repo", repo]
+            if base.strip():
+                arguments.extend(["--base", base.strip()])
+            elif expected_default_commit_id is not None:
+                arguments.extend(["--expected-default", expected_default_commit_id])
+            task_id = new_uuid()
+            arguments.extend([
+                "--harness", harness, "--role", role, "--goal", goal,
+                "--task-id", task_id, "--detach", "--json",
+            ])
+            source, source_was_plain_git = _source_colocation_watch(repo, config)
+            try:
+                return _supervise_start_process(
+                    stdscr, curses_module, model, config,
+                    _start_worker_argv(arguments, env), task_id, env,
+                    source=source, source_was_plain_git=source_was_plain_git,
+                )
+            except StartPrerequisiteRefusal as refusal:
+                action = _prerequisite_action_modal(
+                    stdscr, curses_module, model, refusal.offer,
+                )
+                if action == "apply":
+                    try:
+                        set_form_notice(apply_ignore_prerequisite(
+                            config, refusal.offer,
+                        ))
+                    except PrerequisiteApplyIndeterminate as exc:
+                        set_form_notice(
+                            "INDETERMINATE: inspect .gitignore before retrying. "
+                            f"{exc}"
+                        )
+                    except ValueError as exc:
+                        set_form_notice(
+                            f"Prerequisite repair refused: {exc}. "
+                            "Start form values retained."
+                        )
+                else:
+                    set_form_notice(
+                        "Prerequisite repair cancelled; start form values retained."
+                    )
+                # No action retries. The same frame returns to Base with all
+                # five logical values and a freshly inspected default.
+                field = 1
+                refresh_default_preview(accepted_repository)
+                continue
+            except ValueError as exc:
+                # A worker-side revalidation refusal is not repair eligibility
+                # and stderr is never decoded as such. Keep the draft in this
+                # form and return to Base so the operator can review it.
+                set_form_notice(
+                    f"Task start refused: {exc}. Form values retained."
+                )
+                field = 1
+                refresh_default_preview(accepted_repository)
+                continue
+
         candidates = _start_field_candidates(snapshot, values, field)
         height, width = stdscr.getmaxyx()
         frame = modal_frame(
@@ -1802,6 +2017,7 @@ def _start_form(
             context=(
                 f"Field {field + 1}/5  Up/Down select  Tab complete  "
                 "Shift-Tab back  Esc cancel"
+                + (f"\nNotice: {form_notice}" if form_notice else "")
             ),
             label=_START_FIELDS[field], hint="Enter accepts",
             value=values[field], candidates=candidates, selected=selected,
@@ -1809,8 +2025,16 @@ def _start_form(
         )
         _draw_modal_frame(stdscr, curses_module, frame)
         key = _read_modal_key(stdscr, curses_module)
-        if key == -1 or key == getattr(curses_module, "KEY_RESIZE", -998):
+        if key == -1:
             continue
+        if key == getattr(curses_module, "KEY_RESIZE", -998):
+            if field == 1:
+                refresh_default_preview(accepted_repository)
+            continue
+        # The notice was rendered in the frame above. A real subsequent key is
+        # the explicit acknowledgement boundary; any new outcome below installs
+        # its own notice for the next frame.
+        form_notice = ""
         if key == 27:
             return "task start cancelled"
         if key == getattr(curses_module, "KEY_BTAB", -994):
@@ -1859,10 +2083,39 @@ def _start_form(
                 )
                 selected = None
                 continue
+            if field == 1 and not canonical.strip():
+                observed_candidate, observed_commit_id = _default_base_candidate(
+                    accepted_repository,
+                )
+                if observed_commit_id is None:
+                    install_default_preview(
+                        accepted_repository, observed_candidate, None,
+                    )
+                    set_form_notice(
+                        "Default base preview is unavailable. Select or type an "
+                        "explicit Base before continuing."
+                    )
+                    selected = None
+                    continue
+                if observed_commit_id != expected_default_commit_id:
+                    previous = expected_default_commit_id or "unavailable"
+                    install_default_preview(
+                        accepted_repository, observed_candidate,
+                        observed_commit_id,
+                    )
+                    set_form_notice(
+                        f"Default base changed from {previous} to "
+                        f"{observed_commit_id}; review it and press Enter again."
+                    )
+                    selected = None
+                    continue
             if field == 0:
                 if canonical != accepted_repository:
                     values[1] = ""
                 accepted_repository = canonical
+                refresh_default_preview(canonical)
+            elif field == 1:
+                model.message = ""
             values[field] = canonical
             field += 1
             selected = None
@@ -1881,23 +2134,6 @@ def _start_form(
             if _prompt_character_allowed(logical, character):
                 values[field] += character
                 selected = None
-    repo, base, harness, role, goal = values
-    arguments = ["--repo", repo]
-    if base.strip():
-        arguments.extend(["--base", base.strip()])
-    task_id = new_uuid()
-    arguments.extend([
-        "--harness", harness, "--role", role, "--goal", goal,
-        "--task-id", task_id, "--detach", "--json",
-    ])
-    source, source_was_plain_git = _source_colocation_watch(repo, config)
-    return _supervise_start_process(
-        stdscr, curses_module, model, config,
-        _start_worker_argv(arguments, env), task_id, env,
-        source=source, source_was_plain_git=source_was_plain_git,
-    )
-
-
 def _retry_arguments(task: dict[str, Any], task_id: str) -> list[str]:
     """Reconstruct one recorded task request under a fresh path identity."""
     arguments = ["--repo", task["repository"]["root"]]
@@ -1906,7 +2142,10 @@ def _retry_arguments(task: dict[str, Any], task_id: str) -> list[str]:
         arguments.extend([f"--{source['kind']}", str(source["number"])])
     # PR start resolves its current head and owns its generated requested-base
     # description; the public CLI intentionally refuses --pr plus --base.
-    if source["kind"] != "pr":
+    if (
+        source["kind"] != "pr"
+        and task["jj"]["requested_base"] != DEFAULT_BASE_REVSET
+    ):
         arguments.extend(["--base", task["jj"]["requested_base"]])
     if not task["runs"]:
         raise ValueError("task without a recorded primary run cannot be retried")

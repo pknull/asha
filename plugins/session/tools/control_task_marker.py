@@ -15,6 +15,9 @@ from typing import Any
 
 MARKER_CONTRACT = "asha.control-task-context.v1"
 MAX_MARKER_BYTES = 32 * 1024
+CONTROL_IGNORE_RULE = "/.asha/control-task.json"
+CONTROL_IGNORE_MARKER = "# Asha Control private context (managed)"
+CONTROL_IGNORE_BLOCK = f"{CONTROL_IGNORE_MARKER}\n{CONTROL_IGNORE_RULE}\n"
 _CHANGE_ID = re.compile(r"[k-z]{32}", re.ASCII)
 _COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", re.ASCII)
 _WORKSPACE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
