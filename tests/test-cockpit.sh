@@ -40,6 +40,13 @@ if "$DISPATCHER" cockpit --bogus --dry-run >/dev/null 2>&1; then fail "unknown o
 if "$DISPATCHER" cockpit "$WORK/Code" "$WORK/Code" --dry-run >/dev/null 2>&1; then fail "two DIRs accepted"; else ok "two DIRs refused"; fi
 if PATH="$WORK/nope:$PATH" "$DISPATCHER" cockpit "$WORK/Code" --dry-run >/dev/null 2>&1 && ! command -v tmux >/dev/null; then fail "tmux check"; else ok "tmux presence is checked"; fi
 
+echo "--- test 4: preflight refuses an unconfigured Claude home and names the remedy ---"
+rc=0; out="$("$DISPATCHER" cockpit "$WORK/Code" --check 2>&1)" || rc=$?
+if [[ $rc -ne 0 ]] && grep -q "asha doctor claude" <<<"$out"; then ok "--check fails closed with remediation"; else fail "--check rc=$rc: $out"; fi
+if grep -q "jj-colocated Asha project" <<<"$out"; then ok "project index is probed"; else fail "project probe missing: $out"; fi
+out="$("$DISPATCHER" cockpit "$WORK/Code" --dry-run)"
+if [[ "$(wc -l <<<"$out")" == 4 ]]; then ok "--dry-run plans without the preflight"; else fail "dry-run ran preflight: $out"; fi
+
 echo ""
 echo "test-cockpit: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
