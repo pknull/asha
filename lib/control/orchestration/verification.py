@@ -74,44 +74,121 @@ def _verification_gate(plan: Mapping[str, Any], node_id: str) -> dict[str, Any]:
     return gates[0]
 
 
+def terminal_seals(
+    store: InitiativeStore,
+    initiative_id: str,
+    plan: Mapping[str, Any],
+    initiative: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """One latest success seal per scope member, in scope order.
+
+    A repository-scope initiative has exactly one terminal candidate; a
+    workspace-scope initiative has one per member repository (graph rule).
+    """
+    from .model import scope_repositories
+
+    record = initiative if initiative is not None else store.peek(initiative_id)
+    members = scope_repositories(record)
+    candidates = [item for item in plan["nodes"] if item["terminal_candidate"]]
+    if len(members) == 1 and len(candidates) != 1:
+        raise VerificationError("Core verification requires one terminal candidate producer")
+    seals = store.list_seals_snapshot(initiative_id)
+    ordered: list[dict[str, Any]] = []
+    for member in members:
+        producers = [item for item in candidates if item["repository_id"] == member["repository_id"]]
+        if len(producers) != 1:
+            raise VerificationError(
+                f"repository {member['repository_id']} needs exactly one terminal candidate producer"
+            )
+        success = sorted(
+            (
+                item for item in seals
+                if item["node_id"] == producers[0]["node_id"]
+                and item["repository_id"] == member["repository_id"]
+                and item["outcome"] == "success"
+            ),
+            key=lambda item: (item["sealed_at"], item["seal_id"]),
+        )
+        if not success:
+            raise VerificationError("terminal candidate has no success seal")
+        ordered.append(success[-1])
+    return ordered
+
+
 def _terminal_seal(
     store: InitiativeStore,
     initiative_id: str,
     plan: Mapping[str, Any],
 ) -> dict[str, Any]:
-    candidates = [item for item in plan["nodes"] if item["terminal_candidate"]]
-    if len(candidates) != 1:
-        raise VerificationError("Core verification requires one terminal candidate producer")
-    node = candidates[0]
-    seals = sorted(
-        (
-            item for item in store.list_seals_snapshot(initiative_id)
-            if item["node_id"] == node["node_id"] and item["outcome"] == "success"
-        ),
-        key=lambda item: (item["sealed_at"], item["seal_id"]),
-    )
-    if not seals:
-        raise VerificationError("terminal candidate has no success seal")
-    return seals[-1]
+    """The primary (first-member) terminal seal; kept for single-member callers."""
+    return terminal_seals(store, initiative_id, plan)[0]
 
 
 def candidate_bundle_digest(
     initiative: Mapping[str, Any],
     plan: Mapping[str, Any],
-    seal: Mapping[str, Any],
+    seal: Mapping[str, Any] | list[Mapping[str, Any]],
     gate: Mapping[str, Any],
 ) -> str:
+    """Bind the exact terminal candidate set to the approved verification gate.
+
+    A single member keeps the Increment 3 canonical shape byte-for-byte; a
+    multi-member set binds the ordered member identities instead.
+    """
+    members = [seal] if isinstance(seal, Mapping) else list(seal)
+    if len(members) == 1:
+        only = members[0]
+        return hashlib.sha256(_canonical({
+            "initiative_id": initiative["initiative_id"],
+            "active_plan_digest": plan["digest"],
+            "aggregate_spec_digest": specification_digest(initiative, plan),
+            "repository_id": only["repository_id"],
+            "seal_id": only["seal_id"],
+            "jj_commit_id": only["jj_commit_id"],
+            "tree_digest": only["tree_digest"],
+            "diff_digest": only["diff_digest"],
+            "verification_spec": gate,
+        })).hexdigest()
     return hashlib.sha256(_canonical({
         "initiative_id": initiative["initiative_id"],
         "active_plan_digest": plan["digest"],
         "aggregate_spec_digest": specification_digest(initiative, plan),
-        "repository_id": seal["repository_id"],
-        "seal_id": seal["seal_id"],
-        "jj_commit_id": seal["jj_commit_id"],
-        "tree_digest": seal["tree_digest"],
-        "diff_digest": seal["diff_digest"],
+        "members": [
+            {
+                "repository_id": item["repository_id"], "seal_id": item["seal_id"],
+                "jj_commit_id": item["jj_commit_id"], "tree_digest": item["tree_digest"],
+                "diff_digest": item["diff_digest"],
+            }
+            for item in members
+        ],
         "verification_spec": gate,
     })).hexdigest()
+
+
+def _member_root(initiative: Mapping[str, Any], seal: Mapping[str, Any]) -> Path:
+    from .model import repository_by_id
+
+    return Path(repository_by_id(initiative, seal["repository_id"])["root"])
+
+
+def _member_materialization_name(initiative_id: str, verification_id: str, index: int) -> str:
+    base = f"verify-{initiative_id}-{verification_id[:8]}"
+    return base if index == 0 else f"{base}-{index}"
+
+
+def verification_members(
+    store: InitiativeStore, initiative_id: str, verification_id: str,
+) -> list[dict[str, Any]]:
+    """Per-member bindings recorded as immutable `verification-member` evidence, in scope order."""
+    members = []
+    for evidence in store.list_evidence_snapshot(initiative_id):
+        if evidence["kind"] != "verification-member" or evidence["subject_id"] != verification_id:
+            continue
+        try:
+            members.append(json.loads(evidence["summary"]))
+        except (TypeError, ValueError) as exc:
+            raise VerificationError("verification member evidence is unreadable") from exc
+    return sorted(members, key=lambda item: item["index"])
 
 
 def prevalidate_verification(
@@ -152,23 +229,28 @@ def prevalidate_verification(
         ):
             raise VerificationError("verify node already has an active dispatch action")
     gate = _verification_gate(plan, node_id)
-    seal = _terminal_seal(store, initiative_id, plan)
-    reviews = [
-        item for item in store.list_reviews_snapshot(initiative_id)
-        if item["state"] == "accepted-pass"
-        and item["target"]["seal_id"] == seal["seal_id"]
-        and item["target"]["active_plan_digest"] == plan["digest"]
-        and item["target"]["specification_digest"]
-        == specification_digest(initiative, plan)
-        and item["target"]["repository_id"] == seal["repository_id"]
-        and item["target"]["jj_commit_id"] == seal["jj_commit_id"]
-        and item["target"]["base_seal_ids"] == seal["base"]["seal_ids"]
-        and item["target"]["diff_digest"] == seal["diff_digest"]
-    ]
-    if len(reviews) != 1:
-        raise VerificationError(
-            "verification requires one accepted-pass review on the exact seal"
-        )
+    seals = terminal_seals(store, initiative_id, plan, initiative)
+    seal = seals[0]
+    all_reviews = store.list_reviews_snapshot(initiative_id)
+    reviews: list[dict[str, Any]] = []
+    for member_seal in seals:
+        matching = [
+            item for item in all_reviews
+            if item["state"] == "accepted-pass"
+            and item["target"]["seal_id"] == member_seal["seal_id"]
+            and item["target"]["active_plan_digest"] == plan["digest"]
+            and item["target"]["specification_digest"]
+            == specification_digest(initiative, plan)
+            and item["target"]["repository_id"] == member_seal["repository_id"]
+            and item["target"]["jj_commit_id"] == member_seal["jj_commit_id"]
+            and item["target"]["base_seal_ids"] == member_seal["base"]["seal_ids"]
+            and item["target"]["diff_digest"] == member_seal["diff_digest"]
+        ]
+        if len(matching) != 1:
+            raise VerificationError(
+                "verification requires one accepted-pass review on the exact seal"
+            )
+        reviews.append(matching[0])
     prior = [
         item for item in store.list_verifications_snapshot(initiative_id)
         if item["node_id"] == node_id
@@ -178,6 +260,17 @@ def prevalidate_verification(
     if any(item["state"] != "indeterminate" for item in prior):
         raise VerificationError("verify node already has a retained current execution")
     return initiative, plan, node, gate, _bubblewrap_program(), seal, reviews[0]
+
+
+def prevalidate_verification_members(
+    store: InitiativeStore, initiative_id: str, node_id: str,
+    *, exclude_action_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """The ordered terminal seals a verification binds (after the same prevalidation)."""
+    initiative, plan, _node, _gate, _bubblewrap, _seal, _review = prevalidate_verification(
+        store, initiative_id, node_id, exclude_action_id=exclude_action_id,
+    )
+    return terminal_seals(store, initiative_id, plan, initiative)
 
 
 def command_denial(argv: list[str]) -> str | None:
@@ -417,18 +510,32 @@ def prepare_verification_intent(
         )
     del review, bubblewrap
     verification_id = verification_id or new_uuid()
-    materialization_id = new_uuid()
-    name = f"verify-{initiative_id}-{verification_id[:8]}"
-    source = Path(initiative["scope"]["repository"]["root"])
-    try:
-        target = plan_materialization(
-            store.config.control, source, name, jj=adapter,
-        )
-        planned_path = Path(target["workspace_path"])
-    except (PreparationError, JjError, OSError, ValueError) as exc:
-        raise VerificationError(f"materialization intent failed without mutation: {exc}") from exc
-    materialization_path = planned_path
-    bundle_digest = candidate_bundle_digest(initiative, plan, seal, gate)
+    seals = terminal_seals(store, initiative_id, plan, initiative)
+    planned_members: list[dict[str, Any]] = []
+    for index, member_seal in enumerate(seals):
+        name = _member_materialization_name(initiative_id, verification_id, index)
+        source = _member_root(initiative, member_seal)
+        try:
+            target = plan_materialization(
+                store.config.control, source, name, jj=adapter,
+            )
+        except (PreparationError, JjError, OSError, ValueError) as exc:
+            raise VerificationError(f"materialization intent failed without mutation: {exc}") from exc
+        planned_members.append({
+            "index": index,
+            "verification_id": verification_id,
+            "repository_id": member_seal["repository_id"],
+            "seal_id": member_seal["seal_id"],
+            "jj_commit_id": member_seal["jj_commit_id"],
+            "tree_digest": member_seal["tree_digest"],
+            "materialization_id": new_uuid(),
+            "materialization_name": name,
+            "materialization_path": str(Path(target["workspace_path"])),
+            "source_root": str(source),
+        })
+    materialization_id = planned_members[0]["materialization_id"]
+    materialization_path = Path(planned_members[0]["materialization_path"])
+    bundle_digest = candidate_bundle_digest(initiative, plan, seals, gate)
     at = _now()
     record = validate_verification({
         "contract": VERIFICATION_CONTRACT,
@@ -449,6 +556,18 @@ def prepare_verification_intent(
         "updated_at": at,
     })
     store.save_verification(initiative_id, record)
+    for member in planned_members:
+        summary = json.dumps(member, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        store.save_evidence(initiative_id, {
+            "contract": EVIDENCE_CONTRACT,
+            "evidence_id": new_uuid(),
+            "initiative_id": initiative_id,
+            "kind": "verification-member",
+            "subject_id": verification_id,
+            "digest": hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+            "summary": summary,
+            "recorded_at": _now(),
+        })
     evaluating = copy.deepcopy(node)
     evaluating["state"] = "evaluating"
     validate_node(evaluating)
@@ -502,23 +621,32 @@ def run_verification(
         raise VerificationError("verification intent node is not evaluating")
     gate = _verification_gate(plan, node_id)
     bubblewrap = _bubblewrap_program()
-    seal = store.read_seal(initiative_id, intent["seal_id"])
+    verification_id = intent["verification_id"]
+    members = verification_members(store, initiative_id, verification_id)
+    if not members:
+        raise VerificationError("verification intent has no retained member bindings")
+    member_seals = [store.read_seal(initiative_id, member["seal_id"]) for member in members]
+    seal = member_seals[0]
     if (
-        intent["bundle_digest"] != candidate_bundle_digest(initiative, plan, seal, gate)
+        intent["bundle_digest"] != candidate_bundle_digest(initiative, plan, member_seals, gate)
         or intent["repository_id"] != seal["repository_id"]
+        or intent["seal_id"] != seal["seal_id"]
     ):
         raise VerificationError("verification intent candidate binding is stale")
-    verification_id = intent["verification_id"]
-    name = f"verify-{initiative_id}-{verification_id[:8]}"
-    source = Path(initiative["scope"]["repository"]["root"])
-    try:
-        target = plan_materialization(
-            store.config.control, source, name, jj=adapter,
-        )
-    except (PreparationError, JjError, OSError, ValueError) as exc:
-        raise VerificationError(f"materialization intent cannot be recovered: {exc}") from exc
-    planned_path = Path(target["workspace_path"])
-    planned_workspace_name = target["workspace_name"]
+    planned: list[tuple[dict[str, Any], dict[str, Any], Path, str, Path]] = []
+    for member, member_seal in zip(members, member_seals):
+        name = member["materialization_name"]
+        source = _member_root(initiative, member_seal)
+        try:
+            target = plan_materialization(
+                store.config.control, source, name, jj=adapter,
+            )
+        except (PreparationError, JjError, OSError, ValueError) as exc:
+            raise VerificationError(f"materialization intent cannot be recovered: {exc}") from exc
+        if Path(member["materialization_path"]) != Path(target["workspace_path"]):
+            raise VerificationError("verification materialization path differs from its intent")
+        planned.append((member, member_seal, source, target["workspace_name"], Path(target["workspace_path"])))
+    _member0, _seal0, source, planned_workspace_name, planned_path = planned[0]
     if Path(intent["materialization_path"]) != planned_path:
         raise VerificationError("verification materialization path differs from its intent")
     materialization_path = planned_path
@@ -531,16 +659,21 @@ def run_verification(
     )
 
     try:
-        materialization = materializer(
-            store.config.control, source, seal["jj_commit_id"], name, jj=adapter,
-        )
-        if (
-            materialization["workspace_name"] != planned_workspace_name
-            or Path(materialization["workspace_path"]) != planned_path
-        ):
-            raise VerificationError(
-                "materializer returned a path or workspace name outside its durable intent"
+        materialized: list[dict[str, Any]] = []
+        for member, member_seal, member_source, member_workspace_name, member_path in planned:
+            item = materializer(
+                store.config.control, member_source, member_seal["jj_commit_id"],
+                member["materialization_name"], jj=adapter,
             )
+            if (
+                item["workspace_name"] != member_workspace_name
+                or Path(item["workspace_path"]) != member_path
+            ):
+                raise VerificationError(
+                    "materializer returned a path or workspace name outside its durable intent"
+                )
+            materialized.append(item)
+        materialization = materialized[0]
     except (PreparationError, JjError, OSError, ValueError) as exc:
         current = store.read_verification(initiative_id, verification_id)
         failed_record = copy.deepcopy(current)
@@ -573,7 +706,14 @@ def run_verification(
     evidence_ids: list[str] = []
     failed = False
     command_environment = environment or os.environ
-    for specification in gate["commands"]:
+    member_runs = [
+        (member, member_seal, member_source, materialized_item, member_path)
+        for (member, member_seal, member_source, _name, member_path), materialized_item
+        in zip(planned, materialized)
+    ]
+    for (member, seal, source, materialization, materialization_path), specification in (
+        (run, spec) for run in member_runs for spec in gate["commands"]
+    ):
         command_id = new_uuid()
         evidence_id = new_uuid()
         process_identity = f"not-executed:{command_id}"

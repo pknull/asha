@@ -44,41 +44,49 @@ def _qualification(
     if initiative["active_plan"] is None:
         raise ReadinessError("initiative has no approved active plan")
     plan = store.read_plan(initiative_id, initiative["active_plan"]["revision"])
-    producers = [item for item in plan["nodes"] if item["terminal_candidate"]]
-    if len(producers) != 1:
-        raise ReadinessError("Core readiness requires one terminal candidate producer")
-    producer = producers[0]
-    seals = sorted(
-        (
-            seal for seal in store.list_seals_snapshot(initiative_id)
-            if seal["node_id"] == producer["node_id"] and seal["outcome"] == "success"
-        ),
-        key=lambda item: (item["sealed_at"], item["seal_id"]),
-    )
-    if not seals:
-        raise ReadinessError("terminal candidate has no qualifying success seal")
-    seal = seals[-1]
+    from .model import scope_repositories
+    from .verification import VerificationError, terminal_seals
+
+    members = scope_repositories(initiative)
+    try:
+        member_seals = terminal_seals(store, initiative_id, plan, initiative)
+    except VerificationError as exc:
+        message = str(exc)
+        if "success seal" in message:
+            raise ReadinessError("terminal candidate has no qualifying success seal") from exc
+        raise ReadinessError(
+            "Core readiness requires one terminal candidate producer"
+            if len(members) == 1 else message
+        ) from exc
+    seal = member_seals[0]
     review_gates = [
         item for item in plan["declared_gates"]
         if item["kind"] == "review" and item["required"] is True
     ]
-    if len(review_gates) != 1:
+    if len(members) == 1 and len(review_gates) != 1:
         raise ReadinessError("Core readiness requires one required review gate")
-    reviews = [
-        item for item in store.list_reviews_snapshot(initiative_id)
-        if item["state"] == "accepted-pass"
-        and item["node_id"] == review_gates[0]["node_id"]
-        and item["target"]["seal_id"] == seal["seal_id"]
-        and item["target"]["active_plan_digest"] == plan["digest"]
-        and item["target"]["specification_digest"] == specification_digest(initiative, plan)
-        and item["target"]["repository_id"] == seal["repository_id"]
-        and item["target"]["jj_commit_id"] == seal["jj_commit_id"]
-        and item["target"]["base_seal_ids"] == seal["base"]["seal_ids"]
-        and item["target"]["diff_digest"] == seal["diff_digest"]
-    ]
-    if len(reviews) != 1:
-        raise ReadinessError("exact terminal seal lacks one accepted-pass review")
-    review = reviews[0]
+    if len(review_gates) < 1:
+        raise ReadinessError("readiness requires at least one required review gate")
+    review_gate_nodes = {item["node_id"] for item in review_gates}
+    all_reviews = store.list_reviews_snapshot(initiative_id)
+    member_reviews: list[dict[str, Any]] = []
+    for member_seal in member_seals:
+        matching = [
+            item for item in all_reviews
+            if item["state"] == "accepted-pass"
+            and item["node_id"] in review_gate_nodes
+            and item["target"]["seal_id"] == member_seal["seal_id"]
+            and item["target"]["active_plan_digest"] == plan["digest"]
+            and item["target"]["specification_digest"] == specification_digest(initiative, plan)
+            and item["target"]["repository_id"] == member_seal["repository_id"]
+            and item["target"]["jj_commit_id"] == member_seal["jj_commit_id"]
+            and item["target"]["base_seal_ids"] == member_seal["base"]["seal_ids"]
+            and item["target"]["diff_digest"] == member_seal["diff_digest"]
+        ]
+        if len(matching) != 1:
+            raise ReadinessError("exact terminal seal lacks one accepted-pass review")
+        member_reviews.append(matching[0])
+    review = member_reviews[0]
     gates = [
         item for item in plan["declared_gates"]
         if item["kind"] == "verification"
@@ -96,7 +104,7 @@ def _qualification(
     if verification_node is None:
         raise ReadinessError("required verification gate has no verify node")
     expected_bundle_digest = candidate_bundle_digest(
-        initiative, plan, seal, gates[0],
+        initiative, plan, member_seals, gates[0],
     )
     verifications = [
         item for item in store.list_verifications_snapshot(initiative_id)
@@ -112,12 +120,19 @@ def _qualification(
     verification = verifications[0]
     commands = verification["commands"]
     if (
-        len(commands) != len(gates[0]["commands"])
+        len(commands) != len(gates[0]["commands"]) * len(member_seals)
         or len(verification["evidence_ids"]) != len(commands)
     ):
         raise ReadinessError("passed verification lacks complete per-command evidence")
-    for specification, command, evidence_id in zip(
-        gates[0]["commands"], commands, verification["evidence_ids"],
+    # Commands run member by member in scope order; each member's commands
+    # bind that member's seal identity.
+    expected_specs = [
+        (member_seal, specification)
+        for member_seal in member_seals
+        for specification in gates[0]["commands"]
+    ]
+    for (seal, specification), command, evidence_id in zip(
+        expected_specs, commands, verification["evidence_ids"],
     ):
         if (
             command["argv"] != specification["argv"]
@@ -202,27 +217,67 @@ def _qualification(
     return initiative, plan, seal, review, verification
 
 
+def _qualified_members(
+    store: InitiativeStore, initiative_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """All member seals and their reviews, after the full single-member qualification."""
+    initiative, plan, _seal, _review, verification = _qualification(store, initiative_id)
+    from .verification import terminal_seals, verification_members
+
+    member_seals = terminal_seals(store, initiative_id, plan, initiative)
+    bound = verification_members(store, initiative_id, verification["verification_id"])
+    if not bound:
+        # Increment 3 single-member verifications carry the binding on the record itself.
+        if len(member_seals) != 1 or verification["seal_id"] != member_seals[0]["seal_id"]:
+            raise ReadinessError("verification member bindings differ from the terminal seal set")
+    elif [item["seal_id"] for item in bound] != [item["seal_id"] for item in member_seals]:
+        raise ReadinessError("verification member bindings differ from the terminal seal set")
+    review_gate_nodes = {
+        item["node_id"] for item in plan["declared_gates"]
+        if item["kind"] == "review" and item["required"] is True
+    }
+    reviews = []
+    for member_seal in member_seals:
+        reviews.append(next(
+            item for item in store.list_reviews_snapshot(initiative_id)
+            if item["state"] == "accepted-pass" and item["node_id"] in review_gate_nodes
+            and item["target"]["seal_id"] == member_seal["seal_id"]
+        ))
+    return initiative, plan, member_seals, reviews, verification
+
+
 def bind_readiness(
     store: InitiativeStore, initiative_id: str,
 ) -> dict[str, Any]:
     """Bind a one-member compatible bundle and stop before integration."""
-    initiative, plan, seal, review, verification = _qualification(store, initiative_id)
+    initiative, plan, member_seals, reviews, verification = _qualified_members(store, initiative_id)
+    seal = member_seals[0]
     if initiative["state"] not in {"running", "ready-for-integration"}:
         raise ReadinessError("only a running initiative may become ready-for-integration")
-    member = {
-        "repository_id": seal["repository_id"],
-        "seal_id": seal["seal_id"],
-        "jj_commit_id": seal["jj_commit_id"],
-        "tree_digest": seal["tree_digest"],
-        "diff_digest": seal["diff_digest"],
-        "materialization_id": verification["materialization_id"],
-        "review_id": review["review_id"],
-        "verification_id": verification["verification_id"],
-    }
+    from .verification import verification_members
+
+    bound_members = verification_members(store, initiative_id, verification["verification_id"])
+    materialization_ids = {item["seal_id"]: item["materialization_id"] for item in bound_members}
+    members = [
+        {
+            "repository_id": member_seal["repository_id"],
+            "seal_id": member_seal["seal_id"],
+            "jj_commit_id": member_seal["jj_commit_id"],
+            "tree_digest": member_seal["tree_digest"],
+            "diff_digest": member_seal["diff_digest"],
+            "materialization_id": materialization_ids.get(
+                member_seal["seal_id"], verification["materialization_id"],
+            ),
+            "review_id": review["review_id"],
+            "verification_id": verification["verification_id"],
+        }
+        for member_seal, review in zip(member_seals, reviews)
+    ]
+    seal_ids = {item["seal_id"] for item in members}
     aggregate_spec_digest = specification_digest(initiative, plan)
     existing = [
         item for item in store.list_bundles_snapshot(initiative_id)
-        if item["members"][0]["seal_id"] == seal["seal_id"]
+        if {entry["seal_id"] for entry in item["members"]} == seal_ids
     ]
     if len(existing) > 1:
         raise ReadinessError("candidate seal has multiple retained bundle proposals")
@@ -232,7 +287,7 @@ def bind_readiness(
             binding["initiative_id"] != initiative_id
             or binding["aggregate_spec_digest"] != aggregate_spec_digest
             or binding["active_plan_digest"] != plan["digest"]
-            or binding["members"] != [member]
+            or binding["members"] != members
             or binding["state"] not in {"binding", "compatible"}
         ):
             raise ReadinessError("retained candidate bundle binding changed")
@@ -244,7 +299,7 @@ def bind_readiness(
             "aggregate_spec_digest": aggregate_spec_digest,
             "active_plan_digest": plan["digest"],
             "state": "binding",
-            "members": [member],
+            "members": members,
             "controller_evidence_ids": [],
             "outcome": None,
             "bound_at": None,

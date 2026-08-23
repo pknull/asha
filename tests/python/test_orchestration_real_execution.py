@@ -670,6 +670,182 @@ RESULTPY
         )
         self.assertFalse((self.repo / "scope").exists(), "candidate was integrated into source")
 
+    # --- Increment 7: one initiative across a declared two-member workspace ---
+
+    def _initialize_member(self, root: Path, project_id: str) -> tuple[str, str]:
+        """A minimal jj-colocated Asha project; returns its base commit and tree digest."""
+        root.mkdir(mode=0o755)
+        (root / ".asha").mkdir(mode=0o755)
+        (root / "Memory").mkdir(mode=0o755)
+        (root / "Work/session-state").mkdir(parents=True, mode=0o755)
+        (root / ".asha/config.json").write_text(json.dumps({
+            "initialized": True, "memory_version": 2, "project_id": project_id,
+        }) + "\n")
+        (root / "Memory/activeContext.md").write_text(
+            "# Objective\n\nMember.\n\n# State\n\nReady.\n\n# Next\n\n- Run.\n\n# Blockers\n\n- None.\n"
+        )
+        (root / "Memory/decisions.md").write_text("# Decisions\n\n- Test.\n")
+        (root / ".gitignore").write_text(
+            ".asha/config.json\n.asha/control-task.json\nMemory/activeContext.md\n"
+            "Memory/decisions.md\nWork/session-state/\n__pycache__/\n"
+        )
+        (root / "seed.txt").write_text(f"{project_id}\n")
+        self._run_command(["git", "init", "-q"], cwd=root)
+        self._run_command(["git", "config", "user.email", "integration@example.invalid"], cwd=root)
+        self._run_command(["git", "config", "user.name", "Asha Integration"], cwd=root)
+        self._run_command(["git", "add", ".gitignore", "seed.txt"], cwd=root)
+        self._run_command(["git", "commit", "-q", "-m", "base"], cwd=root)
+        self._run_command(["jj", "git", "init", "--colocate", "."], cwd=root)
+        self._run_command(["jj", "status"], cwd=root)
+        commit = self._run_command(["git", "rev-parse", "HEAD"], cwd=root).stdout.strip()
+        return commit, JjAdapter().immutable_tree(root, commit).digest
+
+    def _create_workspace_initiative(self) -> tuple[str, dict[str, Path]]:
+        workspace = self.root / "ws"
+        workspace.mkdir(mode=0o755)
+        (workspace / ".asha").mkdir(mode=0o755)
+        (workspace / ".asha/workspace.json").write_text(json.dumps({
+            "version": 1, "workspace_name": "real-workspace",
+            "repositories": [{"path": "alpha"}, {"path": "beta"}],
+        }) + "\n")
+        members = {"alpha": workspace / "alpha", "beta": workspace / "beta"}
+        origins = {
+            name: self._initialize_member(path, f"real-workspace-{name}")
+            for name, path in members.items()
+        }
+        created = self.asha_json(
+            "initiative", "create", "--workspace", str(workspace),
+            "--slug", "real-workspace", "--label", "Real workspace",
+            "--objective", "Change both members and gate the pair.",
+            "--acceptance", "Each member candidate passes review and one controller verification.",
+            "--max-parallel", "2", "--max-total-tasks", "5",
+            "--max-attempts-per-node", "1", "--max-repair-cycles", "1", "--json",
+        )["initiative"]
+        self.assertEqual(created["scope"]["kind"], "workspace")
+        scope_members = created["scope"]["workspace"]["repositories"]
+        self.assertEqual([Path(item["root"]).name for item in scope_members], ["alpha", "beta"])
+        ids = {Path(item["root"]).name: item["repository_id"] for item in scope_members}
+        writer_a = graph_node("writer-alpha", "work", [], terminal=True)
+        writer_b = graph_node("writer-beta", "work", [], terminal=True)
+        review_a = graph_node("review-alpha", "review", ["writer-alpha"])
+        review_b = graph_node("review-beta", "review", ["writer-beta"])
+        verify = graph_node("verify-workspace", "verify", ["review-alpha", "review-beta"])
+        writer_a["goal"], writer_b["goal"] = "PARALLEL_A", "PARALLEL_B"
+        review_a["goal"] = review_b["goal"] = "REVIEW"
+        for node, name in ((writer_a, "alpha"), (review_a, "alpha"), (verify, "alpha"),
+                           (writer_b, "beta"), (review_b, "beta")):
+            node["repository_id"] = ids[name]
+        for node, name in ((writer_a, "alpha"), (writer_b, "beta")):
+            commit, tree = origins[name]
+            node["base"]["scope_origin"] = {"jj_commit_id": commit, "tree_digest": tree}
+            node["hard_write_scope"] = ["scope"]
+            node["advisory_path_ownership"] = ["scope"]
+        plan = valid_plan()
+        plan.update({
+            "initiative_id": created["initiative_id"],
+            "repositories": copy.deepcopy(scope_members),
+            "limits": copy.deepcopy(created["limits"]),
+            "nodes": [writer_a, writer_b, review_a, review_b, verify],
+            "declared_gates": [
+                {"kind": "review", "node_id": "review-alpha", "required": True},
+                {"kind": "review", "node_id": "review-beta", "required": True},
+                {
+                    "kind": "verification", "node_id": "verify-workspace", "required": True,
+                    "environment_policy": "minimal",
+                    "commands": [{
+                        "argv": [
+                            sys.executable, "-c",
+                            "from pathlib import Path; "
+                            "assert Path('scope/a.txt').is_file() != Path('scope/b.txt').is_file()",
+                        ],
+                        "cwd": ".", "timeout_seconds": 30,
+                    }],
+                },
+            ],
+        })
+        plan_path = self.root / "plan-workspace.json"
+        plan_path.write_text(json.dumps(plan))
+        proposed = self.asha_json(
+            "initiative", "plan", created["initiative_id"], "--file", str(plan_path), "--json",
+        )
+        self.asha_json(
+            "initiative", "approve", created["initiative_id"], "--digest", proposed["digest"], "--json",
+        )
+        store = InitiativeStore(self.config)
+        approved = store.peek(created["initiative_id"])
+        running = copy.deepcopy(approved)
+        running.update({
+            "state": "running", "state_revision": approved["state_revision"] + 1,
+            "updated_at": now_text(),
+        })
+        store.save_initiative(running, expected_digest=record_digest(approved))
+        for node in store.list_nodes_snapshot(created["initiative_id"]):
+            changed = copy.deepcopy(node)
+            changed["state"] = "ready" if node["node_id"].startswith("writer-") else "blocked"
+            store.save_node(created["initiative_id"], changed, expected_digest=record_digest(node))
+        return created["initiative_id"], members
+
+    def test_real_two_member_workspace_reaches_readiness_with_one_bundle(self) -> None:
+        initiative_id, members = self._create_workspace_initiative()
+        heads = {
+            name: self._run_command(["git", "rev-parse", "HEAD"], cwd=path).stdout.strip()
+            for name, path in members.items()
+        }
+        self.asha_json("initiative", "dispatch", initiative_id, "--node", "writer-alpha", "--json")
+        self.asha_json("initiative", "dispatch", initiative_id, "--node", "writer-beta", "--json")
+        store = self._wait_for_node_states(
+            initiative_id, {"writer-alpha": "succeeded", "writer-beta": "succeeded"},
+        )
+        seals = {item["node_id"]: item for item in store.list_seals_snapshot(initiative_id)}
+        self.assertEqual(set(seals), {"writer-alpha", "writer-beta"})
+        self.assertNotEqual(seals["writer-alpha"]["repository_id"], seals["writer-beta"]["repository_id"])
+        self.assertEqual(seals["writer-alpha"]["changed_paths"], ["scope/a.txt"])
+        self.assertEqual(seals["writer-beta"]["changed_paths"], ["scope/b.txt"])
+
+        # Operator dispatches use the exact revision rule, so each review is
+        # dispatched after the previous worker's publication settled.
+        self.asha_json("initiative", "dispatch", initiative_id, "--node", "review-alpha", "--json")
+        self._wait_for_node_states(initiative_id, {"review-alpha": "succeeded"})
+        self.asha_json("initiative", "dispatch", initiative_id, "--node", "review-beta", "--json")
+        store = self._wait_for_node_states(initiative_id, {"review-beta": "succeeded"})
+        reviews = {item["node_id"]: item for item in store.list_reviews_snapshot(initiative_id)}
+        self.assertEqual(set(reviews), {"review-alpha", "review-beta"})
+        self.assertEqual(reviews["review-alpha"]["target"]["seal_id"], seals["writer-alpha"]["seal_id"])
+        self.assertEqual(reviews["review-beta"]["target"]["seal_id"], seals["writer-beta"]["seal_id"])
+        self.assertEqual({item["state"] for item in reviews.values()}, {"accepted-pass"})
+
+        verification_action = self.asha_json(
+            "initiative", "dispatch", initiative_id, "--node", "verify-workspace", "--json",
+        )
+        self.assertEqual(verification_action["state"], "completed")
+        store = InitiativeStore(self.config)
+        self.assertEqual(store.peek(initiative_id)["state"], "ready-for-integration")
+        verification = store.list_verifications_snapshot(initiative_id)[0]
+        self.assertEqual(verification["state"], "passed")
+        self.assertEqual(len(verification["commands"]), 2)
+        from lib.control.orchestration.verification import verification_members
+
+        bound = verification_members(store, initiative_id, verification["verification_id"])
+        self.assertEqual(
+            [item["seal_id"] for item in bound],
+            [seals["writer-alpha"]["seal_id"], seals["writer-beta"]["seal_id"]],
+        )
+        bundle = store.list_bundles_snapshot(initiative_id)[0]
+        self.assertEqual(bundle["outcome"], "compatible")
+        self.assertEqual(
+            [item["seal_id"] for item in bundle["members"]],
+            [seals["writer-alpha"]["seal_id"], seals["writer-beta"]["seal_id"]],
+        )
+        storage = self.asha_json("initiative", "storage", initiative_id, "--json")
+        self.assertGreaterEqual(len(storage["workspaces"]), 4)
+        self.assertTrue(all(item["jj_workspace_registered"] for item in storage["workspaces"]))
+        self.assertEqual(len(storage["materializations"]), 2)
+        for name, path in members.items():
+            self.assertEqual(
+                self._run_command(["git", "rev-parse", "HEAD"], cwd=path).stdout.strip(), heads[name],
+            )
+            self.assertFalse((path / "scope").exists(), f"{name} candidate was integrated into source")
+
     # --- Increment 4: Asha claims the coordinator role from a tmux pane ---
 
     def _start_coordinator_pane(self, name: str) -> tuple[Path, str, str]:

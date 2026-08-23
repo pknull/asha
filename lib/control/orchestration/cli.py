@@ -33,9 +33,10 @@ from .coordinator import (
 )
 from .doctor import run_orchestration_doctor
 from .graph import PlanError, validate_plan
+from .workspace_scope import ScopeError, repository_scope, workspace_scope
 from .model import (
     APPROVAL_CONTRACT, EVENT_CONTRACT, FORBIDDEN_ACTION_CLASSES,
-    INITIATIVE_CONTRACT, MAX_CRITERION_BYTES, MUTATING_NODE_TYPES,
+    INITIATIVE_CONTRACT, INITIATIVE_CONTRACT_V2, MAX_CRITERION_BYTES, MUTATING_NODE_TYPES,
     NODE_NONTERMINAL_STATES,
     ModelError, new_uuid, record_digest,
     validate_approval, validate_event, validate_initiative, validate_node,
@@ -79,7 +80,7 @@ def _usage(stream=sys.stdout) -> None:
 
 Usage:
   asha initiative baseline --repo PATH [--revision REVSET] [--json]
-  asha initiative create --repo PATH --slug SLUG --label TEXT --objective TEXT [--acceptance TEXT]...
+  asha initiative create (--repo PATH | --workspace PATH) --slug SLUG --label TEXT --objective TEXT [--acceptance TEXT]...
   asha initiative plan <id> --file PLAN.json
   asha initiative plan <id> --show [--revision N] [--json]
   asha initiative approve <id> --digest SHA256 [--json]
@@ -245,23 +246,7 @@ def _event(
     })
 
 
-def _repository_scope(repo: Path, jj: JjAdapter) -> dict[str, Any]:
-    root = repo.expanduser().resolve()
-    facts = jj.preflight(root)
-    snapshot = read_published_snapshot(facts.root)
-    identity, _ = derive_repository_identity(snapshot.project_id, facts.root, facts.git_root)
-    initial = hashlib.sha256(json.dumps(
-        [snapshot.project_id, str(facts.root), identity],
-        ensure_ascii=False, separators=(",", ":"),
-    ).encode()).hexdigest()
-    return {
-        "repository_id": str(uuid.uuid5(
-            uuid.NAMESPACE_URL, f"asha-orchestration-repository-v1:{initial}"
-        )),
-        "project_id": snapshot.project_id,
-        "root": str(facts.root), "control_repository_id": identity,
-        "initial_identity_digest": initial,
-    }
+_repository_scope = repository_scope
 
 
 def _guard_colocated_sync(jj: JjAdapter, root: Path, git_root: Path) -> None:
@@ -322,12 +307,14 @@ def _baseline(
 
 def _create(args: list[str], config, store: InitiativeStore, jj: JjAdapter) -> dict[str, Any]:
     options = _parse_options(args, repeat={"acceptance"}, flags={"json"})
-    allowed = {"repo", "slug", "label", "objective", "acceptance", "max_parallel",
+    allowed = {"repo", "workspace", "slug", "label", "objective", "acceptance", "max_parallel",
                "max_total_tasks", "max_attempts_per_node", "max_repair_cycles", "deadline", "json"}
     unknown = options.keys() - allowed
     if unknown:
         raise ValueError(f"unsupported create option: {next(iter(unknown))}")
-    _required(options, "repo", "slug", "label", "objective")
+    if bool(options.get("repo")) == bool(options.get("workspace")):
+        raise ValueError("create requires exactly one of --repo or --workspace")
+    _required(options, "slug", "label", "objective")
     validate_slug(options["slug"])
     ceilings = {
         "max_parallel": config.max_parallel_tasks,
@@ -355,12 +342,21 @@ def _create(args: list[str], config, store: InitiativeStore, jj: JjAdapter) -> d
                 f"{MAX_CRITERION_BYTES} UTF-8 bytes"
             )
         acceptance = [options["objective"]]
+    if options.get("workspace"):
+        try:
+            scope = {"kind": "workspace", "workspace": workspace_scope(Path(options["workspace"]), jj)}
+        except ScopeError as exc:
+            raise ValueError(str(exc)) from exc
+        contract = INITIATIVE_CONTRACT_V2
+    else:
+        scope = {"kind": "repository", "repository": repository_scope(Path(options["repo"]), jj)}
+        contract = INITIATIVE_CONTRACT
     initiative = validate_initiative({
-        "contract": INITIATIVE_CONTRACT, "initiative_id": new_uuid(),
+        "contract": contract, "initiative_id": new_uuid(),
         "slug": options["slug"], "label": options["label"], "state": "draft",
         "objective": options["objective"],
         "acceptance_criteria": acceptance,
-        "scope": {"kind": "repository", "repository": _repository_scope(Path(options["repo"]), jj)},
+        "scope": scope,
         "active_plan": None, "limits": limits, "coordinator": None,
         "state_revision": 0, "forbidden_action_classes": list(FORBIDDEN_ACTION_CLASSES),
         "last_event_sequence": 0, "created_at": at, "updated_at": at,

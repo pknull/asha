@@ -22,6 +22,10 @@ from memory_v2 import (  # type: ignore  # noqa: E402
     ACTIVE_LIMIT, CONFIG_LIMIT, DECISIONS_LIMIT, read_published_snapshot,
     validate_active_context, validate_decisions,
 )
+# Declared-workspace detection and manifest validation for orchestration scope
+# identity (Increment 7); same import seam, same read-only semantics.
+from project_root import detect_workspace  # type: ignore  # noqa: E402
+from workspace_manifest import validate_manifest  # type: ignore  # noqa: E402
 
 
 class ContextError(ValueError):

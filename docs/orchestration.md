@@ -1,4 +1,4 @@
-# Orchestration Core: Increments 1-5
+# Orchestration Core: Increments 1-7
 
 Orchestration Core stores one bounded initiative and approved dependency graph
 beside Asha Control. Increment 3 adds ordered composition, independent
@@ -10,16 +10,19 @@ approval stays an operator act from another terminal. Increment 5 opens the
 bounded active set to that coordinator (dispatch, repair, salvage request,
 stop, pause, continuation, decision request, outcome proposal, pending
 directive), adds CAS checkpoints, and lets Control-launched workers run without
-the persona. Control remains the
-only owner of worker jj workspace and tmux task creation; its run-less
-materialization seam owns fresh controller verification workspaces.
+the persona. Increment 6 is the Initiatives mode of `asha control` (see
+`docs/control.md`). Increment 7 lets one initiative span a declared workspace:
+one terminal candidate, review, and verification materialization per member
+repository, one aggregate bundle. Control remains the only owner of worker jj
+workspace and tmux task creation; its run-less materialization seam owns fresh
+controller verification workspaces.
 
 ## Commands
 
 ```text
 asha initiative baseline --repo PATH [--revision REVSET] [--json]
-asha initiative create --repo PATH --slug SLUG --label TEXT --objective TEXT
-  [--acceptance TEXT]... [--max-parallel N] [--max-total-tasks N]
+asha initiative create --repo PATH | --workspace PATH --slug SLUG --label TEXT
+  --objective TEXT [--acceptance TEXT]... [--max-parallel N] [--max-total-tasks N]
   [--max-attempts-per-node N] [--max-repair-cycles N] [--deadline RFC3339]
 asha initiative plan ID --file PLAN.json
 asha initiative plan ID --show [--revision N] [--json]
@@ -495,6 +498,41 @@ All three values must be positive integers. `link_grace_seconds` bounds the
 launch-to-link publication wait; result publication polls for the immutable
 attempt link every 250 milliseconds before returning a retryable refusal.
 
+## Workspace scope (Increment 7)
+
+`create --repo PATH` binds a repository scope; `create --workspace PATH` binds
+a declared workspace: the `.asha/workspace.json` manifest the session plugin
+already validates, resolved through Control's existing context seam. Exactly
+one of the two flags is accepted. New initiatives persist
+`asha.orchestration-initiative.v2` with
+`scope: {kind: repository, repository} | {kind: workspace, workspace}`; v1
+records stay readable and executable unchanged. The workspace object is
+`{workspace_id, project_id, root, manifest_membership_digest, repositories}`
+where `repositories` is the ordered list of member repository-scope objects
+(`repository_id`, `project_id`, `root`, `control_repository_id`,
+`initial_identity_digest`) and the membership digest covers the ordered
+manifest paths and member identities.
+
+Workspace plans must list exactly the scope members, declare exactly one
+terminal candidate producer per member, one required review gate per member
+(each depending on that member's terminal candidate), and one verification
+gate depending on every review gate. Dispatch passes each node's member root
+as `--repo`; assignments name the member. Activation re-verifies every
+member's identity and the manifest membership; a renamed, relocated, added, or
+removed member is a typed refusal, never a silent rebinding. Dispatch runs in
+the member root recorded at creation and inherits Control's own preflight.
+Verification materializes one fresh explicit-base workspace per member
+(`verify-<initiative-id>-<verification8>[-<index>]`) at that member's exact
+terminal seal, records one `verification-member` evidence per member, and runs
+the approved commands in every member; the candidate bundle digest binds the
+ordered member seal set. Readiness requires, per member, one accepted-pass
+review and the one passed verification binding that member, and writes one
+ordered multi-member bundle. `storage` merges jj registrations across every
+member root, lists every member materialization (primary record path plus
+`verification-member` paths), and labels each workspace and materialization
+with its `repository_id`. Archive retains every member materialization and the
+bundle.
+
 ## Storage and JSON contracts
 
 The registry root is:
@@ -525,7 +563,7 @@ remain available where their ordinary lifecycle rules permit containment.
 | Command | Exact payload |
 |---|---|
 | `baseline` | `asha.orchestration-baseline.v1` `{contract, repository: {root, control_repository_id}, jj_commit_id, tree_digest, entry_count}` |
-| `create` | `asha.orchestration-initiative-create.v1` `{contract, initiative}` |
+| `create` | `asha.orchestration-initiative-create.v1` `{contract, initiative}` (`initiative` is a stored `asha.orchestration-initiative.v2` record with `scope.kind` `repository` or `workspace`) |
 | `plan`, `plan --show` | stored `asha.orchestration-plan.v1` record |
 | `approve` | `asha.orchestration-plan-approval.v1` `{contract, initiative, plan, approval}` |
 | `reject` | `asha.orchestration-plan-rejection.v1` `{contract, initiative, plan_digest, reason}` |
@@ -538,7 +576,7 @@ remain available where their ordinary lifecycle rules permit containment.
 | `show` | `asha.orchestration-initiative-show.v1` `{contract, initiative, graph, action_outcomes, gates, limits, evidence_counts, node_reconciliation, superseded_nodes}` |
 | `events` | `asha.orchestration-event-list.v1` `{contract, initiative_id, events}` |
 | `reconcile` | `asha.orchestration-reconcile-list.v1` `{contract, initiative_id, action_reconciliation, live_reconciliation, coordinator_reconciliation, results, superseded_nodes}` |
-| `storage` | `asha.orchestration-storage-report.v1` `{contract, initiative_id, inventory, workspaces, totals, thresholds, pause_recommended}` |
+| `storage` | `asha.orchestration-storage-report.v1` `{contract, initiative_id, inventory, workspaces, materializations, totals, thresholds, pause_recommended}`; `workspaces[]` and `materializations[]` entries carry `repository_id` (additive label under v1, following the `coordinator_reconciliation`/`coordinator` precedent) |
 | `snapshot` | `asha.orchestration-snapshot.v1` `{contract, initiative, active_plan, nodes, superseded_nodes, attempts, links, actions, coordinator, last_event_sequence, state_revision}` |
 | `doctor` | `asha.orchestration-doctor.v1` `{contract, ok, probes, limitations}` |
 | `coordinator claim` | `asha.orchestration-coordinator-claim.v1` `{contract, initiative_id, coordinator, environment}` |
@@ -605,7 +643,7 @@ A required verification gate in the approved plan has this closed form:
 ```
 
 The controller creates a fresh run-less Control materialization at the exact
-terminal seal and executes only those argv arrays. `minimal` supplies exactly
+terminal seal (one per scope member) and executes only those argv arrays. `minimal` supplies exactly
 `PATH`, `HOME`, and `LANG`. There is no worker, harness, tmux session, shell, or
 source checkout mutation. On Linux, the runner requires a trusted, executable,
 non-group/other-writable `bwrap` at `/usr/bin/bwrap` or `/bin/bwrap`; it refuses
@@ -644,10 +682,10 @@ materialization remain retained.
 
 ## Bundle, readiness, finalization, and archive
 
-One accepted passing review and one passed controller verification must both
-name the current terminal candidate seal. The controller then binds a
-one-member compatible bundle and advances only `running ->
-ready-for-integration`. Core has no integrate, merge, push, or deletion verb.
+One accepted passing review per member and one passed controller
+verification must name the current terminal candidate seal of every scope
+member. The controller then binds one compatible bundle with one ordered
+member per repository and advances only `running -> ready-for-integration`. Core has no integrate, merge, push, or deletion verb.
 When every graph node is terminal without a qualifying candidate, the operator
 may acknowledge `partial` or `failed` with `finalize --reason`; partial requires
 at least one retained success seal as useful work. Failure-only evidence must

@@ -351,7 +351,7 @@ def assignment_bytes(
             "seal_id": seal_facts[0]["seal_id"],
             "active_plan_digest": plan["digest"],
             "specification_digest": specification_digest(initiative, plan),
-            "repository_id": initiative["scope"]["repository"]["repository_id"],
+            "repository_id": _node_repository(initiative, node)["repository_id"],
             "jj_commit_id": seal_facts[0]["jj_commit_id"],
             "base_seal_ids": seal_facts[0].get("base_seal_ids", []),
             "diff_digest": seal_facts[0]["diff_digest"],
@@ -408,8 +408,8 @@ into this workspace or run any command that writes into it. Publish a
 
 ## Repository and immutable base
 
-- Repository root: {initiative['scope']['repository']['root']}
-- Repository ID: {initiative['scope']['repository']['repository_id']}
+- Repository root: {_node_repository(initiative, node)['root']}
+- Repository ID: {_node_repository(initiative, node)['repository_id']}
 - Base policy: {base['policy']}
 - Exact base commit: {exact_base}
 - Scope-origin tree digest: {base['scope_origin']['tree_digest']}
@@ -665,6 +665,16 @@ def _control_creation_evidence(
     else:
         return True, f"Control creation journal exists at phase {journal['phase']}"
     return False, "Control has no task or creation journal for the reserved ID"
+
+
+def _node_repository(initiative: Mapping[str, Any], node: Mapping[str, Any]) -> dict[str, Any]:
+    """The scope member a node binds; single-repository initiatives have exactly one."""
+    from .model import repository_by_id, scope_repositories
+
+    repository_id = node.get("repository_id")
+    if repository_id is None:
+        return scope_repositories(initiative)[0]
+    return repository_by_id(initiative, repository_id)
 
 
 def _asha_executable() -> Path:
@@ -1030,9 +1040,10 @@ def dispatch(
             )
             asha = _asha_executable()
             goal = _goal(initiative, node, assignment_path)
+            repository_root = _node_repository(initiative, node)["root"]
             argv = [
                 str(asha), "task", "start",
-                "--repo", initiative["scope"]["repository"]["root"],
+                "--repo", repository_root,
                 "--task-id", attempt["task_id"],
                 "--base", exact_base,
                 "--harness", node["harness"],
@@ -1067,7 +1078,7 @@ def dispatch(
         try:
             returncode, stdout, stderr = capture_bytes(
                 argv,
-                cwd=Path(initiative["scope"]["repository"]["root"]),
+                cwd=Path(repository_root),
                 limit=MAX_CONTROL_OUTPUT_BYTES,
                 runner=None,
                 error_type=SchedulerError,

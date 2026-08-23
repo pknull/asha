@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 from pathlib import Path
@@ -32,6 +33,41 @@ def _path_usage(path: Path) -> tuple[int, int]:
     return total_bytes, total_inodes
 
 
+def _attempt_repositories(store: InitiativeStore, initiative_id: str) -> dict[str, str | None]:
+    """attempt_id -> the repository its node targets (None when the node is unknown)."""
+    nodes = {item["node_id"]: item for item in store.list_nodes_snapshot(initiative_id)}
+    return {
+        attempt["attempt_id"]: (nodes.get(attempt["node_id"]) or {}).get("repository_id")
+        for attempt in store.list_attempts_snapshot(initiative_id)
+    }
+
+
+def _materialization_paths(
+    store: InitiativeStore, initiative_id: str,
+) -> tuple[dict[str, list[str]], dict[str, str | None]]:
+    """Every retained verification materialization path: the record's primary
+    path plus each `verification-member` binding, labelled by repository."""
+    by_path: dict[str, list[str]] = {}
+    repository: dict[str, str | None] = {}
+    for verification in store.list_verifications_snapshot(initiative_id):
+        path = verification["materialization_path"]
+        by_path.setdefault(path, []).append(verification["verification_id"])
+        repository.setdefault(path, verification.get("repository_id"))
+    for evidence in store.list_evidence_snapshot(initiative_id):
+        if evidence.get("kind") != "verification-member":
+            continue
+        try:
+            member = json.loads(evidence["summary"])
+        except (TypeError, ValueError):
+            continue
+        path = member["materialization_path"]
+        ids = by_path.setdefault(path, [])
+        if member["verification_id"] not in ids:
+            ids.append(member["verification_id"])
+        repository[path] = member.get("repository_id")
+    return by_path, repository
+
+
 def storage_report(
     initiative: dict[str, Any],
     *,
@@ -45,14 +81,19 @@ def storage_report(
     inventory = store.inventory(initiative_id, locked=False)
     control_store = control_store or TaskStore(store.config.control)
     jj = jj or JjAdapter()
-    repository_root = Path(initiative["scope"]["repository"]["root"])
-    registrations: dict[str, tuple[str, str]] | None
+    from .model import scope_repositories
+
+    # One jj workspace registry per member repository; a task workspace is
+    # registered when any member registry knows its name.
+    registrations: dict[str, tuple[str, str]] | None = {}
     registration_error: str | None = None
-    try:
-        registrations = jj.workspace_identities(repository_root)
-    except (JjError, OSError, ValueError) as exc:
-        registrations = None
-        registration_error = str(exc)[:400]
+    for member in scope_repositories(initiative):
+        try:
+            registrations.update(jj.workspace_identities(Path(member["root"])))
+        except (JjError, OSError, ValueError) as exc:
+            registrations = None
+            registration_error = str(exc)[:400]
+            break
 
     workspaces: list[dict[str, Any]] = []
     materializations: list[dict[str, Any]] = []
@@ -60,6 +101,7 @@ def storage_report(
     workspace_inodes = 0
     counted_paths: set[str] = set()
     usage_by_path: dict[str, tuple[int, int]] = {}
+    attempt_repository = _attempt_repositories(store, initiative_id)
     for link in store.list_links_snapshot(initiative_id):
         try:
             task = control_store.peek(link["control_task_id"])
@@ -86,6 +128,7 @@ def storage_report(
             workspace_inodes += used_inodes
         workspaces.append({
             "attempt_id": link["attempt_id"],
+            "repository_id": attempt_repository.get(link["attempt_id"]),
             "control_task_id": link["control_task_id"],
             "path": None if path is None else str(path),
             "workspace_name": name,
@@ -95,11 +138,7 @@ def storage_report(
             "inodes": used_inodes,
             "detail": detail,
         })
-    verification_paths: dict[str, list[str]] = {}
-    for verification in store.list_verifications_snapshot(initiative_id):
-        verification_paths.setdefault(
-            verification["materialization_path"], [],
-        ).append(verification["verification_id"])
+    verification_paths, path_repository = _materialization_paths(store, initiative_id)
     for path_key in sorted(verification_paths):
         path = Path(path_key)
         exists = path.exists() and path.is_dir() and not path.is_symlink()
@@ -112,6 +151,7 @@ def storage_report(
             workspace_inodes += used_inodes
         materializations.append({
             "path": path_key,
+            "repository_id": path_repository.get(path_key),
             "verification_ids": sorted(verification_paths[path_key]),
             "exists": exists,
             "bytes": used_bytes,

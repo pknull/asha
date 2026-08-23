@@ -20,6 +20,8 @@ from ..config import is_canonical_absolute_path
 
 
 INITIATIVE_CONTRACT = "asha.orchestration-initiative.v1"
+INITIATIVE_CONTRACT_V2 = "asha.orchestration-initiative.v2"
+INITIATIVE_CONTRACTS = frozenset({INITIATIVE_CONTRACT, INITIATIVE_CONTRACT_V2})
 PLAN_CONTRACT = "asha.orchestration-plan.v1"
 NODE_CONTRACT = "asha.orchestration-node.v1"
 ATTEMPT_CONTRACT = "asha.orchestration-attempt.v1"
@@ -359,6 +361,46 @@ def validate_repository_scope(value: Any) -> dict[str, Any]:
     return copy.deepcopy(repository)
 
 
+_WORKSPACE_SCOPE_KEYS = frozenset({
+    "workspace_id", "project_id", "root", "manifest_membership_digest", "repositories",
+})
+
+
+def validate_workspace_scope(value: Any) -> dict[str, Any]:
+    """A declared Asha workspace binding several member repositories (Increment 7)."""
+    workspace = _object(value, "workspace scope", _WORKSPACE_SCOPE_KEYS)
+    canonical_uuid(workspace["workspace_id"], "workspace_id")
+    _text(workspace["project_id"], "workspace project_id", maximum=MAX_PROJECT_ID_BYTES)
+    _canonical_path(workspace["root"], "workspace root")
+    _digest(workspace["manifest_membership_digest"], "workspace manifest_membership_digest")
+    members = _array(workspace["repositories"], "workspace repositories", MAX_REPOSITORIES)
+    if len(members) < 1:
+        raise ModelError("workspace scope requires at least one member repository")
+    seen: list[str] = []
+    for index, member in enumerate(members):
+        checked = validate_repository_scope(member)
+        if not checked["root"].startswith(workspace["root"].rstrip("/") + "/"):
+            raise ModelError(f"workspace repositories[{index}] root is outside the workspace root")
+        seen.append(checked["repository_id"])
+    _unique(seen, "workspace repository IDs")
+    return copy.deepcopy(workspace)
+
+
+def scope_repositories(initiative: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Ordered member repository scopes of an initiative (one for repository kind)."""
+    scope = initiative["scope"]
+    if scope.get("kind", "repository") == "workspace":
+        return [copy.deepcopy(item) for item in scope["workspace"]["repositories"]]
+    return [copy.deepcopy(scope["repository"])]
+
+
+def repository_by_id(initiative: Mapping[str, Any], repository_id: str) -> dict[str, Any]:
+    for repository in scope_repositories(initiative):
+        if repository["repository_id"] == repository_id:
+            return repository
+    raise ModelError(f"repository {repository_id} is not in the initiative scope")
+
+
 _LIMIT_KEYS = frozenset({
     "max_parallel", "max_total_tasks", "max_attempts_per_node",
     "max_repair_cycles", "max_retained_bytes_before_pause",
@@ -694,8 +736,10 @@ _INITIATIVE_KEYS = frozenset({
 
 def validate_initiative(value: Any) -> dict[str, Any]:
     record = _object(value, "initiative", _INITIATIVE_KEYS)
-    if record["contract"] != INITIATIVE_CONTRACT:
-        raise ModelError(f"initiative contract must be {INITIATIVE_CONTRACT}")
+    if record["contract"] not in INITIATIVE_CONTRACTS:
+        raise ModelError(
+            f"initiative contract must be {INITIATIVE_CONTRACT} or {INITIATIVE_CONTRACT_V2}"
+        )
     canonical_uuid(record["initiative_id"], "initiative_id")
     validate_slug(record["slug"], "initiative slug")
     _text(record["label"], "initiative label", maximum=MAX_LABEL_BYTES)
@@ -708,10 +752,19 @@ def validate_initiative(value: Any) -> dict[str, Any]:
     )
     if not record["acceptance_criteria"]:
         raise ModelError("initiative acceptance_criteria must not be empty")
-    scope = _object(record["scope"], "initiative scope", frozenset({"kind", "repository"}))
-    if scope["kind"] != "repository":
-        raise ModelError("Core initiative scope kind must be repository")
-    validate_repository_scope(scope["repository"])
+    if not isinstance(record["scope"], dict):
+        raise ModelError("initiative scope must be an object")
+    kind = record["scope"].get("kind")
+    if kind == "repository":
+        scope = _object(record["scope"], "initiative scope", frozenset({"kind", "repository"}))
+        validate_repository_scope(scope["repository"])
+    elif kind == "workspace" and record["contract"] == INITIATIVE_CONTRACT_V2:
+        scope = _object(record["scope"], "initiative scope", frozenset({"kind", "workspace"}))
+        validate_workspace_scope(scope["workspace"])
+    elif kind == "workspace":
+        raise ModelError("workspace scope requires the asha.orchestration-initiative.v2 contract")
+    else:
+        raise ModelError("initiative scope kind must be repository or workspace")
     if record["active_plan"] is not None:
         active = _object(
             record["active_plan"], "initiative active_plan",
@@ -1715,6 +1768,7 @@ def checkpoint_digest(value: Mapping[str, Any]) -> str:
 
 _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     INITIATIVE_CONTRACT: validate_initiative,
+    INITIATIVE_CONTRACT_V2: validate_initiative,
     COORDINATOR_CONTRACT: validate_coordinator,
     COORDINATOR_CHECKPOINT_CONTRACT: validate_coordinator_checkpoint,
     PLAN_CONTRACT: validate_plan_record,
@@ -1767,7 +1821,8 @@ def plan_digest(plan: Any) -> str:
 
 __all__ = [name for name in globals() if name.isupper()] + [
     "ModelError", "new_uuid", "canonical_uuid", "validate_slug",
-    "validate_repository_scope", "validate_limits", "validate_base_policy",
+    "validate_repository_scope", "validate_workspace_scope", "scope_repositories",
+    "repository_by_id", "validate_limits", "validate_base_policy",
     "validate_initiative", "validate_plan_record", "validate_plan", "validate_node",
     "validate_attempt", "validate_result_publication", "validate_result",
     "validate_seal", "validate_review", "validate_verification", "validate_approval",
