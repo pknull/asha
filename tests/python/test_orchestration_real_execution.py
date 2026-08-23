@@ -222,6 +222,7 @@ fi
 if [[ "$mode" != NO_SNAPSHOT* && "$mode" != REVIEW* ]]; then
   jj status >/dev/null
 fi
+printf '%s' "${ASHA_PERSONA:-unset}" >"$XDG_RUNTIME_DIR/persona-$ASHA_CONTROL_TASK_ID"
 result_file="$XDG_RUNTIME_DIR/result-$ASHA_CONTROL_TASK_ID.json"
 python3 -I - "$result_file" "$initiative" "$node" "$attempt" "$mode" "$path" "$assignment" <<'RESULTPY'
 import datetime, json, os, pathlib, sys, uuid
@@ -1010,6 +1011,55 @@ RESULTPY
         self.assertEqual(
             [event["type"] for event in later["events"]][-2:],
             ["action-received", "action-refused"],
+        )
+
+        # The live generation drives a real persona-free worker to a success seal.
+        approved_record = store.peek(initiative_id)
+        running = copy.deepcopy(approved_record)
+        running.update({
+            "state": "running", "state_revision": approved_record["state_revision"] + 1,
+            "updated_at": now_text(),
+        })
+        store.save_initiative(running, expected_digest=record_digest(approved_record))
+        for node in store.list_nodes_snapshot(initiative_id):
+            changed = copy.deepcopy(node)
+            changed["state"] = "ready" if node["node_id"] == "implementation-a" else "blocked"
+            store.save_node(initiative_id, changed, expected_digest=record_digest(node))
+        cursor_before_dispatch = store.read_coordinator(initiative_id, second["coordinator_id"])["event_cursor"]
+        rc, out, err = self._in_pane(
+            runner_two, "initiative", "dispatch", initiative_id,
+            "--node", "implementation-a", "--as-coordinator", "--json",
+        )
+        self.assertEqual(rc, 0, err)
+        dispatched = json.loads(out)
+        self.assertEqual(dispatched["actor_kind"], "coordinator")
+        self.assertEqual(dispatched["coordinator_generation"], 2)
+        self.assertEqual(dispatched["state"], "completed")
+        outcome = json.loads(dispatched["outcome"])
+        store = self._wait_for_node_states(initiative_id, {"implementation-a": "succeeded"})
+        link = next(
+            item for item in store.list_links_snapshot(initiative_id)
+            if item["attempt_id"] == outcome["attempt_id"]
+        )
+        self.assertEqual(link["coordinator_generation"], 2)
+        seal = next(
+            item for item in store.list_seals_snapshot(initiative_id)
+            if item["node_id"] == "implementation-a"
+        )
+        self.assertEqual(seal["outcome"], "success")
+        self.assertEqual(seal["changed_paths"], ["scope/inside.txt"])
+        persona = (Path(self.env["XDG_RUNTIME_DIR"]) / f"persona-{link['control_task_id']}").read_text()
+        self.assertEqual(persona, "0", "Control-launched worker did not receive ASHA_PERSONA=0")
+        rc, out, err = self._in_pane(
+            runner_two, "initiative", "wait", initiative_id,
+            "--after", str(cursor_before_dispatch), "--timeout", "5", "--json",
+        )
+        self.assertEqual(rc, 0, err)
+        observed = json.loads(out)
+        self.assertIn("seal-published", [event["type"] for event in observed["events"]])
+        self.assertEqual(
+            store.read_coordinator(initiative_id, second["coordinator_id"])["event_cursor"],
+            observed["events"][-1]["sequence"],
         )
 
         rc, out, err = self._in_pane(runner_two, "initiative", "coordinator", "release", initiative_id, "--json")
