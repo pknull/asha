@@ -273,7 +273,7 @@ class CoordinatorClaimTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(shown["coordinator"]["coordinator_id"], payload["coordinator"]["coordinator_id"])
         released, _ = cli._coordinator_command(["release", self.initiative_id], self.store, self.pane_env, self.tmux)
         self.assertEqual(released["coordinator"]["state"], "exited")
-        with self.assertRaisesRegex(ValueError, "requires claim, release, or show"):
+        with self.assertRaisesRegex(ValueError, "requires claim, release, show, launch, sessions, or attach"):
             cli._coordinator_command(["start", self.initiative_id], self.store, self.pane_env, self.tmux)
         with self.assertRaisesRegex(ValueError, "does not accept --harness"):
             cli._coordinator_command(

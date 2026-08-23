@@ -52,6 +52,9 @@ asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
 asha initiative coordinator claim ID [--harness H] [--json]     (from the Asha pane)
 asha initiative coordinator release|show ID [--json]
+asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
+asha initiative coordinator sessions [--json]
+asha initiative coordinator attach ID | --session NAME [--json]
 asha initiative propose-plan ID --file PLAN.json [--json]       (coordinator actor)
 asha initiative wait ID --after SEQUENCE --timeout SECONDS --json
 asha initiative checkpoint ID --file CHECKPOINT.json [--json]   (coordinator actor)
@@ -583,6 +586,9 @@ remain available where their ordinary lifecycle rules permit containment.
 | `projects` | `asha.orchestration-project-list.v1` `{contract, root, source, match, projects: [{name, root, project_id, role, declared, asha_project, jj_colocated}]}` — `source` is `manifest` (declared workspace at or above `--root`) or `discovery` (jj-colocated Asha projects at and below `--root`, depth 1-3, 512-directory bound); read-only |
 | `coordinator claim` | `asha.orchestration-coordinator-claim.v1` `{contract, initiative_id, coordinator, environment}` |
 | `coordinator release` | `asha.orchestration-coordinator-release.v1` `{contract, initiative_id, coordinator}` |
+| `coordinator launch` | `asha.orchestration-coordinator-launch.v1` `{contract, session, pane_id, root, harness, intent, launched_at}` |
+| `coordinator sessions` | `asha.orchestration-coordinator-sessions.v1` `{contract, sessions: [{session, initiative_id, slug, coordinator_id, generation, state}]}` |
+| `coordinator attach` | `asha.orchestration-coordinator-attach.v1` `{contract, initiative_id, session, pane_id, coordinator_id, generation}` |
 | `coordinator show` | `asha.orchestration-coordinator-show.v1` `{contract, initiative_id, coordinator, anchor_live, anchor_detail, generations}` |
 | `propose-plan` | stored `asha.orchestration-plan.v1` record (event actor `coordinator`) |
 | `wait` | `asha.orchestration-event-wait.v1` `{contract, initiative_id, coordinator_id, generation, after, events, last_event_sequence, state_revision, timed_out}` |

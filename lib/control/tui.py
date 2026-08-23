@@ -23,7 +23,7 @@ from .config import ControlConfig, load_config
 from .jj import (
     DEFAULT_BASE_REVSET, DiffSummary, JjAdapter, JjError, discover_git_root,
 )
-from .harness import HARNESSES, validate_role
+from .harness import HARNESSES, HarnessError, validate_role
 from .launch import archive_task, stop_task
 from .model import GIT_OBJECT_ID_PATTERN, new_uuid, retry_task_slug
 from .prepare import retained_recovery_guidance, v2_retention_diagnostic
@@ -97,6 +97,8 @@ class IntentKind(Enum):
     INIT_STOP = "initiative-stop"
     INIT_EXPAND = "initiative-expand"
     INIT_COLLAPSE = "initiative-collapse"
+    INIT_NEW = "initiative-new"
+    INIT_ATTACH = "initiative-attach"
 
 
 @dataclass(frozen=True)
@@ -486,11 +488,15 @@ class TuiModel:
             return TuiIntent(IntentKind.INIT_EXPAND)
         if key == "LEFT":
             return TuiIntent(IntentKind.INIT_COLLAPSE)
+        if key == "n":
+            return TuiIntent(IntentKind.INIT_NEW)
         screen = self.initiatives
         row = None if screen is None else screen.selected_row
         if row is None:
             return TuiIntent(IntentKind.NONE, reason="no initiative is selected")
         if key == "ENTER":
+            if row.kind == "initiative":
+                return TuiIntent(IntentKind.INIT_ATTACH, initiative_id=row.initiative_id, target=row.id)
             return TuiIntent(IntentKind.INIT_OPEN, initiative_id=row.initiative_id, target=row.id)
         kind = _INITIATIVE_KEYS.get(key)
         if kind is None:
@@ -655,8 +661,9 @@ def render(model: TuiModel) -> list[str]:
 
 _STATUS_MAX_LINES = 6
 _INITIATIVE_FOOTER = (
-    "Enter open  Right/Left expand  r reconcile  d diff  e events  a approval  "
-    "c candidates  v verify  t storage  p pause/resume  s stop  / filter  Tab tasks  ? help  q quit"
+    # Most-used keys first: narrow terminals clip the tail, `?` shows everything.
+    "n new  Enter attach/open  a approve  p pause  s stop  ? help  q quit  |  "
+    "r reconcile  d diff  e events  c seals  v verify  t storage  / filter  Right/Left fold  Tab tasks"
 )
 
 
@@ -676,7 +683,8 @@ def _render_initiatives(model: TuiModel) -> list[str]:
         lines = [
             "ASHA CONTROL HELP  [Initiatives]",
             "",
-            "Keys: Tab tasks | Up/Down select | Right/Left expand/collapse | Enter open worker task popup",
+            "Keys: Tab tasks | Up/Down select | Right/Left expand/collapse | n new intent (starts the coordinator)",
+            "      Enter on an initiative attaches to its coordinator session; on a node opens the worker popup",
             "      r reconcile | d diff | e events | a approval decision | c candidate seals",
             "      v review+verification evidence | t retained storage | p pause/resume | s stop attempt",
             "      / filter | ? help | q quit",
@@ -2867,6 +2875,7 @@ _INITIATIVE_INTENTS = frozenset({
     IntentKind.INIT_EVENTS, IntentKind.INIT_APPROVE, IntentKind.INIT_CANDIDATES,
     IntentKind.INIT_VERIFICATION, IntentKind.INIT_STORAGE, IntentKind.INIT_PAUSE,
     IntentKind.INIT_STOP, IntentKind.INIT_EXPAND, IntentKind.INIT_COLLAPSE,
+    IntentKind.INIT_NEW, IntentKind.INIT_ATTACH,
 })
 
 
@@ -2892,6 +2901,72 @@ def _linked_task_for_row(screen, row) -> tuple[str | None, str | None]:
     return None, None
 
 
+def _coordinator_tmux():
+    from .tmux import TmuxAdapter
+    return TmuxAdapter()
+
+
+def _launch_coordinator_session(stdscr, curses_module, model: TuiModel, config: ControlConfig, env: Mapping[str, str]) -> str:
+    """`n` in Initiatives mode: ask for an intent, start the coordinator session, open it."""
+    from .orchestration.coordinator import CoordinatorError, launch_session
+
+    root = str(Path(env.get("ASHA_PROJECTS_ROOT") or Path.cwd()).resolve())
+    intent = _prompt_line(
+        stdscr, curses_module, model, "Intent: ",
+        title="New initiative",
+        context=(
+            f"Projects root: {root}\n"
+            "Control starts the coordinator (asha claude) in its own tmux session at this root\n"
+            "with your intent as the first message; Enter on the initiative attaches to it."
+        ),
+        maximum=2000,
+    )
+    if not intent or not intent.strip():
+        return "intent cancelled"
+    try:
+        launched = launch_session(
+            config, root=Path(root), intent=intent, tmux=_coordinator_tmux(),
+            asha_root=_tui_asha_root(env),
+        )
+    except (CoordinatorError, ValueError, HarnessError, TmuxError) as exc:
+        return f"coordinator launch refused: {_safe_error(exc)}"
+    refusal = _popup_session(stdscr, curses_module, config, env, launched["session"], "coordinator")
+    return refusal or f"coordinator session {launched['session']} started; Enter on its initiative reattaches"
+
+
+def _attach_coordinator(stdscr, curses_module, config: ControlConfig, env: Mapping[str, str], initiative_id: str) -> str:
+    from .orchestration.config import load_config as load_orchestration_config
+    from .orchestration.coordinator import CoordinatorError, attach_target
+    from .orchestration.store import InitiativeStore
+
+    try:
+        target = attach_target(
+            InitiativeStore(load_orchestration_config(env)), tmux=_coordinator_tmux(), initiative_id=initiative_id,
+        )
+    except (CoordinatorError, TmuxError, ValueError) as exc:
+        return f"attach refused: {_safe_error(exc)}"
+    refusal = _popup_session(stdscr, curses_module, config, env, target["session"], "coordinator")
+    return refusal or "coordinator popup closed; the session keeps running"
+
+
+def _popup_session(stdscr, curses_module, config: ControlConfig, env: Mapping[str, str], session: str, label: str) -> str | None:
+    from .cli import _run_popup
+
+    curses_module.endwin()
+    try:
+        return _run_popup(_coordinator_tmux(), config, session, label, env)
+    finally:
+        _repaint_after_suspend(stdscr)
+
+
+def _tui_asha_root(env: Mapping[str, str]) -> Path:
+    raw_root = env.get("ASHA_ROOT")
+    root = Path(__file__).resolve().parents[2] if raw_root is None else Path(raw_root)
+    if not root.is_absolute() or root.resolve() != root:
+        raise ValueError("ASHA_ROOT must be an exact canonical absolute path")
+    return root
+
+
 def _execute_initiative_intent(
     intent: TuiIntent,
     *,
@@ -2911,9 +2986,13 @@ def _execute_initiative_intent(
         return None if screen.expand() else "nothing to expand"
     if intent.kind is IntentKind.INIT_COLLAPSE:
         return None if screen.collapse() else "nothing to collapse"
+    if intent.kind is IntentKind.INIT_NEW:
+        return _launch_coordinator_session(stdscr, curses_module, model, config, env)
     row = screen.selected_row
     if row is None:
         return "no initiative is selected"
+    if intent.kind is IntentKind.INIT_ATTACH:
+        return _attach_coordinator(stdscr, curses_module, config, env, row.initiative_id)
     if intent.kind in {IntentKind.INIT_EVENTS, IntentKind.INIT_CANDIDATES, IntentKind.INIT_VERIFICATION, IntentKind.INIT_STORAGE}:
         pane = {
             IntentKind.INIT_EVENTS: "events", IntentKind.INIT_CANDIDATES: "candidates",

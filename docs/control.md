@@ -348,9 +348,30 @@ Use `asha task list --json` directly for scripts and other non-interactive
 callers. A curses failure after initialization also exits 2 and names the same
 fallback.
 
+### Coordinator sessions
+
+The monitor is the front door. In Initiatives mode, `n` asks for an intent and
+Control starts the coordinator as its own tmux session at the projects root
+(`ASHA_PROJECTS_ROOT` or the monitor's working directory): a full-persona
+`asha claude` whose first message is the intent. That session runs the
+`orchestrate-initiative` skill, resolves the repository through
+`asha initiative projects`, creates and claims the initiative from its pane,
+and proposes the plan. The popup opens on it immediately; `Enter` on the
+initiative row reattaches later (on a node row it opens the worker popup as
+before). Approvals stay in the monitor (`a`); the coordinator's own pane is
+refused. CLI equivalents: `asha initiative coordinator launch [--root DIR]
+--intent TEXT`, `coordinator sessions`, and `coordinator attach ID |
+--session NAME` (popup inside tmux, otherwise the attach command is printed).
+Coordinator sessions are named `<session_prefix>coord-<token>` on Control's
+default tmux server, carry `@asha_coordinator_session=1`, and are never
+Control tasks: prune and task listing ignore them; they end when the harness
+session exits.
+
 ## Cockpit
 
-`asha cockpit [DIR] [--session NAME] [--dry-run]` opens one tmux window: the
+The monitor's `n` (Coordinator sessions, above) is the front door; the cockpit
+is the two-pane alternative when you want the coordinator chat visible beside
+the monitor. `asha cockpit [DIR] [--session NAME] [--dry-run]` opens one tmux window: the
 left pane runs `asha claude` at `DIR` (default: the current directory) and is
 the coordinator's chat; the right pane runs `asha control --initiatives`, the
 Keeper's monitor and approval surface. `DIR` is the projects root the

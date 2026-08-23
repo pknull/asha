@@ -144,7 +144,7 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         self.assertEqual(lines[0], "ASHA CONTROL  [Initiatives]")
         self.assertTrue(lines[2].startswith("STATE"))
         self.assertTrue(any("plan approval" in line for line in lines))
-        self.assertTrue(lines[-1].startswith("Enter open"))
+        self.assertTrue(lines[-1].startswith("n new  Enter attach/open  a approve"))
         model.help_visible = True
         help_lines = render(model)
         self.assertEqual(help_lines[0], "ASHA CONTROL HELP  [Initiatives]")
@@ -167,13 +167,15 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         self.assertIs(model.dispatch_key("/").kind, IntentKind.FILTER)
         self.assertIs(model.dispatch_key("RIGHT").kind, IntentKind.INIT_EXPAND)
         self.assertIs(model.dispatch_key("LEFT").kind, IntentKind.INIT_COLLAPSE)
-        self.assertIs(model.dispatch_key("ENTER").kind, IntentKind.INIT_OPEN)
+        # Enter on the initiative row attaches to its coordinator; node rows open the worker.
+        self.assertIs(model.dispatch_key("ENTER").kind, IntentKind.INIT_ATTACH)
+        self.assertIs(model.dispatch_key("n").kind, IntentKind.INIT_NEW)
         approve = model.dispatch_key("a")
         self.assertIs(approve.kind, IntentKind.INIT_APPROVE)
         self.assertTrue(approve.requires_confirmation)
         self.assertTrue(model.dispatch_key("p").requires_confirmation)
         self.assertTrue(model.dispatch_key("s").requires_confirmation)
-        for key in ("x", "n", "A", "m", "D", "!"):
+        for key in ("x", "A", "m", "D", "!"):
             self.assertIs(model.dispatch_key(key).kind, IntentKind.NONE)
         # Tasks-mode bindings are untouched by the initiatives table.
         tasks = TuiModel([], height=24, width=60)
@@ -299,6 +301,49 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
                 self.tasks, self.journals, self.jj,
             )
         self.assertEqual(code, 0)
+
+    def test_n_prompts_for_an_intent_launches_the_coordinator_and_opens_its_popup(self) -> None:
+        calls: dict = {}
+
+        def fake_launch(config, *, root, intent, tmux, asha_root, harness="claude", token=None):
+            calls["launch"] = {"root": str(root), "intent": intent, "harness": harness}
+            return {"session": "asha-coord-feedbeef", "pane_id": "%9"}
+
+        def fake_popup(stdscr, curses_module, config, env, session, label):
+            calls["popup"] = (session, label)
+            return None
+
+        self.env = {**self.env, "ASHA_PROJECTS_ROOT": str(self.root)}
+        with mock.patch("lib.control.orchestration.coordinator.launch_session", fake_launch), \
+             mock.patch("lib.control.tui._popup_session", fake_popup):
+            _screen, model = self.run_loop([9, ord("n"), *map(ord, "update termart"), 10, ord("q")])
+        self.assertEqual(calls["launch"], {"root": str(self.root), "intent": "update termart", "harness": "claude"})
+        self.assertEqual(calls["popup"], ("asha-coord-feedbeef", "coordinator"))
+        self.assertIn("coordinator session asha-coord-feedbeef started", model.message)
+        self.assertEqual(model.mode, "initiatives")
+
+    def test_n_with_an_empty_intent_launches_nothing(self) -> None:
+        with mock.patch("lib.control.orchestration.coordinator.launch_session") as launch:
+            _screen, model = self.run_loop([9, ord("n"), 10, ord("q")])
+        launch.assert_not_called()
+        self.assertEqual(model.message, "intent cancelled")
+
+    def test_enter_on_an_initiative_row_attaches_to_its_live_coordinator_or_explains(self) -> None:
+        from lib.control.orchestration.coordinator import claim
+        from tests.python.test_orchestration_coordinator_sessions import LaunchingTmux
+
+        fake = LaunchingTmux()
+        popups: list = []
+        with mock.patch("lib.control.tui._coordinator_tmux", return_value=fake), \
+             mock.patch("lib.control.tui._popup_session", lambda *args: popups.append(args[4]) or None):
+            _screen, model = self.run_loop([9, 10, ord("q")])
+            self.assertIn("no coordinator has claimed this initiative", model.message)
+            self.assertEqual(popups, [])
+            selected = model.initiatives.selected_row.initiative_id
+            claim(self.store, self.store.peek(selected), env={**self.env, "TMUX_PANE": fake.pane_id}, tmux=fake)
+            _screen, model = self.run_loop([9, 10, ord("q")])
+        self.assertEqual(popups, ["keeper"])
+        self.assertIn("coordinator popup closed", model.message)
 
     def records(self) -> dict:
         return {

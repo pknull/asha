@@ -100,6 +100,9 @@ Usage:
   asha initiative doctor [--json]
   asha initiative projects [--root DIR] [--depth N] [--match TEXT] [--json]
   asha initiative coordinator claim <id> [--harness H] [--json]   (from the Asha pane)
+  asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
+  asha initiative coordinator sessions [--json]
+  asha initiative coordinator attach ID | --session NAME [--json]
   asha initiative coordinator release|show <id> [--json]
   asha initiative propose-plan <id> --file PLAN.json [--json]     (coordinator actor)
   asha initiative wait <id> --after SEQUENCE --timeout SECONDS --json
@@ -606,9 +609,12 @@ def propose_plan(
 
 def _coordinator_command(
     args: list[str], store: InitiativeStore, env: Mapping[str, str], tmux: TmuxAdapter,
+    config: Any = None,
 ) -> tuple[dict[str, Any], bool]:
-    if not args or args[0] not in {"claim", "release", "show"}:
-        raise ValueError("coordinator requires claim, release, or show")
+    if not args or args[0] not in {"claim", "release", "show", "launch", "sessions", "attach"}:
+        raise ValueError("coordinator requires claim, release, show, launch, sessions, or attach")
+    if args[0] in {"launch", "sessions", "attach"}:
+        return _coordinator_session_command(args[0], args[1:], store, config, env, tmux)
     verb, tail = args[0], args[1:]
     if not tail:
         raise ValueError(f"coordinator {verb} requires an initiative ID or exact slug")
@@ -634,6 +640,49 @@ def _coordinator_command(
             "coordinator": record,
         }, bool(options["json"])
     return show_coordinator(store, initiative, tmux=tmux), bool(options["json"])
+
+
+def _asha_root_from_env(env: Mapping[str, str]) -> Path:
+    raw_root = env.get("ASHA_ROOT")
+    root = Path(__file__).resolve().parents[3] if not raw_root else Path(raw_root)
+    if not root.is_absolute() or root.resolve() != root:
+        raise ValueError("ASHA_ROOT must be an exact canonical absolute path")
+    return root
+
+
+def _coordinator_session_command(
+    verb: str, args: list[str], store: InitiativeStore, config: Any,
+    env: Mapping[str, str], tmux: TmuxAdapter,
+) -> tuple[dict[str, Any], bool]:
+    from .coordinator import attach_target, launch_session, list_coordinator_sessions
+
+    if verb == "launch":
+        options = _parse_options(args, flags={"json"})
+        _only(options, {"root", "intent", "harness", "json"}, "coordinator launch")
+        _required(options, "intent")
+        root = Path(options["root"]) if options.get("root") else Path.cwd()
+        result = launch_session(
+            config.control, root=root, intent=options["intent"], tmux=tmux,
+            asha_root=_asha_root_from_env(env), harness=options.get("harness") or "claude",
+        )
+        return result, bool(options["json"])
+    if verb == "sessions":
+        options = _parse_options(args, flags={"json"})
+        _only(options, {"json"}, "coordinator sessions")
+        return list_coordinator_sessions(config.control, store=store, tmux=tmux), bool(options["json"])
+    selector = None
+    if args and not args[0].startswith("--"):
+        selector, args = args[0], args[1:]
+    options = _parse_options(args, flags={"json"})
+    _only(options, {"session", "json"}, "coordinator attach")
+    initiative_id = None if selector is None else _resolve(store, selector)["initiative_id"]
+    target = attach_target(store, tmux=tmux, initiative_id=initiative_id, session=options.get("session"))
+    if env.get("TMUX") and not options["json"]:
+        from ..cli import _run_popup
+        refusal = _run_popup(tmux, config.control, target["session"], "coordinator", env)
+        if refusal:
+            raise ValueError(refusal)
+    return target, bool(options["json"])
 
 
 def _wait_command(
@@ -1189,7 +1238,7 @@ def _initiative_command(
         _payload(result, json_output)
         return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
     if command == "coordinator":
-        result, json_output = _coordinator_command(tail, store, env, tmux)
+        result, json_output = _coordinator_command(tail, store, env, tmux, config=config)
         _payload(result, json_output)
         return 0
     if command == "wait":
