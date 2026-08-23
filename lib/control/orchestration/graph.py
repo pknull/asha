@@ -110,6 +110,62 @@ def _ancestors(node_id: str, by_id: Mapping[str, dict[str, Any]]) -> set[str]:
     return result
 
 
+def _check_gate_wiring(
+    required_reviews: list[str],
+    required_verifications: list[str],
+    terminal_candidates: Mapping[str, str],
+    by_id: Mapping[str, Mapping[str, Any]],
+) -> None:
+    """One required review gate per member terminal candidate; one verification over all reviews."""
+    members = len(terminal_candidates)
+    if len(required_reviews) != members or len(required_verifications) != 1:
+        scope = "Core plan" if members == 1 else f"workspace plan with {members} members"
+        _fail(
+            RULE_REQUIRED_GATES,
+            f"{scope} requires exactly {members} required review gate(s), one per terminal candidate,"
+            " and one verification gate",
+        )
+    reviewed: dict[str, str] = {}
+    for review_node_id in required_reviews:
+        targets = [
+            candidate for candidate in terminal_candidates.values()
+            if candidate in by_id[review_node_id]["dependencies"]
+        ]
+        if len(targets) != 1:
+            _fail(
+                RULE_REQUIRED_GATES,
+                f"review gate {review_node_id} must depend on exactly one terminal candidate",
+            )
+        if targets[0] in reviewed:
+            _fail(
+                RULE_REQUIRED_GATES,
+                f"terminal candidate {targets[0]} is reviewed by more than one required gate",
+            )
+        review_repository = by_id[review_node_id].get("repository_id")
+        candidate_repository = by_id[targets[0]]["repository_id"]
+        if review_repository is not None and review_repository != candidate_repository:
+            _fail(
+                RULE_REQUIRED_GATES,
+                f"review gate {review_node_id} must bind the member of candidate {targets[0]}",
+            )
+        if review_repository is None and members > 1:
+            _fail(
+                RULE_REQUIRED_GATES,
+                f"review gate {review_node_id} must name the member of candidate {targets[0]}",
+            )
+        reviewed[targets[0]] = review_node_id
+    missing = [candidate for candidate in terminal_candidates.values() if candidate not in reviewed]
+    if missing:
+        _fail(RULE_REQUIRED_GATES, f"terminal candidate {missing[0]} has no required review gate")
+    verification_node_id = required_verifications[0]
+    for review_node_id in required_reviews:
+        if review_node_id not in by_id[verification_node_id]["dependencies"]:
+            _fail(
+                RULE_REQUIRED_GATES,
+                f"verification gate {verification_node_id} must depend on review {review_node_id}",
+            )
+
+
 def validate_plan(
     plan: Any,
     *,
@@ -152,12 +208,27 @@ def validate_plan(
     repository_ids = [item["repository_id"] for item in normalized["repositories"]]
     if len(repository_ids) != len(set(repository_ids)):
         _fail(RULE_REPOSITORY_MEMBERSHIP, "repository membership contains duplicates")
-    initiative_repository = initiative_record["scope"]["repository"]
-    if normalized["repositories"] != [initiative_repository]:
+    from .model import scope_repositories
+
+    scope_members = scope_repositories(initiative_record)
+    if normalized["repositories"] != scope_members:
         _fail(
             RULE_REPOSITORY_MEMBERSHIP,
-            "Core plan repository membership must exactly match the initiative scope",
+            "plan repository membership must exactly match the initiative scope",
         )
+    if len(scope_members) > 1:
+        producers_by_repository: dict[str, int] = {}
+        for candidate in nodes:
+            if candidate.get("terminal_candidate") is True:
+                producers_by_repository[candidate["repository_id"]] = (
+                    producers_by_repository.get(candidate["repository_id"], 0) + 1
+                )
+        for member in scope_members:
+            if producers_by_repository.get(member["repository_id"], 0) != 1:
+                _fail(
+                    RULE_REPOSITORY_MEMBERSHIP,
+                    f"workspace plan needs exactly one terminal candidate for repository {member['repository_id']}",
+                )
     if normalized["initiative_id"] != initiative_record["initiative_id"]:
         _fail(RULE_REPOSITORY_MEMBERSHIP, "plan belongs to another initiative")
     for node in nodes:
@@ -402,24 +473,7 @@ def validate_plan(
     required_verifications = sorted(
         node_id for kind, node_id in required if kind == "verification"
     )
-    if len(required_reviews) != 1 or len(required_verifications) != 1:
-        _fail(
-            RULE_REQUIRED_GATES,
-            "Core plan requires exactly one review and one verification gate",
-        )
-    terminal_candidate = next(iter(terminal_candidates.values()))
-    review_node_id = required_reviews[0]
-    verification_node_id = required_verifications[0]
-    if terminal_candidate not in by_id[review_node_id]["dependencies"]:
-        _fail(
-            RULE_REQUIRED_GATES,
-            f"review gate {review_node_id} must depend on terminal candidate {terminal_candidate}",
-        )
-    if review_node_id not in by_id[verification_node_id]["dependencies"]:
-        _fail(
-            RULE_REQUIRED_GATES,
-            f"verification gate {verification_node_id} must depend on review {review_node_id}",
-        )
+    _check_gate_wiring(required_reviews, required_verifications, terminal_candidates, by_id)
 
     plan_limits = normalized["limits"]
     initiative_limits = initiative_record["limits"]

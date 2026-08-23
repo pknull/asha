@@ -102,101 +102,130 @@ def _identity_digest(workspace: str, change: str, commit: str, tree: str) -> str
     return hashlib.sha256(raw).hexdigest()
 
 
-def save_passed_verification(fixture, candidate: dict) -> dict:
+def save_passed_verification(fixture, candidate, *, node_id: str = "verify-a") -> dict:
+    """Retain a passed controller verification for one candidate or an ordered member set.
+
+    With several candidates the commands run member by member (scope order) and
+    each member binding is retained as `verification-member` evidence, exactly as
+    `prepare_verification_intent` records it.
+    """
+    candidates = [candidate] if isinstance(candidate, dict) else list(candidate)
     gate = next(
         item for item in fixture.plan["declared_gates"]
         if item["kind"] == "verification"
     )
     verification_id = str(uuid.uuid4())
-    evidence_id = str(uuid.uuid4())
     workspace_name = "asha-materialization-test"
     change_id = "k" * 32
     commit_id = "f" * 40
-    identity = _identity_digest(
-        workspace_name, change_id, commit_id, candidate["tree_digest"],
-    )
-    command_spec = gate["commands"][0]
     bundle_digest = candidate_bundle_digest(
-        fixture.initiative(), fixture.plan, candidate, gate,
+        fixture.initiative(), fixture.plan,
+        candidates[0] if len(candidates) == 1 else candidates, gate,
     )
-    output = b"fixture verification output\n"
-    output_path = fixture.store.save_output(
-        fixture.initiative_id, evidence_id, output,
-    )
-    started_at = now_text()
-    finished_at = now_text()
-    command = {
-        "command_id": str(uuid.uuid4()),
-        "argv": list(command_spec["argv"]),
-        "cwd": command_spec["cwd"],
-        "environment_policy_id": gate["environment_policy"],
-        "timeout_seconds": command_spec["timeout_seconds"],
-        "process_identity": "controller:test-command",
-        "started_at": started_at,
-        "finished_at": finished_at,
-        "exit_code": 0,
-        "signal": None,
-        "timed_out": False,
-        "output_path": str(output_path),
-        "output_digest": hashlib.sha256(output).hexdigest(),
-        "output_truncated": False,
-        "output_original_bytes": len(output),
-        "pre_identity_status": "observed",
-        "post_identity_status": "observed",
-        "pre_identity_digest": identity,
-        "post_identity_digest": identity,
-        "pre_jj_commit_id": commit_id,
-        "pre_tree_digest": candidate["tree_digest"],
-        "post_jj_commit_id": commit_id,
-        "post_tree_digest": candidate["tree_digest"],
-    }
-    summary = json.dumps({
-        "verification_id": verification_id,
-        "bundle_digest": bundle_digest,
-        "repository_id": candidate["repository_id"],
-        "seal_id": candidate["seal_id"],
-        "argv": command["argv"], "cwd": command["cwd"],
-        "environment_policy_id": command["environment_policy_id"],
-        "process_identity": command["process_identity"],
-        "started_at": started_at, "finished_at": finished_at,
-        "exit_code": 0, "signal": None, "timed_out": False,
-        "denied": False, "mutation": False,
-        "pre_identity_status": "observed",
-        "post_identity_status": "observed",
-        "pre_jj_commit_id": commit_id,
-        "pre_tree_digest": candidate["tree_digest"],
-        "post_jj_commit_id": commit_id,
-        "post_tree_digest": candidate["tree_digest"],
-        "output_digest": command["output_digest"],
-        "output_path": command["output_path"],
-        "output_truncated": False,
-        "output_original_bytes": len(output),
-    }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    evidence = {
-        "contract": EVIDENCE_CONTRACT,
-        "evidence_id": evidence_id,
-        "initiative_id": fixture.initiative_id,
-        "kind": "verification-command",
-        "subject_id": verification_id,
-        "digest": hashlib.sha256(summary.encode()).hexdigest(),
-        "summary": summary,
-        "recorded_at": now_text(),
-    }
-    fixture.store.save_evidence(fixture.initiative_id, evidence)
+    commands: list[dict] = []
+    evidence_ids: list[str] = []
+    member_materializations: list[str] = []
+    for index, member in enumerate(candidates):
+        materialization_id = str(uuid.uuid4())
+        member_materializations.append(materialization_id)
+        if len(candidates) > 1:
+            summary = json.dumps({
+                "index": index, "verification_id": verification_id,
+                "repository_id": member["repository_id"], "seal_id": member["seal_id"],
+                "jj_commit_id": member["jj_commit_id"], "tree_digest": member["tree_digest"],
+                "materialization_id": materialization_id,
+                "materialization_name": f"verify-{fixture.initiative_id}-{verification_id[:8]}"
+                + ("" if index == 0 else f"-{index}"),
+                "materialization_path": str((fixture.root / f"materialization-{index}").resolve()),
+                "source_root": "/tmp/source",
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            fixture.store.save_evidence(fixture.initiative_id, {
+                "contract": EVIDENCE_CONTRACT, "evidence_id": str(uuid.uuid4()),
+                "initiative_id": fixture.initiative_id, "kind": "verification-member",
+                "subject_id": verification_id,
+                "digest": hashlib.sha256(summary.encode()).hexdigest(),
+                "summary": summary, "recorded_at": now_text(),
+            })
+        identity = _identity_digest(workspace_name, change_id, commit_id, member["tree_digest"])
+        for command_spec in gate["commands"]:
+            evidence_id = str(uuid.uuid4())
+            output = b"fixture verification output\n"
+            output_path = fixture.store.save_output(fixture.initiative_id, evidence_id, output)
+            started_at = now_text()
+            finished_at = now_text()
+            command = {
+                "command_id": str(uuid.uuid4()),
+                "argv": list(command_spec["argv"]),
+                "cwd": command_spec["cwd"],
+                "environment_policy_id": gate["environment_policy"],
+                "timeout_seconds": command_spec["timeout_seconds"],
+                "process_identity": "controller:test-command",
+                "started_at": started_at,
+                "finished_at": finished_at,
+                "exit_code": 0,
+                "signal": None,
+                "timed_out": False,
+                "output_path": str(output_path),
+                "output_digest": hashlib.sha256(output).hexdigest(),
+                "output_truncated": False,
+                "output_original_bytes": len(output),
+                "pre_identity_status": "observed",
+                "post_identity_status": "observed",
+                "pre_identity_digest": identity,
+                "post_identity_digest": identity,
+                "pre_jj_commit_id": commit_id,
+                "pre_tree_digest": member["tree_digest"],
+                "post_jj_commit_id": commit_id,
+                "post_tree_digest": member["tree_digest"],
+            }
+            summary = json.dumps({
+                "verification_id": verification_id,
+                "bundle_digest": bundle_digest,
+                "repository_id": member["repository_id"],
+                "seal_id": member["seal_id"],
+                "argv": command["argv"], "cwd": command["cwd"],
+                "environment_policy_id": command["environment_policy_id"],
+                "process_identity": command["process_identity"],
+                "started_at": started_at, "finished_at": finished_at,
+                "exit_code": 0, "signal": None, "timed_out": False,
+                "denied": False, "mutation": False,
+                "pre_identity_status": "observed",
+                "post_identity_status": "observed",
+                "pre_jj_commit_id": commit_id,
+                "pre_tree_digest": member["tree_digest"],
+                "post_jj_commit_id": commit_id,
+                "post_tree_digest": member["tree_digest"],
+                "output_digest": command["output_digest"],
+                "output_path": command["output_path"],
+                "output_truncated": False,
+                "output_original_bytes": len(output),
+            }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            fixture.store.save_evidence(fixture.initiative_id, {
+                "contract": EVIDENCE_CONTRACT,
+                "evidence_id": evidence_id,
+                "initiative_id": fixture.initiative_id,
+                "kind": "verification-command",
+                "subject_id": verification_id,
+                "digest": hashlib.sha256(summary.encode()).hexdigest(),
+                "summary": summary,
+                "recorded_at": now_text(),
+            })
+            commands.append(command)
+            evidence_ids.append(evidence_id)
     verification = {
         "contract": VERIFICATION_CONTRACT,
         "verification_id": verification_id,
         "initiative_id": fixture.initiative_id,
-        "node_id": "verify-a",
+        "node_id": node_id,
         "bundle_digest": bundle_digest,
         "active_plan_digest": fixture.plan["digest"],
-        "repository_id": candidate["repository_id"],
-        "seal_id": candidate["seal_id"],
-        "materialization_id": str(uuid.uuid4()),
+        "repository_id": candidates[0]["repository_id"],
+        "seal_id": candidates[0]["seal_id"],
+        "materialization_id": member_materializations[0],
         "materialization_path": str((fixture.root / "materialization").resolve()),
         "state": "passed",
-        "commands": [command],
-        "evidence_ids": [evidence_id],
+        "commands": commands,
+        "evidence_ids": evidence_ids,
         "outcome": "passed",
         "created_at": now_text(),
         "updated_at": now_text(),

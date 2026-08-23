@@ -38,6 +38,24 @@ def repository() -> dict:
     }
 
 
+def workspace_scope_value() -> dict:
+    second = repository()
+    second.update({
+        "repository_id": "33333333-3333-4333-8333-333333333333",
+        "root": "/tmp/workspace/second",
+        "control_repository_id": "control-second",
+    })
+    first = repository()
+    first["root"] = "/tmp/workspace/first"
+    return {
+        "workspace_id": "44444444-4444-4444-8444-444444444444",
+        "project_id": "workspace-project",
+        "root": "/tmp/workspace",
+        "manifest_membership_digest": "b" * 64,
+        "repositories": [first, second],
+    }
+
+
 def limits() -> dict:
     return {
         "max_parallel": 2,
@@ -523,8 +541,30 @@ class OrchestrationModelTests(unittest.TestCase):
         extra["extra"] = True
         mutations.append(extra)
         future = initiative()
-        future["contract"] = "asha.orchestration-initiative.v2"
+        future["contract"] = "asha.orchestration-initiative.v3"
         mutations.append(future)
+        workspace_on_v1 = initiative()
+        workspace_on_v1["scope"] = {"kind": "workspace", "workspace": workspace_scope_value()}
+        mutations.append(workspace_on_v1)
+        unknown_kind = initiative()
+        unknown_kind["scope"] = {"kind": "galaxy", "repository": repository()}
+        mutations.append(unknown_kind)
+        # The v2 contract accepts both scope kinds (Increment 7).
+        v2_repository = initiative()
+        v2_repository["contract"] = model.INITIATIVE_CONTRACT_V2
+        model.validate_initiative(v2_repository)
+        v2_workspace = initiative()
+        v2_workspace["contract"] = model.INITIATIVE_CONTRACT_V2
+        v2_workspace["scope"] = {"kind": "workspace", "workspace": workspace_scope_value()}
+        model.validate_initiative(v2_workspace)
+        self.assertEqual(
+            [item["repository_id"] for item in model.scope_repositories(v2_workspace)],
+            [REPOSITORY_ID, "33333333-3333-4333-8333-333333333333"],
+        )
+        outside = copy.deepcopy(v2_workspace)
+        outside["scope"]["workspace"]["repositories"][1]["root"] = "/tmp/elsewhere"
+        with self.assertRaisesRegex(model.ModelError, "outside the workspace root"):
+            model.validate_initiative(outside)
         noncanonical = initiative()
         noncanonical["initiative_id"] = "{" + INITIATIVE_ID + "}"
         mutations.append(noncanonical)

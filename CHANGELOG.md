@@ -12,6 +12,21 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration Increment 7: workspace-scoped initiatives
+
+- `create --workspace PATH` binds a declared `.asha/workspace.json` workspace;
+  new initiatives persist `asha.orchestration-initiative.v2` with
+  `scope.kind` `repository` or `workspace` (v1 records unchanged). Workspace
+  plans name exactly the members, one terminal candidate producer and one
+  required review gate per member, and one verification gate over all
+  reviews. Dispatch targets each node's member root; activation refuses
+  member identity or manifest membership drift. Verification
+  materializes one fresh workspace per member at its exact terminal seal with
+  `verification-member` evidence; the bundle digest binds the ordered member
+  seal set; readiness binds one multi-member bundle; storage reports merge
+  member roots with `repository_id` labels. Archive retains every member
+  materialization.
+
 #### Orchestration Increment 6: Initiatives mode in `asha control`
 
 - `Tab` switches the Control TUI between Tasks and a text-only Initiatives view

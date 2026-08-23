@@ -414,26 +414,18 @@ def _refuse(
 
 
 def _repository_identity_matches(initiative: Mapping[str, Any]) -> None:
-    expected = initiative["scope"]["repository"]
-    root = Path(expected["root"])
-    jj = JjAdapter()
-    facts = jj.preflight(root)
-    if facts.root != root:
-        raise ActionRefused("initiative repository canonical root changed")
-    snapshot = read_published_snapshot(root)
-    identity, _ = derive_repository_identity(
-        snapshot.project_id, facts.root, facts.git_root,
-    )
-    digest = hashlib.sha256(json.dumps(
-        [snapshot.project_id, str(facts.root), identity],
-        ensure_ascii=False, separators=(",", ":"),
-    ).encode("utf-8")).hexdigest()
-    if (
-        snapshot.project_id != expected["project_id"]
-        or identity != expected["control_repository_id"]
-        or digest != expected["initial_identity_digest"]
-    ):
-        raise ActionRefused("initiative repository identity digest changed")
+    """Refuse activation when any scope member or the workspace membership drifted."""
+    from .workspace_scope import ScopeError, verify_scope_identity
+
+    try:
+        # Module-level names so tests that patch this module's adapter and
+        # snapshot reader keep steering the activation handshake.
+        verify_scope_identity(
+            initiative, jj=JjAdapter(), read_snapshot=read_published_snapshot,
+            derive_identity=derive_repository_identity,
+        )
+    except ScopeError as exc:
+        raise ActionRefused(" ".join(str(exc).split())) from exc
 
 
 def _activate(

@@ -659,6 +659,9 @@ class OrchestrationCliTests(unittest.TestCase):
             "initiative": {"bytes": 5, "inodes": 1},
             "totals": {"bytes": 5, "inodes": 1},
         }
+        fake_store.list_nodes_snapshot.return_value = []
+        fake_store.list_attempts_snapshot.return_value = []
+        fake_store.list_evidence_snapshot.return_value = []
         fake_store.list_links_snapshot.return_value = [
             {"attempt_id": "one", "control_task_id": "task"},
             {"attempt_id": "two", "control_task_id": "task"},
@@ -694,6 +697,9 @@ class OrchestrationCliTests(unittest.TestCase):
             "totals": {"bytes": 5, "inodes": 1},
         }
         fake_store.list_links_snapshot.return_value = []
+        fake_store.list_nodes_snapshot.return_value = []
+        fake_store.list_attempts_snapshot.return_value = []
+        fake_store.list_evidence_snapshot.return_value = []
         fake_store.list_verifications_snapshot.return_value = [
             {
                 "verification_id": "one",
