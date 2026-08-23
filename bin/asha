@@ -143,6 +143,24 @@ exec_copilot() {
   local instr cmd
   instr="${ASHA_COPILOT_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-copilot.md}"
   cmd="$(asha_harness_executable copilot)"
+
+  if ! asha_persona_enabled; then
+    # Control-managed worker: operational layer only through the custom
+    # instructions dir (Copilot has no usable hook), no identity render.
+    local worker_dir worker_op_file worker_op_tmp
+    worker_dir="${ASHA_COPILOT_INSTR_DIR:-$HOME/.cache/asha/copilot-instr-worker}"
+    worker_op_file="$worker_dir/.github/instructions/asha-operational.instructions.md"
+    worker_op_tmp="$(mktemp)"
+    if asha_render_operational_layer "$worker_op_tmp"; then
+      mkdir -p "$(dirname "$worker_op_file")"
+      { printf -- '---\napplyTo: "**"\n---\n'; cat "$worker_op_tmp"; } > "$worker_op_file"
+      rm -f "$worker_op_tmp"
+      export COPILOT_CUSTOM_INSTRUCTIONS_DIRS="$worker_dir${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:+,$COPILOT_CUSTOM_INSTRUCTIONS_DIRS}"
+    else
+      rm -f "$worker_op_tmp"
+    fi
+    exec "$cmd" "$@"
+  fi
   export ASHA_PERSONA=1
 
   if [[ ! -x "$MERGE_SCRIPT" ]]; then
@@ -191,6 +209,31 @@ exec_copilot() {
   exec "$cmd" "$@"
 }
 
+# ASHA_PERSONA=0 marks a Control-managed worker launch: the harness runs from
+# its assignment brief without the identity render. Everything else (hooks,
+# skills, the operational layer where file-based, Codex trust injection) is
+# unchanged. Any other value, or unset, means the full persona.
+asha_persona_enabled() {
+  [[ "${ASHA_PERSONA:-1}" != "0" ]]
+}
+
+# Operational layer only (operation.md + active learnings) rendered to $1.
+# Returns non-zero when the merge script is missing or produced nothing.
+asha_render_operational_layer() {
+  local target="$1" op_merge op_tmp
+  op_merge="$IDENTITY_DIR/operational-merge.sh"
+  [[ -x "$op_merge" ]] || return 1
+  op_tmp="$(mktemp)"
+  if "$op_merge" "$op_tmp" 2>/dev/null && [[ -s "$op_tmp" ]]; then
+    mkdir -p "$(dirname "$target")"
+    cat "$op_tmp" >"$target"
+    rm -f "$op_tmp"
+    return 0
+  fi
+  rm -f "$op_tmp"
+  return 1
+}
+
 launch() {
   local h="$1"; shift
   local executable
@@ -204,6 +247,11 @@ launch() {
         agents|auth|auto-mode|doctor|install|mcp|plugin|plugins|project|setup-token|ultrareview|update|upgrade)
           exec "$executable" "$@" ;;
       esac
+      if ! asha_persona_enabled; then
+        # Control-managed worker: assignment brief, no identity render. The
+        # operational layer still arrives through the SessionStart hook.
+        exec "$executable" "$@"
+      fi
       local id
       id="${ASHA_CLAUDE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
       export ASHA_PERSONA=1
@@ -226,6 +274,15 @@ launch() {
           escaped_root="${escaped_root//\"/\\\"}"
           trust_args=(-c "projects={\"$escaped_root\"={trust_level=\"trusted\"}}")
         fi
+      fi
+      if ! asha_persona_enabled; then
+        # Control-managed worker: operational layer only (Codex has no reliable
+        # SessionStart injection), trust override kept, no identity render.
+        instr="$HOME/.cache/asha/instructions-codex-operational.md"
+        if asha_render_operational_layer "$instr"; then
+          exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+        fi
+        exec "$executable" "${trust_args[@]}" "$@"
       fi
       base="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
       instr="$base"
@@ -261,6 +318,19 @@ launch() {
       local base instr op_merge op_tmp cfg raw_cfg
       base="${ASHA_OPENCODE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-opencode.md}"
       instr="$base"
+      if ! asha_persona_enabled; then
+        # Control-managed worker: operational layer only, no identity render.
+        instr="$HOME/.cache/asha/instructions-opencode-operational.md"
+        if asha_render_operational_layer "$instr"; then
+          raw_cfg="${OPENCODE_CONFIG_CONTENT:-}"
+          [[ -n "$raw_cfg" ]] || raw_cfg='{}'
+          cfg="$(jq -cn --argjson base "$raw_cfg" --arg f "$instr" \
+            '$base * {instructions: (($base.instructions // []) + [$f] | unique)}')" \
+            || die "OPENCODE_CONFIG_CONTENT is not valid OpenCode JSON"
+          export OPENCODE_CONFIG_CONTENT="$cfg"
+        fi
+        exec "$executable" "$@"
+      fi
       export ASHA_PERSONA=1
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
         op_merge="$IDENTITY_DIR/operational-merge.sh"

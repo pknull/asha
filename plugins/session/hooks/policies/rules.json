@@ -64,7 +64,7 @@
       "command_regex": "\\basha[[:space:]]+initiative[[:space:]]+(approve|reject|approve-salvage)([[:space:]]|$)",
       "action": "deny",
       "require_env": "ASHA_ORCHESTRATION_COORDINATOR_ID",
-      "_comment": "Structural approval split (Keeper ruling 2026-08-22): the Asha session that claimed a coordinator generation exports ASHA_ORCHESTRATION_COORDINATOR_ID; plan approval, rejection, and salvage approval are operator acts run from the Keeper's own terminal. The controller refuses these verbs from the coordinator's pane as well; this rule is the belt, the controller is the braces.",
+      "_comment": "Structural approval split (Keeper ruling 2026-08-22): approval verbs are operator acts from the Keeper's own terminal. The controller refuses every operator write from the coordinator's pane and from any session whose environment carries ASHA_ORCHESTRATION_COORDINATOR_ID; that is the braces. This rule is a belt that applies only when the variable is present in the harness process environment at launch (hooks do not see a shell export made inside the session).",
       "reason": "Operator approval verbs are refused inside a coordinator session. Approve, reject, or approve salvage from your own terminal (asha control or the CLI outside the coordinator pane)."
     }
   ]

@@ -49,6 +49,7 @@ from .model import (
     validate_attempt,
     validate_bundle,
     validate_coordinator,
+    validate_coordinator_checkpoint,
     validate_evidence,
     validate_event,
     validate_initiative,
@@ -74,7 +75,7 @@ _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CL
 _LAYOUT_DIRECTORIES = (
     "plans", "nodes", "attempts", "assignments", "links", "result-publications", "results",
     "seal-preparations", "seals", "reviews", "verifications", "bundles", "approvals", "actions",
-    "evidence", "outputs", "events", "locks", "coordinators",
+    "evidence", "outputs", "events", "locks", "coordinators", "checkpoints",
 )
 _INVENTORY_CLASSES = ("initiative",) + _LAYOUT_DIRECTORIES
 
@@ -1122,6 +1123,25 @@ class InitiativeStore:
         records = self.list_coordinators_snapshot(initiative_id)
         return records[-1] if records else None
 
+    def save_checkpoint(
+        self, initiative_id: str, record: Any, *, expected_digest: str | None = None
+    ) -> Path:
+        """Replace a generation's checkpoint; identity fields are fixed, content is CAS-guarded."""
+        try:
+            value = validate_coordinator_checkpoint(record)
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        return self._save_subrecord(
+            initiative_id, "checkpoints", f"{value['coordinator_id']}.json", record,
+            validate_coordinator_checkpoint, immutable=False, expected_digest=expected_digest,
+            immutable_fields=("contract", "initiative_id", "coordinator_id", "generation"),
+        )
+
+    def read_checkpoint(self, initiative_id: str, coordinator_id: str) -> dict[str, Any]:
+        return self._read_uuid_record(
+            initiative_id, "checkpoints", coordinator_id, validate_coordinator_checkpoint
+        )
+
     def save_evidence(self, initiative_id: str, record: Any) -> Path:
         return self._save_uuid_immutable(
             initiative_id, "evidence", record, validate_evidence, "evidence_id"
@@ -1437,6 +1457,7 @@ class InitiativeStore:
             "actions": "action_id",
             "evidence": "evidence_id",
             "coordinators": "coordinator_id",
+            "checkpoints": "coordinator_id",
         }
         return self._read_subrecord(
             initiative_id, directory, f"{record_id}.json", validator,
@@ -1625,6 +1646,7 @@ class InitiativeStore:
             "actions": (validate_action, "action_id"),
             "evidence": (validate_evidence, "evidence_id"),
             "coordinators": (validate_coordinator, "coordinator_id"),
+            "checkpoints": (validate_coordinator_checkpoint, "coordinator_id"),
         }
         counts = {
             "links": len(self.list_links_snapshot(initiative_id)),

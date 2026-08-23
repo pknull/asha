@@ -49,6 +49,7 @@ SUPPORTED_ACTION_KINDS = frozenset({
     "activate-initiative", "dispatch-node", "pause", "resume",
     "stop-attempt", "cancel-node", "repair-node", "request-salvage",
     "decide", "continue-node", "finalize", "archive", "unarchive",
+    "request-decision", "propose-outcome", "directive",
 })
 _EXECUTION_AUTHORITY_ACTIONS = frozenset({
     "activate-initiative", "dispatch-node", "resume", "repair-node",
@@ -60,9 +61,15 @@ _ACTION_DOCUMENT_KEYS = frozenset({
     "expected_state_revision",
 })
 _COORDINATOR_DOCUMENT_KEYS = frozenset({"coordinator_id", "coordinator_generation"})
-# Action classes a fenced, live coordinator generation may submit. Increment 4
-# journals and refuses every class; Increment 5 opens the bounded set.
-COORDINATOR_ACTION_KINDS: frozenset[str] = frozenset()
+# Action classes a fenced, live coordinator generation may submit (Increment 5).
+# Approval-shaped classes (activate, resume, decide, finalize, archive,
+# unarchive, cancel-node) stay operator-only; salvage is request-only here and
+# the operator approves it separately.
+COORDINATOR_ACTION_KINDS: frozenset[str] = frozenset({
+    "dispatch-node", "repair-node", "request-salvage", "stop-attempt", "pause",
+    "continue-node", "request-decision", "propose-outcome", "directive",
+})
+_MAX_REQUEST_TEXT_BYTES = 2048
 _MAX_ACTION_PAYLOAD_BYTES = 4096
 _MAX_STOP_OUTPUT_BYTES = 64 * 1024
 
@@ -238,6 +245,18 @@ def append_event(
     return event
 
 
+def _bounded_request_text(
+    value: Any, name: str, *, maximum: int = _MAX_REQUEST_TEXT_BYTES,
+) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ActionRefused(f"{name} must be non-empty text")
+    if len(value.encode("utf-8")) > maximum:
+        raise ActionRefused(f"{name} exceeds {maximum} bytes")
+    if any(ord(char) < 32 and char not in "\n\t" for char in value):
+        raise ActionRefused(f"{name} must not contain control characters")
+    return value
+
+
 def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise ActionRefused("action payload must be an object")
@@ -255,6 +274,9 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         "finalize": frozenset({"outcome", "reason"}),
         "archive": frozenset(),
         "unarchive": frozenset(),
+        "request-decision": frozenset({"subject_id", "question"}),
+        "propose-outcome": frozenset({"outcome", "reason"}),
+        "directive": frozenset({"node_id", "attempt_id", "text"}),
     }[kind]
     if kind == "dispatch-node" and set(payload) == {"node_id", "salvage_request_id"}:
         expected = frozenset({"node_id", "salvage_request_id"})
@@ -262,6 +284,15 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         raise ActionRefused(
             f"{kind} payload requires exactly {sorted(expected)}"
         )
+    for field in ("question", "text"):
+        if field in payload:
+            _bounded_request_text(payload[field], f"{kind} {field}")
+    if kind == "request-decision":
+        _bounded_request_text(payload["subject_id"], "request-decision subject_id", maximum=128)
+    if kind == "propose-outcome":
+        if payload["outcome"] not in {"partial", "failed"}:
+            raise ActionRefused("propose-outcome outcome must be partial or failed")
+        _bounded_request_text(payload["reason"], "propose-outcome reason")
     if "node_id" in payload:
         from .model import validate_slug
 
@@ -486,14 +517,15 @@ def _resume(
     initiative = store.peek(initiative_id)
     if initiative["state"] == "running":
         return {"status": "running", "already_running": True}
-    if initiative["state"] != "paused":
-        raise ActionRefused("only a paused initiative may resume")
+    if initiative["state"] not in {"paused", "needs-input"}:
+        raise ActionRefused("only a paused or needs-input initiative may resume")
+    resumed_from = initiative["state"]
     reconcile_actions(store, initiative_id, exclude_action_id=action_id)
     live = reconcile_live(store, initiative_id)
     if live["conflicts"]:
         raise ActionRefused("resume requires a clean live reconciliation")
     initiative = store.peek(initiative_id)
-    if initiative["state"] != "paused":
+    if initiative["state"] != resumed_from:
         raise ActionRefused("live reconciliation changed the initiative state")
     changed = copy.deepcopy(initiative)
     changed.update({
@@ -504,7 +536,7 @@ def _resume(
     store.save_initiative(changed, expected_digest=record_digest(initiative))
     append_event(
         store, initiative_id, "initiative-state-changed", [initiative_id],
-        {"from": "paused", "to": "running"},
+        {"from": resumed_from, "to": "running"},
         actor_kind="controller", actor_id="action-broker",
     )
     refresh_readiness(store, initiative_id)
@@ -1146,6 +1178,90 @@ def _decide(
     }
 
 
+def _request_decision(
+    store: InitiativeStore, action: dict[str, Any], payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Coordinator escalation: the initiative waits for the operator (running -> needs-input)."""
+    initiative_id = action["initiative_id"]
+    initiative = store.peek(initiative_id)
+    if initiative["state"] == "needs-input":
+        return {"status": "needs-input", "already_waiting": True, "subject_id": payload["subject_id"]}
+    if initiative["state"] != "running":
+        raise ActionRefused("only a running initiative may request an operator decision")
+    changed = copy.deepcopy(initiative)
+    changed.update({
+        "state": "needs-input",
+        "state_revision": initiative["state_revision"] + 1,
+        "updated_at": _now(),
+    })
+    store.save_initiative(changed, expected_digest=record_digest(initiative))
+    append_event(
+        store, initiative_id, "approval-requested", [action["action_id"], payload["subject_id"]],
+        {
+            "kind": "operator-decision", "subject_id": payload["subject_id"],
+            "question": payload["question"], "action_id": action["action_id"],
+        },
+        actor_kind=action["actor_kind"], actor_id=action["actor_id"],
+    )
+    append_event(
+        store, initiative_id, "initiative-state-changed", [initiative_id],
+        {"from": "running", "to": "needs-input"},
+        actor_kind="controller", actor_id="action-broker",
+    )
+    return {"status": "needs-input", "already_waiting": False, "subject_id": payload["subject_id"]}
+
+
+def _propose_outcome(
+    store: InitiativeStore, action: dict[str, Any], payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Record a proposed terminal outcome; only the operator's finalize makes it so."""
+    initiative_id = action["initiative_id"]
+    initiative = store.peek(initiative_id)
+    if initiative["state"] not in {"running", "paused", "needs-input"}:
+        raise ActionRefused("an outcome may be proposed only for a live initiative")
+    append_event(
+        store, initiative_id, "approval-requested", [action["action_id"]],
+        {
+            "kind": "outcome-proposal", "outcome": payload["outcome"],
+            "reason": payload["reason"], "action_id": action["action_id"],
+        },
+        actor_kind=action["actor_kind"], actor_id=action["actor_id"],
+    )
+    return {"status": "outcome-proposed", "outcome": payload["outcome"]}
+
+
+def _directive(
+    store: InitiativeStore, action: dict[str, Any], payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Record a bounded directive for a live, unsealed attempt; delivery stays pending.
+
+    No harness seam is proven safe for mid-run delivery, so the controller never
+    types into a pane. The deterministic fallbacks are operator attach, a new
+    attempt carrying the directive in its assignment context, or needs-input.
+    """
+    initiative_id = action["initiative_id"]
+    attempt = store.read_attempt(initiative_id, payload["attempt_id"])
+    if attempt["node_id"] != payload["node_id"]:
+        raise ActionRefused("directive attempt does not belong to the named node")
+    if attempt["state"] not in {"dispatching", "running", "reported"}:
+        raise ActionRefused("directives target a live, unsealed attempt")
+    append_event(
+        store, initiative_id, "directive-accepted",
+        [action["action_id"], payload["node_id"], payload["attempt_id"]],
+        {
+            "node_id": payload["node_id"], "attempt_id": payload["attempt_id"],
+            "text_digest": hashlib.sha256(payload["text"].encode("utf-8")).hexdigest(),
+            "delivery": "pending",
+            "fallbacks": ["operator-attach", "new-attempt-with-directive", "needs-input"],
+        },
+        actor_kind=action["actor_kind"], actor_id=action["actor_id"],
+    )
+    return {
+        "status": "directive-pending", "node_id": payload["node_id"],
+        "attempt_id": payload["attempt_id"], "delivery": "pending",
+    }
+
+
 def _continue_node(
     store: InitiativeStore, action: dict[str, Any], payload: dict[str, Any],
 ) -> dict[str, Any]:
@@ -1281,6 +1397,12 @@ def _execute_local(
         return _decide(store, action, payload)
     if kind == "continue-node":
         return _continue_node(store, action, payload)
+    if kind == "request-decision":
+        return _request_decision(store, action, payload)
+    if kind == "propose-outcome":
+        return _propose_outcome(store, action, payload)
+    if kind == "directive":
+        return _directive(store, action, payload)
     if kind == "finalize":
         from .readiness import finalize_initiative
 
@@ -1354,7 +1476,18 @@ def submit_action(
             return _refuse(store, action, "initiative has no active approved plan")
         if action["active_plan_digest"] != initiative["active_plan"]["digest"]:
             return _refuse(store, action, "action active plan digest is stale")
-        if action["expected_state_revision"] != initiative["state_revision"]:
+        if action["actor_kind"] == "coordinator":
+            # The event loop wakes on sequences, not revisions, so a coordinator's
+            # expected revision is commonly behind. The records each class binds
+            # (plan digest, node/attempt/seal identities) are re-checked under the
+            # lock by the executor; only a future or garbage revision is refused.
+            if action["expected_state_revision"] > initiative["state_revision"]:
+                return _refuse(
+                    store, action,
+                    f"expected state revision {action['expected_state_revision']} is ahead of "
+                    f"current revision {initiative['state_revision']}",
+                )
+        elif action["expected_state_revision"] != initiative["state_revision"]:
             return _refuse(
                 store, action,
                 f"expected state revision {action['expected_state_revision']} does not match "

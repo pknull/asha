@@ -472,6 +472,7 @@ class OrchestrationModelTests(unittest.TestCase):
                 "pane_pid": 4242,
                 "process_start_identity": "boot:test:start:1234",
                 "server_pid": 4000,
+                "server_start_identity": "boot:test:start:1000",
             },
             "protocol_version": model.COORDINATOR_PROTOCOL_VERSION,
             "claimed_at": TIMESTAMP,

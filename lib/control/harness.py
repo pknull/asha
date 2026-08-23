@@ -131,6 +131,9 @@ def controller_env(
         "ASHA_CONTROL_RUN_ID": run_id,
         "ASHA_CONTROL_STATE_DIR": str(state),
         "ASHA_CONTROL_MANAGED": "1",
+        # Control-launched workers run from an assignment brief, not a persona:
+        # the launcher skips the identity render and keeps the operational layer.
+        "ASHA_PERSONA": "0",
     }
 
 

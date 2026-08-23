@@ -80,6 +80,8 @@ def build_link(
         "control_task_identity_digest": control_task_identity_digest(control_task),
         "control_task_record_digest": task_digest(control_task),
     }
+    if checked_action["actor_kind"] == "coordinator":
+        value["coordinator_generation"] = checked_action["coordinator_generation"]
     return validate_link(value)
 
 

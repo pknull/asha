@@ -27,6 +27,7 @@ def anchor(**overrides: object) -> dict:
         "pane_pid": 4242,
         "process_start_identity": "boot:test:start:1234",
         "server_pid": 4000,
+        "server_start_identity": "boot:test:start:1000",
     }
     value.update(overrides)
     return value
@@ -87,6 +88,7 @@ class CoordinatorValidatorTests(unittest.TestCase):
         for bad in (
             {"pane_id": "7"}, {"pane_id": "%x"}, {"pane_pid": 0}, {"server_pid": -1},
             {"session": ""}, {"process_start_identity": "x" * 201},
+            {"server_start_identity": ""},
         ):
             with self.subTest(bad=bad), self.assertRaises(model.ModelError):
                 model.validate_coordinator(coordinator(anchor=anchor(**bad)))

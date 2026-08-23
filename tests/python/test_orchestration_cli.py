@@ -85,6 +85,9 @@ class OrchestrationCliTests(unittest.TestCase):
             "lib.control.orchestration.cli.reconcile_live",
             side_effect=lambda *_: events.append("live") or {"l": 1},
         ), mock.patch(
+            "lib.control.orchestration.cli.reconcile_coordinator",
+            side_effect=lambda *_args, **_kwargs: events.append("coordinator") or None,
+        ), mock.patch(
             "lib.control.orchestration.cli._snapshot",
             side_effect=lambda *_: events.append("snapshot") or {
                 "nodes": [{"node_id": "node-a"}], "superseded_nodes": [],
@@ -97,7 +100,8 @@ class OrchestrationCliTests(unittest.TestCase):
         ) as dispatch:
             result = reconcile_one_initiative(store, initiative_id)
 
-        self.assertEqual(events, ["actions", "live", "snapshot", "nodes"])
+        self.assertEqual(events, ["actions", "live", "coordinator", "snapshot", "nodes"])
+        self.assertIsNone(result["coordinator_reconciliation"])
         self.assertEqual(result["initiative_id"], initiative_id)
         self.assertEqual(result["results"], [{"state": "ready"}])
         dispatch.assert_not_called()
@@ -495,7 +499,7 @@ class OrchestrationCliTests(unittest.TestCase):
                         "links", "result-publications", "results", "seals",
                         "seal-preparations",
                         "reviews", "verifications", "bundles", "approvals",
-                        "actions", "evidence", "events", "coordinators",
+                        "actions", "evidence", "events", "coordinators", "checkpoints",
                     })
                     self.assertEqual(value["evidence_counts"]["evidence"], 0)
                 self.assertEqual(stdout.count("\n"), 1)
