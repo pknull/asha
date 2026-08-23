@@ -577,6 +577,7 @@ def render(model: TuiModel) -> list[str]:
     title = f"ASHA TASKS  Scope: {'all' if model.include_archived else 'active'}"
     if model.filter_string:
         title += f"  Filter: {model.filter_string}"
+    title += "  (Tab: initiatives)"
     lines = [title, ""]
     lines.append(_table_line(
         ("STATE", "TASK", "REPOSITORY", "CHANGE", "HARNESS", "AGE"),
@@ -624,7 +625,7 @@ def render(model: TuiModel) -> list[str]:
         if detail.diff_summary is not None:
             diff_lines = detail.diff_summary.splitlines() or ["No changes."]
             lines.extend(f"Diff:       {line}" for line in diff_lines[:3])
-    footer = "Enter inspect  x actions  A scope  n start  r reconcile  d diff  a archive  / filter  Tab initiatives  ? help  q quit"
+    footer = "Enter inspect  x actions  A scope  n start  r reconcile  d diff  a archive  / filter  ? help  q quit"
     # Automatic failures are actionable and must not disappear below a long
     # task/detail body or operator message. Reserve their lines first, then the
     # ordinary status, truncating lower-priority body content as needed.
