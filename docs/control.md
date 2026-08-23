@@ -348,6 +348,24 @@ Use `asha task list --json` directly for scripts and other non-interactive
 callers. A curses failure after initialization also exits 2 and names the same
 fallback.
 
+## Cockpit
+
+`asha cockpit [DIR] [--session NAME] [--dry-run]` opens one tmux window: the
+left pane runs `asha claude` at `DIR` (default: the current directory) and is
+the coordinator's chat; the right pane runs `asha control --initiatives`, the
+Keeper's monitor and approval surface. `DIR` is the projects root the
+coordinator resolves intents against through `asha initiative projects`
+(declared workspace manifest first, otherwise the jj-colocated Asha projects at
+and one level below `DIR`). Inside tmux the window is added to the current
+session; outside tmux a detached session named `asha-cockpit-<dir>` is created
+once and attached. `--dry-run` prints the tmux plan. The split is structural:
+approvals typed in the left pane are refused because that pane carries the
+coordinator claim; `Enter` on a node in the right pane opens the worker's
+session popup.
+
+`asha control --initiatives` starts the TUI directly in Initiatives mode with
+the same lazy orchestration load and degradation as the `Tab` toggle.
+
 ## Task and run model
 
 A task is the durable container. Its lifecycle is `creating`, `running`,

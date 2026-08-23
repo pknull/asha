@@ -771,6 +771,17 @@ def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[st
     return views
 
 
+
+def _enter_initiatives(model: TuiModel, env: Mapping[str, str]) -> None:
+    """Switch to Initiatives mode; a failed orchestration load degrades this mode only."""
+    try:
+        _refresh_initiatives(model, env)
+    except Exception as exc:  # noqa: BLE001 - degrade this mode only
+        model.initiatives = None
+        model.initiatives_error = f"initiatives unavailable: {_safe_error(exc)}"
+    model.mode = "initiatives"
+
+
 def _refresh_initiatives(model: TuiModel, env: Mapping[str, str], *, tmux=None) -> None:
     from .orchestration.tui_model import InitiativesScreen
 
@@ -3064,12 +3075,7 @@ def _execute_intent(
             model.mode = "tasks"
             model.help_visible = False
             return True
-        try:
-            _refresh_initiatives(model, env)
-        except Exception as exc:  # noqa: BLE001 - degrade this mode only
-            model.initiatives = None
-            model.initiatives_error = f"initiatives unavailable: {_safe_error(exc)}"
-        model.mode = "initiatives"
+        _enter_initiatives(model, env)
         model.help_visible = False
         return True
     if intent.kind in _INITIATIVE_INTENTS:
@@ -3242,6 +3248,7 @@ def run_tui(
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
     curses_module=None,
+    initial_mode: str = "tasks",
 ) -> int:
     """Preflight and run curses, restoring signal dispositions on every exit."""
     values = os.environ if env is None else env
@@ -3267,6 +3274,8 @@ def run_tui(
     jj = JjAdapter()
     model = TuiModel(_load_rows(config, store, journals, jj))
     _surface_skipped(model, store)
+    if initial_mode == "initiatives":
+        _enter_initiatives(model, values)
 
     previous: dict[int, Any] = {}
 

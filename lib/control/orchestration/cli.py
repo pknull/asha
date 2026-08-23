@@ -98,6 +98,7 @@ Usage:
   asha initiative list [--all] [--json]
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
   asha initiative doctor [--json]
+  asha initiative projects [--root DIR] [--depth N] [--match TEXT] [--json]
   asha initiative coordinator claim <id> [--harness H] [--json]   (from the Asha pane)
   asha initiative coordinator release|show <id> [--json]
   asha initiative propose-plan <id> --file PLAN.json [--json]     (coordinator actor)
@@ -1226,6 +1227,28 @@ def _initiative_command(
         if store.skipped:
             payload["skipped"] = list(store.skipped)
         _payload(payload, bool(options["json"]))
+        return 0
+    if command == "projects":
+        options = _parse_options(tail, flags={"json"})
+        _only(options, {"root", "depth", "match", "json"}, "projects")
+        from .projects import list_projects
+
+        depth_option = options.get("depth")
+        try:
+            depth = 1 if depth_option is None else int(depth_option)
+        except ValueError as exc:
+            raise ValueError("projects --depth must be an integer") from exc
+        payload = list_projects(
+            Path(options["root"]) if options.get("root") else Path.cwd(),
+            depth=depth, match=options.get("match"),
+        )
+        if options["json"]:
+            _json(payload)
+        else:
+            print(f"Index: {payload['source']} at {payload['root']}")
+            for entry in payload["projects"]:
+                flags = ("declared " if entry["declared"] else "") + ("jj" if entry["jj_colocated"] else "no-jj")
+                print(f"{entry['name']:<24} {entry['root']}  [{flags}]")
         return 0
     if command == "doctor":
         options = _parse_options(tail, flags={"json"})
