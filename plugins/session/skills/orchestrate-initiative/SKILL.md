@@ -24,8 +24,21 @@ approves from his own terminal. That split is structural, not a courtesy.
 ## The loop
 
 1. Resolve the intent to one repository root and one bounded objective with
-   acceptance criteria. Email, calendar, and other non-code intents are not
-   initiatives; route them to the admin skills.
+   acceptance criteria. Use the project index, never a guess:
+
+   ```bash
+   asha initiative projects --match "<name the Keeper used>" --json
+   ```
+
+   The index is the declared workspace manifest at or above this session's
+   directory when one exists, otherwise the jj-colocated Asha projects found
+   at and one level below it (`asha cockpit DIR` starts this session at the
+   projects root for exactly this reason). Exactly one match is the
+   repository; zero or several: show the candidates and ask once. An entry
+   with `jj_colocated: false` cannot be an initiative target (`create`
+   refuses); say so instead of trying. Email,
+   calendar, and other non-code intents are not initiatives; route them to the
+   admin skills.
 2. Create the initiative (this grants no authority):
 
    ```bash

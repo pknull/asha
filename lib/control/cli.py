@@ -91,6 +91,7 @@ def _control_usage(stream=sys.stdout) -> None:
     print("""asha control: terminal task supervision
 
 Run `asha control` in a terminal to open the Control TUI.
+Use `asha control --initiatives` to open it in Initiatives mode.
 Use `asha task list --json` as the non-interactive fallback.
 Use `asha control tmux` to print the optional tmux integration snippet.""", file=stream)
 
@@ -1612,6 +1613,9 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             if not tail:
                 from .tui import run_tui
                 return run_tui(values)
+            if tail == ["--initiatives"]:
+                from .tui import run_tui
+                return run_tui(values, initial_mode="initiatives")
             _control_usage(sys.stderr)
             return 2
         print("unknown Control route", file=sys.stderr)

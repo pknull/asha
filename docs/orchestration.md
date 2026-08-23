@@ -46,6 +46,7 @@ asha initiative reconcile ID [--json]
 asha initiative storage ID [--json]
 asha initiative snapshot ID --json
 asha initiative doctor [--json]
+asha initiative projects [--root DIR] [--depth N] [--match TEXT] [--json]
 asha task report --file PATH [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
@@ -579,6 +580,7 @@ remain available where their ordinary lifecycle rules permit containment.
 | `storage` | `asha.orchestration-storage-report.v1` `{contract, initiative_id, inventory, workspaces, materializations, totals, thresholds, pause_recommended}`; `workspaces[]` and `materializations[]` entries carry `repository_id` (additive label under v1, following the `coordinator_reconciliation`/`coordinator` precedent) |
 | `snapshot` | `asha.orchestration-snapshot.v1` `{contract, initiative, active_plan, nodes, superseded_nodes, attempts, links, actions, coordinator, last_event_sequence, state_revision}` |
 | `doctor` | `asha.orchestration-doctor.v1` `{contract, ok, probes, limitations}` |
+| `projects` | `asha.orchestration-project-list.v1` `{contract, root, source, match, projects: [{name, root, project_id, role, declared, asha_project, jj_colocated}]}` — `source` is `manifest` (declared workspace at or above `--root`) or `discovery` (jj-colocated Asha projects at and below `--root`, depth 1-3, 512-directory bound); read-only |
 | `coordinator claim` | `asha.orchestration-coordinator-claim.v1` `{contract, initiative_id, coordinator, environment}` |
 | `coordinator release` | `asha.orchestration-coordinator-release.v1` `{contract, initiative_id, coordinator}` |
 | `coordinator show` | `asha.orchestration-coordinator-show.v1` `{contract, initiative_id, coordinator, anchor_live, anchor_detail, generations}` |

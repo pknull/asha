@@ -12,6 +12,17 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Cockpit and project index
+
+- `asha cockpit [DIR]` opens the coordinator's `asha claude` pane beside
+  `asha control --initiatives` in one tmux window (new window inside tmux,
+  named session outside; `--dry-run` prints the plan). `asha initiative
+  projects [--root DIR] [--match TEXT]` is the coordinator's read-only project
+  index: the declared workspace manifest when present, otherwise jj-colocated
+  Asha projects found at and below the root (bounded). The
+  `orchestrate-initiative` skill resolves intents through it (session plugin
+  2.1.2).
+
 #### Dogfood fixes
 
 - `orchestrate-initiative` ships `plan-template.json` plus a fill recipe so the

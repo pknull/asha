@@ -279,6 +279,27 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(code, 0)
         return screen, model
 
+    def test_initiatives_start_mode_enters_directly_and_degrades_alone(self) -> None:
+        model = TuiModel([], height=24, width=80)
+        tui._enter_initiatives(model, self.env)
+        self.assertEqual(model.mode, "initiatives")
+        self.assertIsNotNone(model.initiatives)
+        self.assertIsNone(model.initiatives_error)
+        broken = self.root / "broken-config.json"
+        broken.write_text("{not json")
+        degraded = TuiModel([], height=24, width=80)
+        tui._enter_initiatives(degraded, {**self.env, "ASHA_CONFIG": str(broken)})
+        self.assertEqual(degraded.mode, "initiatives")
+        self.assertIsNone(degraded.initiatives)
+        self.assertTrue(str(degraded.initiatives_error).startswith("initiatives unavailable:"))
+        screen = Screen([ord("q")])
+        with mock.patch("lib.control.tui._load_rows", return_value=[]):
+            code = tui._curses_loop(
+                screen, FakeCurses, degraded, self.control_config, self.env,
+                self.tasks, self.journals, self.jj,
+            )
+        self.assertEqual(code, 0)
+
     def records(self) -> dict:
         return {
             iid: (
