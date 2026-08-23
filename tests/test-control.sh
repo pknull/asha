@@ -198,6 +198,17 @@ PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_control_tui_initiatives_mode \
   tests.python.test_control_create_by_id \
   tests.python.test_control_colocated_sync \
+  tests.python.test_control_doctor_ok \
+  tests.python.test_control_finish_review_repairs \
+  tests.python.test_control_goal_viewport_large_tree \
+  tests.python.test_control_increment4 \
+  tests.python.test_control_increment5 \
+  tests.python.test_control_issue60_cleanup \
+  tests.python.test_control_live_state \
+  tests.python.test_control_pane_death \
+  tests.python.test_control_prerequisites \
+  tests.python.test_control_reconcile_doctor_cli \
+  tests.python.test_control_store \
   tests.python.test_control_increment2.RealJjPreparationTests \
   tests.python.test_control_increment3.RealTmuxLaunchTests \
   tests.python.test_control_popup_client.RealTmuxPopupClientTests \
