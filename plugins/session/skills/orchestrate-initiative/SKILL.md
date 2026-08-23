@@ -10,6 +10,14 @@ it claims one generation per initiative from the tmux pane it runs in, and
 every coordinator verb re-proves that pane. The Keeper is the operator and
 approves from his own terminal. That split is structural, not a courtesy.
 
+## How this session usually starts
+
+When Control launched this session (`n` in `asha control`, or `asha initiative
+coordinator launch`), the Keeper's intent is the first message, the working
+directory is the projects root, and the Keeper watches the monitor: report the
+plan digest in chat and keep the loop below; approvals arrive through the
+monitor, never through this pane.
+
 ## Preconditions
 
 - This session runs inside tmux (`$TMUX_PANE` is set). Outside tmux, `claim`

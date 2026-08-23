@@ -271,6 +271,23 @@ class TmuxAdapter:
             raise TmuxError("tmux returned invalid server pid")
         return pid
 
+    def list_sessions(self) -> list[str]:
+        """Session names on this server; an absent server is an empty list."""
+        returncode, stdout, stderr = self._run_status(
+            ["list-sessions", "-F", "#{session_name}"],
+        )
+        if returncode != 0:
+            diagnostic = stderr.decode("utf-8", errors="replace").casefold()
+            if any(marker in diagnostic for marker in ("no server running", "no sessions", "error connecting")):
+                return []
+            raise TmuxError("tmux list-sessions failed: " + diagnostic.strip()[:200])
+        names = []
+        for line in stdout.decode("utf-8", errors="replace").splitlines():
+            line = line.strip()
+            if line and _NAME.fullmatch(line):
+                names.append(line)
+        return names
+
     def has_session(self, name: str) -> bool:
         session = _validate_session_name(name)
         returncode, _stdout, stderr = self._run_status(

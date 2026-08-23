@@ -24,6 +24,9 @@ from ..harness import (
     verify_process,
 )
 from ..tmux import TmuxAdapter, TmuxError
+from ..harness import launch_argv
+import uuid
+from pathlib import Path
 from .actions import append_event
 from .model import (
     COORDINATOR_CHECKPOINT_CONTRACT,
@@ -532,3 +535,143 @@ __all__ = [
     "environment_for", "reconcile_coordinator", "refuse_coordinator_pane", "release",
     "require_anchored_caller", "require_live_coordinator", "show", "wait",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Control-managed coordinator sessions (the monitor's front door)
+# ---------------------------------------------------------------------------
+
+COORDINATOR_LAUNCH_CONTRACT = "asha.orchestration-coordinator-launch.v1"
+COORDINATOR_SESSIONS_CONTRACT = "asha.orchestration-coordinator-sessions.v1"
+COORDINATOR_ATTACH_CONTRACT = "asha.orchestration-coordinator-attach.v1"
+COORDINATOR_SESSION_INFIX = "coord-"
+MAX_INTENT_BYTES = 2000
+
+
+def coordinator_session_name(session_prefix: str, token: str) -> str:
+    return f"{session_prefix}{COORDINATOR_SESSION_INFIX}{token}"
+
+
+def launch_prompt(intent: str) -> str:
+    """The first message the launched coordinator session receives."""
+    return (
+        "Use the session-orchestrate-initiative skill for this intent: resolve the "
+        "repository with `asha initiative projects`, create and claim the initiative, "
+        "propose the plan, and tell the Keeper the digest. Intent: " + intent
+    )
+
+
+def normalize_intent(intent: Any) -> str:
+    if not isinstance(intent, str):
+        raise CoordinatorError("intent must be text")
+    text = " ".join(intent.split())
+    if not text:
+        raise CoordinatorError("intent must not be empty")
+    if len(text.encode("utf-8")) > MAX_INTENT_BYTES:
+        raise CoordinatorError(f"intent exceeds {MAX_INTENT_BYTES} UTF-8 bytes")
+    return text
+
+
+def launch_session(
+    config: Any, *, root: Path, intent: str, tmux: TmuxAdapter, asha_root: Path,
+    harness: str = "claude", token: str | None = None,
+) -> dict[str, Any]:
+    """Start the coordinator as a Control-owned tmux session at the projects root.
+
+    The session runs the full-persona harness with the intent as its first
+    message; the coordinator claims its initiative from that pane like any
+    other session. Control never types into the pane afterwards.
+    """
+    text = normalize_intent(intent)
+    directory = Path(root).expanduser().resolve()
+    if not directory.is_dir():
+        raise CoordinatorError(f"projects root is not a directory: {root}")
+    token = token or uuid.uuid4().hex[:8]
+    session = coordinator_session_name(config.session_prefix, token)
+    argv = launch_argv(asha_root, harness, [launch_prompt(text)])
+    pane_id = tmux.create_task_session(
+        session=session, window="coordinator", start_directory=directory,
+        environment={"ASHA_COORDINATOR_LAUNCH": token},
+        holder_argv=["sleep", "3600"],
+        session_options={"@asha_coordinator_session": "1"},
+        pane_options={"@asha_coordinator_launch": token, "@asha_harness": harness},
+        pane_title=f"asha:coordinator:{harness}",
+    )
+    tmux.respawn(pane_id, argv)
+    return {
+        "contract": COORDINATOR_LAUNCH_CONTRACT,
+        "session": session,
+        "pane_id": pane_id,
+        "root": str(directory),
+        "harness": harness,
+        "intent": text,
+        "launched_at": _now(),
+    }
+
+
+def _claimed_sessions(store: InitiativeStore) -> dict[str, dict[str, Any]]:
+    bound: dict[str, dict[str, Any]] = {}
+    for initiative in store.list_initiatives():
+        try:
+            record = store.current_coordinator(initiative["initiative_id"])
+        except StoreError:
+            # Retained initiatives from before the coordinator layout have no
+            # coordinators directory; they were never claimed.
+            continue
+        if record is None:
+            continue
+        bound[record["anchor"]["session"]] = {
+            "initiative_id": initiative["initiative_id"],
+            "slug": initiative["slug"],
+            "coordinator_id": record["coordinator_id"],
+            "generation": record["generation"],
+            "state": record["state"],
+        }
+    return bound
+
+
+def list_coordinator_sessions(config: Any, *, store: InitiativeStore, tmux: TmuxAdapter) -> dict[str, Any]:
+    """Control-launched coordinator sessions on this server, with their claims when made."""
+    prefix = coordinator_session_name(config.session_prefix, "")
+    bound = _claimed_sessions(store)
+    sessions = []
+    for name in sorted(tmux.list_sessions()):
+        if not name.startswith(prefix):
+            continue
+        claim = bound.get(name)
+        sessions.append({
+            "session": name,
+            "initiative_id": None if claim is None else claim["initiative_id"],
+            "slug": None if claim is None else claim["slug"],
+            "coordinator_id": None if claim is None else claim["coordinator_id"],
+            "generation": None if claim is None else claim["generation"],
+            "state": None if claim is None else claim["state"],
+        })
+    return {"contract": COORDINATOR_SESSIONS_CONTRACT, "sessions": sessions}
+
+
+def attach_target(
+    store: InitiativeStore, *, tmux: TmuxAdapter,
+    initiative_id: str | None = None, session: str | None = None,
+) -> dict[str, Any]:
+    """The tmux session to attach to for an initiative's coordinator, or a named session."""
+    if (initiative_id is None) == (session is None):
+        raise CoordinatorError("attach requires exactly one of an initiative or --session")
+    record = None
+    if initiative_id is not None:
+        record = store.current_coordinator(initiative_id)
+        if record is None:
+            raise CoordinatorError("no coordinator has claimed this initiative")
+        if record["state"] not in COORDINATOR_LIVE_STATES:
+            raise CoordinatorError(f"the current coordinator generation is {record['state']}; re-claim or launch a new session")
+        session = record["anchor"]["session"]
+    if not tmux.has_session(session):
+        raise CoordinatorError(f"coordinator session {session} is not running")
+    return {
+        "contract": COORDINATOR_ATTACH_CONTRACT,
+        "initiative_id": initiative_id,
+        "session": session,
+        "pane_id": None if record is None else record["anchor"]["pane_id"],
+        "coordinator_id": None if record is None else record["coordinator_id"],
+        "generation": None if record is None else record["generation"],
+    }

@@ -12,6 +12,15 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Coordinator sessions from the monitor
+
+- `n` in `asha control` Initiatives mode asks for an intent and starts the
+  coordinator as a Control-owned tmux session (`<prefix>coord-<token>`, full
+  persona `asha claude` at the projects root, intent as the first message),
+  opening its popup; `Enter` on an initiative row reattaches to its
+  coordinator. `asha initiative coordinator launch|sessions|attach` are the
+  CLI forms. The cockpit remains as a two-pane alternative.
+
 #### Cockpit and project index
 
 - `asha cockpit [DIR]` opens the coordinator's `asha claude` pane beside
