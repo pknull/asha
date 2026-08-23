@@ -459,6 +459,57 @@ check_dangling() { # home_dir label dir:depth...
   return 0
 }
 
+# ── Shared source-skill presence check ──
+# Every plugin skill directory must be installed under $home/skills, by whatever
+# name the harness renderer chose: a skill counts as installed when any entry
+# there resolves to its source directory. Only an installed harness home (at
+# least one asha-rooted skill symlink) is audited, so an unconfigured home is
+# first-use, not drift. The launcher's freshness probe only notices a different
+# checkout; a skill added after the last install is invisible until this names it.
+check_skill_links() { # home_dir label
+  local home_dir="$1" label="$2" skills_dir="$1/skills"
+  [[ -d "$skills_dir" ]] || return 0
+  local entry target installed_any=0
+  declare -A installed=()
+  for entry in "$skills_dir"/* "$skills_dir"/.[!.]*; do
+    [[ -L "$entry" ]] || continue
+    target="$(readlink -f "$entry" 2>/dev/null || true)"
+    case "$target" in
+      "$ASHA"|"$ASHA"/*) installed_any=1; installed["$target"]=1 ;;
+    esac
+  done
+  [[ $installed_any -eq 1 ]] || return 0
+  if [[ "$label" == copilot ]] && ! declare -F _copilot_is_skip_plugin >/dev/null 2>&1; then
+    # shellcheck source=../harnesses/copilot-common.sh
+    source "$ASHA/harnesses/copilot-common.sh"
+  fi
+  local missing=0 src plugin_dir ns skill dest
+  for src in "$ASHA"/plugins/*/skills/*/; do
+    [[ -f "$src/SKILL.md" ]] || continue
+    src="${src%/}"
+    plugin_dir="$(basename "$(dirname "$(dirname "$src")")")"
+    if [[ "$label" == copilot ]] && _copilot_is_skip_plugin "$plugin_dir"; then
+      continue
+    fi
+    [[ -n "${installed[$(readlink -f "$src")]:-}" ]] && continue
+    ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
+    skill="$(basename "$src")"
+    if [[ $FIX -eq 1 && "$label" == claude ]]; then
+      dest="$skills_dir/${ns}-${skill}"
+      if [[ ! -e "$dest" && ! -L "$dest" ]]; then
+        ln -s "$src" "$dest"
+        echo "FIXED  linked missing skill: $dest -> $src"
+        continue
+      fi
+    fi
+    [[ $missing -eq 0 ]] && nope "installed skill symlinks missing ($label); run: asha install $label"
+    echo "  $src  (no entry under $skills_dir resolves to it)"
+    missing=$((missing+1))
+  done
+  [[ $missing -eq 0 ]] && pass "every source skill is installed ($label)"
+  return 0
+}
+
 # ===========================================================================
 # Repo-wide checks (always run)
 # ===========================================================================
@@ -535,6 +586,7 @@ if [[ "$TARGET" == "claude" || "$TARGET" == "all" ]]; then
 
   # No dangling asha symlinks under Claude scan dirs
   check_dangling "$CLAUDE" claude skills:2 agents:2 commands:2
+  check_skill_links "$CLAUDE" claude
 
   # Every asha hook command path exists on disk. Match by command path-prefix
   # OR source tag (mirrors register_hooks in lib/install.sh): Claude Code
@@ -582,6 +634,7 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
   else
     # No dangling asha symlinks under Codex scan dirs
     check_dangling "$CODEX" codex skills:1 agents:1 prompts:1
+    check_skill_links "$CODEX" codex
 
     # config.toml parses as TOML
     if [[ -f "$CODEX/config.toml" ]]; then
@@ -700,6 +753,7 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
   else
     # No dangling asha symlinks under Copilot scan dirs
     check_dangling "$COPILOT" copilot skills:2 agents:1
+    check_skill_links "$COPILOT" copilot
 
     # Command-skill coverage + freshness (generated SKILL.md files)
     check_command_skills "$COPILOT/skills" copilot fix_regen_copilot_command_skill
@@ -825,6 +879,7 @@ if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
     pass "opencode not configured by Asha (skipping opencode checks)"
   else
     check_dangling "$OPENCODE" opencode skills:1
+    check_skill_links "$OPENCODE" opencode
     manifest_out="$(asha_artifact_doctor opencode 2>&1)"; manifest_rc=$?
     if [[ $manifest_rc -eq 0 ]]; then
       pass "generated-artifact ownership manifest clean (opencode)"

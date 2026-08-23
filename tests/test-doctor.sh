@@ -283,6 +283,39 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+echo "--- test 2e: a source skill missing from the install is named; install restores it ---"
+skill_link="$SANDBOX/.codex/skills/orchestrate-initiative"
+if [[ -L "$skill_link" ]]; then
+  unlink "$skill_link"
+  out="$(run --target codex 2>&1 || true)"
+  if grep -q "installed skill symlinks missing (codex); run: asha install codex" <<<"$out" && grep -q "skills/orchestrate-initiative" <<<"$out"; then
+    ok "missing source skill FAILS --target codex and is named"
+  else
+    fail "missing source skill not reported: $(grep -i skill <<<"$out" | head -3)"
+  fi
+  out="$(run --target codex --fix 2>&1 || true)"
+  if [[ ! -e "$skill_link" ]] && grep -q "run: asha install codex" <<<"$out"; then
+    ok "--fix defers codex skill naming to the installer"
+  else
+    fail "--fix should not guess codex skill names"
+  fi
+  env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+    bash "$REPO_ROOT/install.sh" --target codex >/dev/null 2>&1 || true
+  if [[ -L "$skill_link" ]]; then
+    ok "reinstall restores the skill link"
+  else
+    fail "reinstall did not restore $skill_link"
+  fi
+  out="$(run --target codex 2>&1 || true)"
+  if grep -q "every source skill is installed (codex)" <<<"$out"; then
+    ok "codex probe passes after reinstall"
+  else
+    fail "codex probe after reinstall: $(grep -iE "skill|FAIL" <<<"$out" | head -4 | tr '\n' '|')"
+  fi
+else
+  fail "fixture: expected codex skill symlink at $skill_link"
+fi
+
 echo "--- test 3: claude untagged (tag-stripped) hooks are audited by path-prefix ---"
 mkdir -p "$SANDBOX/.claude/skills" "$SANDBOX/.claude/agents" \
          "$SANDBOX/.claude/commands"
@@ -372,6 +405,29 @@ grep -q "FIXED  regenerated drifted command-skill" <<<"$out" \
 run_portable --target copilot >/dev/null 2>&1 \
   && ok "BSD-like post-fix re-run is clean" \
   || fail "BSD-like post-fix re-run is clean"
+
+echo "--- test 6: claude home with one asha skill is audited; --fix links the rest by <ns>-<dir> ---"
+mkdir -p "$SANDBOX/.claude/skills"
+ln -sfn "$REPO_ROOT/plugins/session/skills/skill-creator" "$SANDBOX/.claude/skills/session-skill-creator"
+out="$(run --target claude 2>&1 || true)"
+if grep -q "installed skill symlinks missing (claude)" <<<"$out" && grep -q "skills/orchestrate-initiative" <<<"$out"; then
+  ok "partially installed claude home names the missing skills"
+else
+  fail "claude missing-skill probe: $(grep -i skill <<<"$out" | head -3)"
+fi
+out="$(run --target claude --fix 2>&1 || true)"
+if grep -q "FIXED  linked missing skill: $SANDBOX/.claude/skills/session-orchestrate-initiative" <<<"$out" \
+   && [[ "$(readlink -f "$SANDBOX/.claude/skills/session-orchestrate-initiative")" == "$(readlink -f "$REPO_ROOT/plugins/session/skills/orchestrate-initiative")" ]]; then
+  ok "--fix links missing claude skills to their sources"
+else
+  fail "--fix did not link claude skills: $(grep FIXED <<<"$out" | head -2)"
+fi
+out="$(run --target claude 2>&1 || true)"
+if grep -q "every source skill is installed (claude)" <<<"$out"; then
+  ok "claude post-fix probe passes"
+else
+  fail "claude post-fix probe still failing: $(grep -iE "skill|FAIL" <<<"$out" | head -4 | tr '\n' '|')"
+fi
 
 echo ""
 echo "test-doctor: $PASS passed, $FAIL failed"

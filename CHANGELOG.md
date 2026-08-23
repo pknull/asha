@@ -21,7 +21,9 @@ the active instruction surface loses no release detail.
   index: the declared workspace manifest when present, otherwise jj-colocated
   Asha projects found at and below the root (bounded). The
   `orchestrate-initiative` skill resolves intents through it (session plugin
-  2.1.2).
+  2.1.2). The cockpit preflights `asha doctor claude`, `asha initiative
+  doctor`, and the project index; `asha doctor <harness>` now names source
+  skills missing from an install (and `--fix` links them).
 
 #### Dogfood fixes
 

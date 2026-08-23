@@ -358,7 +358,11 @@ coordinator resolves intents against through `asha initiative projects`
 (declared workspace manifest first, otherwise the jj-colocated Asha projects at
 and one level below `DIR`). Inside tmux the window is added to the current
 session; outside tmux a detached session named `asha-cockpit-<dir>` is created
-once and attached. `--dry-run` prints the tmux plan. The split is structural:
+once and attached. Before opening, a preflight runs `asha doctor claude`,
+`asha initiative doctor`, and the project index for `DIR`, and refuses with
+the remediation when the Claude install or the orchestration runtime is not
+healthy (`--check` runs only the preflight; `--no-check` skips it;
+`--dry-run` prints the tmux plan without it). The split is structural:
 approvals typed in the left pane are refused because that pane carries the
 coordinator claim; `Enter` on a node in the right pane opens the worker's
 session popup.
