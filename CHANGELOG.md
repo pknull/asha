@@ -12,6 +12,18 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration Increment 6: Initiatives mode in `asha control`
+
+- `Tab` switches the Control TUI between Tasks and a text-only Initiatives view
+  with per-mode key tables: expand/collapse the initiative tree, open a node's
+  linked task popup, reconcile, jj diff, events/candidates/verification/storage
+  panes, operator plan approval or rejection (typed `approve`/`reject`),
+  confirmed pause/resume and stop-attempt. The view reads through the same
+  typed controller functions as the CLI (`snapshot`, `show_payload`,
+  `approve_plan`, `reject_plan`, `reconcile_one_initiative`, `submit_action`),
+  loads orchestration lazily so a malformed configuration degrades this view
+  only, and exposes no forbidden action path.
+
 #### Orchestration Increment 5: the bounded active coordinator; persona-free workers
 
 - The coordinator actor may now submit exactly `dispatch-node`, `repair-node`,

@@ -114,6 +114,43 @@ switches to `all`; archived records use their durable lifecycle projection and
 display `archived` even after their session and workspace have been pruned.
 The title always names the current scope. Scope reloads preserve the selected
 task when it remains visible, and the text filter remains independent.
+
+### Initiatives mode
+
+`Tab` switches between the Tasks view and the Initiatives view. Bindings are per
+mode: the Tasks keys above are untouched, and the Initiatives view binds the
+table below. The view is text only, works on an 80x24 monochrome terminal, and
+reads orchestration state through the same typed controller functions the CLI
+uses (`snapshot`, `show_payload`, `reconcile_one_initiative`, `approve_plan`,
+`reject_plan`, `submit_action`); it duplicates no lifecycle logic. Orchestration
+is imported lazily on the first `Tab`; a malformed orchestration configuration
+degrades this view to a status line and leaves Tasks intact. The five-second
+automatic refresh reloads both views with lock-free snapshot readers.
+
+| Key | Action |
+|---|---|
+| `Up`/`Down` | Move between initiative, node, and attempt rows. |
+| `Right`/`Left` | Expand or collapse the selected initiative or node; `Left` on a child returns to its parent. |
+| `Enter` | Open the selected node's or attempt's linked Control task in the existing tmux popup. |
+| `r` | Reconcile the selected initiative (actions, live evidence, coordinator anchor) without dispatching. |
+| `d` | Read-only jj diff summary of the selected node's linked task workspace. |
+| `e`, `c`, `v`, `t` | Toggle a pane: recent events, candidate seals, review + verification evidence, retained storage (sampled on demand). |
+| `a` | Decide a pending plan approval: type `approve` or `reject` (with a reason) exactly; recorded as operator actor `tui`. |
+| `p` | After `yes`, pause a running initiative or resume a paused / needs-input one. |
+| `s` | After `yes`, ask Control to stop the selected attempt's task gracefully. |
+| `/` | Filter initiative rows without mutating state. |
+| `?` | Help for this mode. `q` exits the TUI only. |
+
+The table shows `STATE`, `INITIATIVE`, `COORDINATOR` (harness and generation of
+the live claim, or the terminal state), `NODES` (succeeded/total), and
+`ATTENTION` (plan approval, needs input, salvage approval, paused, failed
+count). The detail block shows the coordinator claim and anchor liveness, the
+pending approval, the latest candidate seal, the review verdict, the
+verification outcome, limits, storage, and the last events as separate facts.
+No key in this view reaches merge, rebase, bookmark movement, push,
+publication, workspace removal, or deletion; approval keys are operator acts
+and refuse nothing here because the TUI runs in the Keeper's own terminal, not
+the coordinator's pane.
 Every reconciliation path re-reads lifecycle under the task lock immediately
 before consulting live adapters. If archive wins after an earlier list or
 selection snapshot, the path returns the durable archived projection instead.
