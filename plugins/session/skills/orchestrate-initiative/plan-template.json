@@ -1,0 +1,115 @@
+{
+  "contract": "asha.orchestration-plan.v1",
+  "initiative_id": "<FILL: initiative_id from `asha initiative create --json`>",
+  "revision": 1,
+  "digest": null,
+  "status": "proposed",
+  "repositories": [
+    "<FILL: the exact `initiative.scope.repository` object from create --json>"
+  ],
+  "limits": "<FILL: the exact `initiative.limits` object from create --json>",
+  "declared_gates": [
+    {
+      "kind": "review",
+      "node_id": "review-a",
+      "required": true
+    },
+    {
+      "kind": "verification",
+      "node_id": "verify-a",
+      "required": true,
+      "environment_policy": "minimal",
+      "commands": [
+        {
+          "argv": [
+            "<FILL: the repository's narrowest real check, e.g. cargo|pytest|npm>",
+            "test"
+          ],
+          "cwd": ".",
+          "timeout_seconds": 600
+        }
+      ]
+    }
+  ],
+  "nested_workflow_policy": {
+    "workflow": "none",
+    "single_writer": false
+  },
+  "acceptance_conditions": [
+    "<FILL: the initiative acceptance criteria, one string each>"
+  ],
+  "action_classes": [
+    "task-start",
+    "review",
+    "verification"
+  ],
+  "nodes": [
+    {
+      "contract": "asha.orchestration-node.v1",
+      "node_id": "implementation-a",
+      "type": "work",
+      "goal": "<FILL: the bounded change, stated so a worker with no other context can do it>",
+      "role": "implementer",
+      "workflow": "none",
+      "harness": "codex",
+      "repository_id": "<FILL: repositories[0].repository_id>",
+      "base": {
+        "policy": "approved-baseline",
+        "scope_origin": {
+          "jj_commit_id": "<FILL: from `asha initiative baseline --repo ROOT --json`>",
+          "tree_digest": "<FILL: from the same baseline output>"
+        },
+        "upstream_node_ids": [],
+        "seal_inputs": []
+      },
+      "dependencies": [],
+      "advisory_path_ownership": [
+        "<FILL: directory the change lives in, e.g. src/monitor>"
+      ],
+      "hard_write_scope": [
+        "<FILL: same directory; writes outside it fail the seal>"
+      ],
+      "acceptance": "<FILL: what the worker must make true>",
+      "terminal_candidate": true,
+      "state": "proposed"
+    },
+    {
+      "contract": "asha.orchestration-node.v1",
+      "node_id": "review-a",
+      "type": "review",
+      "goal": "Review the exact candidate seal against the plan acceptance; read-only.",
+      "role": "reviewer",
+      "workflow": "none",
+      "harness": "codex",
+      "repository_id": "<FILL: repositories[0].repository_id>",
+      "base": null,
+      "dependencies": [
+        "implementation-a"
+      ],
+      "advisory_path_ownership": [],
+      "hard_write_scope": [],
+      "acceptance": "An accepted-pass verdict bound to the candidate seal.",
+      "terminal_candidate": false,
+      "state": "proposed"
+    },
+    {
+      "contract": "asha.orchestration-node.v1",
+      "node_id": "verify-a",
+      "type": "verify",
+      "goal": "Controller runs the declared verification commands in a fresh materialization.",
+      "role": "controller",
+      "workflow": "none",
+      "harness": null,
+      "repository_id": "<FILL: repositories[0].repository_id>",
+      "base": null,
+      "dependencies": [
+        "review-a"
+      ],
+      "advisory_path_ownership": [],
+      "hard_write_scope": [],
+      "acceptance": "Every declared command exits 0 at the exact candidate seal.",
+      "terminal_candidate": false,
+      "state": "proposed"
+    }
+  ]
+}

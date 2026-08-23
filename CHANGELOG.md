@@ -12,6 +12,12 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Dogfood fixes
+
+- `orchestrate-initiative` ships `plan-template.json` plus a fill recipe so the
+  coordinator proposes a plan instead of re-deriving the schema from the
+  reference document (session plugin 2.1.1).
+
 #### Orchestration Increment 7: workspace-scoped initiatives
 
 - `create --workspace PATH` binds a declared `.asha/workspace.json` workspace;

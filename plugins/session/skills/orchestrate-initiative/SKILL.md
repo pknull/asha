@@ -30,7 +30,8 @@ approves from his own terminal. That split is structural, not a courtesy.
 
    ```bash
    asha initiative create --repo "$REPO" --slug "$SLUG" --label "$LABEL" \
-     --objective "$OBJECTIVE" --acceptance "$CRITERION_1" --json
+     --objective "$OBJECTIVE" --acceptance "$CRITERION_1" --json > create.json
+   ID="$(python3 -c 'import json;print(json.load(open("create.json"))["initiative"]["initiative_id"])')"
    ```
 
 3. Claim the coordinator generation from this pane and export the identifiers it
@@ -47,10 +48,36 @@ approves from his own terminal. That split is structural, not a courtesy.
    variables select records for the CLI; they do not reach hook processes, so
    the policy guard's belt applies only to sessions launched with them set.
    The controller's pane check is what actually refuses operator verbs here.
-4. Author the plan as `asha.orchestration-plan.v1` (schema and node kinds in
-   `docs/orchestration.md`). For every mutating node use
-   `asha initiative baseline --repo "$REPO" --json` for the exact
-   `scope_origin`. Propose it as the coordinator actor:
+4. Author the plan from `plan-template.json` beside this skill (the
+   canonical three-node Core plan: one `work` producer, one `review`, one
+   `verify`). Do not read the reference document to learn the schema; fill the
+   `<FILL: …>` markers and nothing else. Mechanically:
+
+   ```bash
+   asha initiative baseline --repo "$REPO" --json > baseline.json   # exact scope origin
+   python3 - <<'PY'
+   import json, pathlib
+   created = json.load(open("create.json"))["initiative"]        # saved from step 2
+   base = json.load(open("baseline.json"))
+   plan = json.load(open(pathlib.Path("~/.claude/skills/session-orchestrate-initiative/plan-template.json").expanduser()))
+   plan["initiative_id"] = created["initiative_id"]
+   plan["repositories"] = [created["scope"]["repository"]]
+   plan["limits"] = created["limits"]
+   plan["acceptance_conditions"] = created["acceptance_criteria"]
+   for node in plan["nodes"]:
+       node["repository_id"] = created["scope"]["repository"]["repository_id"]
+   work = plan["nodes"][0]
+   work["base"]["scope_origin"] = {"jj_commit_id": base["jj_commit_id"], "tree_digest": base["tree_digest"]}
+   json.dump(plan, open("plan.json", "w"), indent=2)
+   PY
+   ```
+
+   Then edit only: `goal`, `acceptance`, `hard_write_scope` and
+   `advisory_path_ownership` on `implementation-a` (the one directory the
+   change lives in), and the verification `commands` (the repository's real,
+   narrowest check; it runs under bwrap with `PATH`, `HOME`, `LANG` only, so
+   name the binary that exists on this machine). `limits` must not exceed the
+   initiative's. Propose:
 
    ```bash
    asha initiative propose-plan "$ID" --file plan.json --json
