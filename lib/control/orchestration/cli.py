@@ -26,10 +26,10 @@ from .actions import (
 from ..tmux import TmuxAdapter
 from .config import OrchestrationConfigError, load_config
 from .coordinator import (
-    CoordinatorError, claim as claim_coordinator, environment_for,
-    reconcile_coordinator, refuse_coordinator_pane, release as release_coordinator,
-    require_anchored_caller, require_live_coordinator, show as show_coordinator,
-    wait as wait_for_events,
+    CoordinatorError, checkpoint as checkpoint_coordinator, claim as claim_coordinator,
+    environment_for, reconcile_coordinator, refuse_coordinator_pane,
+    release as release_coordinator, require_anchored_caller, require_live_coordinator,
+    show as show_coordinator, wait as wait_for_events,
 )
 from .doctor import run_orchestration_doctor
 from .graph import PlanError, validate_plan
@@ -100,7 +100,9 @@ Usage:
   asha initiative coordinator claim <id> [--harness H] [--json]   (from the Asha pane)
   asha initiative coordinator release|show <id> [--json]
   asha initiative propose-plan <id> --file PLAN.json [--json]     (coordinator actor)
-  asha initiative wait <id> --after SEQUENCE --timeout SECONDS --json""", file=stream)
+  asha initiative wait <id> --after SEQUENCE --timeout SECONDS --json
+  asha initiative checkpoint <id> --file CHECKPOINT.json [--json] (coordinator actor)
+  asha initiative dispatch|pause|stop <id> ... --as-coordinator  (coordinator actor)""", file=stream)
 
 
 def _payload(value: Any, json_output: bool) -> None:
@@ -477,9 +479,11 @@ def _verify_approved_baselines(
 
 def _plan(
     args: list[str], store: InitiativeStore, config, *, jj: JjAdapter,
+    env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if not args:
         raise ValueError("plan requires an initiative ID or exact slug")
+    env = {} if env is None else env
     initiative = _resolve(store, args[0])
     options = _parse_options(args[1:], flags={"show", "json"})
     _only(options, {"file", "show", "revision", "json"}, "plan")
@@ -498,6 +502,7 @@ def _plan(
     _required(options, "file")
     if options.get("revision") is not None:
         raise ValueError("--revision is valid only with --show")
+    refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux or TmuxAdapter())
     raw = _read_plan_file(Path(options["file"]))
     if not isinstance(raw, dict):
         raise ValueError("plan file must contain an object")
@@ -674,6 +679,22 @@ def _propose_plan_command(
     return plan, bool(options["json"])
 
 
+def _checkpoint_command(
+    args: list[str], store: InitiativeStore, env: Mapping[str, str], tmux: TmuxAdapter,
+) -> tuple[dict[str, Any], bool]:
+    if not args:
+        raise ValueError("checkpoint requires an initiative ID or exact slug")
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={"json"})
+    _only(options, {"file", "json"}, "checkpoint")
+    _required(options, "file")
+    document = _read_json_file(Path(options["file"]), "checkpoint")
+    if not isinstance(document, dict):
+        raise ValueError("checkpoint file must contain an object")
+    record = checkpoint_coordinator(store, initiative, env=env, tmux=tmux, document=document)
+    return record, bool(options["json"])
+
+
 def _non_negative(value: Any, name: str) -> int:
     if re.fullmatch(r"(?:0|[1-9][0-9]*)", str(value)) is None:
         raise ValueError(f"--{name} must be a non-negative integer")
@@ -692,10 +713,17 @@ def _approve(
     _only(options, {"digest", "json"}, "approve")
     _required(options, "digest")
     refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux)
+    return approve_plan(store, initiative, options["digest"]), bool(options["json"])
+
+
+def approve_plan(
+    store: InitiativeStore, initiative: dict[str, Any], digest: str, *, actor_id: str = "cli",
+) -> dict[str, Any]:
+    """Operator plan approval core shared by the CLI and the Control TUI."""
     plan = _latest_executable_plan(store, initiative["initiative_id"])
     if initiative["state"] not in {"awaiting-plan-approval", "approved"}:
         raise ValueError("initiative is not awaiting plan approval")
-    if not re.fullmatch(r"[0-9a-f]{64}", options["digest"]) or options["digest"] != plan["digest"]:
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or digest != plan["digest"]:
         raise ValueError("approval digest does not match the latest proposed plan")
     nodes = store.list_nodes_snapshot(initiative["initiative_id"])
     plan_ids = {node["node_id"] for node in plan["nodes"]}
@@ -759,7 +787,7 @@ def _approve(
             "initiative_id": initiative["initiative_id"], "action_class": "plan-approval",
             "binding_digest": plan["digest"], "active_plan_digest": plan["digest"],
             "expected_state_revision": initiative["state_revision"], "actor_kind": "operator",
-            "actor_id": "cli", "state": "approved", "expires_at": expires,
+            "actor_id": actor_id, "state": "approved", "expires_at": expires,
             "rationale": None, "created_at": at, "updated_at": at,
         })
     approval_id = approved["request_id"]
@@ -820,8 +848,12 @@ def _approve(
                 {"revision": plan["revision"], "digest": plan["digest"], "approval_id": approval_id}, at,
             )
             store.append_event(initiative["initiative_id"], event)
-    payload = {"contract": APPROVAL_RESULT_CONTRACT, "initiative": store.peek(initiative["initiative_id"]), "plan": plan, "approval": store.read_approval(initiative["initiative_id"], approval_id)}
-    return payload, bool(options["json"])
+    return {
+        "contract": APPROVAL_RESULT_CONTRACT,
+        "initiative": store.peek(initiative["initiative_id"]),
+        "plan": plan,
+        "approval": store.read_approval(initiative["initiative_id"], approval_id),
+    }
 
 
 def _reject(
@@ -836,11 +868,21 @@ def _reject(
     _only(options, {"digest", "reason", "json"}, "reject")
     _required(options, "digest", "reason")
     refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux)
+    return reject_plan(store, initiative, options["digest"], options["reason"]), bool(options["json"])
+
+
+def reject_plan(
+    store: InitiativeStore, initiative: dict[str, Any], digest: str, reason: str, *,
+    actor_id: str = "cli",
+) -> dict[str, Any]:
+    """Operator plan rejection core shared by the CLI and the Control TUI."""
     plan = _latest_plan(store, initiative["initiative_id"])
     if initiative["state"] != "awaiting-plan-approval":
         raise ValueError("initiative is not awaiting plan approval")
-    if not re.fullmatch(r"[0-9a-f]{64}", options["digest"]) or options["digest"] != plan["digest"]:
+    if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or digest != plan["digest"]:
         raise ValueError("rejection digest does not match the latest proposed plan")
+    if not isinstance(reason, str) or not reason.strip():
+        raise ValueError("rejection requires a reason")
     plan_ids = {node["node_id"] for node in plan["nodes"]}
     retained = {
         node["node_id"]: node
@@ -871,7 +913,11 @@ def _reject(
     changed = copy.deepcopy(initiative)
     changed.update({"state": "planning", "state_revision": initiative["state_revision"] + 1, "updated_at": at})
     validate_initiative(changed)
-    event = _event(initiative, "plan-rejected", {"revision": plan["revision"], "digest": plan["digest"], "reason": options["reason"]}, at)
+    event = _event(
+        initiative, "plan-rejected",
+        {"revision": plan["revision"], "digest": plan["digest"], "reason": reason}, at,
+        actor_id=actor_id,
+    )
     with store.transaction_lock(initiative["initiative_id"]):
         if record_digest(store.peek(initiative["initiative_id"])) != record_digest(initiative):
             raise StoreError("initiative changed; reload before rejecting")
@@ -895,7 +941,12 @@ def _reject(
             )
         store.save_initiative(changed, expected_digest=record_digest(initiative))
         store.append_event(initiative["initiative_id"], event)
-    return {"contract": REJECTION_RESULT_CONTRACT, "initiative": store.peek(initiative["initiative_id"]), "plan_digest": plan["digest"], "reason": options["reason"]}, bool(options["json"])
+    return {
+        "contract": REJECTION_RESULT_CONTRACT,
+        "initiative": store.peek(initiative["initiative_id"]),
+        "plan_digest": plan["digest"],
+        "reason": reason,
+    }
 
 
 def _partition_nodes(
@@ -920,7 +971,8 @@ def _partition_nodes(
     return live, superseded
 
 
-def _snapshot(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, Any]:
+def snapshot(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, Any]:
+    """Lock-free typed read shared by the CLI, reconciliation, and the Control TUI."""
     plans = store.list_plans_snapshot(initiative["initiative_id"])
     active = None
     if initiative["active_plan"] is not None:
@@ -942,6 +994,9 @@ def _snapshot(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, A
         "last_event_sequence": initiative["last_event_sequence"],
         "state_revision": initiative["state_revision"],
     }
+
+
+_snapshot = snapshot
 
 
 def reconcile_one_initiative(
@@ -1001,20 +1056,23 @@ def _action_command(
             # The pane/process proof lives here; the journal fence lives in submit_action.
             coordinator = require_live_coordinator(store, initiative["initiative_id"])
             require_anchored_caller(coordinator, env, tmux or TmuxAdapter())
-        elif document.get("action_class") == "decide":
-            refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux)
+        else:
+            # Operator documents never come from the coordinator's pane or session.
+            refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux or TmuxAdapter())
     result = submit_action(store, initiative["initiative_id"], document)
     return result, True
 
 
 def _operator_action(
-    command: str, args: list[str], store: InitiativeStore
+    command: str, args: list[str], store: InitiativeStore,
+    env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if not args:
         raise ValueError(f"{command} requires an initiative ID or exact slug")
+    env = {} if env is None else env
     initiative = _resolve(store, args[0])
-    options = _parse_options(args[1:], flags={"json"})
-    allowed = {"json"}
+    options = _parse_options(args[1:], flags={"json", "as_coordinator"})
+    allowed = {"json", "as_coordinator"}
     payload: dict[str, Any]
     action_class = command
     if command == "activate":
@@ -1046,6 +1104,16 @@ def _operator_action(
     else:
         raise ValueError(f"unknown operator action: {command}")
     _only(options, allowed, command)
+    if not options["as_coordinator"]:
+        refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux or TmuxAdapter())
+    if options["as_coordinator"]:
+        coordinator = require_live_coordinator(store, initiative["initiative_id"])
+        require_anchored_caller(coordinator, env, tmux or TmuxAdapter())
+        document = build_action_document(
+            initiative, action_class, payload,
+            actor_id=f"coordinator:{coordinator['coordinator_id']}", coordinator=coordinator,
+        )
+        return submit_action(store, initiative["initiative_id"], document), bool(options["json"])
     return (
         _submit_convenience_action(
             store, initiative, action_class, payload,
@@ -1104,7 +1172,7 @@ def _initiative_command(
         _payload(result, json_output)
         return 0
     if command == "plan":
-        result, json_output = _plan(tail, store, config, jj=jj or JjAdapter())
+        result, json_output = _plan(tail, store, config, jj=jj or JjAdapter(), env=env, tmux=tmux)
         _payload(result, json_output)
         return 0
     if command == "approve":
@@ -1141,9 +1209,13 @@ def _initiative_command(
         "activate", "dispatch", "pause", "resume", "stop", "cancel",
         "finalize", "archive", "unarchive",
     }:
-        result, json_output = _operator_action(command, tail, store)
+        result, json_output = _operator_action(command, tail, store, env, tmux)
         _payload(result, json_output)
         return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
+    if command == "checkpoint":
+        result, json_output = _checkpoint_command(tail, store, env, tmux)
+        _payload(result, json_output)
+        return 0
     options_tail, json_output = [], False
     if command == "list":
         options = _parse_options(tail, flags={"all", "json"})
@@ -1197,24 +1269,29 @@ def _initiative_command(
     elif command == "storage":
         payload = storage_report(initiative, store=store)
     else:
-        snapshot = _snapshot(store, initiative)
-        reconciled = reconcile_nodes(initiative["initiative_id"], snapshot["nodes"], store=store)
-        evidence_counts = store.record_counts_snapshot(initiative["initiative_id"])
-        payload = {
-            "contract": SHOW_CONTRACT, "initiative": initiative,
-            "graph": {
-                "plan": snapshot["active_plan"], "nodes": snapshot["nodes"],
-                "attempts": snapshot["attempts"], "links": snapshot["links"],
-            },
-            "action_outcomes": snapshot["actions"],
-            "gates": [] if snapshot["active_plan"] is None else snapshot["active_plan"]["declared_gates"],
-            "limits": initiative["limits"],
-            "evidence_counts": evidence_counts,
-            "node_reconciliation": reconciled,
-            "superseded_nodes": snapshot["superseded_nodes"],
-        }
+        payload = show_payload(store, initiative)
     _payload(payload, json_output)
     return 0
+
+
+def show_payload(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, Any]:
+    """The `show` composition: typed snapshot, node reconciliation, counts, gates, limits."""
+    current = snapshot(store, initiative)
+    reconciled = reconcile_nodes(initiative["initiative_id"], current["nodes"], store=store)
+    evidence_counts = store.record_counts_snapshot(initiative["initiative_id"])
+    return {
+        "contract": SHOW_CONTRACT, "initiative": initiative,
+        "graph": {
+            "plan": current["active_plan"], "nodes": current["nodes"],
+            "attempts": current["attempts"], "links": current["links"],
+        },
+        "action_outcomes": current["actions"],
+        "gates": [] if current["active_plan"] is None else current["active_plan"]["declared_gates"],
+        "limits": initiative["limits"],
+        "evidence_counts": evidence_counts,
+        "node_reconciliation": reconciled,
+        "superseded_nodes": current["superseded_nodes"],
+    }
 
 
 def _task_2b_command(args: list[str], env: Mapping[str, str]) -> int:

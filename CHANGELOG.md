@@ -12,6 +12,22 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Orchestration Increment 5: the bounded active coordinator; persona-free workers
+
+- The coordinator actor may now submit exactly `dispatch-node`, `repair-node`,
+  `request-salvage` (request only), `stop-attempt`, `pause`, `continue-node`,
+  and the new `request-decision`, `propose-outcome`, and `directive` classes;
+  `dispatch|pause|stop --as-coordinator` from the anchored pane. Its expected
+  revision may be behind the current one (ahead is refused; executors re-check
+  the bound records under the lock); operators keep exact matching. Links
+  carry the coordinator generation. `checkpoint --file` replaces the
+  generation's CAS-guarded `asha.orchestration-coordinator-checkpoint.v1`.
+  `resume` also returns a `needs-input` initiative to running. Directives are
+  recorded as pending with deterministic fallbacks; the controller never types
+  into a pane. Control-launched workers receive `ASHA_PERSONA=0` and the
+  launcher skips the identity render for them (operational layer and Codex
+  trust injection kept).
+
 #### Orchestration Increment 4: Asha claims the coordinator role
 
 - `asha initiative coordinator claim|release|show`, `wait`, and `propose-plan`.

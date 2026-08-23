@@ -1,4 +1,4 @@
-# Orchestration Core: Increments 1-4
+# Orchestration Core: Increments 1-5
 
 Orchestration Core stores one bounded initiative and approved dependency graph
 beside Asha Control. Increment 3 adds ordered composition, independent
@@ -6,7 +6,11 @@ exact-seal review, controller-owned verification, compatible candidate bundles,
 terminal readiness, finalization, and retained archive. Increment 4 adds the
 coordinator claim: the operator's own Asha session, running inside a tmux pane,
 claims one fenced coordinator generation per initiative and proposes plans;
-approval stays an operator act from another terminal. Control remains the
+approval stays an operator act from another terminal. Increment 5 opens the
+bounded active set to that coordinator (dispatch, repair, salvage request,
+stop, pause, continuation, decision request, outcome proposal, pending
+directive), adds CAS checkpoints, and lets Control-launched workers run without
+the persona. Control remains the
 only owner of worker jj workspace and tmux task creation; its run-less
 materialization seam owns fresh controller verification workspaces.
 
@@ -46,6 +50,8 @@ asha initiative coordinator claim ID [--harness H] [--json]     (from the Asha p
 asha initiative coordinator release|show ID [--json]
 asha initiative propose-plan ID --file PLAN.json [--json]       (coordinator actor)
 asha initiative wait ID --after SEQUENCE --timeout SECONDS --json
+asha initiative checkpoint ID --file CHECKPOINT.json [--json]   (coordinator actor)
+asha initiative dispatch|pause|stop ID ... --as-coordinator     (coordinator actor)
 ```
 
 ## Plan authoring and baseline identity
@@ -133,6 +139,14 @@ Core 2b action classes and exact payload shapes are:
 | `finalize` | `{"outcome":"partial|failed","reason":"BOUNDED TEXT"}` |
 | `archive` | `{}` |
 | `unarchive` | `{}` |
+| `request-decision` (coordinator) | `{"subject_id":"BOUNDED TEXT","question":"BOUNDED TEXT"}` |
+| `propose-outcome` (coordinator) | `{"outcome":"partial|failed","reason":"BOUNDED TEXT"}` |
+| `directive` (coordinator) | `{"node_id":"NODE","attempt_id":"UUID","text":"BOUNDED TEXT"}` |
+
+Coordinator-actor documents add `coordinator_id` and `coordinator_generation`
+(Increment 5); the classes marked coordinator are request classes the
+coordinator submits and the operator answers through `resume`, `finalize`, or
+attach.
 
 The journal record keeps the same authority envelope without `payload`, adds
 `state`, `outcome`, `received_at`, and `updated_at`, and stores the canonical
@@ -178,13 +192,51 @@ durable `event_cursor` once. The timeout is capped by
 --file` and records `plan-proposed` under the coordinator actor.
 
 Coordinator-actor action documents carry `coordinator_id` and
-`coordinator_generation`; `submit_action` journals them, refuses a fenced or
-unknown generation, and in Increment 4 refuses every action class for the
-coordinator actor. `approve`, `reject`, `approve-salvage`, and `decide` refuse
-the coordinator actor, the coordinator's anchor pane, and any session carrying
-`ASHA_ORCHESTRATION_COORDINATOR_ID`; the Keeper approves from his own terminal.
-The session plugin's policy guard denies the same verbs inside coordinator
-sessions (`require_env`), as a belt over the controller's braces.
+`coordinator_generation`; `submit_action` journals them and refuses a fenced or
+unknown generation. Increment 5 opens exactly `dispatch-node`, `repair-node`,
+`request-salvage` (request only), `stop-attempt`, `pause`, `continue-node`,
+`request-decision`, `propose-outcome`, and `directive` to the coordinator
+actor; every other class stays operator-only and is journaled then refused.
+The operator convenience verbs `dispatch`, `pause`, and `stop` accept
+`--as-coordinator` from the anchored pane; the request classes go through
+`action --file`. The coordinator's `expected_state_revision` may be behind the
+current revision (the loop wakes on event sequences, not revisions); a revision
+ahead of the current one is refused, and the records each class binds (plan
+digest, node, attempt, and seal identities) are re-checked under the lock by
+the executor. Operators keep exact revision matching. `request-decision` moves a
+running initiative to `needs-input` with the question on an
+`approval-requested` event; `resume` (operator) returns it to running.
+`propose-outcome` records an `approval-requested` outcome proposal and changes
+no state; only the operator's `finalize` ends an initiative. `directive`
+records a bounded directive for a live, unsealed attempt as
+`directive-accepted` with `delivery: pending`; no harness seam is proven safe
+for mid-run delivery, so the controller never types into a pane, and the
+fallbacks are operator attach, a new attempt carrying the directive, or
+`needs-input`. `checkpoint --file` replaces this generation's
+`asha.orchestration-coordinator-checkpoint.v1` under CAS
+(`prior_checkpoint_digest` must equal the retained digest) and appends
+`coordinator-checkpointed`; a checkpoint is a hint for re-claims, never recovery
+authority. Control-task links created by a coordinator carry its generation.
+Every operator write (`approve`, `reject`, `approve-salvage`, `plan --file`,
+the convenience verbs without `--as-coordinator`, and operator-actor
+`action --file` documents including `decide`) refuses the coordinator's anchor
+pane and any session carrying `ASHA_ORCHESTRATION_COORDINATOR_ID`, so the
+coordinator pane can act only as the coordinator actor and the journal never
+attributes a coordinator-pane act to the operator; the Keeper approves from his
+own terminal. The session plugin's policy guard additionally denies the
+approval verbs when `ASHA_ORCHESTRATION_COORDINATOR_ID` is present in the
+harness process environment at launch (`require_env`); an `export` inside a
+session does not reach hook processes, so that rule is a belt only for
+sessions launched with the variable set. The controller check is the braces.
+
+The anchor is pane id + pane pid + process start identity on one tmux server.
+A pane shell that `exec`s another program keeps its claim by design; pid reuse
+is caught by the start identity; session renames and pane moves are cosmetic.
+A caller on a different tmux server cannot judge the anchor: `show` reports
+`anchor_live: null`, `reconcile` leaves the generation untouched, and
+coordinator verbs refuse with "caller tmux server differs from the anchor
+server". Only a pane that is gone or whose process identity changed, observed
+from the anchor's own server, marks the generation `stale`.
 
 Honest boundary: Control has no UID-level boundary. Fencing binds
 coordinator-actor documents, waits, and claims; it is not containment against a
@@ -494,6 +546,8 @@ remain available where their ordinary lifecycle rules permit containment.
 | `coordinator show` | `asha.orchestration-coordinator-show.v1` `{contract, initiative_id, coordinator, anchor_live, anchor_detail, generations}` |
 | `propose-plan` | stored `asha.orchestration-plan.v1` record (event actor `coordinator`) |
 | `wait` | `asha.orchestration-event-wait.v1` `{contract, initiative_id, coordinator_id, generation, after, events, last_event_sequence, state_revision, timed_out}` |
+| `checkpoint` | stored `asha.orchestration-coordinator-checkpoint.v1` `{contract, initiative_id, coordinator_id, generation, plan_revision, event_cursor, nodes_under_consideration, pending_decision, rationale, prior_checkpoint_digest, recorded_at, digest}` |
+| `dispatch\|pause\|stop --as-coordinator` | stored `asha.orchestration-action.v1` journal record with `actor_kind: coordinator`, `coordinator_id`, `coordinator_generation` |
 
 The closed `asha.orchestration-seal.v1` path representation includes
 `changed_paths`, `changed_paths_truncated`, and `changed_paths_digest`.

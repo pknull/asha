@@ -36,7 +36,10 @@ LINK_CONTRACT = "asha.orchestration-link.v1"
 EVIDENCE_CONTRACT = "asha.orchestration-evidence.v1"
 BUNDLE_CONTRACT = "asha.orchestration-bundle.v1"
 COORDINATOR_CONTRACT = "asha.orchestration-coordinator.v1"
+COORDINATOR_CHECKPOINT_CONTRACT = "asha.orchestration-coordinator-checkpoint.v1"
 COORDINATOR_PROTOCOL_VERSION = 1
+MAX_CHECKPOINT_RATIONALE_BYTES = 4096
+MAX_CHECKPOINT_NODES = 64
 
 # Text byte caps.
 MAX_SLUG_BYTES = 64
@@ -1607,7 +1610,8 @@ _COORDINATOR_KEYS = frozenset({
     "last_accepted_action_id", "predecessor_coordinator_id", "created_at", "updated_at",
 })
 _COORDINATOR_ANCHOR_KEYS = frozenset({
-    "tmux_socket", "session", "pane_id", "pane_pid", "process_start_identity", "server_pid",
+    "tmux_socket", "session", "pane_id", "pane_pid", "process_start_identity",
+    "server_pid", "server_start_identity",
 })
 _PANE_ID = re.compile(r"%[0-9]+", re.ASCII)
 MAX_PID = 2**22
@@ -1640,6 +1644,10 @@ def validate_coordinator(value: Any) -> dict[str, Any]:
         maximum=MAX_PROCESS_IDENTITY_BYTES,
     )
     _integer(anchor["server_pid"], "coordinator anchor server_pid", minimum=1, maximum=MAX_PID)
+    _text(
+        anchor["server_start_identity"], "coordinator anchor server_start_identity",
+        maximum=MAX_PROCESS_IDENTITY_BYTES,
+    )
     if record["protocol_version"] != COORDINATOR_PROTOCOL_VERSION:
         raise ModelError(f"coordinator protocol_version must be {COORDINATOR_PROTOCOL_VERSION}")
     claimed = _timestamp(record["claimed_at"], "coordinator claimed_at")
@@ -1661,9 +1669,54 @@ def validate_coordinator(value: Any) -> dict[str, Any]:
     return copy.deepcopy(record)
 
 
+_CHECKPOINT_KEYS = frozenset({
+    "contract", "initiative_id", "coordinator_id", "generation", "plan_revision",
+    "event_cursor", "nodes_under_consideration", "pending_decision", "rationale",
+    "prior_checkpoint_digest", "recorded_at", "digest",
+})
+
+
+def _checkpoint_content_digest(record: Mapping[str, Any]) -> str:
+    content = {key: value for key, value in record.items() if key != "digest"}
+    return hashlib.sha256(_canonical_bytes(content)).hexdigest()
+
+
+def validate_coordinator_checkpoint(value: Any) -> dict[str, Any]:
+    """One bounded coordinator checkpoint; a performance hint, never recovery authority."""
+    record = _object(value, "checkpoint", _CHECKPOINT_KEYS)
+    if record["contract"] != COORDINATOR_CHECKPOINT_CONTRACT:
+        raise ModelError(f"checkpoint contract must be {COORDINATOR_CHECKPOINT_CONTRACT}")
+    canonical_uuid(record["initiative_id"], "checkpoint initiative_id")
+    canonical_uuid(record["coordinator_id"], "checkpoint coordinator_id")
+    _integer(record["generation"], "checkpoint generation", minimum=1)
+    if record["plan_revision"] is not None:
+        _integer(record["plan_revision"], "checkpoint plan_revision", minimum=1)
+    _integer(record["event_cursor"], "checkpoint event_cursor", maximum=MAX_EVENT_SEQUENCE)
+    _string_list(
+        record["nodes_under_consideration"], "checkpoint nodes_under_consideration",
+        maximum_items=MAX_CHECKPOINT_NODES, maximum_bytes=MAX_SLUG_BYTES,
+        validator=validate_slug,
+    )
+    _optional_text(record["pending_decision"], "checkpoint pending_decision", maximum=MAX_CONCERN_BYTES)
+    _text(record["rationale"], "checkpoint rationale", maximum=MAX_CHECKPOINT_RATIONALE_BYTES)
+    if record["prior_checkpoint_digest"] is not None:
+        _digest(record["prior_checkpoint_digest"], "checkpoint prior_checkpoint_digest")
+    _timestamp(record["recorded_at"], "checkpoint recorded_at")
+    _digest(record["digest"], "checkpoint digest")
+    if record["digest"] != _checkpoint_content_digest(record):
+        raise ModelError("checkpoint digest does not match canonical checkpoint bytes")
+    return copy.deepcopy(record)
+
+
+def checkpoint_digest(value: Mapping[str, Any]) -> str:
+    """Content digest of a checkpoint, excluding its own digest field."""
+    return _checkpoint_content_digest(value)
+
+
 _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     INITIATIVE_CONTRACT: validate_initiative,
     COORDINATOR_CONTRACT: validate_coordinator,
+    COORDINATOR_CHECKPOINT_CONTRACT: validate_coordinator_checkpoint,
     PLAN_CONTRACT: validate_plan_record,
     NODE_CONTRACT: validate_node,
     ATTEMPT_CONTRACT: validate_attempt,
@@ -1719,6 +1772,7 @@ __all__ = [name for name in globals() if name.isupper()] + [
     "validate_attempt", "validate_result_publication", "validate_result",
     "validate_seal", "validate_review", "validate_verification", "validate_approval",
     "validate_action", "validate_event", "validate_link", "validate_evidence",
-    "validate_bundle", "validate_coordinator", "validate_record", "record_digest",
+    "validate_bundle", "validate_coordinator", "validate_coordinator_checkpoint",
+    "checkpoint_digest", "validate_record", "record_digest",
     "plan_digest", "require_transition",
 ]

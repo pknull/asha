@@ -43,7 +43,10 @@ approves from his own terminal. That split is structural, not a courtesy.
    ```
 
    A replay from the same pane is idempotent. Claiming from a new pane fences
-   the previous generation; its verbs are refused from then on.
+   the previous generation; its verbs are refused from then on. The exported
+   variables select records for the CLI; they do not reach hook processes, so
+   the policy guard's belt applies only to sessions launched with them set.
+   The controller's pane check is what actually refuses operator verbs here.
 4. Author the plan as `asha.orchestration-plan.v1` (schema and node kinds in
    `docs/orchestration.md`). For every mutating node use
    `asha initiative baseline --repo "$REPO" --json` for the exact
@@ -79,12 +82,29 @@ approves from his own terminal. That split is structural, not a courtesy.
    asha initiative coordinator release "$ID" --json
    ```
 
-## Increment 4 scope (current)
+## What the coordinator may do (Increment 5)
 
-The coordinator actor may claim, propose plans, wait, and release. Every
-state-changing action class submitted as the coordinator is journaled and
-refused; dispatch, pause, repair, and decision requests stay operator verbs
-until Increment 5 opens the bounded set. Say so rather than working around it.
+Besides claim, propose, wait, checkpoint, and release, the coordinator actor
+may submit exactly: `dispatch-node`, `repair-node`, `request-salvage` (the
+Keeper approves it), `stop-attempt`, `pause`, `continue-node`,
+`request-decision`, `propose-outcome`, and `directive`. From the anchored pane:
+
+```bash
+asha initiative dispatch "$ID" --node "$NODE" --as-coordinator --json
+asha initiative pause    "$ID" --as-coordinator --json
+asha initiative stop     "$ID" --attempt "$ATTEMPT" --as-coordinator --json
+asha initiative action   "$ID" --file request.json --json   # repair/salvage/decision/outcome/directive
+asha initiative checkpoint "$ID" --file checkpoint.json --json
+```
+
+Build request documents with `coordinator_id` and `coordinator_generation`
+from the claim; the journal refuses any other generation. Your expected
+revision may be behind the current one; never ahead. `activate`, `resume`,
+`decide`, `finalize`, `archive`, `unarchive`, and `cancel-node` stay with the
+Keeper. To escalate, submit `request-decision` (the initiative waits in
+`needs-input` until the Keeper runs `resume`) and say plainly in conversation
+what you need. Directives are recorded as pending only; say so rather than
+implying a worker received them.
 
 ## Prohibited (proposal, binding)
 

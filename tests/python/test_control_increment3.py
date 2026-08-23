@@ -409,6 +409,7 @@ class HarnessAdapterTests(unittest.TestCase):
                 "ASHA_CONTROL_RUN_ID": run_id,
                 "ASHA_CONTROL_STATE_DIR": str(state_dir),
                 "ASHA_CONTROL_MANAGED": "1",
+                "ASHA_PERSONA": "0",
             },
         )
         with self.assertRaises(HarnessError):

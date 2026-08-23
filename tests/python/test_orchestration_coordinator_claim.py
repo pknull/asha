@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import unittest
 
 from lib.control.orchestration import cli
@@ -20,6 +21,7 @@ from lib.control.orchestration.coordinator import (
     release,
     show,
 )
+from lib.control.harness import caller_descends_from
 from lib.control.tmux import PaneFacts, TmuxError
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
 
@@ -27,11 +29,17 @@ from tests.python.orchestration_execution_fixtures import ExecutionFixture
 class FakeTmux:
     """One pane whose process is this test process (or an ancestor of it)."""
 
-    def __init__(self, *, pane_id: str = "%7", pane_pid: int | None = None, session: str = "keeper") -> None:
+    def __init__(
+        self, *, pane_id: str = "%7", pane_pid: int | None = None, session: str = "keeper",
+        server: int | None = None,
+    ) -> None:
         self.socket = None
         self.pane_id = pane_id
         self.pane_pid = os.getpid() if pane_pid is None else pane_pid
         self.session = session
+        # The "server" must be a real process so its start identity exists;
+        # the test's parent stands in for the tmux server.
+        self.server = os.getppid() if server is None else server
         self.dead = False
         self.missing = False
         self.options: dict[tuple[str, str], str] = {}
@@ -45,7 +53,7 @@ class FakeTmux:
         )
 
     def server_pid(self) -> int:
-        return 4000
+        return self.server
 
     def set_pane_option(self, pane_id: str, option: str, value: str) -> None:
         self.options[(pane_id, option)] = value
@@ -199,6 +207,60 @@ class CoordinatorClaimTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(second["generation"], 2)
         self.assertEqual(self.store.read_coordinator(self.initiative_id, record["coordinator_id"])["state"], "fenced")
 
+    def test_caller_must_descend_from_the_pane_process(self) -> None:
+        # A pane whose process is a sibling (not an ancestor) of this test process.
+        child = subprocess.Popen(["sleep", "30"])
+        self.addCleanup(child.kill)
+        self.assertFalse(caller_descends_from(child.pid))
+        self.assertTrue(caller_descends_from(os.getpid()))
+        self.assertTrue(caller_descends_from(os.getppid()))
+        sibling = FakeTmux(pane_id="%7", pane_pid=child.pid)
+        with self.assertRaisesRegex(CoordinatorError, "does not descend from its tmux pane"):
+            claim(self.store, self.initiative(), env=self.pane_env, tmux=sibling)
+        self.assertIsNone(self.store.current_coordinator(self.initiative_id))
+        # Claimed from the real pane, then the pane process is "replaced" by the sibling.
+        claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        replaced = FakeTmux(pane_id="%7", pane_pid=child.pid)
+        with self.assertRaisesRegex(CoordinatorError, "anchor pane identity changed"):
+            release(self.store, self.initiative(), env=self.pane_env, tmux=replaced)
+
+    def test_a_different_tmux_server_cannot_judge_the_anchor(self) -> None:
+        record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        elsewhere = FakeTmux(pane_id="%7", server=9999)
+        payload = show(self.store, self.initiative(), tmux=elsewhere)
+        self.assertIsNone(payload["anchor_live"])
+        self.assertIn("differs from the anchor server", payload["anchor_detail"])
+        count = len(self.events())
+        result = cli.reconcile_one_initiative(self.store, self.initiative_id, tmux=elsewhere)
+        self.assertEqual(result["coordinator_reconciliation"]["state"], "active")
+        self.assertIsNone(result["coordinator_reconciliation"]["anchor_live"])
+        self.assertEqual(len(self.events()), count)
+        self.assertEqual(self.store.read_coordinator(self.initiative_id, record["coordinator_id"])["state"], "active")
+        with self.assertRaisesRegex(CoordinatorError, "differs from the anchor server"):
+            release(self.store, self.initiative(), env=self.pane_env, tmux=elsewhere)
+
+    def test_session_rename_does_not_change_identity(self) -> None:
+        record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        self.tmux.session = "renamed"
+        again = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        self.assertEqual(again["coordinator_id"], record["coordinator_id"])
+        result = cli.reconcile_one_initiative(self.store, self.initiative_id, tmux=self.tmux)
+        self.assertTrue(result["coordinator_reconciliation"]["anchor_live"])
+        released = release(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        self.assertEqual(released["state"], "exited")
+
+    def test_operator_verbs_refuse_the_coordinator_pane_wholesale(self) -> None:
+        claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        for verb, args in (("pause", []), ("activate", []), ("dispatch", ["--node", "implementation-a"])):
+            with self.subTest(verb=verb), self.assertRaisesRegex(CoordinatorError, "refused from the coordinator's pane"):
+                cli._operator_action(verb, [self.initiative_id, *args], self.store, self.pane_env, self.tmux)
+        plan_file = self.root / "plan.json"
+        with self.assertRaisesRegex(CoordinatorError, "refused from the coordinator's pane"):
+            cli._plan([self.initiative_id, "--file", str(plan_file)], self.store, self.config, jj=None, env=self.pane_env, tmux=self.tmux)
+        shown, _ = cli._plan([self.initiative_id, "--show"], self.store, self.config, jj=None, env=self.pane_env, tmux=self.tmux)
+        self.assertEqual(shown["revision"], self.plan["revision"])
+        self.assertEqual(self.store.list_actions_snapshot(self.initiative_id), [])
+
     def test_cli_coordinator_verbs_round_trip(self) -> None:
         payload, json_output = cli._coordinator_command(
             ["claim", self.initiative_id, "--json"], self.store, self.pane_env, self.tmux,
@@ -257,11 +319,13 @@ class ApprovalSplitTests(ExecutionFixture, unittest.TestCase):
         with self.assertRaisesRegex(CoordinatorError, "refused from the coordinator's pane"):
             cli._action_command([self.initiative_id, "--file", str(path), "--json"], self.store, self.pane_env, self.tmux)
 
-    def test_every_coordinator_action_is_journaled_then_refused(self) -> None:
-        for action_class in ("pause", "dispatch-node", "finalize", "archive"):
-            payload = {"node_id": "implementation-a"} if action_class == "dispatch-node" else (
-                {"outcome": "failed", "reason": "x"} if action_class == "finalize" else {}
-            )
+    def test_operator_only_classes_are_journaled_then_refused_for_the_coordinator(self) -> None:
+        operator_only = {
+            "activate-initiative": {}, "resume": {}, "cancel-node": {"node_id": "implementation-a"},
+            "finalize": {"outcome": "failed", "reason": "x"}, "archive": {}, "unarchive": {},
+            "decide": {"paused_seal_id": "ffffffff-ffff-4fff-8fff-ffffffffffff", "decision": "go"},
+        }
+        for action_class, payload in operator_only.items():
             document = build_action_document(
                 self.initiative(), action_class, payload,
                 actor_id=f"coordinator:{self.record['coordinator_id']}", coordinator=self.record,

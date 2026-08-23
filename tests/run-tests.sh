@@ -280,6 +280,17 @@ else
 fi
 echo ""
 
+# Test Suite 19: Control-Managed Workers Launch Without the Persona
+echo -e "${BLUE}--- Test Suite 19: Worker Persona Mode ---${NC}"
+if "$SCRIPT_DIR/test-worker-persona.sh"; then
+    echo -e "${GREEN}✓ Worker persona tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Worker persona tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"

@@ -26,15 +26,18 @@ from ..harness import (
 from ..tmux import TmuxAdapter, TmuxError
 from .actions import append_event
 from .model import (
+    COORDINATOR_CHECKPOINT_CONTRACT,
     COORDINATOR_CONTRACT,
     COORDINATOR_LIVE_STATES,
     COORDINATOR_PROTOCOL_VERSION,
     ModelError,
+    checkpoint_digest,
     new_uuid,
     record_digest,
     validate_coordinator,
+    validate_coordinator_checkpoint,
 )
-from .store import InitiativeStore
+from .store import InitiativeStore, StoreError
 
 WAIT_CONTRACT = "asha.orchestration-event-wait.v1"
 COORDINATOR_SHOW_CONTRACT = "asha.orchestration-coordinator-show.v1"
@@ -88,30 +91,66 @@ def caller_anchor(env: Mapping[str, str], tmux: TmuxAdapter) -> dict[str, Any]:
         raise CoordinatorError("calling tmux pane process is gone")
     if not caller_descends_from(facts.pane_pid):
         raise CoordinatorError("caller does not descend from its tmux pane process")
+    try:
+        server_identity = process_identity(server_pid)
+    except HarnessError as exc:
+        raise CoordinatorError(str(exc)) from exc
+    if server_identity is None:
+        raise CoordinatorError("tmux server process is gone")
+    tmux_env = env.get("TMUX") or ""
+    socket_path = tmux_env.split(",")[0] if tmux_env else None
     return {
-        "tmux_socket": tmux.socket,
+        "tmux_socket": socket_path or tmux.socket,
         "session": facts.session,
         "pane_id": facts.pane_id,
         "pane_pid": facts.pane_pid,
         "process_start_identity": identity,
         "server_pid": server_pid,
+        "server_start_identity": server_identity,
     }
 
 
-def anchor_liveness(anchor: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[bool, str]:
-    """Is the recorded pane still the same live process?"""
+def anchor_liveness(anchor: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, str]:
+    """Judge the recorded pane: ``live``, ``gone``, or ``unknown``.
+
+    ``gone`` also covers a dead anchor server (its recorded process identity no
+    longer exists). ``unknown`` means the anchor server is alive but the
+    caller's tmux server is a different one, so nothing can be said about the
+    pane; reconciliation must not mark a generation stale on ``unknown``. The session name is cosmetic (renames and
+    moves do not change identity); pane id, pane pid, and the process start
+    identity do.
+    """
+    try:
+        anchor_server_alive = verify_process(anchor["server_pid"], anchor["server_start_identity"])
+    except HarnessError:
+        anchor_server_alive = False
+    if not anchor_server_alive:
+        return "gone", "anchor tmux server is gone"
+    try:
+        server_pid = tmux.server_pid()
+    except TmuxError as exc:
+        return "unknown", f"caller tmux server unavailable: {exc}"
+    if server_pid != anchor["server_pid"]:
+        return "unknown", "caller tmux server differs from the anchor server"
     try:
         facts = tmux.pane_facts(anchor["pane_id"])
     except TmuxError as exc:
-        return False, f"anchor pane unavailable: {exc}"
-    if facts.dead or facts.pane_pid != anchor["pane_pid"] or facts.session != anchor["session"]:
-        return False, "anchor pane identity changed"
+        return "gone", f"anchor pane unavailable: {exc}"
+    if facts.dead or facts.pane_pid != anchor["pane_pid"]:
+        return "gone", "anchor pane identity changed"
     try:
         if not verify_process(anchor["pane_pid"], anchor["process_start_identity"]):
-            return False, "anchor process identity changed"
+            return "gone", "anchor process identity changed"
     except HarnessError as exc:
-        return False, str(exc)
-    return True, "anchor live"
+        return "gone", str(exc)
+    return "live", "anchor live"
+
+
+def _anchor_key(anchor: Mapping[str, Any]) -> tuple[Any, ...]:
+    return (
+        anchor["server_pid"], anchor["server_start_identity"], anchor["pane_id"],
+        anchor["pane_pid"], anchor["process_start_identity"],
+    )
 
 
 def require_anchored_caller(
@@ -124,8 +163,8 @@ def require_anchored_caller(
         )
     if env.get("TMUX_PANE") != record["anchor"]["pane_id"]:
         raise CoordinatorError("caller is not inside the coordinator's anchor pane")
-    live, detail = anchor_liveness(record["anchor"], tmux)
-    if not live:
+    state, detail = anchor_liveness(record["anchor"], tmux)
+    if state != "live":
         raise CoordinatorError(detail)
     if not caller_descends_from(record["anchor"]["pane_pid"]):
         raise CoordinatorError("caller does not descend from the coordinator's anchor process")
@@ -155,10 +194,17 @@ def require_live_coordinator(store: InitiativeStore, initiative_id: str) -> dict
 def refuse_coordinator_pane(
     store: InitiativeStore, initiative_id: str, env: Mapping[str, str], tmux: TmuxAdapter,
 ) -> None:
-    """Operator approval verbs refuse the coordinator's own session and pane."""
+    """Operator verbs refuse the coordinator's own session and pane.
+
+    Every operator-actor write (approval, plan proposal, convenience actions,
+    operator action documents) passes through here, so the coordinator pane can
+    act only as the coordinator actor and the journal never attributes a
+    coordinator-pane act to the operator.
+    """
     if env.get(ENV_COORDINATOR_ID):
         raise CoordinatorError(
-            "approval verbs are refused inside a coordinator session; approve from your own terminal"
+            "operator verbs are refused inside a coordinator session; act as the coordinator "
+            "or use your own terminal"
         )
     current = current_live_coordinator(store, initiative_id)
     if current is None:
@@ -166,7 +212,8 @@ def refuse_coordinator_pane(
     pane = env.get("TMUX_PANE")
     if pane and pane == current["anchor"]["pane_id"]:
         raise CoordinatorError(
-            "approval verbs are refused from the coordinator's pane; approve from your own terminal"
+            "operator verbs are refused from the coordinator's pane; act as the coordinator "
+            "or use your own terminal"
         )
 
 
@@ -220,13 +267,13 @@ def claim(
         )
     except HarnessError as exc:
         raise CoordinatorError(str(exc)) from exc
-    at = _now()
     with store.transaction_lock(initiative_id):
+        at = _now()
         current = store.current_coordinator(initiative_id)
         if (
             current is not None
             and current["state"] in COORDINATOR_LIVE_STATES
-            and current["anchor"] == anchor
+            and _anchor_key(current["anchor"]) == _anchor_key(anchor)
         ):
             record = current
         else:
@@ -301,12 +348,14 @@ def show(
     """Current generation, its anchor liveness, and the generation history."""
     initiative_id = initiative["initiative_id"]
     current = store.current_coordinator(initiative_id)
+    live: bool | None
     if current is None:
         live, detail = False, "no coordinator has claimed this initiative"
     elif current["state"] not in COORDINATOR_LIVE_STATES:
         live, detail = False, f"generation {current['generation']} is {current['state']}"
     else:
-        live, detail = anchor_liveness(current["anchor"], tmux)
+        state, detail = anchor_liveness(current["anchor"], tmux)
+        live = None if state == "unknown" else state == "live"
     return {
         "contract": COORDINATOR_SHOW_CONTRACT,
         "initiative_id": initiative_id,
@@ -368,6 +417,58 @@ def wait(
     }
 
 
+def checkpoint(
+    store: InitiativeStore,
+    initiative: Mapping[str, Any],
+    *,
+    env: Mapping[str, str],
+    tmux: TmuxAdapter,
+    document: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Replace this generation's checkpoint under CAS; a hint for re-claims, never authority."""
+    initiative_id = initiative["initiative_id"]
+    current = require_live_coordinator(store, initiative_id)
+    require_anchored_caller(current, env, tmux)
+    if not isinstance(document, Mapping):
+        raise CoordinatorError("checkpoint document must be an object")
+    record = dict(document)
+    record.update({
+        "contract": COORDINATOR_CHECKPOINT_CONTRACT,
+        "initiative_id": initiative_id,
+        "coordinator_id": current["coordinator_id"],
+        "generation": current["generation"],
+        "recorded_at": _now(),
+    })
+    record["digest"] = checkpoint_digest(record)
+    try:
+        validate_coordinator_checkpoint(record)
+    except ModelError as exc:
+        raise CoordinatorError(str(exc)) from exc
+    tail = store.peek(initiative_id)["last_event_sequence"]
+    if record["event_cursor"] > tail:
+        raise CoordinatorError(f"checkpoint cursor {record['event_cursor']} is beyond the durable tail {tail}")
+    with store.transaction_lock(initiative_id):
+        try:
+            previous = store.read_checkpoint(initiative_id, current["coordinator_id"])
+        except StoreError as exc:
+            if "not found" not in str(exc):
+                raise
+            previous = None
+        prior = None if previous is None else previous["digest"]
+        if record["prior_checkpoint_digest"] != prior:
+            raise CoordinatorError("checkpoint prior_checkpoint_digest does not match the retained checkpoint")
+        store.save_checkpoint(
+            initiative_id, record,
+            expected_digest=None if previous is None else record_digest(previous),
+        )
+        append_event(
+            store, initiative_id, "coordinator-checkpointed", [current["coordinator_id"]],
+            {"generation": current["generation"], "digest": record["digest"], "event_cursor": record["event_cursor"]},
+            actor_kind="coordinator", actor_id=actor_id(current),
+        )
+    return record
+
+
 def reconcile_coordinator(
     store: InitiativeStore, initiative_id: str, *, tmux: TmuxAdapter,
 ) -> dict[str, Any] | None:
@@ -386,11 +487,12 @@ def reconcile_coordinator(
                 "state": current["state"], "anchor_live": False,
                 "detail": f"generation {current['generation']} is {current['state']}",
             }
-        live, detail = anchor_liveness(current["anchor"], tmux)
-        if live:
+        state, detail = anchor_liveness(current["anchor"], tmux)
+        if state != "gone":
             return {
                 "coordinator_id": current["coordinator_id"], "generation": current["generation"],
-                "state": current["state"], "anchor_live": True, "detail": detail,
+                "state": current["state"],
+                "anchor_live": True if state == "live" else None, "detail": detail,
             }
         stale = copy.deepcopy(current)
         stale.update({"state": "stale", "updated_at": _now()})
@@ -426,7 +528,7 @@ def _advance_cursor(
 
 __all__ = [
     "COORDINATOR_SHOW_CONTRACT", "WAIT_CONTRACT", "CoordinatorError", "actor_id",
-    "anchor_liveness", "caller_anchor", "claim", "current_live_coordinator",
+    "anchor_liveness", "caller_anchor", "checkpoint", "claim", "current_live_coordinator",
     "environment_for", "reconcile_coordinator", "refuse_coordinator_pane", "release",
     "require_anchored_caller", "require_live_coordinator", "show", "wait",
 ]

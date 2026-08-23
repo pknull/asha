@@ -45,7 +45,8 @@
           "surface": "--append-system-prompt-file",
           "verifier": "launch-wrapper",
           "limitations": [
-            "SessionStart supplies additional runtime context"
+            "SessionStart supplies additional runtime context",
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
           ]
         },
         "workspace": {
@@ -116,7 +117,9 @@
           "support": "native",
           "surface": "model_instructions_file",
           "verifier": "launch-wrapper",
-          "limitations": []
+          "limitations": [
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
+          ]
         },
         "workspace": {
           "support": "partial",
@@ -188,7 +191,9 @@
           "support": "native",
           "surface": "COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
           "verifier": "launch-wrapper",
-          "limitations": []
+          "limitations": [
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
+          ]
         },
         "workspace": {
           "support": "partial",
@@ -256,7 +261,9 @@
           "support": "native",
           "surface": "OPENCODE_CONFIG_CONTENT.instructions",
           "verifier": "launch-wrapper",
-          "limitations": []
+          "limitations": [
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
+          ]
         },
         "workspace": {
           "support": "partial",
