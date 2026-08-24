@@ -59,6 +59,9 @@ asha initiative propose-plan ID --file PLAN.json [--json]       (coordinator act
 asha initiative wait ID --after SEQUENCE --timeout SECONDS --json
 asha initiative checkpoint ID --file CHECKPOINT.json [--json]   (coordinator actor)
 asha initiative dispatch|pause|stop ID ... --as-coordinator     (coordinator actor)
+asha initiative authority add NAME --repo PATH --scope PREFIX [...]
+asha initiative authority list [--all] [--json]
+asha initiative authority revoke ID [--json]
 ```
 
 ## Plan authoring and baseline identity
@@ -109,6 +112,66 @@ attempt and node transitions, allocates eligible retries, applies breakers,
 then returns the ordinary read-only node join.
 
 `list` omits archived initiatives by default. `list --all` includes them.
+
+## Standing authorities
+
+A standing authority is the operator's pre-signed approval for a narrow,
+recorded plan shape. It is the deliberate autonomy lever: matched proposals are
+approved (and, when granted with auto-activate, activated) without a live
+operator in the loop, and everything outside the recorded shape falls back to
+ordinary manual approval.
+
+`asha initiative authority add NAME --repo PATH --scope PREFIX` grants one
+immutable `asha.orchestration-standing-authority.v1` record under
+`<state>/asha/control/authorities/` — outside the initiatives registry, so
+initiative scans never touch it. The record pins the repository (`repository_id`
+and `initial_identity_digest`), scope prefixes (clean relative paths only),
+`max_nodes`, allowed harnesses, an attempt ceiling, `require_headless`, and
+`auto_activate`. Records are write-once (`O_EXCL`, mode 0600); `authority
+revoke ID` stamps `revoked_at` under a lock and retains the record. `authority
+list` shows active grants; `--all` includes revoked ones.
+
+Matching is deterministic and fail-closed. At the end of every accepted plan
+proposal the controller consults active authorities for the initiative's
+repository. A plan matches only when every check passes: the authority is not
+revoked, the initiative scope is `repository` with the recorded
+`repository_id` and an unchanged `initial_identity_digest`, the plan has at
+most `max_nodes` nodes of types work/review/verify with no nested workflow,
+every work node declares a hard write scope inside the authorized prefixes,
+work and review harnesses are in the allowed set, `require_headless` (when
+set) demands `interactive: false` on work and review nodes, the declared gates
+include review and exactly one minimal-environment verification with real
+commands, and the plan's attempt ceiling does not exceed the authority's. Any
+mismatch leaves the initiative at `awaiting-plan-approval` for the operator,
+with each authority's mismatch reason on stderr so a grant that never fires is
+diagnosable. A damaged or unreadable authority store is reported the same way
+and approves nothing.
+
+A matched plan is approved as the operator by proxy: the stored approval
+record keeps `actor_kind: operator` with `actor_id`
+`standing-authority:<id8>`, because the decision is the operator's own,
+pre-signed when the authority was granted. The controller journals one
+`approval-decided` event citing the authority ID and label so the record shows
+which grant decided. With `auto_activate` the controller then submits an
+ordinary `activate-initiative` action under the same proxy actor; activation
+refusals (doctor failures, identity drift) leave the approval standing and the
+initiative at `approved`.
+
+Authorities never cover integration, salvage approval, operator decisions, or
+needs-input responses — those remain live operator acts. `authority add` and
+`authority revoke` are refused from the coordinator's anchor pane and from any
+session carrying `ASHA_ORCHESTRATION_COORDINATOR_ID`, with the session policy
+guard's `coordinator-no-authority-grant` rule as the same belt the approval
+verbs carry (and the same limitation: it sees only variables present in the
+harness process environment at launch). A coordinator must never mint, widen,
+or revoke its own approval surface. `authority list` is a read and stays
+available everywhere, including inside a coordinator: knowing which shapes are
+pre-approved is by design, since a matching plan is one the operator already
+signed.
+
+Combined with time triggers, this is the bounded autonomous loop: a timer
+proposes, a standing authority approves and activates, gates and breakers
+still bind execution, and integration still waits for the operator.
 
 ## Action document and journal
 
@@ -622,6 +685,9 @@ remain available where their ordinary lifecycle rules permit containment.
 | `wait` | `asha.orchestration-event-wait.v1` `{contract, initiative_id, coordinator_id, generation, after, events, last_event_sequence, state_revision, timed_out}` |
 | `checkpoint` | stored `asha.orchestration-coordinator-checkpoint.v1` `{contract, initiative_id, coordinator_id, generation, plan_revision, event_cursor, nodes_under_consideration, pending_decision, rationale, prior_checkpoint_digest, recorded_at, digest}` |
 | `dispatch\|pause\|stop --as-coordinator` | stored `asha.orchestration-action.v1` journal record with `actor_kind: coordinator`, `coordinator_id`, `coordinator_generation` |
+| `authority add` | `asha.orchestration-authority-grant.v1` `{contract, authority}` (`authority` is a stored `asha.orchestration-standing-authority.v1` record) |
+| `authority list` | `asha.orchestration-authority-list.v1` `{contract, authorities, active, total}` |
+| `authority revoke` | `asha.orchestration-authority-revocation.v1` `{contract, authority}` (revocation stamps `revoked_at`; the record is retained) |
 
 The closed `asha.orchestration-seal.v1` path representation includes
 `changed_paths`, `changed_paths_truncated`, and `changed_paths_digest`.

@@ -78,13 +78,15 @@ class ExecutionFixture:
             [initiative["initiative_id"], "--file", str(plan_file)],
             self.store, self.config, jj=jj,
         )
-        approved, _ = _approve(
-            [initiative["initiative_id"], "--digest", plan["digest"]], self.store,
-        )
         self.initiative_id = initiative["initiative_id"]
         self.plan = plan
-        if getattr(self, "start_running", True):
-            self.set_running(approved["initiative"])
+        self.jj = jj
+        if getattr(self, "approve_in_setup", True):
+            approved, _ = _approve(
+                [initiative["initiative_id"], "--digest", plan["digest"]], self.store,
+            )
+            if getattr(self, "start_running", True):
+                self.set_running(approved["initiative"])
 
     def customize_plan(self, plan_value: dict) -> None:
         """Subclass hook: adjust the plan before it is proposed."""

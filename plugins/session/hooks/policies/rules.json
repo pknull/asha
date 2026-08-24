@@ -66,6 +66,15 @@
       "require_env": "ASHA_ORCHESTRATION_COORDINATOR_ID",
       "_comment": "Structural approval split (Keeper ruling 2026-08-22): approval verbs are operator acts from the Keeper's own terminal. The controller refuses every operator write from the coordinator's pane and from any session whose environment carries ASHA_ORCHESTRATION_COORDINATOR_ID; that is the braces. This rule is a belt that applies only when the variable is present in the harness process environment at launch (hooks do not see a shell export made inside the session).",
       "reason": "Operator approval verbs are refused inside a coordinator session. Approve, reject, or approve salvage from your own terminal (asha control or the CLI outside the coordinator pane)."
+    },
+    {
+      "id": "coordinator-no-authority-grant",
+      "tool": "Bash",
+      "command_regex": "\\basha[[:space:]]+initiative[[:space:]]+authority[[:space:]]+(add|revoke)([[:space:]]|$)",
+      "action": "deny",
+      "require_env": "ASHA_ORCHESTRATION_COORDINATOR_ID",
+      "_comment": "Standing authorities are the operator's pre-signed approval; a coordinator that could mint or widen one would be approving its own plans. Same belt-and-braces split as coordinator-no-operator-approval: the controller refuses these verbs from the coordinator's pane and from any session carrying the variable (braces), and this rule applies only when the variable is in the harness process environment at launch (belt). 'authority list' is a read and stays available: the coordinator learning which shapes are pre-approved is by design, since a matching plan is one the operator already signed.",
+      "reason": "Standing authorities are granted and revoked from the operator's own terminal. A coordinator session cannot mint, widen, or revoke its own approval surface; ask the Keeper. 'asha initiative authority list' remains available."
     }
   ]
 }

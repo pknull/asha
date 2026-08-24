@@ -257,6 +257,19 @@ CLAIM='{"tool_name":"Bash","tool_input":{"command":"asha initiative coordinator 
 [[ "$(coordinator_decision "dddddddd-dddd-4ddd-8ddd-dddddddddddd" "$CLAIM")" == allow ]] || { COORD_OK=0; fail "coordinator verbs stay allowed inside a coordinator session"; }
 [[ $COORD_OK -eq 1 ]] && ok "require_env scopes the coordinator approval rule to coordinator sessions"
 
+# A standing authority is the operator's pre-signed approval: a coordinator that
+# could mint or revoke one would be approving its own plans. The read stays open.
+AUTH_OK=1
+AUTH_ADD='{"tool_name":"Bash","tool_input":{"command":"asha initiative authority add small-fixes --repo /p --scope lib"}}'
+AUTH_REVOKE='{"tool_name":"Bash","tool_input":{"command":"asha initiative authority revoke 1b853ddc-38bf-4cb8-aff3-816e550684dc"}}'
+AUTH_LIST='{"tool_name":"Bash","tool_input":{"command":"asha initiative authority list --json"}}'
+COORD_ID="dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+[[ "$(coordinator_decision "$COORD_ID" "$AUTH_ADD")" == deny ]] || { AUTH_OK=0; fail "authority add inside a coordinator session is denied by policy"; }
+[[ "$(coordinator_decision "$COORD_ID" "$AUTH_REVOKE")" == deny ]] || { AUTH_OK=0; fail "authority revoke inside a coordinator session is denied by policy"; }
+[[ "$(coordinator_decision "$COORD_ID" "$AUTH_LIST")" == allow ]] || { AUTH_OK=0; fail "authority list stays readable inside a coordinator session"; }
+[[ "$(coordinator_decision "" "$AUTH_ADD")" == allow ]] || { AUTH_OK=0; fail "authority add outside a coordinator session is allowed by policy"; }
+[[ $AUTH_OK -eq 1 ]] && ok "standing-authority grants are refused inside coordinator sessions while the read stays open"
+
 WARN_OUT="$WORK/policy-warn.out"
 WARN_ERR="$WORK/policy-warn.err"
 printf '%s' '{"tool_name":"Write","tool_input":{"file_path":"/p/Vault/Random/x.md"}}' \

@@ -23,7 +23,7 @@ from .actions import (
     ActionError, ActionRefused, approve_salvage, build_action_document,
     reconcile_actions, submit_action,
 )
-from ..tmux import TmuxAdapter
+from ..tmux import TmuxAdapter, TmuxError
 from .config import OrchestrationConfigError, load_config
 from .coordinator import (
     CoordinatorError, checkpoint as checkpoint_coordinator, claim as claim_coordinator,
@@ -100,6 +100,11 @@ Usage:
   asha initiative doctor [--json]
   asha initiative projects [--root DIR] [--depth N] [--match TEXT] [--json]
   asha initiative attention [--json]
+  asha initiative authority add NAME --repo DIR --scope PREFIX... [--max-nodes N]
+                                 [--harness H,...] [--max-attempts N] [--require-headless]
+                                 [--no-auto-activate] [--json]
+  asha initiative authority list [--all] [--json]
+  asha initiative authority revoke AUTHORITY_ID [--json]
   asha initiative coordinator claim <id> [--harness H] [--json]   (from the Asha pane)
   asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
   asha initiative coordinator sessions [--json]
@@ -605,10 +610,165 @@ def propose_plan(
                 actor_kind=actor_kind, actor_id=actor_id,
             )
             store.append_event(current["initiative_id"], event)
-    return store.read_plan(initiative["initiative_id"], plan["revision"])
+    stored_plan = store.read_plan(initiative["initiative_id"], plan["revision"])
+    _apply_standing_authority(store, config, initiative["initiative_id"], stored_plan)
+    return stored_plan
+
+
+def _apply_standing_authority(
+    store: InitiativeStore, config, initiative_id: str, plan: dict[str, Any],
+) -> None:
+    """Execute the operator's pre-signed approval when the plan matches a shape.
+
+    Best-effort by design: an unreadable authority store, an off-shape plan, or
+    a refused activation leaves the initiative where the operator can act on it
+    and reports why on stderr. Proposing never fails because autonomy could not
+    engage. When an authority does fire, the approval record carries its proxy
+    actor and the journal carries `approval-decided`; if the event append is
+    what fails, the approval still names the authority, so provenance survives.
+    """
+    from .authority import AuthorityError, find_matching_authority
+
+    try:
+        current = store.peek(initiative_id)
+        if current["state"] != "awaiting-plan-approval":
+            return
+        authority, mismatches = find_matching_authority(config, current, plan)
+        if authority is None:
+            for reason in mismatches:
+                print(
+                    f"asha initiative: standing authority did not apply: {reason}",
+                    file=sys.stderr,
+                )
+            return
+        proxy = f"standing-authority:{authority['authority_id'][:8]}"
+        approve_plan(store, current, plan["digest"], actor_id=proxy)
+        with store.transaction_lock(initiative_id):
+            approved = store.peek(initiative_id)
+            event = _event(
+                approved, "approval-decided",
+                {
+                    "decision": "approved",
+                    "standing_authority_id": authority["authority_id"],
+                    "authority_label": authority["label"],
+                    "plan_digest": plan["digest"],
+                },
+                _now(), actor_kind="controller", actor_id="standing-authority",
+            )
+            store.append_event(initiative_id, event)
+        if not authority["auto_activate"]:
+            return
+        approved = store.peek(initiative_id)
+        document = build_action_document(
+            approved, "activate-initiative", {}, actor_id=proxy,
+        )
+        try:
+            submit_action(store, initiative_id, document)
+        except (ActionRefused, StoreError, ValueError, OSError) as exc:
+            print(
+                f"asha initiative: standing authority {authority['label']} approved the plan "
+                f"but activation was refused: {exc}",
+                file=sys.stderr,
+            )
+    except (AuthorityError, StoreError, ValueError, OSError) as exc:
+        print(f"asha initiative: standing authority not applied: {exc}", file=sys.stderr)
 
 
 ATTENTION_CONTRACT = "asha.orchestration-attention.v1"
+
+
+def _refuse_any_coordinator_session(env: Mapping[str, str]) -> None:
+    """Authority grants are operator acts; any coordinator session is refused."""
+    if env.get("ASHA_ORCHESTRATION_COORDINATOR_ID"):
+        raise ValueError(
+            "standing authorities are granted and revoked from the operator's own "
+            "terminal; a coordinator session cannot hold this verb"
+        )
+
+
+def _authority_command(
+    args: list[str], config, env: Mapping[str, str], tmux: TmuxAdapter,
+    *, jj: JjAdapter | None = None,
+) -> int:
+    from .authority import add_authority, list_authorities, revoke_authority
+
+    if not args or args[0] not in {"add", "list", "revoke"}:
+        raise ValueError("authority requires add, list, or revoke")
+    verb, tail = args[0], args[1:]
+    if verb == "list":
+        options = _parse_options(tail, flags={"json", "all"})
+        _only(options, {"json", "all"}, "authority list")
+        records = list_authorities(config, include_revoked=bool(options["all"]))
+        payload = {"contract": "asha.orchestration-authority-list.v1", "authorities": records}
+        if options["json"]:
+            _json(payload)
+        else:
+            if not records:
+                print("No standing authorities.")
+            for record in records:
+                state = "revoked" if record["revoked_at"] else "active"
+                constraints = record["constraints"]
+                print(f"{record['label']:<20} {state:<8} {record['authority_id']}")
+                print(f"{'':<20} repo {record['repository']['root']}")
+                print(
+                    f"{'':<20} scope {','.join(constraints['scope_prefixes'])}"
+                    f"  nodes<={constraints['max_nodes']}  harnesses {','.join(constraints['harnesses'])}"
+                    f"  auto-activate {record['auto_activate']}"
+                )
+        return 0
+    _refuse_any_coordinator_session(env)
+    refuse_coordinator_pane_any = getattr(tmux, "pane_option", None)
+    pane = env.get("TMUX_PANE")
+    if pane and callable(refuse_coordinator_pane_any):
+        try:
+            if tmux.pane_option(pane, "@asha_coordinator_id"):
+                raise ValueError(
+                    "standing authorities are granted and revoked from the operator's own "
+                    "terminal; the coordinator's pane is refused"
+                )
+        except TmuxError:
+            pass
+    if verb == "add":
+        if not tail or tail[0].startswith("--"):
+            raise ValueError("authority add requires a NAME first")
+        positional = [tail[0]]
+        options = _parse_options(tail[1:], repeat={"scope"}, flags={"json", "require_headless", "no_auto_activate"})
+        _only(options, {"repo", "scope", "max_nodes", "harness", "max_attempts",
+                        "json", "require_headless", "no_auto_activate"}, "authority add")
+        _required(options, "repo")
+        if not options.get("scope"):
+            raise ValueError("authority add requires at least one --scope PREFIX")
+        harnesses = None
+        if options.get("harness"):
+            harnesses = [item.strip() for item in options["harness"].split(",") if item.strip()]
+        record = add_authority(
+            config, root=Path(options["repo"]), label=positional[0],
+            scope_prefixes=list(options["scope"]),
+            max_nodes=int(options["max_nodes"]) if options.get("max_nodes") else 5,
+            harnesses=harnesses,
+            max_attempts_per_node=int(options["max_attempts"]) if options.get("max_attempts") else 2,
+            require_headless=bool(options["require_headless"]),
+            auto_activate=not options["no_auto_activate"],
+            jj=jj or JjAdapter(),
+        )
+        payload = {"contract": "asha.orchestration-authority-grant.v1", "authority": record}
+        if options["json"]:
+            _json(payload)
+        else:
+            print(f"Authority {record['label']} granted: {record['authority_id']}")
+            print("Matching plans are pre-approved" + (" and activated." if record["auto_activate"] else "."))
+        return 0
+    if not tail or tail[0].startswith("--"):
+        raise ValueError("authority revoke requires an AUTHORITY_ID first")
+    options = _parse_options(tail[1:], flags={"json"})
+    _only(options, {"json"}, "authority revoke")
+    record = revoke_authority(config, tail[0])
+    payload = {"contract": "asha.orchestration-authority-revocation.v1", "authority": record}
+    if options["json"]:
+        _json(payload)
+    else:
+        print(f"Authority {record['label']} revoked at {record['revoked_at']}.")
+    return 0
 
 
 def _attention_payload(env: Mapping[str, str]) -> dict[str, Any]:
@@ -1295,6 +1455,8 @@ def _initiative_command(
             payload["skipped"] = list(store.skipped)
         _payload(payload, bool(options["json"]))
         return 0
+    if command == "authority":
+        return _authority_command(tail, config, env, tmux, jj=jj or JjAdapter())
     if command == "attention":
         options = _parse_options(tail, flags={"json"})
         _only(options, {"json"}, "attention")
