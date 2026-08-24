@@ -60,6 +60,12 @@ _STATE_ORDER = {
     "archived": 10,
 }
 _FIXED_SCREEN_LINES = 15
+_STATUS_MAX_LINES = 6
+_TREE_FOOTER = (
+    # Most-used keys first: narrow terminals clip the tail, `?` shows everything.
+    "n new  Enter attach/open  ! attention  a approve/archive  X close worker  p pause  s stop  ? help  q quit  |  "
+    "N task  r reconcile  d diff  e events  c seals  v verify  t storage  x actions  A scope  / filter"
+)
 _INPUT_POLL_MS = 200
 _AUTO_REFRESH_SECONDS = 5.0
 _START_OUTPUT_BYTES = 64 * 1024
@@ -84,7 +90,8 @@ class IntentKind(Enum):
     FILTER = "filter"
     QUIT = "quit"
     HELP = "help"
-    TOGGLE_MODE = "toggle-mode"
+    ATTENTION = "attention-filter"
+    CLOSE_WORKER = "close-worker"
     INIT_OPEN = "initiative-open"
     INIT_RECONCILE = "initiative-reconcile"
     INIT_DIFF = "initiative-diff"
@@ -281,9 +288,10 @@ class TuiModel:
         self.message: str | None = None
         self.automatic_refresh_error: str | None = None
         self.help_visible = False
-        # Initiatives mode (Increment 6): loaded lazily so a malformed
-        # orchestration configuration degrades this mode, never Tasks.
-        self.mode = "tasks"
+        # The unified control tree (initiatives + unbound tasks). Loaded
+        # lazily; a malformed orchestration configuration degrades the
+        # initiative branch only, never the tasks.
+        self.mode = "tree"
         self.initiatives: Any = None
         self.initiatives_error: str | None = None
         self._clamp_selection()
@@ -402,6 +410,10 @@ class TuiModel:
             0 if visible else None,
         )
         self._clamp_selection()
+        if self.initiatives is not None:
+            # The tree renders from its own task snapshot; every row update
+            # must reach it or the screen shows stale worker states.
+            self.initiatives.replace_views(self.initiatives.views, task_rows=self.rows)
 
     def replace_row(self, row: TuiRow) -> None:
         task_id = row.task["task_id"]
@@ -422,82 +434,102 @@ class TuiModel:
             raise ValueError("diff summary does not belong to a displayed task")
         self.diffs[task_id] = diff
 
+    def _ensure_screen(self):
+        """The tree self-builds from the model's own rows when nothing loaded it."""
+        if self.initiatives is None:
+            from .orchestration.tui_model import InitiativesScreen
+
+            self.initiatives = InitiativesScreen(
+                [], height=self.height, width=self.width, task_rows=self.rows,
+                orchestration_error=self.initiatives_error,
+            )
+        return self.initiatives
+
     def dispatch_key(self, key: str) -> TuiIntent:
+        self._ensure_screen()
         normalized = "ENTER" if key in {"\n", "\r", "ENTER"} else key
         if normalized in {"\t", "TAB"}:
-            return TuiIntent(IntentKind.TOGGLE_MODE)
-        if self.mode == "initiatives":
-            return self._dispatch_initiatives_key(normalized)
-        row = self.selected_row
-        detail = self.detail
-        if normalized == "ENTER":
-            if row is None:
-                return TuiIntent(IntentKind.NONE, reason="no task is selected")
             return TuiIntent(
-                IntentKind.OPEN, row.task["task_id"],
-                None if detail is None else detail.run_id,
+                IntentKind.NONE,
+                reason="one tree now: Right/Left expand and collapse, ! filters to attention",
             )
-        if normalized == "n":
-            return TuiIntent(IntentKind.START)
-        if normalized == "r":
-            return self._selected_intent(IntentKind.RECONCILE)
-        if normalized == "d":
-            return self._selected_intent(IntentKind.DIFF)
-        if normalized == "a":
-            if row is None:
-                return TuiIntent(IntentKind.NONE, reason="no task is selected")
-            terminal_runs = all(
-                run["state"] in {"exited", "failed"}
-                for run in row.reconciliation["runs"]
-            )
-            eligible = (
-                row.task["lifecycle"] == "ended" or
-                (row.task["lifecycle"] == "running" and
-                 bool(row.reconciliation["runs"]) and terminal_runs) or
-                (row.task["lifecycle"] == "failed" and terminal_runs)
-            )
-            if not eligible:
-                return TuiIntent(
-                    IntentKind.NONE, task_id=row.task["task_id"],
-                    reason="only a task whose runs have all exited can be archived",
-                )
-            return TuiIntent(
-                IntentKind.ARCHIVE, task_id=row.task["task_id"],
-                requires_confirmation=True,
-            )
-        if normalized == "x":
-            return self._selected_intent(IntentKind.ACTIONS)
-        if normalized == "A":
-            return TuiIntent(IntentKind.TOGGLE_SCOPE)
-        if normalized == "/":
-            return TuiIntent(IntentKind.FILTER)
-        if normalized == "q":
-            return TuiIntent(IntentKind.QUIT)
-        if normalized == "?":
-            return TuiIntent(IntentKind.HELP)
-        return TuiIntent(IntentKind.NONE)
+        return self._dispatch_tree_key(normalized)
 
-    def _dispatch_initiatives_key(self, key: str) -> TuiIntent:
+    def _dispatch_tree_key(self, key: str) -> TuiIntent:
         if key == "q":
             return TuiIntent(IntentKind.QUIT)
         if key == "?":
             return TuiIntent(IntentKind.HELP)
         if key == "/":
             return TuiIntent(IntentKind.FILTER)
+        if key == "!":
+            return TuiIntent(IntentKind.ATTENTION)
+        if key == "A":
+            return TuiIntent(IntentKind.TOGGLE_SCOPE)
         if key == "RIGHT":
             return TuiIntent(IntentKind.INIT_EXPAND)
         if key == "LEFT":
             return TuiIntent(IntentKind.INIT_COLLAPSE)
         if key == "n":
             return TuiIntent(IntentKind.INIT_NEW)
+        if key == "N":
+            return TuiIntent(IntentKind.START)
         screen = self.initiatives
         row = None if screen is None else screen.selected_row
         if row is None:
-            return TuiIntent(IntentKind.NONE, reason="no initiative is selected")
+            return TuiIntent(IntentKind.NONE, reason="no row is selected")
+        task_bound = row.kind in {"node", "attempt", "task"} and row.task_id is not None
         if key == "ENTER":
             if row.kind == "initiative":
                 return TuiIntent(IntentKind.INIT_ATTACH, initiative_id=row.initiative_id, target=row.id)
+            if row.kind == "tasks-root":
+                return TuiIntent(IntentKind.INIT_EXPAND)
+            if row.kind == "task":
+                task_row = next(
+                    (item for item in self.rows if item.task["task_id"] == row.task_id), None,
+                )
+                return TuiIntent(
+                    IntentKind.OPEN, task_id=row.task_id,
+                    run_id=None if task_row is None else task_row.observation.run_id,
+                )
             return TuiIntent(IntentKind.INIT_OPEN, initiative_id=row.initiative_id, target=row.id)
+        if key == "X":
+            if not task_bound:
+                return TuiIntent(IntentKind.NONE, reason="close targets a row with a linked worker")
+            return TuiIntent(IntentKind.CLOSE_WORKER, task_id=row.task_id, requires_confirmation=True)
+        if row.kind == "task":
+            task_row = next(
+                (item for item in self.rows if item.task["task_id"] == row.task_id), None,
+            )
+            if key == "x":
+                return TuiIntent(IntentKind.ACTIONS, task_id=row.task_id)
+            if key == "a":
+                if task_row is not None:
+                    terminal_runs = all(
+                        run["state"] in {"exited", "failed"}
+                        for run in task_row.reconciliation["runs"]
+                    )
+                    eligible = (
+                        task_row.task["lifecycle"] == "ended" or
+                        (task_row.task["lifecycle"] == "running" and
+                         bool(task_row.reconciliation["runs"]) and terminal_runs) or
+                        (task_row.task["lifecycle"] == "failed" and terminal_runs)
+                    )
+                    if not eligible:
+                        return TuiIntent(
+                            IntentKind.NONE, task_id=row.task_id,
+                            reason="only a task whose runs have all exited can be archived",
+                        )
+                return TuiIntent(IntentKind.ARCHIVE, task_id=row.task_id, requires_confirmation=True)
+            if key == "d":
+                return TuiIntent(IntentKind.DIFF, task_id=row.task_id)
+            if key == "r":
+                return TuiIntent(IntentKind.RECONCILE, task_id=row.task_id)
+            return TuiIntent(IntentKind.NONE)
+        if row.kind in {"node", "attempt"} and key == "d" and task_bound:
+            return TuiIntent(IntentKind.DIFF, task_id=row.task_id)
+        if row.kind == "tasks-root":
+            return TuiIntent(IntentKind.NONE)
         kind = _INITIATIVE_KEYS.get(key)
         if kind is None:
             return TuiIntent(IntentKind.NONE)
@@ -561,148 +593,159 @@ def _table_line(
 
 
 def render(model: TuiModel) -> list[str]:
-    """Render the current model to bounded plain text without terminal calls."""
-    if model.mode == "initiatives":
-        return _render_initiatives(model)
+    """Render the unified control tree to bounded plain text without terminal calls."""
+    return _render_tree(model)
+
+
+def _initiative_table_line(values: tuple[str, ...], width: int) -> str:
+    """One tree line: STATE, ROW, WORKER, COORDINATOR, NODES, ATTENTION.
+
+    The row column absorbs spare width; narrow terminals drop the middle
+    columns rather than the attention column, which is why the operator is
+    looking at the screen in the first place.
+    """
+    state, row, worker, coordinator, nodes, attention = values
+    if width >= 96:
+        columns = [(state, 10), (row, max(8, width - 76)), (worker, 12),
+                   (coordinator, 12), (nodes, 5), (attention, 20)]
+    elif width >= 72:
+        columns = [(state, 10), (row, max(8, width - 46)), (worker, 12), (attention, 20)]
+    else:
+        columns = [(state, 10), (row, max(8, width - 30)), (attention, 17)]
+    cells = [_clip(value, cell_width).ljust(cell_width) for value, cell_width in columns]
+    return " ".join(cells).rstrip()
+
+
+def _close_worker(
+    stdscr, curses_module, model: TuiModel, config: ControlConfig,
+    env: Mapping[str, str], row,
+) -> str:
+    """Operator-typed graceful end for a published worker session.
+
+    The human presses X and confirms; the TUI relays that keystroke as the
+    harness quit command into the worker's pane. This is operator input with
+    less friction — the controller's own code paths still never write panes.
+    """
+    from .harness import QUIT_SEQUENCES
+
+    if row is None:
+        return "close targets a row with a linked worker task"
+    task = row.task
+    run = next(
+        (item for item in task["runs"] if item["run_id"] == row.observation.run_id),
+        None,
+    ) or (task["runs"][0] if task["runs"] else None)
+    if run is None:
+        return "worker has no recorded run to close"
+    quit_command = QUIT_SEQUENCES.get(run["harness"])
+    if quit_command is None:
+        return f"{run['harness']} has no known quit command; attach and end it yourself"
+    answer = _prompt_line(
+        stdscr, curses_module, model, "Confirm [yes/N]: ",
+        title="Close worker session",
+        context=(
+            f"Task: {task['slug']}\n"
+            f"Sends {quit_command!r} + Enter into pane {run['pane_id']} as your keystroke.\n"
+            "A published worker seals on this normal exit; an unpublished one loses nothing\n"
+            "but its session. Authorization: type exact yes (lowercase)."
+        ),
+        maximum=4,
+    )
+    if answer != "yes":
+        return "close cancelled"
+    adapter = _adapter_for_task(task)
+    try:
+        adapter.send_line(run["pane_id"], quit_command)
+    except TmuxError as exc:
+        return f"close failed: {_safe_error(exc)}"
+    return f"sent {quit_command} to {task['slug']}; the seal follows its normal exit"
+
+
+
+def _row_by_task(model: TuiModel, task_id: str | None):
+    if task_id is None:
+        return None
+    return next((row for row in model.rows if row.task["task_id"] == task_id), None)
+
+
+def _task_detail_lines(model: TuiModel, task_id: str) -> list[str]:
+    row = _row_by_task(model, task_id)
+    if row is None:
+        return [f"task {task_id[:8]} is not loaded in this scope (A toggles archived)"]
+    task = row.task
+    run = next(
+        (item for item in task["runs"] if item["run_id"] == row.observation.run_id),
+        None,
+    )
+    diff = model.diffs.get(task_id)
+    lines = [
+        task["slug"],
+        f"Run:        {'none' if run is None else run['run_id']}"
+        + ("" if run is None else f" / {run['role']}"),
+        f"Tmux:       {task['tmux']['session']}:{task['tmux']['window']}"
+        + ("" if run is None else f" {run['pane_id']}"),
+        f"Evidence:   {row.observation.detail}",
+        f"Source:     {row.observation.source}",
+        f"Observed:   {row.observation.observed_at or 'unknown'}",
+        f"Freshness:  {row.observation.freshness}",
+        f"Workspace:  {task['jj']['workspace_path']}",
+        f"Change:     {task['jj']['change_id'] or 'not recorded'}, last explicit refresh: "
+        f"{'never' if diff is None else diff.refreshed_at}",
+        f"Blocker:    {row.reconciliation['blocker'] or 'none'}",
+    ]
+    if diff is not None:
+        diff_lines = diff.summary.splitlines() or ["No changes."]
+        lines.extend(f"Diff:       {line}" for line in diff_lines[:3])
+    return lines
+
+
+
+def _render_tree(model: TuiModel) -> list[str]:
+    """One control tree: initiatives, their workers inline, and unbound tasks."""
+    screen = model.initiatives
     if model.help_visible:
         lines = [
             "ASHA CONTROL HELP",
             "",
-            "Keys: Enter inspect | x context actions | A active/all scope | Tab initiatives",
-            "      n start | r reconcile | d diff | a archive | / filter | q quit | ? help",
-            "",
-            "Status: every state is derived from qualified tmux, process, jj, and event evidence.",
-            "Actions: x offers fresh-state signals or initiative stop; every stop is confirmed.",
-            "Limitations: prune requires separate confirmation; no automated integration.",
-            "Refresh: synchronous bounded adapter calls may delay keys after a pass starts.",
-            "Modal prompts pause automatic reconciliation until they close.",
-            "Closing a popup detaches only. SIGKILL and hard crashes cannot restore terminal mode.",
-        ]
-        return [_clip(line, model.width) for line in lines[:model.height]]
-
-    title = f"ASHA TASKS  Scope: {'all' if model.include_archived else 'active'}"
-    if model.filter_string:
-        title += f"  Filter: {model.filter_string}"
-    title += "  (Tab: initiatives)"
-    lines = [title, ""]
-    lines.append(_table_line(
-        ("STATE", "TASK", "REPOSITORY", "CHANGE", "HARNESS", "AGE"),
-        model.width,
-    ))
-    visible = model.visible_rows
-    for offset, row in enumerate(visible):
-        summary = row.summary
-        run = next(
-            (
-                item for item in row.task["runs"]
-                if item["run_id"] == row.observation.run_id
-            ),
-            None,
-        )
-        absolute_index = model.scroll_offset + offset
-        marker = ">" if absolute_index == model.selection else " "
-        repository = Path(summary["repository"]["root"]).name or "/"
-        line = _table_line((
-            row.display_state, summary["slug"], repository,
-            row.task["jj"]["change_id"] or "-",
-            "-" if run is None else run["harness"],
-            _age(row.observation.observed_at, model.now),
-        ), max(0, model.width - 2))
-        lines.append(f"{marker} {line}")
-    if not model.filtered_rows:
-        lines.append("No tasks match the current filter.")
-    lines.append("")
-    detail = model.detail
-    if detail is not None:
-        lines.extend([
-            detail.slug,
-            f"Run:        {detail.run_id or 'none'}"
-            + ("" if detail.role is None else f" / {detail.role}"),
-            f"Tmux:       {detail.tmux}",
-            f"Evidence:   {detail.evidence}",
-            f"Source:     {detail.source}",
-            f"Observed:   {detail.observed_at or 'unknown'}",
-            f"Freshness:  {detail.freshness}",
-            f"Workspace:  {detail.workspace}",
-            f"Change:     {detail.change}, last explicit refresh: "
-            f"{detail.diff_refreshed_at or 'never'}",
-            f"Blocker:    {detail.blocker or 'none'}",
-        ])
-        if detail.diff_summary is not None:
-            diff_lines = detail.diff_summary.splitlines() or ["No changes."]
-            lines.extend(f"Diff:       {line}" for line in diff_lines[:3])
-    footer = "Enter inspect  x actions  A scope  n start  r reconcile  d diff  a archive  / filter  ? help  q quit"
-    # Automatic failures are actionable and must not disappear below a long
-    # task/detail body or operator message. Reserve their lines first, then the
-    # ordinary status, truncating lower-priority body content as needed.
-    error_lines = (
-        _wrap_status(model.automatic_refresh_error, model.width)
-        if model.automatic_refresh_error else []
-    )
-    message_lines = (
-        _wrap_status(model.message, model.width) if model.message else []
-    )
-    available = max(0, model.height - 1)
-    status_limit = min(_STATUS_MAX_LINES, available)
-    all_status_lines = error_lines + message_lines
-    status_lines = all_status_lines[:status_limit]
-    if len(all_status_lines) > status_limit and status_lines:
-        status_lines[-1] = _clip(
-            status_lines[-1][:-1] + "…", model.width,
-        )
-    body_budget = max(0, available - len(status_lines))
-    lines = lines[:body_budget] + status_lines
-    # The footer is the operator's escape route. Preserve it even when the
-    # terminal is shorter than the detail projection.
-    if model.height:
-        lines.append(footer)
-    return [_clip(line, model.width) for line in lines]
-
-
-_STATUS_MAX_LINES = 6
-_INITIATIVE_FOOTER = (
-    # Most-used keys first: narrow terminals clip the tail, `?` shows everything.
-    "n new  Enter attach/open  a approve  p pause  s stop  ? help  q quit  |  "
-    "r reconcile  d diff  e events  c seals  v verify  t storage  / filter  Right/Left fold  Tab tasks"
-)
-
-
-def _initiative_table_line(values: tuple[str, str, str, str, str], width: int) -> str:
-    # STATE, INITIATIVE, COORDINATOR, NODES, ATTENTION with four separators:
-    # the name column absorbs the width so the attention column never clips.
-    name_width = max(8, width - 47)
-    widths = (10, name_width, 12, 5, 16)
-    cells = [_clip(value, cell_width).ljust(cell_width) for value, cell_width in zip(values, widths)]
-    return " ".join(cells).rstrip()
-
-
-def _render_initiatives(model: TuiModel) -> list[str]:
-    """Text-only Initiatives mode: table, fact detail, optional pane, footer."""
-    screen = model.initiatives
-    if model.help_visible:
-        lines = [
-            "ASHA CONTROL HELP  [Initiatives]",
-            "",
-            "Keys: Tab tasks | Up/Down select | Right/Left expand/collapse | n new intent (starts the coordinator)",
-            "      Enter on an initiative attaches to its coordinator session; on a node opens the worker popup",
-            "      r reconcile | d diff | e events | a approval decision | c candidate seals",
+            "Keys: Up/Down select | Right/Left expand/collapse | ! only rows waiting on a human",
+            "      Enter: initiative row attaches its coordinator; node/task rows open the worker popup",
+            "      n new intent (Control starts the coordinator) | N start an ad-hoc task | A archived scope",
+            "      X close a published worker (sends its quit command as you) | x context actions on a task",
+            "      r reconcile | d diff | e events | a approve plan / archive task | c candidate seals",
             "      v review+verification evidence | t retained storage | p pause/resume | s stop attempt",
             "      / filter | ? help | q quit",
             "",
             "Facts: claim, seal, review verdict, and verification outcome are shown separately.",
             "Approval: the operator decides here or in the CLI; the coordinator pane is refused.",
             "No merge, rebase, bookmark, push, publication, workspace removal, or deletion exists here.",
+            "Status: every state is derived from qualified tmux, process, jj, and event evidence.",
+            "Limitations: prune requires separate confirmation; no automated integration.",
+            "Refresh: synchronous bounded adapter calls may delay keys after a pass starts.",
+            "Modal prompts pause automatic reconciliation until they close.",
+            "Closing a popup detaches only. SIGKILL and hard crashes cannot restore terminal mode.",
         ]
         return [_clip(line, model.width) for line in lines[:model.height]]
-    title = "ASHA CONTROL  [Initiatives]"
+    title = "ASHA CONTROL"
+    if screen is not None and screen.attention_only:
+        title += "  [waiting on you]"
+    title += f"  Scope: {'all' if model.include_archived else 'active'}"
     if screen is not None and screen.filter_string:
         title += f"  Filter: {screen.filter_string}"
     lines = [title, ""]
     if screen is None:
-        lines.append(model.initiatives_error or "Initiatives unavailable.")
+        # A bare model still shows its tasks: build a transient task-only tree.
+        from .orchestration.tui_model import InitiativesScreen
+
+        screen = InitiativesScreen(
+            [], height=model.height, width=model.width, task_rows=model.rows,
+            orchestration_error=model.initiatives_error,
+        )
+        model.initiatives = screen
+    if screen is None:
+        lines.append(model.initiatives_error or "Control tree unavailable.")
     else:
         lines.append(_initiative_table_line(
-            ("STATE", "INITIATIVE", "COORDINATOR", "NODES", "ATTENTION"), model.width,
+            ("STATE", "ROW", "WORKER", "COORDINATOR", "NODES", "ATTENTION"), model.width,
         ))
         visible = screen.visible_rows
         for offset, row in enumerate(visible):
@@ -710,14 +753,26 @@ def _render_initiatives(model: TuiModel) -> list[str]:
             marker = ">" if absolute_index == screen.selection else " "
             indent = "  " * row.depth
             if row.kind == "initiative":
-                cells = (row.state, indent + row.label, row.coordinator, row.nodes, row.attention)
+                cells = (row.state, indent + row.label, "", row.coordinator, row.nodes, row.attention)
+            elif row.kind == "tasks-root":
+                cells = ("", indent + row.label, row.state, "", "", "")
+            elif row.kind == "task":
+                cells = (row.state, indent + row.label, row.type, "",
+                         _age(row.observed_at, model.now), row.attention)
             else:
-                cells = (row.state, indent + f"{row.id}  {row.label}", row.type, "", "")
+                cells = (row.state, indent + f"{row.id}", row.worker, "",
+                         _age(row.observed_at, model.now), row.attention)
             lines.append(f"{marker} {_initiative_table_line(cells, max(0, model.width - 2))}")
         if not screen.rows():
-            lines.append("No initiatives match the current filter.")
+            lines.append("Nothing to show: no initiatives or tasks match.")
+        if screen.orchestration_error:
+            lines.append(_clip(f"Initiatives unavailable: {screen.orchestration_error}", model.width))
         lines.append("")
-        lines.extend(screen.detail_lines())
+        selected = screen.selected_row
+        if selected is not None and selected.kind in {"task", "node", "attempt"} and selected.task_id:
+            lines.extend(_task_detail_lines(model, selected.task_id))
+        else:
+            lines.extend(screen.detail_lines())
         pane = screen.pane_lines()
         if pane:
             lines.append("")
@@ -734,7 +789,7 @@ def _render_initiatives(model: TuiModel) -> list[str]:
     body_budget = max(0, available - len(status_lines))
     lines = lines[:body_budget] + status_lines
     if model.height:
-        lines.append(_INITIATIVE_FOOTER)
+        lines.append(_TREE_FOOTER)
     return [_clip(line, model.width) for line in lines]
 
 
@@ -780,14 +835,32 @@ def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[st
 
 
 
-def _enter_initiatives(model: TuiModel, env: Mapping[str, str]) -> None:
-    """Switch to Initiatives mode; a failed orchestration load degrades this mode only."""
+def _enter_tree(model: TuiModel, env: Mapping[str, str]) -> None:
+    """Build or refresh the unified tree; orchestration failure degrades to a note.
+
+    Tasks always render: a malformed orchestration configuration leaves the
+    unbound-task branch (and every task action) fully usable.
+    """
     try:
         _refresh_initiatives(model, env)
-    except Exception as exc:  # noqa: BLE001 - degrade this mode only
-        model.initiatives = None
-        model.initiatives_error = f"initiatives unavailable: {_safe_error(exc)}"
-    model.mode = "initiatives"
+    except Exception as exc:  # noqa: BLE001 - degrade initiatives only, keep tasks
+        from .orchestration.tui_model import InitiativesScreen
+
+        error = f"{_safe_error(exc)}"
+        if model.initiatives is None:
+            model.initiatives = InitiativesScreen(
+                [], height=model.height, width=model.width,
+                task_rows=model.rows, orchestration_error=error,
+            )
+        else:
+            model.initiatives.resize(model.height, model.width)
+            model.initiatives.replace_views([], task_rows=model.rows)
+            model.initiatives.orchestration_error = error
+        model.initiatives_error = error
+
+
+# The Increment 6 name; the tree is now the only view.
+_enter_initiatives = _enter_tree
 
 
 def _refresh_initiatives(model: TuiModel, env: Mapping[str, str], *, tmux=None) -> None:
@@ -795,10 +868,13 @@ def _refresh_initiatives(model: TuiModel, env: Mapping[str, str], *, tmux=None) 
 
     views = _load_initiative_views(env, tmux=tmux)
     if model.initiatives is None:
-        model.initiatives = InitiativesScreen(views, height=model.height, width=model.width)
+        model.initiatives = InitiativesScreen(
+            views, height=model.height, width=model.width, task_rows=model.rows,
+        )
     else:
         model.initiatives.resize(model.height, model.width)
-        model.initiatives.replace_views(views)
+        model.initiatives.replace_views(views, task_rows=model.rows)
+        model.initiatives.orchestration_error = None
     model.initiatives_error = None
 
 
@@ -3107,7 +3183,11 @@ def _execute_intent(
     journals: CreationJournalStore,
     jj: JjAdapter,
 ) -> bool:
-    row = model.selected_row
+    screen = model.initiatives
+    selected = None if screen is None else screen.selected_row
+    row = _row_by_task(model, intent.task_id) if intent.task_id else (
+        _row_by_task(model, None if selected is None else selected.task_id)
+    )
     if intent.kind is IntentKind.NONE:
         if intent.reason:
             model.message = intent.reason
@@ -3124,22 +3204,18 @@ def _execute_intent(
             include_archived=model.include_archived,
         ))
         _surface_skipped(model, store)
+        _enter_tree(model, env)
         return True
     if intent.kind is IntentKind.FILTER:
-        if model.mode == "initiatives" and model.initiatives is not None:
-            value = _prompt_line(
-                stdscr, curses_module, model, "Filter: ",
-                initial=model.initiatives.filter_string, maximum=200,
-            )
-            if value is not None:
-                model.initiatives.set_filter(value)
+        if screen is None:
+            model.message = "control tree unavailable"
             return True
         value = _prompt_line(
             stdscr, curses_module, model, "Filter: ",
-            initial=model.filter_string, maximum=200,
+            initial=screen.filter_string, maximum=200,
         )
         if value is not None:
-            model.set_filter(value)
+            screen.set_filter(value)
         return True
     if intent.kind is IntentKind.START:
         model.message = _start_form(stdscr, curses_module, model, env, config)
@@ -3148,14 +3224,23 @@ def _execute_intent(
             include_archived=model.include_archived,
         ))
         _surface_skipped(model, store)
+        _enter_tree(model, env)
         return True
-    if intent.kind is IntentKind.TOGGLE_MODE:
-        if model.mode == "initiatives":
-            model.mode = "tasks"
-            model.help_visible = False
+    if intent.kind is IntentKind.ATTENTION:
+        if screen is None:
+            model.message = "control tree unavailable"
             return True
-        _enter_initiatives(model, env)
-        model.help_visible = False
+        screen.attention_only = not screen.attention_only
+        screen.selection = 0 if screen.rows() else None
+        model.message = (
+            "showing only rows waiting on a human (! shows everything)"
+            if screen.attention_only else "showing everything"
+        )
+        return True
+    if intent.kind is IntentKind.CLOSE_WORKER:
+        model.message = _close_worker(
+            stdscr, curses_module, model, config, env, row,
+        )
         return True
     if intent.kind in _INITIATIVE_INTENTS:
         model.message = _execute_initiative_intent(
@@ -3247,6 +3332,8 @@ def _curses_loop(
     jj: JjAdapter,
 ) -> int:
     stdscr.timeout(_INPUT_POLL_MS)
+    if model.initiatives is None:
+        _enter_tree(model, env)
     next_refresh = time.monotonic() + _AUTO_REFRESH_SECONDS
     while True:
         _reap_deferred_start_workers()
@@ -3258,29 +3345,24 @@ def _curses_loop(
                 model.resize(height, width)
                 continue
             if key == getattr(curses_module, "KEY_UP", -997):
-                if model.mode == "initiatives" and model.initiatives is not None:
+                if model.initiatives is not None:
                     model.initiatives.move_selection(-1)
-                else:
-                    model.move_selection(-1)
                 continue
             if key == getattr(curses_module, "KEY_DOWN", -996):
-                if model.mode == "initiatives" and model.initiatives is not None:
+                if model.initiatives is not None:
                     model.initiatives.move_selection(1)
-                else:
-                    model.move_selection(1)
                 continue
             if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
                 value = "ENTER"
-            elif key == 9:
-                value = "\t"
             elif key == getattr(curses_module, "KEY_RIGHT", -994):
                 value = "RIGHT"
             elif key == getattr(curses_module, "KEY_LEFT", -993):
                 value = "LEFT"
-            elif 0 <= key <= 0x10FFFF:
-                value = chr(key)
             else:
-                value = ""
+                try:
+                    value = chr(key)
+                except ValueError:
+                    continue
             intent = model.dispatch_key(value)
             try:
                 if not _execute_intent(
@@ -3303,8 +3385,7 @@ def _curses_loop(
                 ))
                 _surface_skipped(model, store)
                 model.automatic_refresh_error = None
-                if model.mode == "initiatives" and model.initiatives is not None:
-                    _refresh_initiatives(model, env)
+                _enter_tree(model, env)
             except (ValueError, OSError) as exc:
                 model.automatic_refresh_error = (
                     f"automatic reconciliation failed: {_safe_error(exc)}"
@@ -3353,8 +3434,8 @@ def run_tui(
     jj = JjAdapter()
     model = TuiModel(_load_rows(config, store, journals, jj))
     _surface_skipped(model, store)
-    if initial_mode == "initiatives":
-        _enter_initiatives(model, values)
+    del initial_mode  # single view: the tree is the only mode (flag kept for compat)
+    _enter_tree(model, values)
 
     previous: dict[int, Any] = {}
 

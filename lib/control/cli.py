@@ -1433,6 +1433,16 @@ def _recover_command(args: list[str], env: Mapping[str, str]) -> int:
     return 0
 
 
+def _load_rows_for_attention(env: Mapping[str, str]):
+    """Reconciled task rows for the attention assembler (bounded, read-only)."""
+    from .tui import _load_rows
+
+    config = load_config(env)
+    return _load_rows(
+        config, TaskStore(config), CreationJournalStore(config), JjAdapter(),
+    )
+
+
 def _trust_command(args: list[str], env: Mapping[str, str]) -> int:
     """Report, or grant, harness trust for one path across every known store."""
     from . import trust as trust_api

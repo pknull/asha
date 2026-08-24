@@ -827,7 +827,7 @@ class RealControlFinishPtyTests(unittest.TestCase):
         self.addCleanup(lambda: child.poll() is None and child.terminate())
         logical_goal = "PTY 界 e\u0301 🧑🏽\u200d💻"
         try:
-            self._send(("n\r\r\r\r" + logical_goal + "\r").encode("utf-8"), settle=1)
+            self._send(("N\r\r\r\r" + logical_goal + "\r").encode("utf-8"), settle=1)
             task = self._wait(lambda: self.tasks.list()[0] if self.tasks.list() else None)
             task_id = task["task_id"]
             task = self._wait(
@@ -885,7 +885,7 @@ class RealControlFinishPtyTests(unittest.TestCase):
         )
         os.close(slave)
         try:
-            self._send(b"n\r\r\r\rterminate directly\r", settle=1)
+            self._send(b"N\r\r\r\rterminate directly\r", settle=1)
             task = self._wait(lambda: self.tasks.list()[0] if self.tasks.list() else None)
             task_id = task["task_id"]
             self._wait(lambda: self.signal_log.exists() or b"working" in self.captured,

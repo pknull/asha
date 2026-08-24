@@ -12,6 +12,18 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### One control tree
+
+- `asha control` is now a single tree: initiatives expand to nodes and
+  attempts with their workers' live states inline (prompt-stuck and
+  published-awaiting-exit workers are visible where the work is), unbound
+  tasks sit under one branch (flat when no initiatives exist), and `Tab`'s
+  mode split is retired. New keys: `!` filters to rows waiting on a human,
+  `X` sends a published worker its quit command as the operator's keystroke,
+  `N` opens the ad-hoc task form (`n` remains new-intent). `asha initiative
+  attention [--json]` is the CLI twin of `!`, sharing one assembler. Narrow
+  terminals keep the attention column and drop the middle ones.
+
 #### Repair assignments carry their findings
 
 - A repair dispatch now embeds the accepted review findings bound to the exact

@@ -145,7 +145,8 @@ class PureModelTests(unittest.TestCase):
         model = TuiModel([row("keys", "working")])
         expected = {
             "ENTER": IntentKind.OPEN,
-            "n": IntentKind.START,
+            "n": IntentKind.INIT_NEW,   # one tree: n starts a coordinator intent
+            "N": IntentKind.START,      # the ad-hoc task form moved to N
             "r": IntentKind.RECONCILE,
             "d": IntentKind.DIFF,
             "/": IntentKind.FILTER,
@@ -153,6 +154,7 @@ class PureModelTests(unittest.TestCase):
             "?": IntentKind.HELP,
             "x": IntentKind.ACTIONS,
             "A": IntentKind.TOGGLE_SCOPE,
+            "!": IntentKind.ATTENTION,
         }
         for key, kind in expected.items():
             with self.subTest(key=key):
@@ -192,8 +194,8 @@ class PureModelTests(unittest.TestCase):
         )
 
         lines = render(model)
-        table = next(line for line in lines if "REPOSITORY" in line)
-        for column in ("STATE", "TASK", "REPOSITORY", "CHANGE", "HARNESS", "AGE"):
+        table = next(line for line in lines if "ATTENTION" in line)
+        for column in ("STATE", "ROW", "WORKER", "COORDINATOR", "NODES", "ATTENTION"):
             self.assertIn(column, table)
         output = "\n".join(lines)
         for field in ("Run:", "Tmux:", "Evidence:", "Workspace:", "Change:", "Blocker:"):
@@ -278,7 +280,7 @@ class PureModelTests(unittest.TestCase):
 
         output = "\n".join(render(model))
 
-        for key in ("Enter", "x context", "A active/all", "n start", "r reconcile", "d diff", "a archive", "/ filter", "q quit", "? help"):
+        for key in ("Enter", "x context", "A archived scope", "n new intent", "N start", "r reconcile", "d diff", "/ filter", "q quit", "? help"):
             self.assertIn(key, output)
         self.assertIn("evidence", output)
         self.assertIn("Limitations", output)
@@ -316,12 +318,12 @@ class PureModelTests(unittest.TestCase):
         joined = " ".join(line.strip() for line in status).replace("Status: ", "")
         self.assertIn("chmod g-w,o-w /home/pknull/Code/Thallus", joined)
         self.assertIn("nothing to recover", joined)
-        self.assertEqual(lines[-1].split()[0], "Enter")  # footer survives
+        self.assertEqual(lines[-1].split()[0], "n")  # footer survives
         # A tiny terminal still yields the footer and a bounded status.
         model.height = 12
         small = render(model)
         self.assertEqual(len(small), 12)
-        self.assertTrue(small[-1].startswith("Enter"))
+        self.assertTrue(small[-1].startswith("n new"))
 
     def test_no_intent_represents_removal_or_automated_integration(self) -> None:
         values = {kind.value for kind in IntentKind}

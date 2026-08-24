@@ -99,6 +99,7 @@ Usage:
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
   asha initiative doctor [--json]
   asha initiative projects [--root DIR] [--depth N] [--match TEXT] [--json]
+  asha initiative attention [--json]
   asha initiative coordinator claim <id> [--harness H] [--json]   (from the Asha pane)
   asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
   asha initiative coordinator sessions [--json]
@@ -605,6 +606,23 @@ def propose_plan(
             )
             store.append_event(current["initiative_id"], event)
     return store.read_plan(initiative["initiative_id"], plan["revision"])
+
+
+ATTENTION_CONTRACT = "asha.orchestration-attention.v1"
+
+
+def _attention_payload(env: Mapping[str, str]) -> dict[str, Any]:
+    """Everything waiting on a human, from the same assembler the tree uses."""
+    from ..cli import _load_rows_for_attention
+    from ..tui import _load_initiative_views
+    from .tui_model import attention_items
+
+    views = _load_initiative_views(env)
+    task_rows = _load_rows_for_attention(env)
+    return {
+        "contract": ATTENTION_CONTRACT,
+        "items": attention_items(views, task_rows),
+    }
 
 
 def _coordinator_command(
@@ -1276,6 +1294,20 @@ def _initiative_command(
         if store.skipped:
             payload["skipped"] = list(store.skipped)
         _payload(payload, bool(options["json"]))
+        return 0
+    if command == "attention":
+        options = _parse_options(tail, flags={"json"})
+        _only(options, {"json"}, "attention")
+        payload = _attention_payload(env)
+        if options["json"]:
+            _json(payload)
+        else:
+            if not payload["items"]:
+                print("Nothing is waiting on a human.")
+            for item in payload["items"]:
+                where = item.get("slug") or item.get("task_id", "")
+                print(f"{item['kind']:<18} {str(where)[:28]:<28} {item['detail'][:70]}")
+                print(f"{'':<18} -> {item['resolution'][:90]}")
         return 0
     if command == "projects":
         options = _parse_options(tail, flags={"json"})

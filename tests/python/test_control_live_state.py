@@ -147,7 +147,7 @@ class AtomicObservationTests(unittest.TestCase):
         output = "\n".join(render(model))
 
         table_row = next(line for line in output.splitlines() if "live-state" in line)
-        self.assertTrue(table_row.rstrip().endswith("10s"), table_row)
+        self.assertIn("10s", table_row)
         self.assertIn("Source:     event", output)
         self.assertIn(f"Observed:   {OBSERVED}", output)
         self.assertIn("Freshness:  fresh", output)
@@ -399,7 +399,10 @@ class AutomaticRefreshTests(unittest.TestCase):
             )
 
         self.assertEqual(status, 0)
-        self.assertEqual(model.selection, 1)
+        # Tree rows: the unbound-tasks root, then the two tasks; one KEY_DOWN
+        # lands on the first task.
+        self.assertEqual(model.initiatives.selection, 1)
+        self.assertEqual(model.initiatives.selected_row.kind, "task")
         load.assert_not_called()
 
     def test_default_height_reserves_visible_space_for_automatic_refresh_error(self) -> None:
@@ -430,9 +433,8 @@ class AutomaticRefreshTests(unittest.TestCase):
                 for line in output
             ),
         )
-        self.assertEqual(
-            output[-1],
-            "Enter inspect  x actions  A scope  n start  r reconcile  d diff  a archive  / filter  ? help  q quit",
+        self.assertTrue(
+            output[-1].startswith("n new  Enter attach/open  ! attention"), output[-1],
         )
         self.assertEqual(model.message, operator_message)
 

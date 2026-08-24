@@ -569,6 +569,22 @@ class TmuxAdapter:
             "attach-session", "-t", session,
         ]
 
+    def send_line(self, pane_id: str, text: str) -> None:
+        """Type one bounded line plus Enter into an owned pane.
+
+        OPERATOR-ONLY SEAM: this exists for explicit human actions relayed by
+        the TUI (the close-worker key). Controller code paths must never call
+        it; the controller's no-pane-input rule is a design invariant, not a
+        missing feature.
+        """
+        pane = _validate_pane_id(pane_id)
+        if not isinstance(text, str) or not text or len(text) > 200 or any(
+            ord(char) < 32 or ord(char) == 127 for char in text
+        ):
+            raise TmuxError("pane input must be one bounded printable line")
+        self._run(["send-keys", "-t", pane, "-l", text])
+        self._run(["send-keys", "-t", pane, "Enter"])
+
     def pane_tail(self, pane_id: str, *, lines: int = 12) -> list[str]:
         """Last non-empty visible lines of an owned pane (no scrollback).
 

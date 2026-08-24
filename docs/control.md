@@ -91,23 +91,35 @@ branch such as `dev` is a default candidate; a detached repository with missing
 or conflicting fallback candidates refuses before mutation and requests an
 explicit `--base`.
 
-## Terminal TUI
+## Terminal TUI: one control tree
 
-`asha control` opens the task supervisor in the current terminal. Use the up
-and down arrow keys to move between tasks. The remaining keys are:
+`asha control` opens a single tree in the current terminal: every non-archived
+initiative (expandable to its nodes and attempts, each showing its linked
+worker's live state inline) followed by an **Unbound tasks** branch holding
+Control tasks bound to no initiative. With no initiatives on screen the branch
+flattens and the tree is exactly the task list. Keys act on the selected row's
+kind:
 
 | Key | Action |
 |---|---|
-| `Enter` | Open the selected task and run in a tmux popup. |
-| `x` | Open controller-revalidated actions for the selected task. |
-| `A` | Toggle the explicit `active` / `all` lifecycle scope. |
-| `n` | Open the task-start form. |
-| `r` | Reconcile the selected task from live state. |
-| `d` | Refresh and display a read-only jj diff summary. |
-| `a` | After confirmation, archive the selected eligible task; preserve its workspace and change. |
-| `/` | Filter the task list without mutating task state. |
-| `q` | Exit the TUI without affecting tasks. |
-| `?` | Toggle help for the keys, status evidence, and limitations. |
+| `Up`/`Down`, `Right`/`Left` | Move; expand or collapse (`Left` on a child returns to its parent). |
+| `Enter` | Initiative row: attach its coordinator session. Node/attempt/task row: open the worker's tmux popup. |
+| `!` | Show only rows waiting on a human (plan approvals, needs-input, workers at prompts, published-awaiting-exit). |
+| `n` | New intent: Control starts a coordinator session at the projects root with your intent as its first message. |
+| `N` | Open the ad-hoc task-start form. |
+| `X` | After `yes`, send the worker's quit command (`/exit`, `/quit`) into its pane **as your keystroke** — for a published worker whose seal awaits its normal exit. |
+| `a` | Initiative row: decide a pending plan approval (`approve`/`reject`). Task row: archive after confirmation. |
+| `x` | Task row: controller-revalidated context actions. |
+| `r` | Initiative row: reconcile it. Task row: reconcile the task. |
+| `d` | jj diff summary of the selected row's linked workspace. |
+| `e`, `c`, `v`, `t` | Initiative panes: events, candidate seals, review + verification evidence, retained storage. |
+| `p` / `s` | After `yes`: pause/resume the initiative / stop the selected attempt's task. |
+| `A` | Toggle the `active` / `all` lifecycle scope for tasks. |
+| `/` | Filter rows. `?` help. `q` exits the TUI only. |
+
+`asha initiative attention [--json]` is the CLI twin of `!`: one list of
+everything waiting on a human across initiatives and tasks, each item naming
+its resolution. The tree and the verb share one assembler and cannot disagree.
 
 The default `active` scope does not load or reconcile archived tasks. `A`
 switches to `all`; archived records use their durable lifecycle projection and
@@ -115,17 +127,17 @@ display `archived` even after their session and workspace have been pruned.
 The title always names the current scope. Scope reloads preserve the selected
 task when it remains visible, and the text filter remains independent.
 
-### Initiatives mode
+### Tree mechanics
 
-`Tab` switches between the Tasks view and the Initiatives view. Bindings are per
-mode: the Tasks keys above are untouched, and the Initiatives view binds the
-table below. The view is text only, works on an 80x24 monochrome terminal, and
-reads orchestration state through the same typed controller functions the CLI
-uses (`snapshot`, `show_payload`, `reconcile_one_initiative`, `approve_plan`,
-`reject_plan`, `submit_action`); it duplicates no lifecycle logic. Orchestration
-is imported lazily on the first `Tab`; a malformed orchestration configuration
-degrades this view to a status line and leaves Tasks intact. The five-second
-automatic refresh reloads both views with lock-free snapshot readers.
+The view is text only, works on an 80x24 monochrome terminal (narrow widths
+drop the middle columns, never the attention column), and reads orchestration
+state through the same typed controller functions the CLI uses (`snapshot`,
+`show_payload`, `reconcile_one_initiative`, `approve_plan`, `reject_plan`,
+`submit_action`); it duplicates no lifecycle logic. Orchestration is imported
+lazily; a malformed orchestration configuration degrades the initiative branch
+to an inline note and leaves the task branch fully usable. The five-second
+automatic refresh reloads the whole tree with lock-free snapshot readers.
+`Tab` no longer switches modes — there is one view.
 
 | Key | Action |
 |---|---|
@@ -414,8 +426,8 @@ approvals typed in the left pane are refused because that pane carries the
 coordinator claim; `Enter` on a node in the right pane opens the worker's
 session popup.
 
-`asha control --initiatives` starts the TUI directly in Initiatives mode with
-the same lazy orchestration load and degradation as the `Tab` toggle.
+`asha control --initiatives` remains accepted as a compatibility alias; the
+tree is the only view, so it opens the same screen as `asha control`.
 
 ## Task and run model
 
