@@ -806,7 +806,10 @@ _NODE_KEYS = frozenset({
 
 def validate_node(value: Any) -> dict[str, Any]:
     expected = _NODE_KEYS | ({"conflict_policy"} if isinstance(value, dict) and value.get("type") == "compose" else set())
+    expected = expected | ({"interactive"} if isinstance(value, dict) and "interactive" in value else set())
     node = _object(value, "node", frozenset(expected))
+    if "interactive" in node and not isinstance(node["interactive"], bool):
+        raise ModelError("node interactive must be a boolean")
     if node["contract"] != NODE_CONTRACT:
         raise ModelError(f"node contract must be {NODE_CONTRACT}")
     validate_slug(node["node_id"], "node_id")

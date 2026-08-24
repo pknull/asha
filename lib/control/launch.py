@@ -41,6 +41,7 @@ def _adapter_for_task(task: dict[str, Any]) -> TmuxAdapter:
 
 def _validate_launch_request(
     harness: str, role: str, goal_args: tuple[str, ...] | list[str],
+    headless: bool = False,
 ) -> tuple[str, str, list[str]]:
     """Validate every operator-controlled launch argument without state mutation."""
     selected_harness = harness_api.validate_harness(harness)
@@ -53,7 +54,9 @@ def _validate_launch_request(
         if not supplied.is_absolute():
             raise LaunchError("ASHA_ROOT must be an absolute path")
         asha_root = supplied.resolve()
-    command = harness_api.launch_argv(asha_root, selected_harness, goal_args)
+    command = harness_api.launch_argv(
+        asha_root, selected_harness, goal_args, headless=headless,
+    )
     return selected_harness, selected_role, command
 
 
@@ -326,6 +329,7 @@ def launch_task(
     harness: str,
     goal_args=(),
     role: str = "implementer",
+    headless: bool = False,
     failure_injector: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Launch exactly one primary run from a prepared creation transaction."""
@@ -353,7 +357,7 @@ def launch_task(
             )
         try:
             selected_harness, selected_role, command = _validate_launch_request(
-                harness, role, tuple(goal_args),
+                harness, role, tuple(goal_args), headless,
             )
             run_id = new_uuid()
             environment = harness_api.controller_env(

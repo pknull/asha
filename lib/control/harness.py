@@ -47,6 +47,9 @@ QUIT_SEQUENCES: dict[str, str] = {
     "claude": "/exit",
     "codex": "/quit",
 }
+# Harnesses with a real headless (one-turn, exits-on-completion) mode. A
+# headless worker's exit is structural, so its seal never waits on a human.
+HEADLESS_HARNESSES = frozenset({"claude", "codex"})
 PROC_ROOT = Path("/proc")
 MAX_PROC_BYTES = 64 * 1024
 _BOOT_ID = re.compile(
@@ -112,6 +115,7 @@ def validate_role(role: Any) -> str:
 
 def launch_argv(
     asha_root: Path, harness: str, extra: Sequence[str] = (),
+    *, headless: bool = False,
 ) -> list[str]:
     root = _canonical_path(asha_root, "Asha root is not an absolute canonical path")
     harness = validate_harness(harness)
@@ -126,6 +130,19 @@ def launch_argv(
         raise HarnessError("harness extra arguments are invalid")
     if arguments and arguments[0].startswith("-"):
         raise HarnessError("the first goal argument must not begin with '-'")
+    if headless:
+        if harness not in HEADLESS_HARNESSES:
+            raise HarnessError(f"{harness} has no headless mode")
+        if harness == "claude":
+            # Print mode runs one full agentic turn and exits. Permissions are
+            # bypassed deliberately: the workspace is isolated, hard scope and
+            # read-only review are enforced by the seal, and a headless run
+            # cannot answer a prompt.
+            return [
+                str(executable), harness, "-p", *arguments,
+                "--permission-mode", "bypassPermissions",
+            ]
+        return [str(executable), harness, "exec", *arguments]
     return [str(executable), harness, *arguments]
 
 

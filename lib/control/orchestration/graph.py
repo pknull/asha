@@ -448,6 +448,19 @@ def validate_plan(
     if policy["workflow"] == "code-orchestrate" and not policy["single_writer"]:
         _fail(RULE_NESTED_WORKFLOW, "code-orchestrate requires a single-writer declaration")
     for node in nodes:
+        if node.get("interactive") is False:
+            from ..harness import HEADLESS_HARNESSES
+
+            if node["type"] not in {"work", "review"}:
+                _fail(
+                    RULE_NESTED_WORKFLOW,
+                    f"node {node['node_id']} cannot be headless: only work and review nodes run workers",
+                )
+            if node.get("harness") not in HEADLESS_HARNESSES:
+                _fail(
+                    RULE_NESTED_WORKFLOW,
+                    f"node {node['node_id']} declares a harness without a headless mode",
+                )
         if node["workflow"] == "session-loop":
             _fail(RULE_NESTED_WORKFLOW, f"node {node['node_id']} requests session-loop")
         if node["workflow"] != "none" and node["workflow"] != policy["workflow"]:

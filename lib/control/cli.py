@@ -68,7 +68,7 @@ Usage:
   asha task start [--repo PATH] (--pr N | --issue N | [--base REVSET])
                   [--task-id UUID] [--slug SLUG]
                   [--harness H|--agent H] (--goal TEXT | -- TEXT...)
-                  [--role ROLE] [--detach] [--json]
+                  [--role ROLE] [--detach] [--headless] [--json]
   asha task list [--json]
   asha task show <task-id|exact-slug> [--json]
   asha task attach <task-id|exact-slug> [--run RUN_ID]
@@ -321,7 +321,7 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         "repo": None, "base": DEFAULT_BASE_REVSET, "harness": None, "role": "implementer",
         "goal": None, "pr": None, "issue": None, "task_id": None, "slug": None,
         "expected_default": None, "detach": False, "json": False,
-        "tui_worker": False,
+        "tui_worker": False, "headless": False,
     }
     seen: set[str] = set()
     index = 0
@@ -331,7 +331,7 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         if argument == "--":
             trailing = args[index + 1:]
             break
-        if argument in {"--detach", "--json", "--tui-worker"}:
+        if argument in {"--detach", "--json", "--tui-worker", "--headless"}:
             key = argument[2:].replace("-", "_")
             if key in seen:
                 raise ValueError(f"{argument} may be specified only once")
@@ -936,6 +936,7 @@ def _start_new_task(
     result = launch_task(
         config, prepared, tmux=adapter, harness=selected_harness,
         goal_args=parsed["goal_args"], role=selected_role,
+        headless=parsed["headless"],
     )
     trust_mutation = _workspace_trust_mutation(result.pop("workspace_trust", None))
     if trust_mutation is not None:
