@@ -291,6 +291,17 @@ else
 fi
 echo ""
 
+# Test Suite 21: Trigger Scheduling
+echo -e "${BLUE}--- Test Suite 21: Trigger Scheduling ---${NC}"
+if "$SCRIPT_DIR/test-trigger.sh"; then
+    echo -e "${GREEN}✓ Trigger tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Trigger tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Test Suite 20: Cockpit Launcher Plan
 echo -e "${BLUE}--- Test Suite 20: Cockpit Launcher ---${NC}"
 if "$SCRIPT_DIR/test-cockpit.sh"; then

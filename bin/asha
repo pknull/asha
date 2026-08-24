@@ -381,6 +381,8 @@ Usage:
   asha control [--initiatives|event|tmux]
                                    run the terminal TUI (optionally in Initiatives mode) or Control internals
   asha cockpit [DIR] [--dry-run]   coordinator pane (asha claude at DIR) beside the Initiatives monitor
+  asha trigger add|list|remove [...]
+                                   schedule coordinator launches (systemd user timers); fired runs wait at plan approval
   asha process route <task>        advisory process route with risks and fallback
   asha capabilities match <task>   registry-backed harness capability match
                                    (both accept --json)
@@ -416,6 +418,15 @@ ASHA_FLAG_YES=0
 case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;
 esac
+
+# Triggers are systemd user-timer glue over coordinator launch.
+if [[ "${1:-}" == "trigger" ]]; then
+  shift
+  # shellcheck disable=SC1090
+  source "$ASHA_ROOT/lib/trigger.sh"
+  ( set -euo pipefail; asha_trigger_main "$@" )
+  exit $?
+fi
 
 # The cockpit is tmux layout glue over Control: coordinator pane + monitor.
 if [[ "${1:-}" == "cockpit" ]]; then
