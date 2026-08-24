@@ -141,30 +141,44 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         lines = render(model)
         self.assertLessEqual(len(lines), 24)
         self.assertTrue(all(len(line) <= 60 for line in lines))
-        self.assertEqual(lines[0], "ASHA CONTROL  [Initiatives]")
+        self.assertEqual(lines[0], "ASHA CONTROL  Scope: active")
         self.assertTrue(lines[2].startswith("STATE"))
         self.assertTrue(any("plan approval" in line for line in lines))
-        self.assertTrue(lines[-1].startswith("n new  Enter attach/open  a approve"))
+        self.assertTrue(lines[-1].startswith("n new  Enter attach/open  ! attention"))
         model.help_visible = True
         help_lines = render(model)
-        self.assertEqual(help_lines[0], "ASHA CONTROL HELP  [Initiatives]")
+        self.assertEqual(help_lines[0], "ASHA CONTROL HELP")
         self.assertTrue(any("No merge, rebase, bookmark" in line for line in help_lines))
 
-    def test_render_without_a_loaded_screen_shows_the_error_and_keeps_tasks_intact(self) -> None:
-        model = TuiModel([], height=24, width=60)
-        model.mode = "initiatives"
-        model.initiatives_error = "initiatives unavailable: bad orchestration config"
+    def test_render_degrades_initiatives_to_a_note_and_keeps_the_task_branch(self) -> None:
+        from lib.control.orchestration.tui_model import InitiativesScreen
+
+        model = TuiModel([], height=24, width=80)
+        model.initiatives = InitiativesScreen(
+            [], height=24, width=80, task_rows=(),
+            orchestration_error="bad orchestration config",
+        )
         lines = render(model)
-        self.assertIn("initiatives unavailable: bad orchestration config", lines)
-        model.mode = "tasks"
-        self.assertTrue(render(model)[0].startswith("ASHA TASKS"))
+        self.assertTrue(any("Initiatives unavailable: bad orchestration config" in line for line in lines))
+        self.assertEqual(lines[0], "ASHA CONTROL  Scope: active")
+        # A bare model without any screen still renders the (empty) tree.
+        bare = TuiModel([], height=24, width=80)
+        lines = render(bare)
+        self.assertEqual(lines[0], "ASHA CONTROL  Scope: active")
+        self.assertTrue(any("Nothing to show" in line for line in lines))
 
     def test_initiative_keys_map_only_to_bounded_intents(self) -> None:
         model = self.model([_view("one", "running")])
-        self.assertIs(model.dispatch_key("\t").kind, IntentKind.TOGGLE_MODE)
+        # One view now: Tab is an inert hint, never a mode switch.
+        tab = model.dispatch_key("\t")
+        self.assertIs(tab.kind, IntentKind.NONE)
+        self.assertIn("one tree", tab.reason)
         self.assertIs(model.dispatch_key("q").kind, IntentKind.QUIT)
         self.assertIs(model.dispatch_key("?").kind, IntentKind.HELP)
         self.assertIs(model.dispatch_key("/").kind, IntentKind.FILTER)
+        self.assertIs(model.dispatch_key("!").kind, IntentKind.ATTENTION)
+        self.assertIs(model.dispatch_key("A").kind, IntentKind.TOGGLE_SCOPE)
+        self.assertIs(model.dispatch_key("N").kind, IntentKind.START)
         self.assertIs(model.dispatch_key("RIGHT").kind, IntentKind.INIT_EXPAND)
         self.assertIs(model.dispatch_key("LEFT").kind, IntentKind.INIT_COLLAPSE)
         # Enter on the initiative row attaches to its coordinator; node rows open the worker.
@@ -175,12 +189,13 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         self.assertTrue(approve.requires_confirmation)
         self.assertTrue(model.dispatch_key("p").requires_confirmation)
         self.assertTrue(model.dispatch_key("s").requires_confirmation)
-        for key in ("x", "A", "m", "D", "!"):
+        # X targets only rows with a linked worker; an initiative row refuses it.
+        self.assertIs(model.dispatch_key("X").kind, IntentKind.NONE)
+        for key in ("x", "m", "D", "z"):
             self.assertIs(model.dispatch_key(key).kind, IntentKind.NONE)
-        # Tasks-mode bindings are untouched by the initiatives table.
-        tasks = TuiModel([], height=24, width=60)
-        self.assertIs(tasks.dispatch_key("a").kind, IntentKind.NONE)  # no task selected
-        self.assertIs(tasks.dispatch_key("\t").kind, IntentKind.TOGGLE_MODE)
+        # Without a screen, row keys explain themselves instead of acting.
+        bare = TuiModel([], height=24, width=60)
+        self.assertIs(bare.dispatch_key("a").kind, IntentKind.NONE)
 
     def test_no_forbidden_action_class_is_reachable_from_the_tui(self) -> None:
         tui_classes = {"pause", "resume", "stop-attempt"}
@@ -283,17 +298,17 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
 
     def test_initiatives_start_mode_enters_directly_and_degrades_alone(self) -> None:
         model = TuiModel([], height=24, width=80)
-        tui._enter_initiatives(model, self.env)
-        self.assertEqual(model.mode, "initiatives")
+        tui._enter_tree(model, self.env)
         self.assertIsNotNone(model.initiatives)
         self.assertIsNone(model.initiatives_error)
+        self.assertIsNone(model.initiatives.orchestration_error)
         broken = self.root / "broken-config.json"
         broken.write_text("{not json")
         degraded = TuiModel([], height=24, width=80)
-        tui._enter_initiatives(degraded, {**self.env, "ASHA_CONFIG": str(broken)})
-        self.assertEqual(degraded.mode, "initiatives")
-        self.assertIsNone(degraded.initiatives)
-        self.assertTrue(str(degraded.initiatives_error).startswith("initiatives unavailable:"))
+        tui._enter_tree(degraded, {**self.env, "ASHA_CONFIG": str(broken)})
+        self.assertIsNotNone(degraded.initiatives, "tasks must survive a broken orchestration config")
+        self.assertEqual(degraded.initiatives.views, [])
+        self.assertTrue(str(degraded.initiatives_error))
         screen = Screen([ord("q")])
         with mock.patch("lib.control.tui._load_rows", return_value=[]):
             code = tui._curses_loop(
@@ -316,11 +331,10 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
         self.env = {**self.env, "ASHA_PROJECTS_ROOT": str(self.root)}
         with mock.patch("lib.control.orchestration.coordinator.launch_session", fake_launch), \
              mock.patch("lib.control.tui._popup_session", fake_popup):
-            _screen, model = self.run_loop([9, ord("n"), *map(ord, "update termart"), 10, ord("q")])
+            _screen, model = self.run_loop([ord("n"), *map(ord, "update termart"), 10, ord("q")])
         self.assertEqual(calls["launch"], {"root": str(self.root), "intent": "update termart", "harness": "claude"})
         self.assertEqual(calls["popup"], ("asha-coord-feedbeef", "coordinator"))
         self.assertIn("coordinator session asha-coord-feedbeef started", model.message)
-        self.assertEqual(model.mode, "initiatives")
 
     def test_n_with_an_empty_intent_launches_nothing(self) -> None:
         with mock.patch("lib.control.orchestration.coordinator.launch_session") as launch:
@@ -357,18 +371,18 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
 
     def test_tab_switches_modes_and_restart_leaves_records_untouched(self) -> None:
         before = self.records()
-        screen, model = self.run_loop([9, FakeCurses.KEY_RIGHT, ord("e"), ord("c"), ord("?"), ord("?"), 9, ord("q")])
+        screen, model = self.run_loop([9, FakeCurses.KEY_RIGHT, ord("e"), ord("c"), ord("?"), ord("?"), ord("q")])
         text = screen.text()
-        self.assertIn("ASHA CONTROL  [Initiatives]", text)
+        self.assertIn("ASHA CONTROL", text)
         self.assertIn("awaiting-one", text)
         self.assertIn("plan approval", text)
         self.assertIn("[events]", text)
         self.assertIn("[candidates]", text)
-        self.assertIn("ASHA CONTROL HELP  [Initiatives]", text)
-        self.assertEqual(model.mode, "tasks")
+        self.assertIn("ASHA CONTROL HELP", text)
+        self.assertIn("one tree", text, "Tab explains itself instead of switching modes")
         self.assertEqual(self.records(), before)
         # A second session sees the same records; no lifecycle side effect from the TUI.
-        screen, _model = self.run_loop([9, ord("q")])
+        screen, _model = self.run_loop([ord("q")])
         self.assertEqual(self.records(), before)
         self.assertIn("awaiting-one", screen.text())
 
@@ -410,9 +424,175 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
 
     def test_initiatives_mode_degrades_when_orchestration_cannot_load(self) -> None:
         with mock.patch("lib.control.tui._load_initiative_views", side_effect=ValueError("boom")):
-            screen, model = self.run_loop([9, ord("q")])
-        self.assertIn("initiatives unavailable: boom", screen.text())
-        self.assertIsNone(model.initiatives)
+            screen, model = self.run_loop([ord("q")])
+        self.assertIn("Initiatives unavailable: boom", screen.text())
+        self.assertIsNotNone(model.initiatives, "the task branch must survive orchestration failure")
+        self.assertEqual(model.initiatives.orchestration_error, "boom")
+
+
+
+class _FakeObservation:
+    def __init__(self, observed_at="2026-08-24T10:00:00Z"):
+        self.observed_at = observed_at
+        self.run_id = "run-1"
+        self.detail = "owned pane matched"
+        self.source = "tmux"
+        self.freshness = "fresh"
+
+
+class _FakeTaskRow:
+    """Duck-typed stand-in for the Tasks-side TuiRow inside the pure tree."""
+
+    def __init__(self, task_id, slug, display_state="working", evidence=(), blocker=None,
+                 harness="claude"):
+        self.task = {
+            "task_id": task_id, "slug": slug,
+            "runs": [{"run_id": "run-1", "harness": harness, "pane_id": "%9",
+                      "role": "implementer", "state": "active"}],
+            "tmux": {"session": f"s-{slug}", "window": "main", "socket": "default"},
+            "jj": {"workspace_path": f"/ws/{slug}", "change_id": "zz"},
+            "lifecycle": "running",
+        }
+        self.display_state = display_state
+        self.summary = {"slug": slug, "label": slug, "repository": {"root": "/r", "identity": "i"}}
+        self.observation = _FakeObservation()
+        self.reconciliation = {"state": display_state, "blocker": blocker,
+                               "evidence": list(evidence), "runs": []}
+
+
+class UnifiedTreeTests(unittest.TestCase):
+    """The one-tree ruling: workers inline, unbound branch, attention filter."""
+
+    def screen(self, views, task_rows, **kwargs):
+        from lib.control.orchestration.tui_model import InitiativesScreen
+
+        return InitiativesScreen(views, height=24, width=120, task_rows=task_rows, **kwargs)
+
+    def test_node_rows_carry_their_worker_state_and_awaiting_exit_attention(self) -> None:
+        worker = _FakeTaskRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "review-worker", display_state="idle")
+        view = _view("smoke", "running")
+        view["attempts"][1]["state"] = "reported"
+        screen = self.screen([view], (worker,))
+        screen.expanded.add(("initiative", view["initiative"]["initiative_id"]))
+        rows = {row.id: row for row in screen.rows() if row.kind == "node"}
+        review = rows["review-a"]
+        self.assertEqual(review.worker, "idle")
+        self.assertEqual(review.attention, "awaiting exit (X closes)")
+        self.assertEqual(review.task_id, "cccccccc-cccc-4ccc-8ccc-cccccccccccc")
+        self.assertEqual(rows["implementation-a"].worker, "-")
+
+    def test_prompt_stuck_worker_surfaces_on_its_node_row(self) -> None:
+        worker = _FakeTaskRow(
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "review-worker",
+            display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "pane shows the claude input prompt 'trust'"}],
+        )
+        view = _view("smoke", "running")
+        screen = self.screen([view], (worker,))
+        screen.expanded.add(("initiative", view["initiative"]["initiative_id"]))
+        review = next(row for row in screen.rows() if row.id == "review-a")
+        self.assertTrue(review.attention.startswith("at prompt"))
+        self.assertIn("claude input prompt", review.attention)
+
+    def test_unbound_tasks_sit_under_one_branch_when_initiatives_exist(self) -> None:
+        bound = _FakeTaskRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "bound-worker")
+        loose = _FakeTaskRow("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "loose-task")
+        screen = self.screen([_view("smoke", "running")], (bound, loose))
+        kinds = [(row.kind, row.label) for row in screen.rows()]
+        self.assertIn(("tasks-root", "Unbound tasks"), kinds)
+        labels = [label for kind, label in kinds if kind == "task"]
+        self.assertEqual(labels, ["loose-task"], "bound workers never appear as unbound tasks")
+
+    def test_attention_filter_keeps_only_rows_waiting_on_a_human(self) -> None:
+        stuck = _FakeTaskRow(
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "stuck-task", display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "prompt"}],
+        )
+        quiet = _FakeTaskRow("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "quiet-task")
+        views = [_view("calm", "running"), _view("waiting", "awaiting-plan-approval")]
+        screen = self.screen(views, (stuck, quiet), attention_only=True)
+        rows = screen.rows()
+        labels = {row.label for row in rows}
+        self.assertIn("waiting", labels)
+        self.assertIn("stuck-task", labels)
+        self.assertNotIn("calm", labels)
+        self.assertNotIn("quiet-task", labels)
+
+    def test_attention_items_join_initiative_and_task_waits_with_resolutions(self) -> None:
+        from lib.control.orchestration.tui_model import attention_items
+
+        stuck = _FakeTaskRow(
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "stuck-task", display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "prompt"}],
+        )
+        views = [_view("waiting", "awaiting-plan-approval")]
+        items = attention_items(views, (stuck,))
+        kinds = {item["kind"] for item in items}
+        self.assertIn("plan-approval", kinds)
+        self.assertIn("task", kinds)
+        plan = next(item for item in items if item["kind"] == "plan-approval")
+        self.assertIn("asha initiative approve", plan["resolution"])
+        self.assertIn("d" * 64, plan["resolution"])
+
+    def test_close_worker_sends_the_quit_command_only_after_an_exact_yes(self) -> None:
+        worker = _FakeTaskRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "review-worker", display_state="idle")
+        sent: list = []
+        adapter = mock.Mock()
+        adapter.send_line = lambda pane, text: sent.append((pane, text))
+        row = tui.TuiRow.from_records if False else None
+        del row
+        model = TuiModel([], height=24, width=100)
+        with mock.patch("lib.control.tui._adapter_for_task", return_value=adapter), \
+             mock.patch("lib.control.tui._prompt_line", return_value="yes"):
+            message = tui._close_worker(None, None, model, mock.Mock(), {}, worker)
+        self.assertEqual(sent, [("%9", "/exit")])
+        self.assertIn("sent /exit to review-worker", message)
+        with mock.patch("lib.control.tui._adapter_for_task", return_value=adapter), \
+             mock.patch("lib.control.tui._prompt_line", return_value="no"):
+            message = tui._close_worker(None, None, model, mock.Mock(), {}, worker)
+        self.assertEqual(len(sent), 1, "declining must send nothing")
+        self.assertEqual(message, "close cancelled")
+        codex_row = _FakeTaskRow("ffffffff-ffff-4fff-8fff-ffffffffffff", "codex-w", harness="codex")
+        with mock.patch("lib.control.tui._adapter_for_task", return_value=adapter), \
+             mock.patch("lib.control.tui._prompt_line", return_value="yes"):
+            tui._close_worker(None, None, model, mock.Mock(), {}, codex_row)
+        self.assertEqual(sent[-1], ("%9", "/quit"))
+        opencode_row = _FakeTaskRow("11111111-2222-4333-8444-555555555555", "oc-w", harness="opencode")
+        with mock.patch("lib.control.tui._adapter_for_task", return_value=adapter):
+            message = tui._close_worker(None, None, model, mock.Mock(), {}, opencode_row)
+        self.assertIn("no known quit command", message)
+
+
+    def test_attention_verb_emits_the_assembler_payload(self) -> None:
+        import contextlib
+        import io
+        import json as json_module
+        from lib.control.orchestration import cli as orchestration_cli
+
+        stuck = _FakeTaskRow(
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "stuck-task", display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "prompt"}],
+        )
+        import tempfile
+        from pathlib import Path as _Path
+
+        base = _Path(tempfile.mkdtemp()).resolve()
+        env = {
+            "HOME": str(base / "home"), "ASHA_CONFIG": str(base / "missing.json"),
+            "XDG_STATE_HOME": str(base / "state"), "XDG_DATA_HOME": str(base / "data"),
+            "XDG_RUNTIME_DIR": str(base / "runtime"),
+        }
+        for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+            _Path(env[key]).mkdir(mode=0o700)
+        with mock.patch("lib.control.tui._load_initiative_views", return_value=[_view("waiting", "awaiting-plan-approval")]), \
+             mock.patch("lib.control.cli._load_rows_for_attention", return_value=(stuck,)):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = orchestration_cli.main(["initiative", "attention", "--json"], env=env)
+        self.assertEqual(rc, 0)
+        payload = json_module.loads(out.getvalue())
+        self.assertEqual(payload["contract"], "asha.orchestration-attention.v1")
+        self.assertEqual({item["kind"] for item in payload["items"]}, {"plan-approval", "task"})
 
 
 if __name__ == "__main__":

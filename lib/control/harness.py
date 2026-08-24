@@ -40,6 +40,13 @@ INPUT_PROMPT_MARKERS: dict[str, tuple[str, ...]] = {
     "opencode": (),
 }
 INPUT_PROMPT_TAIL_LINES = 12
+# Graceful end-of-session composer commands per interactive harness. Sent only
+# by an explicit operator action (the close-worker key): the operator types
+# through the TUI; the controller itself still never writes into a pane.
+QUIT_SEQUENCES: dict[str, str] = {
+    "claude": "/exit",
+    "codex": "/quit",
+}
 PROC_ROOT = Path("/proc")
 MAX_PROC_BYTES = 64 * 1024
 _BOOT_ID = re.compile(

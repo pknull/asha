@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
-from typing import Any
+import json
+from dataclasses import dataclass, replace
+from typing import Any, Iterable
 
 
 class InitiativeTreeModel:
@@ -111,6 +112,10 @@ class InitiativeTreeModel:
 # Backward-compatible name for the tree projection.
 TuiModel = InitiativeTreeModel
 
+
+# The unified control tree: initiatives plus the unbound-task branch.
+# (InitiativesScreen grew the branch in place; the alias names the intent.)
+
 _STATE_ORDER = {
     "needs-input": 0, "awaiting-plan-approval": 1, "running": 2, "paused": 3, "approved": 4,
     "planning": 5, "draft": 6, "ready-for-integration": 7, "partial": 8, "failed": 9,
@@ -131,10 +136,17 @@ class InitiativeRow:
     coordinator: str = "-"
     nodes: str = "-"
     attention: str = "-"
+    worker: str = "-"
+    task_id: str | None = None
+    observed_at: str | None = None
 
     @property
     def key(self) -> tuple[str, str, str]:
         return (self.kind, self.initiative_id, self.id)
+
+    @property
+    def needs_human(self) -> bool:
+        return self.attention not in ("-", "")
 
 
 def _attention(view: dict[str, Any]) -> str:
@@ -170,6 +182,153 @@ def _nodes_text(view: dict[str, Any]) -> str:
     return f"{done}/{len(nodes)}"
 
 
+_TASKS_ROOT_KEY = ("tasks-root", "unbound", "unbound")
+_WORKER_ATTENTION_STATES = {"needs-input"}
+
+
+def _task_attention(task_row: Any) -> str:
+    """The human-actionable state of one Control task row, or '-'.
+
+    Duck-typed over the Tasks-side row (``task``, ``display_state``,
+    ``reconciliation``) so this pure module never imports the Tasks TUI.
+    """
+    state = getattr(task_row, "display_state", "?")
+    reconciliation = getattr(task_row, "reconciliation", {}) or {}
+    if state in _WORKER_ATTENTION_STATES:
+        detail = ""
+        for item in reconciliation.get("evidence", []) or []:
+            if isinstance(item, dict) and item.get("state") == "needs-input":
+                detail = str(item.get("detail", ""))
+                break
+        return "at prompt" + (f": {detail[:60]}" if detail else "")
+    blocker = reconciliation.get("blocker")
+    if blocker:
+        return str(blocker)[:70]
+    return "-"
+
+
+def _link_maps(views: list[dict[str, Any]]) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
+    """(control_task_id -> (initiative_id, attempt_id), attempt_id -> control_task_id)."""
+    bound: dict[str, tuple[str, str]] = {}
+    by_attempt: dict[str, str] = {}
+    for view in views:
+        initiative_id = view["initiative"]["initiative_id"]
+        for link in view.get("links", []) or []:
+            bound[link["control_task_id"]] = (initiative_id, link["attempt_id"])
+            by_attempt[link["attempt_id"]] = link["control_task_id"]
+    return bound, by_attempt
+
+
+def _attempt_worker(
+    attempt: dict[str, Any] | None,
+    by_attempt: dict[str, str],
+    task_index: dict[str, Any],
+) -> tuple[str, str, str | None, str | None]:
+    """(worker text, attention text, task_id, observed_at) for a node/attempt row."""
+    if attempt is None:
+        return "-", "-", None, None
+    task_id = by_attempt.get(attempt["attempt_id"])
+    task_row = None if task_id is None else task_index.get(task_id)
+    if task_row is None:
+        return "-", "-", task_id, None
+    state = getattr(task_row, "display_state", "?")
+    attention = _task_attention(task_row)
+    if attempt.get("state") in {"reported", "awaiting-exit"} and state == "idle":
+        attention = "awaiting exit (X closes)"
+    observed = getattr(getattr(task_row, "observation", None), "observed_at", None)
+    return state, attention, task_id, observed
+
+
+def _latest_attempt(view: dict[str, Any], node_id: str) -> dict[str, Any] | None:
+    attempts = sorted(
+        (item for item in view.get("attempts", []) if item["node_id"] == node_id),
+        key=lambda item: (item.get("ordinal", 0), item["attempt_id"]),
+    )
+    return attempts[-1] if attempts else None
+
+
+def _pending_directives(view: dict[str, Any]) -> list[dict[str, Any]]:
+    pending = []
+    for action in view.get("actions", []) or []:
+        if action.get("action_class") != "directive":
+            continue
+        try:
+            outcome = json.loads(action.get("outcome") or "{}")
+        except ValueError:
+            continue
+        if outcome.get("delivery") == "pending":
+            pending.append({"action_id": action["action_id"], "node_id": outcome.get("node_id")})
+    return pending
+
+
+def attention_items(
+    views: list[dict[str, Any]], task_rows: Iterable[Any] = (),
+) -> list[dict[str, Any]]:
+    """Everything currently waiting on a human, across initiatives and tasks.
+
+    One assembler feeds both the tree's waiting-on-me filter and the
+    ``asha initiative attention`` verb, so the two can never disagree.
+    """
+    items: list[dict[str, Any]] = []
+    bound, by_attempt = _link_maps(views)
+    task_index = {getattr(row, "task", {}).get("task_id"): row for row in task_rows}
+    for view in views:
+        initiative = view["initiative"]
+        identity = {
+            "initiative_id": initiative["initiative_id"],
+            "slug": initiative.get("slug", ""),
+        }
+        state = initiative.get("state")
+        if state == "awaiting-plan-approval":
+            plan = view.get("plan") or {}
+            items.append({
+                **identity, "kind": "plan-approval",
+                "detail": f"plan revision {plan.get('revision', '?')} awaits approval",
+                "resolution": f"asha initiative approve {initiative['initiative_id']} --digest {plan.get('digest', '?')}",
+            })
+        for approval in view.get("approvals", []) or []:
+            if approval.get("state") == "requested":
+                items.append({
+                    **identity, "kind": "salvage-approval",
+                    "detail": f"salvage request {approval.get('request_id', '?')} awaits approval",
+                    "resolution": f"asha initiative approve-salvage {initiative['initiative_id']} --request {approval.get('request_id', '?')}",
+                })
+        for node in view.get("nodes", []) or []:
+            if node.get("state") == "needs-input":
+                items.append({
+                    **identity, "kind": "needs-input", "node_id": node["node_id"],
+                    "detail": f"node {node['node_id']} needs a decision",
+                    "resolution": "decide or repair, then resume",
+                })
+            attempt = _latest_attempt(view, node["node_id"])
+            worker, attention, task_id, _seen = _attempt_worker(attempt, by_attempt, task_index)
+            del worker
+            if attention not in ("-", ""):
+                items.append({
+                    **identity, "kind": "worker", "node_id": node["node_id"],
+                    "task_id": task_id, "detail": attention,
+                    "resolution": "attach (Enter) or close (X) in asha control",
+                })
+        for directive in _pending_directives(view):
+            items.append({
+                **identity, "kind": "directive-pending", "node_id": directive.get("node_id"),
+                "detail": f"directive {directive['action_id'][:8]} awaits delivery",
+                "resolution": "relay to the attempt's pane or let the next attempt carry it",
+            })
+    for task_id, row in task_index.items():
+        if task_id is None or task_id in bound:
+            continue
+        attention = _task_attention(row)
+        if attention not in ("-", ""):
+            items.append({
+                "initiative_id": None, "slug": None, "kind": "task",
+                "task_id": task_id,
+                "detail": f"task {getattr(row, 'summary', {}).get('slug', task_id)}: {attention}",
+                "resolution": "attach (Enter) in asha control",
+            })
+    return items
+
+
 class InitiativesScreen:
     """Selection, expansion, filter, and fact projection over several initiative views.
 
@@ -188,13 +347,23 @@ class InitiativesScreen:
         expanded: set[tuple[str, str]] | None = None,
         selection: int | None = 0,
         filter_string: str = "",
+        task_rows: Iterable[Any] = (),
+        attention_only: bool = False,
+        orchestration_error: str | None = None,
     ) -> None:
         self.views = [copy.deepcopy(view) for view in views]
         self.height = max(0, int(height))
         self.width = max(0, int(width))
-        self.expanded: set[tuple[str, str]] = set(expanded or ())
+        # The unbound-tasks branch starts open: plain Control tasks must stay
+        # visible without a keystroke, exactly as the old Tasks view showed them.
+        self.expanded: set[tuple[str, str]] = (
+            {("tasks-root", "unbound")} if expanded is None else set(expanded)
+        )
         self.selection = selection
         self.filter_string = filter_string
+        self.task_rows: tuple[Any, ...] = tuple(task_rows)
+        self.attention_only = bool(attention_only)
+        self.orchestration_error = orchestration_error
         self.scroll_offset = 0
         self.help_visible = False
         self.message: str | None = None
@@ -214,6 +383,10 @@ class InitiativesScreen:
 
     def rows(self) -> list[InitiativeRow]:
         needle = self.filter_string.casefold()
+        bound, by_attempt = _link_maps(self.views)
+        task_index = {
+            getattr(row, "task", {}).get("task_id"): row for row in self.task_rows
+        }
         rows: list[InitiativeRow] = []
         for view in self._sorted_views():
             initiative = view["initiative"]
@@ -226,10 +399,14 @@ class InitiativesScreen:
             children: list[InitiativeRow] = []
             if ("initiative", initiative_id) in self.expanded:
                 for node in sorted(view.get("nodes", []), key=lambda item: item["node_id"]):
+                    attempt = _latest_attempt(view, node["node_id"])
+                    worker, worker_attention, task_id, observed = _attempt_worker(attempt, by_attempt, task_index)
                     node_row = InitiativeRow(
                         "node", 1, node["node_id"], initiative_id,
                         node.get("goal", node["node_id"]), node.get("state", "?"),
                         node.get("type", "?"),
+                        attention=worker_attention if node.get("state") != "needs-input" else "needs input",
+                        worker=worker, task_id=task_id, observed_at=observed,
                     )
                     children.append(node_row)
                     if ("node", f"{initiative_id}:{node['node_id']}") in self.expanded:
@@ -237,26 +414,81 @@ class InitiativesScreen:
                             (item for item in view.get("attempts", []) if item["node_id"] == node["node_id"]),
                             key=lambda item: (item.get("ordinal", 0), item["attempt_id"]),
                         )
-                        children.extend(
-                            InitiativeRow(
+                        for item in attempts:
+                            a_worker, a_attention, a_task, a_seen = _attempt_worker(item, by_attempt, task_index)
+                            children.append(InitiativeRow(
                                 "attempt", 2, item["attempt_id"], initiative_id,
                                 f"attempt {item.get('ordinal', '?')}", item.get("state", "?"), "attempt",
-                            )
-                            for item in attempts
-                        )
+                                attention=a_attention, worker=a_worker, task_id=a_task, observed_at=a_seen,
+                            ))
             candidates = [head, *children]
-            if needle:
-                matching = [
-                    row for row in candidates
-                    if needle in f"{row.label} {row.state} {row.type} {row.id} {row.attention}".casefold()
-                ]
-                if not matching:
-                    continue
-                if head not in matching:
-                    matching.insert(0, head)
-                candidates = matching
+            candidates = self._narrow(candidates, head, needle)
             rows.extend(candidates)
+        rows.extend(self._task_branch(bound, needle))
         return rows
+
+    def _narrow(
+        self, candidates: list[InitiativeRow], head: InitiativeRow, needle: str,
+    ) -> list[InitiativeRow]:
+        """Apply the text filter and the waiting-on-me filter; keep a matching head."""
+        result = candidates
+        if needle:
+            matching = [
+                row for row in result
+                if needle in f"{row.label} {row.state} {row.type} {row.id} {row.attention}".casefold()
+            ]
+            if not matching:
+                return []
+            if head not in matching:
+                matching.insert(0, head)
+            result = matching
+        if self.attention_only:
+            matching = [row for row in result if row.needs_human]
+            if not matching:
+                return []
+            if head not in matching:
+                matching.insert(0, head)
+            result = matching
+        return result
+
+    def _task_branch(
+        self, bound: dict[str, tuple[str, str]], needle: str,
+    ) -> list[InitiativeRow]:
+        """Control tasks bound to no initiative, under one expandable root."""
+        unbound = [
+            row for row in self.task_rows
+            if getattr(row, "task", {}).get("task_id") not in bound
+        ]
+        if not unbound:
+            return []
+        # With no initiatives on screen the branch flattens: the tree is then
+        # exactly the task list, no header row stealing the first selection.
+        flat = not self.views
+        head = InitiativeRow(
+            "tasks-root", 0, "unbound", "unbound",
+            "Unbound tasks", str(len(unbound)), "tasks",
+        )
+        children: list[InitiativeRow] = []
+        if flat or ("tasks-root", "unbound") in self.expanded:
+            for row in unbound:
+                task = getattr(row, "task", {})
+                summary = getattr(row, "summary", {}) or {}
+                children.append(InitiativeRow(
+                    "task", 1, task.get("task_id", "?"), "unbound",
+                    summary.get("slug", task.get("task_id", "?")),
+                    getattr(row, "display_state", "?"),
+                    (task.get("runs") or [{}])[0].get("harness", "task"),
+                    attention=_task_attention(row),
+                    worker=getattr(row, "display_state", "?"),
+                    task_id=task.get("task_id"),
+                    observed_at=getattr(getattr(row, "observation", None), "observed_at", None),
+                ))
+        if flat:
+            children = [replace(child, depth=0) for child in children]
+            if not children:
+                return []
+            return self._narrow(children, children[0], needle)
+        return self._narrow([head, *children], head, needle)
 
     @property
     def visible_capacity(self) -> int:
@@ -323,9 +555,14 @@ class InitiativesScreen:
 
     def expand(self) -> bool:
         row = self.selected_row
-        if row is None or row.kind == "attempt":
+        if row is None or row.kind in {"attempt", "task"}:
             return False
-        key = ("initiative", row.id) if row.kind == "initiative" else ("node", f"{row.initiative_id}:{row.id}")
+        if row.kind == "tasks-root":
+            key = ("tasks-root", "unbound")
+        elif row.kind == "initiative":
+            key = ("initiative", row.id)
+        else:
+            key = ("node", f"{row.initiative_id}:{row.id}")
         if key in self.expanded:
             return False
         self.expanded.add(key)
@@ -340,6 +577,8 @@ class InitiativesScreen:
             key = ("initiative", row.id)
         elif row.kind == "node":
             key = ("node", f"{row.initiative_id}:{row.id}")
+        elif row.kind == "tasks-root":
+            key = ("tasks-root", "unbound")
         else:
             key = None
         if key is not None and key in self.expanded:
@@ -367,9 +606,13 @@ class InitiativesScreen:
         self.width = max(0, int(width))
         self._ensure_visible()
 
-    def replace_views(self, views: list[dict[str, Any]]) -> None:
+    def replace_views(
+        self, views: list[dict[str, Any]], task_rows: Iterable[Any] | None = None,
+    ) -> None:
         selected = None if self.selected_row is None else self.selected_row.key
         self.views = [copy.deepcopy(view) for view in views]
+        if task_rows is not None:
+            self.task_rows = tuple(task_rows)
         rows = self.rows()
         self.selection = next(
             (index for index, row in enumerate(rows) if row.key == selected),
@@ -484,3 +727,6 @@ class InitiativesScreen:
 
 
 __all__ = ["InitiativeRow", "InitiativeTreeModel", "InitiativesScreen", "TuiModel"]
+
+# The unified control tree is this screen; the alias names the role.
+ControlTree = InitiativesScreen
