@@ -251,6 +251,17 @@ deliberate local process.
 
 ## Assignment and dispatch
 
+A node may declare `"interactive": false` (work and review nodes on a harness
+with a headless mode: Claude, Codex). Control then launches the worker
+headless in its pane (`claude -p … --permission-mode bypassPermissions`,
+`codex exec …`): the session runs one full turn and exits, so the seal follows
+mechanically and the published-awaiting-exit state cannot occur. Permissions
+are bypassed deliberately — the workspace is isolated and the seal enforces
+hard scope and read-only review; a headless run cannot answer a prompt.
+Interactive assignments now state that the worker cannot end its own session
+and must ask the operator to close it (the `X` key in `asha control`).
+
+
 Dispatch preallocates the attempt UUID and Control task UUID and stores both in
 the action outcome before calling Control. It writes this immutable file first:
 

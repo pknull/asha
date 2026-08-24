@@ -389,6 +389,17 @@ into this workspace or run any command that writes into it. Publish a
         "Required: run `jj status` in this workspace to snapshot before "
         "`asha task report`, and after any later edit."
     )
+    exit_contract = (
+        "Your session ends by itself when this turn completes; that normal exit "
+        "is what seals the work. Publish before finishing the turn."
+        if node.get("interactive") is False else
+        "The seal is recorded only when the controller observes this session's "
+        "normal exit, and you cannot end the session yourself. After the "
+        "receipt, state clearly that the work is published and ask the "
+        "operator to close this session (the X key in asha control); then stop "
+        "working. A killed process seals as a failure even when the result was "
+        "published."
+    )
     publication_contract = (
         "Before exiting, write the bounded result document outside this "
         "workspace to "
@@ -484,11 +495,7 @@ session, coordinator, or unmanaged parallel writer.
 The controller never snapshots or otherwise mutates the worker workspace on
 the worker's behalf.
 
-End your session after the receipt. The exit seals your work: the controller
-records the candidate only once it observes a normal exit, and an interactive
-harness that stays at its prompt leaves this node unsealed indefinitely. Exit
-normally (`/exit` in an interactive session); a killed process seals as a
-failure even when the result was published.
+{exit_contract}
 
 The client document is `asha.orchestration-result.v1` with every result field
 except controller-generated `result_id` and `payload_digest`: `publication_id`,
@@ -1077,6 +1084,7 @@ def dispatch(
                 "--base", exact_base,
                 "--harness", node["harness"],
                 "--role", node["role"],
+                *(["--headless"] if node.get("interactive") is False else []),
                 "--detach", "--json",
                 "--goal", goal,
             ]

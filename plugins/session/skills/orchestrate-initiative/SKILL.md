@@ -93,6 +93,9 @@ monitor, never through this pane.
    PY
    ```
 
+   Set `"interactive": false` on mechanical work or review nodes (Claude and
+   Codex only) to run them headless: the worker exits when its turn ends, so
+   the seal never waits on a human closing the session.
    Then edit only: `goal`, `acceptance`, `hard_write_scope` and
    `advisory_path_ownership` on `implementation-a` (the one directory the
    change lives in), and the verification `commands` (the repository's real,

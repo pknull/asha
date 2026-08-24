@@ -263,6 +263,29 @@ print(json.dumps({
         self.assertIn("Repair the exact candidate before verification.", text)
         self.assertIn("lib/file.py", text)
 
+    def test_interactive_node_brief_requests_the_operator_close(self) -> None:
+        calls: list[list[str]] = []
+        tasks: list[dict] = []
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+            side_effect=self.fake_capture(calls, tasks),
+        ):
+            submit_action(self.store, self.initiative_id, document)
+        self.assertNotIn("--headless", calls[0])
+        attempts = self.store.list_attempts_snapshot(self.initiative_id)
+        text = (
+            self.config.initiatives_dir / self.initiative_id / "assignments"
+            / f"{attempts[-1]['attempt_id']}.md"
+        ).read_text()
+        self.assertIn("you cannot end the session yourself", text)
+        self.assertIn("the X key in asha control", text)
+
     def test_exit_two_is_proven_launch_failure(self) -> None:
         document = build_action_document(
             self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
@@ -435,6 +458,42 @@ print(json.dumps({
     shutil.which("tmux") and shutil.which("jj") and shutil.which("git") and shutil.which("jq"),
     "real orchestration integration requires tmux, jj, git, and jq",
 )
+
+class HeadlessDispatchTests(ExecutionFixture, unittest.TestCase):
+    """A node born headless dispatches with --headless and a structural-exit brief."""
+
+    fake_capture = OrchestrationDispatchTests.fake_capture
+
+    def customize_plan(self, plan_value: dict) -> None:
+        plan_value["nodes"][0]["interactive"] = False  # codex has a headless mode
+
+    def test_headless_node_dispatch_passes_headless_and_adapts_the_brief(self) -> None:
+        calls: list[list[str]] = []
+        tasks: list[dict] = []
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+            side_effect=self.fake_capture(calls, tasks),
+        ):
+            action = submit_action(self.store, self.initiative_id, document)
+        self.assertEqual(action["state"], "completed")
+        self.assertIn("--headless", calls[0])
+        stored = self.store.read_node(self.initiative_id, "implementation-a")
+        self.assertIs(stored["interactive"], False)
+        attempts = self.store.list_attempts_snapshot(self.initiative_id)
+        text = (
+            self.config.initiatives_dir / self.initiative_id / "assignments"
+            / f"{attempts[-1]['attempt_id']}.md"
+        ).read_text()
+        self.assertIn("ends by itself when this turn completes", text)
+        self.assertNotIn("you cannot end the session yourself", text)
+
+
 class RealOrchestrationDispatchTests(unittest.TestCase):
     """One real Control/jj/tmux dispatch with an isolated default socket."""
 

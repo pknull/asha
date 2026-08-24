@@ -421,5 +421,34 @@ class OrchestrationGraphTests(unittest.TestCase):
         self.assertEqual(ready, dependency_states(value, states, seals))
 
 
+
+class HeadlessNodeTests(OrchestrationGraphTests):
+    def test_headless_work_node_on_a_headless_harness_validates(self) -> None:
+        plan = valid_plan()
+        plan["nodes"][0]["interactive"] = False
+        plan["nodes"][0]["harness"] = "claude"
+        validated = validate_plan(plan, config=self.config, initiative=self.initiative)
+        node = next(item for item in validated["nodes"] if item["node_id"] == "implementation-a")
+        self.assertIs(node["interactive"], False)
+
+    def test_headless_refuses_harnesses_without_a_headless_mode_and_verify_nodes(self) -> None:
+        plan = valid_plan()
+        plan["nodes"][0]["interactive"] = False
+        plan["nodes"][0]["harness"] = "copilot"
+        with self.assertRaisesRegex(PlanError, "harness without a headless mode"):
+            validate_plan(plan, config=self.config, initiative=self.initiative)
+        plan = valid_plan()
+        plan["nodes"][2]["interactive"] = False  # verify-a: controller-run, no worker
+        with self.assertRaisesRegex(PlanError, "only work and review nodes run workers"):
+            validate_plan(plan, config=self.config, initiative=self.initiative)
+
+    def test_interactive_must_be_boolean_when_present(self) -> None:
+        from lib.control.orchestration.model import ModelError, validate_node
+
+        node = dict(valid_plan()["nodes"][0], state="proposed", interactive="yes")
+        with self.assertRaises(ModelError):
+            validate_node(node)
+
+
 if __name__ == "__main__":
     unittest.main()

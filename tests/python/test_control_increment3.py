@@ -434,6 +434,24 @@ class HarnessAdapterTests(unittest.TestCase):
         with self.assertRaisesRegex(HarnessError, "must not begin"):
             launch_argv(self.root, "codex", ("--operator-goal",))
 
+    def test_headless_launch_argv_is_per_harness_and_refused_without_a_mode(self) -> None:
+        executable = self.root / "bin" / "asha"
+        executable.parent.mkdir(exist_ok=True)
+        executable.write_text("#!/bin/sh\n", encoding="ascii")
+        executable.chmod(0o700)
+        self.assertEqual(
+            launch_argv(self.root, "claude", ("do the thing",), headless=True),
+            [str(executable), "claude", "-p", "do the thing",
+             "--permission-mode", "bypassPermissions"],
+        )
+        self.assertEqual(
+            launch_argv(self.root, "codex", ("do the thing",), headless=True),
+            [str(executable), "codex", "exec", "do the thing"],
+        )
+        for harness in ("copilot", "opencode"):
+            with self.assertRaisesRegex(HarnessError, "no headless mode"):
+                launch_argv(self.root, harness, ("x",), headless=True)
+
     def test_process_lookup_race_is_treated_as_missing(self) -> None:
         with mock.patch.object(
             Path, "open", side_effect=OSError(errno.ESRCH, "process disappeared"),

@@ -71,6 +71,7 @@ class ExecutionFixture:
         for node in plan_value["nodes"]:
             if node["repository_id"] is not None:
                 node["repository_id"] = repository_id
+        self.customize_plan(plan_value)
         plan_file = self.root / "plan.json"
         plan_file.write_text(json.dumps(plan_value))
         plan, _ = _plan(
@@ -84,6 +85,9 @@ class ExecutionFixture:
         self.plan = plan
         if getattr(self, "start_running", True):
             self.set_running(approved["initiative"])
+
+    def customize_plan(self, plan_value: dict) -> None:
+        """Subclass hook: adjust the plan before it is proposed."""
 
     def set_running(self, approved: dict) -> None:
         running = copy.deepcopy(approved)
