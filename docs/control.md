@@ -147,7 +147,7 @@ automatic refresh reloads the whole tree with lock-free snapshot readers.
 | `r` | Reconcile the selected initiative (actions, live evidence, coordinator anchor) without dispatching. |
 | `d` | Read-only jj diff summary of the selected node's linked task workspace. |
 | `e`, `c`, `v`, `t` | Toggle a pane: recent events, candidate seals, review + verification evidence, retained storage (sampled on demand). |
-| `a` | Decide a pending plan approval: type `approve` or `reject` (with a reason) exactly; recorded as operator actor `tui`. |
+| `a` | Perform the operator act this row is waiting for: decide a pending plan approval (type `approve` or `reject` exactly), activate an approved initiative, or archive a terminal one. Every form is recorded as operator actor `tui`. |
 | `p` | After `yes`, pause a running initiative or resume a paused / needs-input one. |
 | `s` | After `yes`, ask Control to stop the selected attempt's task gracefully. |
 | `/` | Filter initiative rows without mutating state. |
@@ -396,6 +396,11 @@ integrate — one glyph each, derived by `rail_tiers` from the stored record
 only. A stage is `!` when it waits on the operator, `✗` when it failed, `●`
 when live, `✓` when passed, `·` when not reached. Within a stage a demand
 outranks a failure, which outranks live work: the loudest true thing wins.
+
+`approved` is a demand, not a resting state: an approved initiative advances
+only when the operator activates it, so it renders amber and `a` activates it.
+The count line separates `idle` (live but not started) from `settled`
+(terminal), because a draft and an archived initiative are opposite things.
 
 A stage is ticked only when its record exists, never inferred from where an
 initiative ended: `draft → cancelled` is a legal transition, and an initiative

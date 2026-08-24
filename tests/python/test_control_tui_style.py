@@ -37,8 +37,18 @@ class TierTests(unittest.TestCase):
         # approved, cancelled, dispatching, needs-input, stale) are reused.
         self.assertEqual(sum(len(item) for item in classes), 56)
         self.assertEqual(len(every), 44)
+        # Assert EXPLICIT membership, not just that tier_for returns something:
+        # inert is the fallback, so a state nobody classified would pass a
+        # weaker check while silently rendering as "not actionable". `ready`
+        # and `partial` both reached a live screen that way.
+        from lib.control.tui_style import _STATE_TIER
+
+        unclassified = sorted(every - set(_STATE_TIER))
+        self.assertEqual(unclassified, [], f"states with no explicit tier: {unclassified}")
         for state in every:
             self.assertIn(tier_for(state), {WAITING, MACHINE, GOOD, BAD, INERT}, state)
+        self.assertEqual(tier_for("ready"), MACHINE)
+        self.assertEqual(tier_for("partial"), BAD)
         # The three that mean the operator is the blocker are the loud tier.
         for state in ("awaiting-plan-approval", "needs-input", "ready-for-integration"):
             self.assertEqual(tier_for(state), WAITING, state)

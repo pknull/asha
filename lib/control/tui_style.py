@@ -51,6 +51,8 @@ _assign(
     MACHINE,
     "planning", "running", "dispatching", "evaluating", "sealing", "allocated",
     "active", "waiting", "starting", "stopping",
+    # A ready node owes the machine a dispatch, not the operator a decision.
+    "ready",
 )
 _assign(
     GOOD,
@@ -62,6 +64,8 @@ _assign(
     BAD,
     "failed", "sealed-failure", "failure-seal-ready", "abnormal-exit",
     "launch-failed", "failed-no-artifact", "result-missing", "indeterminate",
+    # Finalised without full success: settled, but not a success.
+    "partial",
 )
 _assign(
     INERT,
@@ -119,6 +123,9 @@ def short_label(state: str | None, width: int = STATE_COLUMN) -> str:
 
 
 # ---------------------------------------------------------------- the rail
+# Terminal for the purposes of the count line: nothing further will happen.
+TERMINAL_STATES = frozenset({"archived", "cancelled", "partial"})
+
 STAGES = ("plan", "approve", "build", "review", "verify", "integrate")
 
 GLYPHS = {
@@ -308,6 +315,8 @@ def display_state(view: Mapping[str, Any]) -> tuple[str, str]:
     """
     initiative = view.get("initiative") or {}
     state = initiative.get("state")
+    if state == "approved":
+        return WAITING, "activate"
     tier = tier_for(state)
     if tier != WAITING and WAITING in rail_tiers(view):
         return WAITING, "needs you"
@@ -323,7 +332,8 @@ def summary_counts(rows: Sequence[Any]) -> dict[str, int]:
     the tier each row displays, so the amber count equals the number of amber
     rows; every counted row lands in exactly one bucket, so they sum.
     """
-    counts = {"initiatives": 0, "waiting": 0, "running": 0, "failed": 0, "paused": 0, "settled": 0}
+    counts = {"initiatives": 0, "waiting": 0, "running": 0, "failed": 0,
+              "paused": 0, "settled": 0, "idle": 0}
     for row in rows:
         if getattr(row, "kind", None) != "initiative":
             continue
@@ -338,8 +348,10 @@ def summary_counts(rows: Sequence[Any]) -> dict[str, int]:
             counts["failed"] += 1
         elif tier == MACHINE:
             counts["running"] += 1
-        else:
+        elif getattr(row, "state", None) in TERMINAL_STATES:
             counts["settled"] += 1
+        else:
+            counts["idle"] += 1
     return counts
 
 
@@ -347,5 +359,5 @@ __all__ = [
     "WAITING", "MACHINE", "GOOD", "BAD", "INERT", "TIERS", "TIER_XTERM", "TIER_PAIR",
     "DECORATION_PAIR", "DECORATION_XTERM", "STAGES", "GLYPHS", "ROW_GLYPH", "RAIL_WIDTH",
     "STATE_COLUMN", "Line", "LineBuilder", "rail_text", "rail_tiers", "short_label",
-    "summary_counts", "tier_for", "display_state", "safe_text",
+    "summary_counts", "tier_for", "display_state", "safe_text", "TERMINAL_STATES",
 ]

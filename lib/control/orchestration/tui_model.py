@@ -161,6 +161,8 @@ def _attention(view: dict[str, Any]) -> str:
         return "needs input"
     if state == "ready-for-integration":
         return "integrate"
+    if state == "approved":
+        return "activate"
     if any(item.get("state") == "requested" for item in view.get("approvals", [])):
         return "salvage approval"
     if state == "paused":
