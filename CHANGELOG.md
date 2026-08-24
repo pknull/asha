@@ -12,6 +12,19 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Workspace trust and waiting workers
+
+- Control now inherits harness trust for the workspace it creates: when a
+  task's source repository is trusted in any harness store, the new workspace
+  is trusted in all of them (Claude, Codex, Copilot; OpenCode has no gate), so
+  no run is blocked at a trust prompt again. A source trusted nowhere grants
+  nothing. Every grant is reported as a `workspace-trust` source mutation, on
+  `attempt-started` and the dispatch outcome, and in the
+  `asha.control-workspace-trust.v1` ledger; `asha task trust [PATH] [--grant]`
+  reports or performs one, and `control.workspace_trust: "never"` disables it.
+- Claude's trust dialog and permission prompts are recognized, so a waiting
+  Claude worker reconciles as `needs-input` instead of `running`.
+
 #### Coordinator sessions from the monitor
 
 - `n` in `asha control` Initiatives mode asks for an intent and starts the

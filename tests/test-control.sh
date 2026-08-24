@@ -209,6 +209,7 @@ PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_control_prerequisites \
   tests.python.test_control_reconcile_doctor_cli \
   tests.python.test_control_store \
+  tests.python.test_control_workspace_trust \
   tests.python.test_control_increment2.RealJjPreparationTests \
   tests.python.test_control_increment3.RealTmuxLaunchTests \
   tests.python.test_control_popup_client.RealTmuxPopupClientTests \

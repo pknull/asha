@@ -84,6 +84,7 @@ Usage:
   asha task report --file RESULT.json [--json]
   asha task result <task-id> [--json]
   asha task seal <task-id|attempt-id> [--json]
+  asha task trust [PATH] [--grant] [--json]
   asha task doctor [--json]""", file=stream)
 
 
@@ -740,6 +741,25 @@ def _progress(message: str) -> None:
         pass
 
 
+def _workspace_trust_mutation(report: Mapping[str, Any] | None) -> dict[str, str] | None:
+    """Report a granted workspace trust as the source mutation it is.
+
+    Granting changes harness configuration in $HOME, outside both the task
+    workspace and the source repository, so it belongs in the same list the
+    caller already reads for everything Control changed on its behalf.
+    """
+    if not report or not report.get("applied"):
+        return None
+    return {
+        "kind": "workspace-trust",
+        "detail": (
+            f"trusted {report['workspace']} in {', '.join(report['granted'])}; "
+            f"inherited from {report['source']} (trusted in "
+            f"{', '.join(report['inherited_from'])})"
+        ),
+    }
+
+
 def _emit_start_result(
     parsed: Mapping[str, Any], env: Mapping[str, str], config,
     result: dict[str, Any], adapter: TmuxAdapter, *,
@@ -917,6 +937,9 @@ def _start_new_task(
         config, prepared, tmux=adapter, harness=selected_harness,
         goal_args=parsed["goal_args"], role=selected_role,
     )
+    trust_mutation = _workspace_trust_mutation(result.pop("workspace_trust", None))
+    if trust_mutation is not None:
+        source_mutations.append(trust_mutation)
     return _emit_start_result(
         parsed, env, config, result, adapter,
         source_mutations=source_mutations, existing=False,
@@ -1410,6 +1433,66 @@ def _recover_command(args: list[str], env: Mapping[str, str]) -> int:
     return 0
 
 
+def _trust_command(args: list[str], env: Mapping[str, str]) -> int:
+    """Report, or grant, harness trust for one path across every known store."""
+    from . import trust as trust_api
+
+    parsed = _parse_flags(args, {"grant", "json"}) if False else None
+    del parsed
+    grant = "--grant" in args
+    as_json = "--json" in args
+    positional = [item for item in args if not item.startswith("--")]
+    unknown = [item for item in args if item.startswith("--") and item not in {"--grant", "--json"}]
+    if unknown:
+        print(f"asha task trust: unsupported option(s): {', '.join(unknown)}", file=sys.stderr)
+        return 2
+    if len(positional) > 1:
+        print("asha task trust takes at most one path", file=sys.stderr)
+        return 2
+    config = load_config(env)
+    target = Path(positional[0]).expanduser() if positional else Path.cwd()
+    try:
+        if grant:
+            outcome = trust_api.grant(config.home, target)
+            if outcome["granted"]:
+                trust_api.record_grant(config.tasks_dir.parent, {
+                    "workspace": outcome["path"], "source": outcome["path"],
+                    "inherited_from": ["operator"], "granted": outcome["granted"],
+                })
+            payload = {"contract": "asha.control-trust-grant.v1", **outcome}
+        else:
+            payload = {
+                "contract": "asha.control-trust-status.v1",
+                "path": str(Path(target).expanduser().resolve()),
+                "trusted_by": trust_api.trusting_harnesses(config.home, target),
+                "harnesses": {
+                    name: trust_api.is_trusted(config.home, name, target)
+                    for name in trust_api.TRUST_HARNESSES
+                },
+                "unsupported": list(trust_api.UNSUPPORTED_HARNESSES),
+                "workspace_trust": config.workspace_trust,
+            }
+    except trust_api.TrustError as exc:
+        print(f"asha task trust: {exc}", file=sys.stderr)
+        return 2
+    if as_json:
+        _json(payload)
+        return 0
+    if grant:
+        print(f"Path: {payload['path']}")
+        for field in ("granted", "already", "unavailable"):
+            if payload[field]:
+                print(f"{field.capitalize()}: {', '.join(payload[field])}")
+        return 0
+    print(f"Path: {payload['path']}")
+    for name, state in payload["harnesses"].items():
+        print(f"{name:<9} {'trusted' if state else ('no store' if state is None else 'not trusted')}")
+    for name in payload["unsupported"]:
+        print(f"{name:<9} no trust gate")
+    print(f"control.workspace_trust: {payload['workspace_trust']}")
+    return 0
+
+
 def _task_command(args: list[str], env: Mapping[str, str]) -> int:
     if not args or args[0] in {"-h", "--help", "help"}:
         _task_usage(sys.stdout if args else sys.stderr)
@@ -1423,7 +1506,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         return orchestration_task_main(args, env=env)
     if command not in {
         "start", "list", "show", "attach", "stop", "archive", "unarchive",
-        "recover", "prune", "reconcile", "doctor",
+        "recover", "prune", "reconcile", "doctor", "trust",
     }:
         print("asha task: unknown subcommand", file=sys.stderr)
         return 2
@@ -1441,6 +1524,8 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         return _recover_command(tail, env)
     if command == "prune":
         return _prune_command(tail, env)
+    if command == "trust":
+        return _trust_command(tail, env)
     tail, json_output = _parse_json_flag(tail)
     config = load_config(env)
     store = TaskStore(config)

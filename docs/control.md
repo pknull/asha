@@ -367,6 +367,32 @@ default tmux server, carry `@asha_coordinator_session=1`, and are never
 Control tasks: prune and task listing ignore them; they end when the harness
 session exits.
 
+## Workspace trust
+
+Every worker runs in a fresh jj workspace, which each harness treats as an
+unseen directory behind its own trust prompt; a worker waiting at that prompt
+looks alive. Control therefore **inherits** trust rather than inventing it: when
+a task's source repository is already trusted in at least one harness store,
+Control trusts the new workspace in every harness that has one (Claude's
+`~/.claude.json`, Codex's `~/.codex/config.toml`, Copilot's
+`~/.copilot/config.json`; OpenCode has no trust gate), so a later run under a
+different harness is not blocked again. A source repository trusted nowhere is
+never granted anything — the worker prompts, which is correct.
+
+Granting is reported, never silent: as a `workspace-trust` source mutation in
+the task-start payload, on the initiative's `attempt-started` event and the
+completed dispatch outcome (so the coordinator sees it), and as a line in the
+durable `asha.control-workspace-trust.v1` ledger at
+`${XDG_STATE_HOME}/asha/control/trust.jsonl`. `asha task trust [PATH]` reports
+the current state per harness, and `asha task trust PATH --grant` performs an
+explicit grant. Set `control.workspace_trust` to `"never"` to disable
+inheritance entirely (the default is `"inherit"`).
+
+A waiting worker is also detected rather than mistaken for a busy one:
+`INPUT_PROMPT_MARKERS` covers Codex's and Claude's prompts, so reconciliation
+reports `needs-input`, and the initiative journal carries that state up through
+`task-status-observed`.
+
 ## Cockpit
 
 The monitor's `n` (Coordinator sessions, above) is the front door; the cockpit

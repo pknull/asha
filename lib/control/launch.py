@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import os
+import sys
 import signal
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,6 +76,44 @@ def _save_phase(
     if inject_after:
         _inject(failure_injector, f"journal:{phase}")
         _inject(failure_injector, phase)
+
+
+def _inherit_workspace_trust(config, task: dict[str, Any]) -> dict[str, Any] | None:
+    """Trust the fresh workspace wherever the source repository is already trusted.
+
+    Never fatal: a worker that prompts is a delay, but a launch that dies
+    because a harness config moved is a lost task. The outcome is printed and
+    appended to the durable ledger so the grant is never silent.
+    """
+    from . import trust as trust_api
+
+    try:
+        report = trust_api.inherit_workspace_trust(
+            config.home,
+            source=task["repository"]["root"],
+            workspace=task["jj"]["workspace_path"],
+            mode=config.workspace_trust,
+            state_dir=config.tasks_dir.parent,
+        )
+    except (trust_api.TrustError, OSError, KeyError) as exc:
+        print(f"asha control: workspace trust was not applied: {exc}", file=sys.stderr)
+        return None
+    if report["applied"]:
+        print(
+            "asha control: trusted the worker workspace in "
+            + ", ".join(report["granted"])
+            + f" (inherited from {report['source']}, trusted in "
+            + ", ".join(report["inherited_from"]) + ")",
+            file=sys.stderr,
+        )
+    elif report["mode"] != "never" and not report["inherited_from"]:
+        print(
+            "asha control: workspace trust not inherited; the source repository "
+            f"{report['source']} is trusted in no harness store, so the worker "
+            "may wait at a trust prompt",
+            file=sys.stderr,
+        )
+    return report
 
 
 def _session_options(task: dict[str, Any]) -> dict[str, str]:
@@ -337,6 +376,7 @@ def launch_task(
                 )
             _inject(failure_injector, "session-available")
 
+            trust_report = _inherit_workspace_trust(config, current)
             _save_phase(journal_store, journal, "tmux-intent", failure_injector)
             expected_session = _session_options(current)
             expected_pane = _pane_options(run_id, selected_harness, selected_role)
@@ -404,6 +444,7 @@ def launch_task(
                 "run": run,
                 "session": session,
                 "pane": pane_id,
+                "workspace_trust": trust_report,
                 "workspace": {
                     "path": launched["jj"]["workspace_path"],
                     "name": launched["jj"]["workspace_name"],

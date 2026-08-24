@@ -8,6 +8,7 @@ import posixpath
 import re
 import stat
 import unicodedata
+from .trust import TRUST_MODES
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Any
@@ -60,6 +61,7 @@ class ControlConfig:
     popup_height: str
     session_prefix: str
     event_staleness_seconds: int
+    workspace_trust: str
 
 
 def _absolute(value: str, name: str, *, home: Path, allow_tilde: bool = True) -> Path:
@@ -437,6 +439,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
         raise ConfigError("control must be an object")
     supported_control = {
         "workspace_root", "default_harness", "tmux", "event_staleness_seconds",
+        "workspace_trust",
     }
     unknown_control = set(control) - supported_control
     if unknown_control:
@@ -524,6 +527,12 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
     if not 1 <= raw_staleness <= 86400:
         raise ConfigError("control.event_staleness_seconds must be from 1 through 86400")
 
+    workspace_trust = control.get("workspace_trust", "inherit")
+    if workspace_trust not in TRUST_MODES:
+        raise ConfigError(
+            "control.workspace_trust must be one of " + ", ".join(TRUST_MODES)
+        )
+
     return ControlConfig(
         config_path=config_path,
         home=home,
@@ -535,4 +544,5 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
         popup_height=popup_height,
         session_prefix=session_prefix,
         event_staleness_seconds=raw_staleness,
+        workspace_trust=workspace_trust,
     )
