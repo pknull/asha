@@ -24,6 +24,8 @@ the active instruction surface loses no release detail.
   reports or performs one, and `control.workspace_trust: "never"` disables it.
 - Claude's trust dialog and permission prompts are recognized, so a waiting
   Claude worker reconciles as `needs-input` instead of `running`.
+- Assignments state that a worker must end its session after publishing: the
+  seal needs a normal exit, and a killed attempt seals as a failure.
 
 #### Coordinator sessions from the monitor
 

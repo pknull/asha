@@ -472,6 +472,12 @@ session, coordinator, or unmanaged parallel writer.
 The controller never snapshots or otherwise mutates the worker workspace on
 the worker's behalf.
 
+End your session after the receipt. The exit seals your work: the controller
+records the candidate only once it observes a normal exit, and an interactive
+harness that stays at its prompt leaves this node unsealed indefinitely. Exit
+normally (`/exit` in an interactive session); a killed process seals as a
+failure even when the result was published.
+
 The client document is `asha.orchestration-result.v1` with every result field
 except controller-generated `result_id` and `payload_digest`: `publication_id`,
 `supersedes_result_id`, the initiative/node/attempt/task/run identities above,
