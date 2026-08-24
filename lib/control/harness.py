@@ -28,7 +28,14 @@ INPUT_PROMPT_MARKERS: dict[str, tuple[str, ...]] = {
         "Would you like to run the following command?",
         "Do you trust the contents of this directory",
     ),
-    "claude": (),
+    # Claude Code's per-directory trust dialog fires in every fresh Control
+    # workspace, and its permission prompts share one footer line. Without
+    # these a Claude worker waits at a prompt while the pane still looks alive.
+    "claude": (
+        "Is this a project you created or one you trust?",
+        "Enter to confirm \u00b7 Esc to cancel",
+        "Do you want to proceed?",
+    ),
     "copilot": (),
     "opencode": (),
 }
