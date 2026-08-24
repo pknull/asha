@@ -12,6 +12,13 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Repair assignments carry their findings
+
+- A repair dispatch now embeds the accepted review findings bound to the exact
+  upstream seal into the worker assignment ("Accepted review findings to
+  fix") — the first live repair showed the worker otherwise repairs blind,
+  the gap the original evidence-gate review predicted.
+
 #### Workspace trust and waiting workers
 
 - Control now inherits harness trust for the workspace it creates: when a
