@@ -72,7 +72,7 @@ class _Screen:
     def clrtoeol(self):
         pass
 
-    def addnstr(self, y, x, value, limit):
+    def addnstr(self, y, x, value, limit, attribute=0):
         self.drawn.append((y, x, value, limit))
 
     def refresh(self):

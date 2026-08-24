@@ -141,10 +141,25 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         lines = render(model)
         self.assertLessEqual(len(lines), 24)
         self.assertTrue(all(len(line) <= 60 for line in lines))
-        self.assertEqual(lines[0], "ASHA CONTROL  Scope: active")
-        self.assertTrue(lines[2].startswith("STATE"))
+        # The title carries counts the operator can audit against the rows, and
+        # sheds by width: at 60 columns the default scope goes before a count,
+        # because a default scope tells the operator nothing.
+        self.assertTrue(lines[0].startswith("ASHA CONTROL   1 need you"))
+        self.assertIn("2 initiatives", lines[0])
+        self.assertNotIn("Scope: active", lines[0])
+        wide = render(self.model(
+            [_view("one", "running"), _view("two", "awaiting-plan-approval")], width=120,
+        ))
+        self.assertIn("Scope: active", wide[0])
+        self.assertIn("1 need you", wide[0])
+        # At 60 columns STATE and WORKER have dropped; PIPELINE and WAITING ON
+        # are what a narrow pane keeps, because they are why the operator looked.
+        header = lines[2].lstrip()
+        self.assertTrue(header.startswith("PIPELINE"), header)
+        self.assertIn("WAITING ON", header)
+        self.assertNotIn("WORKER", header)
         self.assertTrue(any("plan approval" in line for line in lines))
-        self.assertTrue(lines[-1].startswith("n new  Enter attach/open  ! attention"))
+        self.assertTrue(lines[-1].startswith("Enter attach  ! need you  a approve"))
         model.help_visible = True
         help_lines = render(model)
         self.assertEqual(help_lines[0], "ASHA CONTROL HELP")
@@ -238,7 +253,7 @@ class Screen:
     def refresh(self):
         pass
 
-    def addnstr(self, _y, _x, value, _limit):
+    def addnstr(self, _y, _x, value, _limit, _attribute=0):
         self.current.append(value)
 
     def move(self, _y, _x):

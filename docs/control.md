@@ -153,10 +153,13 @@ automatic refresh reloads the whole tree with lock-free snapshot readers.
 | `/` | Filter initiative rows without mutating state. |
 | `?` | Help for this mode. `q` exits the TUI only. |
 
-The table shows `STATE`, `INITIATIVE`, `COORDINATOR` (harness and generation of
-the live claim, or the terminal state), `NODES` (succeeded/total), and
-`ATTENTION` (plan approval, needs input, salvage approval, paused, failed
-count). The detail block shows the coordinator claim and anchor liveness, the
+The table shows `STATE`, `INITIATIVE / NODE`, `PIPELINE`, `WORKER`, `AGE`, and
+`WAITING ON`. Every layout fills the terminal exactly, and columns shed by
+width in a deliberate order — `WORKER` first, then `AGE` and `STATE` — because
+`PIPELINE` and `WAITING ON` are why the operator looked. `PIPELINE` survives to
+46 columns; below that only the demand does. Each cell keeps one column of
+clearance, so a long slug can never run into its neighbour. The detail block shows the coordinator
+claim and anchor liveness, the
 pending approval, the latest candidate seal, the review verdict, the
 verification outcome, limits, storage, and the last events as separate facts.
 No key in this view reaches merge, rebase, bookmark movement, push,
@@ -359,6 +362,63 @@ asha control: terminal TUI unavailable; use `asha task list --json` as the non-i
 Use `asha task list --json` directly for scripts and other non-interactive
 callers. A curses failure after initialization also exits 2 and names the same
 fallback.
+
+
+### Colour, tiers, and the pipeline rail
+
+`lib/control/tui_style.py` owns the whole visual vocabulary and imports no
+curses; the renderer stays terminal-independent and only `_paint` reads it.
+
+The four record classes carry 56 states (44 distinct words, since `running`,
+`failed`, `approved`, `cancelled`, `dispatching`, `needs-input` and `stale` are
+reused across classes). No operator holds that many words in their eye, so
+`tier_for` maps every state to exactly one of five tiers, and the tier is what
+colour means:
+
+| Tier | xterm | Means |
+|---|---|---|
+| waiting | 214 | Nothing advances until the operator acts. The only loud tier. |
+| machine | 74 | Work is in flight; visible, never urgent. |
+| good | 71 | Settled and passed. |
+| bad | 167 | Settled and failed. |
+| inert | 245 | Not reached, held, or already history. |
+
+Colour never carries alone where a word can carry with it. The `STATE` column
+shows a short label (`awaiting-plan-approval` renders as `approve`, never as
+the ambiguous stub a 10-column clip produced), and the rail shows a glyph. On a
+monochrome terminal `init_colours` returns False and the two loud tiers keep
+bold — bold is one attribute and cannot encode five. An 8-colour terminal gets
+the coarse ANSI approximations. The 72-column layout drops `STATE`, and that is
+the one place the glyph carries alone; it is a stated cost of the narrow pane.
+
+`PIPELINE` is six fixed stages — plan, approve, build, review, verify,
+integrate — one glyph each, derived by `rail_tiers` from the stored record
+only. A stage is `!` when it waits on the operator, `✗` when it failed, `●`
+when live, `✓` when passed, `·` when not reached. Within a stage a demand
+outranks a failure, which outranks live work: the loudest true thing wins.
+
+A stage is ticked only when its record exists, never inferred from where an
+initiative ended: `draft → cancelled` is a legal transition, and an initiative
+killed at draft must not claim a plan and an approval it never had.
+
+A collapsed initiative rolls up a child's demand (`display_state`), because a
+request for a human that is only visible after expanding a row is a request
+nobody sees. A failing child is deliberately *not* rolled up — retries are
+allocated automatically, so the initiative is still the machine's move, and the
+rail already carries the `✗`. The title's counts are computed from the rendered
+rows rather than the view list, and bucketed by the tier each row displays, so
+a filter narrows the counts with the rows and the amber count always equals the
+number of amber rows on screen.
+
+Every cell passes through `safe_text` on its way to the terminal, so a control
+code, bidi override or unassigned codepoint reaching a slug, goal or evidence
+string cannot move the cursor or reorder a line, whatever the record validators
+upstream accepted.
+
+`◆ ● ◼ ✓ ✗` are East-Asian-ambiguous width: under a CJK locale, or a terminal
+treating ambiguous as wide, each takes two cells and every column right of it
+drifts. A CJK `LANG`/`LC_ALL`/`LC_CTYPE` selects the exact-width ASCII rail
+automatically; `ASHA_CONTROL_GLYPHS=ascii` or `=unicode` overrides either way.
 
 ### Coordinator sessions
 

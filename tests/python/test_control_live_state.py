@@ -434,7 +434,7 @@ class AutomaticRefreshTests(unittest.TestCase):
             ),
         )
         self.assertTrue(
-            output[-1].startswith("n new  Enter attach/open  ! attention"), output[-1],
+            output[-1].startswith("Enter attach  ! need you  a approve"), output[-1],
         )
         self.assertEqual(model.message, operator_message)
 

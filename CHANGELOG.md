@@ -12,6 +12,26 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Colour and the pipeline rail in the control tree
+
+- The control TUI never asked curses for colour at all (no `init_pair`,
+  `A_BOLD` or `attron` anywhere), and its 10-wide `STATE` column truncated
+  `awaiting-plan-approval` and `ready-for-integration` — the two states meaning
+  the operator is the blocker — into near-identical stubs. `lib/control/
+  tui_style.py` now maps all 56 record states to five semantic tiers coloured
+  by whose turn it is, gives every initiative a six-stage pipeline rail
+  (plan · approve · build · review · verify · integrate), shows short labels
+  that never truncate, and puts auditable counts in the title. Rendered lines
+  are a `str` subclass carrying tier spans, so the renderer stays
+  terminal-independent and every existing caller keeps treating them as text;
+  only the painter reads spans. Monochrome terminals keep bold on the two loud
+  tiers, 8-colour terminals get ANSI approximations, and a CJK locale selects
+  an exact-width ASCII rail. A stage is ticked only on the evidence of its
+  record, so an initiative cancelled at draft claims nothing; the title's
+  counts come from the rendered rows, so a filter narrows them together; and
+  every cell keeps the `safe_text` sanitisation and the column clearance the
+  retired renderer applied.
+
 #### Standing authorities
 
 - `asha initiative authority add|list|revoke` records the operator's
