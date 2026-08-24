@@ -12,6 +12,22 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Standing authorities
+
+- `asha initiative authority add|list|revoke` records the operator's
+  pre-signed approval for a narrow plan shape
+  (`asha.orchestration-standing-authority.v1`: pinned repository identity,
+  scope prefixes, node/harness/attempt ceilings, optional headless
+  requirement). A deterministic fail-closed matcher runs at proposal time;
+  matched plans are approved as the operator by proxy
+  (`standing-authority:<id8>`) with an `approval-decided` journal event, and
+  optionally activated. Mismatches wait for the operator; grant and revoke are
+  refused from coordinator sessions and panes (with a matching
+  `coordinator-no-authority-grant` policy-guard belt); integration, salvage,
+  decisions, and needs-input stay live operator acts. With a time trigger this
+  closes the bounded autonomous loop while keeping gates and integration
+  manual.
+
 #### Time triggers
 
 - `asha trigger add|list|remove` schedules coordinator launches via systemd
