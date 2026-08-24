@@ -309,6 +309,15 @@ journal exists. It never allocates a replacement task for that action.
 
 ## Worker result publication
 
+A worker publishes its result and then **ends its session**. The seal is
+recorded only when the controller observes a normal exit: an interactive
+harness that returns to its prompt leaves the attempt at `reported` and the
+node `running` indefinitely, and stopping such an attempt seals a failure
+because a killed process is not a normal exit. The assignment states this
+requirement; `asha task attach` plus a normal exit is the recovery when a
+worker has published but stayed open.
+
+
 `asha task report` accepts one closed `asha.orchestration-result.v1` client
 object. The client omits controller-owned `result_id` and `payload_digest`:
 
