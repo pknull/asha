@@ -12,6 +12,22 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Time triggers
+
+- `asha trigger add|list|remove` schedules coordinator launches via systemd
+  user timers (marked owned units; foreign units refused; Persistent
+  catch-up). Fired runs stop at plan approval — triggers schedule proposals,
+  never unattended execution. Webhooks deliberately deferred.
+
+#### Headless nodes
+
+- A plan node may declare `interactive: false` (work/review on Claude or
+  Codex): Control launches the worker headless in its pane (`claude -p
+  --permission-mode bypassPermissions`, `codex exec`), the turn's end is the
+  normal exit, and the seal follows without a human closing the session.
+  Interactive briefs now say honestly that the worker cannot exit itself and
+  must ask the operator to close it (`X` in the control tree).
+
 #### One control tree
 
 - `asha control` is now a single tree: initiatives expand to nodes and

@@ -33,7 +33,7 @@ because those harnesses claim process liveness only.
 asha task start [--repo PATH] (--pr N | --issue N | [--base REVSET])
                 [--task-id UUID] [--slug SLUG]
                 [--harness H|--agent H] (--goal TEXT | -- TEXT...)
-                [--role ROLE] [--detach] [--json]
+                [--role ROLE] [--detach] [--headless] [--json]
 asha task list [--json]
 asha task show <task-id|exact-slug> [--json]
 asha task attach <task-id|exact-slug> [--run RUN_ID]
@@ -378,6 +378,21 @@ Coordinator sessions are named `<session_prefix>coord-<token>` on Control's
 default tmux server, carry `@asha_coordinator_session=1`, and are never
 Control tasks: prune and task listing ignore them; they end when the harness
 session exits.
+
+## Triggers
+
+`asha trigger add NAME --schedule CALENDAR --root DIR --intent TEXT
+[--harness H]` schedules a coordinator launch through a **systemd user
+timer** (`asha-trigger-NAME.{service,timer}` under
+`~/.config/systemd/user/`, `Persistent=true` so a missed window fires after
+boot). Each firing starts an ordinary coordinator session that resolves the
+repository, creates the initiative, and proposes a plan — then **waits at
+plan approval** like every other initiative; triggers schedule proposals,
+never unattended execution. `asha trigger list` shows armed triggers and
+their next elapse; `asha trigger remove NAME` disables and deletes them.
+Only units carrying the managed marker are ever modified; foreign units are
+refused. `--dry-run` prints the unit bodies and commands. Inbound webhooks
+are deliberately not built.
 
 ## Workspace trust
 
