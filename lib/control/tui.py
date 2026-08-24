@@ -44,6 +44,11 @@ from .text import (
     terminal_text_is_complete,
 )
 from . import view
+from .tui_style import (
+    BAD, DECORATION_PAIR, DECORATION_XTERM, GLYPHS, GOOD, INERT, MACHINE, ROW_GLYPH,
+    TIER_PAIR, TIER_XTERM, WAITING, Line, LineBuilder, short_label, summary_counts,
+    tier_for,
+)
 
 
 _STATE_ORDER = {
@@ -63,9 +68,30 @@ _FIXED_SCREEN_LINES = 15
 _STATUS_MAX_LINES = 6
 _TREE_FOOTER = (
     # Most-used keys first: narrow terminals clip the tail, `?` shows everything.
-    "n new  Enter attach/open  ! attention  a approve/archive  X close worker  p pause  s stop  ? help  q quit  |  "
+    "Enter attach  ! need you  a approve  X close worker  p pause  s stop  n new  ? help  q quit  |  "
     "N task  r reconcile  d diff  e events  c seals  v verify  t storage  x actions  A scope  / filter"
 )
+def _glyph_mode(env: Mapping[str, str] | None = None) -> str:
+    """Unicode by default; ASCII where ambiguous-width glyphs would shift columns.
+
+    ◆ ● ◼ ✓ ✗ are East-Asian-ambiguous: a CJK locale, or any terminal set to
+    treat ambiguous as wide, renders them two cells and every column right of
+    them drifts. ASHA_CONTROL_GLYPHS=ascii opts out; a CJK LANG opts out by
+    itself so the default is safe without configuration.
+    """
+    values = os.environ if env is None else env
+    choice = (values.get("ASHA_CONTROL_GLYPHS") or "").strip().lower()
+    if choice in {"ascii", "unicode"}:
+        return choice
+    locale_text = " ".join(str(values.get(key) or "") for key in ("LC_ALL", "LC_CTYPE", "LANG")).lower()
+    if any(token in locale_text for token in ("zh", "ja", "ko")):
+        return "ascii"
+    return "unicode"
+
+
+# An 8-colour terminal still separates the tiers, just coarsely.
+_BASIC_TIER_COLOUR = {WAITING: 3, MACHINE: 6, GOOD: 2, BAD: 1, INERT: 7}
+
 _INPUT_POLL_MS = 200
 _AUTO_REFRESH_SECONDS = 5.0
 _START_OUTPUT_BYTES = 64 * 1024
@@ -288,6 +314,10 @@ class TuiModel:
         self.message: str | None = None
         self.automatic_refresh_error: str | None = None
         self.help_visible = False
+        # Set once by the curses loop; the renderer stays terminal-independent
+        # and the painter falls back to bold-only when this is False.
+        self.coloured = False
+        self.env: Mapping[str, str] | None = None
         # The unified control tree (initiatives + unbound tasks). Loaded
         # lazily; a malformed orchestration configuration degrades the
         # initiative branch only, never the tasks.
@@ -597,23 +627,175 @@ def render(model: TuiModel) -> list[str]:
     return _render_tree(model)
 
 
-def _initiative_table_line(values: tuple[str, ...], width: int) -> str:
-    """One tree line: STATE, ROW, WORKER, COORDINATOR, NODES, ATTENTION.
+def _tree_columns(width: int) -> list[tuple[str, int]]:
+    """Which columns survive this width, and how wide the name column is.
 
-    The row column absorbs spare width; narrow terminals drop the middle
-    columns rather than the attention column, which is why the operator is
-    looking at the screen in the first place.
+    Degradation order is deliberate: WORKER goes first because a worker's
+    identity is recoverable from its row, then STATE because the glyph and the
+    rail still carry the tier. PIPELINE and WAITING ON are the last to go —
+    they are what the operator came to read.
     """
-    state, row, worker, coordinator, nodes, attention = values
-    if width >= 96:
-        columns = [(state, 10), (row, max(8, width - 76)), (worker, 12),
-                   (coordinator, 12), (nodes, 5), (attention, 20)]
+    # Each layout fills `width` exactly: the name column takes whatever the
+    # fixed columns leave, so no terminal columns are wasted and no row can
+    # exceed the terminal and wrap.
+    if width >= 116:
+        fixed = [("glyph", 2), ("state", 11), ("rail", 10), ("worker", 11), ("age", 5), ("waiting", 24)]
+        order = ["glyph", "state", "name", "rail", "worker", "age", "waiting"]
+    elif width >= 96:
+        fixed = [("glyph", 2), ("state", 11), ("rail", 10), ("age", 5), ("waiting", 24)]
+        order = ["glyph", "state", "name", "rail", "age", "waiting"]
     elif width >= 72:
-        columns = [(state, 10), (row, max(8, width - 46)), (worker, 12), (attention, 20)]
+        fixed = [("glyph", 2), ("rail", 10), ("age", 4), ("waiting", 20)]
+        order = ["glyph", "rail", "name", "age", "waiting"]
+    elif width >= 46:
+        # Below the four-column layout the rail still earns its ten columns:
+        # it is the only thing showing where the work actually sits.
+        room = max(0, width - 12)
+        waiting = min(18, room // 2)
+        return [("glyph", 2), ("rail", 10), ("name", room - waiting), ("waiting", waiting)]
     else:
-        columns = [(state, 10), (row, max(8, width - 30)), (attention, 17)]
-    cells = [_clip(value, cell_width).ljust(cell_width) for value, cell_width in columns]
-    return " ".join(cells).rstrip()
+        # Now genuinely out of room. The demand is the last thing the operator
+        # should lose, so split what is left rather than dropping it.
+        room = max(0, width - 2)
+        waiting = min(18, room // 2)
+        return [("glyph", 2), ("name", room - waiting), ("waiting", waiting)]
+    sizes = dict(fixed)
+    sizes["name"] = max(10, width - sum(size for _name, size in fixed))
+    return [(name, sizes[name]) for name in order]
+
+
+_COLUMN_TITLES = {
+    "glyph": "", "state": "STATE", "name": "INITIATIVE / NODE", "rail": "PIPELINE",
+    "worker": "WORKER", "age": "AGE", "waiting": "WAITING ON",
+}
+
+
+def _tree_header(width: int) -> Line:
+    builder = LineBuilder().add("  ")
+    for name, size in _tree_columns(width):
+        builder.column(_COLUMN_TITLES[name], size, INERT)
+    return builder.build()
+
+
+def _rail_cell(rail: tuple[str, ...], glyphs: str, paused: bool) -> list[tuple[str, str | None]]:
+    """The rail as (text, tier) pieces so each stage keeps its own colour."""
+    if not rail:
+        return [("", None)]
+    table = GLYPHS[glyphs]
+    pieces: list[tuple[str, str | None]] = [("[", None)]
+    for tier in rail:
+        if not tier:
+            pieces.append((table[INERT], None))
+        elif paused and tier == MACHINE:
+            pieces.append((table["held"], INERT))
+        else:
+            pieces.append((table[tier], tier))
+    pieces.append(("]", None))
+    pieces.append(("  ", None))
+    return pieces
+
+
+def _row_worker(row) -> str:
+    """What belongs in WORKER: a task shows its harness, an attempt its worker."""
+    value = row.type if row.kind == "task" else row.worker
+    return "" if value in ("-", "", None) else str(value)
+
+
+def _tree_row_line(row, width: int, selected: bool, now, glyphs: str) -> Line:
+    """One tree row under the current column set, each cell tagged with its tier."""
+    display = getattr(row, "display", None)
+    tier = display[0] if display else (tier_for(row.state) if row.state else INERT)
+    waiting = "" if row.attention in ("-", "") else row.attention
+    paused = row.state == "paused"
+    values = {
+        "glyph": (ROW_GLYPH[glyphs][tier] if row.kind != "tasks-root" else "", tier),
+        "state": (display[1] if display else short_label(row.state), tier),
+        "name": ("  " * row.depth + (row.label if row.kind in {"initiative", "task", "tasks-root"} else row.id), None),
+        "worker": (_row_worker(row), None),
+        "age": (_age(row.observed_at, now) if row.observed_at else "", None),
+        "waiting": (waiting, tier if waiting else None),
+    }
+    if row.kind == "tasks-root":
+        values["name"] = ("  " * row.depth + row.label, None)
+        values["state"] = ("", None)
+        values["worker"] = (row.state, None)
+    builder = LineBuilder().add(">" if selected else " ", 1, WAITING if selected else None).add(" ")
+    for name, size in _tree_columns(width):
+        if name == "rail":
+            room = size
+            for text, piece_tier in _rail_cell(row.rail, glyphs, paused):
+                if room <= 0:
+                    break
+                builder.add(text[:room], 0, piece_tier)
+                room -= len(text[:room])
+            if room > 0:
+                builder.add("", room)
+            continue
+        text, cell_tier = values[name]
+        builder.column(text, size, cell_tier)
+    return builder.build()
+
+
+def _tree_title(model, screen) -> Line:
+    """The title bar, shed by width the way the columns are.
+
+    Priority order is what the operator loses last: the demand count, then
+    anything that changes WHAT is on screen (an attention filter, a text
+    filter, a non-default scope), then the quieter counts. "Scope: active" is
+    the default and goes first, because a default tells you nothing.
+    """
+    rows = list(screen.rows()) if screen is not None else []
+    counts = summary_counts(rows) if rows else {}
+    pieces: list[tuple[int, str, str, str | None]] = []
+    if counts:
+        if counts["waiting"]:
+            pieces.append((0, "   ", f"{counts['waiting']} need you", WAITING))
+        for order, (label, key, tier) in enumerate((
+            ("running", "running", MACHINE), ("failed", "failed", BAD),
+            ("paused", "paused", INERT), ("settled", "settled", INERT),
+        )):
+            if counts[key]:
+                pieces.append((3 + order, " · " if pieces else "   ", f"{counts[key]} {label}", tier))
+        # Shown last and shed first: it is the total the other terms sum to.
+        pieces.append((7, "   ", f"{counts['initiatives']} initiatives", INERT))
+    if screen is not None and screen.attention_only:
+        pieces.append((1, "  ", "[waiting on you]", WAITING))
+    if screen is not None and screen.filter_string:
+        pieces.append((1, "  ", f"Filter: {screen.filter_string}", INERT))
+    if model.include_archived:
+        pieces.append((2, "  ", "Scope: all", WAITING))
+    else:
+        pieces.append((8, "  ", "Scope: active", INERT))
+
+    budget = max(0, model.width) - len("ASHA CONTROL")
+    keep: set[int] = set()
+    for index, (_priority, joiner, text, _tier) in sorted(
+        enumerate(pieces), key=lambda item: (item[1][0], item[0])
+    ):
+        cost = len(joiner) + len(text)
+        if cost <= budget:
+            budget -= cost
+            keep.add(index)
+    builder = LineBuilder().add("ASHA CONTROL")
+    first = True
+    for index, (_priority, joiner, text, tier) in enumerate(pieces):
+        if index not in keep:
+            continue
+        builder.add("   " if first and joiner == " · " else joiner).add(text, 0, tier)
+        first = False
+    return builder.build()
+
+
+def _tree_summary(views, glyphs: str) -> Line:
+    """Counts that sum to the total, so the operator can audit them by eye."""
+    counts = summary_counts(views)
+    builder = LineBuilder().add("ASHA CONTROL", 0, None).add("   ")
+    builder.add(f"{counts['initiatives']} initiatives", 0, INERT)
+    for label, key, tier in (("need you", "waiting", WAITING), ("running", "running", MACHINE),
+                             ("failed", "failed", BAD), ("paused", "paused", INERT)):
+        if counts[key]:
+            builder.add(" · ", 0, None).add(f"{counts[key]} {label}", 0, tier)
+    return builder.build()
 
 
 def _close_worker(
@@ -725,12 +907,7 @@ def _render_tree(model: TuiModel) -> list[str]:
             "Closing a popup detaches only. SIGKILL and hard crashes cannot restore terminal mode.",
         ]
         return [_clip(line, model.width) for line in lines[:model.height]]
-    title = "ASHA CONTROL"
-    if screen is not None and screen.attention_only:
-        title += "  [waiting on you]"
-    title += f"  Scope: {'all' if model.include_archived else 'active'}"
-    if screen is not None and screen.filter_string:
-        title += f"  Filter: {screen.filter_string}"
+    title = _tree_title(model, screen)
     lines = [title, ""]
     if screen is None:
         # A bare model still shows its tasks: build a transient task-only tree.
@@ -744,25 +921,15 @@ def _render_tree(model: TuiModel) -> list[str]:
     if screen is None:
         lines.append(model.initiatives_error or "Control tree unavailable.")
     else:
-        lines.append(_initiative_table_line(
-            ("STATE", "ROW", "WORKER", "COORDINATOR", "NODES", "ATTENTION"), model.width,
-        ))
+        glyphs = _glyph_mode(getattr(model, "env", None))
+        lines.append(_tree_header(max(0, model.width - 2)))
         visible = screen.visible_rows
         for offset, row in enumerate(visible):
             absolute_index = screen.scroll_offset + offset
-            marker = ">" if absolute_index == screen.selection else " "
-            indent = "  " * row.depth
-            if row.kind == "initiative":
-                cells = (row.state, indent + row.label, "", row.coordinator, row.nodes, row.attention)
-            elif row.kind == "tasks-root":
-                cells = ("", indent + row.label, row.state, "", "", "")
-            elif row.kind == "task":
-                cells = (row.state, indent + row.label, row.type, "",
-                         _age(row.observed_at, model.now), row.attention)
-            else:
-                cells = (row.state, indent + f"{row.id}", row.worker, "",
-                         _age(row.observed_at, model.now), row.attention)
-            lines.append(f"{marker} {_initiative_table_line(cells, max(0, model.width - 2))}")
+            lines.append(_tree_row_line(
+                row, max(0, model.width - 2), absolute_index == screen.selection,
+                model.now, glyphs,
+            ))
         if not screen.rows():
             lines.append("Nothing to show: no initiatives or tasks match.")
         if screen.orchestration_error:
@@ -790,7 +957,10 @@ def _render_tree(model: TuiModel) -> list[str]:
     lines = lines[:body_budget] + status_lines
     if model.height:
         lines.append(_TREE_FOOTER)
-    return [_clip(line, model.width) for line in lines]
+    return [
+        line.clipped(model.width) if isinstance(line, Line) else _clip(line, model.width)
+        for line in lines
+    ]
 
 
 def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[str, Any]]:
@@ -987,20 +1157,110 @@ def _surface_skipped(model: TuiModel, store: TaskStore) -> None:
     model.message = f"{model.message}; {detail}" if model.message else detail
 
 
+def init_colours(curses_module) -> bool:
+    """Five tier pairs plus one decoration pair, or nothing on a mono terminal.
+
+    Returns whether colour is available. Every failure path leaves the screen
+    exactly as it renders today: the glyph and the short label already carry
+    the tier, so a terminal without colour loses emphasis, never meaning.
+    """
+    has_colors = getattr(curses_module, "has_colors", None)
+    start_color = getattr(curses_module, "start_color", None)
+    init_pair = getattr(curses_module, "init_pair", None)
+    error = getattr(curses_module, "error", Exception)
+    if not callable(has_colors) or not callable(start_color) or not callable(init_pair):
+        return False
+    try:
+        if not has_colors():
+            return False
+        start_color()
+        background = 0
+        use_default = getattr(curses_module, "use_default_colors", None)
+        if callable(use_default):
+            try:
+                use_default()
+                background = -1
+            except error:
+                background = 0
+        usable = getattr(curses_module, "COLORS", 8) or 8
+        for tier, index in TIER_PAIR.items():
+            colour = TIER_XTERM[tier] if usable >= 256 else _BASIC_TIER_COLOUR[tier]
+            init_pair(index, colour, background)
+        decoration = DECORATION_XTERM if usable >= 256 else getattr(curses_module, "COLOR_BLUE", 4)
+        init_pair(DECORATION_PAIR, decoration, background)
+    except error:
+        return False
+    except Exception:
+        return False
+    return True
+
+
+def _attribute(curses_module, tier: str | None, coloured: bool) -> int:
+    """A tier's screen attribute, or 0 where the terminal offers none.
+
+    Attributes are decoration: a curses build without them, or a terminal
+    without colour, still shows the glyph and the short label, which is where
+    the meaning lives. Bold marks only the two loud tiers, because bold is one
+    attribute and cannot encode five.
+    """
+    if tier is None:
+        return 0
+    bold = getattr(curses_module, "A_BOLD", 0) if tier in {WAITING, BAD} else 0
+    if not coloured:
+        return bold
+    colour_pair = getattr(curses_module, "color_pair", None)
+    if not callable(colour_pair):
+        return bold
+    try:
+        return colour_pair(TIER_PAIR[tier]) | bold
+    except Exception:
+        return bold
+
+
 def _paint(stdscr, curses_module, model: TuiModel) -> None:
     height, width = stdscr.getmaxyx()
     model.resize(height, width)
     if model.initiatives is not None:
         model.initiatives.resize(height, width)
+    coloured = getattr(model, "coloured", False)
     stdscr.erase()
     for y, line in enumerate(render(model)):
         if y >= height or width <= 1:
             break
+        spans = getattr(line, "spans", ())
         try:
-            stdscr.addnstr(y, 0, line, width - 1)
+            if not spans:
+                stdscr.addnstr(y, 0, line, width - 1)
+            else:
+                _paint_spans(stdscr, curses_module, y, line, spans, width, coloured)
         except curses_module.error:
             pass
     stdscr.refresh()
+
+
+def _paint_spans(stdscr, curses_module, y: int, line, spans, width: int, coloured: bool) -> None:
+    """Write one line piece by piece so each column keeps its own attribute.
+
+    A screen that cannot take an attribute argument gets the line as plain
+    text: emphasis is lost, the words are not.
+    """
+    limit = width - 1
+    cursor = 0
+    for start, stop, tier in sorted(spans):
+        start, stop = max(start, cursor), min(stop, limit)
+        if stop <= start:
+            continue
+        if start > cursor:
+            stdscr.addnstr(y, cursor, line[cursor:start], start - cursor)
+        attribute = _attribute(curses_module, tier, coloured)
+        try:
+            stdscr.addnstr(y, start, line[start:stop], stop - start, attribute)
+        except TypeError:
+            stdscr.addnstr(y, 0, str(line)[:limit], limit)
+            return
+        cursor = stop
+    if cursor < limit:
+        stdscr.addnstr(y, cursor, line[cursor:limit], limit - cursor)
 
 
 _ZWJ = "\u200d"
@@ -3332,6 +3592,13 @@ def _curses_loop(
     jj: JjAdapter,
 ) -> int:
     stdscr.timeout(_INPUT_POLL_MS)
+    model.coloured = init_colours(curses_module)
+    hide_cursor = getattr(curses_module, "curs_set", None)
+    if callable(hide_cursor):
+        try:
+            hide_cursor(0)
+        except Exception:
+            pass
     if model.initiatives is None:
         _enter_tree(model, env)
     next_refresh = time.monotonic() + _AUTO_REFRESH_SECONDS

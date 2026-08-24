@@ -6,6 +6,7 @@ import copy
 import json
 from dataclasses import dataclass, replace
 from typing import Any, Iterable
+from ..tui_style import display_state, rail_tiers
 
 
 class InitiativeTreeModel:
@@ -139,6 +140,8 @@ class InitiativeRow:
     worker: str = "-"
     task_id: str | None = None
     observed_at: str | None = None
+    rail: tuple[str, ...] = ()
+    display: tuple[str, str] | None = None
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -156,6 +159,8 @@ def _attention(view: dict[str, Any]) -> str:
         return "plan approval"
     if state == "needs-input":
         return "needs input"
+    if state == "ready-for-integration":
+        return "integrate"
     if any(item.get("state") == "requested" for item in view.get("approvals", [])):
         return "salvage approval"
     if state == "paused":
@@ -395,6 +400,7 @@ class InitiativesScreen:
                 "initiative", 0, initiative_id, initiative_id,
                 initiative.get("slug", initiative_id[:8]), initiative.get("state", "?"),
                 "initiative", _coordinator_text(view), _nodes_text(view), _attention(view),
+                rail=tuple(rail_tiers(view)), display=display_state(view),
             )
             children: list[InitiativeRow] = []
             if ("initiative", initiative_id) in self.expanded:

@@ -194,8 +194,8 @@ class PureModelTests(unittest.TestCase):
         )
 
         lines = render(model)
-        table = next(line for line in lines if "ATTENTION" in line)
-        for column in ("STATE", "ROW", "WORKER", "COORDINATOR", "NODES", "ATTENTION"):
+        table = next(line for line in lines if "WAITING ON" in line)
+        for column in ("STATE", "INITIATIVE / NODE", "PIPELINE", "WORKER", "AGE", "WAITING ON"):
             self.assertIn(column, table)
         output = "\n".join(lines)
         for field in ("Run:", "Tmux:", "Evidence:", "Workspace:", "Change:", "Blocker:"):
@@ -318,12 +318,12 @@ class PureModelTests(unittest.TestCase):
         joined = " ".join(line.strip() for line in status).replace("Status: ", "")
         self.assertIn("chmod g-w,o-w /home/pknull/Code/Thallus", joined)
         self.assertIn("nothing to recover", joined)
-        self.assertEqual(lines[-1].split()[0], "n")  # footer survives
+        self.assertEqual(lines[-1].split()[0], "Enter")  # footer survives
         # A tiny terminal still yields the footer and a bounded status.
         model.height = 12
         small = render(model)
         self.assertEqual(len(small), 12)
-        self.assertTrue(small[-1].startswith("n new"))
+        self.assertTrue(small[-1].startswith("Enter attach"))
 
     def test_no_intent_represents_removal_or_automated_integration(self) -> None:
         values = {kind.value for kind in IntentKind}

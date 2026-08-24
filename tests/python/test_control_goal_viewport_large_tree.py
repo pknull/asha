@@ -87,7 +87,7 @@ class PromptScreen:
     def refresh(self):
         self.frames.append((self._pending, self._cursor, self.width))
 
-    def addnstr(self, y, x, value, limit):
+    def addnstr(self, y, x, value, limit, attribute=0):
         if y == 7:
             rendered = value[:limit]
             if oracle_terminal_cells(rendered) > max(0, self.width - 1):

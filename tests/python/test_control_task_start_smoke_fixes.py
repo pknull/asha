@@ -485,7 +485,7 @@ class ProgressScreen:
     def refresh(self):
         pass
 
-    def addnstr(self, _y, _x, value, _limit):
+    def addnstr(self, _y, _x, value, _limit, _attribute=0):
         self.lines.append(value)
 
     def move(self, _y, _x):
