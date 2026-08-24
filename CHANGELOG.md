@@ -31,6 +31,13 @@ the active instruction surface loses no release detail.
   counts come from the rendered rows, so a filter narrows them together; and
   every cell keeps the `safe_text` sanitisation and the column clearance the
   retired renderer applied.
+- `a` in the control tree now performs whichever operator act the selected row
+  waits for — approve or reject a plan, activate an approved initiative, or
+  archive a terminal one — so an approved initiative no longer sends the
+  operator to the CLI to start it. A live run also fixed: refused actions
+  reported as successes (the outcome key is `status`, not `state`), `draft` and
+  `approved` initiatives counted as "settled", amber rows with no stated
+  demand, and `ready` and `partial` silently falling through to the inert tier.
 
 #### Standing authorities
 

@@ -736,6 +736,63 @@ def _tree_row_line(row, width: int, selected: bool, now, glyphs: str) -> Line:
     return builder.build()
 
 
+_ARCHIVABLE_INITIATIVE_STATES = frozenset({"ready-for-integration", "partial", "failed", "cancelled"})
+
+
+def _operator_action(
+    stdscr, curses_module, model, env, initiative_store, initiative, action: str,
+    title: str, context: str, done: str,
+) -> str:
+    """Confirm, then submit one operator-actor action document.
+
+    Uses the same build/submit path the CLI does, so the journal records an
+    ordinary operator action; the TUI adds no lifecycle logic of its own.
+    """
+    from .orchestration.actions import (
+        ActionRefused, action_outcome, build_action_document, submit_action,
+    )
+
+    answer = _prompt_line(
+        stdscr, curses_module, model, "Confirm [yes/N]: ", title=title,
+        context=context, maximum=4,
+    )
+    if answer != "yes":
+        return f"{action} cancelled"
+    document = build_action_document(initiative, action, {}, actor_id="tui")
+    try:
+        record = submit_action(initiative_store, initiative["initiative_id"], document)
+    except (ActionRefused, StoreError, ValueError) as exc:
+        return f"{action} refused: {_safe_error(exc)}"
+    outcome = action_outcome(record)
+    _refresh_initiatives(model, env)
+    if outcome and outcome.get("status") == "refused":
+        return f"{action} refused: {outcome.get('reason') or 'no reason recorded'}"
+    if outcome and outcome.get("status") not in {"applied", None}:
+        return f"{action} is {outcome.get('status')}: press r to reconcile"
+    return done
+
+
+def _activate_initiative(stdscr, curses_module, model, env, initiative_store, initiative) -> str:
+    return _operator_action(
+        stdscr, curses_module, model, env, initiative_store, initiative, "activate-initiative",
+        "Activate initiative",
+        f"Initiative: {initiative['slug']} ({initiative['initiative_id']})\n"
+        "The approved plan starts running: ready nodes become dispatchable.",
+        "activated; ready nodes can now be dispatched",
+    )
+
+
+def _archive_initiative(stdscr, curses_module, model, env, initiative_store, initiative) -> str:
+    return _operator_action(
+        stdscr, curses_module, model, env, initiative_store, initiative, "archive",
+        "Archive initiative",
+        f"Initiative: {initiative['slug']} ({initiative['initiative_id']})\n"
+        f"State: {initiative['state']}. Records are retained; the row leaves the active scope.\n"
+        "Integration is not performed here and never has been.",
+        "archived; it stays readable under the archived scope (A)",
+    )
+
+
 def _tree_title(model, screen) -> Line:
     """The title bar, shed by width the way the columns are.
 
@@ -752,7 +809,8 @@ def _tree_title(model, screen) -> Line:
             pieces.append((0, "   ", f"{counts['waiting']} need you", WAITING))
         for order, (label, key, tier) in enumerate((
             ("running", "running", MACHINE), ("failed", "failed", BAD),
-            ("paused", "paused", INERT), ("settled", "settled", INERT),
+            ("paused", "paused", INERT), ("idle", "idle", INERT),
+            ("settled", "settled", INERT),
         )):
             if counts[key]:
                 pieces.append((3 + order, " · " if pieces else "   ", f"{counts[key]} {label}", tier))
@@ -3371,6 +3429,16 @@ def _execute_initiative_intent(
     if intent.kind is IntentKind.INIT_APPROVE:
         from .orchestration.cli import _latest_plan, approve_plan, reject_plan
 
+        # `a` performs whichever operator act this row is actually waiting for.
+        # An amber row is one that cannot advance without a human; making one
+        # key mean "do that" is what keeps the operator inside the tree instead
+        # of approving here and activating somewhere else.
+        if initiative["state"] == "approved":
+            return _activate_initiative(
+                stdscr, curses_module, model, env, initiative_store, initiative)
+        if initiative["state"] in _ARCHIVABLE_INITIATIVE_STATES:
+            return _archive_initiative(
+                stdscr, curses_module, model, env, initiative_store, initiative)
         if initiative["state"] != "awaiting-plan-approval":
             return "no plan is awaiting approval"
         plan = _latest_plan(initiative_store, row.initiative_id)
