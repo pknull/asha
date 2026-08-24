@@ -1149,12 +1149,23 @@ def dispatch(
                     {"from": "dispatching", "to": "running"},
                     actor_kind="controller", actor_id="scheduler",
                 )
+            # Control may grant harness trust for the fresh workspace (inherited
+            # from the source repository). That is a mutation outside the task,
+            # so it reaches the coordinator through the journal, never silently.
+            trust_detail = next(
+                (
+                    item.get("detail") for item in control["source_mutations"]
+                    if isinstance(item, dict) and item.get("kind") == "workspace-trust"
+                ),
+                None,
+            )
             append_event(
                 store, initiative_id, "attempt-started",
                 [node_id, attempt["attempt_id"], attempt["task_id"]],
                 {
                     "existing": control["existing"],
                     "control_task_record_digest": task_digest(control["task"]),
+                    "workspace_trust": trust_detail,
                 },
                 actor_kind="controller", actor_id="scheduler",
             )
@@ -1171,6 +1182,7 @@ def dispatch(
                     **json.loads(action["outcome"]),
                     "status": "running",
                     "existing": control["existing"],
+                    "workspace_trust": trust_detail,
                 },
             )
         except (SchedulerError, StoreError, OSError, ValueError) as exc:

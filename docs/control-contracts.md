@@ -28,6 +28,15 @@ these surfaces and to nothing else in Control.
 | `asha.control-task-prune.v1` | `cli.py` prune route via `lib/control/prune.py` `prune_task` (added 2026-08-18, additive) | `contract`, `dry_run`, `results[]` each `{task_id, slug, outcome, session{action, detail}, workspace{action, detail}, bindings[]}` with outcome in `pruned`, `planned`, `partial`, `refused`, `nothing-to-prune`; session action in `killed`, `would-kill`, `absent`, `refused`, `kept`; workspace action in `removed`, `would-remove`, `forgotten`, `would-forget`, `absent`, `refused`, `kept`; optional `orchestration_bindings_error` | closed |
 | `asha.control-doctor.v1` | `lib/control/doctor.py` `run_doctor` | `contract`, `ok`, `probes[]` `{name, outcome, detail}` with outcome in `match`, `mismatch`, `missing`, `unavailable`, `limitations[]` | closed |
 
+`source_mutations` gained the `workspace-trust` kind (2026-08-23, additive
+within the existing open item shape): Control grants harness trust for the
+fresh worker workspace when the source repository is already trusted in at
+least one harness store, and reports that grant here because it changes
+harness configuration in `$HOME`, outside both the workspace and the source.
+`control.workspace_trust: "never"` disables it. Orchestration carries the same
+detail on `attempt-started` and the completed dispatch outcome, and every
+grant appends to the `asha.control-workspace-trust.v1` ledger.
+
 Within the existing open `jj-operation` item shape,
 `operation: "git init --colocate"` reports automatic plain-Git repository
 enablement. Its detail states that verified colocation is retained. This adds
