@@ -157,12 +157,39 @@ class VisiblePromptTests(unittest.TestCase):
         self.assertEqual(result["state"], "working")
 
     def test_harness_without_markers_never_captures(self) -> None:
-        self.task["runs"][0]["harness"] = "claude"
+        self.task["runs"][0]["harness"] = "copilot"
         tmux = FakeTmux(self.task, tail=CODEX_PROMPT)
         result = self.reconcile(tmux)
         self.assertEqual(tmux.tail_calls, 0)
         self.assertEqual(result["state"], "working")
-        self.assertEqual(INPUT_PROMPT_MARKERS["claude"], ())
+        self.assertEqual(INPUT_PROMPT_MARKERS["copilot"], ())
+
+    def test_claude_trust_dialog_in_a_fresh_workspace_is_needs_input(self) -> None:
+        # Verbatim from a real Control-launched Claude worker (2026-08-23).
+        trust = [
+            "Quick safety check: Is this a project you created or one you trust?",
+            "Claude Code'll be able to read, edit, and execute files here.",
+            "\u276f 1. Yes, I trust this folder",
+            "  2. No, exit",
+            "Enter to confirm \u00b7 Esc to cancel",
+        ]
+        self.task["runs"][0]["harness"] = "claude"
+        result = self.reconcile(FakeTmux(self.task, tail=trust))
+        self.assertEqual(result["state"], "needs-input")
+        detail = next(e for e in result["evidence"] if e["source"] == "tmux")
+        self.assertIn("pane shows the claude input prompt", detail["detail"])
+        self.assertIn("Is this a project you created", detail["detail"])
+
+    def test_claude_permission_prompt_is_needs_input_but_ordinary_output_is_not(self) -> None:
+        self.task["runs"][0]["harness"] = "claude"
+        permission = ["Bash(cargo test)", "Do you want to proceed?", "\u276f 1. Yes"]
+        self.assertEqual(self.reconcile(FakeTmux(self.task, tail=permission))["state"], "needs-input")
+        prose = [
+            "Updated src/monitor/layout.rs with the sparkline renderer.",
+            "Running cargo test to confirm; will report when it finishes.",
+            "The plan is to proceed with the headroom colors next.",
+        ]
+        self.assertEqual(self.reconcile(FakeTmux(self.task, tail=prose))["state"], "working")
 
 
 class RealTmuxPaneTailTests(unittest.TestCase):
