@@ -210,11 +210,58 @@ print(json.dumps({
             "Nested workflows are prohibited",
         ):
             self.assertIn(expected, text)
+        self.assertNotIn("Accepted review findings", text)
         self.assertLessEqual(len(assignment.read_bytes()), 32 * 1024)
         link = self.store.read_link(self.initiative_id, attempts[0]["attempt_id"])
         self.assertEqual(link["control_task_id"], attempts[0]["task_id"])
         self.assertEqual(link["action_id"], action["action_id"])
         self.assertEqual(link["expected_initiative_revision"], document["expected_state_revision"])
+
+    def test_repair_dispatch_binds_the_accepted_findings_into_the_assignment(self) -> None:
+        from tests.python.orchestration_increment3_fixtures import (
+            advance_node, save_accepted_review, save_candidate,
+        )
+
+        advance_node(self, "implementation-a", ["ready", "dispatching", "running", "evaluating", "succeeded"])
+        candidate = save_candidate(self)
+        review = save_accepted_review(self, candidate, verdict="findings")
+        advance_node(self, "implementation-a", ["ready"])
+        calls: list[list[str]] = []
+        tasks: list[dict] = []
+        repair = build_action_document(
+            self.initiative(), "repair-node",
+            {"node_id": "implementation-a", "seal_id": candidate["seal_id"]},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+            side_effect=self.fake_capture(calls, tasks),
+        ):
+            repair_action = submit_action(self.store, self.initiative_id, repair)
+            dispatch = build_action_document(
+                self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+            )
+            submit_action(self.store, self.initiative_id, dispatch)
+        self.assertEqual(repair_action["state"], "completed")
+        attempts = self.store.list_attempts_snapshot(self.initiative_id)
+        attempt = attempts[-1]
+        self.assertEqual(attempt["base"]["policy"], "upstream-seal")
+        self.assertEqual(
+            [item["seal_id"] for item in attempt["base"]["seal_inputs"]],
+            [candidate["seal_id"]],
+        )
+        text = (
+            self.config.initiatives_dir / self.initiative_id / "assignments"
+            / f"{attempt['attempt_id']}.md"
+        ).read_text()
+        self.assertIn("## Accepted review findings to fix", text)
+        self.assertIn("fixing them IS the goal", text)
+        self.assertIn(review["review_id"], text)
+        self.assertIn(candidate["seal_id"], text)
+        self.assertIn("Repair the exact candidate before verification.", text)
+        self.assertIn("lib/file.py", text)
 
     def test_exit_two_is_proven_launch_failure(self) -> None:
         document = build_action_document(

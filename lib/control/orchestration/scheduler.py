@@ -325,12 +325,24 @@ def assignment_bytes(
     attempt: dict[str, Any],
     exact_base: str,
     resolved_seals: list[dict[str, Any]] | None = None,
+    accepted_findings: list[dict[str, Any]] | None = None,
 ) -> bytes:
     """Render the bounded deterministic 2b worker assignment contract."""
     base = attempt["base"]
     nested = plan["nested_workflow_policy"]
     seal_facts = resolved_seals or []
     read_only_facts = [item for item in seal_facts if item["read_only"]]
+    findings_section = ""
+    if accepted_findings:
+        findings_section = f"""
+## Accepted review findings to fix
+
+This attempt repairs the exact upstream candidate seal. The findings below are
+the accepted review verdict on that seal; fixing them IS the goal of this
+attempt. Do not regress the sealed work.
+
+{_json_lines(accepted_findings, 4000)}
+"""
     composition = ""
     if node["type"] == "compose":
         composition = f"""
@@ -405,7 +417,7 @@ into this workspace or run any command that writes into it. Publish a
 ## Node goal
 
 {_truncate(node['goal'], 3000)}
-
+{findings_section}
 ## Repository and immutable base
 
 - Repository root: {_node_repository(initiative, node)['root']}
@@ -1041,8 +1053,19 @@ def dispatch(
                     "cumulative_changed_paths": seal["cumulative_changed_paths"],
                     "result": result_summary,
                 })
+            input_seal_ids = {
+                item["seal_id"] for item in attempt["base"].get("seal_inputs", [])
+            }
+            accepted_findings = [
+                {"review_id": review["review_id"], "seal_id": review["target"]["seal_id"], **finding}
+                for review in store.list_reviews_snapshot(initiative_id)
+                if review["state"] == "accepted-findings"
+                and review["target"]["seal_id"] in input_seal_ids
+                for finding in review.get("findings", [])
+            ] if input_seal_ids else []
             assignment = assignment_bytes(
                 initiative, plan, node, attempt, exact_base, resolved_seals,
+                accepted_findings=accepted_findings,
             )
             asha = _asha_executable()
             goal = _goal(initiative, node, assignment_path)

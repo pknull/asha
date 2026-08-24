@@ -420,6 +420,14 @@ or attempt UUID.
 
 ## Retry, repair, salvage, and continuation
 
+A repair attempt's assignment carries the accepted review findings bound to
+its exact upstream seal in an "Accepted review findings to fix" section — the
+findings are the goal of the attempt, so the correction reaches the worker
+through the assignment record, never through direct pane input. A running
+attempt can additionally receive a journaled `directive` (recorded before any
+relay; delivery stays pending by design).
+
+
 Autonomous retries consume the configured attempt budget and resolve the
 node's original approved base, never the failed attempt's inherited base.
 Salvage and repair lineages are not autonomously retried; a lineage failure
