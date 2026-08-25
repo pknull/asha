@@ -345,12 +345,20 @@ def _validate_journal_v1(value: Any, *, config: ControlConfig | None = None) -> 
     if not isinstance(removal["root_removed"], bool):
         raise JournalError("journal removal root_removed is invalid")
     if config is not None:
+        # The journal still RECORDS runtime_dir (closed keys stay closed), but
+        # the binding compares only the durable pair. XDG_RUNTIME_DIR flips
+        # between /run/user/$UID and /tmp/user-$UID by invocation context —
+        # a live audit found 42 of 67 journals unreadable for exactly that —
+        # and an ephemeral path was never a sound durable identity.
         expected_config = {
             "workspace_root": str(config.workspace_root),
             "tasks_dir": str(config.tasks_dir),
-            "runtime_dir": str(config.runtime_dir),
         }
-        if bound_config != expected_config:
+        durable_bound = {
+            key: value for key, value in bound_config.items()
+            if key in ("workspace_root", "tasks_dir")
+        }
+        if durable_bound != expected_config:
             raise JournalError("creation journal is not bound to the current Control config")
         destination = Path(workspace["path"])
         expected_destination = config.workspace_root / repository["repo_key"] / task["slug"]

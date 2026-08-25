@@ -203,6 +203,7 @@ PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_control_create_by_id \
   tests.python.test_control_colocated_sync \
   tests.python.test_control_doctor_ok \
+  tests.python.test_control_migrate \
   tests.python.test_control_finish_review_repairs \
   tests.python.test_control_goal_viewport_large_tree \
   tests.python.test_control_increment4 \

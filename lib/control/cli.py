@@ -1687,6 +1687,12 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             print("asha control core requires the `task` or `control` route", file=sys.stderr)
             return 2
         domain, tail = args[0], args[1:]
+        if domain == "migrate":
+            # Dispatched before any load_config: the migrator derives its own
+            # paths, so the legacy-layout gate cannot brick the tool that
+            # clears it.
+            from .migrate import main as migrate_main
+            return migrate_main(tail, values)
         if domain == "task":
             return _task_command(tail, values)
         if domain == "initiative":

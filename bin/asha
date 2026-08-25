@@ -439,7 +439,7 @@ fi
 
 # Asha Control owns these public nouns. Route them before harness selection so
 # neither can fall through and become a default-harness argument.
-if [[ "${1:-}" == "task" || "${1:-}" == "control" || "${1:-}" == "initiative" ]]; then
+if [[ "${1:-}" == "task" || "${1:-}" == "control" || "${1:-}" == "initiative" || "${1:-}" == "migrate" ]]; then
   control_route="$1"; shift
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/control.sh"

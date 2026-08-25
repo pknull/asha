@@ -2623,10 +2623,29 @@ class RealJjPreparationTests(unittest.TestCase):
         rollback_thread.join(20)
         self.assertEqual(prepare_error, [])
         self.assertEqual(len(rollback_error), 1)
-        self.assertIn("not bound to the current Control config", str(rollback_error[0]))
+        # Runtime-dir drift no longer breaks the journal binding: an ephemeral
+        # path was never a sound durable identity (XDG_RUNTIME_DIR flips by
+        # invocation context; a live audit found 42/67 journals unreadable for
+        # exactly that). The other-runtime rollback therefore proceeds like a
+        # same-config one and lands on the retained-recovery refusal.
+        self.assertIn("automatic recovery retained", str(rollback_error[0]))
         with self.assertRaisesRegex(PreparationError, "automatic recovery retained"):
             rollback_prelaunch(self.config, request.task_id)
         self.assertEqual(CreationJournalStore(self.config).read(request.task_id)["phase"], "preserved")
+        # The DURABLE pair still binds: a config whose workspace_root differs
+        # must refuse the journal outright.
+        foreign_file = self.root / "foreign-config.json"
+        foreign_file.write_text(json.dumps(
+            {"control": {"workspace_root": str(self.root / "foreign-workspaces")}}
+        ) + "\n")
+        foreign_file.chmod(0o600)
+        foreign_config = load_config({
+            "HOME": str(self.home), "ASHA_CONFIG": str(foreign_file),
+            "ASHA_HOME": str(self.root / "asha"),
+            "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+        })
+        with self.assertRaisesRegex(PreparationError, "not bound to the current Control config"):
+            rollback_prelaunch(foreign_config, request.task_id)
 
     def test_dirty_source_tracked_state_is_byte_and_revision_stable(self) -> None:
         (self.source / "tracked.txt").write_text("dirty source bytes\n", encoding="utf-8")
