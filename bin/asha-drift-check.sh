@@ -726,8 +726,8 @@ print(f\"{len(events)} {str(feats.get('hooks', False)).lower()} {len(trust)}\")
       printf '%s\n' "$manifest_out" | sed 's/^/  /'
     fi
     # ───── Cached identity check (regenerated on each `asha codex` launch) ─────
-    if [[ -f "$HOME/.cache/asha/instructions.md" ]]; then
-      pass "cached identity exists at ~/.cache/asha/instructions.md"
+    if [[ -f "${ASHA_HOME:-$HOME/.asha}/cache/instructions.md" ]]; then
+      pass "cached identity exists at ~/.asha/cache/instructions.md"
     else
       # Not actually a failure — wrapper regenerates on launch — but worth logging
       log_msg="cached identity not yet generated (run \`asha codex --version\` to seed it)"
@@ -1111,7 +1111,7 @@ else
   nope "repo identity file missing: identity/asha-identity-system-prompt.md"
 fi
 for f in soul.md voice.md keeper.md config.json; do
-  [[ -f "$HOME/.asha/$f" ]] || warn "$HOME_LABEL/.asha/$f absent (rerun installer to seed it)"
+  [[ -f "${ASHA_HOME:-$HOME/.asha}/$f" ]] || warn "$HOME_LABEL/.asha/$f absent (rerun installer to seed it)"
 done
 identity_probe="$(mktemp)"
 if "$ASHA/identity/identity-merge.sh" "$identity_probe" >/dev/null 2>&1; then

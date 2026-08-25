@@ -36,7 +36,7 @@ ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
 OUTPUT="${1:-}"
 [[ -n "$OUTPUT" ]] || { echo "usage: $0 <output-path>" >&2; exit 1; }
 
-ASHA_DIR="$HOME/.asha"
+ASHA_DIR="${ASHA_HOME:-$HOME/.asha}"
 OPERATION_FILE="$ASHA_DIR/operation.md"
 LEARNINGS_DIR="$ASHA_DIR/learnings"
 LEARNINGS_MANAGER="$ASHA_ROOT/plugins/session/tools/learnings_manager.py"

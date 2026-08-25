@@ -37,7 +37,7 @@ repo that never opted in. Also required: `gh` authenticated, and
 ### Step 1: Safety rails (preflight)
 
 ```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
 ARGS_JSON="$(bash "$ASHA_ROOT/plugins/code/tools/issue-loop-preflight.sh")"
 ```
 

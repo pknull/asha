@@ -22,7 +22,9 @@ class LearningLifecycleTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.bundle = Path(self.tmp.name) / "learnings"
-        self.patch = mock.patch.object(lm, "LEARNINGS_DIR", self.bundle)
+        # learnings_dir() resolves at call time (honoring ASHA_HOME), so the
+        # redirect patches the function rather than a frozen constant.
+        self.patch = mock.patch.object(lm, "learnings_dir", lambda: self.bundle)
         self.patch.start()
         self.projects = {}
         self.project = self.project_for("p1")

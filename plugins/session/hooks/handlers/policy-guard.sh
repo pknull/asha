@@ -52,7 +52,7 @@ FILE="$(printf '%s' "$INPUT" | jq -r '
 
 # Locate rule sources relative to this script (hooks run from the source tree).
 REPO_RULES="$SELF_DIR/../policies/rules.json"
-USER_RULES="$HOME/.asha/policies.json"
+USER_RULES="${ASHA_HOME:-$HOME/.asha}/policies.json"
 
 # Merge repo + user rules (user overrides by id). Missing user file is normal.
 RULES=""

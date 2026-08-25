@@ -11,7 +11,7 @@ Resolve the repository root from the harness payload/current Git worktree and
 run:
 
 ```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel)}"
 python3 "$ASHA_ROOT/plugins/session/tools/memory_v2.py" init --project-dir "$PROJECT_DIR"
 ```

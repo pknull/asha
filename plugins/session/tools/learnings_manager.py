@@ -26,7 +26,16 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from path_safety import secure_path, secure_project_root
 
 
-LEARNINGS_DIR = Path.home() / ".asha" / "learnings"
+def learnings_dir() -> Path:
+    """The learnings bundle root, honoring ASHA_HOME.
+
+    Resolved at call time, not import time: an import-time Path.home()
+    constant could not be redirected by any caller or test.
+    """
+    asha_home = os.environ.get("ASHA_HOME")
+    base = Path(asha_home) if asha_home else Path.home() / ".asha"
+    return base / "learnings"
+
 STATES = ("candidate", "active", "retired")
 ACTIVATION_SESSIONS = 3
 ACTIVATION_PROJECTS = 2
@@ -82,7 +91,7 @@ def _path(learning: Learning) -> Path:
 
 def _learning_root() -> Path:
     """Return a stable root, allowing an intentional top-level dotfiles link."""
-    root = LEARNINGS_DIR
+    root = learnings_dir()
     if not root.is_symlink():
         return root
     try:
@@ -205,8 +214,8 @@ def _parse(path: Path) -> Learning:
 def _global_lock(*, recover: bool = True):
     # Keep the coordination inode outside the legacy root OKF corpus. A
     # read-only render before reviewed migration must not alter that bundle.
-    LEARNINGS_DIR.parent.mkdir(parents=True, exist_ok=True)
-    lock_parent = LEARNINGS_DIR.parent.resolve(strict=True)
+    learnings_dir().parent.mkdir(parents=True, exist_ok=True)
+    lock_parent = learnings_dir().parent.resolve(strict=True)
     lock = lock_parent / ".asha-learnings-v2.lock"
     if lock.is_symlink():
         raise ValueError(f"symlinked learning lock rejected: {lock}")

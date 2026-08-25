@@ -102,13 +102,20 @@ _trigger_add() {
     fi
   done
   local escaped_intent="${intent//\"/\\\"}"
+  local asha_home_env=""
+  if [[ -n "${ASHA_HOME:-}" && "${ASHA_HOME}" != "$HOME/.asha" ]]; then
+    # A non-default root must reach the fired coordinator, which runs outside
+    # any shell that exported it.
+    asha_home_env="
+Environment=\"ASHA_HOME=${ASHA_HOME}\""
+  fi
   local service_body="[Unit]
 $ASHA_TRIGGER_MARKER
 Description=asha trigger $name: coordinator launch
 
 [Service]
 Type=oneshot
-Environment=\"PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\"
+Environment=\"PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\"${asha_home_env}
 ExecStart=$asha_root/bin/asha initiative coordinator launch --root \"$project_root\" --harness \"$harness\" --intent \"$escaped_intent\"
 "
   local timer_body="[Unit]

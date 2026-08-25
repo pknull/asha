@@ -58,7 +58,7 @@ jq -e . "$FLAG" >/dev/null 2>&1 || refuse ".asha/issue-loop.json is not valid JS
 ENABLED="$(jq -r '.enabled // false' "$FLAG")"
 [[ "$ENABLED" == "true" ]] || refuse ".asha/issue-loop.json has enabled=false — project opt-in is explicit"
 
-USER_CFG="$HOME/.asha/config.json"
+USER_CFG="${ASHA_HOME:-$HOME/.asha}/config.json"
 [[ -f "$USER_CFG" ]] || refuse "no ~/.asha/config.json — the user-side allowlist is required (add .issue_loop.repos)"
 
 IN_LIST=false

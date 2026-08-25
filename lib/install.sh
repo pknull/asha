@@ -296,7 +296,7 @@ _install_shim_link() {
 # a symlinked config.json (dotfiles) keeps its symlink and its other keys.
 _write_default_harness() {
   local h="$1"
-  local cfg="${ASHA_CONFIG:-$HOME/.asha/config.json}"
+  local cfg="${ASHA_CONFIG:-${ASHA_HOME:-$HOME/.asha}/config.json}"
 
   if [[ ${DRY_RUN:-0} -eq 1 ]]; then
     say "  CONFIG  default_harness=$h -> $cfg"
@@ -324,7 +324,7 @@ _write_default_harness() {
 # the repo without the `asha` wrapper's exported ASHA_ROOT (bare `claude`/`codex`/
 # `copilot`/`opencode` launches). Same write-through-symlink discipline as _write_default_harness.
 _write_asha_root() {
-  local cfg="${ASHA_CONFIG:-$HOME/.asha/config.json}"
+  local cfg="${ASHA_CONFIG:-${ASHA_HOME:-$HOME/.asha}/config.json}"
 
   if [[ ${DRY_RUN:-0} -eq 1 ]]; then
     say "  CONFIG  asha_root=$MARKET_ROOT -> $cfg"
@@ -373,9 +373,9 @@ _detect_legacy_asha() {
 # authority: root OKF concepts, the old archive, and the flat file must be
 # reviewed item by item through /session:consolidate.
 _detect_legacy_learnings() {
-  local flat="$HOME/.asha/learnings.md"
-  local bundle="$HOME/.asha/learnings"
-  local archive="$HOME/.asha/learnings-archive"
+  local flat="${ASHA_HOME:-$HOME/.asha}/learnings.md"
+  local bundle="${ASHA_HOME:-$HOME/.asha}/learnings"
+  local archive="${ASHA_HOME:-$HOME/.asha}/learnings-archive"
   local marker="$bundle/.migration-v2.json"
   # Reviewed migration is deliberately source-preserving. Once the migration
   # manager has committed its global marker, the remaining root/archive files
@@ -588,7 +588,7 @@ register_hooks() {
 # existing user files are never clobbered. Extended identity material belongs
 # under ~/.asha/reference/ and is loaded only through the asha-reference skill.
 bootstrap_identity() {
-  local asha_home="$HOME/.asha"
+  local asha_home="${ASHA_HOME:-$HOME/.asha}"
   local tmpl_dir="$PLUGINS_DIR/asha/templates"
 
   if [[ $DRY_RUN -eq 1 ]]; then

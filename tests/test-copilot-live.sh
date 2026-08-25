@@ -6,6 +6,9 @@
 # `asha copilot`; install/doctor tests cover generated local artifacts.
 set -euo pipefail
 
+# Sandbox hermeticity: an operator shell exporting these must not leak in.
+unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME 2>/dev/null || true
+
 if [[ "${ASHA_LIVE_COPILOT:-0}" != "1" ]]; then
   echo "SKIP: set ASHA_LIVE_COPILOT=1 to run the authenticated Copilot runtime canary"
   exit 0

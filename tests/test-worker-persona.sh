@@ -5,6 +5,9 @@
 # keeps the full persona.
 set -euo pipefail
 
+# Sandbox hermeticity: an operator shell exporting these must not leak in.
+unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME 2>/dev/null || true
+
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 DISPATCHER="$REPO_ROOT/bin/asha"
@@ -19,7 +22,7 @@ fail() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 HOME_DIR="$WORK/home"
 CAPTURE="$WORK/argv"
 ENVCAP="$WORK/env"
-mkdir -p "$HOME_DIR/.asha" "$HOME_DIR/bin" "$HOME_DIR/.cache/asha"
+mkdir -p "$HOME_DIR/.asha" "$HOME_DIR/bin" "$HOME_DIR/.asha/cache"
 printf 'SOUL\n' >"$HOME_DIR/.asha/soul.md"
 printf 'VOICE\n' >"$HOME_DIR/.asha/voice.md"
 printf 'KEEPER\n' >"$HOME_DIR/.asha/keeper.md"
@@ -111,19 +114,19 @@ fi
 run_harness copilot 0
 COPILOT_DIRS="$(env_value COPILOT_CUSTOM_INSTRUCTIONS_DIRS)"
 if [[ -s "$CAPTURE" ]] && [[ -z "$COPILOT_DIRS" || "$COPILOT_DIRS" == *copilot-instr-worker* ]] \
-   && [[ ! -f "$HOME_DIR/.cache/asha/copilot-instr-worker/.github/instructions/asha.instructions.md" ]]; then
+   && [[ ! -f "$HOME_DIR/.asha/cache/copilot-instr-worker/.github/instructions/asha.instructions.md" ]]; then
   ok "copilot ASHA_PERSONA=0 never writes the identity instructions file"
 else
   fail "copilot ASHA_PERSONA=0 never writes the identity instructions file (dirs=$COPILOT_DIRS)"
 fi
-if [[ -f "$HOME_DIR/.cache/asha/copilot-instr-worker/.github/instructions/asha-operational.instructions.md" ]]; then
+if [[ -f "$HOME_DIR/.asha/cache/copilot-instr-worker/.github/instructions/asha-operational.instructions.md" ]]; then
   ok "copilot ASHA_PERSONA=0 carries the operational layer"
 else
   fail "copilot ASHA_PERSONA=0 carries the operational layer"
 fi
 run_harness copilot ""
 if [[ "$(env_value COPILOT_CUSTOM_INSTRUCTIONS_DIRS)" == *copilot-instr* ]] \
-   && [[ -f "$HOME_DIR/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md" ]]; then
+   && [[ -f "$HOME_DIR/.asha/cache/copilot-instr/.github/instructions/asha.instructions.md" ]]; then
   ok "copilot default writes the identity instructions file"
 else
   fail "copilot default writes the identity instructions file (stderr: $(cat "$WORK/stderr"))"
