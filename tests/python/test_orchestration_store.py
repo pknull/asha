@@ -76,12 +76,11 @@ class OrchestrationStoreTests(unittest.TestCase):
         env = {
             "HOME": str(self.root / "home"),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.env = env
-        for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
             Path(env[key]).mkdir(mode=0o700)
         self.config = load_config(env)
         self.store = InitiativeStore(self.config)

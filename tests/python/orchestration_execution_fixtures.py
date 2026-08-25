@@ -31,11 +31,10 @@ class ExecutionFixture:
         self.env = {
             "HOME": str(self.root / "home"),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
-        for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
             Path(self.env[key]).mkdir(mode=0o700)
         self.repo = self.root / "repo"
         (self.repo / ".asha").mkdir(parents=True)

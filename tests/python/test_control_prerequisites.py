@@ -78,8 +78,7 @@ class PrerequisiteRepository:
         home.mkdir()
         self.env = {
             "HOME": str(home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)

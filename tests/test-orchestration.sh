@@ -39,11 +39,13 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 chmod 0755 "$WORK"
 export HOME="$WORK/home"
-export XDG_STATE_HOME="$WORK/state"
-export XDG_DATA_HOME="$WORK/data"
+export ASHA_HOME="$WORK/asha-home"
 export XDG_RUNTIME_DIR="$WORK/runtime"
 export ASHA_CONFIG="$WORK/config.json"
-mkdir -m 0700 "$HOME" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_RUNTIME_DIR"
+# Retired from the toolkit; unset so an operator shell cannot leak real
+# legacy-state detection into the fixtures.
+unset XDG_STATE_HOME XDG_DATA_HOME
+mkdir -m 0700 "$HOME" "$ASHA_HOME" "$XDG_RUNTIME_DIR"
 printf '%s\n' '{}' >"$ASHA_CONFIG"
 chmod 0600 "$ASHA_CONFIG"
 

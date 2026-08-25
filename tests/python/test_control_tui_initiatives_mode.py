@@ -594,10 +594,10 @@ class UnifiedTreeTests(unittest.TestCase):
         base = _Path(tempfile.mkdtemp()).resolve()
         env = {
             "HOME": str(base / "home"), "ASHA_CONFIG": str(base / "missing.json"),
-            "XDG_STATE_HOME": str(base / "state"), "XDG_DATA_HOME": str(base / "data"),
+            "ASHA_HOME": str(base / "asha"),
             "XDG_RUNTIME_DIR": str(base / "runtime"),
         }
-        for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
             _Path(env[key]).mkdir(mode=0o700)
         with mock.patch("lib.control.tui._load_initiative_views", return_value=[_view("waiting", "awaiting-plan-approval")]), \
              mock.patch("lib.control.cli._load_rows_for_attention", return_value=(stuck,)):

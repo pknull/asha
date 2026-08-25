@@ -150,8 +150,7 @@ class DefaultBaseResolutionTests(unittest.TestCase):
         home.mkdir()
         env = {
             "HOME": str(home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         config = load_config(env)
@@ -511,8 +510,7 @@ class TuiStartCancellationTests(unittest.TestCase):
         self.env = {
             "HOME": str(home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)
@@ -1609,8 +1607,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
         self.config = load_config({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         })
         self.write_memory()
@@ -2229,8 +2226,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
                 "--detach", "--json",
             ], env={
                 "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-                "XDG_STATE_HOME": str(self.root / "state"),
-                "XDG_DATA_HOME": str(self.root / "data"),
+                "ASHA_HOME": str(self.root / "asha"),
                 "XDG_RUNTIME_DIR": str(self.root / "runtime"),
             })
         self.assertEqual(status, 2)
@@ -2264,8 +2260,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
                 "--goal", "Wrong remote", "--detach", "--json",
             ], env={
                 "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-                "XDG_STATE_HOME": str(self.root / "state"),
-                "XDG_DATA_HOME": str(self.root / "data"),
+                "ASHA_HOME": str(self.root / "asha"),
                 "XDG_RUNTIME_DIR": str(self.root / "runtime"),
             })
         self.assertEqual(status, 2)
@@ -2502,8 +2497,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
             ], env={
                 "HOME": str(self.home),
                 "ASHA_CONFIG": str(self.root / "missing.json"),
-                "XDG_STATE_HOME": str(self.root / "state"),
-                "XDG_DATA_HOME": str(self.root / "data"),
+                "ASHA_HOME": str(self.root / "asha"),
                 "XDG_RUNTIME_DIR": str(self.root / "runtime"),
             })
         self.assertEqual(status, 2)
@@ -2525,8 +2519,7 @@ class ColocationIntentTests(unittest.TestCase):
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)
@@ -3191,8 +3184,7 @@ class CliColocationTests(unittest.TestCase):
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)
@@ -3921,8 +3913,7 @@ class RecoveryAdoptionCliTests(unittest.TestCase):
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)
@@ -4010,8 +4001,7 @@ class DoctorColocationIntentTests(unittest.TestCase):
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)

@@ -438,8 +438,7 @@ class PreflightDegradeTests(unittest.TestCase):
             env = {
                 "HOME": str(home),
                 "ASHA_CONFIG": str(root / "missing.json"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             }
             curses = self.FakeCurses()
@@ -477,8 +476,7 @@ class PreflightDegradeTests(unittest.TestCase):
             home.mkdir(mode=0o700)
             env = {
                 "HOME": str(home), "ASHA_CONFIG": str(root / "missing.json"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             }
             config = load_config(env)

@@ -362,6 +362,7 @@ def launch_task(
             run_id = new_uuid()
             environment = harness_api.controller_env(
                 task_id=task_id, run_id=run_id, state_dir=config.tasks_dir,
+                asha_home=config.asha_home,
             )
             _inject(failure_injector, "validated")
 

@@ -23,9 +23,9 @@ class OrchestrationDoctorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
-                   "XDG_STATE_HOME": str(root / "state"), "XDG_DATA_HOME": str(root / "data"),
+                   "ASHA_HOME": str(root / "asha"),
                    "XDG_RUNTIME_DIR": str(root / "runtime")}
-            for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
                 Path(env[key]).mkdir(mode=0o700)
             config = load_config(env)
             with mock.patch("lib.control.orchestration.doctor.run_control_doctor", return_value={"ok": True}):
@@ -41,9 +41,9 @@ class OrchestrationDoctorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
-                   "XDG_STATE_HOME": str(root / "state"), "XDG_DATA_HOME": str(root / "data"),
+                   "ASHA_HOME": str(root / "asha"),
                    "XDG_RUNTIME_DIR": str(root / "runtime")}
-            for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
                 Path(env[key]).mkdir(mode=0o700)
             config = load_config(env)
             config.initiatives_dir.mkdir(parents=True, mode=0o700)
@@ -67,9 +67,9 @@ class OrchestrationDoctorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
-                   "XDG_STATE_HOME": str(root / "state"), "XDG_DATA_HOME": str(root / "data"),
+                   "ASHA_HOME": str(root / "asha"),
                    "XDG_RUNTIME_DIR": str(root / "runtime")}
-            for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
                 Path(env[key]).mkdir(mode=0o700)
             config = load_config(env)
             config.initiatives_dir.mkdir(parents=True, mode=0o700)
@@ -86,9 +86,9 @@ class OrchestrationDoctorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
-                   "XDG_STATE_HOME": str(root / "state"), "XDG_DATA_HOME": str(root / "data"),
+                   "ASHA_HOME": str(root / "asha"),
                    "XDG_RUNTIME_DIR": str(root / "runtime")}
-            for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
                 Path(env[key]).mkdir(mode=0o700)
             config = load_config(env)
             config.initiatives_dir.mkdir(parents=True, mode=0o700)

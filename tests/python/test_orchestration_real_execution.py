@@ -57,8 +57,7 @@ class RealOrchestrationExecutionTests(unittest.TestCase):
         self.env = {
             **os.environ,
             "HOME": str(self.root / "home"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
             "TMUX_TMPDIR": str(self.root / "tmux"),
             "ASHA_CONFIG": str(self.root / "config.json"),
@@ -66,10 +65,7 @@ class RealOrchestrationExecutionTests(unittest.TestCase):
             "PYTHONPATH": str(self.project_root),
             "ASHA_ROOT": str(self.stub_asha_root),
         }
-        for key in (
-            "HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR",
-            "TMUX_TMPDIR",
-        ):
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR", "TMUX_TMPDIR"):
             Path(self.env[key]).mkdir(mode=0o700)
         self.session_prefix = f"o2b-{os.getpid()}-"
         Path(self.env["ASHA_CONFIG"]).write_text(json.dumps({
@@ -269,8 +265,7 @@ RESULTPY
             "#!/usr/bin/env bash\n"
             "set -euo pipefail\n"
             f"export HOME={self.env['HOME']}\n"
-            f"export XDG_STATE_HOME={self.env['XDG_STATE_HOME']}\n"
-            f"export XDG_DATA_HOME={self.env['XDG_DATA_HOME']}\n"
+            f"export ASHA_HOME={self.env['ASHA_HOME']}\n"
             f"export XDG_RUNTIME_DIR={self.env['XDG_RUNTIME_DIR']}\n"
             f"export ASHA_CONFIG={self.env['ASHA_CONFIG']}\n"
             f"export PYTHONPATH={self.project_root}\n"

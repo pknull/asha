@@ -53,6 +53,7 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
 class ControlConfig:
     config_path: Path
     home: Path
+    asha_home: Path
     tasks_dir: Path
     workspace_root: Path
     runtime_dir: Path
@@ -418,7 +419,69 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
+LEGACY_BANNER_NAME = "ASHA-MOVED.md"
+LEGACY_REMEDIATION = "run 'asha migrate' to relocate it; nothing was created"
+
+
+def legacy_roots(values: Mapping[str, str], home: Path) -> dict[str, Path]:
+    """Where a pre-consolidation install kept its trees.
+
+    Detection still honors the old XDG variables: a user who ran with
+    XDG_STATE_HOME set has their legacy data there, and the whole point of
+    this enumeration is to find what actually exists. It is shared by the
+    load_config gate, the doctor probe, drift-check, and `asha migrate`, so
+    no two of them can disagree about what "legacy" means.
+    """
+    state_home = Path(values.get("XDG_STATE_HOME") or (home / ".local/state"))
+    data_home = Path(values.get("XDG_DATA_HOME") or (home / ".local/share"))
+    return {
+        "state": state_home / "asha",
+        "control": state_home / "asha" / "control",
+        "workspaces": data_home / "asha" / "workspaces",
+        "cache": home / ".cache" / "asha",
+    }
+
+
+def legacy_populated(path: Path) -> bool:
+    """True when a legacy directory holds anything besides the moved banner.
+
+    `asha migrate` recreates each old root containing exactly one
+    ASHA-MOVED.md, so a banner-only directory is evidence of a completed
+    migration, never a reason to refuse.
+    """
+    try:
+        entries = [item.name for item in path.iterdir()]
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    except OSError:
+        return True  # unreadable legacy data is still legacy data: fail closed
+    return any(name != LEGACY_BANNER_NAME for name in entries)
+
+
+def _refuse_legacy_layout(
+    values: Mapping[str, str], home: Path, asha_home: Path, workspace_root: Path,
+) -> None:
+    """Refuse to run past un-migrated data rather than silently re-home onto
+    an empty tree — the CHANGELOG's own post-mortem class of failure."""
+    legacy = legacy_roots(values, home)
+    if legacy_populated(legacy["control"]) and not (asha_home / "state/control").exists():
+        raise ConfigError(
+            f"legacy Asha state detected at {legacy['control']}; the root moved to "
+            f"{asha_home}/state/control — {LEGACY_REMEDIATION}"
+        )
+    default_workspaces = asha_home / "workspaces"
+    if (workspace_root == default_workspaces
+            and legacy_populated(legacy["workspaces"])
+            and not default_workspaces.exists()):
+        raise ConfigError(
+            f"legacy Asha workspaces detected at {legacy['workspaces']}; the root "
+            f"moved to {default_workspaces} — {LEGACY_REMEDIATION}"
+        )
+
+
+def load_config(
+    env: Mapping[str, str] | None = None, *, check_legacy: bool = True,
+) -> ControlConfig:
     """Parse Control configuration using only the supplied environment."""
     values = os.environ if env is None else env
     raw_home = values.get("HOME", "")
@@ -428,8 +491,28 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
     reject_symlink_components(home, "HOME")
     require_existing_directory_components(home, "HOME")
 
+    # The root check here is canonical form plus ancestor writability. A
+    # symlinked ASHA_HOME needs no extra rejection: the config file's own
+    # parent guard in _open_config_file refuses it (as it always refused a
+    # symlinked ~/.asha), and the state store's traversal validators plus the
+    # orchestration doctor's symlink-free root probe govern the machine-state
+    # subtree. The supported dotfiles pattern is a REAL .asha directory whose
+    # leaf files are symlinks.
+    asha_home = _absolute(
+        values.get("ASHA_HOME") or str(home / ".asha"),
+        "ASHA_HOME",
+        home=home,
+    )
+    if asha_home == Path("/"):
+        raise ConfigError("ASHA_HOME must not be filesystem root")
+    if asha_home == home:
+        raise ConfigError("ASHA_HOME must not be HOME itself")
+    # The ancestor-safety walk runs AFTER the config file is read, preserving
+    # the long-standing error precedence: a malformed config file reports as
+    # such even when a fixture home would also fail the namespace rule.
+
     config_path = _absolute(
-        values.get("ASHA_CONFIG") or str(home / ".asha/config.json"),
+        values.get("ASHA_CONFIG") or str(asha_home / "config.json"),
         "ASHA_CONFIG",
         home=home,
     )
@@ -445,16 +528,8 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
     if unknown_control:
         raise ConfigError(f"control has {len(unknown_control)} unsupported field(s)")
 
-    state_home = _absolute(
-        values.get("XDG_STATE_HOME") or str(home / ".local/state"),
-        "XDG_STATE_HOME",
-        home=home,
-    )
-    data_home = _absolute(
-        values.get("XDG_DATA_HOME") or str(home / ".local/share"),
-        "XDG_DATA_HOME",
-        home=home,
-    )
+    reject_unsafe_writable_ancestors(asha_home, "ASHA_HOME")
+
     runtime_default = f"/tmp/user-{os.getuid()}"
     using_runtime_fallback = not values.get("XDG_RUNTIME_DIR")
     runtime_home = _absolute(
@@ -463,8 +538,6 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
         home=home,
     )
     for name, path in (
-        ("XDG_STATE_HOME", state_home),
-        ("XDG_DATA_HOME", data_home),
         ("XDG_RUNTIME_DIR", runtime_home),
     ):
         try:
@@ -481,7 +554,7 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
                 ) from exc
             raise
 
-    raw_workspace = control.get("workspace_root", str(data_home / "asha/workspaces"))
+    raw_workspace = control.get("workspace_root", str(asha_home / "workspaces"))
     if not isinstance(raw_workspace, str) or not raw_workspace:
         raise ConfigError("control.workspace_root must be a non-empty string")
     workspace_root = validate_workspace_root(
@@ -533,10 +606,19 @@ def load_config(env: Mapping[str, str] | None = None) -> ControlConfig:
             "control.workspace_trust must be one of " + ", ".join(TRUST_MODES)
         )
 
+    # The gate protects the DEFAULT upgrade path. An explicit ASHA_HOME is a
+    # deliberate redirection — tests, sandboxes, expert layouts — and refusing
+    # it because the machine's default location still holds un-migrated data
+    # would break every hermetic use while protecting nothing that session
+    # touches.
+    if check_legacy and not values.get("ASHA_HOME"):
+        _refuse_legacy_layout(values, home, asha_home, workspace_root)
+
     return ControlConfig(
         config_path=config_path,
         home=home,
-        tasks_dir=state_home / "asha/control/tasks",
+        asha_home=asha_home,
+        tasks_dir=asha_home / "state/control/tasks",
         workspace_root=workspace_root,
         runtime_dir=runtime_home / "asha-control",
         default_harness=default_harness,

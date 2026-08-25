@@ -26,10 +26,10 @@ class ProjectIndexTests(unittest.TestCase):
         self.root.mkdir()
         self.env = {
             "HOME": str(base / "home"), "ASHA_CONFIG": str(base / "missing.json"),
-            "XDG_STATE_HOME": str(base / "state"), "XDG_DATA_HOME": str(base / "data"),
+            "ASHA_HOME": str(base / "asha"),
             "XDG_RUNTIME_DIR": str(base / "runtime"),
         }
-        for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
             Path(self.env[key]).mkdir(mode=0o700)
         write_member(self.root / "termart", "termart-project")
         write_member(self.root / "asha", "asha-project")
