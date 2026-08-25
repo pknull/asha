@@ -143,9 +143,9 @@ single-file instruction seam, and injects the result through a CLI override:
 
 ```bash
 # bin/asha (codex branch)
-identity-merge.sh ~/.cache/asha/instructions.md
+identity-merge.sh ~/.asha/cache/instructions.md
 operational-merge.sh <temporary-file>
-# combined output: ~/.cache/asha/instructions-codex.md
+# combined output: ~/.asha/cache/instructions-codex.md
 exec codex -c "model_instructions_file=\"<combined-or-identity-file>\"" "$@"
 ```
 
@@ -176,10 +176,10 @@ Claude's `--append-system-prompt-file` and Codex's `model_instructions_file`):
 
 ```bash
 # bin/asha (copilot branch)
-identity-merge.sh ~/.cache/asha/instructions-copilot.md   # assertion + soul/voice/keeper
-#  → wrapped as ~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md   (applyTo:"**")
+identity-merge.sh ~/.asha/cache/instructions-copilot.md   # assertion + soul/voice/keeper
+#  → wrapped as ~/.asha/cache/copilot-instr/.github/instructions/asha.instructions.md   (applyTo:"**")
 operational-merge.sh → asha-operational.instructions.md   # operation.md + active learnings (same dir)
-export COPILOT_CUSTOM_INSTRUCTIONS_DIRS=~/.cache/asha/copilot-instr   # Copilot auto-loads both files
+export COPILOT_CUSTOM_INSTRUCTIONS_DIRS=~/.asha/cache/copilot-instr   # Copilot auto-loads both files
 exec copilot "$@"
 ```
 
@@ -198,7 +198,7 @@ and missed the user-level instructions dir (no repo files are touched).
 | PreToolUse guardrails | **Installed** | `copilot_install_hooks()` writes a dedicated `~/.copilot/hooks/asha-guardrails.json` (Copilot loads every `*.json` there, so a user's own `hooks.json` is untouched) pointing at `plugins/session/hooks/handlers/copilot-policy-adapter.sh`, which bridges Copilot's hook contract to the shared `policy-guard.sh` + `block-secrets.sh`. Recovery uses separate prompt/PostToolUse/SessionEnd callbacks; no Stop auto-save exists. **Enforcement verdict + live-test findings + the #2893 caveat: [docs/harness-enforcement.md](docs/harness-enforcement.md).** |
 | Hook payload normalization | **Installed** | Native camelCase session/tool payloads are normalized at the recovery and policy seams, including string/object `toolArgs`, touched paths, results, and error fields. |
 | MCP config | Not managed | `~/.copilot/mcp-config.json` is read directly by Copilot; not touched by this installer (matches Claude/Codex which also don't manage MCP) |
-| Persona auto-injection | **Automatic — per-launch** | `asha copilot` regenerates the capped hot identity, wraps it as `~/.cache/asha/copilot-instr/.github/instructions/asha.instructions.md` (`applyTo: "**"`), writes the operational layer as a separate instruction file, and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Plain `copilot` stays persona-free. Status/verification: [docs/harness-enforcement.md](docs/harness-enforcement.md). |
+| Persona auto-injection | **Automatic — per-launch** | `asha copilot` regenerates the capped hot identity, wraps it as `~/.asha/cache/copilot-instr/.github/instructions/asha.instructions.md` (`applyTo: "**"`), writes the operational layer as a separate instruction file, and exports `COPILOT_CUSTOM_INSTRUCTIONS_DIRS`. Plain `copilot` stays persona-free. Status/verification: [docs/harness-enforcement.md](docs/harness-enforcement.md). |
 | `drift-check` | **Copilot-aware** | `asha doctor [copilot]` (front door for `bin/asha-drift-check.sh`) audits symlinks, command-skill freshness, and guardrails content; `--fix` self-heals. |
 | Team distribution | **Additive path** | `asha build copilot` packages namespaces as native Copilot plugins (marketplace + `enabledPlugins` pinning); see [docs/distribution-copilot.md](docs/distribution-copilot.md). Repo onboarding: `asha init-repo`. |
 

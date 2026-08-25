@@ -264,7 +264,7 @@ content limits; no per-blob Git subprocess is used.
 ## Not contracts
 
 tmux user options (`@asha_*`), session/window/pane names, workspace directory
-layout under `${XDG_DATA_HOME}/asha/workspaces/`, and the human TUI are
+layout under `${ASHA_HOME:-~/.asha}/workspaces/`, and the human TUI are
 presentation and ownership aids. Orchestration must read task state through
 the payloads above, never through tmux or the filesystem.
 

@@ -362,6 +362,7 @@ rules. They are not interchangeable:
 | Store | Scope | Default location | Commit policy | Typical content |
 |---|---|---|---|---|
 | **Global identity and learnings** | User, all projects | `~/.asha/` | Separate user-managed store | Identity, operation rules, preferences, candidate/active/retired learnings |
+| **Machine state** | This machine | `~/.asha/state/`, `~/.asha/workspaces/`, `~/.asha/cache/` | Never commit; machine-managed | Control/orchestration records, worker jj workspaces, rendered persona cache — everything under one `ASHA_HOME` root since the single-root migration |
 | **Repository operational memory** | One repository | `<repo>/Memory/` | Explicit save commit | Four-section handoff and current binding decisions |
 | **Workspace operational memory** | A group of repositories | `<workspace>/Memory/` | Explicit workspace-scope save | Cross-repository handoff and binding decisions |
 | **Private workspace memory** | User-local workspace material | `<workspace>/memory-local/` | Never commit | Private notes, work-item state, material not ready for shared review |
