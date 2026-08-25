@@ -46,7 +46,7 @@ asha initiative reconcile ID [--json]
 asha initiative storage ID [--json]
 asha initiative snapshot ID --json
 asha initiative doctor [--json]
-asha initiative projects [--root DIR] [--depth N] [--match TEXT] [--json]
+asha initiative projects [--root DIR]... [--depth N] [--match TEXT] [--json]
 asha task report --file PATH [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
@@ -172,6 +172,48 @@ signed.
 Combined with time triggers, this is the bounded autonomous loop: a timer
 proposes, a standing authority approves and activates, gates and breakers
 still bind execution, and integration still waits for the operator.
+
+## Project roots and friendly names
+
+`asha initiative projects` indexes one or more roots. Which roots it uses is
+resolved explicit-first, per-invocation before persistent:
+
+```text
+--root DIR (repeatable)  ->  ASHA_PROJECTS_ROOT  ->  ~/.asha/config.json
+                                                     project_roots  ->  cwd
+```
+
+`~/.asha/config.json` is the user's cross-project configuration — the same file
+`bin/asha` already reads `default_harness` from on every bare launch — so the
+directories someone keeps work in belong there:
+
+```json
+{"project_roots": ["~/Code", "~/Projects", "~/Obsidian"]}
+```
+
+At most eight roots are read, and each is discovered under its own
+512-directory bound, so that bound is per root rather than global. A root that
+cannot be indexed is reported in `skipped` instead of failing the listing: one
+missing directory must not hide the projects in the others. A project reachable
+from two roots is listed once.
+
+A project may state a friendly name in its own `.asha/config.json`:
+
+```json
+{"initialized": true, "memory_version": 2, "project_id": "...", "name": "Ashes and Starlight"}
+```
+
+The index shows that name and keeps the directory in `directory`, so an
+operator reads words they chose while the path stays available. The name is
+bounded at 48 characters, whitespace-collapsed, and must be printable;
+anything else falls back to the directory name rather than reaching a terminal
+row. `--match` remains exact and case-insensitive against the friendly name,
+the directory, or the project id — the index resolves an intent to exactly one
+repository, so substring matching would resolve ambiguously.
+
+Plain output groups by root and leads with the jj-colocated projects, because
+only those can run an initiative and an operator should not pick one and then
+be refused.
 
 ## Action document and journal
 
@@ -674,7 +716,7 @@ remain available where their ordinary lifecycle rules permit containment.
 | `storage` | `asha.orchestration-storage-report.v1` `{contract, initiative_id, inventory, workspaces, materializations, totals, thresholds, pause_recommended}`; `workspaces[]` and `materializations[]` entries carry `repository_id` (additive label under v1, following the `coordinator_reconciliation`/`coordinator` precedent) |
 | `snapshot` | `asha.orchestration-snapshot.v1` `{contract, initiative, active_plan, nodes, superseded_nodes, attempts, links, actions, coordinator, last_event_sequence, state_revision}` |
 | `doctor` | `asha.orchestration-doctor.v1` `{contract, ok, probes, limitations}` |
-| `projects` | `asha.orchestration-project-list.v1` `{contract, root, source, match, projects: [{name, root, project_id, role, declared, asha_project, jj_colocated}]}` — `source` is `manifest` (declared workspace at or above `--root`) or `discovery` (jj-colocated Asha projects at and below `--root`, depth 1-3, 512-directory bound); read-only |
+| `projects` | `asha.orchestration-project-list.v1` `{contract, root, roots_from, source, match, groups, projects, skipped}`; each project is `{name, directory, root, project_id, role, declared, asha_project, jj_colocated}` — `source` is `manifest` (declared workspace at or above the root) or `discovery` (jj-colocated Asha projects at and below it, depth 1-3, 512-directory bound per root). `directory` is an additive label under v1, following the `repository_id` precedent, because `name` may be the project's own. `root` is null when several roots were indexed; `groups` keeps each root's projects, `projects` is their flat union, and `skipped` names roots that could not be indexed. Read-only |
 | `coordinator claim` | `asha.orchestration-coordinator-claim.v1` `{contract, initiative_id, coordinator, environment}` |
 | `coordinator release` | `asha.orchestration-coordinator-release.v1` `{contract, initiative_id, coordinator}` |
 | `coordinator launch` | `asha.orchestration-coordinator-launch.v1` `{contract, session, pane_id, root, harness, intent, launched_at}` |

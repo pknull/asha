@@ -771,6 +771,49 @@ def _authority_command(
     return 0
 
 
+def _print_project_index(payload: dict[str, Any]) -> None:
+    """Grouped by root, orchestration-ready first.
+
+    Only a jj-colocated project can run an initiative, so the distinction leads
+    rather than hiding in a flag column: an operator should not pick a project
+    and then be refused.
+    """
+    width = max(
+        [len(entry["name"]) for entry in payload["projects"]] + [12]
+    ) + 2
+    ready_total = 0
+    for group in payload["groups"]:
+        projects = group["projects"]
+        ready = [entry for entry in projects if entry["jj_colocated"]]
+        ready_total += len(ready)
+        print(f"{_home_relative(group['root'])}   {_count(len(projects), 'project')}"
+              f", {len(ready)} orchestration-ready")
+        order = sorted(projects, key=lambda item: (not item["jj_colocated"], item["name"].lower()))
+        for entry in order:
+            mark = "*" if entry["jj_colocated"] else "-"
+            note = "" if entry["jj_colocated"] else "  (no jj - cannot run an initiative)"
+            renamed = ""
+            if entry.get("directory") and entry["directory"] != entry["name"]:
+                renamed = f"  [{entry['directory']}]"
+            print(f"   {mark} {entry['name']:<{width}}{renamed}{note}")
+        print()
+    for item in payload.get("skipped", []):
+        print(f"skipped {_home_relative(item['root'])}: {item['reason']}")
+    total = len(payload["projects"])
+    roots = _count(len(payload["groups"]), "root")
+    print(f"{_count(total, 'project')} across {roots} - {ready_total} orchestration-ready"
+          f"  (roots from {payload.get('roots_from', 'argument')})")
+
+
+def _count(number: int, noun: str) -> str:
+    return f"{number} {noun}" if number == 1 else f"{number} {noun}s"
+
+
+def _home_relative(path: str) -> str:
+    home = str(Path.home())
+    return f"~{path[len(home):]}" if path.startswith(home) else path
+
+
 def _attention_payload(env: Mapping[str, str]) -> dict[str, Any]:
     """Everything waiting on a human, from the same assembler the tree uses."""
     from ..cli import _load_rows_for_attention
@@ -1472,26 +1515,23 @@ def _initiative_command(
                 print(f"{'':<18} -> {item['resolution'][:90]}")
         return 0
     if command == "projects":
-        options = _parse_options(tail, flags={"json"})
+        options = _parse_options(tail, repeat={"root"}, flags={"json"})
         _only(options, {"root", "depth", "match", "json"}, "projects")
-        from .projects import list_projects
+        from .projects import list_projects_across, resolve_roots
 
         depth_option = options.get("depth")
         try:
             depth = 1 if depth_option is None else int(depth_option)
         except ValueError as exc:
             raise ValueError("projects --depth must be an integer") from exc
-        payload = list_projects(
-            Path(options["root"]) if options.get("root") else Path.cwd(),
-            depth=depth, match=options.get("match"),
+        roots, roots_from = resolve_roots(list(options.get("root") or []), env=env)
+        payload = list_projects_across(
+            roots, depth=depth, match=options.get("match"), source_of_roots=roots_from,
         )
         if options["json"]:
             _json(payload)
         else:
-            print(f"Index: {payload['source']} at {payload['root']}")
-            for entry in payload["projects"]:
-                flags = ("declared " if entry["declared"] else "") + ("jj" if entry["jj_colocated"] else "no-jj")
-                print(f"{entry['name']:<24} {entry['root']}  [{flags}]")
+            _print_project_index(payload)
         return 0
     if command == "doctor":
         options = _parse_options(tail, flags={"json"})
