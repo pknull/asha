@@ -12,6 +12,36 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### One asha root (`ASHA_HOME`), with a one-shot migration
+
+- Every durable location now derives from a single root — default `~/.asha`,
+  overridden only by `ASHA_HOME` — holding `config.json`, `state/control/`
+  (tasks, initiatives, authorities, transactions, repository-inits, prunes,
+  trust.jsonl), `workspaces/`, and `cache/` (the rendered persona files,
+  formerly `~/.cache/asha`). `XDG_STATE_HOME`/`XDG_DATA_HOME` are no longer
+  consumed; the ephemeral runtime dir stays under `XDG_RUNTIME_DIR`.
+  `bin/asha` exports `ASHA_HOME` once so hooks, harnesses and worker panes
+  agree; nineteen independent `~/.asha` spellings across shell and Python now
+  honor it, including the learnings store (import-time constant became a
+  call-time function) and the proton-mail replay ledger.
+- **Behavior changes:** a group-writable `~/.asha` (umask-002 dotfiles
+  setups) now refuses every command, with `chmod g-w,o-w ~/.asha` named in
+  the refusal — the state tree lives beneath it. Creation journals stop
+  binding `runtime_dir` (an ephemeral path was never a sound durable
+  identity; a live audit found 42/67 journals unreadable from
+  `XDG_RUNTIME_DIR` flapping between `/run/user` and `/tmp/user`).
+- `asha migrate` performs the fail-closed, one-shot relocation: read-only
+  preflight (live sessions, non-archived work, cross-device, symlinks, a
+  foreign new root all refuse), one atomic rename verified by a per-file
+  sha256 manifest, husk retirement into `retired-<date>/` with a
+  review-digested manifest (never rewritten — their digests are frozen into
+  archived initiative evidence), regenerable materializations forgotten
+  by name through their source repos and deleted, supersession banners at
+  both legacy roots, a marker for idempotence, and a phase journal for
+  resume. Until it runs, commands refuse under default resolution with the
+  command named; an explicit `ASHA_HOME` bypasses. The doctor gains a
+  `migration` probe, including a resurrected-decoy mismatch.
+
 #### Project roots and friendly names
 
 - `asha initiative projects` indexes several roots. `--root` repeats, and with

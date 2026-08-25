@@ -675,7 +675,7 @@ bundle.
 The registry root is:
 
 ```text
-${XDG_STATE_HOME:-~/.local/state}/asha/control/initiatives/<initiative-uuid>/
+${ASHA_HOME:-~/.asha}/state/control/initiatives/<initiative-uuid>/
 ```
 
 `initiative.json` is the mutable optimistic-concurrency snapshot. Plans,

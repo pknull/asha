@@ -475,7 +475,7 @@ Granting is reported, never silent: as a `workspace-trust` source mutation in
 the task-start payload, on the initiative's `attempt-started` event and the
 completed dispatch outcome (so the coordinator sees it), and as a line in the
 durable `asha.control-workspace-trust.v1` ledger at
-`${XDG_STATE_HOME}/asha/control/trust.jsonl`. `asha task trust [PATH]` reports
+`${ASHA_HOME:-~/.asha}/state/control/trust.jsonl`. `asha task trust [PATH]` reports
 the current state per harness, and `asha task trust PATH --grant` performs an
 explicit grant. Set `control.workspace_trust` to `"never"` to disable
 inheritance entirely (the default is `"inherit"`).
@@ -779,28 +779,76 @@ paths publish it once. One sampled reconciliation time is shared by evidence
 aging and summary aging for the pass. A late hook write rechecks the durable
 run state before it may survive.
 
-## State and XDG locations
+## State locations: one asha root
 
-Defaults follow XDG paths:
+Everything durable lives under a single root — `$ASHA_HOME`, default
+`~/.asha` — with only the ephemeral runtime dir outside it:
 
 ```text
-${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.json
-${XDG_STATE_HOME:-~/.local/state}/asha/control/tasks/<task-id>.lock
-${XDG_STATE_HOME:-~/.local/state}/asha/control/repository-inits/<root-sha256>.json
-${XDG_STATE_HOME:-~/.local/state}/asha/control/prunes/<task-id>.json
-${XDG_DATA_HOME:-~/.local/share}/asha/workspaces/<repo-key>/<task-slug>/
+${ASHA_HOME:-~/.asha}/config.json
+${ASHA_HOME:-~/.asha}/state/control/tasks/<task-id>.json
+${ASHA_HOME:-~/.asha}/state/control/tasks/<task-id>.lock
+${ASHA_HOME:-~/.asha}/state/control/initiatives/<initiative-id>/...
+${ASHA_HOME:-~/.asha}/state/control/authorities/<authority-id>.json
+${ASHA_HOME:-~/.asha}/state/control/transactions/<task-id>.json (+ .ownership)
+${ASHA_HOME:-~/.asha}/state/control/repository-inits/<root-sha256>.json
+${ASHA_HOME:-~/.asha}/state/control/prunes/<task-id>.json
+${ASHA_HOME:-~/.asha}/state/control/trust.jsonl
+${ASHA_HOME:-~/.asha}/workspaces/<repo-key>/<task-slug>/
+${ASHA_HOME:-~/.asha}/cache/                       (rendered persona files)
 ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/
 ${XDG_RUNTIME_DIR:-/tmp/user-$UID}/asha-control/events/<run-id>.json
 ```
 
-`control.workspace_root` in `~/.asha/config.json` may replace the data-path
-default. It cannot be `/`, `$HOME`, the source, below the source, or an ancestor
-of the source. Existing path components must be canonical directories without
+`XDG_STATE_HOME` and `XDG_DATA_HOME` are no longer consumed; setting them is
+ignored. `ASHA_HOME` is the one override for the root, exported once by
+`bin/asha` so hooks, harnesses and worker panes agree; `ASHA_CONFIG` still
+overrides the config file specifically. A symlinked `$ASHA_HOME` is not
+supported (and never was: the config file's own parent guard refuses it) —
+the supported dotfiles pattern is a real `.asha` directory whose leaf files
+are symlinks. A group-writable `$ASHA_HOME` refuses every command with the
+exact remediation (`chmod g-w,o-w ~/.asha`), because the state tree now
+lives beneath it.
+
+`control.workspace_root` in the config may replace the workspaces default. It
+cannot be `/`, `$HOME`, the source, below the source, or an ancestor of the
+source. Existing path components must be canonical directories without
 symlink aliases or unsafe writable ancestry.
 
 If the `/tmp/user-$UID` runtime fallback already exists but fails those safety
 checks, Control refuses it and directs the operator to set `XDG_RUNTIME_DIR` to
 an existing private directory.
+
+### Migrating from the pre-consolidation layout
+
+Installs that predate the single root keep data at
+`~/.local/state/asha/control`, `~/.local/share/asha/workspaces`, and
+`~/.cache/asha`. Until `asha migrate` runs, every command refuses under the
+DEFAULT resolution with the remediation in the message; an explicit
+`ASHA_HOME` bypasses the gate, since a deliberate redirection touches nothing
+the gate protects.
+
+`asha migrate --dry-run` prints the full plan; `asha migrate --yes` performs
+it: one atomic rename of the state tree (verified by a per-file sha256
+manifest staged beforehand), permission normalization (state 0700,
+trust.jsonl 0600), retirement of path-bound husks — archived task records,
+creation journals with their ownership sidecars, prune records — into
+`state/control/retired-<date>/` with a review-digested manifest, deletion of
+regenerable verification materializations after forgetting each jj workspace
+by name through its source repository, and a supersession banner
+(`ASHA-MOVED.md`) left at both legacy roots so a restored backup cannot
+masquerade as live state. A marker at `state/.migration-v1.json` makes
+re-runs no-ops; an interrupted run resumes from its phase journal. Manual
+rollback before the marker: move `~/.asha/state` back and verify against the
+staged manifest. Preflight refuses on live Control tmux sessions, any
+non-archived task or initiative, cross-device layouts, symlinked roots, or an
+existing new root without a marker. The doctor's `migration` probe reports
+pending, complete, or a resurrected-decoy mismatch.
+
+Retired records are retention, not deletion — but they are no longer visible
+to the registry, deliberately: their digests are frozen into archived
+initiative evidence and rewriting them would falsify it, while leaving them
+in place would make every `task list` silently skip 65 records forever.
 
 Writable ancestry is judged by mode, not ownership: a group- or other-writable
 non-sticky directory anywhere on a Control path (state, runtime, workspace
@@ -813,7 +861,7 @@ created before 2026-08-17 may carry the umask mode `0775` and are skipped by
 `task list` until remediated:
 
 ```text
-chmod g-w,o-w "${XDG_DATA_HOME:-~/.local/share}"/asha/workspaces/*/*
+chmod g-w,o-w "${ASHA_HOME:-~/.asha}"/workspaces/*/*
 ```
 
 Task records use the `asha.control-task.v1` schema:
@@ -1040,7 +1088,7 @@ finished by running it again. Per task, in order:
    workspace and name the reason.
 
 Removal is journaled in
-`${XDG_STATE_HOME}/asha/control/prunes/<task-id>.json`
+`${ASHA_HOME:-~/.asha}/state/control/prunes/<task-id>.json`
 (`asha.control-prune-record.v1`): intent before the first unlink, completion
 after the root is gone. A later pass treats a completed path as absent for
 the pruned task even when a successor task with the same slug reuses the
