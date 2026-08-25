@@ -185,11 +185,10 @@ class OrchestrationGraphTests(unittest.TestCase):
         env = {
             "HOME": str(root / "home"),
             "ASHA_CONFIG": str(root / "missing.json"),
-            "XDG_STATE_HOME": str(root / "state"),
-            "XDG_DATA_HOME": str(root / "data"),
+            "ASHA_HOME": str(root / "asha"),
             "XDG_RUNTIME_DIR": str(root / "runtime"),
         }
-        for key in ("HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
             Path(env[key]).mkdir(mode=0o700)
         self.config = load_config(env)
         self.initiative = initiative()

@@ -575,8 +575,7 @@ class LaunchFixtureTests(unittest.TestCase):
         self.config = load_config({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         })
         self.source = self.root / "source"
@@ -1100,8 +1099,7 @@ class Increment3DoctorTests(unittest.TestCase):
             config = load_config({
                 "HOME": str(home),
                 "ASHA_CONFIG": str(root / "missing.json"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             })
             with mock.patch(
@@ -1148,8 +1146,7 @@ class Increment3CliGrammarTests(unittest.TestCase):
         home.mkdir()
         self.env = {
             "HOME": str(home), "ASHA_CONFIG": str(root / "missing.json"),
-            "XDG_STATE_HOME": str(root / "state"),
-            "XDG_DATA_HOME": str(root / "data"),
+            "ASHA_HOME": str(root / "asha"),
             "XDG_RUNTIME_DIR": str(root / "runtime"),
         }
         self.root = root
@@ -1578,8 +1575,7 @@ class RealTmuxLaunchTests(unittest.TestCase):
         self.source.chmod(0o755)
         self.config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         })
         self.adapter = TmuxAdapter(
@@ -1763,8 +1759,7 @@ class RealTmuxLaunchTests(unittest.TestCase):
         stdout, stderr = io.StringIO(), io.StringIO()
         env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):

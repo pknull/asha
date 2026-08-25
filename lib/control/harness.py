@@ -147,7 +147,7 @@ def launch_argv(
 
 
 def controller_env(
-    *, task_id: str, run_id: str, state_dir: Path,
+    *, task_id: str, run_id: str, state_dir: Path, asha_home: Path | None = None,
 ) -> dict[str, str]:
     try:
         task_id = canonical_uuid(task_id)
@@ -157,7 +157,7 @@ def controller_env(
     state = _canonical_path(
         state_dir, "control state directory is not an absolute canonical path",
     )
-    return {
+    environment = {
         "ASHA_CONTROL_TASK_ID": task_id,
         "ASHA_CONTROL_RUN_ID": run_id,
         "ASHA_CONTROL_STATE_DIR": str(state),
@@ -166,6 +166,14 @@ def controller_env(
         # the launcher skips the identity render and keeps the operational layer.
         "ASHA_PERSONA": "0",
     }
+    if asha_home is not None:
+        # Panes inherit the tmux SERVER's environment, not the controller's: a
+        # non-default ASHA_HOME would otherwise desync the worker's derived
+        # tasks_dir and every `asha control event` it sends would be refused.
+        environment["ASHA_HOME"] = str(_canonical_path(
+            asha_home, "asha home is not an absolute canonical path",
+        ))
+    return environment
 
 
 def boot_id() -> str:

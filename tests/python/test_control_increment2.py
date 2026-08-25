@@ -268,8 +268,7 @@ class JournalStoreTests(unittest.TestCase):
         home.mkdir()
         self.config = load_config({
             "HOME": str(home), "ASHA_CONFIG": str(root / "missing.json"),
-            "XDG_STATE_HOME": str(root / "state"),
-            "XDG_DATA_HOME": str(root / "data"),
+            "ASHA_HOME": str(root / "asha"),
             "XDG_RUNTIME_DIR": str(root / "runtime"),
         })
         self.store = CreationJournalStore(self.config)
@@ -487,8 +486,7 @@ class RealJjPreparationTests(unittest.TestCase):
         self.source.chmod(0o755)
         self.env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)
@@ -749,8 +747,7 @@ class RealJjPreparationTests(unittest.TestCase):
         from lib.control.cli import main as control_main
         cli_env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         stdout = io.StringIO()
@@ -895,8 +892,7 @@ class RealJjPreparationTests(unittest.TestCase):
         from lib.control.cli import main as control_main
         cli_env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         stdout = io.StringIO()
@@ -920,8 +916,7 @@ class RealJjPreparationTests(unittest.TestCase):
         from lib.control.cli import main as control_main
         cli_env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         stdout = io.StringIO()
@@ -939,8 +934,7 @@ class RealJjPreparationTests(unittest.TestCase):
         from lib.control.cli import main as control_main
         cli_env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         stdout = io.StringIO()
@@ -1774,8 +1768,7 @@ class RealJjPreparationTests(unittest.TestCase):
 
         cli_env = {
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         cases = (
@@ -2282,8 +2275,7 @@ class RealJjPreparationTests(unittest.TestCase):
         nested = self.source / "controller-workspaces"
         config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "nested-config.json"),
-            "XDG_STATE_HOME": str(self.root / "nested-state"),
-            "XDG_DATA_HOME": str(self.root / "nested-data"),
+            "ASHA_HOME": str(self.root / "nested-asha"),
             "XDG_RUNTIME_DIR": str(self.root / "nested-runtime"),
         })
         object.__setattr__(config, "workspace_root", nested)
@@ -2299,8 +2291,7 @@ class RealJjPreparationTests(unittest.TestCase):
         workspace_root = anchor.joinpath(*(f"level-{index}" for index in range(7)))
         config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "eight-config.json"),
-            "XDG_STATE_HOME": str(self.root / "eight-state"),
-            "XDG_DATA_HOME": str(self.root / "eight-data"),
+            "ASHA_HOME": str(self.root / "eight-asha"),
             "XDG_RUNTIME_DIR": str(self.root / "eight-runtime"),
         })
         object.__setattr__(config, "workspace_root", workspace_root)
@@ -2323,8 +2314,7 @@ class RealJjPreparationTests(unittest.TestCase):
         workspace_root = anchor.joinpath(*(f"level-{index}" for index in range(8)))
         config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "nine-config.json"),
-            "XDG_STATE_HOME": str(self.root / "nine-state"),
-            "XDG_DATA_HOME": str(self.root / "nine-data"),
+            "ASHA_HOME": str(self.root / "nine-asha"),
             "XDG_RUNTIME_DIR": str(self.root / "nine-runtime"),
         })
         object.__setattr__(config, "workspace_root", workspace_root)
@@ -2601,8 +2591,7 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertTrue(entered.wait(10))
         other_runtime_config = load_config({
             "HOME": str(self.home), "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "other-runtime"),
         })
         rollback_thread = threading.Thread(target=lambda: self._capture_error(

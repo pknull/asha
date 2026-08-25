@@ -16,16 +16,14 @@ from lib.control.orchestration.config import (
 class OrchestrationConfigTests(unittest.TestCase):
     def environment(self, root: Path) -> dict[str, str]:
         home = root / "home"
-        state = root / "state"
-        data = root / "data"
+        asha_home = root / "asha"
         runtime = root / "runtime"
-        for directory in (home, state, data, runtime):
+        for directory in (home, asha_home, runtime):
             directory.mkdir(mode=0o700)
         return {
             "HOME": str(home),
             "ASHA_CONFIG": str(root / "config.json"),
-            "XDG_STATE_HOME": str(state),
-            "XDG_DATA_HOME": str(data),
+            "ASHA_HOME": str(asha_home),
             "XDG_RUNTIME_DIR": str(runtime),
         }
 
@@ -52,7 +50,7 @@ class OrchestrationConfigTests(unittest.TestCase):
             self.assertEqual(config.link_grace_seconds, 30)
             self.assertEqual(config.max_consecutive_failures, 3)
             self.assertEqual(
-                config.initiatives_dir, root / "state/asha/control/initiatives"
+                config.initiatives_dir, root / "asha/state/control/initiatives"
             )
 
     def test_exact_document_parses(self) -> None:

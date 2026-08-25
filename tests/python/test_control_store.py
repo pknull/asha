@@ -30,8 +30,7 @@ class ControlStoreTests(unittest.TestCase):
         self.config = load_config({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         })
         self.store = TaskStore(self.config)
@@ -87,29 +86,28 @@ class ControlStoreTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(lock.stat().st_mode), 0o600)
 
     def test_private_state_root_accepts_group_readable_asha_parent_without_read_side_effects(self) -> None:
-        state = self.root / "live-state"
-        shared = state / "asha"
-        state.mkdir(mode=0o700)
+        asha_home = self.root / "live-asha"
+        shared = asha_home / "state"
+        asha_home.mkdir(mode=0o700)
         shared.mkdir(mode=0o750)
         shared.chmod(0o750)
         config = load_config({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(state),
-            "XDG_DATA_HOME": str(self.root / "live-data"),
+            "ASHA_HOME": str(asha_home),
             "XDG_RUNTIME_DIR": str(self.root / "live-runtime"),
         })
         store = TaskStore(config)
         before = sorted(
-            (str(path.relative_to(state)), path.stat().st_mode)
-            for path in state.rglob("*")
+            (str(path.relative_to(shared)), path.stat().st_mode)
+            for path in shared.rglob("*")
         )
 
         self.assertEqual(store.list(), [])
 
         after = sorted(
-            (str(path.relative_to(state)), path.stat().st_mode)
-            for path in state.rglob("*")
+            (str(path.relative_to(shared)), path.stat().st_mode)
+            for path in shared.rglob("*")
         )
         self.assertEqual(after, before)
         self.assertFalse((shared / "control").exists())
@@ -148,9 +146,12 @@ class ControlStoreTests(unittest.TestCase):
             self.store.save(record)
 
     def test_symlinked_state_directory_is_rejected(self) -> None:
+        # The workspace chain (asha/workspaces) must stay real so validation
+        # reaches the STATE traversal; the symlink sits at asha/state.
         target = self.root / "outside"
         target.mkdir()
-        (self.root / "state").symlink_to(target, target_is_directory=True)
+        (self.root / "asha").mkdir(mode=0o700)
+        (self.root / "asha/state").symlink_to(target, target_is_directory=True)
         with self.assertRaisesRegex(StoreError, "symlink"):
             self.store.save(self.record())
 
@@ -263,22 +264,26 @@ class ControlStoreTests(unittest.TestCase):
             with self.subTest(unsafe_kind=unsafe_kind), tempfile.TemporaryDirectory() as td:
                 root = Path(td)
                 home = root / "home"
-                state = root / "state"
+                asha_home = root / "asha"
                 data = root / "data"
                 runtime = root / "runtime"
-                for directory in (home, state, data, runtime):
+                for directory in (home, asha_home, data, runtime):
                     directory.mkdir(mode=0o700)
+                config_file = root / "config.json"
+                config_file.write_text(json.dumps(
+                    {"control": {"workspace_root": str(data / "workspaces")}}
+                ) + "\n")
+                config_file.chmod(0o600)
                 config = load_config({
                     "HOME": str(home),
-                    "ASHA_CONFIG": str(root / "missing.json"),
-                    "XDG_STATE_HOME": str(state),
-                    "XDG_DATA_HOME": str(data),
+                    "ASHA_CONFIG": str(config_file),
+                    "ASHA_HOME": str(asha_home),
                     "XDG_RUNTIME_DIR": str(runtime),
                 })
                 # Remove the TemporaryDirectory's implicit private boundary;
                 # the subsequently widened child must then be rejected.
                 root.chmod(0o755)
-                unsafe = {"state": state, "runtime": runtime, "workspace": data}[unsafe_kind]
+                unsafe = {"state": asha_home, "runtime": runtime, "workspace": data}[unsafe_kind]
                 unsafe.chmod(0o777)
                 record = task_record(
                     repository_root=str(root / "repositories/source"),
@@ -330,7 +335,7 @@ class ControlStoreTests(unittest.TestCase):
 
         self.assertTrue(swapped)
         self.assertFalse(any(outside.rglob("*.json")))
-        pinned_record = self.root / "state/asha-pinned/control/tasks" / f"{record['task_id']}.json"
+        pinned_record = self.root / "asha/asha-pinned/control/tasks" / f"{record['task_id']}.json"
         self.assertTrue(pinned_record.is_file())
 
     def test_production_lock_reports_deterministic_cross_process_contention(self) -> None:
@@ -377,8 +382,7 @@ finally:
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
             "TASK_ID": record["task_id"],
             "TASK_JSON": json.dumps(changed),
@@ -471,8 +475,7 @@ else:
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "DIGEST": task_digest(record),
         })
 
@@ -546,8 +549,7 @@ else:
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(peek_runtime),
             "TASKS_DIR": str(self.config.tasks_dir),
             "TASK_ID": record["task_id"],
@@ -609,8 +611,7 @@ print(json.dumps(task, sort_keys=True), flush=True)
         config = load_config({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "peek-state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "peek-asha"),
             "XDG_RUNTIME_DIR": str(self.root / "peek-runtime"),
         })
         store = TaskStore(config)
@@ -657,15 +658,19 @@ print(json.dumps(task, sort_keys=True), flush=True)
         self.assertTrue(raced)
         self.assertTrue(set(race_inodes).issubset(synced_inodes))
 
-        other = self.record(slug="bad-race-mode")
         runtime = self.root / "runtime-bad"
         config = load_config({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state-bad"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha-bad"),
             "XDG_RUNTIME_DIR": str(runtime),
         })
+        # The record must live under THIS config's workspace root: with one
+        # consolidated home, a second ASHA_HOME is a different workspace root.
+        other = self.record(
+            slug="bad-race-mode",
+            workspace_path=str(config.workspace_root / "repo-key/bad-race-mode"),
+        )
         config.tasks_dir.parents[1].mkdir(parents=True, mode=0o700)
         config.tasks_dir.parents[2].chmod(0o700)
         config.tasks_dir.parents[1].chmod(0o700)
@@ -694,8 +699,7 @@ print(json.dumps(task, sort_keys=True), flush=True)
                 config = load_config({
                     "HOME": str(home),
                     "ASHA_CONFIG": str(root / "missing.json"),
-                    "XDG_STATE_HOME": str(root / "state"),
-                    "XDG_DATA_HOME": str(root / "data"),
+                    "ASHA_HOME": str(root / "asha"),
                     "XDG_RUNTIME_DIR": str(root / "runtime"),
                 })
                 store = TaskStore(config)
@@ -703,7 +707,7 @@ print(json.dumps(task, sort_keys=True), flush=True)
                     repository_root=str(root / "repositories/source"),
                     workspace_path=str(config.workspace_root / "repo-key/control-test"),
                 )
-                child_path = root / "state"
+                child_path = root / "asha"
                 parent_inode = root.stat().st_ino
                 injected: list[int] = []
 
@@ -967,8 +971,7 @@ print(json.dumps(task, sort_keys=True), flush=True)
         env.update({
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
             "TASK_ID": record["task_id"],

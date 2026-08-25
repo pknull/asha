@@ -84,13 +84,12 @@ def write_config(path: Path, value: str) -> None:
 
 
 class ControlConfigTests(unittest.TestCase):
-    def test_defaults_use_isolated_xdg_roots_and_launcher_fallback(self) -> None:
+    def test_defaults_use_isolated_asha_home_and_launcher_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             env = {
                 "HOME": str(root / "home"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
                 "ASHA_CONFIG": str(root / "missing.json"),
             }
@@ -98,8 +97,8 @@ class ControlConfigTests(unittest.TestCase):
             config = load_config(env)
 
             self.assertEqual(config.default_harness, "claude")
-            self.assertEqual(config.tasks_dir, root / "state/asha/control/tasks")
-            self.assertEqual(config.workspace_root, root / "data/asha/workspaces")
+            self.assertEqual(config.tasks_dir, root / "asha/state/control/tasks")
+            self.assertEqual(config.workspace_root, root / "asha/workspaces")
             self.assertEqual(config.runtime_dir, root / "runtime/asha-control")
             self.assertEqual(config.popup_width, "90%")
             self.assertEqual(config.session_prefix, "asha-")
@@ -119,8 +118,7 @@ class ControlConfigTests(unittest.TestCase):
                 return load_config({
                     "HOME": str(root / "home"),
                     "ASHA_CONFIG": str(config_path),
-                    "XDG_STATE_HOME": str(root / "state"),
-                    "XDG_DATA_HOME": str(root / "data"),
+                    "ASHA_HOME": str(root / "asha"),
                     "XDG_RUNTIME_DIR": str(root / "runtime"),
                 })
 
@@ -145,8 +143,7 @@ class ControlConfigTests(unittest.TestCase):
             config = load_config({
                 "HOME": str(home),
                 "ASHA_CONFIG": str(config_path),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             })
             self.assertEqual(config.default_harness, "codex")
@@ -173,8 +170,7 @@ class ControlConfigTests(unittest.TestCase):
                 load_config({
                     "HOME": str(home),
                     "ASHA_CONFIG": str(config_path),
-                    "XDG_STATE_HOME": str(root / "state"),
-                    "XDG_DATA_HOME": str(root / "data"),
+                    "ASHA_HOME": str(root / "asha"),
                     "XDG_RUNTIME_DIR": str(root / "runtime"),
                 })
             self.assertFalse((root / "state").exists())
@@ -189,8 +185,11 @@ class ControlConfigTests(unittest.TestCase):
             config_parent.mkdir(parents=True, mode=0o700)
             target.parent.mkdir(parents=True, mode=0o700)
             home.chmod(0o750)
-            config_parent.chmod(0o775)
-            target.parent.chmod(0o775)
+            # 0755: group-READABLE stays fine; the old 0775 group-writable
+            # tolerance is retired — a writable .asha now refuses everywhere,
+            # because the state tree lives beneath it.
+            config_parent.chmod(0o755)
+            target.parent.chmod(0o755)
             write_config(target, '{"control":{"default_harness":"codex"}}')
             (config_parent / "config.json").symlink_to(
                 "../dotfiles/asha/.asha/config.json"
@@ -198,8 +197,6 @@ class ControlConfigTests(unittest.TestCase):
 
             config = load_config({
                 "HOME": str(home),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             })
 
@@ -252,8 +249,7 @@ class ControlConfigTests(unittest.TestCase):
                             load_config({
                                 "HOME": str(home),
                                 "ASHA_CONFIG": str(config_path),
-                                "XDG_STATE_HOME": str(root / "state"),
-                                "XDG_DATA_HOME": str(root / "data"),
+                                "ASHA_HOME": str(root / "asha"),
                                 "XDG_RUNTIME_DIR": str(root / "runtime"),
                             })
 
@@ -284,8 +280,7 @@ class ControlConfigTests(unittest.TestCase):
                 config = load_config({
                     "HOME": str(home),
                     "ASHA_CONFIG": str(config_path),
-                    "XDG_STATE_HOME": str(root / "state"),
-                    "XDG_DATA_HOME": str(root / "data"),
+                    "ASHA_HOME": str(root / "asha"),
                     "XDG_RUNTIME_DIR": str(root / "runtime"),
                 })
                 self.assertEqual(config.default_harness, "codex")
@@ -335,8 +330,6 @@ class ControlConfigTests(unittest.TestCase):
 
                 env = {
                     "HOME": str(home),
-                    "XDG_STATE_HOME": str(root / "state"),
-                    "XDG_DATA_HOME": str(root / "data"),
                     "XDG_RUNTIME_DIR": str(root / "runtime"),
                 }
                 if target_shape in {"chained-leaf", "symlink-parent"}:
@@ -398,20 +391,28 @@ class ControlConfigTests(unittest.TestCase):
                     with self.assertRaisesRegex(ConfigError, "owned"):
                         load_config(env)
 
-    def test_xdg_roots_must_be_absolute_and_have_no_symlink_components(self) -> None:
+    def test_asha_home_must_be_absolute_and_have_no_symlink_components(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
             home = root / "home"
             home.mkdir()
-            with self.assertRaisesRegex(ConfigError, "XDG_STATE_HOME.*absolute"):
-                load_config({"HOME": str(home), "XDG_STATE_HOME": "relative"})
+            with self.assertRaisesRegex(ConfigError, "ASHA_HOME.*absolute"):
+                load_config({"HOME": str(home), "ASHA_HOME": "relative"})
 
+            # A symlinked ASHA_HOME was never supported: the config file's own
+            # parent guard rejects it, exactly as it rejected a symlinked
+            # ~/.asha before consolidation. The dotfiles pattern is a REAL
+            # .asha directory holding symlinked leaf files.
             target = root / "target"
-            target.mkdir()
-            link = root / "state-link"
+            target.mkdir(mode=0o700)
+            (target / "config.json").write_text("{}")
+            link = root / "asha-link"
             link.symlink_to(target, target_is_directory=True)
-            with self.assertRaisesRegex(ConfigError, "symlink"):
-                load_config({"HOME": str(home), "XDG_STATE_HOME": str(link)})
+            home.chmod(0o700)
+            with self.assertRaisesRegex(ConfigError, "symlink component rejected in ASHA_CONFIG parent"):
+                load_config({"HOME": str(home), "ASHA_HOME": str(link)})
+            with self.assertRaisesRegex(ConfigError, "must not be HOME"):
+                load_config({"HOME": str(home), "ASHA_HOME": str(home)})
 
     def test_paths_require_exact_single_slash_canonical_form(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -427,7 +428,7 @@ class ControlConfigTests(unittest.TestCase):
                 str(root) + "/./state",
             ):
                 with self.subTest(value=value), self.assertRaisesRegex(ConfigError, "canonical"):
-                    load_config({**base, "XDG_STATE_HOME": value})
+                    load_config({**base, "ASHA_HOME": value})
             with self.assertRaisesRegex(ConfigError, "canonical"):
                 load_config({**base, "HOME": f"//{str(home).lstrip('/')}"})
             for config_value in (
@@ -448,8 +449,7 @@ class ControlConfigTests(unittest.TestCase):
                     load_config({
                         **base,
                         "ASHA_CONFIG": str(config_path),
-                        "XDG_STATE_HOME": str(root / "state"),
-                        "XDG_DATA_HOME": str(root / "data"),
+                        "ASHA_HOME": str(root / "asha"),
                         "XDG_RUNTIME_DIR": str(root / "runtime"),
                     })
 
@@ -467,8 +467,7 @@ class ControlConfigTests(unittest.TestCase):
             config = load_config({
                 "HOME": str(home),
                 "ASHA_CONFIG": str(config_path),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             })
             self.assertEqual(config.workspace_root, home / "workspaces")
@@ -500,7 +499,7 @@ class ControlConfigTests(unittest.TestCase):
             blocker = root / "blocker"
             blocker.write_text("not a directory")
             with self.assertRaisesRegex(ConfigError, "directory"):
-                load_config({"HOME": str(home), "XDG_STATE_HOME": str(blocker / "state")})
+                load_config({"HOME": str(home), "ASHA_HOME": str(blocker / "asha")})
 
             workspace = root / "workspace-file"
             workspace.write_text("not a directory")
@@ -509,7 +508,7 @@ class ControlConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "directory"):
                 load_config({"HOME": str(home), "ASHA_CONFIG": str(config_path)})
 
-    def test_empty_xdg_and_config_values_use_unset_defaults(self) -> None:
+    def test_empty_env_values_use_unset_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             home = Path(td) / "home"
             home.mkdir()
@@ -517,14 +516,77 @@ class ControlConfigTests(unittest.TestCase):
             config = load_config({
                 "HOME": str(home),
                 "ASHA_CONFIG": "",
-                "XDG_STATE_HOME": "",
-                "XDG_DATA_HOME": "",
+                "ASHA_HOME": "",
                 "XDG_RUNTIME_DIR": "",
             })
+            self.assertEqual(config.asha_home, home / ".asha")
             self.assertEqual(config.config_path, home / ".asha/config.json")
-            self.assertEqual(config.tasks_dir, home / ".local/state/asha/control/tasks")
-            self.assertEqual(config.workspace_root, home / ".local/share/asha/workspaces")
+            self.assertEqual(config.tasks_dir, home / ".asha/state/control/tasks")
+            self.assertEqual(config.workspace_root, home / ".asha/workspaces")
             self.assertEqual(config.runtime_dir, Path(f"/tmp/user-{os.getuid()}/asha-control"))
+
+    def test_explicit_asha_home_moves_every_derived_root(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            elsewhere = root / "elsewhere"
+            for directory in (home, elsewhere):
+                directory.mkdir(mode=0o700)
+            config = load_config({"HOME": str(home), "ASHA_HOME": str(elsewhere)})
+            self.assertEqual(config.asha_home, elsewhere)
+            self.assertEqual(config.config_path, elsewhere / "config.json")
+            self.assertEqual(config.tasks_dir, elsewhere / "state/control/tasks")
+            self.assertEqual(config.workspace_root, elsewhere / "workspaces")
+
+    def test_xdg_state_and_data_are_ignored_when_set(self) -> None:
+        """The toolkit no longer consumes XDG_STATE_HOME/XDG_DATA_HOME.
+
+        A login environment that sets them must not split the single root
+        back apart: only ASHA_HOME (and, for the ephemeral runtime dir,
+        XDG_RUNTIME_DIR) decides where asha's files live.
+        """
+        with tempfile.TemporaryDirectory() as td:
+            home = Path(td) / "home"
+            home.mkdir(mode=0o700)
+            config = load_config({
+                "HOME": str(home),
+                "XDG_STATE_HOME": str(Path(td) / "ignored-state"),
+                "XDG_DATA_HOME": str(Path(td) / "ignored-data"),
+            })
+            self.assertEqual(config.tasks_dir, home / ".asha/state/control/tasks")
+            self.assertEqual(config.workspace_root, home / ".asha/workspaces")
+
+    def test_legacy_layout_refuses_until_migrated_and_the_bypass_works(self) -> None:
+        """Un-migrated data must fail loudly, never silently re-home."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            home = root / "home"
+            home.mkdir(mode=0o700)
+            legacy_control = home / ".local/state/asha/control"
+            legacy_control.mkdir(parents=True, mode=0o700)
+            (legacy_control / "tasks").mkdir(mode=0o700)
+            with self.assertRaisesRegex(ConfigError, "legacy Asha state.*asha migrate"):
+                load_config({"HOME": str(home)})
+            config = load_config({"HOME": str(home)}, check_legacy=False)
+            self.assertEqual(config.tasks_dir, home / ".asha/state/control/tasks")
+            # An explicit ASHA_HOME is a deliberate redirection and bypasses
+            # the gate: the machine's default location is not this session's.
+            elsewhere = home / "elsewhere"
+            elsewhere.mkdir(mode=0o700)
+            load_config({"HOME": str(home), "ASHA_HOME": str(elsewhere)})
+            # A banner-only legacy directory is a completed migration, not data.
+            for item in ("tasks",):
+                (legacy_control / item).rmdir()
+            (legacy_control / "ASHA-MOVED.md").write_text("moved\n")
+            load_config({"HOME": str(home)})
+            # New root present alongside real legacy data: no refusal either —
+            # migration is complete or in hand; the doctor reports the leftover.
+            (legacy_control / "tasks").mkdir(mode=0o700)
+            # mkdir(parents=True) would give the intermediates the umask mode;
+            # the ancestor rule needs each level free of group/world write.
+            for depth in (".asha", ".asha/state", ".asha/state/control"):
+                (home / depth).mkdir(mode=0o700)
+            load_config({"HOME": str(home)})
 
     def test_unsafe_runtime_fallback_names_the_xdg_runtime_dir_remedy(self) -> None:
         with tempfile.TemporaryDirectory() as td:
@@ -553,8 +615,6 @@ class ControlConfigTests(unittest.TestCase):
             with self.assertRaisesRegex(ConfigError, "writable non-sticky ancestor"):
                 load_config({
                     "HOME": str(home),
-                    "XDG_STATE_HOME": str(root / "state"),
-                    "XDG_DATA_HOME": str(root / "data"),
                     "XDG_RUNTIME_DIR": str(root / "runtime"),
                 })
 
@@ -577,8 +637,7 @@ class ControlConfigTests(unittest.TestCase):
                     load_config({
                         "HOME": str(home),
                         "ASHA_CONFIG": str(home / "missing.json"),
-                        "XDG_STATE_HOME": str(shared),
-                        "XDG_DATA_HOME": str(private / "data"),
+                        "ASHA_HOME": str(shared),
                         "XDG_RUNTIME_DIR": str(private / "runtime"),
                     })
 
@@ -596,17 +655,16 @@ class ControlConfigTests(unittest.TestCase):
             root.chmod(0o755)
             home = root / "home"
             home.mkdir(mode=0o750)          # group-readable, NOT group-writable
-            shared = home / "state"
+            shared = home / "asha"
             shared.mkdir(mode=0o750)        # group-readable, NOT group-writable
 
             config = load_config({
                 "HOME": str(home),
                 "ASHA_CONFIG": str(home / "missing.json"),
-                "XDG_STATE_HOME": str(shared),
-                "XDG_DATA_HOME": str(home / "data"),
+                "ASHA_HOME": str(shared),
                 "XDG_RUNTIME_DIR": str(home / "runtime"),
             })
-            self.assertEqual(config.tasks_dir, shared / "asha/control/tasks")
+            self.assertEqual(config.tasks_dir, shared / "state/control/tasks")
 
     def test_group_writable_ancestor_never_establishes_the_boundary(self) -> None:
         """Writability is the line: a 0770 home must NOT confer trust."""
@@ -657,8 +715,7 @@ class ControlConfigTests(unittest.TestCase):
             env = {
                 "HOME": str(root / "home"),
                 "ASHA_CONFIG": str(root / "config.json"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             }
             invalid = (

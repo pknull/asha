@@ -8,17 +8,20 @@ trap 'rm -rf "$WORK"' EXIT
 chmod 0755 "$WORK"
 
 export HOME="$WORK/home"
-export XDG_STATE_HOME="$WORK/state"
-export XDG_DATA_HOME="$WORK/data"
+export ASHA_HOME="$HOME/.asha"
 export XDG_RUNTIME_DIR="$WORK/runtime"
+# The toolkit no longer consumes these; unset so an operator shell that
+# exports them cannot leak real legacy-state detection into the fixtures.
+unset XDG_STATE_HOME XDG_DATA_HOME
 mkdir -p "$HOME/.asha" "$HOME/dotfiles/asha/.asha" "$WORK/reject-bin" "$WORK/repository"
 chmod 0750 "$HOME"
-chmod 0775 "$HOME/.asha" "$HOME/dotfiles/asha/.asha"
+# 0755: the old group-writable .asha tolerance is retired by ruling — the
+# state tree now lives beneath it, and a writable .asha refuses everywhere.
+chmod 0755 "$HOME/.asha" "$HOME/dotfiles/asha/.asha"
 printf '%s\n' '{"control":{"default_harness":"codex"}}' >"$HOME/dotfiles/asha/.asha/config.json"
 chmod 0600 "$HOME/dotfiles/asha/.asha/config.json"
 ln -s '../dotfiles/asha/.asha/config.json' "$HOME/.asha/config.json"
-mkdir -m 0700 "$XDG_STATE_HOME"
-mkdir -m 0750 "$XDG_STATE_HOME/asha"
+mkdir -m 0750 "$ASHA_HOME/state"
 
 # Neither cwd nor inherited PYTHONPATH may shadow the trusted controller.
 mkdir -p "$WORK/repository/control" "$WORK/python-poison/control"
@@ -59,7 +62,7 @@ done
 export PATH="$WORK/reject-bin:$PATH"
 
 before="$(find "$WORK/repository" -mindepth 1 -print | sort)"
-state_before="$(find "$XDG_STATE_HOME" -printf '%P %y %m %u %g\n' | sort)"
+state_before="$(find "$ASHA_HOME/state" -printf '%P %y %m %u %g\n' | sort)"
 bytecode_before="$(find "$ROOT/lib/control" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -printf '%p %s %T@\n' | sort)"
 cd "$WORK/repository"
 
@@ -109,14 +112,14 @@ allowed_only '^(tmux|jj|)$' "$doctor_before"
 # registry before it writes a snapshot. Seed the exact task/run/pane identity
 # exercised below; isolated mode plus an explicit trusted path keeps both
 # poison import roots out of this setup process.
-mkdir -p "$WORK/source" "$XDG_DATA_HOME/asha/workspaces/repo-key/shell-event"
+mkdir -p "$WORK/source" "$ASHA_HOME/workspaces/repo-key/shell-event"
 # The namespace predicate rejects writable ancestors and requires 0700
 # destination components: privatize the fixture chain like production.
 chmod 0755 "$WORK/source"
-chmod 0700 "$XDG_DATA_HOME" "$XDG_DATA_HOME/asha" "$XDG_DATA_HOME/asha/workspaces" \
-  "$XDG_DATA_HOME/asha/workspaces/repo-key" "$XDG_DATA_HOME/asha/workspaces/repo-key/shell-event"
+chmod 0700 "$ASHA_HOME/workspaces" \
+  "$ASHA_HOME/workspaces/repo-key" "$ASHA_HOME/workspaces/repo-key/shell-event"
 python3 -I - "$ROOT" "$WORK/source" \
-  "$XDG_DATA_HOME/asha/workspaces/repo-key/shell-event" <<'PY'
+  "$ASHA_HOME/workspaces/repo-key/shell-event" <<'PY'
 import os
 import sys
 
@@ -134,12 +137,12 @@ task["runs"][0]["run_id"] = "22222222-2222-4222-8222-222222222222"
 task["runs"][0]["pane_id"] = "%9"
 TaskStore(load_config(os.environ)).save(task)
 PY
-state_before="$(find "$XDG_STATE_HOME" -printf '%P %y %m %u %g\n' | sort)"
+state_before="$(find "$ASHA_HOME/state" -printf '%P %y %m %u %g\n' | sort)"
 
 export ASHA_CONTROL_MANAGED=1
 export ASHA_CONTROL_TASK_ID=11111111-1111-4111-8111-111111111111
 export ASHA_CONTROL_RUN_ID=22222222-2222-4222-8222-222222222222
-export ASHA_CONTROL_STATE_DIR="$XDG_STATE_HOME/asha/control/tasks"
+export ASHA_CONTROL_STATE_DIR="$ASHA_HOME/state/control/tasks"
 event_before="$(invoked_lines)"
 event="$(bash "$ROOT/bin/asha" control event --event prompt-submitted \
   --harness codex --session-id shell-isolation --pane-id %9 --json)"
@@ -180,7 +183,7 @@ mkdir "$WORK/safe-cwd"
 mv "$WORK/repository/control-disabled" "$WORK/repository/control"
 
 after="$(find "$WORK/repository" -mindepth 1 -print | sort)"
-state_after="$(find "$XDG_STATE_HOME" -printf '%P %y %m %u %g\n' | sort)"
+state_after="$(find "$ASHA_HOME/state" -printf '%P %y %m %u %g\n' | sort)"
 bytecode_after="$(find "$ROOT/lib/control" \( -type d -name __pycache__ -o -type f -name '*.pyc' \) -printf '%p %s %T@\n' | sort)"
 [[ "$before" == "$after" ]]
 [[ "$state_before" == "$state_after" ]]

@@ -310,8 +310,7 @@ class StartGuardOrderingTests(unittest.TestCase):
             env = {
                 "HOME": str(home),
                 "ASHA_CONFIG": str(root / "missing.json"),
-                "XDG_STATE_HOME": str(root / "state"),
-                "XDG_DATA_HOME": str(root / "data"),
+                "ASHA_HOME": str(root / "asha"),
                 "XDG_RUNTIME_DIR": str(root / "runtime"),
             }
             events: list[str] = []
@@ -423,8 +422,7 @@ class RealColocatedSyncTests(unittest.TestCase):
             **self.git_env,
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.git("init", "-q", "-b", "main")

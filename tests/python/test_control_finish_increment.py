@@ -93,8 +93,7 @@ class ControlFinishIncrementTests(unittest.TestCase):
         self.env = {
             "HOME": str(home),
             "ASHA_CONFIG": str(root / "missing.json"),
-            "XDG_STATE_HOME": str(root / "state"),
-            "XDG_DATA_HOME": str(root / "data"),
+            "ASHA_HOME": str(root / "asha"),
             "XDG_RUNTIME_DIR": str(root / "runtime"),
         }
         self.config = load_config(self.env)
@@ -664,10 +663,9 @@ class RealControlFinishPtyTests(unittest.TestCase):
         self.source = self.root / "source"
         self.source.mkdir()
         self.source.chmod(0o755)
-        self.state = self.root / "state"
-        self.data = self.root / "data"
+        self.asha_home = self.root / "asha"
         self.runtime = self.root / "runtime"
-        for path in (self.state, self.data, self.runtime):
+        for path in (self.asha_home, self.runtime):
             path.mkdir(mode=0o700)
         self.config_path = self.root / "config.json"
         self.config_path.write_text(
@@ -678,7 +676,7 @@ class RealControlFinishPtyTests(unittest.TestCase):
         self.env = {
             **os.environ,
             "HOME": str(self.home), "ASHA_CONFIG": str(self.config_path),
-            "XDG_STATE_HOME": str(self.state), "XDG_DATA_HOME": str(self.data),
+            "ASHA_HOME": str(self.asha_home),
             "XDG_RUNTIME_DIR": str(self.runtime), "TERM": "xterm-256color",
         }
         git_env = {

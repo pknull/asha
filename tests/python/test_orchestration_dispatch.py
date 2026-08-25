@@ -518,8 +518,7 @@ class RealOrchestrationDispatchTests(unittest.TestCase):
             **os.environ,
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "control.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
             "TMUX_TMPDIR": str(self.tmux_tmp),
             "PATH": f"{self.path_bin}:{os.environ.get('PATH', '')}",
@@ -528,7 +527,7 @@ class RealOrchestrationDispatchTests(unittest.TestCase):
         }
         self.env.pop("TMUX", None)
         self.env.pop("TMUX_PANE", None)
-        for key in ("XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_RUNTIME_DIR"):
+        for key in ("ASHA_HOME", "XDG_RUNTIME_DIR"):
             Path(self.env[key]).mkdir(mode=0o700)
         tmux_probe = subprocess.run(
             ["tmux", "-f", "/dev/null", "new-session", "-d", "-s", "asha-orchestration-probe", "sleep", "1"],

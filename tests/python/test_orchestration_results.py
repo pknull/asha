@@ -80,8 +80,8 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
         self.workspace = Path(self.task["jj"]["workspace_path"])
         (self.workspace / "lib/control/orchestration").mkdir(parents=True)
         current = self.workspace
-        data_home = os.path.realpath(self.env["XDG_DATA_HOME"])
-        while os.path.realpath(current) != data_home:
+        asha_home = os.path.realpath(self.env["ASHA_HOME"])
+        while os.path.realpath(current) != asha_home:
             current.chmod(0o700)
             current = current.parent
         (self.workspace / "lib/control/orchestration/result.py").write_text("changed\n")

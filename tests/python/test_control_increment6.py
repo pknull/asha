@@ -455,8 +455,7 @@ class RealGithubSourceTests(unittest.TestCase):
         self.env = {
             "HOME": str(self.home),
             "ASHA_CONFIG": str(self.root / "missing.json"),
-            "XDG_STATE_HOME": str(self.root / "state"),
-            "XDG_DATA_HOME": str(self.root / "data"),
+            "ASHA_HOME": str(self.root / "asha"),
             "XDG_RUNTIME_DIR": str(self.root / "runtime"),
         }
         self.config = load_config(self.env)
@@ -685,8 +684,7 @@ class RealGithubSourceTests(unittest.TestCase):
         )
 
         other = self.root / "second-state"
-        env = {**self.env, "XDG_STATE_HOME": str(other / "state"),
-               "XDG_DATA_HOME": str(other / "data"),
+        env = {**self.env, "ASHA_HOME": str(other / "asha"),
                "XDG_RUNTIME_DIR": str(other / "runtime")}
         stdout, stderr_stream = io.StringIO(), io.StringIO()
         captured: dict[str, dict] = {}
@@ -826,8 +824,7 @@ class CliUsesLiveEvidenceTests(unittest.TestCase):
         (root / "home").mkdir()
         self.env = {
             "HOME": str(root / "home"),
-            "XDG_STATE_HOME": str(root / "state"),
-            "XDG_DATA_HOME": str(root / "data"),
+            "ASHA_HOME": str(root / "asha"),
             "XDG_RUNTIME_DIR": str(root / "run"),
             "ASHA_CONFIG": str(root / "missing.json"),
         }
@@ -868,8 +865,7 @@ class TmuxPresentationTests(unittest.TestCase):
         (root / "home").mkdir()
         self.env = {
             "HOME": str(root / "home"),
-            "XDG_STATE_HOME": str(root / "state"),
-            "XDG_DATA_HOME": str(root / "data"),
+            "ASHA_HOME": str(root / "asha"),
             "XDG_RUNTIME_DIR": str(root / "run"),
             "ASHA_CONFIG": str(root / "missing.json"),
         }
