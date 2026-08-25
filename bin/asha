@@ -33,6 +33,8 @@ done
 SCRIPT_DIR="$(cd -P "$(dirname "$__asha_src")" >/dev/null 2>&1 && pwd)"
 unset __asha_src __asha_dir
 ASHA_ROOT="$(dirname "$SCRIPT_DIR")"
+ASHA_HOME="${ASHA_HOME:-$HOME/.asha}"
+export ASHA_HOME
 export ASHA_ROOT
 
 IDENTITY_DIR="$ASHA_ROOT/identity"
@@ -63,7 +65,7 @@ harness_initialized() {
 
 default_harness() {
   local cfg h
-  cfg="${ASHA_CONFIG:-$HOME/.asha/config.json}"
+  cfg="${ASHA_CONFIG:-$ASHA_HOME/config.json}"
   h=""
   if [[ -f "$cfg" ]] && command -v jq >/dev/null 2>&1; then
     h="$(jq -r '.default_harness // empty' "$cfg" 2>/dev/null || true)"
@@ -82,7 +84,7 @@ harness_configured() {
   home="$(asha_harness_home "$h")"
   local sub dir entry tgt foreign
   foreign=0
-  local manifest="${ASHA_HOME:-$HOME/.asha}/install-manifests/$h.json"
+  local manifest="$ASHA_HOME/install-manifests/$h.json"
   if [[ -s "$manifest" ]]; then
     if jq -e --arg root "$ASHA_ROOT/" \
         '(.artifacts | length) > 0 and (.artifacts | all((.source // "") | startswith($root)))' \
@@ -141,14 +143,14 @@ maybe_configure() {
 # ---- per-harness launch (lifted verbatim from the retired wrappers) ----
 exec_copilot() {
   local instr cmd
-  instr="${ASHA_COPILOT_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-copilot.md}"
+  instr="${ASHA_COPILOT_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions-copilot.md}"
   cmd="$(asha_harness_executable copilot)"
 
   if ! asha_persona_enabled; then
     # Control-managed worker: operational layer only through the custom
     # instructions dir (Copilot has no usable hook), no identity render.
     local worker_dir worker_op_file worker_op_tmp
-    worker_dir="${ASHA_COPILOT_INSTR_DIR:-$HOME/.cache/asha/copilot-instr-worker}"
+    worker_dir="${ASHA_COPILOT_INSTR_DIR:-$ASHA_HOME/cache/copilot-instr-worker}"
     worker_op_file="$worker_dir/.github/instructions/asha-operational.instructions.md"
     worker_op_tmp="$(mktemp)"
     if asha_render_operational_layer "$worker_op_tmp"; then
@@ -182,7 +184,7 @@ exec_copilot() {
   # only the .github/instructions/*.instructions.md form is — so wrap the merged
   # identity in that layout with an applyTo:"**" header. Regenerated every launch.
   local instr_dir instr_file
-  instr_dir="${ASHA_COPILOT_INSTR_DIR:-$HOME/.cache/asha/copilot-instr}"
+  instr_dir="${ASHA_COPILOT_INSTR_DIR:-$ASHA_HOME/cache/copilot-instr}"
   instr_file="$instr_dir/.github/instructions/asha.instructions.md"
   mkdir -p "$(dirname "$instr_file")"
   { printf -- '---\napplyTo: "**"\n---\n'; cat "$instr"; } > "$instr_file"
@@ -253,7 +255,7 @@ launch() {
         exec "$executable" "$@"
       fi
       local id
-      id="${ASHA_CLAUDE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
+      id="${ASHA_CLAUDE_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions.md}"
       export ASHA_PERSONA=1
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$id"; then
         exec "$executable" --append-system-prompt-file "$id" "$@"
@@ -278,13 +280,13 @@ launch() {
       if ! asha_persona_enabled; then
         # Control-managed worker: operational layer only (Codex has no reliable
         # SessionStart injection), trust override kept, no identity render.
-        instr="$HOME/.cache/asha/instructions-codex-operational.md"
+        instr="$ASHA_HOME/cache/instructions-codex-operational.md"
         if asha_render_operational_layer "$instr"; then
           exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
         fi
         exec "$executable" "${trust_args[@]}" "$@"
       fi
-      base="${ASHA_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions.md}"
+      base="${ASHA_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions.md}"
       instr="$base"
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
         # Operational layer (operation.md + learnings) — codex takes a single
@@ -297,7 +299,7 @@ launch() {
         if [[ -x "$op_merge" ]]; then
           op_tmp="$(mktemp)"
           if "$op_merge" "$op_tmp" 2>/dev/null; then
-            instr="$HOME/.cache/asha/instructions-codex.md"
+            instr="$ASHA_HOME/cache/instructions-codex.md"
             { cat "$base"; printf '\n\n'; cat "$op_tmp"; } > "$instr"
           fi
           rm -f "$op_tmp"
@@ -316,11 +318,11 @@ launch() {
       source "$ASHA_ROOT/harnesses/opencode.sh"
       opencode_check_version
       local base instr op_merge op_tmp cfg raw_cfg
-      base="${ASHA_OPENCODE_INSTRUCTIONS_FILE:-$HOME/.cache/asha/instructions-opencode.md}"
+      base="${ASHA_OPENCODE_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions-opencode.md}"
       instr="$base"
       if ! asha_persona_enabled; then
         # Control-managed worker: operational layer only, no identity render.
-        instr="$HOME/.cache/asha/instructions-opencode-operational.md"
+        instr="$ASHA_HOME/cache/instructions-opencode-operational.md"
         if asha_render_operational_layer "$instr"; then
           raw_cfg="${OPENCODE_CONFIG_CONTENT:-}"
           [[ -n "$raw_cfg" ]] || raw_cfg='{}'
@@ -337,7 +339,7 @@ launch() {
         if [[ -x "$op_merge" ]]; then
           op_tmp="$(mktemp)"
           if "$op_merge" "$op_tmp" 2>/dev/null; then
-            instr="$HOME/.cache/asha/instructions-opencode-combined.md"
+            instr="$ASHA_HOME/cache/instructions-opencode-combined.md"
             { cat "$base"; printf '\n\n'; cat "$op_tmp"; } >"$instr"
           fi
           rm -f "$op_tmp"

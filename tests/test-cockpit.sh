@@ -15,6 +15,8 @@ fail() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 mkdir -p "$WORK/home" "$WORK/Code/termart" "$WORK/bin"
 # A tmux on PATH is required for the plan; the dry run never invokes it.
 printf '#!/usr/bin/env bash\nexit 0\n' >"$WORK/bin/tmux"; chmod +x "$WORK/bin/tmux"
+# Sandbox hermeticity: an operator shell exporting these must not leak in.
+unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME 2>/dev/null || true
 export HOME="$WORK/home" PATH="$WORK/bin:$PATH"
 unset TMUX
 

@@ -9,7 +9,7 @@ allowed-tools: ["Bash", "Read"]
 
 ```bash
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}"
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
 TOOLS="$ASHA_ROOT/plugins/session/tools"
 
 python3 "$TOOLS/memory_v2.py" status --project-dir "$PROJECT_DIR"

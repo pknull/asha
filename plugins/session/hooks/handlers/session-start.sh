@@ -84,7 +84,7 @@ fi
 # Copilot, and OpenCode receive the same layer from their wrapper-managed
 # instruction file; injecting it again here doubles authoritative context.
 if [[ "$HARNESS" == "claude" ]]; then
-  OPERATION_FILE="$HOME/.asha/operation.md"
+  OPERATION_FILE="${ASHA_HOME:-$HOME/.asha}/operation.md"
   CORE_MD="$PLUGIN_ROOT/modules/CORE.md"
   REMINDER=""
   if [[ -f "$OPERATION_FILE" ]]; then

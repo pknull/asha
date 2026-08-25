@@ -920,10 +920,8 @@ def default_ledger_path() -> Path:
     configured = os.environ.get("PROTON_MAIL_LEDGER_PATH")
     if configured:
         return Path(configured).expanduser()
-    state_home = Path(
-        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
-    )
-    return state_home / "asha" / "proton-mail" / "replay-ledger.json"
+    asha_home = Path(os.environ.get("ASHA_HOME") or (Path.home() / ".asha"))
+    return asha_home / "state" / "proton-mail" / "replay-ledger.json"
 
 
 def _require_private_mode(path: Path, mode: int) -> None:

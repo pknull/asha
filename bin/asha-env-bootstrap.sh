@@ -21,7 +21,7 @@
 
 set -u
 
-ASHA_SECRETS_FILE="${ASHA_SECRETS_FILE:-$HOME/.asha/secrets.env}"
+ASHA_SECRETS_FILE="${ASHA_SECRETS_FILE:-${ASHA_HOME:-$HOME/.asha}/secrets.env}"
 
 if [[ -r "$ASHA_SECRETS_FILE" ]]; then
     # Permission warning — secrets file should not be world-readable.

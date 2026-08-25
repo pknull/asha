@@ -23,6 +23,8 @@ cat > "$WORK/bin/systemd-analyze" <<'FAKE'
 echo "Next elapse: soon"
 FAKE
 chmod +x "$WORK/bin/systemctl" "$WORK/bin/systemd-analyze"
+# Sandbox hermeticity: an operator shell exporting these must not leak in.
+unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME 2>/dev/null || true
 export XDG_CONFIG_HOME="$WORK/config" PATH="$WORK/bin:$PATH" SYSTEMCTL_LOG="$WORK/systemctl.log"
 : > "$SYSTEMCTL_LOG"
 UNITS="$WORK/config/systemd/user"

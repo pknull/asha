@@ -27,12 +27,12 @@ reset_sandbox() {
 }
 
 run_identity_merge() {
-  env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$SANDBOX" \
+  env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u ASHA_HOME HOME="$SANDBOX" \
     bash "$IDENTITY_MERGE" "$SANDBOX/.cache/asha/instructions.md"
 }
 
 run_operational_merge() {
-  env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$SANDBOX" \
+  env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u ASHA_HOME HOME="$SANDBOX" \
     bash "$OPERATIONAL_MERGE" "$SANDBOX/.cache/asha/operational.md"
 }
 

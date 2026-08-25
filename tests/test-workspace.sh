@@ -16,6 +16,8 @@ fail() { echo -e "${RED}FAIL${NC}"; echo "  $1"; FAILED=$((FAILED + 1)); }
 
 FIX="$(mktemp -d)"
 trap 'rm -rf "$FIX"' EXIT
+# Sandbox hermeticity: an operator shell exporting these must not leak in.
+unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME 2>/dev/null || true
 export HOME="$FIX/home"   # sandbox: the walk stops before $HOME (exclusive)
 mkdir -p "$HOME"
 

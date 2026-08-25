@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test-uninstall.sh — regression tests for issue #4 (uninstall gaps).
 #
-# Gap 1: a failing `rmdir` of the shared ~/.cache/asha dir inside
+# Gap 1: a failing `rmdir` of the shared ~/.asha/cache dir inside
 #         codex_uninstall died silently under `set -e`, so copilot_uninstall
 #         never ran and every ~/.copilot symlink was stranded.
 # Gap 2: claude_uninstall stripped settings.json hooks by "source" tag only,
@@ -9,7 +9,7 @@
 #         live (untagged) hooks were never removed.
 #
 # Strategy: build a sandbox HOME with all three harness mounts symlinked into
-# THIS repo, a tag-stripped hooks fixture, and a non-empty ~/.cache/asha, then
+# THIS repo, a tag-stripped hooks fixture, and a non-empty ~/.asha/cache, then
 # run the real uninstall engine with HOME=<sandbox>. The real user HOME is
 # never touched.
 set -euo pipefail
@@ -45,7 +45,7 @@ build_sandbox() {
            "$SANDBOX/.codex/skills" "$SANDBOX/.codex/agents" \
            "$SANDBOX/.copilot/skills" "$SANDBOX/.copilot/agents" \
            "$SANDBOX/.local/bin" \
-           "$SANDBOX/.cache/asha/leftover-dir" \
+           "$SANDBOX/.asha/cache/leftover-dir" \
            "$SANDBOX/claude-styles-target"
 
   # Previous releases installed this canary. The destination root is itself a
@@ -68,9 +68,9 @@ build_sandbox() {
 
   # Gap 1 trigger: shared cache dir that stays non-empty after codex removes
   # its own files — the unguarded rmdir here is what killed the old code.
-  touch "$SANDBOX/.cache/asha/instructions.md" \
-        "$SANDBOX/.cache/asha/instructions-codex.md" \
-        "$SANDBOX/.cache/asha/leftover-dir/keep.txt"
+  touch "$SANDBOX/.asha/cache/instructions.md" \
+        "$SANDBOX/.asha/cache/instructions-codex.md" \
+        "$SANDBOX/.asha/cache/leftover-dir/keep.txt"
 
   # Minimal codex config (no asha fence — excise path idles).
   printf 'model = "gpt-5"\n' > "$SANDBOX/.codex/config.toml"
@@ -143,7 +143,7 @@ assert_eq "dry-run leaves settings.json hooks in place" "4" "$(asha_hooks_left)"
 # Test 2: live uninstall --target all completes past a non-empty cache dir
 # (gap 1) and sweeps every harness including copilot
 # ---------------------------------------------------------------------------
-echo "--- test 2: live uninstall survives non-empty ~/.cache/asha and sweeps all harnesses ---"
+echo "--- test 2: live uninstall survives non-empty ~/.asha/cache and sweeps all harnesses ---"
 build_sandbox
 if out="$(run_uninstall 2>&1)"; then
   ok "uninstall --target all exits 0"
@@ -161,7 +161,7 @@ assert_eq "all repo-pointing symlinks removed (incl. copilot)" "0" "$(repo_links
 [[ -L "$SANDBOX/.copilot/skills/foreign-tool" ]] \
   && ok "foreign symlink preserved" \
   || fail "foreign symlink preserved"
-[[ -f "$SANDBOX/.cache/asha/leftover-dir/keep.txt" ]] \
+[[ -f "$SANDBOX/.asha/cache/leftover-dir/keep.txt" ]] \
   && ok "unrelated cache content preserved" \
   || fail "unrelated cache content preserved"
 

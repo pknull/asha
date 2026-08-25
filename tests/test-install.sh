@@ -43,7 +43,7 @@ run_install() {
 echo 1.17.18
 EOF
   chmod +x "$fake_opencode"
-  env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$SANDBOX" \
+  env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u ASHA_HOME HOME="$SANDBOX" \
     ASHA_OPENCODE_CMD="$fake_opencode" \
     PYTHONPATH="$PYTHON_USER_SITE${PYTHONPATH:+:$PYTHONPATH}" \
     bash "$REPO_ROOT/install.sh" "$@"

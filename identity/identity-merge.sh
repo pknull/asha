@@ -42,7 +42,7 @@ OUTPUT="${1:-}"
 
 [[ -f "$IDENTITY_FILE" ]] || { echo "ERROR: identity file missing: $IDENTITY_FILE" >&2; exit 1; }
 
-USER_ASHA="$HOME/.asha"
+USER_ASHA="${ASHA_HOME:-$HOME/.asha}"
 MAX_BYTES="${ASHA_IDENTITY_MAX_BYTES:-24576}"
 [[ "$MAX_BYTES" =~ ^[0-9]+$ && "$MAX_BYTES" -ge 4096 ]] \
   || { echo "ERROR: ASHA_IDENTITY_MAX_BYTES must be an integer >= 4096" >&2; exit 1; }

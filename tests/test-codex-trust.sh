@@ -2,6 +2,9 @@
 # Control-managed Codex launches receive a per-launch workspace trust override.
 set -euo pipefail
 
+# Sandbox hermeticity: an operator shell exporting these must not leak in.
+unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME 2>/dev/null || true
+
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 DISPATCHER="$REPO_ROOT/bin/asha"
@@ -28,7 +31,7 @@ printf '%s\0' "$@" >"$ASHA_TEST_CAPTURE"
 EOF
 chmod +x "$HOME_DIR/bin/codex"
 
-MODEL_FILE="$HOME_DIR/.cache/asha/instructions-codex.md"
+MODEL_FILE="$HOME_DIR/.asha/cache/instructions-codex.md"
 
 run_codex() {
   local cwd="$1" managed="$2"

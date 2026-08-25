@@ -2,6 +2,9 @@
 # Memory v2 hook contract tests.
 set -uo pipefail
 
+# Sandbox hermeticity: an operator shell exporting these must not leak in.
+unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME 2>/dev/null || true
+
 REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HANDLERS="$REPO_ROOT/plugins/session/hooks/handlers"
 WORK="$(mktemp -d)"

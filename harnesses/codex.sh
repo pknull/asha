@@ -910,17 +910,17 @@ codex_uninstall() {
 
   # Cached identity + combined identity-plus-operational file (both regenerated
   # on the next asha-codex launch; safe to remove)
-  if [[ -f "$HOME/.cache/asha/instructions.md" || -f "$HOME/.cache/asha/instructions-codex.md" ]]; then
+  if [[ -f "${ASHA_HOME:-$HOME/.asha}/cache/instructions.md" || -f "${ASHA_HOME:-$HOME/.asha}/cache/instructions-codex.md" ]]; then
     if [[ $DRY_RUN -eq 1 ]]; then
-      say "[codex] would remove ~/.cache/asha/instructions.md + instructions-codex.md"
+      say "[codex] would remove ~/.asha/cache/instructions.md + instructions-codex.md"
     else
-      rm -f "$HOME/.cache/asha/instructions.md" "$HOME/.cache/asha/instructions-codex.md"
+      rm -f "${ASHA_HOME:-$HOME/.asha}/cache/instructions.md" "${ASHA_HOME:-$HOME/.asha}/cache/instructions-codex.md"
       # `|| true` is load-bearing: the cache dir usually still holds OTHER
       # harnesses' files (codex runs before copilot in `--target all`), so this
       # rmdir fails — and with stderr silenced, an unguarded failure under the
       # shim's `set -e` killed the whole uninstall here, stranding every
       # harness after codex (issue #4, 2026-07-01 relocation).
-      rmdir "$HOME/.cache/asha" 2>/dev/null || true
+      rmdir "${ASHA_HOME:-$HOME/.asha}/cache" 2>/dev/null || true
       log "[codex] removed cached identity"
     fi
   fi

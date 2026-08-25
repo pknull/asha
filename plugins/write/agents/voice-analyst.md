@@ -22,7 +22,7 @@ End-to-end voice bible pipeline. Phase 1 extracts quantified style rules from ex
 The write-style-analyzer skill's scripts are the **preferred measurement engine** when available:
 
 ```bash
-ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "$HOME/.asha/config.json" 2>/dev/null)}"
+ASHA_ROOT="${ASHA_ROOT:-$(jq -r '.asha_root // empty' "${ASHA_HOME:-$HOME/.asha}/config.json" 2>/dev/null)}"
 [[ -n "$ASHA_ROOT" ]] || { echo "ERROR: asha_root unresolved — run ./install.sh or launch via the asha wrapper" >&2; exit 1; }
 python3 "$ASHA_ROOT/plugins/write/skills/style-analyzer/scripts/analyze_style.py" "source.txt" --json
 ```
