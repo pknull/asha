@@ -12,6 +12,20 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Project roots and friendly names
+
+- `asha initiative projects` indexes several roots. `--root` repeats, and with
+  none given the roots come from `project_roots` in `~/.asha/config.json`,
+  then `ASHA_PROJECTS_ROOT`, then the working directory. Output groups by root
+  and leads with the jj-colocated projects, since only those can run an
+  initiative; a root that cannot be indexed is reported rather than failing
+  the listing.
+- A project may state a friendly `name` in its own `.asha/config.json`. The
+  index shows it and keeps the directory in the additive `directory` label,
+  falling back to the directory name when the stated one is unbounded,
+  unprintable or absent. `--match` stays exact and now answers to the friendly
+  name as well.
+
 #### Colour and the pipeline rail in the control tree
 
 - The control TUI never asked curses for colour at all (no `init_pair`,
