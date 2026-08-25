@@ -94,12 +94,26 @@ class LegacyFixture(unittest.TestCase):
             repo_key = self.workspaces / "project-abcd1234"
             mats = repo_key / "materializations"
             mats.mkdir(parents=True, mode=0o700)
-            self.mat_name = "asha-materialization-test"
+            # Production registers a HASHED workspace name derived from the
+            # repo key and the directory name — never the directory name
+            # itself. The fixture mirrors that, so a forget by the wrong name
+            # cannot pass (the original fixture equated the two and masked
+            # exactly that bug).
+            from lib.control.migrate import materialization_registration_name
+            self.mat_dir = "verify-test-materialization"
+            self.mat_name = materialization_registration_name(
+                "project-abcd1234", self.mat_dir)
             subprocess.run(
                 ["jj", "-R", str(self.source), "workspace", "add",
-                 "--name", self.mat_name, str(mats / self.mat_name)],
+                 "--name", self.mat_name, str(mats / self.mat_dir)],
                 check=True, capture_output=True, env=git_env)
-            self.mat_path = mats / self.mat_name
+            self.mat_path = mats / self.mat_dir
+            # The live layout also carries a .journals DIRECTORY of
+            # materialization journals — the residue class that crashed the
+            # sweep in rehearsal.
+            (mats / ".journals").mkdir(mode=0o700)
+            (mats / ".journals" / f"{self.mat_name}.json").write_text("{}")
+            (mats / ".asha-control-materializations.json").write_text("{}")
 
     def migrate(self, *args: str) -> int:
         return migrate.main(list(args), self.env)
@@ -148,7 +162,31 @@ class PreflightTests(LegacyFixture):
         with mock.patch("lib.control.tmux.TmuxAdapter.list_sessions", return_value=[]), \
                 contextlib.redirect_stderr(stderr):
             self.assertEqual(self.migrate("--yes"), 2)
-        self.assertIn("without a migration marker", stderr.getvalue())
+        self.assertIn("no migration marker", stderr.getvalue())
+        self.assertIn("cannot merge into it", stderr.getvalue())
+
+
+class TenantRefusalTests(LegacyFixture):
+    def test_a_tenant_in_new_state_refuses_by_name(self) -> None:
+        state = self.home / ".asha/state"
+        state.mkdir(parents=True, mode=0o700)
+        (self.home / ".asha").chmod(0o700)
+        (state / "broker-events.jsonl").write_text("{}\n")
+        import io, contextlib
+        stderr = io.StringIO()
+        with mock.patch("lib.control.tmux.TmuxAdapter.list_sessions", return_value=[]), \
+                contextlib.redirect_stderr(stderr):
+            self.assertEqual(self.migrate("--yes"), 2)
+        self.assertIn("broker-events.jsonl", stderr.getvalue())
+        self.assertIn("cannot merge", stderr.getvalue())
+
+    def test_an_empty_new_state_is_replaced_atomically(self) -> None:
+        state = self.home / ".asha/state"
+        state.mkdir(parents=True, mode=0o700)
+        (self.home / ".asha").chmod(0o700)
+        with mock.patch("lib.control.tmux.TmuxAdapter.list_sessions", return_value=[]):
+            self.assertEqual(self.migrate("--yes"), 0)
+        self.assertTrue((state / "control/initiatives").is_dir())
 
 
 class FullRunTests(LegacyFixture):
@@ -183,8 +221,14 @@ class FullRunTests(LegacyFixture):
         self.assertEqual(layout["new_state"].stat().st_mode & 0o777, 0o700)
         # Proton satellite rode the same rename.
         self.assertTrue((layout["new_state"] / "proton-mail/replay-ledger.json").is_file())
-        # Materialization forgotten and deleted; workspace root created fresh.
+        # Materialization forgotten and deleted; the .journals residue
+        # directory cleared; workspace root created fresh.
         self.assertFalse(self.mat_path.exists())
+        self.assertFalse((self.mat_path.parent / ".journals").exists())
+        self.assertEqual(
+            [item for item in marker["materializations"] if item.get("forget_error")],
+            [], "every production-named registration must forget cleanly",
+        )
         identities = subprocess.run(
             ["jj", "-R", str(self.source), "workspace", "list"],
             capture_output=True, text=True, env={**os.environ, "HOME": str(self.home)},

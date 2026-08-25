@@ -569,11 +569,15 @@ class ControlConfigTests(unittest.TestCase):
                 load_config({"HOME": str(home)})
             config = load_config({"HOME": str(home)}, check_legacy=False)
             self.assertEqual(config.tasks_dir, home / ".asha/state/control/tasks")
-            # An explicit ASHA_HOME is a deliberate redirection and bypasses
-            # the gate: the machine's default location is not this session's.
+            # A redirection to somewhere ELSE bypasses the gate; ASHA_HOME set
+            # to the default location does not — bin/asha exports it
+            # unconditionally, and set-ness alone would neuter the gate on the
+            # normal CLI path.
             elsewhere = home / "elsewhere"
             elsewhere.mkdir(mode=0o700)
             load_config({"HOME": str(home), "ASHA_HOME": str(elsewhere)})
+            with self.assertRaisesRegex(ConfigError, "asha migrate"):
+                load_config({"HOME": str(home), "ASHA_HOME": str(home / ".asha")})
             # A banner-only legacy directory is a completed migration, not data.
             for item in ("tasks",):
                 (legacy_control / item).rmdir()

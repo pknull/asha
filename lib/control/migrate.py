@@ -39,9 +39,9 @@ from .config import (
 MIGRATE_PLAN_CONTRACT = "asha.control-migrate-plan.v1"
 MARKER_VERSION = 1
 _PHASES = (
-    "preflight-passed", "manifest-written", "state-moved", "perms-normalized",
-    "husks-retired", "materializations-cleared", "workspaces-root-created",
-    "cache-moved", "banners-written",
+    "preflight-passed", "manifest-written", "state-moved", "move-verified",
+    "perms-normalized", "husks-retired", "materializations-cleared",
+    "workspaces-root-created", "cache-moved", "banners-written",
 )
 _HUSK_KINDS = ("tasks", "transactions", "prunes")
 _MAX_RECORD_BYTES = 1 << 20
@@ -183,12 +183,19 @@ def preflight(layout: Mapping[str, Path], inventory: Mapping[str, Any], *,
               tmux_sessions: list[str]) -> list[str]:
     """Every refusal, or an empty list. Read-only."""
     problems: list[str] = []
-    new_control = layout["new_control"]
-    if new_control.exists() and not layout["marker"].exists() and not layout["journal"].exists():
-        problems.append(
-            f"{new_control} already exists without a migration marker; refusing to "
-            "merge into unknown state; move it aside and re-run"
-        )
+    new_state = layout["new_state"]
+    if new_state.exists() and not layout["marker"].exists() and not layout["journal"].exists():
+        try:
+            tenants = sorted(item.name for item in new_state.iterdir())
+        except OSError:
+            tenants = ["<unreadable>"]
+        if tenants:
+            problems.append(
+                f"{new_state} already exists holding {', '.join(tenants[:4])}"
+                f"{'…' if len(tenants) > 4 else ''} and no migration marker; the "
+                "atomic rename cannot merge into it; move it aside and re-run"
+            )
+        # An empty new_state is replaced atomically by rename(2); no refusal.
     euid = os.geteuid()
     current = Path(layout["asha_home"].anchor)
     boundary = False
@@ -259,7 +266,17 @@ def _journal_read(layout: Mapping[str, Path]) -> dict[str, Any] | None:
 
 
 def _journal_write(layout: Mapping[str, Path], phase: str, extra: dict[str, Any]) -> None:
-    _write_private(layout["journal"], {"phase": phase, "at": _now(), **extra})
+    prior = {}
+    if layout["journal"].is_file():
+        try:
+            prior = _read_bounded_json(layout["journal"])
+        except (OSError, ValueError):
+            prior = {}
+    stamp = extra.pop("stamp", None) or prior.get("stamp")
+    payload = {"phase": phase, "at": _now(), **extra}
+    if stamp:
+        payload["stamp"] = stamp
+    _write_private(layout["journal"], payload)
 
 
 def _phase_reached(journal: dict[str, Any] | None, phase: str) -> bool:
@@ -274,39 +291,67 @@ def _retire_husks(layout: Mapping[str, Path], stamp: str) -> dict[str, Any]:
     entries: dict[str, str] = {}
     moved = {kind: 0 for kind in _HUSK_KINDS}
     retired.mkdir(mode=0o700, exist_ok=True)
+    manifest_path = retired / "manifest.json"
+    prior_files: dict[str, str] = {}
+    prior_counts: dict[str, int] = {}
+    if manifest_path.is_file():
+        # A crash between retiring and journaling leaves a manifest beside an
+        # incomplete move; a resume MERGES rather than clobbering — the digests
+        # of already-retired records are evidence and must survive byte-exact.
+        prior = _read_bounded_json(manifest_path)
+        prior_files = dict(prior.get("files", {}))
+        prior_counts = dict(prior.get("counts", {}))
     for kind in _HUSK_KINDS:
         source = control / kind
         destination = retired / kind
         destination.mkdir(mode=0o700, exist_ok=True)
         if not source.is_dir():
             continue
-        patterns = ("*.json", "*.ownership") if kind == "transactions" else ("*.json",)
+        patterns = ("*.json", "*.ownership", "*.lock") if kind == "transactions" else ("*.json", "*.lock")
         for pattern in patterns:
             for record in sorted(source.glob(pattern)):
                 entries[f"{kind}/{record.name}"] = _sha256(record)
                 os.rename(record, destination / record.name)
                 moved[kind] += 1
+    merged_counts = {
+        kind: moved[kind] + int(prior_counts.get(kind, 0)) for kind in _HUSK_KINDS
+    }
     manifest = {
         "reason": "path-bound record superseded by the ASHA_HOME migration",
-        "retired_at": _now(), "counts": moved, "files": entries,
+        "retired_at": _now(), "counts": merged_counts,
+        "files": {**prior_files, **entries},
     }
     manifest["review_sha256"] = hashlib.sha256(
         json.dumps(manifest, sort_keys=True).encode()
     ).hexdigest()
-    _write_private(retired / "manifest.json", manifest)
-    return {"retired_dir": str(retired), "counts": moved}
+    _write_private(manifest_path, manifest)
+    return {"retired_dir": str(retired), "counts": merged_counts}
+
+
+def materialization_registration_name(repo_key: str, name: str) -> str:
+    """The jj workspace name production registers for a materialization.
+
+    Byte-identical to the derivation in prepare.py: the DIRECTORY name is not
+    the registration name, and forgetting by directory name strands a dangling
+    registration in the source repository for every real materialization.
+    """
+    return "asha-materialization-" + hashlib.sha256(
+        f"{repo_key}\0{name}".encode("utf-8")
+    ).hexdigest()[:24]
 
 
 def _clear_materializations(inventory: Mapping[str, Any], layout: Mapping[str, Path],
-                            jj_forget) -> list[dict[str, Any]]:
+                            jj_forget) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
     report: list[dict[str, Any]] = []
+    residue_errors: list[dict[str, str]] = []
     for item in inventory["materializations"]:
         workspace = Path(item["path"])
         entry: dict[str, Any] = {**item, "forgotten": False, "deleted": False}
         pointer = workspace / ".jj/repo"
+        registration = materialization_registration_name(item["repo_key"], workspace.name)
         try:
             source_repo = Path(pointer.read_text().strip()).parent.parent
-            jj_forget(source_repo, workspace.name)
+            jj_forget(source_repo, registration)
             entry["forgotten"] = True
         except Exception as exc:  # noqa: BLE001 - degrade per design: dangling registrations are jj-tolerated
             entry["forget_error"] = str(exc)
@@ -320,20 +365,35 @@ def _clear_materializations(inventory: Mapping[str, Any], layout: Mapping[str, P
     workspaces = layout["legacy_workspaces"]
     if workspaces.is_dir():
         for repo_key in sorted(workspaces.iterdir()):
+            if repo_key.is_symlink() or not repo_key.is_dir():
+                continue
             for child in ("materializations",):
                 candidate = repo_key / child
-                if candidate.is_dir():
-                    for residue in candidate.glob(".*"):
-                        residue.unlink(missing_ok=True)
+                if not candidate.is_dir():
+                    continue
+                # Residue includes .journals/ (a DIRECTORY of materialization
+                # journal records) and dotfile markers. unlink() on a
+                # directory raises, and an uncaught error here — after the
+                # state rename — locked the whole CLI in rehearsal. Every
+                # residue failure degrades to a report line instead.
+                for residue in sorted(candidate.glob(".*")):
                     try:
-                        candidate.rmdir()
-                    except OSError:
-                        pass
+                        if residue.is_dir() and not residue.is_symlink():
+                            reject_symlink_components(residue, "materialization residue")
+                            shutil.rmtree(residue)
+                        else:
+                            residue.unlink(missing_ok=True)
+                    except (OSError, ConfigError) as exc:
+                        residue_errors.append({"path": str(residue), "error": str(exc)})
+                try:
+                    candidate.rmdir()
+                except OSError:
+                    pass
             try:
                 repo_key.rmdir()
             except OSError:
                 pass
-    return report
+    return report, residue_errors
 
 
 def _write_banner(directory: Path, layout: Mapping[str, Path]) -> None:
@@ -359,8 +419,12 @@ def run(args: list[str], env: Mapping[str, str], *, tmux=None, jj=None) -> int:
     layout = migration_layout(env)
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
+    if as_json and not dry_run:
+        raise MigrateError("--json is only meaningful with --dry-run")
     marker = layout["marker"]
     if marker.is_file():
+        layout["journal"].unlink(missing_ok=True)
+        layout["staging_manifest"].unlink(missing_ok=True)
         print(f"asha migrate: already migrated on "
               f"{_read_bounded_json(marker).get('migrated_at', '?')}; nothing to do")
         return 0
@@ -380,7 +444,12 @@ def run(args: list[str], env: Mapping[str, str], *, tmux=None, jj=None) -> int:
             sessions = []
     else:
         sessions = tmux
-    inventory = build_inventory(layout)
+    try:
+        inventory = build_inventory(layout)
+    except OSError as exc:
+        raise MigrateError(
+            f"cannot inventory the legacy tree: {exc}; fix permissions and re-run"
+        ) from exc
     problems = [] if journal is not None else preflight(layout, inventory, tmux_sessions=sessions)
     if problems:
         for problem in problems:
@@ -434,21 +503,44 @@ def run(args: list[str], env: Mapping[str, str], *, tmux=None, jj=None) -> int:
         jj_forget = jj
 
     layout["asha_home"].mkdir(mode=0o700, exist_ok=True)
+    if journal is not None:
+        if journal.get("stamp"):
+            stamp = journal["stamp"]
+        elif _phase_reached(journal, "manifest-written"):
+            raise MigrateError(
+                "resume journal carries no date stamp past the manifest phase; "
+                "a silently regenerated stamp would split the retirement across "
+                f"two directories — inspect {layout['journal']}"
+            )
     if not _phase_reached(journal, "preflight-passed"):
-        _journal_write(layout, "preflight-passed", {})
+        _journal_write(layout, "preflight-passed", {"stamp": stamp})
     if not _phase_reached(journal, "manifest-written"):
         manifest = _tree_manifest(layout["legacy_state"])
         _write_private(layout["staging_manifest"], {"files": manifest, "at": _now()})
         _journal_write(layout, "manifest-written", {"files": len(manifest)})
     if not _phase_reached(journal, "state-moved"):
-        os.rename(layout["legacy_state"], layout["new_state"])
+        # Resume-safe: a crash between the rename and its journal write leaves
+        # the tree at the new root with the journal one phase behind. The
+        # rename runs only when the source still exists; a moved-but-unlogged
+        # tree just advances the journal, and verification (its own phase)
+        # still runs on every path to completion.
+        if layout["legacy_state"].exists():
+            os.rename(layout["legacy_state"], layout["new_state"])
+        elif not layout["new_state"].exists():
+            raise MigrateError(
+                "neither the legacy state tree nor the new one exists; nothing "
+                "to move and nothing to resume — inspect "
+                f"{layout['journal']}"
+            )
         for parent in (layout["new_state"].parent, layout["legacy_state"].parent):
-            descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+            if parent.is_dir():
+                descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         _journal_write(layout, "state-moved", {})
+    if not _phase_reached(journal, "move-verified"):
         staged = _read_bounded_json(layout["staging_manifest"])["files"]
         current = _tree_manifest(layout["new_state"])
         if staged != current:
@@ -458,6 +550,7 @@ def run(args: list[str], env: Mapping[str, str], *, tmux=None, jj=None) -> int:
                 f"preserved at {layout['new_state']} — do not delete; see "
                 f"{layout['staging_manifest']}"
             )
+        _journal_write(layout, "move-verified", {})
     if not _phase_reached(journal, "perms-normalized"):
         os.chmod(layout["new_state"], 0o700)
         if layout["new_control"].is_dir():
@@ -471,8 +564,10 @@ def run(args: list[str], env: Mapping[str, str], *, tmux=None, jj=None) -> int:
         retired_info = _retire_husks(layout, stamp)
         _journal_write(layout, "husks-retired", retired_info)
     materialization_report: list[dict[str, Any]] = []
+    residue_errors: list[dict[str, str]] = []
     if not _phase_reached(journal, "materializations-cleared"):
-        materialization_report = _clear_materializations(inventory, layout, jj_forget)
+        materialization_report, residue_errors = _clear_materializations(
+            inventory, layout, jj_forget)
         _journal_write(layout, "materializations-cleared", {})
     if not _phase_reached(journal, "workspaces-root-created"):
         layout["new_workspaces"].mkdir(mode=0o700, exist_ok=True)
@@ -494,6 +589,7 @@ def run(args: list[str], env: Mapping[str, str], *, tmux=None, jj=None) -> int:
         "version": MARKER_VERSION, "status": "complete", "migrated_at": _now(),
         "counts": inventory["husks"], "retired": retired_info,
         "materializations": materialization_report or inventory["materializations"],
+        "residue_errors": residue_errors,
         "banners": [str(layout["legacy_state"]), str(layout["legacy_workspaces"].parent)],
     })
     layout["journal"].unlink(missing_ok=True)

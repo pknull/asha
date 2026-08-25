@@ -638,12 +638,14 @@ def load_config(
             "control.workspace_trust must be one of " + ", ".join(TRUST_MODES)
         )
 
-    # The gate protects the DEFAULT upgrade path. An explicit ASHA_HOME is a
-    # deliberate redirection — tests, sandboxes, expert layouts — and refusing
-    # it because the machine's default location still holds un-migrated data
-    # would break every hermetic use while protecting nothing that session
-    # touches.
-    if check_legacy and not values.get("ASHA_HOME"):
+    # The gate protects the DEFAULT LOCATION, judged by value, not by whether
+    # the variable is set: bin/asha exports ASHA_HOME unconditionally so that
+    # children agree, which would otherwise make every CLI invocation look
+    # "explicit" and neuter the gate on exactly the path real operators use
+    # (verified live: task list sailed onto an empty tree past 65 un-migrated
+    # records). A redirection to somewhere else — tests, sandboxes, expert
+    # layouts — still bypasses, because it touches nothing the gate protects.
+    if check_legacy and asha_home == home / ".asha":
         _refuse_legacy_layout(values, home, asha_home, workspace_root)
 
     return ControlConfig(
