@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.1.2
+**Version**: 2.2.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -80,6 +80,7 @@ migration review is owned by `/session:consolidate`.
 | Skill | Role |
 |---|---|
 | `memory-maintenance` | Memory v2 schema, recovery, learnings, and migration rules |
+| `operate-control` | Run the Control plane from the operator's chair: launch fenced coordinators, sign on the Keeper's word, relay questions, prepare integration |
 | `orchestrate-initiative` | Run a bounded initiative as its coordinator from Asha's own tmux pane; approval stays with the Keeper's terminal |
 | `skill-creator` | Create or update Codex-compatible skills |
 
@@ -133,6 +134,15 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.2.0
+
+Added the `operate-control` skill — the operator-side twin of
+`orchestrate-initiative`: a wrapped session drives the Control plane as the
+Keeper's chair (launch fenced coordinators, monitor by reading, perform
+operator writes only on the Keeper's explicit word, prepare but never
+perform integration). Loaded by default into wrapped launches through the
+dispatcher's orchestrator-stance brief.
 
 ### 2.1.0
 

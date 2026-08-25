@@ -219,6 +219,30 @@ asha_persona_enabled() {
   [[ "${ASHA_PERSONA:-1}" != "0" ]]
 }
 
+# Control-launched coordinators use the orchestrate-initiative skill instead of
+# the operator's chair. An explicit environment setting wins over user config;
+# otherwise the chair stance is on unless config disables it exactly.
+asha_orchestrator_stance_enabled() {
+  local cfg stance
+  [[ -z "${ASHA_COORDINATOR_LAUNCH:-}" ]] || return 1
+  case "${ASHA_ORCHESTRATOR_STANCE:-}" in
+    0) return 1 ;;
+    1) return 0 ;;
+  esac
+  cfg="${ASHA_CONFIG:-$ASHA_HOME/config.json}"
+  stance=""
+  if [[ -r "$cfg" ]] && command -v jq >/dev/null 2>&1; then
+    stance="$(jq -r 'if has("orchestrator_stance") then .orchestrator_stance else empty end' "$cfg" 2>/dev/null || true)"
+  fi
+  [[ "$stance" != "false" ]]
+}
+
+# The chair brief is repository-owned by default, with an override for user
+# customization and isolated launcher tests.
+asha_orchestrator_brief_file() {
+  echo "${ASHA_ORCHESTRATOR_BRIEF_FILE:-$ASHA_ROOT/identity/orchestrator-brief.md}"
+}
+
 # Operational layer only (operation.md + active learnings) rendered to $1.
 # Returns non-zero when the merge script is missing or produced nothing.
 asha_render_operational_layer() {
@@ -254,17 +278,31 @@ launch() {
         # operational layer still arrives through the SessionStart hook.
         exec "$executable" "$@"
       fi
-      local id
+      local id brief chair
       id="${ASHA_CLAUDE_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions.md}"
       export ASHA_PERSONA=1
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$id"; then
+        if asha_orchestrator_stance_enabled; then
+          brief="$(asha_orchestrator_brief_file)"
+          if [[ -s "$brief" ]]; then
+            chair="$ASHA_HOME/cache/instructions-claude-chair.md"
+            mkdir -p "$(dirname "$chair")"
+            if { cat "$id"; printf '\n\n'; cat "$brief"; } > "$chair" 2>/dev/null; then
+              exec "$executable" --append-system-prompt-file "$chair" "$@"
+            fi
+            info "warn: chair render failed; launching with identity only"
+          else
+            info "warn: orchestrator brief missing; launching without the chair stance"
+          fi
+        fi
         exec "$executable" --append-system-prompt-file "$id" "$@"
       fi
       info "warn: identity merge failed; launching plain Claude"
       exec "$executable" "$@"
       ;;
     codex)
-      local base instr op_merge op_tmp trust_root escaped_root
+      local base instr op_merge op_tmp brief trust_root escaped_root
+      local operational_applies=0 brief_applies=0
       local -a trust_args=()
       if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" ]]; then
         trust_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
@@ -299,11 +337,43 @@ launch() {
         if [[ -x "$op_merge" ]]; then
           op_tmp="$(mktemp)"
           if "$op_merge" "$op_tmp" 2>/dev/null; then
-            instr="$ASHA_HOME/cache/instructions-codex.md"
-            { cat "$base"; printf '\n\n'; cat "$op_tmp"; } > "$instr"
+            operational_applies=1
           fi
-          rm -f "$op_tmp"
         fi
+        if asha_orchestrator_stance_enabled; then
+          brief="$(asha_orchestrator_brief_file)"
+          if [[ -s "$brief" ]]; then
+            brief_applies=1
+          else
+            info "warn: orchestrator brief missing; launching without the chair stance"
+          fi
+        fi
+        if [[ $operational_applies -eq 1 || $brief_applies -eq 1 ]]; then
+          if [[ $brief_applies -eq 1 ]]; then
+            instr="$ASHA_HOME/cache/instructions-codex-chair.md"
+          else
+            instr="$ASHA_HOME/cache/instructions-codex.md"
+          fi
+          mkdir -p "$(dirname "$instr")"
+          if {
+            cat "$base"
+            if [[ $operational_applies -eq 1 ]]; then
+              printf '\n\n'
+              cat "$op_tmp"
+            fi
+            if [[ $brief_applies -eq 1 ]]; then
+              printf '\n\n'
+              cat "$brief"
+            fi
+          } > "$instr" 2>/dev/null; then
+            [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
+            exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+          fi
+          [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
+          info "warn: combined instructions render failed; launching with identity only"
+          exec "$executable" -c "model_instructions_file=\"$base\"" "${trust_args[@]}" "$@"
+        fi
+        [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
         exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
       fi
       info "warn: identity merge failed; launching plain codex"

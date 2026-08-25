@@ -249,6 +249,21 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 | Identity assertion | `--append-system-prompt-file` | `model_instructions_file` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | `OPENCODE_CONFIG_CONTENT.instructions` |
 | Scope | wrapper only | wrapper only | wrapper only | wrapper only |
 | Delivery | launch-time identity file; operation via SessionStart | launch-time combined file | launch-time instruction directory with separate files | launch-time combined file |
+| Orchestrator stance | combined chair file (default on) | combined chair file (default on) | not injected | not injected |
+
+Wrapped `asha claude` and `asha codex` launches also carry the orchestrator
+stance by default: `identity/orchestrator-brief.md` — the operator's-chair
+brief pointing at the `operate-control` skill — is appended to the launch
+instructions (a separate combined cache file; the canonical identity render
+stays identity-only). It is suppressed for Control-launched coordinator
+sessions (`ASHA_COORDINATOR_LAUNCH`), for Control-managed workers
+(`ASHA_PERSONA=0`), by `"orchestrator_stance": false` in
+`~/.asha/config.json`, or per-launch via `ASHA_ORCHESTRATOR_STANCE=0`
+(`=1` overrides a config `false`; the coordinator suppression beats both).
+The config read needs `jq` and a well-formed file — without them the
+default (on) applies silently; `ASHA_ORCHESTRATOR_STANCE=0` is the
+dependable per-launch kill switch. Plain harness commands never receive
+the stance.
 
 Codex has no `--append-system-prompt-file` equivalent at the CLI, and
 its `model_instructions_file` config field accepts only a single file
