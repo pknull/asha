@@ -275,6 +275,13 @@ class is refused before any approval lookup.
 
 ## Coordinator claims (Increment 4)
 
+The operator side has a chair of its own: wrapped `asha claude`/`asha codex`
+launches carry the orchestrator stance by default (see INSTALLER.md, Persona
+model) — the session drives this surface as the Keeper's instrument through
+the `operate-control` skill, launching one fenced coordinator per piece of
+work and signing operator writes only on the Keeper's word. The stance never
+reaches coordinator sessions or workers, so the split below stays exact.
+
 The controller never launches a coordinator. The operator's Asha session runs
 `asha initiative coordinator claim ID` from inside a tmux pane. The claim
 records one `asha.orchestration-coordinator.v1` generation under

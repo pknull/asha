@@ -313,6 +313,17 @@ else
 fi
 echo ""
 
+# Test Suite 22: Orchestrator Chair Stance
+echo -e "${BLUE}--- Test Suite 22: Orchestrator Chair Stance ---${NC}"
+if "$SCRIPT_DIR/test-orchestrator-stance.sh"; then
+    echo -e "${GREEN}✓ Orchestrator chair stance tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Orchestrator chair stance tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"

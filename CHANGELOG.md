@@ -12,6 +12,27 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### The orchestrator's chair: wrapped launches coordinate by default
+
+- `asha claude` and `asha codex` now start in the orchestrator stance: the
+  wrapped session is the Keeper's chair for the Control plane — it launches
+  one fenced coordinator per piece of work, monitors by reading, performs
+  operator writes only on the Keeper's explicit word, and prepares but never
+  performs integration. The stance is a small launch-time brief
+  (`identity/orchestrator-brief.md`) pointing at the new session-plugin
+  skill `operate-control` (session 2.2.0), the operator-side twin of
+  `orchestrate-initiative`.
+- Suppression is structural where it must be: Control-launched coordinator
+  sessions (`ASHA_COORDINATOR_LAUNCH`) and Control-managed workers
+  (`ASHA_PERSONA=0`) never receive the chair brief, so a coordinator is
+  never told it must not be one. `"orchestrator_stance": false` in
+  `~/.asha/config.json` turns the default off; `ASHA_ORCHESTRATOR_STANCE`
+  overrides per launch. Plain `claude`/`codex` remain persona- and
+  stance-free with full tooling, unchanged. Existing installs need a
+  reinstall or `asha doctor --fix` to symlink the new skill; until then
+  the brief names a skill that is not yet installed.
+
+
 #### One asha root (`ASHA_HOME`), with a one-shot migration
 
 - Every durable location now derives from a single root — default `~/.asha`,

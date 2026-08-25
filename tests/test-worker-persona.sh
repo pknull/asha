@@ -104,10 +104,12 @@ else
   fail "codex ASHA_PERSONA=0 carries the operational layer only ($CODEX_ARGS)"
 fi
 run_harness codex "" ASHA_CONTROL_MANAGED=1
-if argv_joined | grep -q 'instructions-codex\.md'; then
-  ok "codex default keeps the identity model_instructions_file"
+# The persona default now carries the orchestrator stance: the combined
+# render is the role-distinct chair file, which still contains the identity.
+if argv_joined | grep -q 'instructions-codex-chair\.md'; then
+  ok "codex default keeps the identity model_instructions_file (chair render)"
 else
-  fail "codex default keeps the identity model_instructions_file ($(argv_joined | tr '\n' ' '); stderr: $(cat "$WORK/stderr"))"
+  fail "codex default keeps the identity model_instructions_file (chair render) ($(argv_joined | tr '\n' ' '); stderr: $(cat "$WORK/stderr"))"
 fi
 
 # --- copilot ---

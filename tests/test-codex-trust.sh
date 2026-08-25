@@ -31,7 +31,9 @@ printf '%s\0' "$@" >"$ASHA_TEST_CAPTURE"
 EOF
 chmod +x "$HOME_DIR/bin/codex"
 
-MODEL_FILE="$HOME_DIR/.asha/cache/instructions-codex.md"
+# Default persona launches carry the orchestrator stance, so the combined
+# render is the chair file (identity + operational + brief).
+MODEL_FILE="$HOME_DIR/.asha/cache/instructions-codex-chair.md"
 
 run_codex() {
   local cwd="$1" managed="$2"
