@@ -828,9 +828,42 @@ def _prunable_probe(config) -> Probe:
     )
 
 
+def _migration_probe(config) -> Probe:
+    """Whether the single-root migration is complete, pending, or disturbed."""
+    from .config import LEGACY_BANNER_NAME, legacy_populated, migration_layout
+
+    if config is None:
+        return Probe("migration", "unavailable", "configuration was not supplied")
+    try:
+        layout = migration_layout({"HOME": str(config.home), "ASHA_HOME": str(config.asha_home)})
+    except Exception as exc:  # noqa: BLE001 - a probe reports, never raises
+        return Probe("migration", "unavailable", f"layout underivable: {exc}")
+    marker = layout["marker"].is_file()
+    control_live = legacy_populated(layout["legacy_control"])
+    workspaces_live = legacy_populated(layout["legacy_workspaces"])
+    if control_live or workspaces_live:
+        where = layout["legacy_control"] if control_live else layout["legacy_workspaces"]
+        if marker:
+            return Probe(
+                "migration", "mismatch",
+                f"legacy data reappeared at {where} after the migration marker; a "
+                f"restore resurrected superseded files — compare against {layout['marker']}",
+            )
+        return Probe(
+            "migration", "mismatch",
+            f"legacy Control state remains at {where}; run: asha migrate",
+        )
+    if marker:
+        return Probe("migration", "match", "single-root migration complete; legacy roots hold only banners")
+    if layout["legacy_state"].exists() and not (layout["legacy_state"] / LEGACY_BANNER_NAME).is_file():
+        return Probe("migration", "match", "no legacy state and no marker: nothing ever needed migrating")
+    return Probe("migration", "match", "no legacy Asha state present")
+
+
 DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "python": _python_probe,
     "configuration": _configuration_probe,
+    "migration": _migration_probe,
     "tmux": _tmux_probe,
     "harness": _harness_probe,
     "gh": _gh_probe,

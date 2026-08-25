@@ -442,6 +442,38 @@ def legacy_roots(values: Mapping[str, str], home: Path) -> dict[str, Path]:
     }
 
 
+def migration_layout(values: Mapping[str, str] | None = None) -> dict[str, Path]:
+    """Every path `asha migrate` and its probes reason about, in one place.
+
+    Pure derivation — no validation, no filesystem writes — so the migrator
+    can run while load_config's own gate is refusing. Legacy locations honor
+    the retired XDG variables (that is where a pre-consolidation install kept
+    data); new locations derive from ASHA_HOME exactly as load_config does.
+    """
+    env = os.environ if values is None else values
+    raw_home = env.get("HOME", "")
+    if not raw_home:
+        raise ConfigError("HOME is required")
+    home = Path(raw_home)
+    asha_home = Path(env.get("ASHA_HOME") or (home / ".asha"))
+    legacy = legacy_roots(env, home)
+    return {
+        "home": home,
+        "asha_home": asha_home,
+        "legacy_state": legacy["state"],
+        "legacy_control": legacy["control"],
+        "legacy_workspaces": legacy["workspaces"],
+        "legacy_cache": legacy["cache"],
+        "new_state": asha_home / "state",
+        "new_control": asha_home / "state/control",
+        "new_workspaces": asha_home / "workspaces",
+        "new_cache": asha_home / "cache",
+        "marker": asha_home / "state/.migration-v1.json",
+        "journal": asha_home / ".migrate-journal.json",
+        "staging_manifest": asha_home / ".migrate-manifest.json",
+    }
+
+
 def legacy_populated(path: Path) -> bool:
     """True when a legacy directory holds anything besides the moved banner.
 
