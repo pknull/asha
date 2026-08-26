@@ -282,6 +282,13 @@ the `operate-control` skill, launching one fenced coordinator per piece of
 work and signing operator writes only on the Keeper's word. The stance never
 reaches coordinator sessions or workers, so the split below stays exact.
 
+Codex coordinators are launch-equivalent to Claude ones (verified live
+2026-08-25: prompt delivery, skill adherence, create, claim with the pane
+proofs, and propose-plan all hold): `coordinator launch --harness codex`
+adds the per-launch trust override and the unattended workspace-write
+posture described in docs/control.md, since an unattended session cannot
+answer Codex's own approval prompts.
+
 The controller never launches a coordinator. The operator's Asha session runs
 `asha initiative coordinator claim ID` from inside a tmux pane. The claim
 records one `asha.orchestration-coordinator.v1` generation under
