@@ -8,6 +8,7 @@ import json
 import unittest
 import uuid
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 from lib.control.orchestration.cli import main
 from lib.control.orchestration.model import record_digest
@@ -149,6 +150,79 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
         )
         self.assertEqual(code, 2)
         self.assertIn("does not belong to initiative", error)
+
+        # Form A must reject a bundle of another initiative for the same reason
+        # a foreign seal is rejected: ownership, not merely compatibility.
+        before = len(self.store.list_events_snapshot(other["initiative_id"]))
+        code, _output, error = self.run_cli(
+            other["initiative_id"], "--bundle", self.bundle["bundle_id"],
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("does not belong to initiative", error)
+        self.assertEqual(
+            len(self.store.list_events_snapshot(other["initiative_id"])), before,
+        )
+
+    def record_digests(self) -> dict[str, object]:
+        return {
+            "state": self.initiative()["state"],
+            "bundles": [
+                record_digest(item)
+                for item in self.store.list_bundles_snapshot(self.initiative_id)
+            ],
+            "seals": [
+                record_digest(item)
+                for item in self.store.list_seals_snapshot(self.initiative_id)
+            ],
+            "attempts": [
+                record_digest(item)
+                for item in self.store.list_attempts_snapshot(self.initiative_id)
+            ],
+            "nodes": [
+                record_digest(item)
+                for item in self.store.list_nodes_snapshot(self.initiative_id)
+            ],
+        }
+
+    def test_neither_form_touches_a_repository_or_the_initiative_outcome(self) -> None:
+        """Each form appends one event and nothing else: no process, no records.
+
+        Every repository mutation this codebase can make -- merge, rebase,
+        bookmark move, push -- is an external command, so an attempted spawn is
+        the observable proof that a verb stopped being an attestation.  Each
+        form gets a fresh initiative because recording either disposition
+        refuses the other for the same seal.
+        """
+        def spawned(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("record-integration must not run an external command")
+
+        for form in ("bundle", "seal"):
+            with self.subTest(form=form):
+                self.setUp()
+                tail = (
+                    ["--bundle", self.bundle["bundle_id"]] if form == "bundle"
+                    else [
+                        "--seal", self.first["seal_id"], "--abandoned",
+                        "--reason", "Recorded without integrating.",
+                    ]
+                )
+                before = self.record_digests()
+                before_events = len(self.store.list_events_snapshot(self.initiative_id))
+                with mock.patch("subprocess.Popen", side_effect=spawned), mock.patch(
+                    "subprocess.run", side_effect=spawned,
+                ):
+                    code, _output, error = self.run_cli(
+                        self.initiative_id, *tail, "--json",
+                    )
+                self.assertEqual((code, error), (0, ""))
+                # The attestation is the only new fact: the compatible bundle,
+                # its member seals, their attempts, the nodes, and the
+                # initiative outcome all stand exactly as they were.
+                self.assertEqual(self.record_digests(), before)
+                self.assertEqual(
+                    len(self.store.list_events_snapshot(self.initiative_id)),
+                    before_events + 1,
+                )
 
     def test_coordinator_session_cannot_record_an_operator_attestation(self) -> None:
         before = len(self.store.list_events_snapshot(self.initiative_id))
