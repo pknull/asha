@@ -301,7 +301,7 @@ launch() {
       exec "$executable" "$@"
       ;;
     codex)
-      local base instr op_merge op_tmp brief trust_root escaped_root escaped_home
+      local base instr op_merge op_tmp brief trust_root escaped_root
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
       local -a coordinator_args=()
@@ -317,13 +317,12 @@ launch() {
         fi
       fi
       if [[ -n "${ASHA_COORDINATOR_LAUNCH:-}" ]]; then
-        if [[ "$ASHA_HOME" =~ [[:cntrl:]] ]]; then
-          info "warn: Codex coordinator unattended posture skipped: ASHA_HOME contains TOML-unsafe control characters"
-        else
-          escaped_home="${ASHA_HOME//\\/\\\\}"
-          escaped_home="${escaped_home//\"/\\\"}"
-          coordinator_args=(-a never --sandbox workspace-write -c "sandbox_workspace_write={writable_roots=[\"$escaped_home\"]}")
-        fi
+        # Any Codex sandbox mode short of full access runs commands in a PID
+        # namespace and refuses the tmux socket, which breaks the
+        # coordinator's own pane and server proofs (verified live
+        # 2026-08-25). The coordinator is the operator's persona-trusted
+        # agent running no foreign code; workers stay fully sandboxed.
+        coordinator_args=(-a never --sandbox danger-full-access)
       fi
       if ! asha_persona_enabled; then
         # Control-managed worker: operational layer only (Codex has no reliable

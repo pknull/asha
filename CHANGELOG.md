@@ -30,9 +30,12 @@ the active instruction surface loses no release detail.
   coordinator arc (create, claim, propose-plan) on Codex. The launcher keys
   the per-launch trust override on `ASHA_COORDINATOR_LAUNCH` as well as
   `ASHA_CONTROL_MANAGED`, and coordinator launches add `-a never
-  --sandbox workspace-write` with `$ASHA_HOME` as a writable root — Control
-  state is reachable, project trees sit inside the workspace, and everything
-  else stays sandboxed. The probe also confirmed a known gap now recorded
+  --sandbox danger-full-access`: every Codex sandbox mode short of full
+  access runs commands in a PID namespace and refuses the tmux socket,
+  which breaks the coordinator's own pane and server proofs — proven by a
+  live probe whose claim succeeded only when its command escaped the
+  sandbox. Coordinators are the operator's persona-trusted agents; workers
+  keep their full sandbox. The probe also confirmed a known gap now recorded
   for ruling: a never-activated initiative has no wind-down route
   (`finalize` and `archive` refuse from `planning`).
 
