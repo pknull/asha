@@ -86,6 +86,10 @@ class OrchestrationConfig:
         return self.control.config_path
 
     @property
+    def asha_home(self) -> Path:
+        return self.control.asha_home
+
+    @property
     def home(self) -> Path:
         return self.control.home
 
