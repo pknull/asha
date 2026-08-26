@@ -153,22 +153,36 @@ def orchestration_bindings(env: dict[str, str] | None = None) -> dict[str, list[
                 if attempt["state"] not in ATTEMPT_TERMINAL_STATES:
                     bind(attempt.get("task_id"), attempt["attempt_id"], attempt["state"])
                     continue
-                if attempt["state"] not in {
-                    "sealed-success", "sealed-failure", "sealed-paused",
-                }:
-                    continue
+                # A saved seal id is the ownership fact, and every terminal
+                # state can carry one: seals.py saves the seal only after the
+                # attempt is durably `sealing`, and cancel-node moves a
+                # `sealing` attempt to `cancelled` with its seal id intact.
+                # The state only decides whether an outcome is implied.
                 seal_id = attempt.get("seal_id")
-                if not isinstance(seal_id, str):
-                    raise ValueError(
-                        f"terminal attempt {attempt['attempt_id']} has no seal binding"
-                    )
-                seal = integration.seals.get(seal_id)
-                expected_outcome = attempt["state"].removeprefix("sealed-")
+                implied_outcome = (
+                    attempt["state"].removeprefix("sealed-")
+                    if attempt["state"].startswith("sealed-")
+                    else None
+                )
+                if seal_id is None:
+                    # A terminal attempt that never sealed owns no commit; a
+                    # sealed-* one without its seal id is corrupt state.
+                    if implied_outcome is not None:
+                        raise ValueError(
+                            f"terminal attempt {attempt['attempt_id']} has no seal binding"
+                        )
+                    continue
+                seal = (
+                    integration.seals.get(seal_id) if isinstance(seal_id, str) else None
+                )
                 if (
                     seal is None
                     or seal["attempt_id"] != attempt["attempt_id"]
                     or seal["task_id"] != attempt["task_id"]
-                    or seal["outcome"] != expected_outcome
+                    or (
+                        implied_outcome is not None
+                        and seal["outcome"] != implied_outcome
+                    )
                 ):
                     raise ValueError(
                         f"terminal attempt {attempt['attempt_id']} seal binding is inconsistent"

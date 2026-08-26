@@ -31,6 +31,7 @@ from lib.control.tmux import TmuxAdapter
 from lib.control.transaction import CreationJournalStore
 from lib.control.orchestration.actions import append_event, build_action_document, submit_action
 from lib.control.orchestration.cli import main as initiative_main
+from lib.control.orchestration.integration import integration_snapshot
 from lib.control.orchestration.model import BUNDLE_CONTRACT, record_digest
 from lib.control.orchestration.readiness import archive_initiative
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
@@ -915,7 +916,9 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(action["state"], "completed")
         return captured["task"], self.store.list_attempts_snapshot(self.initiative_id)[0]
 
-    def sealed_attempt(self, outcome: str = "success") -> tuple[dict, dict, dict]:
+    def sealed_attempt(
+        self, outcome: str = "success", *, stop_at: str = "",
+    ) -> tuple[dict, dict, dict]:
         task, attempt = self.dispatched_attempt()
         seal = graph_seal(str(uuid.uuid4()))
         seal.update({
@@ -934,7 +937,10 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
         self.store.save_seal(self.initiative_id, seal)
         ready = f"{outcome}-seal-ready"
         sealed = f"sealed-{outcome}"
-        for state in ("reported", "awaiting-exit", ready, "sealing", sealed):
+        states = ["reported", "awaiting-exit", ready, "sealing", sealed]
+        if stop_at:
+            states = states[: states.index(stop_at) + 1]
+        for state in states:
             current = self.store.read_attempt(self.initiative_id, attempt["attempt_id"])
             changed = copy.deepcopy(current)
             changed.update({"state": state, "updated_at": _timestamp()})
@@ -1061,6 +1067,55 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
                 )
                 self.assertEqual(orchestration_bindings(self.env), {})
 
+    def test_a_cancelled_attempt_that_still_holds_its_seal_binds(self) -> None:
+        """`cancelled` is terminal too, and it can carry an unintegrated seal.
+
+        seals.py saves the seal only after the attempt is durably `sealing`,
+        and `_finish_published_seal` resumes from exactly that state, so a
+        finalization interrupted there is an anticipated shape rather than a
+        theoretical race.  From there the ordinary operator verb
+        `asha initiative cancel <id> --node NODE` moves the attempt to
+        `cancelled` and preserves its seal_id, so a `sealed-*` allowlist would
+        hand the sealed-but-unintegrated workspace straight to prune.
+        """
+        task, attempt, seal = self.sealed_attempt(stop_at="sealing")
+        self.assertEqual(attempt["state"], "sealing")
+
+        action = submit_action(self.store, self.initiative_id, build_action_document(
+            self.initiative(), "cancel-node", {"node_id": attempt["node_id"]},
+        ))
+        self.assertEqual(action["state"], "completed")
+        cancelled = self.store.read_attempt(self.initiative_id, attempt["attempt_id"])
+        self.assertEqual(
+            (cancelled["state"], cancelled["seal_id"]),
+            ("cancelled", seal["seal_id"]),
+        )
+        self.assertNotIn(seal["seal_id"], integration_snapshot(
+            self.store, self.initiative_id,
+        ).facts)
+
+        self.assertEqual(orchestration_bindings(self.env)[task["task_id"]], [{
+            "initiative_id": self.initiative_id,
+            "attempt_id": attempt["attempt_id"],
+            "state": "cancelled",
+            "seal_id": seal["seal_id"],
+        }])
+        # Form B is the only exit: no compatible bundle will ever carry it.
+        self.record_abandonment(seal["seal_id"], "Cancelled before integration.")
+        self.assertEqual(orchestration_bindings(self.env), {})
+
+    def test_a_terminal_attempt_that_never_sealed_does_not_bind(self) -> None:
+        """A seal-less terminal attempt owns nothing; only a seal_id binds."""
+        _task, attempt = self.dispatched_attempt()
+        self.assertIsNone(attempt["seal_id"])
+        action = submit_action(self.store, self.initiative_id, build_action_document(
+            self.initiative(), "cancel-node", {"node_id": attempt["node_id"]},
+        ))
+        self.assertEqual(action["state"], "completed")
+        cancelled = self.store.read_attempt(self.initiative_id, attempt["attempt_id"])
+        self.assertEqual((cancelled["state"], cancelled["seal_id"]), ("cancelled", None))
+        self.assertEqual(orchestration_bindings(self.env), {})
+
     def test_terminal_initiative_state_is_not_integration_evidence(self) -> None:
         """Reaching a terminal outcome, including archived, records nothing."""
         task, _attempt, seal = self.sealed_attempt()
@@ -1099,6 +1154,24 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
             self.config.initiatives_dir / self.initiative_id / "seals"
             / f"{seal['seal_id']}.json"
         ).unlink()
+        with self.assertRaisesRegex(PruneError, "orchestration state unreadable"):
+            orchestration_bindings(self.env)
+
+    def test_a_sealed_attempt_that_lost_its_seal_id_fails_closed(self) -> None:
+        """A `sealed-*` state without a seal id is corrupt, never permission.
+
+        Binding on the seal id makes a null one the ordinary terminal case, so
+        the one state family that must always carry a seal keeps its own
+        refusal rather than falling through to `continue`.
+        """
+        _task, attempt, _seal = self.sealed_attempt()
+        path = (
+            self.config.initiatives_dir / self.initiative_id / "attempts"
+            / f"{attempt['attempt_id']}.json"
+        )
+        record = json.loads(path.read_text())
+        record["seal_id"] = None
+        path.write_text(json.dumps(record))
         with self.assertRaisesRegex(PruneError, "orchestration state unreadable"):
             orchestration_bindings(self.env)
 
