@@ -142,7 +142,15 @@ def launch_argv(
                 str(executable), harness, "-p", *arguments,
                 "--permission-mode", "bypassPermissions",
             ]
-        return [str(executable), harness, "exec", *arguments]
+        # A Control worker runs inside a jj workspace, which carries `.jj` and
+        # never a `.git` of its own.  `codex exec` refuses to start outside a
+        # git repository without this flag, and the projects trust table does
+        # not satisfy that gate in exec mode, so every codex worker would exit
+        # 1 before it could read its brief.
+        return [
+            str(executable), harness, "exec", "--skip-git-repo-check",
+            *arguments,
+        ]
     return [str(executable), harness, *arguments]
 
 
