@@ -32,6 +32,7 @@ from lib.control.transaction import CreationJournalStore
 from lib.control.orchestration.actions import append_event, build_action_document, submit_action
 from lib.control.orchestration.cli import main as initiative_main
 from lib.control.orchestration.model import BUNDLE_CONTRACT, record_digest
+from lib.control.orchestration.readiness import archive_initiative
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
 from tests.python.test_orchestration_graph import seal as graph_seal
 
@@ -914,7 +915,7 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(action["state"], "completed")
         return captured["task"], self.store.list_attempts_snapshot(self.initiative_id)[0]
 
-    def sealed_attempt(self) -> tuple[dict, dict, dict]:
+    def sealed_attempt(self, outcome: str = "success") -> tuple[dict, dict, dict]:
         task, attempt = self.dispatched_attempt()
         seal = graph_seal(str(uuid.uuid4()))
         seal.update({
@@ -926,21 +927,37 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
             "repository_id": self.initiative()["scope"]["repository"]["repository_id"],
             "scope_origin": copy.deepcopy(attempt["base"]["scope_origin"]),
             "sealed_at": _timestamp(),
+            "outcome": outcome,
         })
+        if outcome == "failure":
+            seal["result_id"] = None
         self.store.save_seal(self.initiative_id, seal)
-        for state in (
-            "reported", "awaiting-exit", "success-seal-ready", "sealing", "sealed-success",
-        ):
+        ready = f"{outcome}-seal-ready"
+        sealed = f"sealed-{outcome}"
+        for state in ("reported", "awaiting-exit", ready, "sealing", sealed):
             current = self.store.read_attempt(self.initiative_id, attempt["attempt_id"])
             changed = copy.deepcopy(current)
             changed.update({"state": state, "updated_at": _timestamp()})
-            if state in {"success-seal-ready", "sealing", "sealed-success"}:
+            if state in {ready, "sealing", sealed}:
                 changed["seal_id"] = seal["seal_id"]
                 changed["result_id"] = seal["result_id"]
             self.store.save_attempt(
                 self.initiative_id, changed, expected_digest=record_digest(current),
             )
         return task, self.store.read_attempt(self.initiative_id, attempt["attempt_id"]), seal
+
+    def run_record_integration(self, *args: str) -> tuple[int, str]:
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = initiative_main([
+                "initiative", "record-integration", self.initiative_id, *args, "--json",
+            ], env=self.env)
+        return code, stderr.getvalue()
+
+    def record_abandonment(self, seal_id: str, reason: str) -> None:
+        self.assertEqual(self.run_record_integration(
+            "--seal", seal_id, "--abandoned", "--reason", reason,
+        ), (0, ""))
 
     def compatible_bundle(self, seal: dict) -> dict:
         bundle = {
@@ -1021,11 +1038,218 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual((code, stderr.getvalue()), (0, ""))
         self.assertEqual(orchestration_bindings(self.env), {})
 
-    def test_malformed_integration_fact_makes_the_binding_scan_fail_closed(self) -> None:
+    def test_failure_and_paused_seals_bind_and_release_only_by_abandonment(self) -> None:
+        """A seal that can never reach a compatible bundle still has an exit.
+
+        Only Form A can record integration, and no compatible bundle will ever
+        contain a failure or paused seal, so without Form B their workspaces
+        would bind forever.
+        """
+        for outcome in ("failure", "paused"):
+            with self.subTest(outcome=outcome):
+                # A node dispatches once, so each case needs its own initiative.
+                self.setUp()
+                task, attempt, seal = self.sealed_attempt(outcome)
+                self.assertEqual(orchestration_bindings(self.env)[task["task_id"]], [{
+                    "initiative_id": self.initiative_id,
+                    "attempt_id": attempt["attempt_id"],
+                    "state": f"sealed-{outcome}",
+                    "seal_id": seal["seal_id"],
+                }])
+                self.record_abandonment(
+                    seal["seal_id"], f"Operator released this {outcome} candidate.",
+                )
+                self.assertEqual(orchestration_bindings(self.env), {})
+
+    def test_terminal_initiative_state_is_not_integration_evidence(self) -> None:
+        """Reaching a terminal outcome, including archived, records nothing."""
+        task, _attempt, seal = self.sealed_attempt()
+        current = self.initiative()
+        partial = copy.deepcopy(current)
+        partial.update({
+            "state": "partial",
+            "state_revision": current["state_revision"] + 1,
+            "updated_at": _timestamp(),
+        })
+        self.store.save_initiative(partial, expected_digest=record_digest(current))
+        self.assertIn(task["task_id"], orchestration_bindings(self.env))
+
+        archive_initiative(self.store, self.initiative_id, source_state="partial")
+        self.assertEqual(self.initiative()["state"], "archived")
+        self.assertIn(task["task_id"], orchestration_bindings(self.env))
+
+        self.record_abandonment(seal["seal_id"], "Archived without integrating.")
+        self.assertEqual(orchestration_bindings(self.env), {})
+
+    def test_a_link_whose_attempt_record_is_gone_still_binds(self) -> None:
+        task, attempt = self.dispatched_attempt()
+        (
+            self.config.initiatives_dir / self.initiative_id / "attempts"
+            / f"{attempt['attempt_id']}.json"
+        ).unlink()
+        self.assertEqual(orchestration_bindings(self.env)[task["task_id"]], [{
+            "initiative_id": self.initiative_id,
+            "attempt_id": attempt["attempt_id"],
+            "state": "unknown",
+        }])
+
+    def test_a_terminal_attempt_whose_seal_record_is_gone_fails_closed(self) -> None:
         _task, _attempt, seal = self.sealed_attempt()
+        (
+            self.config.initiatives_dir / self.initiative_id / "seals"
+            / f"{seal['seal_id']}.json"
+        ).unlink()
+        with self.assertRaisesRegex(PruneError, "orchestration state unreadable"):
+            orchestration_bindings(self.env)
+
+    def test_a_partially_unreadable_initiative_registry_fails_closed(self) -> None:
+        self.sealed_attempt()
+        unreadable = self.config.initiatives_dir / str(uuid.uuid4())
+        unreadable.mkdir(mode=0o700)
+        (unreadable / "initiative.json").write_text("{ not an initiative")
+        with self.assertRaisesRegex(PruneError, "initiative record\\(s\\) unreadable"):
+            orchestration_bindings(self.env)
+
+    def test_malformed_integration_fact_makes_the_binding_scan_fail_closed(self) -> None:
+        """Malformed, conflicting, or unauthored evidence is never permission.
+
+        Each case is appended to its own initiative because the scan refuses
+        the whole read as soon as one retained fact fails to validate.
+        """
+        def facts(seal: dict) -> dict[str, tuple[list[str], dict, str]]:
+            member = {"seal_id": seal["seal_id"], "jj_commit_id": seal["jj_commit_id"]}
+            abandoned = {
+                "disposition": "abandoned", "members": [member], "reason": "released",
+            }
+            return {
+                "no members": (
+                    [seal["seal_id"]],
+                    {"disposition": "integrated", "members": []},
+                    "operator",
+                ),
+                "integrated without a bundle of this initiative": (
+                    [str(uuid.uuid4()), seal["seal_id"]],
+                    {"disposition": "integrated", "members": [member]},
+                    "operator",
+                ),
+                "commit drift against the seal": (
+                    [seal["seal_id"]],
+                    {**abandoned, "members": [
+                        {"seal_id": seal["seal_id"], "jj_commit_id": "a" * 40},
+                    ]},
+                    "operator",
+                ),
+                "an unknown disposition": (
+                    [seal["seal_id"]],
+                    {"disposition": "reverted", "members": [member]},
+                    "operator",
+                ),
+                "an actor that is not the operator": (
+                    [seal["seal_id"]], abandoned, "coordinator",
+                ),
+            }
+
+        for label in (
+            "no members",
+            "integrated without a bundle of this initiative",
+            "commit drift against the seal",
+            "an unknown disposition",
+            "an actor that is not the operator",
+        ):
+            with self.subTest(fact=label):
+                self.setUp()
+                _task, _attempt, seal = self.sealed_attempt()
+                subject_ids, payload, actor_kind = facts(seal)[label]
+                append_event(
+                    self.store, self.initiative_id, "seal-integration-recorded",
+                    subject_ids, payload, actor_kind=actor_kind, actor_id="cli",
+                )
+                with self.assertRaisesRegex(PruneError, "orchestration state unreadable"):
+                    orchestration_bindings(self.env)
+
+    def test_an_integrated_fact_may_not_name_a_seal_its_bundle_never_carried(self) -> None:
+        """The bundle is the whole evidence: a fact cannot borrow its authority.
+
+        Both seals exist and both commits match, so only the bundle-membership
+        cross-check stands between a fabricated subject list and a released
+        workspace.
+        """
+        _task, _attempt, bound = self.sealed_attempt()
+        other = copy.deepcopy(bound)
+        other.update({"seal_id": str(uuid.uuid4()), "sealed_at": _timestamp()})
+        self.store.save_seal(self.initiative_id, other)
+        bundle = self.compatible_bundle(other)
+
         append_event(
             self.store, self.initiative_id, "seal-integration-recorded",
-            [seal["seal_id"]], {"disposition": "integrated", "members": []},
+            [bundle["bundle_id"], bound["seal_id"]],
+            {"disposition": "integrated", "members": [{
+                "seal_id": bound["seal_id"], "jj_commit_id": bound["jj_commit_id"],
+            }]},
+            actor_kind="operator", actor_id="cli",
+        )
+        with self.assertRaisesRegex(PruneError, "orchestration state unreadable"):
+            orchestration_bindings(self.env)
+
+    def test_a_second_disposition_is_refused_before_it_can_poison_the_scan(self) -> None:
+        """Both conflict refusals are write-side, so the read path stays usable.
+
+        A retained conflict would make every later scan fail closed and leave
+        the workspace with no exit at all, so the verb refuses first.
+        """
+        for order, expected in (
+            ("integrated-then-abandoned", "already recorded as integrated"),
+            ("abandoned-then-integrated", "already recorded as abandoned"),
+        ):
+            with self.subTest(order=order):
+                self.setUp()
+                _task, _attempt, seal = self.sealed_attempt()
+                bundle = self.compatible_bundle(seal)
+                integrate = ["--bundle", bundle["bundle_id"]]
+                abandon = [
+                    "--seal", seal["seal_id"], "--abandoned", "--reason", "released",
+                ]
+                first, second = (
+                    (integrate, abandon)
+                    if order == "integrated-then-abandoned"
+                    else (abandon, integrate)
+                )
+                self.assertEqual(self.run_record_integration(*first), (0, ""))
+                events = len(self.store.list_events_snapshot(self.initiative_id))
+                code, error = self.run_record_integration(*second)
+                self.assertEqual(code, 2)
+                self.assertIn(expected, error)
+                self.assertEqual(
+                    len(self.store.list_events_snapshot(self.initiative_id)), events,
+                )
+                # The refusal kept the scan readable rather than fail-closed.
+                self.assertEqual(orchestration_bindings(self.env), {})
+
+    def test_an_unprintable_abandonment_reason_is_refused(self) -> None:
+        """A reason the reader would later reject must not reach the journal."""
+        task, _attempt, seal = self.sealed_attempt()
+        events = len(self.store.list_events_snapshot(self.initiative_id))
+        code, error = self.run_record_integration(
+            "--seal", seal["seal_id"], "--abandoned", "--reason", "released\x00now",
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("bounded printable text", error)
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), events,
+        )
+        self.assertIn(task["task_id"], orchestration_bindings(self.env))
+
+    def test_conflicting_dispositions_for_one_seal_fail_closed(self) -> None:
+        """The reader is not allowed to pick a winner if a conflict is retained."""
+        _task, _attempt, seal = self.sealed_attempt()
+        member = {"seal_id": seal["seal_id"], "jj_commit_id": seal["jj_commit_id"]}
+        self.record_abandonment(seal["seal_id"], "Released by the operator.")
+        self.assertEqual(orchestration_bindings(self.env), {})
+        bundle = self.compatible_bundle(seal)
+        append_event(
+            self.store, self.initiative_id, "seal-integration-recorded",
+            [bundle["bundle_id"], seal["seal_id"]],
+            {"disposition": "integrated", "members": [member]},
             actor_kind="operator", actor_id="cli",
         )
         with self.assertRaisesRegex(PruneError, "orchestration state unreadable"):
