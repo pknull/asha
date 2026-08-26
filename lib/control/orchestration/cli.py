@@ -33,6 +33,7 @@ from .coordinator import (
 )
 from .doctor import run_orchestration_doctor
 from .graph import PlanError, validate_plan
+from .integration import record_integration
 from .workspace_scope import ScopeError, repository_scope, workspace_scope
 from .model import (
     APPROVAL_CONTRACT, EVENT_CONTRACT, FORBIDDEN_ACTION_CLASSES,
@@ -95,6 +96,8 @@ Usage:
   asha initiative finalize <id> --outcome partial|failed --reason TEXT [--json]
   asha initiative archive <id> [--json]
   asha initiative unarchive <id> [--json]
+  asha initiative record-integration <id> --bundle BUNDLE_ID [--json]
+  asha initiative record-integration <id> --seal SEAL_ID --abandoned --reason TEXT [--json]
   asha initiative list [--all] [--json]
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
   asha initiative doctor [--json]
@@ -1389,6 +1392,38 @@ def _operator_action(
     )
 
 
+def _record_integration_command(
+    args: list[str], store: InitiativeStore,
+    env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
+) -> tuple[dict[str, Any], bool]:
+    if not args:
+        raise ValueError("record-integration requires an initiative ID or exact slug")
+    env = {} if env is None else env
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={"json", "abandoned"})
+    _only(options, {"bundle", "seal", "abandoned", "reason", "json"}, "record-integration")
+    bundle_id, seal_id = options.get("bundle"), options.get("seal")
+    if (bundle_id is None) == (seal_id is None):
+        raise ValueError("record-integration requires exactly one of --bundle or --seal")
+    if bundle_id is not None:
+        if options["abandoned"]:
+            raise ValueError("record-integration --bundle does not accept --abandoned")
+        if options.get("reason") is not None:
+            raise ValueError("record-integration --bundle does not accept --reason")
+    else:
+        if not options["abandoned"]:
+            raise ValueError("record-integration --seal requires --abandoned")
+        _required(options, "reason")
+    refuse_coordinator_pane(
+        store, initiative["initiative_id"], env, tmux or TmuxAdapter(),
+    )
+    event = record_integration(
+        store, initiative["initiative_id"], bundle_id=bundle_id, seal_id=seal_id,
+        abandoned=bool(options["abandoned"]), reason=options.get("reason"),
+    )
+    return event, bool(options["json"])
+
+
 def _approve_salvage_command(
     args: list[str], store: InitiativeStore,
     env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
@@ -1479,6 +1514,10 @@ def _initiative_command(
         result, json_output = _operator_action(command, tail, store, env, tmux)
         _payload(result, json_output)
         return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
+    if command == "record-integration":
+        result, json_output = _record_integration_command(tail, store, env, tmux)
+        _payload(result, json_output)
+        return 0
     if command == "checkpoint":
         result, json_output = _checkpoint_command(tail, store, env, tmux)
         _payload(result, json_output)

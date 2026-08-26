@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import io
 import json
 import os
@@ -28,8 +29,11 @@ from lib.control.prune import (
 from lib.control.store import StoreError, TaskStore, task_digest
 from lib.control.tmux import TmuxAdapter
 from lib.control.transaction import CreationJournalStore
-from lib.control.orchestration.actions import build_action_document, submit_action
+from lib.control.orchestration.actions import append_event, build_action_document, submit_action
+from lib.control.orchestration.cli import main as initiative_main
+from lib.control.orchestration.model import BUNDLE_CONTRACT, record_digest
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
+from tests.python.test_orchestration_graph import seal as graph_seal
 
 
 def _timestamp() -> str:
@@ -498,6 +502,27 @@ class PruneTaskTests(PruneFixture):
         self.assertTrue(Path(task["jj"]["workspace_path"]).exists())
         self.assertEqual(result.bindings, bindings[task["task_id"]])
 
+    def test_unintegrated_terminal_seal_refuses_before_forget_or_tree_removal(self) -> None:
+        task = self.archived_task()
+        initiative_id = str(uuid.uuid4())
+        attempt_id = str(uuid.uuid4())
+        seal_id = str(uuid.uuid4())
+        bindings = {task["task_id"]: [{
+            "initiative_id": initiative_id,
+            "attempt_id": attempt_id,
+            "state": "sealed-success",
+            "seal_id": seal_id,
+        }]}
+
+        result, _tmux, jj = self.prune(task, bindings=bindings)
+
+        self.assertEqual(result.workspace.action, "refused")
+        for identity in (attempt_id, seal_id, initiative_id):
+            self.assertIn(identity, result.workspace.detail)
+        self.assertTrue(result.workspace.detail.endswith("; kept"))
+        self.assertEqual(jj.forgotten, [])
+        self.assertTrue(Path(task["jj"]["workspace_path"]).exists())
+
     def test_unreadable_orchestration_state_keeps_workspace(self) -> None:
         task = self.archived_task()
         result, _tmux, jj = self.prune(task, bindings_error="orchestration state unreadable: x")
@@ -868,7 +893,7 @@ class OrchestrationBindingTests(unittest.TestCase):
 class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
     """A dispatched (running) attempt binds its Control task; prune keeps it."""
 
-    def test_running_attempt_blocks_workspace_removal(self) -> None:
+    def dispatched_attempt(self) -> tuple[dict, dict]:
         captured: dict[str, dict] = {}
 
         def capture(argv, **_kwargs):
@@ -887,7 +912,64 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
         ):
             action = submit_action(self.store, self.initiative_id, document)
         self.assertEqual(action["state"], "completed")
-        task_id = captured["task"]["task_id"]
+        return captured["task"], self.store.list_attempts_snapshot(self.initiative_id)[0]
+
+    def sealed_attempt(self) -> tuple[dict, dict, dict]:
+        task, attempt = self.dispatched_attempt()
+        seal = graph_seal(str(uuid.uuid4()))
+        seal.update({
+            "initiative_id": self.initiative_id,
+            "node_id": attempt["node_id"],
+            "attempt_id": attempt["attempt_id"],
+            "task_id": task["task_id"],
+            "run_id": task["runs"][0]["run_id"],
+            "repository_id": self.initiative()["scope"]["repository"]["repository_id"],
+            "scope_origin": copy.deepcopy(attempt["base"]["scope_origin"]),
+            "sealed_at": _timestamp(),
+        })
+        self.store.save_seal(self.initiative_id, seal)
+        for state in (
+            "reported", "awaiting-exit", "success-seal-ready", "sealing", "sealed-success",
+        ):
+            current = self.store.read_attempt(self.initiative_id, attempt["attempt_id"])
+            changed = copy.deepcopy(current)
+            changed.update({"state": state, "updated_at": _timestamp()})
+            if state in {"success-seal-ready", "sealing", "sealed-success"}:
+                changed["seal_id"] = seal["seal_id"]
+                changed["result_id"] = seal["result_id"]
+            self.store.save_attempt(
+                self.initiative_id, changed, expected_digest=record_digest(current),
+            )
+        return task, self.store.read_attempt(self.initiative_id, attempt["attempt_id"]), seal
+
+    def compatible_bundle(self, seal: dict) -> dict:
+        bundle = {
+            "contract": BUNDLE_CONTRACT,
+            "bundle_id": str(uuid.uuid4()),
+            "initiative_id": self.initiative_id,
+            "aggregate_spec_digest": "1" * 64,
+            "active_plan_digest": self.plan["digest"],
+            "state": "compatible",
+            "members": [{
+                "repository_id": seal["repository_id"],
+                "seal_id": seal["seal_id"],
+                "jj_commit_id": seal["jj_commit_id"],
+                "tree_digest": seal["tree_digest"],
+                "diff_digest": seal["diff_digest"],
+                "materialization_id": str(uuid.uuid4()),
+                "review_id": str(uuid.uuid4()),
+                "verification_id": str(uuid.uuid4()),
+            }],
+            "controller_evidence_ids": [],
+            "outcome": "compatible",
+            "bound_at": _timestamp(),
+        }
+        self.store.save_bundle(self.initiative_id, bundle)
+        return bundle
+
+    def test_running_attempt_blocks_workspace_removal(self) -> None:
+        task, attempt = self.dispatched_attempt()
+        task_id = task["task_id"]
         bindings = orchestration_bindings(self.env)
         self.assertIn(task_id, bindings)
         self.assertEqual(bindings[task_id][0]["initiative_id"], self.initiative_id)
@@ -895,7 +977,6 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(len(bindings[task_id]), 1)
         # A dispatch interrupted before the link write leaves a link-less
         # non-terminal attempt that still reserves the task: it must bind too.
-        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
         link_path = (
             self.config.initiatives_dir / self.initiative_id / "links"
             / f"{attempt['attempt_id']}.json"
@@ -906,6 +987,49 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
             [entry["attempt_id"] for entry in bindings.get(task_id, [])],
             [attempt["attempt_id"]],
         )
+
+    def test_terminal_seal_binds_until_bundle_integration_is_recorded(self) -> None:
+        task, attempt, seal = self.sealed_attempt()
+        bindings = orchestration_bindings(self.env)
+        self.assertEqual(bindings[task["task_id"]], [{
+            "initiative_id": self.initiative_id,
+            "attempt_id": attempt["attempt_id"],
+            "state": "sealed-success",
+            "seal_id": seal["seal_id"],
+        }])
+
+        bundle = self.compatible_bundle(seal)
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = initiative_main([
+                "initiative", "record-integration", self.initiative_id,
+                "--bundle", bundle["bundle_id"], "--json",
+            ], env=self.env)
+        self.assertEqual((code, stderr.getvalue()), (0, ""))
+        self.assertEqual(orchestration_bindings(self.env), {})
+
+    def test_abandoned_terminal_seal_no_longer_binds(self) -> None:
+        task, attempt, seal = self.sealed_attempt()
+        self.assertIn(task["task_id"], orchestration_bindings(self.env))
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            code = initiative_main([
+                "initiative", "record-integration", self.initiative_id,
+                "--seal", seal["seal_id"], "--abandoned", "--reason",
+                "Operator intentionally discarded this candidate.", "--json",
+            ], env=self.env)
+        self.assertEqual((code, stderr.getvalue()), (0, ""))
+        self.assertEqual(orchestration_bindings(self.env), {})
+
+    def test_malformed_integration_fact_makes_the_binding_scan_fail_closed(self) -> None:
+        _task, _attempt, seal = self.sealed_attempt()
+        append_event(
+            self.store, self.initiative_id, "seal-integration-recorded",
+            [seal["seal_id"]], {"disposition": "integrated", "members": []},
+            actor_kind="operator", actor_id="cli",
+        )
+        with self.assertRaisesRegex(PruneError, "orchestration state unreadable"):
+            orchestration_bindings(self.env)
 
 
 if __name__ == "__main__":

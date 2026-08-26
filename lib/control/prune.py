@@ -97,16 +97,17 @@ def _now() -> str:
 
 
 def orchestration_bindings(env: dict[str, str] | None = None) -> dict[str, list[dict[str, str]]]:
-    """Map Control task ids to orchestration attempts that are not terminal.
+    """Map Control task ids to attempts whose workspaces are not reclaimable.
 
-    An archived task whose attempt has not reached a terminal state may still be
-    sealed from its workspace, so prune keeps that workspace.  Any failure to
-    read orchestration state is reported as a refusal by the caller, never as
-    an empty binding set.
+    A non-terminal attempt still owns its workspace.  A terminal sealed attempt
+    owns it until an operator records the exact seal as integrated or abandoned.
+    Any failure to read orchestration state is reported as a refusal by the
+    caller, never as an empty binding set.
     """
     # Local imports keep ordinary Control commands independent of the
     # orchestration package unless prune actually needs it.
     from .orchestration.config import OrchestrationConfigError, load_config
+    from .orchestration.integration import integration_snapshot
     from .orchestration.model import ATTEMPT_TERMINAL_STATES
     from .orchestration.store import InitiativeStore
     from .orchestration.store import StoreError as InitiativeStoreError
@@ -127,17 +128,23 @@ def orchestration_bindings(env: dict[str, str] | None = None) -> dict[str, list[
                 attempt["attempt_id"]: attempt
                 for attempt in store.list_attempts_snapshot(initiative_id)
             }
+            integration = integration_snapshot(store, initiative_id)
             seen: set[tuple[str, str]] = set()
 
-            def bind(task_id: Any, attempt_id: str, state: str) -> None:
+            def bind(
+                task_id: Any, attempt_id: str, state: str, seal_id: str | None = None,
+            ) -> None:
                 if not isinstance(task_id, str) or (task_id, attempt_id) in seen:
                     return
                 seen.add((task_id, attempt_id))
-                bindings.setdefault(task_id, []).append({
+                binding = {
                     "initiative_id": initiative_id,
                     "attempt_id": attempt_id,
                     "state": state,
-                })
+                }
+                if seal_id is not None:
+                    binding["seal_id"] = seal_id
+                bindings.setdefault(task_id, []).append(binding)
 
             # Links are the durable binding, but an attempt reserves its task id
             # before the link is written; a dispatch interrupted between the two
@@ -145,6 +152,32 @@ def orchestration_bindings(env: dict[str, str] | None = None) -> dict[str, list[
             for attempt in attempts.values():
                 if attempt["state"] not in ATTEMPT_TERMINAL_STATES:
                     bind(attempt.get("task_id"), attempt["attempt_id"], attempt["state"])
+                    continue
+                if attempt["state"] not in {
+                    "sealed-success", "sealed-failure", "sealed-paused",
+                }:
+                    continue
+                seal_id = attempt.get("seal_id")
+                if not isinstance(seal_id, str):
+                    raise ValueError(
+                        f"terminal attempt {attempt['attempt_id']} has no seal binding"
+                    )
+                seal = integration.seals.get(seal_id)
+                expected_outcome = attempt["state"].removeprefix("sealed-")
+                if (
+                    seal is None
+                    or seal["attempt_id"] != attempt["attempt_id"]
+                    or seal["task_id"] != attempt["task_id"]
+                    or seal["outcome"] != expected_outcome
+                ):
+                    raise ValueError(
+                        f"terminal attempt {attempt['attempt_id']} seal binding is inconsistent"
+                    )
+                if seal_id not in integration.facts:
+                    bind(
+                        attempt["task_id"], attempt["attempt_id"],
+                        attempt["state"], seal_id,
+                    )
             for link in store.list_links_snapshot(initiative_id):
                 attempt = attempts.get(link["attempt_id"])
                 state = "unknown" if attempt is None else attempt["state"]
@@ -504,6 +537,13 @@ def _workspace_step(
         )
     if bindings.get(task_id):
         bound = bindings[task_id][0]
+        if "seal_id" in bound:
+            return ArtifactOutcome(
+                "refused",
+                "bound to terminal orchestration attempt "
+                f"{bound['attempt_id']} ({bound['state']}) with unintegrated seal "
+                f"{bound['seal_id']} of initiative {bound['initiative_id']}; kept",
+            )
         return ArtifactOutcome(
             "refused",
             "bound to non-terminal orchestration attempt "

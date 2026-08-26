@@ -28,6 +28,29 @@ these surfaces and to nothing else in Control.
 | `asha.control-task-prune.v1` | `cli.py` prune route via `lib/control/prune.py` `prune_task` (added 2026-08-18, additive) | `contract`, `dry_run`, `results[]` each `{task_id, slug, outcome, session{action, detail}, workspace{action, detail}, bindings[]}` with outcome in `pruned`, `planned`, `partial`, `refused`, `nothing-to-prune`; session action in `killed`, `would-kill`, `absent`, `refused`, `kept`; workspace action in `removed`, `would-remove`, `forgotten`, `would-forget`, `absent`, `refused`, `kept`; optional `orchestration_bindings_error` | closed |
 | `asha.control-doctor.v1` | `lib/control/doctor.py` `run_doctor` | `contract`, `ok`, `probes[]` `{name, outcome, detail}` with outcome in `match`, `mismatch`, `missing`, `unavailable`, `limitations[]` | closed |
 
+The 2026-08-26 prune amendment makes each `bindings[]` item explicit.  A
+non-terminal attempt retains the existing
+`{initiative_id, attempt_id, state}` shape.  A terminal sealed attempt with no
+operator-recorded disposition adds `seal_id`; this additive item field lets the
+refusal name the initiative, attempt, and exact seal it is protecting.  Such a
+binding refuses before either `jj workspace forget` or filesystem removal.
+
+The durable permission input is the additive
+`asha.orchestration-event.v1` type `seal-integration-recorded`, written only by
+the explicit operator verb `asha initiative record-integration`.  Its
+`actor_kind` is `operator`.  For `--bundle BUNDLE_ID`, `subject_ids` is the
+compatible bundle ID followed by every member seal ID and the exact payload is
+`{disposition: "integrated", members: [{seal_id, jj_commit_id}, ...]}`.  For
+`--seal SEAL_ID --abandoned --reason TEXT`, `subject_ids` is that seal ID and
+the exact payload is
+`{disposition: "abandoned", members: [{seal_id, jj_commit_id}], reason}`.
+Neither form performs or infers a merge, rebase, bookmark move, push, or any
+other repository mutation.  Ready-for-integration and archived initiative
+states are not integration evidence.  Missing, malformed, conflicting, or
+partially unreadable orchestration evidence makes prune refuse and keep the
+workspace; a recorded integrated or abandoned disposition makes that terminal
+seal cease to bind while every other prune guard remains authoritative.
+
 `source_mutations` gained the `workspace-trust` kind (2026-08-23, additive
 within the existing open item shape): Control grants harness trust for the
 fresh worker workspace when the source repository is already trusted in at
