@@ -101,7 +101,8 @@ Installers refuse foreign collisions unless the user explicitly supplies
 The dispatcher grammar is positional:
 
 ```text
-asha [HARNESS] [args...]         launch a harness
+asha                             open the seat: default harness at ~/.asha/chair
+asha [HARNESS] [args...]         launch a harness from the caller's cwd
 asha install <target> [...]      provision primitives and wrappers
 asha uninstall <target> [...]    remove owned installation state
 asha doctor [target] [--fix]     audit installation drift

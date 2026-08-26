@@ -305,7 +305,7 @@ launch() {
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
       local -a coordinator_args=()
-      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" ]]; then
+      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" || "${ASHA_SEAT:-0}" == "1" ]]; then
         trust_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
           || trust_root="$PWD"
         if [[ "$trust_root" =~ [[:cntrl:]] ]]; then
@@ -586,8 +586,28 @@ fi
 
 # Launch path.
 harness=""
-if is_harness "${1:-}"; then harness="$1"; shift; fi
+harness_explicit=0
+if is_harness "${1:-}"; then
+  harness="$1"
+  harness_explicit=1
+  shift
+fi
 [[ -n "$harness" ]] || harness="$(default_harness)"
+
+if [[ $harness_explicit -eq 0 && $ASHA_FLAG_YES -eq 0 && $# -eq 0 ]]; then
+  chair_dir="$ASHA_HOME/chair"
+  seat_ready=1
+  if [[ ! -e "$chair_dir" ]] && ! mkdir -m 700 -- "$chair_dir"; then
+    seat_ready=0
+  fi
+  if [[ $seat_ready -eq 1 ]] && cd -- "$chair_dir"; then
+    export ASHA_SEAT=1
+    info "[asha] seat: $chair_dir"
+  else
+    unset ASHA_SEAT
+    info "warn: seat directory unavailable; launching from $PWD"
+  fi
+fi
 
 harness_configured "$harness"; status=$?
 [[ $status -ne 0 ]] && maybe_configure "$harness" "$status"
