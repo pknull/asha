@@ -206,6 +206,26 @@ exec_copilot() {
   fi
   rm -f "$op_tmp"
 
+  # Chair stance — a third instruction file, same launch-scoped delivery.
+  # Stale copies are cleared when the stance does not apply, so a
+  # suppressed launch can never read an old brief.
+  local chair_file brief
+  chair_file="$instr_dir/.github/instructions/asha-chair.instructions.md"
+  if asha_orchestrator_stance_enabled; then
+    brief="$(asha_orchestrator_brief_file)"
+    if [[ -s "$brief" ]]; then
+      if ! { printf -- '---\napplyTo: "**"\n---\n'; cat "$brief"; } > "$chair_file" 2>/dev/null; then
+        rm -f "$chair_file" 2>/dev/null || true
+        info "warn: chair render failed; launching without the chair stance"
+      fi
+    else
+      rm -f "$chair_file" 2>/dev/null || true
+      info "warn: orchestrator brief missing; launching without the chair stance"
+    fi
+  else
+    rm -f "$chair_file" 2>/dev/null || true
+  fi
+
   export COPILOT_CUSTOM_INSTRUCTIONS_DIRS="$instr_dir${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:+,$COPILOT_CUSTOM_INSTRUCTIONS_DIRS}"
   info "[asha copilot] persona: wired via COPILOT_CUSTOM_INSTRUCTIONS_DIRS (user-level, this launch only)"
   exec "$cmd" "$@"
@@ -414,15 +434,53 @@ launch() {
       fi
       export ASHA_PERSONA=1
       if [[ -x "$MERGE_SCRIPT" ]] && "$MERGE_SCRIPT" "$base"; then
+        # Combined render mirrors the codex branch: identity, then the
+        # operational layer when it applies, then the chair brief when the
+        # stance applies — in a role-distinct chair file so a stance-off
+        # launch never shares a path with a chair render. Writes are
+        # guarded; failure falls back to the identity-only file.
+        local operational_applies=0 brief_applies=0 brief
         op_merge="$IDENTITY_DIR/operational-merge.sh"
+        op_tmp=""
         if [[ -x "$op_merge" ]]; then
           op_tmp="$(mktemp)"
           if "$op_merge" "$op_tmp" 2>/dev/null; then
-            instr="$ASHA_HOME/cache/instructions-opencode-combined.md"
-            { cat "$base"; printf '\n\n'; cat "$op_tmp"; } >"$instr"
+            operational_applies=1
           fi
-          rm -f "$op_tmp"
         fi
+        if asha_orchestrator_stance_enabled; then
+          brief="$(asha_orchestrator_brief_file)"
+          if [[ -s "$brief" ]]; then
+            brief_applies=1
+          else
+            info "warn: orchestrator brief missing; launching without the chair stance"
+          fi
+        fi
+        if [[ $operational_applies -eq 1 || $brief_applies -eq 1 ]]; then
+          if [[ $brief_applies -eq 1 ]]; then
+            instr="$ASHA_HOME/cache/instructions-opencode-chair.md"
+          else
+            instr="$ASHA_HOME/cache/instructions-opencode-combined.md"
+          fi
+          mkdir -p "$(dirname "$instr")"
+          if {
+            cat "$base"
+            if [[ $operational_applies -eq 1 ]]; then
+              printf '\n\n'
+              cat "$op_tmp"
+            fi
+            if [[ $brief_applies -eq 1 ]]; then
+              printf '\n\n'
+              cat "$brief"
+            fi
+          } > "$instr" 2>/dev/null; then
+            :
+          else
+            info "warn: combined instructions render failed; launching with identity only"
+            instr="$base"
+          fi
+        fi
+        [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
         raw_cfg="${OPENCODE_CONFIG_CONTENT:-}"
         [[ -n "$raw_cfg" ]] || raw_cfg='{}'
         cfg="$(jq -cn --argjson base "$raw_cfg" --arg f "$instr" \
@@ -585,15 +643,17 @@ fi
 
 # Launch path.
 harness=""
-harness_explicit=0
 if is_harness "${1:-}"; then
   harness="$1"
-  harness_explicit=1
   shift
 fi
 [[ -n "$harness" ]] || harness="$(default_harness)"
 
-if [[ $harness_explicit -eq 0 && $ASHA_FLAG_YES -eq 0 && $# -eq 0 ]]; then
+# The seat: any wrapped no-argument launch is the chair, whichever harness
+# holds it. Control-managed launches (coordinator sessions, workers) keep
+# their own start directories; arguments keep the caller's cwd.
+if [[ $ASHA_FLAG_YES -eq 0 && $# -eq 0 \
+      && -z "${ASHA_COORDINATOR_LAUNCH:-}" && "${ASHA_PERSONA:-1}" != "0" ]]; then
   chair_dir="$ASHA_HOME/chair"
   seat_ready=1
   if [[ ! -e "$chair_dir" ]] && ! mkdir -m 700 -- "$chair_dir"; then

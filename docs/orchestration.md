@@ -275,9 +275,10 @@ class is refused before any approval lookup.
 
 ## Coordinator claims (Increment 4)
 
-The operator side has a chair of its own: wrapped `asha claude`/`asha codex`
-launches carry the orchestrator stance by default (see INSTALLER.md, Persona
-model) — the session drives this surface as the Keeper's instrument through
+The operator side has a chair of its own: every wrapped no-argument `asha
+[HARNESS]` launch seats at `$ASHA_HOME/chair` and carries the orchestrator
+stance by default — the harness word selects only the tool (see INSTALLER.md,
+Persona model) — the session drives this surface as the Keeper's instrument through
 the `operate-control` skill, launching one fenced coordinator per piece of
 work and signing operator writes only on the Keeper's word. The stance never
 reaches coordinator sessions or workers, so the split below stays exact.

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A completely bare Asha launch enters the stable operator seat. Explicit
-# harness selection and passthrough arguments preserve the caller's cwd.
+# Every no-argument Asha launch enters the stable operator seat. Passthrough
+# arguments and Control-managed launch markers preserve the caller's cwd.
 set -euo pipefail
 
 # Sandbox hermeticity: an operator shell exporting these must not leak in.
@@ -49,6 +49,11 @@ done
 run_asha() {
   local cwd="$1"
   shift
+  local -a envargs=()
+  while [[ "${1:-}" == *=* ]]; do
+    envargs+=("$1")
+    shift
+  done
   rm -f "$CAPTURE" "$ENVCAP"
   if (cd "$cwd" && env -u ASHA_HOME -u ASHA_SEAT -u ASHA_PERSONA \
       -u ASHA_CONTROL_MANAGED -u ASHA_COORDINATOR_LAUNCH \
@@ -57,6 +62,7 @@ run_asha() {
       HOME="$HOME_DIR" PATH="$HOME_DIR/bin:$PATH" \
       ASHA_CLAUDE_CMD="$HOME_DIR/bin/claude" ASHA_CODEX_CMD="$HOME_DIR/bin/codex" \
       ASHA_TEST_CAPTURE="$CAPTURE" ASHA_TEST_ENV="$ENVCAP" \
+      "${envargs[@]}" \
       bash "$DISPATCHER" "$@" >/dev/null 2>"$WORK/stderr"); then
     LAST_STATUS=0
   else
@@ -111,11 +117,38 @@ fi
 
 run_asha "$SCRATCH" claude
 if [[ $LAST_STATUS -eq 0 \
+   && "$(env_value PWD)" == "$CHAIR_DIR" \
+   && "$(env_value ASHA_SEAT)" == "1" ]]; then
+  ok "explicit no-argument harness launch enters the seat"
+else
+  fail "explicit no-argument harness launch enters the seat (status=$LAST_STATUS; pwd=$(env_value PWD); seat=$(env_value ASHA_SEAT); stderr=$(cat "$WORK/stderr"))"
+fi
+
+run_asha "$SCRATCH" claude PAYLOAD
+if [[ $LAST_STATUS -eq 0 \
    && "$(env_value PWD)" == "$SCRATCH" ]] \
    && ! env_has ASHA_SEAT; then
-  ok "explicit harness launch preserves the caller cwd without ASHA_SEAT"
+  ok "explicit harness arguments preserve the caller cwd without ASHA_SEAT"
 else
-  fail "explicit harness launch preserves the caller cwd without ASHA_SEAT (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+  fail "explicit harness arguments preserve the caller cwd without ASHA_SEAT (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+fi
+
+run_asha "$SCRATCH" ASHA_COORDINATOR_LAUNCH=tok claude
+if [[ $LAST_STATUS -eq 0 \
+   && "$(env_value PWD)" == "$SCRATCH" ]] \
+   && ! env_has ASHA_SEAT; then
+  ok "explicit coordinator launch preserves the caller cwd without ASHA_SEAT"
+else
+  fail "explicit coordinator launch preserves the caller cwd without ASHA_SEAT (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+fi
+
+run_asha "$SCRATCH" ASHA_PERSONA=0 claude
+if [[ $LAST_STATUS -eq 0 \
+   && "$(env_value PWD)" == "$SCRATCH" ]] \
+   && ! env_has ASHA_SEAT; then
+  ok "explicit persona-free launch preserves the caller cwd without ASHA_SEAT"
+else
+  fail "explicit persona-free launch preserves the caller cwd without ASHA_SEAT (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
 fi
 
 run_asha "$SCRATCH" -p hi
@@ -154,4 +187,4 @@ else
 fi
 
 echo "test-seat: $PASS passed, $FAIL failed"
-[[ $PASS -eq 5 && $FAIL -eq 0 ]]
+[[ $PASS -eq 8 && $FAIL -eq 0 ]]
