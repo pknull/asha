@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import sys
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -23,6 +24,13 @@ _USER_OPTION = re.compile(r"@[a-z][a-z0-9_]{0,63}", re.ASCII)
 _ENVIRONMENT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}", re.ASCII)
 _PERCENT = re.compile(r"(?:[1-9][0-9]?|100)%", re.ASCII)
 _SESSION_PREFIX = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30})?", re.ASCII)
+# Every other path this adapter handles reaches tmux as one argv element and is
+# never re-parsed.  A pipe-pane destination is different: it is interpolated
+# into a command string that tmux first expands as a FORMAT and then hands to
+# `/bin/sh -c`.  So the spelling is restricted to characters that mean nothing
+# to either expander before it is quoted for the shell.  '#' is excluded for
+# the format pass exactly as '$' and backtick are for the shell pass.
+_PIPE_PATH = re.compile(r"[A-Za-z0-9 ./_@+,:=-]{1,4096}", re.ASCII)
 _CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 _POPUP_CHILD_EXEC = (
     "(__import__('os').environ.__setitem__('TMUX',''))or"
@@ -155,6 +163,17 @@ def _validate_config_file(value: Any) -> str:
     if (_has_unicode_control(text) or len(text) > 4096 or
             not is_canonical_absolute_path(text, resolved=True)):
         raise TmuxError("tmux config file path is invalid")
+    return text
+
+
+def _validate_pipe_path(value: Any) -> str:
+    if not isinstance(value, (str, Path)):
+        raise TmuxError("tmux pipe destination path is invalid")
+    text = str(value)
+    if (_has_unicode_control(text) or len(text) > 4096 or
+            _PIPE_PATH.fullmatch(text) is None or
+            not is_canonical_absolute_path(text, resolved=True)):
+        raise TmuxError("tmux pipe destination path is invalid")
     return text
 
 
@@ -584,6 +603,24 @@ class TmuxAdapter:
             raise TmuxError("pane input must be one bounded printable line")
         self._run(["send-keys", "-t", pane, "-l", text])
         self._run(["send-keys", "-t", pane, "Enter"])
+
+    def pipe_pane(self, pane_id: str, path: str | Path) -> None:
+        """Append every byte an owned pane emits to a durable file.
+
+        ``pipe-pane -o`` opens the pipe only when the pane has none, and with
+        neither ``-I`` nor ``-O`` given tmux connects the pane's OUTPUT to the
+        command's stdin.  The pipe starts at the pane's next byte, so callers
+        open it before the pane's real command is respawned.  The destination
+        is an ordinary file rather than tmux-resident state, so the record
+        outlives the pane process, the session, and the server.
+
+        Callers verify pane ownership first.
+        """
+        pane = _validate_pane_id(pane_id)
+        destination = _validate_pipe_path(path)
+        self._run([
+            "pipe-pane", "-o", "-t", pane, f"cat >> {shlex.quote(destination)}",
+        ])
 
     def pane_tail(self, pane_id: str, *, lines: int = 12) -> list[str]:
         """Last non-empty visible lines of an owned pane (no scrollback).

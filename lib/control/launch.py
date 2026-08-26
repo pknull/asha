@@ -28,6 +28,15 @@ class LaunchError(ValueError):
     """A launch, stop, or archive precondition or transaction failed."""
 
 
+# Per-run pane logs live beside the task records rather than inside them: a
+# task directory holds one JSON record per task and nothing else.
+RUN_LOG_DIRECTORY = "logs"
+# `evidence` is the only free-text field asha.control-run.v1 carries, and it is
+# capped at 500 characters.  A control state directory long enough to overflow
+# that cap loses the convenience copy; `run_log_path` remains the authority.
+_MAX_RUN_EVIDENCE = 500
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
         "+00:00", "Z"
@@ -117,6 +126,45 @@ def _inherit_workspace_trust(config, task: dict[str, Any]) -> dict[str, Any] | N
             file=sys.stderr,
         )
     return report
+
+
+def run_log_path(config: ControlConfig, run_id: str) -> Path:
+    """The durable pane log for one run, derived from the run id alone.
+
+    Any reader holding a run record can reconstruct this without guessing, and
+    it stays valid after the pane, the session, and the tmux server are gone.
+    """
+    try:
+        identifier = canonical_uuid(run_id)
+    except ValueError as exc:
+        raise LaunchError(str(exc)) from exc
+    return config.tasks_dir.parent / RUN_LOG_DIRECTORY / f"{identifier}.log"
+
+
+def _open_run_log(config: ControlConfig, run_id: str) -> Path:
+    """Create the run's log before the worker exists, owner-readable only.
+
+    tmux would create it too, but under the SERVER's umask.  Creating it here
+    fixes the mode and guarantees the file is present from the first byte.
+    O_NOFOLLOW refuses a planted symlink at the leaf; a planted symlink higher
+    up is refused by the adapter's resolved-path check before tmux sees it.
+    """
+    path = run_log_path(config, run_id)
+    try:
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.close(os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW,
+            0o600,
+        ))
+    except OSError as exc:
+        raise LaunchError(f"run log could not be opened at {path}: {exc}") from exc
+    return path
+
+
+def _launch_evidence(log_path: Path) -> str:
+    evidence = f"controller launch; log={log_path}"
+    return evidence if len(evidence) <= _MAX_RUN_EVIDENCE else "controller launch"
 
 
 def _session_options(task: dict[str, Any]) -> dict[str, str]:
@@ -404,6 +452,12 @@ def launch_task(
                 adapter, current, pane_id, expected_session, expected_pane,
             )
             _inject(failure_injector, "tmux-verified")
+            # Open the durable record while the pane still holds `sleep`, so
+            # the worker's own first byte is the log's first byte.  This is
+            # still before the irrevocable boundary: a failure here rolls the
+            # whole launch back rather than leaving an undiagnosable worker.
+            log_path = _open_run_log(config, run_id)
+            adapter.pipe_pane(pane_id, log_path)
             _save_phase(
                 journal_store, journal, "tmux-session-created", failure_injector,
             )
@@ -428,6 +482,7 @@ def launch_task(
                 pane_id=pane_id,
                 pid=facts.pane_pid,
                 identity=identity,
+                evidence=_launch_evidence(log_path),
             )
             _inject(failure_injector, "process-identified")
 
@@ -447,6 +502,10 @@ def launch_task(
             return {
                 "task": launched,
                 "run": run,
+                # No "log" key: this dict is spread into the frozen
+                # asha.control-task-start.v1 closed payload, which the
+                # orchestration scheduler validates by exact key set. Readers
+                # reach the log through run_log_path() and the run record.
                 "session": session,
                 "pane": pane_id,
                 "workspace_trust": trust_report,

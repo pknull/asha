@@ -446,7 +446,8 @@ class HarnessAdapterTests(unittest.TestCase):
         )
         self.assertEqual(
             launch_argv(self.root, "codex", ("do the thing",), headless=True),
-            [str(executable), "codex", "exec", "do the thing"],
+            [str(executable), "codex", "exec", "--skip-git-repo-check",
+             "do the thing"],
         )
         for harness in ("copilot", "opencode"):
             with self.assertRaisesRegex(HarnessError, "no headless mode"):
@@ -490,6 +491,7 @@ class FakeTmux:
             if owner is not None:
                 self.session_options["@asha_task_id"] = owner
         self.pane_options: dict[str, str] = {}
+        self.piped: list[str] = []
         self.killed = False
         self.respawned = False
         self.dead = False
@@ -513,6 +515,10 @@ class FakeTmux:
         self.session_options = dict(kwargs["session_options"])
         self.pane_options = dict(kwargs["pane_options"])
         return "%1"
+
+    def pipe_pane(self, pane_id, path):
+        _validate_pane_id(pane_id)
+        self.piped.append(str(path))
 
     def respawn(self, pane_id, argv):
         _validate_argv(argv)
