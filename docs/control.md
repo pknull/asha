@@ -64,11 +64,14 @@ workspace root so a new task does not stop at Codex's directory-trust prompt.
 The override applies only to that process and never edits the Codex trust store
 or `~/.codex/config.toml`. Coordinator launches (`ASHA_COORDINATOR_LAUNCH` in the
 pane environment) receive the same trust override for the projects root plus
-an unattended posture — `-a never --sandbox workspace-write` with `$ASHA_HOME`
-as an extra writable root — so a Control-launched Codex coordinator can run
-the `asha initiative` verbs without stalling on approval prompts. Project
-trees sit inside the workspace (the session starts at the projects root);
-`$ASHA_HOME` covers Control state; everything else stays sandboxed.
+an unattended posture — `-a never --sandbox danger-full-access` — so a
+Control-launched Codex coordinator can run the `asha initiative` verbs
+without stalling on approval prompts. Full access is deliberate, not
+convenience: every Codex sandbox mode short of it runs commands in a PID
+namespace and refuses the tmux socket, which makes the coordinator's own
+pane and server proofs impossible from inside (verified live 2026-08-25).
+The coordinator is the operator's persona-trusted agent running no foreign
+code; workers keep their full sandbox.
 
 Exit codes: `0` success (and, for `task doctor`, all required checks matched);
 `1` when doctor checks complete with `ok:false`, or on an internal error; `2`

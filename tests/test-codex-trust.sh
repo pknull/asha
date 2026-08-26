@@ -103,8 +103,7 @@ run_codex "$COORDINATOR_ROOT" 0 tok123
 assert_argv "coordinator argv trusts the cwd and sets unattended posture" \
   -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
   -c "projects={\"$COORDINATOR_ROOT\"={trust_level=\"trusted\"}}" \
-  -a never --sandbox workspace-write \
-  -c "sandbox_workspace_write={writable_roots=[\"$HOME_DIR/.asha\"]}" PAYLOAD
+  -a never --sandbox danger-full-access PAYLOAD
 
 echo "--- default launch has no unattended posture ---"
 run_codex "$GIT_ROOT/nested/workspace" 0
