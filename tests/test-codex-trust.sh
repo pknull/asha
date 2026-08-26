@@ -34,18 +34,21 @@ chmod +x "$HOME_DIR/bin/codex"
 # Default persona launches carry the orchestrator stance, so the combined
 # render is the chair file (identity + operational + brief).
 MODEL_FILE="$HOME_DIR/.asha/cache/instructions-codex-chair.md"
+COORDINATOR_MODEL_FILE="$HOME_DIR/.asha/cache/instructions-codex.md"
 
 run_codex() {
-  local cwd="$1" managed="$2"
+  local cwd="$1" managed="$2" coordinator="${3:-}"
+  local -a launch_env=(env -u ASHA_CONTROL_MANAGED -u ASHA_COORDINATOR_LAUNCH
+    HOME="$HOME_DIR" ASHA_CODEX_CMD="$HOME_DIR/bin/codex"
+    ASHA_TEST_CAPTURE="$CAPTURE")
   if [[ "$managed" == 1 ]]; then
-    (cd "$cwd" && HOME="$HOME_DIR" ASHA_CODEX_CMD="$HOME_DIR/bin/codex" \
-      ASHA_TEST_CAPTURE="$CAPTURE" ASHA_CONTROL_MANAGED=1 \
-      bash "$DISPATCHER" codex PAYLOAD >/dev/null 2>"$WORK/stderr")
-  else
-    (cd "$cwd" && env -u ASHA_CONTROL_MANAGED HOME="$HOME_DIR" \
-      ASHA_CODEX_CMD="$HOME_DIR/bin/codex" ASHA_TEST_CAPTURE="$CAPTURE" \
-      bash "$DISPATCHER" codex PAYLOAD >/dev/null 2>"$WORK/stderr")
+    launch_env+=(ASHA_CONTROL_MANAGED=1)
   fi
+  if [[ -n "$coordinator" ]]; then
+    launch_env+=(ASHA_COORDINATOR_LAUNCH="$coordinator")
+  fi
+  (cd "$cwd" && "${launch_env[@]}" \
+    bash "$DISPATCHER" codex PAYLOAD >/dev/null 2>"$WORK/stderr")
 }
 
 assert_argv() {
@@ -92,6 +95,27 @@ escaped_plain="${escaped_plain//\"/\\\"}"
 assert_argv "managed argv trusts and TOML-escapes the plain cwd" \
   -c "model_instructions_file=\"$MODEL_FILE\"" \
   -c "projects={\"$escaped_plain\"={trust_level=\"trusted\"}}" PAYLOAD
+
+echo "--- coordinator launch ---"
+COORDINATOR_ROOT="$WORK/coordinator-root"
+mkdir -p "$COORDINATOR_ROOT"
+run_codex "$COORDINATOR_ROOT" 0 tok123
+assert_argv "coordinator argv trusts the cwd and sets unattended posture" \
+  -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
+  -c "projects={\"$COORDINATOR_ROOT\"={trust_level=\"trusted\"}}" \
+  -a never --sandbox workspace-write \
+  -c "sandbox_workspace_write={writable_roots=[\"$HOME_DIR/.asha\"]}" PAYLOAD
+
+echo "--- default launch has no unattended posture ---"
+run_codex "$GIT_ROOT/nested/workspace" 0
+assert_argv "default argv has no coordinator posture" \
+  -c "model_instructions_file=\"$MODEL_FILE\"" PAYLOAD
+
+echo "--- managed worker has trust without unattended posture ---"
+run_codex "$GIT_ROOT/nested/workspace" 1
+assert_argv "managed worker argv has trust without coordinator posture" \
+  -c "model_instructions_file=\"$MODEL_FILE\"" \
+  -c "projects={\"$GIT_ROOT\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo ""
 echo "=== Codex Trust Override Test Summary ==="

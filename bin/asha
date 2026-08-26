@@ -301,10 +301,11 @@ launch() {
       exec "$executable" "$@"
       ;;
     codex)
-      local base instr op_merge op_tmp brief trust_root escaped_root
+      local base instr op_merge op_tmp brief trust_root escaped_root escaped_home
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
-      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" ]]; then
+      local -a coordinator_args=()
+      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" ]]; then
         trust_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
           || trust_root="$PWD"
         if [[ "$trust_root" =~ [[:cntrl:]] ]]; then
@@ -315,14 +316,23 @@ launch() {
           trust_args=(-c "projects={\"$escaped_root\"={trust_level=\"trusted\"}}")
         fi
       fi
+      if [[ -n "${ASHA_COORDINATOR_LAUNCH:-}" ]]; then
+        if [[ "$ASHA_HOME" =~ [[:cntrl:]] ]]; then
+          info "warn: Codex coordinator unattended posture skipped: ASHA_HOME contains TOML-unsafe control characters"
+        else
+          escaped_home="${ASHA_HOME//\\/\\\\}"
+          escaped_home="${escaped_home//\"/\\\"}"
+          coordinator_args=(-a never --sandbox workspace-write -c "sandbox_workspace_write={writable_roots=[\"$escaped_home\"]}")
+        fi
+      fi
       if ! asha_persona_enabled; then
         # Control-managed worker: operational layer only (Codex has no reliable
         # SessionStart injection), trust override kept, no identity render.
         instr="$ASHA_HOME/cache/instructions-codex-operational.md"
         if asha_render_operational_layer "$instr"; then
-          exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+          exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
         fi
-        exec "$executable" "${trust_args[@]}" "$@"
+        exec "$executable" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
       fi
       base="${ASHA_INSTRUCTIONS_FILE:-$ASHA_HOME/cache/instructions.md}"
       instr="$base"
@@ -367,17 +377,17 @@ launch() {
             fi
           } > "$instr" 2>/dev/null; then
             [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
-            exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+            exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
           fi
           [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
           info "warn: combined instructions render failed; launching with identity only"
-          exec "$executable" -c "model_instructions_file=\"$base\"" "${trust_args[@]}" "$@"
+          exec "$executable" -c "model_instructions_file=\"$base\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
         fi
         [[ -z "${op_tmp:-}" ]] || rm -f "$op_tmp"
-        exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "$@"
+        exec "$executable" -c "model_instructions_file=\"$instr\"" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
       fi
       info "warn: identity merge failed; launching plain codex"
-      exec "$executable" "${trust_args[@]}" "$@"
+      exec "$executable" "${trust_args[@]}" "${coordinator_args[@]}" "$@"
       ;;
     copilot)
       exec_copilot "$@"
