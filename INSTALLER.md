@@ -251,6 +251,14 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 | Delivery | launch-time identity file; operation via SessionStart | launch-time combined file | launch-time instruction directory with separate files | launch-time combined file |
 | Orchestrator stance | combined chair file (default on) | combined chair file (default on) | not injected | not injected |
 
+A completely bare `asha` — no harness word, no arguments — opens the seat:
+the default harness launched from `$ASHA_HOME/chair` (created `0700` on
+first use) instead of the caller's cwd, so the chair always boots in the
+same neutral context with one shared `/resume` lineage. Any explicit
+harness word or argument keeps the caller's cwd. A bare Codex seat launch
+also carries the per-launch trust override for the chair directory; the
+unattended coordinator posture is never applied at the seat.
+
 Wrapped `asha claude` and `asha codex` launches also carry the orchestrator
 stance by default: `identity/orchestrator-brief.md` — the operator's-chair
 brief pointing at the `operate-control` skill — is appended to the launch

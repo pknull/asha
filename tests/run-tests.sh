@@ -324,6 +324,17 @@ else
 fi
 echo ""
 
+# Test Suite 23: Stable Operator Seat
+echo -e "${BLUE}--- Test Suite 23: Stable Operator Seat ---${NC}"
+if "$SCRIPT_DIR/test-seat.sh"; then
+    echo -e "${GREEN}✓ Stable operator seat tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Stable operator seat tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"

@@ -12,6 +12,17 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Bare `asha` opens the seat
+
+- `asha` with no harness word and no arguments now launches the default
+  harness from `$ASHA_HOME/chair` — a stable, neutral seat directory —
+  instead of wherever the shell happened to be, so the chair stops asking
+  whether you trust your own home directory and accumulates one `/resume`
+  lineage. Explicit `asha claude`/`asha codex` (or any arguments) keeps the
+  caller's cwd, preserving chair-inside-a-project sessions. Bare Codex seat
+  launches carry the chair-directory trust override; the unattended
+  coordinator posture never applies at the seat.
+
 #### Codex coordinators run unattended
 
 - `coordinator launch --harness codex` is now viable without a human
