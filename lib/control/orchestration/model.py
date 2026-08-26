@@ -1507,7 +1507,7 @@ EVENT_TYPES = frozenset({
     "verification-started", "verification-finished", "node-state-changed",
     "directive-accepted", "directive-delivered", "limit-reached",
     "storage-threshold-reached", "coordinator-checkpointed", "coordinator-restarted",
-    "reconciliation-conflict",
+    "reconciliation-conflict", "seal-integration-recorded",
 })
 
 
