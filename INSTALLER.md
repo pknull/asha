@@ -249,15 +249,17 @@ So `/panel-system:panel` (Claude) and the prompt `panel-system-panel.md`
 | Identity assertion | `--append-system-prompt-file` | `model_instructions_file` | `COPILOT_CUSTOM_INSTRUCTIONS_DIRS` | `OPENCODE_CONFIG_CONTENT.instructions` |
 | Scope | wrapper only | wrapper only | wrapper only | wrapper only |
 | Delivery | launch-time identity file; operation via SessionStart | launch-time combined file | launch-time instruction directory with separate files | launch-time combined file |
-| Orchestrator stance | combined chair file (default on) | combined chair file (default on) | not injected | not injected |
+| Orchestrator stance | combined chair file (default on) | combined chair file (default on) | chair instructions file (default on) | combined chair file (default on) |
 
-A completely bare `asha` — no harness word, no arguments — opens the seat:
-the default harness launched from `$ASHA_HOME/chair` (created `0700` on
-first use) instead of the caller's cwd, so the chair always boots in the
-same neutral context with one shared `/resume` lineage. Any explicit
-harness word or argument keeps the caller's cwd. A bare Codex seat launch
-also carries the per-launch trust override for the chair directory; the
-unattended coordinator posture is never applied at the seat.
+Every wrapped no-argument launch — bare `asha` or an explicit `asha
+claude`/`asha codex`/`asha copilot`/`asha opencode` — opens the seat: the
+harness word selects only the tool, and the session launches from
+`$ASHA_HOME/chair` (created `0700` on first use) so the chair always boots
+in the same neutral context with one shared `/resume` lineage per harness.
+Arguments keep the caller's cwd, and Control-managed launches (coordinator
+sessions, workers) always keep their own start directories. A Codex seat
+launch also carries the per-launch trust override for the chair directory;
+the unattended coordinator posture is never applied at the seat.
 
 Wrapped `asha claude` and `asha codex` launches also carry the orchestrator
 stance by default: `identity/orchestrator-brief.md` — the operator's-chair

@@ -14,14 +14,17 @@ the active instruction surface loses no release detail.
 
 #### Bare `asha` opens the seat
 
-- `asha` with no harness word and no arguments now launches the default
-  harness from `$ASHA_HOME/chair` — a stable, neutral seat directory —
-  instead of wherever the shell happened to be, so the chair stops asking
-  whether you trust your own home directory and accumulates one `/resume`
-  lineage. Explicit `asha claude`/`asha codex` (or any arguments) keeps the
-  caller's cwd, preserving chair-inside-a-project sessions. Bare Codex seat
-  launches carry the chair-directory trust override; the unattended
-  coordinator posture never applies at the seat.
+- Every wrapped no-argument launch now opens the seat: the harness word in
+  `asha [HARNESS]` selects only the tool, and the session launches from
+  `$ASHA_HOME/chair` — a stable, neutral seat directory — instead of
+  wherever the shell happened to be, so the chair stops asking whether you
+  trust your own home directory and accumulates one `/resume` lineage. The
+  chair stance now injects for all four harnesses (Copilot via a third
+  instructions file, OpenCode via a role-distinct combined file).
+  Arguments keep the caller's cwd; Control-managed coordinator and worker
+  launches always keep their own start directories. Codex seat launches
+  carry the chair-directory trust override; the unattended coordinator
+  posture never applies at the seat.
 
 #### Codex coordinators run unattended
 
