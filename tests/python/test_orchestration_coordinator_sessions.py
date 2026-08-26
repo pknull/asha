@@ -73,7 +73,12 @@ class CoordinatorSessionTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(created["session_options"], {"@asha_coordinator_session": "1"})
         self.assertNotIn("@asha_managed", created["session_options"])
         self.assertEqual(created["pane_options"]["@asha_coordinator_launch"], "abcd1234")
-        self.assertEqual(created["environment"], {"ASHA_COORDINATOR_LAUNCH": "abcd1234"})
+        # The pane inherits the tmux server's env, so the launch must carry
+        # the asha home explicitly alongside the coordinator token.
+        self.assertEqual(created["environment"], {
+            "ASHA_COORDINATOR_LAUNCH": "abcd1234",
+            "ASHA_HOME": str(self.config.asha_home),
+        })
         pane_id, argv = self.tmux.respawned[0]
         self.assertEqual(pane_id, "%42")
         self.assertEqual(argv[:2], [str(self.asha_root / "bin" / "asha"), "claude"])

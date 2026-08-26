@@ -591,7 +591,13 @@ def launch_session(
     argv = launch_argv(asha_root, harness, [launch_prompt(text)])
     pane_id = tmux.create_task_session(
         session=session, window="coordinator", start_directory=directory,
-        environment={"ASHA_COORDINATOR_LAUNCH": token},
+        # Panes inherit the tmux server's env, not the caller's: pass the
+        # asha home explicitly so a non-default ASHA_HOME reaches the
+        # coordinator's launcher (same rule controller_env applies to workers).
+        environment={
+            "ASHA_COORDINATOR_LAUNCH": token,
+            "ASHA_HOME": str(config.asha_home),
+        },
         holder_argv=["sleep", "3600"],
         session_options={"@asha_coordinator_session": "1"},
         pane_options={"@asha_coordinator_launch": token, "@asha_harness": harness},
