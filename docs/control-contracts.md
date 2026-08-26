@@ -30,10 +30,13 @@ these surfaces and to nothing else in Control.
 
 The 2026-08-26 prune amendment makes each `bindings[]` item explicit.  A
 non-terminal attempt retains the existing
-`{initiative_id, attempt_id, state}` shape.  A terminal sealed attempt with no
-operator-recorded disposition adds `seal_id`; this additive item field lets the
-refusal name the initiative, attempt, and exact seal it is protecting.  Such a
-binding refuses before either `jj workspace forget` or filesystem removal.
+`{initiative_id, attempt_id, state}` shape.  A terminal attempt that still
+holds a saved `seal_id` with no operator-recorded disposition adds `seal_id`,
+in any terminal state and not only `sealed-*`, because a finalization
+interrupted after the seal is saved can still be cancelled; this additive item
+field lets the refusal name the initiative, attempt, and exact seal it is
+protecting.  Such a binding refuses before either `jj workspace forget` or
+filesystem removal.
 
 The durable permission input is the additive
 `asha.orchestration-event.v1` type `seal-integration-recorded`, written only by
