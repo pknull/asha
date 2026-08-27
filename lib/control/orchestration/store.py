@@ -247,6 +247,31 @@ class InitiativeStore:
         with self._locked_fds(initiative_id):
             yield
 
+    @contextmanager
+    def result_ingestion_lock(
+        self, initiative_id: str, ingestion_id: str,
+    ) -> Iterator[None]:
+        """Single-flight one ingestion without blocking the whole initiative."""
+        try:
+            ingestion_id = canonical_uuid(ingestion_id, "ingestion_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        with self._initiative_directory(
+            initiative_id, create_root=False, create_initiative=False,
+        ) as (_root_fd, initiative_fd):
+            self._ensure_layout(initiative_fd)
+            locks_fd = _open_directory(initiative_fd, "locks", create=True)
+            if locks_fd is None:
+                raise StoreError("initiative lock directory is missing")
+            try:
+                with _task_lock(
+                    locks_fd, f"result-ingestion-{ingestion_id}",
+                    self._lock_wait_hook,
+                ):
+                    yield
+            finally:
+                _close(locks_fd)
+
     @staticmethod
     def _subdirectory(initiative_fd: int, name: str) -> int:
         fd = _open_directory(initiative_fd, name, create=False)
