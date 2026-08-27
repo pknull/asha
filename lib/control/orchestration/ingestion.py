@@ -666,6 +666,26 @@ def ingest_result(
     terminal_reconciliation: Mapping[str, Any] | None = None,
     verifier: Callable[..., list[str]] | None = None,
 ) -> dict[str, Any]:
+    """Single-flight one exact staged candidate through controller ingestion."""
+    with store.result_ingestion_lock(initiative_id, ingestion_id):
+        return _ingest_result(
+            store, initiative_id, ingestion_id,
+            ingester=ingester, control_store=control_store, jj=jj,
+            terminal_reconciliation=terminal_reconciliation, verifier=verifier,
+        )
+
+
+def _ingest_result(
+    store: InitiativeStore,
+    initiative_id: str,
+    ingestion_id: str,
+    *,
+    ingester: Mapping[str, Any] | None = None,
+    control_store: TaskStore | None = None,
+    jj: JjAdapter | None = None,
+    terminal_reconciliation: Mapping[str, Any] | None = None,
+    verifier: Callable[..., list[str]] | None = None,
+) -> dict[str, Any]:
     """Accept one exact staged candidate after terminal producer evidence."""
     adapter = jj or JjAdapter()
     control = control_store or TaskStore(store.config.control)

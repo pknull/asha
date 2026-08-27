@@ -7,9 +7,11 @@ import os
 import shutil
 import subprocess
 import sys
+import threading
 from types import SimpleNamespace
 import unittest
 import uuid
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -386,6 +388,56 @@ print(json.dumps(stage_result(load_config(os.environ), body, os.environ), sort_k
         self.assertEqual(result["commit_provenance"]["creator"], "controller")
         self.assertTrue(result["commit_provenance"]["verification_evidence_ids"])
         self.assertEqual(self.ingest(), receipt)
+
+    def test_concurrent_ingestion_replay_is_single_flight_and_idempotent(self) -> None:
+        self.stage()
+
+        class BlockingSnapshotJj(SnapshotJj):
+            def __init__(inner_self, task):
+                super().__init__(task)
+                inner_self.entered = threading.Event()
+                inner_self.release = threading.Event()
+                inner_self.snapshot_calls = 0
+                inner_self._first_probe = True
+                inner_self._probe_lock = threading.Lock()
+
+            def inspect_workspace(inner_self, *args, **kwargs):
+                with inner_self._probe_lock:
+                    block = inner_self._first_probe
+                    inner_self._first_probe = False
+                    if kwargs.get("snapshot", False):
+                        inner_self.snapshot_calls += 1
+                if block:
+                    inner_self.entered.set()
+                    if not inner_self.release.wait(3):
+                        raise AssertionError("timed out holding the first ingestion")
+                return super().inspect_workspace(*args, **kwargs)
+
+        jj = BlockingSnapshotJj(self.task)
+
+        def ingest():
+            return ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                control_store=TaskStore(self.config.control), jj=jj,
+                terminal_reconciliation={"state": "exited"},
+                verifier=self.verifier,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            first = executor.submit(ingest)
+            self.assertTrue(jj.entered.wait(3))
+            replay = executor.submit(ingest)
+            try:
+                with self.assertRaises(FutureTimeout):
+                    replay.result(timeout=0.25)
+            finally:
+                jj.release.set()
+            first_receipt = first.result(timeout=3)
+            replay_receipt = replay.result(timeout=3)
+
+        self.assertEqual(replay_receipt, first_receipt)
+        self.assertEqual(first_receipt["phase"], "completed")
+        self.assertEqual(jj.snapshot_calls, 1)
 
     def test_live_supervisor_ingests_then_reaches_ordinary_seal_pipeline(self) -> None:
         self.stage()
