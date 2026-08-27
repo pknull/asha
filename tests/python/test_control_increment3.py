@@ -416,6 +416,20 @@ class HarnessAdapterTests(unittest.TestCase):
             controller_env(task_id="not-a-uuid", run_id=run_id, state_dir=state_dir)
         with self.assertRaises(HarnessError):
             controller_env(task_id=task_id, run_id=run_id, state_dir=Path("relative"))
+        ingestion_id = "33333333-3333-4333-8333-333333333333"
+        outbox = self.root / "workspace/.asha/outbox" / f"{ingestion_id}.json"
+        self.assertEqual(
+            controller_env(
+                task_id=task_id, run_id=run_id, state_dir=state_dir,
+                result_ingestion_id=ingestion_id, result_outbox=outbox,
+            )["ASHA_CONTROL_RESULT_OUTBOX"],
+            str(outbox),
+        )
+        with self.assertRaises(HarnessError):
+            controller_env(
+                task_id=task_id, run_id=run_id, state_dir=state_dir,
+                result_ingestion_id=ingestion_id,
+            )
 
     def test_launch_argv_validates_root_harness_and_extra_arguments(self) -> None:
         executable = self.root / "bin" / "asha"

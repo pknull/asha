@@ -17,6 +17,9 @@ from ..transaction import CreationJournalStore, JournalError
 from .config import OrchestrationConfig
 from .graph import dependency_states
 from .links import build_link
+from .ingestion import (
+    reserve_result_ingestion, result_ingestion_id, result_outbox_path,
+)
 from .model import (
     ATTEMPT_ACTIVE_STATES,
     ATTEMPT_CONTRACT,
@@ -380,14 +383,13 @@ into this workspace or run any command that writes into it. Publish a
 {json.dumps(target, ensure_ascii=False, sort_keys=True)}
 """
     publication_workspace_rule = (
-        "Do not run `jj status` or any other command that may snapshot or write "
-        "the review workspace. Write the result document outside the workspace "
-        "to `$XDG_RUNTIME_DIR/asha-review-$ASHA_CONTROL_TASK_ID.json`, then run "
-        "`asha task report --file "
-        "$XDG_RUNTIME_DIR/asha-review-$ASHA_CONTROL_TASK_ID.json`."
+        "Do not run `jj status` or any other command that snapshots the review "
+        "workspace."
         if node["type"] == "review" else
-        "Required: run `jj status` in this workspace to snapshot before "
-        "`asha task report`, and after any later edit."
+        "Do not run `jj status` or any other jj command that snapshots. The "
+        "worker sandbox deliberately cannot write the colocated object store; "
+        "after normal exit the controller snapshots the exact retained tree and "
+        "reruns every declared verification command against that exact commit."
     )
     exit_contract = (
         "Your session ends by itself when this turn completes; that normal exit "
@@ -401,10 +403,11 @@ into this workspace or run any command that writes into it. Publish a
         "published."
     )
     publication_contract = (
-        "Before exiting, write the bounded result document outside this "
-        "workspace to "
-        "`$XDG_RUNTIME_DIR/asha-review-$ASHA_CONTROL_TASK_ID.json`. Do not "
-        "create `.asha/result.json` or any other review-workspace artifact."
+        "Before exiting, write the bounded result document to a temporary file "
+        "inside this workspace's private `.asha/` directory and run "
+        "`asha task report --file FILE`. The command stages the envelope at the "
+        "controller-reserved `$ASHA_CONTROL_RESULT_OUTBOX`; it does not publish "
+        "authoritative Control state."
         if node["type"] == "review" else
         "Before exiting, write the bounded result document to "
         ".asha/result.json (the private `.asha/` directory inside this "
@@ -492,8 +495,9 @@ session, coordinator, or unmanaged parallel writer.
 {publication_contract}
 
 {publication_workspace_rule}
-The controller never snapshots or otherwise mutates the worker workspace on
-the worker's behalf.
+The report receipt phase is `staged`. Exit normally after receiving it. Only
+the controller may accept the staged candidate, snapshot mutable work, and
+publish authoritative result and seal records.
 
 {exit_contract}
 
@@ -1032,6 +1036,8 @@ def dispatch(
 
         try:
             exact_base = _exact_base(store, initiative_id, node, attempt)
+            ingestion_id = result_ingestion_id(attempt["attempt_id"])
+            outbox_path = result_outbox_path(ingestion_id)
             assignment_path = (
                 config.initiatives_dir / initiative_id / "assignments"
                 / f"{attempt['attempt_id']}.md"
@@ -1081,6 +1087,8 @@ def dispatch(
                 str(asha), "task", "start",
                 "--repo", repository_root,
                 "--task-id", attempt["task_id"],
+                "--result-ingestion-id", ingestion_id,
+                "--result-outbox", outbox_path,
                 "--base", exact_base,
                 "--harness", node["harness"],
                 "--role", node["role"],
@@ -1162,6 +1170,9 @@ def dispatch(
                 stored_link = link
             if stored_link != link:
                 raise SchedulerError("retained Control link differs from replayed task")
+            reserve_result_ingestion(
+                store, initiative, node, attempt, stored_link, control["task"],
+            )
         except (SchedulerError, StoreError, OSError, ValueError) as exc:
             action = _mark_indeterminate(
                 store, initiative_id, action, attempt, str(exc)[:1000],

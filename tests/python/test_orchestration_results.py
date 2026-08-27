@@ -76,6 +76,14 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
             action = submit_action(self.store, self.initiative_id, document)
         self.assertEqual(action["state"], "completed")
         self.attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        # This suite exercises the retained direct-publication journal in
+        # isolation. Modern scheduler dispatches reserve the outbox transport,
+        # whose direct-publication refusal is covered by the ingestion suite.
+        ingestion = self.store.list_result_ingestions_snapshot(self.initiative_id)[0]
+        (
+            self.config.initiatives_dir / self.initiative_id / "result-ingestions"
+            / f"{ingestion['ingestion_id']}.json"
+        ).unlink()
         self.repo.chmod(0o700)
         self.workspace = Path(self.task["jj"]["workspace_path"])
         (self.workspace / "lib/control/orchestration").mkdir(parents=True)
@@ -538,12 +546,17 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(self.initiative()["state"], "running")
 
     def test_control_task_report_and_result_cli_routes_publish_and_inspect(self) -> None:
+        # Exercise the retained legacy direct-publication route. New
+        # orchestration dispatches carry an ingestion reservation and the CLI
+        # refuses to bypass it even when a worker removes the private env vars.
         body = self.body()
         path = self.root / "RESULT.json"
         path.write_text(json.dumps(body))
         output = StringIO()
         with mock.patch(
             "lib.control.orchestration.results.JjAdapter", return_value=self.jj,
+        ), mock.patch(
+            "lib.control.orchestration.results.caller_descends_from", return_value=True,
         ), redirect_stdout(output):
             status = control_main(
                 ["task", "report", "--file", str(path), "--json"],

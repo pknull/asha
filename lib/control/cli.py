@@ -82,6 +82,7 @@ Usage:
                   [--dry-run] [--yes] [--json]
   asha task reconcile [task-id|exact-slug] [--json]
   asha task report --file RESULT.json [--json]
+  asha task ingest <task-id|ingestion-id> [--json]
   asha task result <task-id> [--json]
   asha task seal <task-id|attempt-id> [--json]
   asha task trust [PATH] [--grant] [--json]
@@ -322,6 +323,7 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         "goal": None, "pr": None, "issue": None, "task_id": None, "slug": None,
         "expected_default": None, "detach": False, "json": False,
         "tui_worker": False, "headless": False,
+        "result_ingestion_id": None, "result_outbox": None,
     }
     seen: set[str] = set()
     index = 0
@@ -341,7 +343,8 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
             continue
         if argument in {"--repo", "--base", "--harness", "--agent", "--goal", "--role",
                         "--pr", "--issue", "--task-id", "--slug",
-                        "--expected-default"}:
+                        "--expected-default", "--result-ingestion-id",
+                        "--result-outbox"}:
             if index + 1 >= len(args):
                 raise ValueError(f"{argument} requires a value")
             key = argument[2:]
@@ -366,6 +369,19 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
                         "--expected-default requires one full Git object ID"
                     )
                 values["expected_default"] = raw_value
+            elif key == "result-ingestion-id":
+                values["result_ingestion_id"] = canonical_uuid(raw_value)
+            elif key == "result-outbox":
+                relative = Path(raw_value)
+                if (
+                    relative.is_absolute() or str(relative) != raw_value
+                    or not relative.parts or ".." in relative.parts
+                    or relative.parts[:2] != (".asha", "outbox")
+                ):
+                    raise ValueError(
+                        "--result-outbox must be an exact relative path below .asha/outbox"
+                    )
+                values["result_outbox"] = raw_value
             else:
                 values[destination] = raw_value
             index += 2
@@ -407,6 +423,18 @@ def _parse_start(args: list[str]) -> dict[str, Any]:
         raise ValueError(
             "--tui-worker requires explicit --json, --detach, and --task-id"
         )
+    if (values["result_ingestion_id"] is None) != (values["result_outbox"] is None):
+        raise ValueError(
+            "--result-ingestion-id and --result-outbox must be supplied together"
+        )
+    if values["result_ingestion_id"] is not None and "task-id" not in seen:
+        raise ValueError("result ingestion launch requires explicit --task-id")
+    if (
+        values["result_ingestion_id"] is not None
+        and values["result_outbox"]
+        != f".asha/outbox/{values['result_ingestion_id']}.json"
+    ):
+        raise ValueError("--result-outbox must exactly match --result-ingestion-id")
     if values["json"]:
         values["detach"] = True
     return values
@@ -937,6 +965,8 @@ def _start_new_task(
         config, prepared, tmux=adapter, harness=selected_harness,
         goal_args=parsed["goal_args"], role=selected_role,
         headless=parsed["headless"],
+        result_ingestion_id=parsed["result_ingestion_id"],
+        result_outbox=parsed["result_outbox"],
     )
     trust_mutation = _workspace_trust_mutation(result.pop("workspace_trust", None))
     if trust_mutation is not None:
@@ -1509,7 +1539,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
         _task_usage(sys.stdout if args else sys.stderr)
         return 0 if args else 2
     command, tail = args[0], args[1:]
-    if command in {"report", "result", "seal"}:
+    if command in {"report", "ingest", "result", "seal"}:
         # Lazy by contract: malformed orchestration configuration cannot alter
         # any ordinary Control task command.
         from .orchestration.cli import task_main as orchestration_task_main

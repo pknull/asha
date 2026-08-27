@@ -386,17 +386,33 @@ def _contained_argv(
     environment: Mapping[str, str],
     argv: list[str],
     *,
+    writable_root: Path,
     output_path: Path,
     timeout_seconds: int,
 ) -> list[str]:
     supervisor = Path(__file__).with_name("verification_supervisor.py").resolve()
     if not supervisor.is_file():
         raise VerificationError("verification process supervisor is unavailable")
+    writable_root = Path(writable_root)
+    output_path = Path(output_path)
+    if (
+        not writable_root.is_absolute()
+        or writable_root.resolve() != writable_root
+        or not writable_root.is_dir()
+        or not output_path.is_absolute()
+        or output_path.resolve() != output_path
+        or not output_path.is_file()
+    ):
+        raise VerificationError("verification containment paths are not exact")
+    minimal_environment = {**environment, "HOME": "/tmp"}
     return [
         str(bubblewrap), "--unshare-pid", "--die-with-parent",
-        "--bind", "/", "/", "--proc", "/proc", "--dev-bind", "/dev", "/dev",
+        "--ro-bind", "/", "/", "--tmpfs", "/tmp",
+        "--bind", str(writable_root), str(writable_root),
+        "--bind", str(output_path), str(output_path),
+        "--proc", "/proc", "--dev-bind", "/dev", "/dev",
         "--", *_minimal_argv(
-            environment,
+            minimal_environment,
             [
                 sys.executable, str(supervisor),
                 "--output", str(output_path),
@@ -785,6 +801,7 @@ def run_verification(
                 returncode, status = _capture_truncated(
                     _contained_argv(
                         bubblewrap, command_environment, list(specification["argv"]),
+                        writable_root=materialization_path,
                         output_path=retained_output_path,
                         timeout_seconds=specification["timeout_seconds"],
                     ),
