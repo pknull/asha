@@ -18,6 +18,7 @@
 # [y/N] and run `asha install <harness>` first. Skip the prompt with --yes/-y
 # (before the harness) or ASHA_YES=1. A non-interactive launch of an
 # unconfigured harness errors instead of hanging.
+# shellcheck disable=SC1091 # Sources are resolved from ASHA_ROOT at runtime.
 set -uo pipefail   # no -e: the dispatcher owns its exit codes; install/uninstall run in `set -euo` subshells
 
 # ---- resolve self (portable symlink walk) ----
@@ -546,13 +547,18 @@ EOF
 # ---------------------------------------------------------------------------
 
 cmd="$(basename "$0")"
+shim_harness=""
 case "$cmd" in
-  asha-*) shim_harness="${cmd#asha-}"; is_harness "$shim_harness" && launch "$shim_harness" "$@" ;;
+  asha-*) shim_candidate="${cmd#asha-}"; is_harness "$shim_candidate" && shim_harness="$shim_candidate" ;;
 esac
 
-# Dispatcher form (invoked as `asha`).
+# Leading launch flags are shared by the dispatcher and shim forms.
 ASHA_FLAG_YES=0
 [[ "${1:-}" == "-y" || "${1:-}" == "--yes" ]] && { ASHA_FLAG_YES=1; shift; }
+
+# Select a shim's harness positionally so it follows the dispatcher launch
+# path without allowing its passthrough arguments to become Asha verbs.
+[[ -z "$shim_harness" ]] || set -- "$shim_harness" "$@"
 
 case "${1:-}" in
   -h|--help|help) asha_usage; exit 0 ;;

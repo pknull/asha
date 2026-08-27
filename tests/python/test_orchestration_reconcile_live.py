@@ -10,13 +10,27 @@ from unittest import mock
 
 from lib.control.reconcile import Evidence
 from lib.control.launch import persist_terminal_reconciliation
-from lib.control.store import task_digest
-from lib.control.orchestration.actions import build_action_document, submit_action
+from lib.control.store import StoreError, task_digest
+from lib.control.orchestration.actions import (
+    _parse_document,
+    build_action_document,
+    submit_action,
+)
 from lib.control.orchestration.cli import _operator_action
 from lib.control.orchestration.links import control_task_identity_digest
 from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.reconcile import reconcile_live
+from lib.control.orchestration.scheduler import (
+    consecutive_failures,
+    readiness,
+    refresh_readiness,
+)
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
+from tests.python.orchestration_increment3_fixtures import (
+    advance_node,
+    save_candidate,
+    save_passed_verification,
+)
 
 
 class EvidenceAdapters:
@@ -473,6 +487,639 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(unavailable.list.call_count, 1)
         self.assertEqual(result["probes"][0]["outcome"], "unavailable")
         self.assertIn("injected list failure", result["probes"][0]["detail"])
+
+
+class OrchestrationStrandRecoveryTests(ExecutionFixture, unittest.TestCase):
+    """The retroactive half of the stop-attempt strand fix.
+
+    `_release_stopped_node` prevents the contradiction at the two sites that
+    create it, but it does nothing for a node already stranded: that attempt is
+    already `cancelled`, and `cancelled` is deliberately outside the
+    latest-failure acted-on set.  These tests drive the recovery sweep, whose
+    trigger is the node/attempt contradiction itself.
+    """
+
+    def dispatch(self, node_id="implementation-a"):
+        def capture(argv, **_kwargs):
+            payload = self.control_payload(argv)
+            self.task = payload["task"]
+            return 0, json.dumps(payload).encode(), b""
+
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": node_id},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ):
+            return submit_action(self.store, self.initiative_id, document)
+
+    def latest_attempt(self, node_id):
+        return max(
+            (
+                item for item in self.store.list_attempts_snapshot(self.initiative_id)
+                if item["node_id"] == node_id
+            ),
+            key=lambda item: (item["ordinal"], item["attempt_id"]),
+        )
+
+    def strand(self, node_id):
+        """Reproduce the pre-fix shape exactly: attempt cancelled, node untouched.
+
+        This is what `_stop_attempt` used to write, so the fixture builds the
+        strand the same way rather than through the now-repaired verb.
+        """
+        attempt = self.latest_attempt(node_id)
+        cancelled = copy.deepcopy(attempt)
+        cancelled.update({"state": "cancelled", "updated_at": now_text()})
+        self.store.save_attempt(
+            self.initiative_id, cancelled, expected_digest=record_digest(attempt),
+        )
+        return cancelled
+
+    def advance_attempt(self, node_id, states):
+        """Walk an attempt through legal ATTEMPT_TRANSITIONS edges."""
+        current = self.latest_attempt(node_id)
+        for state in states:
+            changed = copy.deepcopy(current)
+            changed.update({"state": state, "updated_at": now_text()})
+            self.store.save_attempt(
+                self.initiative_id, changed, expected_digest=record_digest(current),
+            )
+            current = changed
+        return current
+
+    def set_node_state(self, node_id, state):
+        node = self.store.read_node(self.initiative_id, node_id)
+        changed = copy.deepcopy(node)
+        changed["state"] = state
+        self.store.save_node(
+            self.initiative_id, changed, expected_digest=record_digest(node),
+        )
+        return changed
+
+    def received_stop(self, attempt_id, *, outcome=...):
+        """Save the exact record `submit_action` persists at receipt.
+
+        `_parse_document` builds it, so the fixture cannot drift from the real
+        receipt shape.  `outcome` overrides that record's retained outcome; the
+        adverse probe from the accepted finding passes `None`, which
+        `validate_action` accepts because the action schema declares `outcome`
+        optional.
+        """
+        document = build_action_document(
+            self.initiative(), "stop-attempt", {"attempt_id": attempt_id},
+        )
+        record, _payload = _parse_document(document)
+        self.assertEqual(record["state"], "received")
+        if outcome is not ...:
+            record["outcome"] = outcome
+        self.store.save_action(self.initiative_id, record)
+        return self.store.read_action(self.initiative_id, record["action_id"])
+
+    def settle_action(self, action, state, outcome):
+        settled = copy.deepcopy(action)
+        settled.update({
+            "state": state, "outcome": json.dumps(
+                outcome, sort_keys=True, separators=(",", ":"),
+            ), "updated_at": now_text(),
+        })
+        self.store.save_action(
+            self.initiative_id, settled, expected_digest=record_digest(action),
+        )
+        return settled
+
+    def control(self, extras=None):
+        value = mock.Mock()
+        value.peek.return_value = self.task
+        value.list.return_value = [self.task, *(extras or [])]
+        return value
+
+    def sweep(self, *, state="working", control=None):
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ):
+            return reconcile_live(
+                self.store,
+                self.initiative_id,
+                control_store=control or self.control(),
+                adapters_factory=lambda _task: EvidenceAdapters(state),
+            )
+
+    def recovery_events(self, node_id):
+        return [
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "node-state-changed"
+            and node_id in event["subject_ids"]
+            and event["payload"].get("reason") == "stranded-node-recovered"
+        ]
+
+    def assert_untouched(self, node_id, state):
+        result = self.sweep()
+        self.assertEqual(result["recoveries"], [])
+        self.assertEqual(self.recovery_events(node_id), [])
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, node_id)["state"], state,
+        )
+
+    def test_stranded_node_is_released_and_dispatchable_again(self) -> None:
+        self.dispatch()
+        cancelled = self.strand("implementation-a")
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+
+        result = self.sweep()
+
+        self.assertEqual(
+            result["recoveries"],
+            [{
+                "node_id": "implementation-a",
+                "from": "running",
+                "retired_review_ids": [],
+            }],
+        )
+        self.assertEqual(
+            [
+                (event["payload"]["from"], event["payload"]["to"])
+                for event in self.recovery_events("implementation-a")
+            ],
+            [("running", "evaluating"), ("evaluating", "ready")],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+        self.assertEqual(
+            readiness(self.store, self.initiative())["implementation-a"], "ready",
+        )
+
+        redispatched = self.dispatch()
+
+        self.assertEqual(redispatched["state"], "completed", redispatched["outcome"])
+        self.assertEqual(
+            sorted(
+                item["state"]
+                for item in self.store.list_attempts_snapshot(self.initiative_id)
+                if item["node_id"] == "implementation-a"
+            ),
+            ["cancelled", "running"],
+        )
+        self.assertNotEqual(
+            self.latest_attempt("implementation-a")["attempt_id"],
+            cancelled["attempt_id"],
+        )
+
+    def test_recovery_reserves_no_retry_and_trips_no_breaker(self) -> None:
+        self.dispatch()
+        self.strand("implementation-a")
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        result = self.sweep()
+
+        self.assertEqual(result["retries"], [])
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual(len(self.store.list_attempts_snapshot(self.initiative_id)), 1)
+        self.assertEqual(
+            consecutive_failures(
+                self.store.list_attempts_snapshot(self.initiative_id),
+            ),
+            0,
+        )
+        self.assertEqual(self.initiative()["state"], "running")
+        added = self.store.list_events_snapshot(self.initiative_id)[before:]
+        self.assertEqual(
+            sorted({item["type"] for item in added}), ["node-state-changed"],
+        )
+        self.assertEqual(
+            sorted({
+                (item["actor_kind"], item["actor_id"]) for item in added
+            }),
+            [("controller", "live-reconciler")],
+        )
+
+    def test_recovery_is_idempotent_across_passes(self) -> None:
+        self.dispatch()
+        self.strand("implementation-a")
+        self.sweep()
+
+        result = self.sweep()
+
+        self.assertEqual(result["recoveries"], [])
+        self.assertEqual(len(self.recovery_events("implementation-a")), 2)
+
+    def test_a_node_stranded_while_dispatching_is_released_too(self) -> None:
+        """A stop can land before the node ever reaches `running`.
+
+        `dispatching -> evaluating -> ready` is the same walk, and both edges
+        are legal, so the sweep must cover the shorter strand as well.
+        """
+        self.dispatch()
+        self.strand("implementation-a")
+        self.sweep()
+        self.set_node_state("implementation-a", "dispatching")
+
+        result = self.sweep()
+
+        self.assertEqual(
+            [item["node_id"] for item in result["recoveries"]], ["implementation-a"],
+        )
+        self.assertEqual(result["recoveries"][0]["from"], "dispatching")
+        self.assertEqual(
+            [
+                (event["payload"]["from"], event["payload"]["to"])
+                for event in self.recovery_events("implementation-a")[-2:]
+            ],
+            [("dispatching", "evaluating"), ("evaluating", "ready")],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+
+    def test_sweep_leaves_a_node_holding_an_allocated_reservation(self) -> None:
+        self.dispatch()
+        cancelled = self.strand("implementation-a")
+        reservation = copy.deepcopy(cancelled)
+        reservation.update({
+            "attempt_id": str(uuid.uuid4()),
+            "task_id": str(uuid.uuid4()),
+            "action_id": None,
+            "ordinal": cancelled["ordinal"] + 1,
+            "state": "allocated",
+            "result_publication_id": None,
+            "result_id": None,
+            "seal_id": None,
+            "created_at": now_text(),
+            "updated_at": now_text(),
+        })
+        self.store.save_attempt(self.initiative_id, reservation)
+
+        self.assert_untouched("implementation-a", "running")
+
+    def test_sweep_leaves_an_evaluating_node_whose_newest_attempt_is_no_stop(
+        self,
+    ) -> None:
+        """`evaluating` alone is never the trigger; the newest attempt is.
+
+        A node evaluating a published seal has exactly the shape the sweep
+        selects on -- every attempt terminal, no reservation, no action -- and
+        must be left to its evaluation.  Only a `cancelled` newest attempt
+        marks the state as a release walk that stopped halfway.
+        """
+        self.dispatch()
+        self.advance_attempt("implementation-a", [
+            "reported", "awaiting-exit", "success-seal-ready", "sealing",
+            "sealed-success",
+        ])
+        self.set_node_state("implementation-a", "evaluating")
+
+        self.assert_untouched("implementation-a", "evaluating")
+
+    def test_sweep_finishes_a_release_walk_interrupted_between_its_writes(self) -> None:
+        """The sweep's own walk is two writes and must itself be restartable.
+
+        Injecting the failure into the second `save_node` reproduces the
+        half-released node -- attempt `cancelled`, node `evaluating` -- that
+        would otherwise be stranded exactly like the strand this sweep exists
+        to repair, one edge further along.
+        """
+        self.dispatch()
+        self.strand("implementation-a")
+        real = self.store.save_node
+        writes = []
+
+        def save_node(initiative_id, record, **kwargs):
+            writes.append(record["state"])
+            if len(writes) > 1:
+                raise OSError("injected node write failure")
+            return real(initiative_id, record, **kwargs)
+
+        with mock.patch.object(self.store, "save_node", side_effect=save_node):
+            # The store reports the failed write through its lock teardown.
+            with self.assertRaises(StoreError):
+                self.sweep()
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "evaluating",
+        )
+
+        result = self.sweep()
+
+        self.assertEqual(
+            result["recoveries"],
+            [{
+                "node_id": "implementation-a",
+                "from": "evaluating",
+                "retired_review_ids": [],
+            }],
+        )
+        self.assertEqual(
+            [
+                (event["payload"]["from"], event["payload"]["to"])
+                for event in self.recovery_events("implementation-a")
+            ],
+            [("running", "evaluating"), ("evaluating", "ready")],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+
+        redispatched = self.dispatch()
+
+        self.assertEqual(redispatched["state"], "completed", redispatched["outcome"])
+
+    def test_recovery_defers_a_failure_retry_to_the_following_pass(self) -> None:
+        """Recovery reserves nothing, including for a node whose attempt failed.
+
+        The sweep's predicate is a node/attempt contradiction, not a failure
+        verdict, so the pass that releases a node must not also charge that
+        node's retry budget through `_failure_target`.  The retry is not lost:
+        the next pass sees an ordinary `ready` node with a latest failure and
+        reserves it with the ordinary accounting.
+        """
+        self.dispatch()
+        self.advance_attempt("implementation-a", ["indeterminate", "launch-failed"])
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+
+        recovering = self.sweep()
+
+        self.assertEqual(
+            [item["node_id"] for item in recovering["recoveries"]],
+            ["implementation-a"],
+        )
+        self.assertEqual(recovering["retries"], [])
+        self.assertEqual(len(self.store.list_attempts_snapshot(self.initiative_id)), 1)
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+
+        following = self.sweep()
+
+        self.assertEqual(following["recoveries"], [])
+        self.assertEqual(len(following["retries"]), 1)
+        reserved = self.latest_attempt("implementation-a")
+        self.assertEqual(reserved["state"], "allocated")
+        self.assertEqual(reserved["ordinal"], 2)
+
+    def test_sweep_leaves_an_evaluating_node_owned_by_a_live_verification(self) -> None:
+        """A verification owns the `evaluating` node it moved there.
+
+        `_cancel_node` refuses an evaluating node that owns a non-stale
+        verification for the same reason: the verification path writes the
+        node's next state itself.
+        """
+        self.dispatch()
+        self.strand("implementation-a")
+        self.set_node_state("implementation-a", "evaluating")
+        save_passed_verification(
+            self, save_candidate(self), node_id="implementation-a",
+        )
+
+        self.assert_untouched("implementation-a", "evaluating")
+
+    def test_sweep_leaves_a_needs_input_node_to_continue_node(self) -> None:
+        self.dispatch()
+        self.strand("implementation-a")
+        self.set_node_state("implementation-a", "needs-input")
+
+        self.assert_untouched("implementation-a", "needs-input")
+
+    def test_sweep_leaves_a_node_whose_attempt_is_still_live(self) -> None:
+        self.dispatch()
+        self.assertEqual(
+            self.latest_attempt("implementation-a")["state"], "running",
+        )
+
+        self.assert_untouched("implementation-a", "running")
+
+    def test_sweep_leaves_a_node_owned_by_an_unsettled_action(self) -> None:
+        """An interrupted stop is `reconcile_actions`' to finish, not the sweep's.
+
+        That path completes the same release through `_release_stopped_node`.
+        Both repairs firing on one node would race for its transition.
+        """
+        self.dispatch()
+        cancelled = self.strand("implementation-a")
+        document = build_action_document(
+            self.initiative(), "stop-attempt",
+            {"attempt_id": cancelled["attempt_id"]},
+        )
+        interrupted = {
+            key: value for key, value in document.items() if key != "payload"
+        }
+        interrupted.update({
+            "state": "indeterminate",
+            "outcome": json.dumps({
+                "payload": {"attempt_id": cancelled["attempt_id"]},
+                "status": "indeterminate",
+            }, sort_keys=True, separators=(",", ":")),
+            "received_at": now_text(),
+            "updated_at": now_text(),
+        })
+        self.store.save_action(self.initiative_id, interrupted)
+
+        self.assert_untouched("implementation-a", "running")
+
+    def test_sweep_leaves_a_node_owned_by_an_ordinary_received_stop(self) -> None:
+        """`received` is a durable state, not an instant on the way to another.
+
+        `submit_action` writes the receipt record and only then validates,
+        dispatches and completes the action, so a controller that dies anywhere
+        in that sequence leaves an ordinary `received` stop-attempt behind.  It
+        still owns the attempt it names.
+        """
+        self.dispatch()
+        cancelled = self.strand("implementation-a")
+        self.received_stop(cancelled["attempt_id"])
+
+        self.assert_untouched("implementation-a", "running")
+
+    def test_sweep_fails_closed_on_a_received_stop_with_no_retained_outcome(
+        self,
+    ) -> None:
+        """The adverse probe: ownership the predicate cannot read is still ownership.
+
+        An action names its target only through its retained outcome, and the
+        action schema declares that outcome optional -- `validate_action` runs
+        it through `_optional_text`, so `None` is a legal retained value and
+        `action_outcome` answers it with an empty object.  A predicate that only
+        looks for a positive node/attempt binding therefore reads "nothing owns
+        this node" for an unsettled stop that owns it, and the sweep releases
+        the node to `ready` while a live stop is still entitled to write it.
+        That is the accepted finding this test closes: ambiguity must block.
+        """
+        self.dispatch()
+        cancelled = self.strand("implementation-a")
+        received = self.received_stop(cancelled["attempt_id"], outcome=None)
+        self.assertEqual(received["state"], "received")
+        self.assertIsNone(received["outcome"])
+
+        self.assert_untouched("implementation-a", "running")
+
+        # And the block is temporary, not a wedge: settling the action -- here
+        # by the ordinary `received -> refused` edge -- hands the node back.
+        self.settle_action(received, "refused", {
+            "payload": {"attempt_id": cancelled["attempt_id"]}, "status": "refused",
+            "reason": "recovered after controller interruption",
+        })
+
+        result = self.sweep()
+
+        self.assertEqual(
+            [item["node_id"] for item in result["recoveries"]], ["implementation-a"],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+
+    def test_sweep_fails_closed_on_an_unsettled_action_with_no_payload(self) -> None:
+        """The same rule one step in: a retained outcome that names nothing.
+
+        A truncated or half-written outcome object is the same ownership
+        ambiguity as a null one, and gets the same answer.
+        """
+        self.dispatch()
+        cancelled = self.strand("implementation-a")
+        received = self.received_stop(
+            cancelled["attempt_id"], outcome=json.dumps({"status": "received"}),
+        )
+
+        self.assert_untouched("implementation-a", "running")
+
+        self.settle_action(received, "refused", {
+            "payload": {"attempt_id": cancelled["attempt_id"]}, "status": "refused",
+            "reason": "recovered after controller interruption",
+        })
+        self.assertEqual(
+            [item["node_id"] for item in self.sweep()["recoveries"]],
+            ["implementation-a"],
+        )
+
+
+class OrchestrationStrandedReviewRecoveryTests(ExecutionFixture, unittest.TestCase):
+    """The exact live shape: a stranded review node still owning a running review."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.candidate = save_candidate(self)
+        advance_node(self, "implementation-a", ["evaluating", "succeeded"])
+        refresh_readiness(self.store, self.initiative_id)
+        self.dispatch_review()
+
+    def dispatch_review(self):
+        def capture(argv, **_kwargs):
+            payload = self.control_payload(argv)
+            payload["task"]["jj"].update({
+                "base_commit_id": argv[argv.index("--base") + 1],
+                "working_commit_id": "f" * 40,
+            })
+            self.task = payload["task"]
+            return 0, json.dumps(payload).encode(), b""
+
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "review-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ):
+            return submit_action(self.store, self.initiative_id, document)
+
+    def review_for(self, attempt_id):
+        return next(
+            item for item in self.store.list_reviews_snapshot(self.initiative_id)
+            if item["attempt_id"] == attempt_id
+        )
+
+    def test_stranded_review_node_heals_to_ready_with_a_stale_review(self) -> None:
+        attempt = max(
+            (
+                item for item in self.store.list_attempts_snapshot(self.initiative_id)
+                if item["node_id"] == "review-a"
+            ),
+            key=lambda item: item["ordinal"],
+        )
+        review = self.review_for(attempt["attempt_id"])
+        self.assertEqual(review["state"], "running")
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "review-a")["state"], "running",
+        )
+        cancelled = copy.deepcopy(attempt)
+        cancelled.update({"state": "cancelled", "updated_at": now_text()})
+        self.store.save_attempt(
+            self.initiative_id, cancelled, expected_digest=record_digest(attempt),
+        )
+
+        control = mock.Mock()
+        control.peek.return_value = self.task
+        control.list.return_value = [self.task]
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            # The fixture's candidate seal is synthetic and has no jj workspace
+            # to re-measure. Seal drift is orthogonal to strand recovery, and
+            # letting it pause the initiative would mask the re-dispatch.
+            "lib.control.orchestration.reconcile.reconcile_seal_drift",
+            return_value=[],
+        ):
+            result = reconcile_live(
+                self.store, self.initiative_id, control_store=control,
+                adapters_factory=lambda _task: EvidenceAdapters("working"),
+            )
+
+        self.assertEqual(
+            result["recoveries"],
+            [{
+                "node_id": "review-a",
+                "from": "running",
+                "retired_review_ids": [review["review_id"]],
+            }],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "review-a")["state"], "ready",
+        )
+        retired = self.store.read_review(self.initiative_id, review["review_id"])
+        self.assertEqual(retired["state"], "stale")
+        self.assertIsNone(retired["verdict"])
+        self.assertEqual(retired["findings"], [])
+        self.assertEqual(result["retries"], [])
+        self.assertEqual(result["conflicts"], [])
+        self.assertEqual(self.initiative()["state"], "running")
+
+        redispatched = self.dispatch_review()
+
+        self.assertEqual(redispatched["state"], "completed", redispatched["outcome"])
+        fresh = max(
+            (
+                item for item in self.store.list_attempts_snapshot(self.initiative_id)
+                if item["node_id"] == "review-a"
+            ),
+            key=lambda item: item["ordinal"],
+        )
+        self.assertNotEqual(fresh["attempt_id"], attempt["attempt_id"])
+        self.assertEqual(fresh["state"], "running")
+        self.assertEqual(self.review_for(fresh["attempt_id"])["state"], "running")
+        self.assertEqual(
+            sorted(
+                item["state"]
+                for item in self.store.list_reviews_snapshot(self.initiative_id)
+            ),
+            ["running", "stale"],
+        )
 
 
 if __name__ == "__main__":

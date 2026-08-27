@@ -142,6 +142,60 @@ def register_review_attempt(
     return record
 
 
+# Review states that have not settled a verdict.  Every one of them has a legal
+# `-> stale` edge in REVIEW_TRANSITIONS.
+UNSETTLED_REVIEW_STATES = frozenset({
+    "pending", "running", "submitted", "indeterminate",
+})
+
+
+def retire_unsettled_reviews(
+    store: InitiativeStore,
+    initiative_id: str,
+    attempt_ids: frozenset[str],
+    *,
+    at: str | None = None,
+) -> list[str]:
+    """Stale every unsettled review bound to an attempt that can no longer settle it.
+
+    A review record is written at dispatch and settled only when its review
+    attempt completes, so a stopped or stranded review attempt leaves the
+    record `running` forever.  Left alone it either blocks the node's gate or,
+    once the released node is re-dispatched, sits alongside a second `running`
+    review for the same target.  `running -> stale` is a legal
+    REVIEW_TRANSITIONS edge and `_invalidate_candidate_records` is the
+    precedent for the field reset that comes with it.
+
+    Both node-release paths retire before they release: `_release_stopped_node`
+    in `actions.py` at the two stop sites, and `_recover_stranded_nodes` in
+    `reconcile.py` for a node stranded before either of them ran.  Retiring
+    first is what makes the order safe -- once the node reaches `ready` it is
+    re-dispatchable, and a second review record would be registered against a
+    target that already owns an unsettled one.
+    """
+    retired: list[str] = []
+    moment = at or _now()
+    for review in sorted(
+        store.list_reviews_snapshot(initiative_id),
+        key=lambda item: item["review_id"],
+    ):
+        if review["attempt_id"] not in attempt_ids:
+            continue
+        if review["state"] not in UNSETTLED_REVIEW_STATES:
+            continue
+        changed = copy.deepcopy(review)
+        changed.update({
+            "state": "stale", "verdict": None, "findings": [],
+            "updated_at": moment,
+        })
+        validate_review(changed)
+        store.save_review(
+            initiative_id, changed, expected_digest=record_digest(review),
+        )
+        retired.append(review["review_id"])
+    return retired
+
+
 def _transition_attempt(
     store: InitiativeStore, attempt: dict[str, Any], state: str,
 ) -> dict[str, Any]:
@@ -738,6 +792,7 @@ def complete_review_attempt(
 
 
 __all__ = [
-    "ReviewError", "complete_review_attempt", "register_review_attempt",
-    "review_target", "specification_digest", "tracked_workspace_status",
+    "ReviewError", "UNSETTLED_REVIEW_STATES", "complete_review_attempt",
+    "register_review_attempt", "retire_unsettled_reviews", "review_target",
+    "specification_digest", "tracked_workspace_status",
 ]

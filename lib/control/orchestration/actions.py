@@ -72,6 +72,14 @@ COORDINATOR_ACTION_KINDS: frozenset[str] = frozenset({
 _MAX_REQUEST_TEXT_BYTES = 2048
 _MAX_ACTION_PAYLOAD_BYTES = 4096
 _MAX_STOP_OUTPUT_BYTES = 64 * 1024
+# Node states a stopped attempt releases; see `_release_stopped_node`.
+_STOP_RELEASABLE_NODE_STATES = frozenset({"dispatching", "running"})
+# The release walk itself.  `dispatching`/`running` -> `ready` has no single
+# edge in NODE_TRANSITIONS, so the release is two persisted writes and can be
+# interrupted between them; see `_release_walk_targets`.
+_NODE_RELEASE_WALK = ("evaluating", "ready")
+# Bound on the review identities carried in one release event's subject list.
+_MAX_RELEASE_SUBJECT_REVIEWS = 32
 
 
 class ActionError(ValueError):
@@ -605,7 +613,172 @@ def _stop_attempt(
         store.save_attempt(
             initiative_id, cancelled, expected_digest=record_digest(current),
         )
+        current = cancelled
+    if current["state"] == "cancelled":
+        # Only this stop's own cancellation releases the node.  Any other
+        # terminal state means the attempt raced to a seal or to the live
+        # reconciler, and that path owns the node transition.
+        _release_stopped_node(store, initiative_id, current)
     return {**result, "attempt_id": attempt_id, "status": "cancelled"}
+
+
+def release_walk_interrupted(
+    store: InitiativeStore, initiative_id: str, node: Mapping[str, Any]
+) -> bool:
+    """Report whether `evaluating` is a half-finished release rather than a state.
+
+    The release walk below persists two node writes, and a process or store
+    failure between them leaves the node in `evaluating` with its attempt
+    already `cancelled`.  That intermediate state is indistinguishable from a
+    legitimate `evaluating` by state alone, so the discriminator is the node's
+    newest attempt: no other writer of `evaluating` pairs it with a
+    `cancelled` newest attempt.  Seal publication reaches `evaluating` from
+    `sealing`, `mark_launch_failed` from `launch-failed`, `_failure_target`
+    from the other failure states, review completion from a sealed review
+    attempt, and a verification intent from a node that owns no attempt at
+    all.  A stop is the only path that cancels the newest attempt, so
+    `evaluating` plus a `cancelled` newest attempt is this walk, interrupted.
+
+    The guards are the same ones the walk's entry states get.  Any
+    non-terminal attempt on the node means live work still owns it.  A
+    non-stale verification record means the verification path owns the
+    `evaluating` node and will move it to `succeeded`/`failed` itself, which
+    is exactly why `_cancel_node` refuses an evaluating node that owns one.
+    """
+    attempts = [
+        item for item in store.list_attempts_snapshot(initiative_id)
+        if item["node_id"] == node["node_id"]
+    ]
+    if not attempts:
+        return False
+    if any(item["state"] not in ATTEMPT_TERMINAL_STATES for item in attempts):
+        return False
+    newest = max(attempts, key=lambda item: (item["ordinal"], item["attempt_id"]))
+    if newest["state"] != "cancelled":
+        return False
+    return not any(
+        item["node_id"] == node["node_id"] and item["state"] != "stale"
+        for item in store.list_verifications_snapshot(initiative_id)
+    )
+
+
+def _release_walk_targets(
+    store: InitiativeStore, initiative_id: str, node: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """The release-walk edges this node still owes.
+
+    Only the two states dispatch itself writes start the walk.  A node in
+    `needs-input` belongs to a paused seal whose recovery verb is
+    `continue-node`, and forcing it to `ready` would discard an open operator
+    question.  `evaluating` is not an entry state either -- it is only ever
+    resumed, under `release_walk_interrupted`, because the walk that owes the
+    second write is the only thing that may finish it.
+    """
+    if node["state"] in _STOP_RELEASABLE_NODE_STATES:
+        return _NODE_RELEASE_WALK
+    if node["state"] == "evaluating" and release_walk_interrupted(
+        store, initiative_id, node,
+    ):
+        return _NODE_RELEASE_WALK[1:]
+    return ()
+
+
+def release_node_to_ready(
+    store: InitiativeStore,
+    initiative_id: str,
+    node: dict[str, Any],
+    *,
+    reason: str,
+    actor_id: str,
+    subject_ids: tuple[str, ...] = (),
+    payload: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Walk a released node to `ready`, one persisted edge and event at a time.
+
+    Shared by prevention and recovery so both repairs walk identically and
+    differ only in `reason` and `actor_id`, which is what keeps the journal
+    able to say which one acted.  Each edge is saved before its event, so a
+    crash can lose an event for a state that was reached but can never record
+    a state that was not; `_release_walk_targets` re-derives what is still
+    owed from the records rather than from the journal.
+    """
+    for target in _release_walk_targets(store, initiative_id, node):
+        changed = copy.deepcopy(node)
+        changed["state"] = target
+        validate_node(changed)
+        store.save_node(
+            initiative_id, changed, expected_digest=record_digest(node),
+        )
+        append_event(
+            store, initiative_id, "node-state-changed",
+            [node["node_id"], *subject_ids],
+            {
+                **(dict(payload) if payload else {}),
+                "from": node["state"], "to": target, "reason": reason,
+            },
+            actor_kind="controller", actor_id=actor_id,
+        )
+        node = changed
+    return node
+
+
+def _release_stopped_node(
+    store: InitiativeStore, initiative_id: str, attempt: Mapping[str, Any]
+) -> None:
+    """Propagate a stopped attempt's terminal state onto its node.
+
+    The violated invariant is that an attempt state change must reach its
+    node.  `_cancel_node` below is the precedent: it writes the attempt AND
+    the node AND the event, while a stop used to write only the attempt half,
+    leaving the node in `dispatching`/`running` with no live process.
+    `reconcile_live`'s latest-failure pass never acts on a `cancelled`
+    attempt, so nothing downstream repaired that node and no coordinator verb
+    could recover it (`dispatch-node` and `repair-node` both gate on a
+    deterministically `ready` node, `continue-node` on a paused seal,
+    `request-salvage` on a failure seal, and none of `pause`,
+    `request-decision`, `propose-outcome` or `directive` moves a node out of
+    `running`).
+
+    The fix belongs here rather than in the reconciler's acted-on set.  That
+    route would need two edits -- the latest-failure state set plus that
+    loop's evaluating-or-ready node gate -- and would then run a deliberate
+    operator stop through `_failure_target`, charging it against the node's
+    retry budget and the consecutive-failure breaker as though the work had
+    failed.  A stop is not a failure, so it walks the same
+    `running` -> `evaluating` -> `ready` node edges by hand and reserves no
+    retry attempt.
+
+    A cancelled attempt can never settle a review it was running, so the
+    review is retired to `stale` before the node moves.  Retiring first is
+    the same stale-before-release order `_recover_stranded_nodes` uses, and
+    it is required rather than tidy: the released node is immediately
+    re-dispatchable, and a second review record for the same target would
+    otherwise be registered alongside an unsettled first one.  The retirement
+    is unconditional because the attempt is dead either way, while the node
+    may legitimately not be this walk's to release.
+
+    This site is prevention only, and prevention is not retroactive.
+    `reconcile.py`'s `_recover_stranded_nodes` is the matching recovery: it
+    heals nodes already stranded, keyed on the node/attempt contradiction
+    rather than on a failure, so it too bypasses `_failure_target`.  The two
+    repairs use distinct event reasons -- `attempt-stopped` here,
+    `stranded-node-recovered` there -- so the journal says which one acted.
+    """
+    from .review import retire_unsettled_reviews
+
+    retired = retire_unsettled_reviews(
+        store, initiative_id, frozenset({attempt["attempt_id"]}),
+    )
+    release_node_to_ready(
+        store, initiative_id,
+        store.read_node(initiative_id, attempt["node_id"]),
+        reason="attempt-stopped",
+        actor_id="action-broker",
+        subject_ids=(
+            attempt["attempt_id"], *retired[:_MAX_RELEASE_SUBJECT_REVIEWS],
+        ),
+        payload={"retired_reviews": len(retired)},
+    )
 
 
 def _cancel_node(
@@ -2073,6 +2246,16 @@ def reconcile_actions(
                         store.save_attempt(
                             initiative_id, cancelled,
                             expected_digest=record_digest(current_attempt),
+                        )
+                        current_attempt = cancelled
+                    if current_attempt["state"] == "cancelled":
+                        # Same invariant as `_stop_attempt`: the interrupted
+                        # stop completes both halves, or the node strands.
+                        # This is also where a stop interrupted mid-release
+                        # finishes its own walk, so completing the action
+                        # never leaves a half-released node behind.
+                        _release_stopped_node(
+                            store, initiative_id, current_attempt,
                         )
                     action = set_action_state(
                         store, action, "completed",

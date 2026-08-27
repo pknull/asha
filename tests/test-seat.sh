@@ -11,6 +11,8 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 DISPATCHER="$REPO_ROOT/bin/asha"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+CODEX_SHIM="$WORK/asha-codex"
+ln -s "$DISPATCHER" "$CODEX_SHIM"
 
 PASS=0
 FAIL=0
@@ -49,6 +51,7 @@ done
 run_asha() {
   local cwd="$1"
   shift
+  local launcher="${ASHA_TEST_LAUNCHER:-$DISPATCHER}"
   local -a envargs=()
   while [[ "${1:-}" == *=* ]]; do
     envargs+=("$1")
@@ -63,11 +66,15 @@ run_asha() {
       ASHA_CLAUDE_CMD="$HOME_DIR/bin/claude" ASHA_CODEX_CMD="$HOME_DIR/bin/codex" \
       ASHA_TEST_CAPTURE="$CAPTURE" ASHA_TEST_ENV="$ENVCAP" \
       "${envargs[@]}" \
-      bash "$DISPATCHER" "$@" >/dev/null 2>"$WORK/stderr"); then
+      "$launcher" "$@" >/dev/null 2>"$WORK/stderr"); then
     LAST_STATUS=0
   else
     LAST_STATUS=$?
   fi
+}
+
+run_codex_shim() {
+  ASHA_TEST_LAUNCHER="$CODEX_SHIM" run_asha "$@"
 }
 
 env_value() { sed -n "s/^$1=//p" "$ENVCAP" 2>/dev/null | head -1; }
@@ -151,6 +158,22 @@ else
   fail "explicit persona-free launch preserves the caller cwd without ASHA_SEAT (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
 fi
 
+dispatcher_yes_ok=1
+for yes_flag in --yes -y; do
+  run_asha "$SCRATCH" "$yes_flag" claude
+  if [[ $LAST_STATUS -ne 0 \
+     || "$(env_value PWD)" != "$SCRATCH" ]] \
+     || env_has ASHA_SEAT \
+     || argv_has_exact "$yes_flag"; then
+    dispatcher_yes_ok=0
+  fi
+done
+if [[ $dispatcher_yes_ok -eq 1 ]]; then
+  ok "dispatcher --yes/-y skips the seat and consumes the configure flag"
+else
+  fail "dispatcher --yes/-y skips the seat and consumes the configure flag (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+fi
+
 run_asha "$SCRATCH" -p hi
 if [[ $LAST_STATUS -eq 0 \
    && "$(env_value PWD)" == "$SCRATCH" ]] \
@@ -174,6 +197,60 @@ else
   fail "bare Codex seat trusts the chair without coordinator posture (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
 fi
 
+run_codex_shim "$SCRATCH"
+if [[ $LAST_STATUS -eq 0 \
+   && "$(env_value PWD)" == "$CHAIR_DIR" \
+   && "$(env_value ASHA_SEAT)" == "1" ]] \
+   && codex_has_chair_trust; then
+  ok "no-argument Codex shim enters the seat"
+else
+  fail "no-argument Codex shim enters the seat (status=$LAST_STATUS; pwd=$(env_value PWD); seat=$(env_value ASHA_SEAT); stderr=$(cat "$WORK/stderr"))"
+fi
+
+run_codex_shim "$SCRATCH" PAYLOAD
+if [[ $LAST_STATUS -eq 0 \
+   && "$(env_value PWD)" == "$SCRATCH" ]] \
+   && ! env_has ASHA_SEAT \
+   && argv_has_exact PAYLOAD; then
+  ok "Codex shim arguments preserve the caller cwd and argv"
+else
+  fail "Codex shim arguments preserve the caller cwd and argv (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+fi
+
+run_codex_shim "$SCRATCH" ASHA_COORDINATOR_LAUNCH=tok
+if [[ $LAST_STATUS -eq 0 \
+   && "$(env_value PWD)" == "$SCRATCH" ]] \
+   && ! env_has ASHA_SEAT; then
+  ok "Codex shim coordinator launch preserves the caller cwd without ASHA_SEAT"
+else
+  fail "Codex shim coordinator launch preserves the caller cwd without ASHA_SEAT (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+fi
+
+run_codex_shim "$SCRATCH" ASHA_PERSONA=0
+if [[ $LAST_STATUS -eq 0 \
+   && "$(env_value PWD)" == "$SCRATCH" ]] \
+   && ! env_has ASHA_SEAT; then
+  ok "persona-free Codex shim preserves the caller cwd without ASHA_SEAT"
+else
+  fail "persona-free Codex shim preserves the caller cwd without ASHA_SEAT (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+fi
+
+shim_yes_ok=1
+for yes_flag in --yes -y; do
+  run_codex_shim "$SCRATCH" "$yes_flag"
+  if [[ $LAST_STATUS -ne 0 \
+     || "$(env_value PWD)" != "$SCRATCH" ]] \
+     || env_has ASHA_SEAT \
+     || argv_has_exact "$yes_flag"; then
+    shim_yes_ok=0
+  fi
+done
+if [[ $shim_yes_ok -eq 1 ]]; then
+  ok "Codex shim --yes/-y skips the seat and consumes the configure flag"
+else
+  fail "Codex shim --yes/-y skips the seat and consumes the configure flag (status=$LAST_STATUS; pwd=$(env_value PWD); stderr=$(cat "$WORK/stderr"))"
+fi
+
 printf '{"default_harness": "claude"}\n' >"$HOME_DIR/.asha/config.json"
 mkdir -p "$CHAIR_DIR"
 chmod 750 "$CHAIR_DIR"
@@ -187,4 +264,4 @@ else
 fi
 
 echo "test-seat: $PASS passed, $FAIL failed"
-[[ $PASS -eq 8 && $FAIL -eq 0 ]]
+[[ $PASS -eq 14 && $FAIL -eq 0 ]]

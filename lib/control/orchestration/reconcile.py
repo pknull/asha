@@ -14,7 +14,10 @@ from ..reconcile import LiveAdapters, reconcile_task
 from ..store import StoreError, TaskStore
 from ..tmux import TmuxAdapter
 from .links import control_task_identity_digest
-from .model import ATTEMPT_CONTRACT, record_digest, validate_attempt, validate_node
+from .model import (
+    ATTEMPT_CONTRACT, ATTEMPT_TERMINAL_STATES, record_digest, validate_attempt,
+    validate_node,
+)
 from .store import InitiativeStore
 from .results import reconcile_publications
 from .seals import (
@@ -25,6 +28,20 @@ from .seals import (
 
 NODE_RECONCILIATION_CONTRACT = "asha.orchestration-node-reconciliation.v1"
 LIVE_RECONCILIATION_CONTRACT = "asha.orchestration-live-reconciliation.v1"
+
+# Node states the strand-recovery sweep selects.  They mirror
+# `_STOP_RELEASABLE_NODE_STATES` in `actions.py` for the same reason: these are
+# the only two states dispatch itself writes, so they are the only two a
+# vanished process can leave behind.  `needs-input` belongs to a paused seal
+# recovered by `continue-node`, and forcing it to `ready` would discard an open
+# operator question.  `evaluating` is not selectable on its own either -- only
+# as the interrupted middle of a release walk, which `release_walk_interrupted`
+# in `actions.py` identifies from the records.
+_STRAND_RELEASABLE_NODE_STATES = frozenset({"dispatching", "running"})
+# Action states past which an action owns nothing further.
+_SETTLED_ACTION_STATES = frozenset({"completed", "refused"})
+# Bound on the review identities carried in one recovery event's subject list.
+_MAX_RECOVERY_SUBJECT_REVIEWS = 32
 
 
 def _unlinked(node_id: str) -> dict[str, Any]:
@@ -464,6 +481,174 @@ def _failure_target(
     return current_node, retry, None
 
 
+def _node_has_in_flight_action(
+    store: InitiativeStore,
+    initiative_id: str,
+    node_id: str,
+    attempt_ids: frozenset[str],
+) -> bool:
+    """Report whether an unsettled action still owns this node or its attempts.
+
+    A reservation is a live intent, and so is an action that has not reached
+    `completed` or `refused`.  Either means some other path is still entitled
+    to write this node, and the sweep must keep its hands off.
+
+    The predicate fails closed on ownership it cannot read.  An unsettled
+    action names its target only through its retained outcome, and that
+    outcome is optional in the action schema: `validate_action` accepts a null
+    `outcome`, and `action_outcome` answers an unreadable one with an empty
+    object.  Scanning that empty object finds no binding, so a purely
+    affirmative predicate would answer "nothing owns this node" for an action
+    that owns it and simply has not said so yet.  `received` is a durable
+    state -- `submit_action` persists the record before any later phase
+    rewrites its outcome -- so an unsettled action with a missing, null or
+    payload-less outcome is a normal retained shape after an interrupted
+    submit, not corrupt data.  Ambiguity is therefore treated as ownership:
+    the sweep declines to release a node no record positively frees, and the
+    block lifts by itself as soon as the action settles.
+    """
+    from .actions import ActionError, action_outcome
+
+    for action in store.list_actions_snapshot(initiative_id):
+        if action["state"] in _SETTLED_ACTION_STATES:
+            continue
+        try:
+            outcome = action_outcome(action)
+        except ActionError:
+            # An unreadable outcome on an unsettled action is exactly the
+            # ambiguity this sweep exists to avoid resolving unilaterally.
+            return True
+        payload = outcome.get("payload")
+        if not isinstance(payload, dict):
+            # No readable payload means the record does not say which node or
+            # attempt this unsettled action binds.  Every writer of an action
+            # record retains one, so reaching here is an interrupted or
+            # truncated write, and the safe reading of it is "still owned".
+            return True
+        for source in (outcome, payload):
+            if source.get("node_id") == node_id:
+                return True
+            if source.get("attempt_id") in attempt_ids:
+                return True
+    return False
+
+
+def _stranded_nodes(
+    store: InitiativeStore, initiative_id: str,
+) -> list[tuple[dict[str, Any], frozenset[str]]]:
+    """Select nodes whose claimed liveness no attempt of theirs supports.
+
+    The predicate is a contradiction between two records, not an attempt state:
+    a node in `dispatching`/`running` that owns at least one attempt, where
+    every one of those attempts is terminal, none is `allocated` (a reservation
+    is a live intent, not a strand), and no unsettled action still owns the
+    node.  Such a node asserts a live Control process that nothing corroborates.
+
+    A node halfway through a release walk is the same contradiction one edge
+    later: `evaluating` was written by the release, the second write never
+    landed, and nothing else will ever finish it.  It is selectable only under
+    `release_walk_interrupted`, which requires the node's newest attempt to be
+    `cancelled` -- the one pairing no other writer of `evaluating` produces.
+    The unsettled-action guard below is what makes that safe to sweep here as
+    well as in `reconcile_actions`: an interrupted `stop-attempt` or
+    `cancel-node` still owns its node, so this pass leaves it to that verb.
+    """
+    from .actions import release_walk_interrupted
+
+    by_node: dict[str, list[dict[str, Any]]] = {}
+    for attempt in store.list_attempts_snapshot(initiative_id):
+        by_node.setdefault(attempt["node_id"], []).append(attempt)
+
+    stranded: list[tuple[dict[str, Any], frozenset[str]]] = []
+    for node in sorted(
+        store.list_nodes_snapshot(initiative_id), key=lambda item: item["node_id"],
+    ):
+        if node["state"] not in _STRAND_RELEASABLE_NODE_STATES and not (
+            node["state"] == "evaluating"
+            and release_walk_interrupted(store, initiative_id, node)
+        ):
+            continue
+        owned = by_node.get(node["node_id"], [])
+        if not owned:
+            # A node with no attempt at all was never dispatched through this
+            # controller. Repairing it is a plan question, not a strand.
+            continue
+        if any(item["state"] == "allocated" for item in owned):
+            continue
+        if any(item["state"] not in ATTEMPT_TERMINAL_STATES for item in owned):
+            continue
+        attempt_ids = frozenset(item["attempt_id"] for item in owned)
+        if _node_has_in_flight_action(
+            store, initiative_id, node["node_id"], attempt_ids,
+        ):
+            continue
+        stranded.append((node, attempt_ids))
+    return stranded
+
+
+def _recover_stranded_nodes(
+    store: InitiativeStore, initiative_id: str, at: datetime,
+) -> list[dict[str, Any]]:
+    """Release nodes already stranded by a stop that never reached them.
+
+    `_release_stopped_node` in `actions.py` closes the two sites that create
+    this contradiction, but prevention is not retroactive.  A node stranded
+    before that fix -- or by any other path that writes an attempt terminal
+    without its node -- keeps claiming `dispatching`/`running` forever: its
+    attempt is already `cancelled`, `cancelled` is deliberately absent from the
+    latest-failure acted-on set below, and no coordinator verb moves a node out
+    of `running`.  Recovery is therefore as required as prevention.
+
+    This does not contradict the argument for fixing the stop sites rather than
+    the reconciler.  That argument was against adding `cancelled` to the
+    latest-failure set, because `_failure_target` treats its input as a failure
+    and would charge a deliberate operator stop against the node's retry budget
+    and the consecutive-failure breaker.  This sweep does not route through
+    `_failure_target`: it keys on a node/attempt contradiction rather than a
+    failure, reserves no retry, and trips no breaker.  It walks the same
+    `running` -> `evaluating` -> `ready` edges by hand that
+    `_release_stopped_node` does, under its own event reason so the two repairs
+    stay distinguishable in the journal.
+
+    In practice the predicate selects stops alone: every other terminal attempt
+    state already moves its node off `dispatching`/`running` on the way there
+    (`mark_launch_failed` to `evaluating`, seal publication to
+    `evaluating`/`succeeded`/`failed`, `_mark_conflict` to `stale`).  Should
+    one of those paths ever be interrupted between its attempt write and its
+    node write, releasing the node to `ready` is still right; the retry that
+    failure is owed is reserved by the ordinary latest-failure pass on the
+    next reconciliation, once the node is an ordinary `ready` node rather than
+    one this pass just recovered.  `reconcile_live` excludes recovered nodes
+    from that pass precisely so no recovery can reserve a retry or charge the
+    consecutive-failure breaker on the pass that recovered it.
+
+    The walk itself is `release_node_to_ready`, the same one the stop sites
+    use, so a recovery interrupted between its two writes is finished by the
+    next pass exactly as an interrupted prevention is.
+    """
+    from .actions import release_node_to_ready
+    from .review import retire_unsettled_reviews
+
+    recoveries: list[dict[str, Any]] = []
+    for node, attempt_ids in _stranded_nodes(store, initiative_id):
+        retired = retire_unsettled_reviews(
+            store, initiative_id, attempt_ids, at=_timestamp(at),
+        )
+        release_node_to_ready(
+            store, initiative_id, node,
+            reason="stranded-node-recovered",
+            actor_id="live-reconciler",
+            subject_ids=tuple(retired[:_MAX_RECOVERY_SUBJECT_REVIEWS]),
+            payload={"retired_reviews": len(retired)},
+        )
+        recoveries.append({
+            "node_id": node["node_id"],
+            "from": node["state"],
+            "retired_review_ids": retired,
+        })
+    return recoveries
+
+
 def reconcile_live(
     store: InitiativeStore,
     initiative_id: str,
@@ -478,6 +663,7 @@ def reconcile_live(
     retries: list[dict[str, Any]] = []
     seals: list[dict[str, Any]] = []
     probes: list[dict[str, str]] = []
+    recoveries: list[dict[str, Any]] = []
     clock = now or _now
     with store.transaction_lock(initiative_id):
         initiative = store.peek(initiative_id)
@@ -490,6 +676,7 @@ def reconcile_live(
                 "retries": retries,
                 "seals": seals,
                 "probes": probes,
+                "recoveries": recoveries,
             }
         # Result journals always recover before later process-exit or seal
         # evaluation, so a completion visible before a crash wins the ordering.
@@ -753,6 +940,20 @@ def reconcile_live(
             ]
             retries.extend(newly_allocated)
 
+        # Strand recovery runs before the latest-failure pass so the released
+        # node is truthful in this pass's returned node map, and the pass is
+        # then told to skip it.  Recovery is not a failure verdict: it keys on
+        # a node/attempt contradiction, reserves nothing and charges nothing,
+        # so a node it releases must not also acquire a retry on the same pass
+        # merely because its terminal attempt happens to read as a failure.
+        # Nothing is lost by deferring: the next reconciliation sees an
+        # ordinary `ready` node with a latest failure and reserves that retry
+        # through `_failure_target` with its full accounting and breaker.
+        recoveries.extend(_recover_stranded_nodes(store, initiative_id, clock()))
+        recovered_node_ids = {item["node_id"] for item in recoveries}
+        for node_id in recovered_node_ids:
+            nodes[node_id] = store.read_node(initiative_id, node_id)
+
         # The latest retriable failure is re-evaluated on every pass.  This is
         # what lets a breaker-paused initiative reserve its retry on resume.
         latest_by_node: dict[str, dict[str, Any]] = {}
@@ -769,6 +970,7 @@ def reconcile_live(
                     "failed-no-artifact", "sealed-failure",
                 }
                 or failed["attempt_id"] in handled_failures
+                or node_id in recovered_node_ids
             ):
                 continue
             current_node_record = store.read_node(initiative_id, node_id)
@@ -811,6 +1013,7 @@ def reconcile_live(
         "retries": retries,
         "seals": seals,
         "probes": probes,
+        "recoveries": recoveries,
     }
 
 
