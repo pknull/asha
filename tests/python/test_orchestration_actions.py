@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import unittest
 import uuid
 from unittest import mock
 
 from lib.control.orchestration.actions import (
+    ActionError,
     ActionRefused,
     _parse_document,
     _repair_node,
@@ -15,25 +17,82 @@ from lib.control.orchestration.actions import (
     reconcile_actions,
     submit_action,
 )
-from lib.control.orchestration.scheduler import SchedulerError
+from lib.control.orchestration.coordinator import claim
+from lib.control.orchestration.scheduler import (
+    SchedulerError,
+    consecutive_failures,
+    readiness,
+    refresh_readiness,
+)
 from lib.control.orchestration.model import ATTEMPT_CONTRACT, record_digest
 from lib.control.orchestration.store import ObservationOnlyPlanError
 from lib.control.jj import RepositoryFacts
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
+from tests.python.orchestration_increment3_fixtures import advance_node, save_candidate
+from tests.python.test_orchestration_coordinator_claim import FakeTmux
 
 
-class OrchestrationActionTests(ExecutionFixture, unittest.TestCase):
-    def dispatch_one(self):
-        payloads = []
+class CoordinatorEnvelope:
+    """Submit stops the way a live coordinator generation actually submits them.
 
+    The stop regressions below exist to prove a coordinator's stop releases its
+    node.  Building the document without a coordinator record makes it an
+    operator action: `build_action_document` writes `actor_kind=operator`, the
+    document carries no `coordinator_id`/`coordinator_generation`, and
+    `submit_action` never reaches `_coordinator_fence`.  Such a regression stays
+    green even when the real coordinator action would be refused outright, which
+    is the opposite of what it claims to cover.  So the fixture claims a real
+    generation from a real anchored pane and every stop goes through its
+    envelope.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.tmux = FakeTmux()
+        self.pane_env = {**self.env, "TMUX_PANE": "%7"}
+        self._coordinator = None
+
+    def coordinator(self):
+        """The live generation for this initiative, claimed on first use."""
+        if self._coordinator is None:
+            self._coordinator = claim(
+                self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+            )
+        return self._coordinator
+
+    def coordinator_document(self, action_class, payload, *, record=None):
+        record = self.coordinator() if record is None else record
+        document = build_action_document(
+            self.initiative(), action_class, payload,
+            actor_id=f"coordinator:{record['coordinator_id']}", coordinator=record,
+        )
+        assert document["actor_kind"] == "coordinator"
+        assert document["coordinator_id"] == record["coordinator_id"]
+        assert document["coordinator_generation"] == record["generation"]
+        return document
+
+    def assert_coordinator_action(self, action):
+        """The stored record proves the envelope, not just the document."""
+        self.assertEqual(action["actor_kind"], "coordinator")
+        self.assertEqual(action["coordinator_id"], self.coordinator()["coordinator_id"])
+        self.assertEqual(
+            action["coordinator_generation"], self.coordinator()["generation"],
+        )
+
+
+class OrchestrationActionTests(CoordinatorEnvelope, ExecutionFixture, unittest.TestCase):
+    def dispatch_action(self, node_id: str = "implementation-a", *, coordinator=False):
         def capture(argv, **_kwargs):
             payload = self.control_payload(argv)
-            payloads.append(payload)
             self.last_control_task = payload["task"]
             return 0, json.dumps(payload).encode(), b""
 
-        document = build_action_document(
-            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        document = (
+            self.coordinator_document("dispatch-node", {"node_id": node_id})
+            if coordinator
+            else build_action_document(
+                self.initiative(), "dispatch-node", {"node_id": node_id},
+            )
         )
         with mock.patch(
             "lib.control.orchestration.scheduler.storage_report",
@@ -41,8 +100,45 @@ class OrchestrationActionTests(ExecutionFixture, unittest.TestCase):
         ), mock.patch(
             "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
         ):
-            submit_action(self.store, self.initiative_id, document)
+            return submit_action(self.store, self.initiative_id, document)
+
+    def dispatch_one(self):
+        self.dispatch_action()
         return self.store.list_attempts_snapshot(self.initiative_id)[0]
+
+    def stop_action(self, attempt_id: str, *, record=None):
+        """Submit stop-attempt through the live coordinator generation's envelope."""
+        document = self.coordinator_document(
+            "stop-attempt", {"attempt_id": attempt_id}, record=record,
+        )
+        return self.submit_stop(document)
+
+    def submit_stop(self, document, *, capture=None):
+        with mock.patch(
+            "lib.control.orchestration.actions.capture_bytes",
+            **(capture or {"return_value": (0, b"", b"")}),
+        ), mock.patch(
+            "lib.control.orchestration.actions.TaskStore",
+        ) as control_store:
+            control_store.return_value.peek.return_value = self.last_control_task
+            return submit_action(self.store, self.initiative_id, document)
+
+    def reconcile_stop(self):
+        with mock.patch(
+            "lib.control.orchestration.actions.TaskStore",
+        ) as control_store, mock.patch(
+            "lib.control.orchestration.actions.reconcile_task",
+            return_value={"state": "exited", "blocker": None, "evidence": []},
+        ):
+            control_store.return_value.peek.return_value = self.last_control_task
+            return reconcile_actions(self.store, self.initiative_id)["actions"][0]
+
+    def node_state_changes(self, node_id: str, since: int = 0):
+        return [
+            (event["payload"].get("from"), event["payload"].get("to"))
+            for event in self.store.list_events_snapshot(self.initiative_id)[since:]
+            if event["type"] == "node-state-changed" and node_id in event["subject_ids"]
+        ]
 
     def test_historical_execution_actions_refuse_before_any_execution_effect(self) -> None:
         retained, raw = self.install_historical_active_plan()
@@ -407,6 +503,337 @@ class OrchestrationActionTests(ExecutionFixture, unittest.TestCase):
             "cancelled",
         )
 
+    def test_stop_attempt_releases_its_node_and_leaves_it_dispatchable(self) -> None:
+        """The live stranding shape: a coordinator stops a running attempt.
+
+        Before the fix the attempt went terminal while the node stayed
+        `running`, and `reconcile_live` never acts on a `cancelled` attempt, so
+        no coordinator verb could recover the node.  The stop is submitted
+        through the live generation's envelope, so the refusal path this
+        regression must not silently take -- fence, generation, coordinator
+        action class -- is actually executed.
+        """
+        self.coordinator()
+        attempt = self.dispatch_one()
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "running",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        stopped = self.stop_action(attempt["attempt_id"])
+
+        self.assertEqual(stopped["state"], "completed", stopped["outcome"])
+        self.assert_coordinator_action(stopped)
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "cancelled",
+        )
+        self.assertEqual(
+            self.node_state_changes("implementation-a", before),
+            [("running", "evaluating"), ("evaluating", "ready")],
+        )
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        self.assertEqual(node["state"], "ready")
+        self.assertEqual(
+            readiness(self.store, self.initiative())["implementation-a"], "ready",
+        )
+
+        redispatched = self.dispatch_action(coordinator=True)
+
+        self.assertEqual(redispatched["state"], "completed", redispatched["outcome"])
+        self.assert_coordinator_action(redispatched)
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+        states = sorted(
+            item["state"]
+            for item in self.store.list_attempts_snapshot(self.initiative_id)
+            if item["node_id"] == "implementation-a"
+        )
+        self.assertEqual(states, ["cancelled", "running"])
+
+    def test_stop_attempt_from_a_fenced_generation_is_refused_before_any_effect(
+        self,
+    ) -> None:
+        """The envelope is load-bearing: a stale generation may not stop anything.
+
+        This is the case that proves the two release regressions are not merely
+        green because their document skipped `_coordinator_fence`.  The same
+        stop, resubmitted from the live generation, then succeeds.
+        """
+        stale = self.coordinator()
+        attempt = self.dispatch_one()
+        successor = claim(
+            self.store, self.initiative(),
+            env={**self.env, "TMUX_PANE": "%8"},
+            tmux=FakeTmux(pane_id="%8", pane_pid=os.getppid()),
+        )
+        self.assertEqual(successor["generation"], stale["generation"] + 1)
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        refused = self.stop_action(attempt["attempt_id"], record=stale)
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertIn(
+            f"coordinator generation {stale['generation']} is fenced", refused["outcome"],
+        )
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "running",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+        self.assertEqual(self.node_state_changes("implementation-a", before), [])
+
+        self._coordinator = successor
+        accepted = self.stop_action(attempt["attempt_id"])
+
+        self.assertEqual(accepted["state"], "completed", accepted["outcome"])
+        self.assertEqual(accepted["coordinator_generation"], successor["generation"])
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+
+    def test_stop_attempt_charges_neither_failure_breaker_nor_retry_budget(self) -> None:
+        self.coordinator()
+        attempt = self.dispatch_one()
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        self.stop_action(attempt["attempt_id"])
+
+        node_attempts = [
+            item for item in self.store.list_attempts_snapshot(self.initiative_id)
+            if item["node_id"] == "implementation-a"
+        ]
+        self.assertEqual(len(node_attempts), 1)
+        self.assertEqual(
+            consecutive_failures(
+                self.store.list_attempts_snapshot(self.initiative_id),
+            ),
+            0,
+        )
+        self.assertEqual(self.initiative()["state"], "running")
+        added = self.store.list_events_snapshot(self.initiative_id)[before:]
+        self.assertEqual(
+            sorted({item["type"] for item in added}),
+            ["action-received", "node-state-changed"],
+        )
+        self.assertEqual(
+            sorted({
+                (item["actor_kind"], item["actor_id"]) for item in added
+                if item["type"] == "node-state-changed"
+            }),
+            [("controller", "action-broker")],
+        )
+
+    def assert_stop_leaves_node(self, node_state: str) -> None:
+        self.coordinator()
+        attempt = self.dispatch_one()
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        moved = copy.deepcopy(node)
+        moved["state"] = node_state
+        self.store.save_node(
+            self.initiative_id, moved, expected_digest=record_digest(node),
+        )
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        stopped = self.stop_action(attempt["attempt_id"])
+
+        self.assertEqual(stopped["state"], "completed", stopped["outcome"])
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "cancelled",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            node_state,
+        )
+        self.assertEqual(self.node_state_changes("implementation-a", before), [])
+
+    def test_stop_attempt_leaves_a_terminal_node_untouched(self) -> None:
+        self.assert_stop_leaves_node("stale")
+
+    def test_stop_attempt_leaves_a_needs_input_node_to_continue_node(self) -> None:
+        self.assert_stop_leaves_node("needs-input")
+
+    def test_interrupted_stop_reconciles_attempt_and_node_together(self) -> None:
+        """The second call site: a stop whose command never returned.
+
+        Fixing only `_stop_attempt` ships half the fix, so this shape submits
+        the same real coordinator envelope and then completes through
+        `reconcile_actions`.
+        """
+        self.coordinator()
+        attempt = self.dispatch_one()
+        document = self.coordinator_document(
+            "stop-attempt", {"attempt_id": attempt["attempt_id"]},
+        )
+
+        action = self.submit_stop(
+            document, capture={"side_effect": ActionError("command timed out")},
+        )
+
+        self.assertEqual(action["state"], "indeterminate")
+        self.assert_coordinator_action(action)
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        reconciled = self.reconcile_stop()
+
+        self.assertEqual(reconciled["state"], "completed", reconciled["outcome"])
+        self.assert_coordinator_action(reconciled)
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "cancelled",
+        )
+        self.assertEqual(
+            self.node_state_changes("implementation-a", before),
+            [("running", "evaluating"), ("evaluating", "ready")],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+
+        redispatched = self.dispatch_action(coordinator=True)
+
+        self.assertEqual(redispatched["state"], "completed", redispatched["outcome"])
+        self.assert_coordinator_action(redispatched)
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+        self.assertEqual(
+            sorted(
+                item["state"]
+                for item in self.store.list_attempts_snapshot(self.initiative_id)
+                if item["node_id"] == "implementation-a"
+            ),
+            ["cancelled", "running"],
+        )
+
+    def failing_second_node_write(self):
+        """Persist the first release edge, then fail exactly like a dying process."""
+        real = self.store.save_node
+        writes = []
+
+        def save_node(initiative_id, record, **kwargs):
+            writes.append(record["state"])
+            if len(writes) > 1:
+                raise OSError("injected node write failure")
+            return real(initiative_id, record, **kwargs)
+
+        return mock.patch.object(self.store, "save_node", side_effect=save_node)
+
+    def test_release_interrupted_between_its_two_writes_still_reaches_ready(self) -> None:
+        """The walk is two persisted writes, so it must be restartable.
+
+        `dispatching`/`running` -> `ready` has no single edge, so a failure
+        after `evaluating` is persisted leaves a cancelled attempt on an
+        `evaluating` node.  That pairing is produced by nothing but this walk,
+        so `reconcile_actions` finishes it instead of treating the node as an
+        interrupted seal's and stranding it permanently.
+        """
+        self.coordinator()
+        attempt = self.dispatch_one()
+        document = self.coordinator_document(
+            "stop-attempt", {"attempt_id": attempt["attempt_id"]},
+        )
+        with self.failing_second_node_write():
+            action = self.submit_stop(document)
+
+        self.assertEqual(action["state"], "indeterminate")
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "cancelled",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "evaluating",
+        )
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        reconciled = self.reconcile_stop()
+
+        self.assertEqual(reconciled["state"], "completed", reconciled["outcome"])
+        self.assertEqual(
+            self.node_state_changes("implementation-a", before),
+            [("evaluating", "ready")],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "ready",
+        )
+
+        redispatched = self.dispatch_action(coordinator=True)
+
+        self.assertEqual(redispatched["state"], "completed", redispatched["outcome"])
+        self.assertEqual(
+            sorted(
+                item["state"]
+                for item in self.store.list_attempts_snapshot(self.initiative_id)
+                if item["node_id"] == "implementation-a"
+            ),
+            ["cancelled", "running"],
+        )
+
+    def test_release_does_not_seize_an_evaluating_node_it_did_not_write(self) -> None:
+        """The resume is keyed on the newest attempt, not on `evaluating` alone.
+
+        A node evaluating a seal from a newer attempt keeps that evaluation
+        even when an older attempt of the same node is stopped.
+        """
+        self.coordinator()
+        attempt = self.dispatch_one()
+        indeterminate = copy.deepcopy(attempt)
+        indeterminate.update({"state": "indeterminate", "updated_at": now_text()})
+        self.store.save_attempt(
+            self.initiative_id, indeterminate, expected_digest=record_digest(attempt),
+        )
+        newer = copy.deepcopy(indeterminate)
+        newer.update({
+            "attempt_id": str(uuid.uuid4()),
+            "task_id": str(uuid.uuid4()),
+            "action_id": None,
+            "ordinal": attempt["ordinal"] + 1,
+            "state": "allocated",
+            "created_at": now_text(),
+            "updated_at": now_text(),
+        })
+        self.store.save_attempt(self.initiative_id, newer)
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        evaluating = copy.deepcopy(node)
+        evaluating["state"] = "evaluating"
+        self.store.save_node(
+            self.initiative_id, evaluating, expected_digest=record_digest(node),
+        )
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        stopped = self.stop_action(attempt["attempt_id"])
+
+        self.assertEqual(stopped["state"], "completed", stopped["outcome"])
+        self.assertEqual(
+            self.store.read_attempt(self.initiative_id, attempt["attempt_id"])["state"],
+            "cancelled",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "evaluating",
+        )
+        self.assertEqual(self.node_state_changes("implementation-a", before), [])
+
     def test_cancel_node_stops_live_attempt_then_cancels_both(self) -> None:
         attempt = self.dispatch_one()
         document = build_action_document(
@@ -578,6 +1005,141 @@ class OrchestrationActivationTests(ExecutionFixture, unittest.TestCase):
             action = submit_action(self.store, self.initiative_id, document)
         self.assertEqual(action["state"], "refused")
         self.assertEqual(self.initiative()["state"], "approved")
+
+
+class OrchestrationStoppedReviewNodeTests(
+    CoordinatorEnvelope, ExecutionFixture, unittest.TestCase
+):
+    """A stopped review attempt can never settle the review it was running.
+
+    Prevention releases the review node to `ready`, which makes it immediately
+    re-dispatchable, so the retirement the recovery sweep performs must happen
+    at the stop sites as well.  Without it a redispatch registers a second
+    `running` review for the same target beside the first.  Both shapes submit
+    the stop through the live coordinator generation's envelope for the same
+    reason the implementation-node regressions do.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.candidate = save_candidate(self)
+        advance_node(self, "implementation-a", ["evaluating", "succeeded"])
+        refresh_readiness(self.store, self.initiative_id)
+        self.dispatch_review()
+        self.coordinator()
+
+    def dispatch_review(self):
+        def capture(argv, **_kwargs):
+            payload = self.control_payload(argv)
+            payload["task"]["jj"].update({
+                "base_commit_id": argv[argv.index("--base") + 1],
+                "working_commit_id": "f" * 40,
+            })
+            self.last_control_task = payload["task"]
+            return 0, json.dumps(payload).encode(), b""
+
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "review-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ):
+            return submit_action(self.store, self.initiative_id, document)
+
+    def latest_review_attempt(self):
+        return max(
+            (
+                item for item in self.store.list_attempts_snapshot(self.initiative_id)
+                if item["node_id"] == "review-a"
+            ),
+            key=lambda item: (item["ordinal"], item["attempt_id"]),
+        )
+
+    def review_for(self, attempt_id):
+        return next(
+            item for item in self.store.list_reviews_snapshot(self.initiative_id)
+            if item["attempt_id"] == attempt_id
+        )
+
+    def assert_retired_then_redispatchable(self, attempt, review):
+        retired = self.store.read_review(self.initiative_id, review["review_id"])
+        self.assertEqual(retired["state"], "stale")
+        self.assertIsNone(retired["verdict"])
+        self.assertEqual(retired["findings"], [])
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "review-a")["state"], "ready",
+        )
+
+        redispatched = self.dispatch_review()
+
+        self.assertEqual(redispatched["state"], "completed", redispatched["outcome"])
+        fresh = self.latest_review_attempt()
+        self.assertNotEqual(fresh["attempt_id"], attempt["attempt_id"])
+        self.assertEqual(self.review_for(fresh["attempt_id"])["state"], "running")
+        self.assertEqual(
+            sorted(
+                item["state"]
+                for item in self.store.list_reviews_snapshot(self.initiative_id)
+            ),
+            ["running", "stale"],
+        )
+
+    def submit_stop(self, document, *, capture=None):
+        with mock.patch(
+            "lib.control.orchestration.actions.capture_bytes",
+            **(capture or {"return_value": (0, b"", b"")}),
+        ), mock.patch(
+            "lib.control.orchestration.actions.TaskStore",
+        ) as control_store:
+            control_store.return_value.peek.return_value = self.last_control_task
+            return submit_action(self.store, self.initiative_id, document)
+
+    def test_stop_retires_the_review_its_attempt_can_no_longer_settle(self) -> None:
+        attempt = self.latest_review_attempt()
+        review = self.review_for(attempt["attempt_id"])
+        self.assertEqual(review["state"], "running")
+        document = self.coordinator_document(
+            "stop-attempt", {"attempt_id": attempt["attempt_id"]},
+        )
+
+        stopped = self.submit_stop(document)
+
+        self.assertEqual(stopped["state"], "completed", stopped["outcome"])
+        self.assert_coordinator_action(stopped)
+        self.assert_retired_then_redispatchable(attempt, review)
+
+    def test_interrupted_stop_retires_the_review_at_the_reconciled_site(self) -> None:
+        attempt = self.latest_review_attempt()
+        review = self.review_for(attempt["attempt_id"])
+        document = self.coordinator_document(
+            "stop-attempt", {"attempt_id": attempt["attempt_id"]},
+        )
+
+        interrupted = self.submit_stop(
+            document, capture={"side_effect": ActionError("command timed out")},
+        )
+
+        self.assertEqual(interrupted["state"], "indeterminate")
+        self.assert_coordinator_action(interrupted)
+        self.assertEqual(
+            self.store.read_review(self.initiative_id, review["review_id"])["state"],
+            "running",
+        )
+
+        with mock.patch(
+            "lib.control.orchestration.actions.TaskStore",
+        ) as control_store, mock.patch(
+            "lib.control.orchestration.actions.reconcile_task",
+            return_value={"state": "exited", "blocker": None, "evidence": []},
+        ):
+            control_store.return_value.peek.return_value = self.last_control_task
+            reconciled = reconcile_actions(self.store, self.initiative_id)["actions"][0]
+
+        self.assertEqual(reconciled["state"], "completed", reconciled["outcome"])
+        self.assert_retired_then_redispatchable(attempt, review)
 
 
 if __name__ == "__main__":
