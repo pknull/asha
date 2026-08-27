@@ -287,12 +287,64 @@ materialized file is verified by streaming its Git object hash. Large blobs
 and aggregate tracked bytes are not constrained by the legacy inline-journal
 content limits; no per-blob Git subprocess is used.
 
+## Private orchestration result-ingestion transport
+
+This is an additive orchestration sidecar, not a change to any frozen Control
+v1 JSON payload. An orchestration dispatch reserves one immutable
+`asha.orchestration-result-ingestion.v1` record, identified independently from
+the attempt and stored under the initiative's `result-ingestions/` directory.
+It binds the initiative, active-plan digest, node, attempt, Control task and
+primary run, immutable Control-task identity digest, workspace name/path and
+change ID, plus one relative `.asha/outbox/<ingestion-uuid>.json` path. Its
+state machine is `reserved -> ingesting -> completed|refused`, with an
+`indeterminate` recovery edge. The ingestion UUID is not a result UUID,
+publication UUID, attempt UUID, or Control task UUID.
+
+For these reserved launches only, the private harness environment also carries
+`ASHA_CONTROL_RESULT_INGESTION_ID` and the exact absolute
+`ASHA_CONTROL_RESULT_OUTBOX`. Matching tmux pane options bind their ingestion
+identity and the SHA-256 digest of the outbox path. These are launch ownership
+aids, not authorization to write Control state and not new fields in
+`asha.control-task.v1`, `asha.control-run.v1`, or
+`asha.control-task-start.v1`. `asha task report` proves the caller descends
+from that exact managed pane and stages a closed
+`asha.orchestration-result-candidate.v1` file in the reserved workspace
+outbox. Staging never opens an InitiativeStore or TaskStore and therefore
+continues to work when the worker sees all Control state read-only.
+
+Only the controller-side `asha task ingest`/supervisor path reads a candidate.
+It rechecks the reservation, producer bindings, current active-plan digest,
+Control identity, workspace/change identity, closed result schema, hard scope,
+publication lineage, and the exact candidate bytes. Exact completed replay is
+idempotent; modified, foreign, stale, duplicate, or unreserved candidates are
+refused. Review candidates use the same transport without a commit.
+
+For mutable work, the controller waits for terminal producer evidence, then
+snapshots the retained workspace with controller filesystem authority. The
+command-scoped jj snapshot auto-track fileset excludes the private `.asha/`
+transport, so an outbox candidate cannot enter the commit even when a project
+ignores only the required Control marker rather than the whole directory. If the
+snapshot created the commit, every declared result attestation is rerun inside
+an exact retained materialization. The verifier sees a read-only host root and
+isolated `/tmp`; its only persistent writable mounts are the exact
+materialization and bounded output file. Even a result with no declared command gets
+an immutable exact-tree integrity evidence record. The authoritative result
+and later seal carry `publication_provenance`, `claimed_commit_id`, and
+`commit_provenance`, distinguishing worker-created from controller-created
+commits and naming the producer plus controller/coordinator ingester
+generation. No worker sandbox path is widened, and a forged
+`ASHA_CONTROL_MANAGED` environment from a coordinator pane fails the managed
+pane proof.
+
 ## Not contracts
 
 tmux user options (`@asha_*`), session/window/pane names, workspace directory
 layout under `${ASHA_HOME:-~/.asha}/workspaces/`, and the human TUI are
-presentation and ownership aids. Orchestration must read task state through
-the payloads above, never through tmux or the filesystem.
+presentation and ownership aids. Authoritative orchestration task state is
+read through the payloads above, never inferred from tmux or the filesystem.
+The workspace-only candidate staging seam may prove that its caller owns the
+launch reservation through the private pane options described above; the
+controller still revalidates every authoritative binding from retained state.
 
 The TUI's selected source, observation timestamp, and freshness are an internal
 projection chosen atomically with the same state returned by

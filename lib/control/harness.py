@@ -156,6 +156,8 @@ def launch_argv(
 
 def controller_env(
     *, task_id: str, run_id: str, state_dir: Path, asha_home: Path | None = None,
+    result_ingestion_id: str | None = None,
+    result_outbox: Path | None = None,
 ) -> dict[str, str]:
     try:
         task_id = canonical_uuid(task_id)
@@ -180,6 +182,20 @@ def controller_env(
         # tasks_dir and every `asha control event` it sends would be refused.
         environment["ASHA_HOME"] = str(_canonical_path(
             asha_home, "asha home is not an absolute canonical path",
+        ))
+    if (result_ingestion_id is None) != (result_outbox is None):
+        raise HarnessError("result ingestion identity and outbox must be supplied together")
+    if result_ingestion_id is not None:
+        try:
+            environment["ASHA_CONTROL_RESULT_INGESTION_ID"] = canonical_uuid(
+                result_ingestion_id,
+            )
+        except ModelError as exc:
+            raise HarnessError("result ingestion id must be a canonical UUID") from exc
+        assert result_outbox is not None
+        environment["ASHA_CONTROL_RESULT_OUTBOX"] = str(_canonical_path(
+            result_outbox,
+            "result outbox is not an absolute canonical path",
         ))
     return environment
 

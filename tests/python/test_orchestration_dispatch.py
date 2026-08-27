@@ -190,11 +190,23 @@ print(json.dumps({
         self.assertEqual(argv[argv.index("--base") + 1], "b" * 40)
         self.assertEqual(argv[argv.index("--harness") + 1], "codex")
         self.assertEqual(argv[argv.index("--role") + 1], "implementer")
+        self.assertIn("--result-ingestion-id", argv)
+        self.assertIn("--result-outbox", argv)
         self.assertIn("--detach", argv)
         self.assertIn("--json", argv)
         attempts = self.store.list_attempts_snapshot(self.initiative_id)
         self.assertEqual(len(attempts), 1)
         self.assertEqual(attempts[0]["state"], "running")
+        ingestions = self.store.list_result_ingestions_snapshot(self.initiative_id)
+        self.assertEqual(len(ingestions), 1)
+        self.assertEqual(
+            argv[argv.index("--result-ingestion-id") + 1],
+            ingestions[0]["ingestion_id"],
+        )
+        self.assertEqual(
+            argv[argv.index("--result-outbox") + 1],
+            ingestions[0]["outbox_path"],
+        )
         assignment = (
             self.config.initiatives_dir / self.initiative_id / "assignments"
             / f"{attempts[0]['attempt_id']}.md"

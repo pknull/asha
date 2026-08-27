@@ -48,6 +48,7 @@ from .results import (
     ResultError, ResultRefused, publish_result, read_client_file,
     results_for_task,
 )
+from .ingestion import IngestionRefused, ingest_result, stage_result
 from .scheduler import SchedulerError, validate_goal_capacity
 from .seals import SealError, seal_for_task_or_attempt
 from .storage import storage_report
@@ -1636,8 +1637,8 @@ def show_payload(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str
 
 
 def _task_2b_command(args: list[str], env: Mapping[str, str]) -> int:
-    if not args or args[0] not in {"report", "result", "seal"}:
-        raise ValueError("task result route requires report, result, or seal")
+    if not args or args[0] not in {"report", "ingest", "result", "seal"}:
+        raise ValueError("task result route requires report, ingest, result, or seal")
     command, tail = args[0], args[1:]
     config = load_config(env)
     if command == "report":
@@ -1645,18 +1646,102 @@ def _task_2b_command(args: list[str], env: Mapping[str, str]) -> int:
         _only(options, {"file", "json"}, "task report")
         _required(options, "file")
         body = read_client_file(Path(options["file"]))
-        receipt = publish_result(InitiativeStore(config), body, env)
+        if env.get("ASHA_CONTROL_RESULT_INGESTION_ID"):
+            receipt = stage_result(
+                config, body, env, caller_pid=os.getpid(),
+            )
+        else:
+            receipt = publish_result(
+                InitiativeStore(config), body, env, caller_pid=os.getpid(),
+            )
         if options["json"]:
             _json(receipt)
         else:
-            print(f"Result: {receipt['result_id']}")
+            if receipt["phase"] == "staged":
+                print(f"Ingestion: {receipt['ingestion_id']}")
+                print(f"Reserved outbox: {receipt['outbox_path']}")
+            else:
+                print(f"Result: {receipt['result_id']}")
             print(f"Publication phase: {receipt['phase']}")
-            if receipt["refusal"] is not None:
+            if receipt.get("refusal") is not None:
                 print(f"Refusal: {receipt['refusal']}")
         return (
-            0 if receipt["phase"] == "completed"
+            0 if receipt["phase"] in {"completed", "staged"}
             else 3 if receipt["phase"] == "indeterminate" else 2
         )
+    if command == "ingest":
+        if not tail or tail[0].startswith("--"):
+            raise ValueError("task ingest requires exactly one ingestion identity")
+        identity = tail[0]
+        options = _parse_options(tail[1:], flags={"json"})
+        _only(options, {"json"}, "task ingest")
+        if env.get("ASHA_CONTROL_MANAGED") == "1":
+            raise IngestionRefused(
+                "managed workers cannot invoke controller-owned result ingestion"
+            )
+        store = InitiativeStore(config)
+        matches = []
+        for initiative in store.list_initiatives():
+            initiative_id = initiative["initiative_id"]
+            try:
+                records = store.list_result_ingestions_snapshot(initiative_id)
+            except StoreError as exc:
+                if (
+                    "initiative storage directory is missing: result-ingestions"
+                    not in str(exc)
+                ):
+                    raise
+                # A legacy initiative cannot contain a reservation in the
+                # absent additive sidecar. Keep identity resolution read-only;
+                # caller attribution is checked before ingestion may write.
+                records = []
+            matches.extend(
+                (initiative, record) for record in records
+                if record["ingestion_id"] == identity or record["task_id"] == identity
+            )
+        if len(matches) != 1:
+            raise IngestionRefused(
+                "result ingestion identity is not uniquely reserved"
+            )
+        initiative, record = matches[0]
+        actor = {
+            "actor_kind": "controller", "actor_id": "task-ingest-cli",
+            "coordinator_generation": None,
+        }
+        if env.get("ASHA_ORCHESTRATION_COORDINATOR_ID"):
+            coordinator = require_live_coordinator(
+                store, initiative["initiative_id"],
+            )
+            socket = coordinator["anchor"]["tmux_socket"]
+            require_anchored_caller(
+                coordinator, env,
+                TmuxAdapter(socket=None if socket == "default" else socket),
+            )
+            actor = {
+                "actor_kind": "coordinator",
+                "actor_id": f"coordinator:{coordinator['coordinator_id']}",
+                "coordinator_generation": coordinator["generation"],
+            }
+        else:
+            # An operator-attributed ingest must not be smuggled from the live
+            # coordinator pane by merely unsetting its exported identity.
+            refuse_coordinator_pane(
+                store, initiative["initiative_id"], env, TmuxAdapter(),
+            )
+        receipt = ingest_result(
+            store, initiative["initiative_id"], record["ingestion_id"],
+            ingester=actor,
+        )
+        if options["json"]:
+            _json(receipt)
+        else:
+            print(f"Ingestion: {receipt['ingestion_id']}")
+            print(f"Phase: {receipt['phase']}")
+            if receipt["result_id"] is not None:
+                print(f"Result: {receipt['result_id']}")
+            if receipt["refusal"] is not None:
+                print(f"Refusal: {receipt['refusal']}")
+        return 0 if receipt["phase"] == "completed" else 2
     if not tail or tail[0].startswith("--"):
         raise ValueError(f"task {command} requires exactly one identity")
     identity = tail[0]
@@ -1695,8 +1780,9 @@ def task_main(
     values = os.environ if env is None else env
     try:
         return _task_2b_command(args, values)
-    except (OrchestrationConfigError, ResultError, ResultRefused, SealError,
-            StoreError, JjError, ModelError, OSError, ValueError) as exc:
+    except (CoordinatorError, OrchestrationConfigError, ResultError, ResultRefused,
+            SealError, StoreError, TmuxError, JjError, ModelError, OSError,
+            ValueError) as exc:
         print(f"asha task: {exc}", file=sys.stderr)
         return 2
     except KeyboardInterrupt:
@@ -1722,7 +1808,9 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             return 2
         if args[0] == "initiative":
             return _initiative_command(args[1:], values)
-        if args[0] == "task" and len(args) >= 2 and args[1] in {"report", "result", "seal"}:
+        if args[0] == "task" and len(args) >= 2 and args[1] in {
+            "report", "ingest", "result", "seal",
+        }:
             return task_main(args[1:], env=values)
         raise ValueError("unknown orchestration route")
     except (ActionError, ActionRefused, OrchestrationConfigError, SchedulerError,

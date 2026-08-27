@@ -27,6 +27,8 @@ NODE_CONTRACT = "asha.orchestration-node.v1"
 ATTEMPT_CONTRACT = "asha.orchestration-attempt.v1"
 RESULT_PUBLICATION_CONTRACT = "asha.orchestration-result-publication.v1"
 RESULT_CONTRACT = "asha.orchestration-result.v1"
+RESULT_INGESTION_CONTRACT = "asha.orchestration-result-ingestion.v1"
+RESULT_CANDIDATE_CONTRACT = "asha.orchestration-result-candidate.v1"
 SEAL_CONTRACT = "asha.orchestration-seal.v1"
 SEAL_PREPARATION_CONTRACT = "asha.orchestration-seal-preparation.v1"
 REVIEW_CONTRACT = "asha.orchestration-review.v1"
@@ -608,6 +610,9 @@ def _simple_machine(states: tuple[str, ...], pairs: list[tuple[str, str]]) -> di
 RESULT_PUBLICATION_STATES = (
     "reserved", "validating", "persisting", "completed", "refused", "indeterminate",
 )
+RESULT_INGESTION_STATES = (
+    "reserved", "ingesting", "completed", "refused", "indeterminate",
+)
 RESULT_STATES = ("accepted",)
 SEAL_STATES = (
     "preparing", "sealed-success", "sealed-failure", "sealed-paused", "indeterminate",
@@ -638,6 +643,16 @@ _rp_pairs += [
     for state in ("reserved", "validating", "persisting", "completed", "refused")
 ]
 RESULT_PUBLICATION_TRANSITIONS = _simple_machine(RESULT_PUBLICATION_STATES, _rp_pairs)
+RESULT_INGESTION_TRANSITIONS = _simple_machine(
+    RESULT_INGESTION_STATES,
+    [
+        ("reserved", "ingesting"), ("reserved", "refused"),
+        ("ingesting", "completed"), ("ingesting", "refused"),
+        ("ingesting", "indeterminate"),
+        ("indeterminate", "ingesting"), ("indeterminate", "completed"),
+        ("indeterminate", "refused"),
+    ],
+)
 RESULT_TRANSITIONS = {"accepted": frozenset()}
 SEAL_TRANSITIONS = _simple_machine(
     SEAL_STATES,
@@ -707,6 +722,7 @@ MACHINES = {
     "node": NODE_TRANSITIONS,
     "attempt": ATTEMPT_TRANSITIONS,
     "result-publication": RESULT_PUBLICATION_TRANSITIONS,
+    "result-ingestion": RESULT_INGESTION_TRANSITIONS,
     "result": RESULT_TRANSITIONS,
     "seal": SEAL_TRANSITIONS,
     "review": REVIEW_TRANSITIONS,
@@ -1012,6 +1028,16 @@ _RESULT_KEYS = frozenset({
     "run_id", "claim_status", "summary", "files_changed",
     "verification_attestations", "concerns", "follow_up", "published_at",
 })
+_RESULT_PROVENANCE_KEYS = frozenset({
+    "publication_provenance", "claimed_commit_id", "commit_provenance",
+})
+_PUBLICATION_PROVENANCE_KEYS = frozenset({
+    "method", "producer_run_id", "ingestion_id", "ingester_actor_kind",
+    "ingester_actor_id", "ingester_coordinator_generation",
+})
+_COMMIT_PROVENANCE_KEYS = frozenset({
+    "creator", "actor_id", "verification_evidence_ids",
+})
 
 _REVIEW_FINDING_KEYS = frozenset({"severity", "location", "summary"})
 _REVIEW_RESULT_TARGET_KEYS = frozenset({
@@ -1046,8 +1072,62 @@ def _review_target(value: Any, name: str) -> dict[str, Any]:
     return copy.deepcopy(target)
 
 
+def _publication_provenance(value: Any, name: str) -> dict[str, Any]:
+    provenance = _object(value, name, _PUBLICATION_PROVENANCE_KEYS)
+    if provenance["method"] not in {"direct-worker", "controller-ingestion"}:
+        raise ModelError(f"{name}.method is invalid")
+    canonical_uuid(provenance["producer_run_id"], f"{name}.producer_run_id")
+    if provenance["method"] == "direct-worker":
+        if any(provenance[field] is not None for field in (
+            "ingestion_id", "ingester_actor_kind", "ingester_actor_id",
+            "ingester_coordinator_generation",
+        )):
+            raise ModelError(f"{name} direct-worker method cannot name an ingester")
+    else:
+        canonical_uuid(provenance["ingestion_id"], f"{name}.ingestion_id")
+        if provenance["ingester_actor_kind"] not in {"controller", "coordinator"}:
+            raise ModelError(f"{name}.ingester_actor_kind is invalid")
+        _text(
+            provenance["ingester_actor_id"], f"{name}.ingester_actor_id",
+            maximum=MAX_ACTOR_ID_BYTES,
+        )
+        generation = provenance["ingester_coordinator_generation"]
+        if provenance["ingester_actor_kind"] == "coordinator":
+            _integer(generation, f"{name}.ingester_coordinator_generation", minimum=1)
+        elif generation is not None:
+            raise ModelError(f"{name} controller ingester cannot name a coordinator generation")
+    return copy.deepcopy(provenance)
+
+
+def _commit_provenance(value: Any, name: str) -> dict[str, Any]:
+    provenance = _object(value, name, _COMMIT_PROVENANCE_KEYS)
+    if provenance["creator"] not in {"worker", "controller", "none"}:
+        raise ModelError(f"{name}.creator is invalid")
+    actor_id = provenance["actor_id"]
+    if provenance["creator"] == "none":
+        if actor_id is not None:
+            raise ModelError(f"{name} without a commit cannot name a creator actor")
+    else:
+        _text(actor_id, f"{name}.actor_id", maximum=MAX_ACTOR_ID_BYTES)
+    evidence_ids = _string_list(
+        provenance["verification_evidence_ids"],
+        f"{name}.verification_evidence_ids", maximum_items=MAX_EVIDENCE_IDS,
+        maximum_bytes=36, validator=canonical_uuid,
+    )
+    if provenance["creator"] == "controller" and not evidence_ids:
+        raise ModelError(f"{name} controller-created commit requires verification evidence")
+    if provenance["creator"] != "controller" and evidence_ids:
+        raise ModelError(f"{name} verification evidence belongs only to controller-created commits")
+    return copy.deepcopy(provenance)
+
+
 def validate_result(value: Any) -> dict[str, Any]:
-    expected = _RESULT_KEYS | ({"review"} if isinstance(value, dict) and "review" in value else set())
+    has_provenance = isinstance(value, dict) and bool(_RESULT_PROVENANCE_KEYS & value.keys())
+    provenance_keys = _RESULT_PROVENANCE_KEYS if has_provenance else set()
+    expected = (
+        _RESULT_KEYS | provenance_keys
+        | ({"review"} if isinstance(value, dict) and "review" in value else set())
+    )
     result = _object(value, "result", frozenset(expected))
     if result["contract"] != RESULT_CONTRACT:
         raise ModelError(f"result contract must be {RESULT_CONTRACT}")
@@ -1080,6 +1160,23 @@ def validate_result(value: Any) -> dict[str, Any]:
         maximum_bytes=MAX_FOLLOW_UP_BYTES,
     )
     _timestamp(result["published_at"], "result published_at")
+    if has_provenance:
+        _publication_provenance(
+            result["publication_provenance"], "result publication_provenance",
+        )
+        commit = result["claimed_commit_id"]
+        commit_provenance = _commit_provenance(
+            result["commit_provenance"], "result commit_provenance",
+        )
+        if commit is None:
+            if commit_provenance["creator"] != "none":
+                raise ModelError("result without a claimed commit requires creator none")
+        else:
+            _git_object_id(commit, "result claimed_commit_id")
+            if commit_provenance["creator"] == "none":
+                raise ModelError("result claimed commit requires a creator")
+        if result["publication_provenance"]["producer_run_id"] != result["run_id"]:
+            raise ModelError("result publication producer must name its run")
     if "review" in result:
         payload = _object(result["review"], "result review", _REVIEW_RESULT_KEYS)
         if payload["verdict"] not in {"pass", "findings"}:
@@ -1104,7 +1201,9 @@ _PUBLICATION_KEYS = frozenset({
 
 
 def validate_result_publication(value: Any) -> dict[str, Any]:
-    record = _object(value, "result publication", _PUBLICATION_KEYS)
+    has_provenance = isinstance(value, dict) and bool(_RESULT_PROVENANCE_KEYS & value.keys())
+    expected = _PUBLICATION_KEYS | (_RESULT_PROVENANCE_KEYS if has_provenance else set())
+    record = _object(value, "result publication", frozenset(expected))
     if record["contract"] != RESULT_PUBLICATION_CONTRACT:
         raise ModelError(f"result publication contract must be {RESULT_PUBLICATION_CONTRACT}")
     for field in ("publication_id", "result_id", "initiative_id", "attempt_id", "task_id", "run_id"):
@@ -1122,6 +1221,135 @@ def validate_result_publication(value: Any) -> dict[str, Any]:
     updated = _timestamp(record["updated_at"], "result publication updated_at")
     if updated < created:
         raise ModelError("result publication updated_at must not precede created_at")
+    if has_provenance:
+        _publication_provenance(
+            record["publication_provenance"],
+            "result publication publication_provenance",
+        )
+        commit = record["claimed_commit_id"]
+        commit_provenance = _commit_provenance(
+            record["commit_provenance"], "result publication commit_provenance",
+        )
+        if commit is None:
+            if commit_provenance["creator"] != "none":
+                raise ModelError(
+                    "result publication without a claimed commit requires creator none"
+                )
+        else:
+            _git_object_id(commit, "result publication claimed_commit_id")
+            if commit_provenance["creator"] == "none":
+                raise ModelError("result publication claimed commit requires a creator")
+        if record["publication_provenance"]["producer_run_id"] != record["run_id"]:
+            raise ModelError("result publication producer must name its run")
+    return copy.deepcopy(record)
+
+
+_RESULT_CANDIDATE_KEYS = frozenset({
+    "contract", "ingestion_id", "attempt_id", "task_id", "run_id",
+    "publication_id", "body_digest", "body", "staged_at",
+})
+
+
+def validate_result_candidate(value: Any) -> dict[str, Any]:
+    candidate = _object(value, "result candidate", _RESULT_CANDIDATE_KEYS)
+    if candidate["contract"] != RESULT_CANDIDATE_CONTRACT:
+        raise ModelError(f"result candidate contract must be {RESULT_CANDIDATE_CONTRACT}")
+    for field in (
+        "ingestion_id", "attempt_id", "task_id", "run_id", "publication_id",
+    ):
+        canonical_uuid(candidate[field], f"result candidate {field}")
+    _digest(candidate["body_digest"], "result candidate body_digest")
+    _transport_payload(candidate["body"], "result candidate body")
+    _timestamp(candidate["staged_at"], "result candidate staged_at")
+    return copy.deepcopy(candidate)
+
+
+_INGESTER_KEYS = frozenset({"actor_kind", "actor_id", "coordinator_generation"})
+_RESULT_INGESTION_KEYS = frozenset({
+    "contract", "ingestion_id", "initiative_id", "node_id", "attempt_id",
+    "task_id", "run_id", "active_plan_digest", "control_task_identity_digest",
+    "workspace_path", "workspace_name", "change_id", "outbox_path", "state",
+    "candidate_digest", "publication_id", "result_id", "claimed_commit_id",
+    "claimed_tree_digest", "commit_creator", "verification_evidence_ids",
+    "ingester", "refusal",
+    "created_at", "updated_at",
+})
+
+
+def validate_result_ingestion(value: Any) -> dict[str, Any]:
+    record = _object(value, "result ingestion", _RESULT_INGESTION_KEYS)
+    if record["contract"] != RESULT_INGESTION_CONTRACT:
+        raise ModelError(f"result ingestion contract must be {RESULT_INGESTION_CONTRACT}")
+    for field in ("ingestion_id", "initiative_id", "attempt_id", "task_id", "run_id"):
+        canonical_uuid(record[field], f"result ingestion {field}")
+    validate_slug(record["node_id"], "result ingestion node_id")
+    _digest(record["active_plan_digest"], "result ingestion active_plan_digest")
+    _digest(
+        record["control_task_identity_digest"],
+        "result ingestion control_task_identity_digest",
+    )
+    if (
+        not isinstance(record["workspace_path"], str)
+        or not is_canonical_absolute_path(record["workspace_path"], resolved=True)
+    ):
+        raise ModelError("result ingestion workspace_path must be canonical and absolute")
+    _text(record["workspace_name"], "result ingestion workspace_name", maximum=MAX_LABEL_BYTES)
+    _text(record["change_id"], "result ingestion change_id", maximum=64, pattern=re.compile(r"[k-z]{32}", re.ASCII))
+    _relative_path(record["outbox_path"], "result ingestion outbox_path")
+    if record["state"] not in RESULT_INGESTION_TRANSITIONS:
+        raise ModelError("result ingestion state is invalid")
+    for field in ("candidate_digest", "claimed_tree_digest"):
+        if record[field] is not None:
+            _digest(record[field], f"result ingestion {field}")
+    for field in ("publication_id", "result_id"):
+        _nullable_uuid(record[field], f"result ingestion {field}")
+    if record["claimed_commit_id"] is not None:
+        _git_object_id(record["claimed_commit_id"], "result ingestion claimed_commit_id")
+    if record["commit_creator"] not in {None, "worker", "controller", "none"}:
+        raise ModelError("result ingestion commit_creator is invalid")
+    _string_list(
+        record["verification_evidence_ids"],
+        "result ingestion verification_evidence_ids",
+        maximum_items=MAX_EVIDENCE_IDS, maximum_bytes=36, validator=canonical_uuid,
+    )
+    ingester = record["ingester"]
+    if ingester is not None:
+        ingester = _object(ingester, "result ingestion ingester", _INGESTER_KEYS)
+        if ingester["actor_kind"] not in {"controller", "coordinator"}:
+            raise ModelError("result ingestion ingester actor_kind is invalid")
+        _text(
+            ingester["actor_id"], "result ingestion ingester actor_id",
+            maximum=MAX_ACTOR_ID_BYTES,
+        )
+        generation = ingester["coordinator_generation"]
+        if ingester["actor_kind"] == "coordinator":
+            _integer(generation, "result ingestion ingester coordinator_generation", minimum=1)
+        elif generation is not None:
+            raise ModelError("controller result ingester cannot name a coordinator generation")
+    _optional_text(record["refusal"], "result ingestion refusal", maximum=MAX_REFUSAL_BYTES)
+    created = _timestamp(record["created_at"], "result ingestion created_at")
+    updated = _timestamp(record["updated_at"], "result ingestion updated_at")
+    if updated < created:
+        raise ModelError("result ingestion updated_at must not precede created_at")
+    if (record["claimed_commit_id"] is None) != (record["claimed_tree_digest"] is None):
+        raise ModelError("result ingestion claimed commit and tree must be bound together")
+    if record["commit_creator"] in {"worker", "controller"} and record["claimed_commit_id"] is None:
+        raise ModelError("result ingestion commit creator requires a claimed commit")
+    if record["commit_creator"] == "none" and record["claimed_commit_id"] is not None:
+        raise ModelError("result ingestion creator none cannot bind a commit")
+    if record["state"] == "reserved" and any(record[field] is not None for field in (
+        "candidate_digest", "publication_id", "result_id", "claimed_commit_id",
+        "claimed_tree_digest", "commit_creator", "ingester", "refusal",
+    )):
+        raise ModelError("reserved result ingestion cannot carry completion fields")
+    if record["state"] == "reserved" and record["verification_evidence_ids"]:
+        raise ModelError("reserved result ingestion cannot carry verification evidence")
+    if record["state"] == "completed" and any(record[field] is None for field in (
+        "candidate_digest", "publication_id", "result_id", "commit_creator", "ingester",
+    )):
+        raise ModelError("completed result ingestion requires its accepted binding")
+    if record["state"] == "refused" and record["refusal"] is None:
+        raise ModelError("refused result ingestion requires a refusal")
     return copy.deepcopy(record)
 
 
@@ -1202,7 +1430,9 @@ _SEAL_KEYS = frozenset({
 
 
 def validate_seal(value: Any) -> dict[str, Any]:
-    seal = _object(value, "seal", _SEAL_KEYS)
+    has_provenance = isinstance(value, dict) and "commit_provenance" in value
+    expected = _SEAL_KEYS | ({"commit_provenance"} if has_provenance else set())
+    seal = _object(value, "seal", frozenset(expected))
     if seal["contract"] != SEAL_CONTRACT:
         raise ModelError(f"seal contract must be {SEAL_CONTRACT}")
     for field in (
@@ -1267,6 +1497,8 @@ def validate_seal(value: Any) -> dict[str, Any]:
     if seal["outcome"] in {"success", "paused"} and seal["result_id"] is None:
         raise ModelError("success and paused seals require an accepted result")
     _timestamp(seal["sealed_at"], "seal sealed_at")
+    if has_provenance:
+        _commit_provenance(seal["commit_provenance"], "seal commit_provenance")
     return copy.deepcopy(seal)
 
 
@@ -1778,6 +2010,8 @@ _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     NODE_CONTRACT: validate_node,
     ATTEMPT_CONTRACT: validate_attempt,
     RESULT_PUBLICATION_CONTRACT: validate_result_publication,
+    RESULT_INGESTION_CONTRACT: validate_result_ingestion,
+    RESULT_CANDIDATE_CONTRACT: validate_result_candidate,
     RESULT_CONTRACT: validate_result,
     SEAL_PREPARATION_CONTRACT: validate_seal_preparation,
     SEAL_CONTRACT: validate_seal,
@@ -1827,7 +2061,8 @@ __all__ = [name for name in globals() if name.isupper()] + [
     "validate_repository_scope", "validate_workspace_scope", "scope_repositories",
     "repository_by_id", "validate_limits", "validate_base_policy",
     "validate_initiative", "validate_plan_record", "validate_plan", "validate_node",
-    "validate_attempt", "validate_result_publication", "validate_result",
+    "validate_attempt", "validate_result_publication", "validate_result_ingestion",
+    "validate_result_candidate", "validate_result",
     "validate_seal", "validate_review", "validate_verification", "validate_approval",
     "validate_action", "validate_event", "validate_link", "validate_evidence",
     "validate_bundle", "validate_coordinator", "validate_coordinator_checkpoint",

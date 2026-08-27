@@ -641,6 +641,67 @@ def prepare_and_publish_seal(
             path for path in changed_paths
             if not _in_scope(path, node["advisory_path_ownership"])
         ]
+        claimed_commit_matches = (
+            result is None
+            or result.get("claimed_commit_id") is None
+            or result["claimed_commit_id"] == identity.commit_id
+        )
+        provenance_ingestion_id = None
+        if result is not None and "commit_provenance" in result:
+            commit_provenance = copy.deepcopy(result["commit_provenance"])
+            provenance_ingestion_id = result["publication_provenance"]["ingestion_id"]
+        else:
+            matching_ingestions = [
+                item for item in store.list_result_ingestions_snapshot(initiative_id)
+                if item["attempt_id"] == attempt_id
+                and item["claimed_commit_id"] == identity.commit_id
+                and item["commit_creator"] in {"worker", "controller"}
+            ]
+            if len(matching_ingestions) > 1:
+                raise SealError("multiple ingestion records claim the final commit creator")
+            retained_ingestion = matching_ingestions[0] if matching_ingestions else None
+            if retained_ingestion is not None:
+                provenance_ingestion_id = retained_ingestion["ingestion_id"]
+                creator = retained_ingestion["commit_creator"]
+                commit_provenance = {
+                    "creator": creator,
+                    "actor_id": (
+                        retained_ingestion["ingester"]["actor_id"]
+                        if creator == "controller" else task["runs"][0]["run_id"]
+                    ),
+                    "verification_evidence_ids": list(
+                        retained_ingestion["verification_evidence_ids"]
+                    ),
+                }
+            else:
+                commit_provenance = {
+                    "creator": "worker", "actor_id": task["runs"][0]["run_id"],
+                    "verification_evidence_ids": [],
+                }
+        provenance_verified = True
+        exact_snapshot_verified = commit_provenance["creator"] != "controller"
+        if commit_provenance["creator"] == "controller":
+            for evidence_id in commit_provenance["verification_evidence_ids"]:
+                try:
+                    evidence = store.read_evidence(initiative_id, evidence_id)
+                    detail = json.loads(evidence["summary"])
+                except (StoreError, json.JSONDecodeError, TypeError, ValueError):
+                    provenance_verified = False
+                    break
+                if (
+                    evidence["kind"] != "verification-command"
+                    or evidence["subject_id"]
+                    != provenance_ingestion_id
+                    or detail.get("claimed_commit_id") != identity.commit_id
+                    or detail.get("claimed_tree_digest") != final_tree.digest
+                ):
+                    provenance_verified = False
+                    break
+                if detail.get("kind") in {
+                    "snapshot-integrity", "snapshot-verification-command",
+                }:
+                    exact_snapshot_verified = True
+            provenance_verified = provenance_verified and exact_snapshot_verified
         clean_identity = (
             control_task_identity_digest(dict(task)) == link["control_task_identity_digest"]
             and identity.change_id == task["jj"]["change_id"]
@@ -652,6 +713,8 @@ def prepare_and_publish_seal(
                 or base_tree.digest == base["tree_digest"]
             )
             and reconciliation.get("blocker") is None
+            and claimed_commit_matches
+            and provenance_verified
             and any(
                 item.get("source") == "jj" and item.get("outcome") == "match"
                 for item in process_facts["evidence"]
@@ -687,6 +750,8 @@ def prepare_and_publish_seal(
             "normal_zero_exit": process_kind == "normal",
             "accepted_completed_claim": claim == "completed",
             "clean_identity": clean_identity,
+            "claimed_commit_matches": claimed_commit_matches,
+            "commit_provenance_verified": provenance_verified,
             "hard_scope_valid": hard_scope_valid,
             "jj_commit_id": identity.commit_id,
             "tree_digest": final_tree.digest,
@@ -731,6 +796,7 @@ def prepare_and_publish_seal(
             ).hexdigest(),
             "result_id": None if result is None else result["result_id"],
             "process_evidence_id": process_evidence["evidence_id"],
+            "commit_provenance": commit_provenance,
             "sealed_at": _now(),
         })
         if seal["outcome"] == "success" and node["terminal_candidate"]:

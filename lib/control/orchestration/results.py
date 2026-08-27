@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..jj import JjAdapter, JjError
+from ..harness import HarnessError, caller_descends_from
 from ..reconcile import LiveAdapters
 from ..store import StoreError, TaskStore
 from .actions import append_event
@@ -351,6 +352,7 @@ def _semantic_result(
     node: Mapping[str, Any],
     task: Mapping[str, Any],
     link: Mapping[str, Any],
+    initiative: Mapping[str, Any],
     *,
     jj: JjAdapter,
 ) -> dict[str, Any]:
@@ -364,6 +366,11 @@ def _semantic_result(
         "result_id": publication["result_id"],
         "payload_digest": publication["payload_digest"],
     })
+    for field in (
+        "publication_provenance", "claimed_commit_id", "commit_provenance",
+    ):
+        if field in publication:
+            candidate[field] = copy.deepcopy(publication[field])
     try:
         result = validate_result(candidate)
     except ModelError as exc:
@@ -385,6 +392,12 @@ def _semantic_result(
         raise ResultRefused("only a review node may publish a review payload")
     if link["control_task_id"] != task["task_id"]:
         raise ResultRefused("Control task link identity changed")
+    active = initiative.get("active_plan")
+    if (
+        not isinstance(active, Mapping)
+        or active.get("digest") != link["active_plan_digest"]
+    ):
+        raise ResultRefused("result active plan digest is stale")
     if control_task_identity_digest(dict(task)) != link["control_task_identity_digest"]:
         raise ResultRefused("Control task ownership identity no longer matches its link")
     if attempt["state"] not in {"running", "reported", "awaiting-exit", "indeterminate"}:
@@ -399,12 +412,30 @@ def _semantic_result(
             "supersedes_result_id must name the current accepted result for this attempt"
         )
     _validate_workspace_paths(result, task)
+    scope = node["hard_write_scope"]
+    for path in result["files_changed"]:
+        if not any(
+            item == "." or path == item or path.startswith(item.rstrip("/") + "/")
+            for item in scope
+        ):
+            raise ResultRefused(f"files_changed path is outside the node hard scope: {path}")
     try:
         evidence = LiveAdapters(config=None, jj=jj).jj(dict(task))
     except (JjError, OSError, ValueError) as exc:
         raise ResultRefused(f"Control jj ownership reconciliation failed: {exc}") from exc
     if evidence.outcome != "match":
         raise ResultRefused(f"Control jj ownership does not reconcile: {evidence.detail}")
+    claimed_commit = publication.get("claimed_commit_id")
+    if claimed_commit is not None:
+        try:
+            identity = jj.inspect_workspace(
+                Path(task["jj"]["workspace_path"]), task["jj"]["workspace_name"],
+                snapshot=False, require_empty=False,
+            )
+        except (JjError, OSError, ValueError) as exc:
+            raise ResultRefused(f"claimed commit ownership inspection failed: {exc}") from exc
+        if identity.commit_id != claimed_commit:
+            raise ResultRefused("result claimed commit differs from the task workspace")
     return result
 
 
@@ -487,6 +518,12 @@ def _finish_acceptance(
         for event in store.list_events_snapshot(publication["initiative_id"])
     )
     if not already:
+        provenance = result.get("publication_provenance")
+        actor_kind = "worker"
+        actor_id = result["run_id"]
+        if provenance is not None and provenance["method"] == "controller-ingestion":
+            actor_kind = provenance["ingester_actor_kind"]
+            actor_id = provenance["ingester_actor_id"]
         append_event(
             store, publication["initiative_id"], "result-published",
             [result["node_id"], result["attempt_id"], result["result_id"]],
@@ -494,8 +531,12 @@ def _finish_acceptance(
                 "publication_id": result["publication_id"],
                 "claim_status": result["claim_status"],
                 "supersedes_result_id": result["supersedes_result_id"],
+                "publication_method": (
+                    None if provenance is None else provenance["method"]
+                ),
+                "producer_run_id": result["run_id"],
             },
-            actor_kind="worker", actor_id=result["run_id"],
+            actor_kind=actor_kind, actor_id=actor_id,
         )
 
 
@@ -531,6 +572,7 @@ def _advance_publication(
 ) -> dict[str, Any]:
     initiative_id = publication["initiative_id"]
     hook = phase_hook or (lambda _phase, _record: None)
+    initiative = store.peek(initiative_id)
     attempt = store.read_attempt(initiative_id, publication["attempt_id"])
     node = store.read_node(initiative_id, publication["node_id"])
     link = store.read_link(initiative_id, publication["attempt_id"])
@@ -562,6 +604,7 @@ def _advance_publication(
                 try:
                     expected_result = _semantic_result(
                         publication, publication["body"], attempt, node, task, link,
+                        initiative,
                         jj=jj or JjAdapter(),
                     )
                 except ResultRefused as exc:
@@ -581,6 +624,7 @@ def _advance_publication(
         try:
             expected_result = _semantic_result(
                 publication, publication["body"], attempt, node, task, link,
+                initiative,
                 jj=jj or JjAdapter(),
             )
         except ResultRefused as exc:
@@ -596,6 +640,7 @@ def _advance_publication(
             try:
                 expected_result = _semantic_result(
                     publication, publication["body"], attempt, node, task, link,
+                    initiative,
                     jj=jj or JjAdapter(),
                 )
             except ResultRefused as exc:
@@ -645,10 +690,17 @@ def _advance_publication(
                         "result_id": publication["result_id"],
                         "payload_digest": publication["payload_digest"],
                     })
+                    for field in (
+                        "publication_provenance", "claimed_commit_id",
+                        "commit_provenance",
+                    ):
+                        if field in publication:
+                            candidate[field] = copy.deepcopy(publication[field])
                     expected_result = validate_result(candidate)
                 else:
                     expected_result = _semantic_result(
                         publication, publication["body"], attempt, node, task, link,
+                        initiative,
                         jj=jj or JjAdapter(),
                     )
             if result != expected_result:
@@ -663,27 +715,34 @@ def _advance_publication(
     return publication
 
 
-def publish_result(
+_AUTO_COMMIT = object()
+
+
+def publish_bound_result(
     store: InitiativeStore,
     body: Mapping[str, Any],
-    env: Mapping[str, str],
     *,
+    binding: tuple[
+        InitiativeStore, dict[str, Any], dict[str, Any], dict[str, Any],
+        dict[str, Any], dict[str, Any],
+    ],
+    publication_provenance: Mapping[str, Any] | None = None,
+    claimed_commit_id: str | None | object = _AUTO_COMMIT,
+    commit_provenance: Mapping[str, Any] | None = None,
     control_store: TaskStore | None = None,
     jj: JjAdapter | None = None,
     phase_hook: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Reserve, validate, persist, and acknowledge one exact worker result."""
-    task_id, run_id = _managed_identity(env)
+    """Controller-internal publication from one already-authenticated binding."""
     raw = canonical_body_bytes(body)
     parsed = parse_client_body(raw)
     publication_id = parsed["publication_id"]
-    located = locate_task_binding(store.config, task_id, control_store=control_store)
-    located_store, initiative, link, attempt, node, task = located
+    located_store, initiative, link, attempt, node, task = binding
+    task_id = task["task_id"]
+    run_id = task["runs"][0]["run_id"]
     # Keep an explicitly supplied store (and its failure hooks) authoritative.
     if located_store.config != store.config:
         raise ResultRefused("orchestration configuration changed during publication")
-    if run_id != task["runs"][0]["run_id"]:
-        raise ResultRefused("managed run ID is not the linked task primary run")
     if parsed.get("task_id") != task_id or parsed.get("run_id") != run_id:
         raise ResultRefused("result task/run fields disagree with the managed environment")
     digest = hashlib.sha256(raw).hexdigest()
@@ -698,6 +757,34 @@ def publish_result(
         except StoreError as exc:
             if "not found" not in str(exc):
                 raise
+            adapter = jj or JjAdapter()
+            resolved_commit = claimed_commit_id
+            resolved_commit_provenance = commit_provenance
+            if publication_provenance is not None and resolved_commit is _AUTO_COMMIT:
+                if node["type"] == "review":
+                    resolved_commit = None
+                    resolved_commit_provenance = {
+                        "creator": "none", "actor_id": None,
+                        "verification_evidence_ids": [],
+                    }
+                else:
+                    try:
+                        identity = adapter.inspect_workspace(
+                            Path(task["jj"]["workspace_path"]),
+                            task["jj"]["workspace_name"], snapshot=False,
+                            require_empty=False,
+                        )
+                    except (JjError, OSError, ValueError) as error:
+                        raise ResultRefused(
+                            f"direct worker claimed commit cannot be inspected: {error}"
+                        ) from error
+                    resolved_commit = identity.commit_id
+                    resolved_commit_provenance = {
+                        "creator": "worker", "actor_id": run_id,
+                        "verification_evidence_ids": [],
+                    }
+            if publication_provenance is not None and resolved_commit_provenance is None:
+                raise ResultRefused("result commit provenance is incomplete")
             now = _now()
             sequence = 1 + max(
                 (item["receipt_sequence"] for item in store.list_result_publications_snapshot(
@@ -724,9 +811,27 @@ def publish_result(
                 "created_at": now,
                 "updated_at": now,
             })
+            if publication_provenance is not None:
+                publication.update({
+                    "publication_provenance": copy.deepcopy(
+                        dict(publication_provenance)
+                    ),
+                    "claimed_commit_id": resolved_commit,
+                    "commit_provenance": copy.deepcopy(
+                        dict(resolved_commit_provenance)
+                    ),
+                })
+                publication = validate_result_publication(publication)
             store.save_result_publication(initiative["initiative_id"], publication)
             (phase_hook or (lambda _phase, _record: None))("reserved", publication)
         else:
+            legacy_direct_replay = (
+                "publication_provenance" not in publication
+                and publication_provenance is not None
+                and publication_provenance.get("method") == "direct-worker"
+                and claimed_commit_id is _AUTO_COMMIT
+                and commit_provenance is None
+            )
             binding = (
                 publication["payload_digest"] == digest
                 and publication["body_digest"] == digest
@@ -734,6 +839,21 @@ def publish_result(
                 and publication["task_id"] == task_id
                 and publication["run_id"] == run_id
                 and publication["attempt_id"] == attempt["attempt_id"]
+                and (
+                    publication_provenance is None
+                    or publication.get("publication_provenance")
+                    == dict(publication_provenance)
+                    or legacy_direct_replay
+                )
+                and (
+                    claimed_commit_id is _AUTO_COMMIT
+                    or publication.get("claimed_commit_id") == claimed_commit_id
+                )
+                and (
+                    commit_provenance is None
+                    or publication.get("commit_provenance")
+                    == dict(commit_provenance)
+                )
             )
             if not binding:
                 raise ResultRefused(
@@ -765,6 +885,59 @@ def publish_result(
                 "publication after reconciliation"
             )
         return _receipt(publication)
+
+
+def publish_result(
+    store: InitiativeStore,
+    body: Mapping[str, Any],
+    env: Mapping[str, str],
+    *,
+    control_store: TaskStore | None = None,
+    jj: JjAdapter | None = None,
+    phase_hook: Callable[[str, Mapping[str, Any]], None] | None = None,
+    caller_pid: int | None = None,
+) -> dict[str, Any]:
+    """Authenticate one producing worker and publish its direct result."""
+    if env.get("ASHA_ORCHESTRATION_COORDINATOR_ID"):
+        raise ResultRefused("coordinator sessions cannot impersonate a managed worker")
+    task_id, run_id = _managed_identity(env)
+    located = locate_task_binding(store.config, task_id, control_store=control_store)
+    task = located[-1]
+    if run_id != task["runs"][0]["run_id"]:
+        raise ResultRefused("managed run ID is not the linked task primary run")
+    if caller_pid is not None:
+        try:
+            descended = caller_descends_from(
+                task["runs"][0]["pid"], start_pid=caller_pid,
+            )
+        except HarnessError as exc:
+            raise ResultRefused(f"managed worker process identity is invalid: {exc}") from exc
+        if not descended:
+            raise ResultRefused(
+                "caller does not descend from the linked managed worker process"
+            )
+    initiative = located[1]
+    attempt = located[3]
+    reserved = [
+        item for item in store.list_result_ingestions_snapshot(
+            initiative["initiative_id"]
+        )
+        if item["attempt_id"] == attempt["attempt_id"] and item["task_id"] == task_id
+    ]
+    if reserved:
+        raise ResultRefused(
+            "orchestration result is reserved for workspace-outbox staging; "
+            "direct authoritative publication is refused"
+        )
+    provenance = {
+        "method": "direct-worker", "producer_run_id": run_id,
+        "ingestion_id": None, "ingester_actor_kind": None,
+        "ingester_actor_id": None, "ingester_coordinator_generation": None,
+    }
+    return publish_bound_result(
+        store, body, binding=located, publication_provenance=provenance,
+        control_store=control_store, jj=jj, phase_hook=phase_hook,
+    )
 
 
 def reconcile_publications(
@@ -810,6 +983,6 @@ def results_for_task(
 __all__ = [
     "MAX_RESULT_BODY_BYTES", "RESULT_RECEIPT_CONTRACT", "TASK_RESULTS_CONTRACT",
     "ResultError", "ResultRefused", "canonical_body_bytes", "locate_task_binding",
-    "parse_client_body", "publish_result", "read_client_file",
+    "parse_client_body", "publish_bound_result", "publish_result", "read_client_file",
     "reconcile_publications", "results_for_task",
 ]

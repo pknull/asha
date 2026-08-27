@@ -36,6 +36,7 @@ from .model import (
     REVIEW_TRANSITIONS,
     COORDINATOR_TERMINAL_STATES,
     COORDINATOR_TRANSITIONS,
+    RESULT_INGESTION_TRANSITIONS,
     RESULT_PUBLICATION_TRANSITIONS,
     VERIFICATION_TRANSITIONS,
     ModelError,
@@ -57,6 +58,7 @@ from .model import (
     validate_node,
     validate_plan_record,
     validate_result,
+    validate_result_ingestion,
     validate_result_publication,
     validate_review,
     validate_seal,
@@ -73,7 +75,8 @@ _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CLOEXEC
 
 _LAYOUT_DIRECTORIES = (
-    "plans", "nodes", "attempts", "assignments", "links", "result-publications", "results",
+    "plans", "nodes", "attempts", "assignments", "links", "result-ingestions",
+    "result-publications", "results",
     "seal-preparations", "seals", "reviews", "verifications", "bundles", "approvals", "actions",
     "evidence", "outputs", "events", "locks", "coordinators", "checkpoints",
 )
@@ -903,6 +906,35 @@ class InitiativeStore:
             terminal_states=frozenset({"completed", "refused"}),
         )
 
+    def save_result_ingestion(
+        self,
+        initiative_id: str,
+        record: Any,
+        *,
+        expected_digest: str | None = None,
+    ) -> Path:
+        try:
+            value = validate_result_ingestion(record)
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        mutable = {
+            "state", "candidate_digest", "publication_id", "result_id",
+            "claimed_commit_id", "claimed_tree_digest", "verification_evidence_ids",
+            "commit_creator", "ingester", "refusal", "updated_at",
+        }
+        return self._save_subrecord(
+            initiative_id, "result-ingestions", f"{value['ingestion_id']}.json",
+            value, validate_result_ingestion, immutable=False,
+            expected_digest=expected_digest,
+            transition_machine=RESULT_INGESTION_TRANSITIONS,
+            immutable_fields=tuple(field for field in value if field not in mutable),
+            bind_once_fields=(
+                "candidate_digest", "publication_id", "result_id",
+                "claimed_commit_id", "claimed_tree_digest", "commit_creator", "ingester",
+            ),
+            terminal_states=frozenset({"completed", "refused"}),
+        )
+
     def save_result(self, initiative_id: str, record: Any) -> Path:
         return self._save_uuid_immutable(initiative_id, "results", record, validate_result, "result_id")
 
@@ -1396,6 +1428,12 @@ class InitiativeStore:
             re.compile(r"([0-9a-f-]{36})\.json"), "publication_id",
         )
 
+    def list_result_ingestions_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "result-ingestions", validate_result_ingestion,
+            re.compile(r"([0-9a-f-]{36})\.json"), "ingestion_id",
+        )
+
     def list_results_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
         return self._list_subrecords_snapshot(
             initiative_id, "results", validate_result,
@@ -1446,6 +1484,7 @@ class InitiativeStore:
         identity_fields = {
             "attempts": "attempt_id",
             "links": "attempt_id",
+            "result-ingestions": "ingestion_id",
             "result-publications": "publication_id",
             "results": "result_id",
             "seal-preparations": "seal_id",
@@ -1476,6 +1515,14 @@ class InitiativeStore:
         return self._read_uuid_record(
             initiative_id, "result-publications", publication_id,
             validate_result_publication,
+        )
+
+    def read_result_ingestion(
+        self, initiative_id: str, ingestion_id: str
+    ) -> dict[str, Any]:
+        return self._read_uuid_record(
+            initiative_id, "result-ingestions", ingestion_id,
+            validate_result_ingestion,
         )
 
     def read_result(self, initiative_id: str, result_id: str) -> dict[str, Any]:
