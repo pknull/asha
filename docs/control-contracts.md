@@ -334,11 +334,19 @@ snapshot created the commit, every declared result attestation is rerun inside
 an exact retained materialization. The verifier sees a read-only host root and
 isolated `/tmp`; its only persistent writable mounts are the exact
 materialization and bounded output file. Even a result with no declared command gets
-an immutable exact-tree integrity evidence record. The authoritative result
+an immutable exact-tree integrity evidence record. Exact-materialization
+evidence remains mandatory, but successful reproduction is not: an
+invocation/environment-class rerun failure records a
+`snapshot-verification-environment-gap` bound to the exact commit and tree,
+stops the remaining reruns, and lets the ordinary pipeline continue. A command
+that ran and failed still refuses ingestion. The authoritative result
 and later seal carry `publication_provenance`, `claimed_commit_id`, and
 `commit_provenance`, distinguishing worker-created from controller-created
 commits and naming the producer plus controller/coordinator ingester
-generation. No worker sandbox path is widened, and a forged
+generation. The seal process evidence carries
+`verification_environment_degraded` so the operator can distinguish exact
+reproduction from worker-attested evidence that the controller environment
+could not reproduce. No worker sandbox path is widened, and a forged
 `ASHA_CONTROL_MANAGED` environment from a coordinator pane fails the managed
 pane proof.
 

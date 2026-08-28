@@ -178,12 +178,8 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             verifier=self.verifier,
         )
 
-    def _controller_verification_refusal(
-        self, output: bytes, child_status: int,
-    ) -> str:
-        commit_id = "9" * 40
-        tree_digest = "8" * 64
-
+    @staticmethod
+    def _exact_snapshot_jj(commit_id: str, tree_digest: str):
         class ExactSnapshotJj:
             def inspect_workspace(
                 inner_self, path, name, *, snapshot=False, require_empty=True,
@@ -197,6 +193,28 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             def immutable_tree(inner_self, repository, observed_commit_id):
                 del inner_self, repository
                 return ImmutableTree(observed_commit_id, tree_digest, ())
+
+        return ExactSnapshotJj()
+
+    @staticmethod
+    def _terminal_observed(task: dict) -> dict:
+        return {
+            "state": "exited", "blocker": None,
+            "runs": [{
+                "run_id": task["runs"][0]["run_id"], "state": "exited",
+                "evidence": [
+                    {"source": "process", "outcome": "missing", "state": "exited",
+                     "detail": "tmux pane process exited with status 0"},
+                    {"source": "jj", "outcome": "match", "detail": "owned"},
+                ],
+            }],
+        }
+
+    def _controller_verification_refusal(
+        self, output: bytes, child_status: int,
+    ) -> str:
+        commit_id = "9" * 40
+        tree_digest = "8" * 64
 
         captured: dict[str, Path] = {}
 
@@ -245,7 +263,8 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             with self.assertRaises(IngestionRefused) as refused:
                 verify_controller_snapshot(
                     self.store, self.ingestion, self.task, body,
-                    commit_id, tree_digest, jj=ExactSnapshotJj(),
+                    commit_id, tree_digest,
+                    jj=self._exact_snapshot_jj(commit_id, tree_digest),
                 )
         return str(refused.exception)
 
@@ -257,11 +276,6 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
         self.assertIn("controller-output?tail", refusal)
         self.assertTrue(all(character.isprintable() for character in refusal))
         self.assertLessEqual(len(refusal.encode("utf-8")), 2048)
-
-    def test_empty_nonzero_controller_rerun_is_invocation_environment_failure(self) -> None:
-        refusal = self._controller_verification_refusal(b"\n--- stderr ---\n", 127)
-        self.assertIn("invocation/environment failure", refusal)
-        self.assertNotIn("command failure", refusal)
 
     def test_worker_stages_reserved_candidate_without_authoritative_write(self) -> None:
         before = self.store.list_results_snapshot(self.initiative_id)
@@ -706,6 +720,166 @@ raise SystemExit(0)
         self.assertEqual(retained["state"], "completed")
         self.assertEqual(len(observed["seals"]), 1)
         self.assertEqual(observed["seals"][0]["outcome"], "success")
+
+    def test_environment_class_rerun_publishes_and_seals_with_durable_gap(self) -> None:
+        attestations = [{
+            "argv": [sys.executable, "-c", "raise SystemExit(127)"],
+            "cwd": ".", "exit_code": 0, "output_digest": "5" * 64,
+            "finished_at": now_text(), "summary": "worker passed",
+        }, {
+            "argv": [sys.executable, "-c", "raise AssertionError('must not run')"],
+            "cwd": ".", "exit_code": 0, "output_digest": "4" * 64,
+            "finished_at": now_text(), "summary": "worker passed again",
+        }]
+        self.stage(self.body(verification_attestations=attestations))
+
+        class TerminalAdapters(LiveAdapters):
+            def __init__(inner_self, jj):
+                super().__init__(config=None, tmux=mock.Mock(), jj=jj)
+
+            def tmux(inner_self, _task, _run):
+                return Evidence("tmux", "missing", "owned pane exited")
+
+            def process(inner_self, _task, _run):
+                return Evidence(
+                    "process", "missing", "tmux pane process exited with status 0",
+                    state="exited",
+                )
+
+            def jj(inner_self, _task):
+                return Evidence("jj", "match", "owned")
+
+            def event(inner_self, _task, _run):
+                return Evidence("event", "missing", "none")
+
+        captured: dict[str, Path] = {}
+        rerun_argv: list[list[str]] = []
+
+        def contained(_bubblewrap, _environment, argv, **kwargs):
+            rerun_argv.append(argv)
+            captured["output_path"] = kwargs["output_path"]
+            return ["contained-verification"]
+
+        def execute(_argv, **_kwargs):
+            output = b"\n--- stderr ---\n"
+            output_id = captured["output_path"].stem
+            self.store.finalize_reserved_output(
+                self.initiative_id, output_id, output,
+            )
+            return 0, {
+                "returncode": 127,
+                "invocation_error": None,
+                "timed_out": False,
+                "output_truncated": False,
+                "output_original_bytes": len(output),
+                "output_digest": hashlib.sha256(output).hexdigest(),
+            }
+
+        def real_verifier(store, ingestion, task, body, commit, tree, **_kwargs):
+            return verify_controller_snapshot(
+                store, ingestion, task, body, commit, tree,
+                jj=self._exact_snapshot_jj(commit, tree),
+            )
+
+        materialization = {
+            "workspace_name": "controller-verification",
+            "workspace_path": str(self.workspace),
+        }
+        with mock.patch(
+            "lib.control.orchestration.ingestion.prepare_materialization",
+            return_value=materialization,
+        ), mock.patch(
+            "lib.control.orchestration.ingestion.tracked_workspace_status",
+            return_value=(True, [], False),
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._bubblewrap_program",
+            return_value=Path("/usr/bin/bwrap"),
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._contained_argv",
+            side_effect=contained,
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._capture_truncated",
+            side_effect=execute,
+        ), mock.patch(
+            "lib.control.orchestration.ingestion.verify_controller_snapshot",
+            side_effect=real_verifier,
+        ):
+            observed = reconcile_live(
+                self.store, self.initiative_id,
+                control_store=TaskStore(self.config.control),
+                adapters_factory=lambda _task: TerminalAdapters(self.jj),
+            )
+
+        self.assertEqual(rerun_argv, [attestations[0]["argv"]])
+        result = self.store.list_results_snapshot(self.initiative_id)[0]
+        self.assertEqual(result["claim_status"], "completed")
+        gap_records = []
+        for evidence_id in result["commit_provenance"]["verification_evidence_ids"]:
+            evidence = self.store.read_evidence(self.initiative_id, evidence_id)
+            detail = json.loads(evidence["summary"])
+            if detail.get("kind") == "snapshot-verification-environment-gap":
+                gap_records.append(detail)
+        self.assertEqual(len(gap_records), 1)
+        gap = gap_records[0]
+        self.assertEqual(gap["claimed_commit_id"], "d" * 40)
+        self.assertEqual(gap["claimed_tree_digest"], "e" * 64)
+        self.assertEqual(gap["failure_kind"], "invocation/environment")
+        self.assertEqual(gap["status"], "unreproducible-environment")
+        self.assertEqual(gap["argv"], attestations[0]["argv"])
+        self.assertEqual(gap["cwd"], attestations[0]["cwd"])
+        self.assertIn("output_tail", gap)
+        self.assertTrue(all(character.isprintable() for character in gap["output_tail"]))
+        self.assertLessEqual(len(gap["output_tail"].encode("utf-8")), 2048)
+        self.assertEqual(len(observed["seals"]), 1)
+        seal = observed["seals"][0]
+        self.assertEqual(seal["outcome"], "success")
+        seal_detail = json.loads(self.store.read_evidence(
+            self.initiative_id, seal["process_evidence_id"],
+        )["summary"])
+        self.assertTrue(seal_detail["commit_provenance_verified"])
+        self.assertTrue(seal_detail["verification_environment_degraded"])
+        output = StringIO()
+        with redirect_stdout(output):
+            status = task_main(["seal", self.task["task_id"], "--json"], env=self.env)
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            json.loads(output.getvalue())["verification"], "environment-degraded",
+        )
+
+    def test_tampered_environment_gap_fails_exact_provenance(self) -> None:
+        self.stage()
+
+        def tampered_verifier(store, ingestion, _task, _body, commit, _tree, **_kwargs):
+            return [_save_verification_evidence(
+                store, self.initiative_id, ingestion["ingestion_id"], {
+                    "kind": "snapshot-verification-environment-gap",
+                    "claimed_commit_id": commit,
+                    "claimed_tree_digest": "0" * 64,
+                    "argv": [sys.executable, "-m", "unittest"],
+                    "cwd": ".",
+                    "failure_kind": "invocation/environment",
+                    "output_tail": "<empty>",
+                    "status": "unreproducible-environment",
+                },
+            )]
+
+        accepted = ingest_result(
+            self.store, self.initiative_id, self.ingestion["ingestion_id"],
+            control_store=TaskStore(self.config.control), jj=self.jj,
+            terminal_reconciliation={"state": "exited"},
+            verifier=tampered_verifier,
+        )
+        self.assertEqual(accepted["phase"], "completed")
+        task = TaskStore(self.config.control).peek(self.task["task_id"])
+        seal = prepare_and_publish_seal(
+            self.store, self.initiative_id, self.attempt["attempt_id"], task,
+            self._terminal_observed(task), jj=self.jj,
+        )
+        self.assertEqual(seal["outcome"], "failure")
+        seal_detail = json.loads(self.store.read_evidence(
+            self.initiative_id, seal["process_evidence_id"],
+        )["summary"])
+        self.assertFalse(seal_detail["commit_provenance_verified"])
 
     def test_modified_completed_candidate_and_stale_plan_fail_closed(self) -> None:
         self.stage()

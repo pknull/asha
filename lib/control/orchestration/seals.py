@@ -685,6 +685,7 @@ def prepare_and_publish_seal(
                 }
         provenance_verified = True
         exact_snapshot_verified = commit_provenance["creator"] != "controller"
+        verification_environment_degraded = False
         if commit_provenance["creator"] == "controller":
             for evidence_id in commit_provenance["verification_evidence_ids"]:
                 try:
@@ -704,8 +705,11 @@ def prepare_and_publish_seal(
                     break
                 if detail.get("kind") in {
                     "snapshot-integrity", "snapshot-verification-command",
+                    "snapshot-verification-environment-gap",
                 }:
                     exact_snapshot_verified = True
+                if detail.get("kind") == "snapshot-verification-environment-gap":
+                    verification_environment_degraded = True
             provenance_verified = provenance_verified and exact_snapshot_verified
         clean_identity = (
             control_task_identity_digest(dict(task)) == link["control_task_identity_digest"]
@@ -757,6 +761,7 @@ def prepare_and_publish_seal(
             "clean_identity": clean_identity,
             "claimed_commit_matches": claimed_commit_matches,
             "commit_provenance_verified": provenance_verified,
+            "verification_environment_degraded": verification_environment_degraded,
             "hard_scope_valid": hard_scope_valid,
             "jj_commit_id": identity.commit_id,
             "tree_digest": final_tree.digest,
@@ -1073,16 +1078,33 @@ def seal_for_task_or_attempt(
     except ModelError as exc:
         raise SealError(str(exc)) from exc
     store = InitiativeStore(config)
-    matches: list[dict[str, Any]] = []
+    matches: list[tuple[str, dict[str, Any]]] = []
     for initiative in store.list_initiatives():
         for seal in store.list_seals_snapshot(initiative["initiative_id"]):
             if identity in {seal["task_id"], seal["attempt_id"]}:
-                matches.append(seal)
+                matches.append((initiative["initiative_id"], seal))
     if not matches:
         raise SealError("no published seal matches that task or attempt")
     if len(matches) != 1:
         raise SealError("task or attempt matches more than one published seal")
-    return {"contract": TASK_SEAL_CONTRACT, "seal": matches[0]}
+    initiative_id, seal = matches[0]
+    process_evidence = store.read_evidence(
+        initiative_id, seal["process_evidence_id"],
+    )
+    try:
+        detail = json.loads(process_evidence["summary"])
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        raise SealError("seal process evidence summary is invalid") from exc
+    verification = (
+        "environment-degraded"
+        if detail.get("verification_environment_degraded") is True
+        else "reproduced"
+    )
+    return {
+        "contract": TASK_SEAL_CONTRACT,
+        "seal": seal,
+        "verification": verification,
+    }
 
 
 __all__ = [
