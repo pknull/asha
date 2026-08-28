@@ -1699,8 +1699,14 @@ def submit_action(
                     "active plan digest does not match retained executable plan",
                 )
         abandonment = (
-            initiative["active_plan"] is None
-            and initiative["state"] in {"draft", "planning"}
+            (
+                initiative["active_plan"] is None
+                and initiative["state"] in {"draft", "planning"}
+            )
+            or (
+                initiative["state"] in {"awaiting-plan-approval", "approved"}
+                and not store.list_attempts_snapshot(initiative_id)
+            )
         )
         if (
             action["action_class"] == "finalize"

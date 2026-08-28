@@ -515,6 +515,9 @@ _initiative_pairs = [
     ("running", "ready-for-integration"), ("running", "partial"),
     ("running", "failed"), ("draft", "failed"), ("draft", "partial"),
     ("planning", "failed"), ("planning", "partial"),
+    ("awaiting-plan-approval", "failed"),
+    ("awaiting-plan-approval", "partial"),
+    ("approved", "failed"), ("approved", "partial"),
     ("ready-for-integration", "integrated"),
 ]
 _initiative_pairs += [(state, "cancelled") for state in _INITIATIVE_NONTERMINAL]

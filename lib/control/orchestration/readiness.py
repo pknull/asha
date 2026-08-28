@@ -372,18 +372,32 @@ def prevalidate_finalization(
     if not isinstance(reason, str) or not reason or len(reason.encode("utf-8")) > 4096:
         raise ReadinessError("finalize reason must contain 1-4096 UTF-8 bytes")
     initiative = store.peek(initiative_id)
+    attempts = store.list_attempts_snapshot(initiative_id)
+    preactivation_abandonment = (
+        initiative["state"] in {"awaiting-plan-approval", "approved"}
+        and not attempts
+    )
     # Abandonment proves the absence of live work, not a terminal plan graph.
     if (
-        initiative["active_plan"] is None
-        and initiative["state"] in {"draft", "planning"}
+        (
+            initiative["active_plan"] is None
+            and initiative["state"] in {"draft", "planning"}
+        )
+        or preactivation_abandonment
     ):
         for node in store.list_nodes_snapshot(initiative_id):
-            if node["state"] not in NODE_TERMINAL_STATES:
+            if (
+                node["state"] not in NODE_TERMINAL_STATES
+                and not (
+                    preactivation_abandonment
+                    and node["state"] in {"proposed", "approved"}
+                )
+            ):
                 raise ReadinessError(
                     f"abandonment blocked by non-terminal node {node['node_id']} "
                     f"in state {node['state']}"
                 )
-        for attempt in store.list_attempts_snapshot(initiative_id):
+        for attempt in attempts:
             if attempt["state"] not in ATTEMPT_TERMINAL_STATES:
                 raise ReadinessError(
                     f"abandonment blocked by non-terminal attempt {attempt['attempt_id']} "
@@ -473,7 +487,62 @@ def _finalization_payload(
     }
     if source_state in {"draft", "planning"}:
         payload.update(_latest_rejected_plan(store, initiative_id))
+    if source_state == "approved":
+        payload["abandoned_plan_digest"] = store.peek(initiative_id)["active_plan"][
+            "digest"
+        ]
     return payload
+
+
+def _cancel_abandoned_plan_nodes(
+    store: InitiativeStore,
+    initiative_id: str,
+    source_state: str,
+    action_id: str | None,
+) -> None:
+    """Cancel pre-activation plan echoes and recover any missing edge events."""
+    recovered_from = (
+        "proposed" if source_state == "awaiting-plan-approval" else "approved"
+    )
+    for node in store.list_nodes_snapshot(initiative_id):
+        events = store.list_events_snapshot(initiative_id)
+        if node["state"] in {"proposed", "approved"}:
+            from_state = node["state"]
+            changed = copy.deepcopy(node)
+            changed["state"] = "cancelled"
+            store.save_node(
+                initiative_id, changed, expected_digest=record_digest(node),
+            )
+        elif node["state"] == "cancelled":
+            if any(
+                event["type"] == "node-state-changed"
+                and node["node_id"] in event["subject_ids"]
+                and event["payload"].get("to") == "cancelled"
+                for event in events
+            ):
+                continue
+            # A crash can land after the CAS and before its event. The source
+            # initiative state identifies the plan-echo state being recovered.
+            from_state = recovered_from
+        else:
+            continue
+        if any(
+            event["type"] == "node-state-changed"
+            and node["node_id"] in event["subject_ids"]
+            and (action_id is None or action_id in event["subject_ids"])
+            and event["payload"].get("from") == from_state
+            and event["payload"].get("to") == "cancelled"
+            and event["actor_kind"] == "controller"
+            and event["actor_id"] == "finalization-gate"
+            for event in events
+        ):
+            continue
+        append_event(
+            store, initiative_id, "node-state-changed",
+            [node["node_id"], *([] if action_id is None else [action_id])],
+            {"from": from_state, "to": "cancelled"},
+            actor_kind="controller", actor_id="finalization-gate",
+        )
 
 
 def finalize_initiative(
@@ -494,7 +563,9 @@ def finalize_initiative(
     if initiative["state"] == outcome:
         matching = [
             item["type"] == "initiative-state-changed"
-            and item["payload"].get("from") in {"running", "draft", "planning"}
+            and item["payload"].get("from") in {
+                "running", "draft", "planning", "awaiting-plan-approval", "approved",
+            }
             and (
                 source_state is None
                 or item["payload"].get("from") == source_state
@@ -506,7 +577,9 @@ def finalize_initiative(
         ]
         if any(matching):
             return initiative
-        if action_id is None or source_state not in {"running", "draft", "planning"}:
+        if action_id is None or source_state not in {
+            "running", "draft", "planning", "awaiting-plan-approval", "approved",
+        }:
             raise ReadinessError("terminal initiative cannot be finalized again")
         if not any(
             item["action_id"] == action_id
@@ -529,6 +602,11 @@ def finalize_initiative(
         store, initiative_id, outcome, reason, action_id=action_id,
     )
     source_state = initiative["state"]
+    if source_state in {"awaiting-plan-approval", "approved"}:
+        _cancel_abandoned_plan_nodes(
+            store, initiative_id, source_state, action_id,
+        )
+        initiative = store.peek(initiative_id)
     terminal_payload = _finalization_payload(
         store, initiative_id, source_state, outcome, reason,
     )
