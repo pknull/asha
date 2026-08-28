@@ -31,6 +31,7 @@ from .model import (
     FORBIDDEN_ACTION_CLASSES,
     ModelError,
     NODE_TERMINAL_STATES,
+    NULL_ACTIVE_PLAN_ACTION_CLASSES,
     canonical_uuid,
     new_uuid,
     record_digest,
@@ -153,7 +154,10 @@ def build_action_document(
 ) -> dict[str, Any]:
     """Build one exact action document; a coordinator record makes it coordinator-actor."""
     active = initiative.get("active_plan")
-    if not isinstance(active, Mapping):
+    if (
+        not isinstance(active, Mapping)
+        and action_class not in NULL_ACTIVE_PLAN_ACTION_CLASSES
+    ):
         raise ActionError("initiative has no active plan")
     body = copy.deepcopy(dict(payload))
     document = {
@@ -165,7 +169,7 @@ def build_action_document(
         "action_class": action_class,
         "payload": body,
         "payload_digest": payload_digest(body),
-        "active_plan_digest": active["digest"],
+        "active_plan_digest": None if active is None else active["digest"],
         "expected_state_revision": initiative["state_revision"],
     }
     if coordinator is not None:
@@ -1649,9 +1653,17 @@ def submit_action(
             fence = _coordinator_fence(store, initiative_id, action)
             if fence is not None:
                 return _refuse(store, action, fence)
-        if initiative["active_plan"] is None:
+        if (
+            initiative["active_plan"] is None
+            and action["action_class"] not in NULL_ACTIVE_PLAN_ACTION_CLASSES
+        ):
             return _refuse(store, action, "initiative has no active approved plan")
-        if action["active_plan_digest"] != initiative["active_plan"]["digest"]:
+        active_plan_digest = (
+            None
+            if initiative["active_plan"] is None
+            else initiative["active_plan"]["digest"]
+        )
+        if action["active_plan_digest"] != active_plan_digest:
             return _refuse(store, action, "action active plan digest is stale")
         if action["actor_kind"] == "coordinator":
             # The event loop wakes on sequences, not revisions, so a coordinator's
@@ -1686,7 +1698,15 @@ def submit_action(
                     store, action,
                     "active plan digest does not match retained executable plan",
                 )
-        if action["action_class"] == "finalize" and initiative["state"] != "running":
+        abandonment = (
+            initiative["active_plan"] is None
+            and initiative["state"] in {"draft", "planning"}
+        )
+        if (
+            action["action_class"] == "finalize"
+            and initiative["state"] != "running"
+            and not abandonment
+        ):
             return _refuse(store, action, "only a running initiative may be finalized")
         if action["action_class"] == "finalize":
             from .readiness import ReadinessError, prevalidate_finalization
@@ -1694,6 +1714,7 @@ def submit_action(
             try:
                 prevalidate_finalization(
                     store, initiative_id, payload["outcome"], payload["reason"],
+                    action_id=action["action_id"],
                 )
             except ReadinessError as exc:
                 return _refuse(store, action, str(exc))

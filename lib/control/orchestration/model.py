@@ -108,6 +108,8 @@ FORBIDDEN_ACTION_CLASSES = (
     "deletion",
     "sealed-workspace-mutation",
 )
+# Closure stays journalable when no plan ever became active.
+NULL_ACTIVE_PLAN_ACTION_CLASSES = frozenset({"finalize", "archive", "unarchive"})
 
 NODE_TYPES = frozenset({"work", "research", "review", "compose", "verify", "decision"})
 MUTATING_NODE_TYPES = frozenset({"work", "compose"})
@@ -510,7 +512,8 @@ _initiative_pairs = [
     ("approved", "running"), ("running", "needs-input"), ("running", "paused"),
     ("needs-input", "running"), ("paused", "running"),
     ("running", "ready-for-integration"), ("running", "partial"),
-    ("running", "failed"),
+    ("running", "failed"), ("draft", "failed"), ("draft", "partial"),
+    ("planning", "failed"), ("planning", "partial"),
 ]
 _initiative_pairs += [(state, "cancelled") for state in _INITIATIVE_NONTERMINAL]
 _initiative_pairs += [
@@ -1711,7 +1714,13 @@ def validate_action(value: Any) -> dict[str, Any]:
     _text(record["actor_id"], "action actor_id", maximum=MAX_ACTOR_ID_BYTES)
     _token(record["action_class"], "action class")
     _digest(record["payload_digest"], "action payload_digest")
-    _digest(record["active_plan_digest"], "action active_plan_digest")
+    if record["active_plan_digest"] is None:
+        if record["action_class"] not in NULL_ACTIVE_PLAN_ACTION_CLASSES:
+            raise ModelError(
+                "action active_plan_digest may be null only for finalize, archive, or unarchive"
+            )
+    else:
+        _digest(record["active_plan_digest"], "action active_plan_digest")
     _integer(record["expected_state_revision"], "action expected_state_revision")
     if record["state"] not in ACTION_TRANSITIONS:
         raise ModelError("action state is invalid")
