@@ -1,7 +1,9 @@
 """Explicit operator attestations that sealed work may be reclaimed.
 
-This module records facts only.  It deliberately has no jj, Git, bookmark,
-merge, rebase, or publication adapter.
+This module never performs integration: it has no jj, Git, bookmark, merge,
+rebase, or publication adapter.  A compatible bundle attestation advances the
+durable lifecycle only from ready-for-integration; in every other non-integrated
+state it remains a state-neutral fact.  Abandonment never advances lifecycle.
 """
 
 from __future__ import annotations
@@ -9,9 +11,15 @@ from __future__ import annotations
 import copy
 import unicodedata
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Mapping
 
-from .model import MAX_BUNDLE_MEMBERS, canonical_uuid
+from .model import (
+    MAX_BUNDLE_MEMBERS,
+    canonical_uuid,
+    record_digest,
+    validate_initiative,
+)
 from .store import InitiativeStore
 
 
@@ -29,6 +37,12 @@ class IntegrationSnapshot:
     bundles: dict[str, dict[str, Any]]
     facts: dict[str, dict[str, Any]]
     source_events: dict[tuple[str, str], dict[str, Any]]
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+        "+00:00", "Z"
+    )
 
 
 def _reason(value: Any) -> str:
@@ -166,6 +180,7 @@ def record_integration(
         raise IntegrationError("record-integration requires exactly one of --bundle or --seal")
     with store.transaction_lock(initiative_id):
         snapshot = integration_snapshot(store, initiative_id)
+        existing: dict[str, Any] | None = None
         if bundle_id is not None:
             try:
                 bundle_id = canonical_uuid(bundle_id, "bundle ID")
@@ -193,8 +208,6 @@ def record_integration(
                         f"seal {member['seal_id']} is already recorded as abandoned"
                     )
             existing = snapshot.source_events.get(("integrated", bundle_id))
-            if existing is not None:
-                return copy.deepcopy(existing)
             subject_ids = [bundle_id, *(member["seal_id"] for member in members)]
             payload: dict[str, Any] = {
                 "disposition": "integrated", "members": members,
@@ -229,10 +242,40 @@ def record_integration(
         # Local import keeps the read-only prune path free of action machinery.
         from .actions import append_event
 
-        return append_event(
-            store, initiative_id, INTEGRATION_EVENT_TYPE, subject_ids, payload,
-            actor_kind="operator", actor_id="cli",
-        )
+        event = existing
+        if event is None:
+            event = append_event(
+                store, initiative_id, INTEGRATION_EVENT_TYPE, subject_ids, payload,
+                actor_kind="operator", actor_id="cli",
+            )
+        if bundle_id is None:
+            return copy.deepcopy(event)
+
+        current = store.peek(initiative_id)
+        if current["state"] == "ready-for-integration":
+            changed = copy.deepcopy(current)
+            changed.update({
+                "state": "integrated",
+                "state_revision": current["state_revision"] + 1,
+                "updated_at": _now(),
+            })
+            validate_initiative(changed)
+            store.save_initiative(changed, expected_digest=record_digest(current))
+        elif current["state"] != "integrated":
+            return copy.deepcopy(event)
+        if not any(
+            item["type"] == "initiative-state-changed"
+            and item["payload"].get("from") == "ready-for-integration"
+            and item["payload"].get("to") == "integrated"
+            for item in store.list_events_snapshot(initiative_id)
+        ):
+            append_event(
+                store, initiative_id, "initiative-state-changed",
+                [initiative_id, bundle_id],
+                {"from": "ready-for-integration", "to": "integrated"},
+                actor_kind="operator", actor_id="cli",
+            )
+        return copy.deepcopy(event)
 
 
 __all__ = [

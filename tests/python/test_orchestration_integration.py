@@ -1,4 +1,4 @@
-"""Operator integration attestations are durable facts, not integration machinery."""
+"""Operator integration attestations and their durable lifecycle projection."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import uuid
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
+from lib.control.orchestration.actions import build_action_document, submit_action
 from lib.control.orchestration.cli import main
 from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.readiness import bind_readiness
@@ -40,7 +41,21 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
         self.save_member_review("review-first")
         self.save_member_review("review-second")
         save_passed_verification(self, [self.first, self.second])
-        self.bundle = bind_readiness(self.store, self.initiative_id)
+        if "while_running" in self._testMethodName:
+            original_save = self.store.save_initiative
+
+            def stop_before_readiness(record, *, expected_digest=None):
+                if record["state"] == "ready-for-integration":
+                    raise RuntimeError("keep the compatible bundle in running state")
+                return original_save(record, expected_digest=expected_digest)
+
+            with mock.patch.object(
+                self.store, "save_initiative", side_effect=stop_before_readiness,
+            ), self.assertRaisesRegex(RuntimeError, "running state"):
+                bind_readiness(self.store, self.initiative_id)
+            self.bundle = self.store.list_bundles_snapshot(self.initiative_id)[0]
+        else:
+            self.bundle = bind_readiness(self.store, self.initiative_id)
 
     def run_cli(self, *args: str) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -48,7 +63,7 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
             code = main(["initiative", "record-integration", *args], env=self.env)
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def test_compatible_bundle_records_every_member_once_without_integrating(self) -> None:
+    def test_compatible_bundle_records_every_member_and_advances_to_integrated(self) -> None:
         before_bundle = record_digest(self.bundle)
         before_events = len(self.store.list_events_snapshot(self.initiative_id))
 
@@ -72,12 +87,29 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
                 {"seal_id": self.second["seal_id"], "jj_commit_id": self.second["jj_commit_id"]},
             ],
         })
-        self.assertEqual(self.initiative()["state"], "ready-for-integration")
+        self.assertEqual(self.initiative()["state"], "integrated")
         self.assertEqual(record_digest(self.store.read_bundle(
             self.initiative_id, self.bundle["bundle_id"],
         )), before_bundle)
+        transitions = [
+            item for item in self.store.list_events_snapshot(self.initiative_id)
+            if item["type"] == "initiative-state-changed"
+            and item["payload"].get("to") == "integrated"
+        ]
+        self.assertEqual(len(transitions), 1)
         self.assertEqual(
-            len(self.store.list_events_snapshot(self.initiative_id)), before_events + 1,
+            (transitions[0]["actor_kind"], transitions[0]["actor_id"]),
+            ("operator", "cli"),
+        )
+        self.assertEqual(transitions[0]["payload"], {
+            "from": "ready-for-integration", "to": "integrated",
+        })
+        self.assertEqual(
+            transitions[0]["subject_ids"],
+            [self.initiative_id, self.bundle["bundle_id"]],
+        )
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), before_events + 2,
         )
 
         again_code, again_output, again_error = self.run_cli(
@@ -85,9 +117,30 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
         )
         self.assertEqual((again_code, again_error), (0, ""))
         self.assertEqual(json.loads(again_output)["event_id"], event["event_id"])
+        self.assertEqual(self.initiative()["state"], "integrated")
         self.assertEqual(
-            len(self.store.list_events_snapshot(self.initiative_id)), before_events + 1,
+            len(self.store.list_events_snapshot(self.initiative_id)), before_events + 2,
         )
+
+    def test_integrated_initiative_archives_and_unarchives_to_integrated(self) -> None:
+        code, _output, error = self.run_cli(
+            self.initiative_id, "--bundle", self.bundle["bundle_id"], "--json",
+        )
+        self.assertEqual((code, error), (0, ""))
+
+        archived = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(self.initiative(), "archive", {}),
+        )
+        self.assertEqual(archived["state"], "completed")
+        self.assertEqual(self.initiative()["state"], "archived")
+
+        restored = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(self.initiative(), "unarchive", {}),
+        )
+        self.assertEqual(restored["state"], "completed")
+        self.assertEqual(self.initiative()["state"], "integrated")
 
     def test_abandoned_seal_records_reason_and_conflicts_with_bundle_integration(self) -> None:
         reason = "Operator rejected this candidate after external review."
@@ -107,6 +160,7 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
             }],
             "reason": reason,
         })
+        self.assertEqual(self.initiative()["state"], "ready-for-integration")
 
         refused, _output, refused_error = self.run_cli(
             self.initiative_id, "--bundle", self.bundle["bundle_id"], "--json",
@@ -137,13 +191,20 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
             "outcome": "incompatible",
         })
         self.store.save_bundle(self.initiative_id, incompatible)
+        state_before = self.initiative()
+        events_before = len(self.store.list_events_snapshot(self.initiative_id))
         code, _output, error = self.run_cli(
             self.initiative_id, "--bundle", incompatible["bundle_id"],
         )
         self.assertEqual(code, 2)
         self.assertIn("compatible bundle", error)
+        self.assertEqual(self.initiative(), state_before)
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), events_before,
+        )
 
         other = self.create_initiative("other-initiative")
+        other_before = self.store.peek(other["initiative_id"])
         code, _output, error = self.run_cli(
             other["initiative_id"], "--seal", self.first["seal_id"],
             "--abandoned", "--reason", "not this initiative",
@@ -162,10 +223,10 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
         self.assertEqual(
             len(self.store.list_events_snapshot(other["initiative_id"])), before,
         )
+        self.assertEqual(self.store.peek(other["initiative_id"]), other_before)
 
     def record_digests(self) -> dict[str, object]:
         return {
-            "state": self.initiative()["state"],
             "bundles": [
                 record_digest(item)
                 for item in self.store.list_bundles_snapshot(self.initiative_id)
@@ -184,8 +245,8 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
             ],
         }
 
-    def test_neither_form_touches_a_repository_or_the_initiative_outcome(self) -> None:
-        """Each form appends one event and nothing else: no process, no records.
+    def test_neither_form_touches_a_repository_or_candidate_records(self) -> None:
+        """Neither form runs a process or changes candidate records.
 
         Every repository mutation this codebase can make -- merge, rebase,
         bookmark move, push -- is an external command, so an attempted spawn is
@@ -215,14 +276,36 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
                         self.initiative_id, *tail, "--json",
                     )
                 self.assertEqual((code, error), (0, ""))
-                # The attestation is the only new fact: the compatible bundle,
-                # its member seals, their attempts, the nodes, and the
-                # initiative outcome all stand exactly as they were.
+                # Candidate records stand exactly as they were. Bundle
+                # integration also records the lifecycle transition; seal
+                # abandonment remains a single state-neutral fact.
                 self.assertEqual(self.record_digests(), before)
+                expected_state = "integrated" if form == "bundle" else "ready-for-integration"
+                self.assertEqual(self.initiative()["state"], expected_state)
                 self.assertEqual(
                     len(self.store.list_events_snapshot(self.initiative_id)),
-                    before_events + 1,
+                    before_events + (2 if form == "bundle" else 1),
                 )
+
+    def test_bundle_fact_recorded_while_running_does_not_advance_state(self) -> None:
+        self.assertEqual(self.initiative()["state"], "running")
+        before_events = len(self.store.list_events_snapshot(self.initiative_id))
+
+        code, output, error = self.run_cli(
+            self.initiative_id, "--bundle", self.bundle["bundle_id"], "--json",
+        )
+
+        self.assertEqual((code, error), (0, ""))
+        self.assertEqual(json.loads(output)["payload"]["disposition"], "integrated")
+        self.assertEqual(self.initiative()["state"], "running")
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), before_events + 1,
+        )
+        self.assertFalse(any(
+            item["type"] == "initiative-state-changed"
+            and item["payload"].get("to") == "integrated"
+            for item in self.store.list_events_snapshot(self.initiative_id)
+        ))
 
     def test_coordinator_session_cannot_record_an_operator_attestation(self) -> None:
         before = len(self.store.list_events_snapshot(self.initiative_id))

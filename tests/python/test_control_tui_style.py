@@ -32,11 +32,11 @@ class TierTests(unittest.TestCase):
     def test_every_record_state_resolves_to_exactly_one_tier(self) -> None:
         classes = (INITIATIVE_STATES, NODE_STATES, ATTEMPT_STATES, COORDINATOR_STATES)
         every = set().union(*(set(item) for item in classes))
-        # Both numbers the guide quotes: 56 states across the four record
-        # classes, 44 distinct words, because seven names (running, failed,
+        # Both numbers the guide quotes: 57 states across the four record
+        # classes, 45 distinct words, because seven names (running, failed,
         # approved, cancelled, dispatching, needs-input, stale) are reused.
-        self.assertEqual(sum(len(item) for item in classes), 56)
-        self.assertEqual(len(every), 44)
+        self.assertEqual(sum(len(item) for item in classes), 57)
+        self.assertEqual(len(every), 45)
         # Assert EXPLICIT membership, not just that tier_for returns something:
         # inert is the fallback, so a state nobody classified would pass a
         # weaker check while silently rendering as "not actionable". `ready`
@@ -78,6 +78,15 @@ class RailTests(unittest.TestCase):
                 {"type": "verify", "state": "succeeded"}]
         plan = {"revision": 1}
         self.assertEqual(rail_text(view("a", "ready-for-integration", done, plan=plan)), "[✓✓✓✓✓!]")
+        self.assertEqual(rail_text(view("a", "integrated", done, plan=plan)), "[✓✓✓✓✓✓]")
+        recorded = view("a", "ready-for-integration", done, plan=plan, events=[{
+            "type": "seal-integration-recorded",
+            "payload": {"disposition": "integrated"},
+        }])
+        self.assertEqual(rail_text(recorded), "[✓✓✓✓✓✓]")
+        self.assertEqual(
+            rail_text(view("a", "archived", done, plan=plan)), "[✓✓✓✓✓·]",
+        )
         self.assertEqual(rail_text(view("a", "awaiting-plan-approval", plan=plan)), "[✓!····]")
         self.assertEqual(rail_text(view("a", "draft")), "[······]")
         self.assertEqual(

@@ -1,7 +1,7 @@
 """Semantic tiers, the pipeline rail, and the coloured line primitive.
 
-The records carry 56 state words across four classes. An operator cannot hold
-56 words in their eye, so every state resolves to exactly one of five tiers,
+The records carry 57 state words across four classes. An operator cannot hold
+57 words in their eye, so every state resolves to exactly one of five tiers,
 and the tier is what colour means:
 
     WAITING   nothing advances until the operator acts (the only loud tier)
@@ -58,7 +58,7 @@ _assign(
     GOOD,
     "approved", "succeeded", "sealed-success", "success-seal-ready",
     "completed-readonly", "readonly-ready", "accepted-pass", "passed",
-    "compatible",
+    "compatible", "integrated",
 )
 _assign(
     BAD,
@@ -124,7 +124,7 @@ def short_label(state: str | None, width: int = STATE_COLUMN) -> str:
 
 # ---------------------------------------------------------------- the rail
 # Terminal for the purposes of the count line: nothing further will happen.
-TERMINAL_STATES = frozenset({"archived", "cancelled", "partial"})
+TERMINAL_STATES = frozenset({"integrated", "archived", "cancelled", "partial"})
 
 STAGES = ("plan", "approve", "build", "review", "verify", "integrate")
 
@@ -182,7 +182,7 @@ def rail_tiers(view: Mapping[str, Any]) -> list[str]:
     planned = view.get("plan") is not None
     reached_approval = state in {
         "approved", "running", "needs-input", "paused", "ready-for-integration",
-        "partial", "failed", "cancelled", "archived",
+        "integrated", "partial", "failed", "cancelled", "archived",
     }
 
     plan = GOOD if planned else (MACHINE if state == "planning" else "")
@@ -199,10 +199,16 @@ def rail_tiers(view: Mapping[str, Any]) -> list[str]:
         outcomes = [item.get("outcome") or item.get("state") for item in view["verifications"]]
         verify = GOOD if all(item == "passed" for item in outcomes) else BAD
 
-    if state == "ready-for-integration":
-        integrate = WAITING
-    elif state == "archived":
+    integration_recorded = any(
+        event.get("type") == "seal-integration-recorded"
+        and isinstance(event.get("payload"), Mapping)
+        and event["payload"].get("disposition") == "integrated"
+        for event in view.get("events", []) or []
+    )
+    if state == "integrated" or integration_recorded:
         integrate = GOOD
+    elif state == "ready-for-integration":
+        integrate = WAITING
     elif state in {"failed", "partial", "cancelled"}:
         integrate = BAD
     else:

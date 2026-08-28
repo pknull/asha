@@ -872,7 +872,12 @@ materialization remain retained.
 One accepted passing review per member and one passed controller
 verification must name the current terminal candidate seal of every scope
 member. The controller then binds one compatible bundle with one ordered
-member per repository and advances only `running -> ready-for-integration`. Core has no integrate, merge, push, or deletion verb.
+member per repository and advances only `running -> ready-for-integration`.
+Core has no integrate, merge, push, or deletion verb. After the operator lands
+that exact bundle externally, `record-integration --bundle` records the durable
+attestation and advances `ready-for-integration -> integrated`. The same fact
+recorded in another state does not move lifecycle, and `--seal --abandoned`
+never advances it.
 When every graph node is terminal without a qualifying candidate, the operator
 may acknowledge `partial` or `failed` with `finalize --reason`; partial requires
 at least one retained success seal as useful work. Failure-only evidence must
@@ -893,9 +898,11 @@ workspace directory is gone as reclaimed, not as drift.
 
 The node transition graph includes `succeeded -> ready` when accepted review
 findings make the exact candidate repairable. The initiative transition graph
-includes `archived -> ready-for-integration | partial | failed | cancelled`
-when `unarchive` restores the terminal outcome retained by the latest archive
-cycle. These are explicit lifecycle edges, not same-state record rewrites.
+includes `ready-for-integration -> integrated` and
+`archived -> ready-for-integration | integrated | partial | failed | cancelled`
+when integration is recorded or `unarchive` restores the terminal outcome
+retained by the latest archive cycle. These are explicit lifecycle edges, not
+same-state record rewrites.
 
 Exit status is 0 for success, 2 for usage or deterministic refusal, 3 for an
 indeterminate action outcome, 1 when a doctor payload has `ok:false` or an
