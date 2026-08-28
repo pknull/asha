@@ -8,17 +8,33 @@ Asha renders or mounts skills, agents, commands, and hooks into each harness's n
 
 ## Start here
 
-Launch Asha from the directory whose context should own the work:
+A wrapped launch with **no arguments** is the operator's chair: it seats the
+session at `~/.asha/chair` with the orchestrator stance, whichever harness you
+name. The harness word selects the tool, not the stance.
+
+```bash
+asha                           # the chair (default harness)
+asha claude                    # the chair, held by Claude Code
+asha codex                     # the chair, held by Codex
+```
+
+From the chair you converse: Asha launches one fenced coordinator per piece of
+work, you approve plans and activate initiatives, workers run sandboxed in
+their own jj workspaces, and integration stays your hand. See
+[Control: tasks and initiatives](#control-tasks-and-initiatives).
+
+To work **directly in a repository** instead, pass arguments (arguments keep
+the caller's working directory), or drive the repo through a Control task or
+initiative and let the worker own the checkout:
 
 ```bash
 cd /path/to/repository
-asha claude                    # or: asha codex / asha copilot / asha opencode
+asha claude "fix the failing test"   # direct session in this repo
 ```
 
-Inside a multi-repository workspace, launch from a declared child repository
-for repository work. Launch from the workspace root for cross-repository
-planning, shared operational memory, knowledge promotion, or coordinated
-worktrees. See [Memory and workspace use](#memory-and-workspace-use).
+Inside a multi-repository workspace, direct launches follow the same rule:
+child repository for repository work, workspace root for cross-repository
+planning. See [Memory and workspace use](#memory-and-workspace-use).
 
 Asha exposes four kinds of reusable surface:
 
@@ -67,7 +83,7 @@ After `./install.sh --bin all` you'll have:
 
 | Command | Effect |
 |---|---|
-| `asha` | launch the default harness (set via `--default`; else claude) |
+| `asha` | the chair: launch the default harness seated at `~/.asha/chair` with the orchestrator stance (no-argument launches only; arguments keep your cwd) |
 | `asha <harness>` | launch `claude`/`codex`/`copilot`/`opencode`; interactive first use offers to configure a missing or stale target |
 | `asha install <target>` | provision a harness (`claude`/`codex`/`copilot`/`opencode`/`both`/`all`) |
 | `asha uninstall <target>` | remove Asha from a harness |
@@ -92,106 +108,55 @@ updates.
 
 ---
 
-## Control
+## Control: tasks and initiatives
 
-Asha Control gives agent work a persistent local container: one task record,
-one jj workspace and change, one detached tmux session, and one or more harness
-runs. The source repository stays in place while the task remains attachable
-from `asha control` or the non-interactive `asha task` commands.
+Asha Control has two planes over one durable state store
+(`~/.asha/state/control/`): **tasks** — one persistent local container per
+piece of agent work (task record, jj workspace and change, detached tmux
+session, harness runs) — and **initiatives** — bounded orchestration
+lifecycles over those tasks (plan, approval, dispatch, seals, review,
+verification, integration, archive), run by a fenced per-initiative
+coordinator and advanced by a supervisor daemon.
+
+The authority split is one rule: **machines advance deterministic edges; only
+the operator signs.** Create, approve, activate, resume/decide, salvage,
+finalize, record-integration, and archive are operator acts; everything else
+progresses on its own.
+
+| Piece | What it is |
+|---|---|
+| **State store** | The only stateful thing. Write-once journals, CAS revisions, per-initiative locks. |
+| **Supervisor** | `asha control supervisor run\|start\|stop\|status` — the one long-lived controller process. Sweeps every non-terminal initiative on a clock: ingests staged worker results after terminal process evidence, reconciles, runs the result-grace path. Stateless (re-derives from the store each tick) and structurally unable to sign operator acts. |
+| **Monitor** | bare `asha control` — the interactive TUI: initiative tree, six-stage pipeline rail (`plan approve build review verify integrate`), attention rows, operator keys (`a` approve/activate/archive, `n` new intent, `Enter` attach, `p`/`s` pause/stop, `r` reconcile, `!` attention filter). |
+| **Coordinator** | One fenced LLM session per initiative (generation-fenced, pane-anchored). Proposes plans, dispatches within the approved envelope, asks questions. Never lifecycle authority. |
+| **Workers** | One sandboxed harness session per attempt in its own jj workspace. Stage results to a workspace outbox; the controller validates, snapshots, verifies, and publishes with provenance — workers never write the store. |
+
+Command surface, at a glance:
 
 | Command | Purpose |
 |---|---|
-| `asha task start [--repo PATH] (--pr N \| --issue N \| [--base REVSET]) [--slug SLUG] …` | Create the task, explicit-base jj workspace, tmux session, and primary harness run. The optional slug separates path identity from the unchanged goal. |
-| `asha task list` / `asha task show` | Inspect registered tasks and reconciled live evidence. |
-| `asha task attach` | Attach to the owned task session or open it in a tmux popup. |
-| `asha task reconcile` | Refresh registry facts from jj, tmux, process identity, and supported harness events. |
-| `asha task stop` | Signal the verified run process without deleting its session, workspace, or change. |
-| `asha task archive` | Hide a task after every reconciled run exits while preserving all task data; archive is reversible (`asha task unarchive`). |
-| `asha task recover` | Recover an interrupted creation transaction. The exact historical failed/runless retained shape also supports explicit authenticated forward-adoption with `--adopt --yes` plus reauthorized harness, role, and exact goal. |
-| `asha task prune` | Reclaim what archived tasks leave behind: kill the dead owned tmux session, forget and remove the journaled jj workspace; records and jj changes stay. Confirms once per batch, or `--yes`; `--dry-run` previews. |
-| `asha task doctor` | Report local prerequisites and optional capability limits. |
-| `asha control` | Open the terminal Control TUI. `A` toggles active/all history; `x` opens revalidated inspect, active-run signal/initiative-stop, archive, retry, reconcile, and prune actions. |
-| `asha control tmux` | Print the optional tmux-format integration snippet; it never edits `.tmux.conf`. |
+| `asha task start\|list\|show\|attach\|stop\|archive\|recover\|prune\|doctor …` | The task plane: create and manage persistent containers directly. |
+| `asha initiative create\|plan\|approve\|activate\|dispatch\|resume\|finalize\|record-integration\|archive …` | The orchestration plane: the full lifecycle, with `list`/`show`/`events`/`snapshot`/`reconcile` for inspection. |
+| `asha control` | The monitor TUI. `asha control supervisor …` manages the daemon; `event`/`tmux` are Control internals. |
+| `asha cockpit [DIR]` | A coordinator pane beside the Initiatives monitor. |
+| `asha trigger add\|list\|remove` | Scheduled coordinator launches (systemd user timers); fired runs wait at plan approval. |
 
-Popup attachment uses a fixed argv-only exec wrapper to clear inherited tmux
-nesting state only in the popup child; it does not depend on the newer
-`display-popup -e` option. Successful detach leaves the task running; a popup
-failure remains visible in the TUI or CLI with its status and exact manual
-attach command.
+A normal run: you state an intent (chair conversation, monitor `n`, or a
+trigger) → the coordinator proposes a plan → you approve and activate →
+workers attempt, results are ingested and sealed, review and verification
+gate the candidate → `ready-for-integration` → you land the diff yourself
+(Control has no merge authority) and `record-integration` advances the
+initiative to `integrated` → you archive. Start the supervisor once per boot
+(`asha control supervisor start`) and the blue edges never wait for you.
 
 Control requires a Git repository, tmux with popup support, an installed
-harness, and an initialized Asha project whose Control-created private paths
-are positively ignored by the immutable base. Regular tracked context files
-are validated and reused without requiring an ignore rule. `/session:init`
-installs the narrow `/.asha/control-task.json` rule for new projects, but that
-working-tree patch must be committed before an immutable base gains it. When
-only that rule is missing, the TUI offers Apply patch, instructions, or cancel;
-Apply is source-only, explicitly selected, CAS-revalidated, and never commits,
-moves a ref, enables/imports jj, creates task state, or retries automatically.
-The exact intended bytes and nested ignore policy are proved before rename;
-unsafe or ineffective root-only patches refuse without writing. Apply and
-worker revalidation refusals keep the filled five-field form intact and return
-to Base. Their bounded notice is drawn inside that retained form before Escape
-or Base acceptance can replace it. A changed blank-base preview requires a
-second Enter. `asha task doctor` names the exact
-resolved default ref/OID and reports its immutable context readiness. A
-supported primary plain-Git root (including submodule gitdir roots,
-but not linked worktrees) is automatically jj 0.38-colocated with semantic Git
-state preservation; verified repository enablement is reported and retained
-if later task preparation fails or is cancelled. Before that enablement,
-Control validates source/workspace ancestry (including existing managed-parent
-ownership/mode), Memory, destination/capacity, PR remote selection, and the
-base before enablement. Existing jj repositories retain arbitrary jj revsets.
-For a new plain-Git root, an omitted base selects one exact remote default or
-the first existing local `main`, `master`, or `trunk`; no unambiguous candidate
-refuses before mutation and requests explicit `--base`. The durable task keeps
-the caller's unchanged default expression while the selected ref remains
-preflight evidence and its immutable OID becomes `base_commit_id`, preserving
-caller-ID replay identity. PR start accepts only a configured HTTPS or SSH URL
-whose repository identity matches the viewed PR; execution-capable local Git
-transport/helper config refuses before colocation. The later fetch uses that
-carried URL under an explicit protocol allowlist, with no named-remote reread.
-If the selected PR OID is not local, Control first fetches it into an isolated
-temporary object plane, proves the immutable tree and ignore policy there, and
-removes that plane. A prerequisite refusal therefore precedes source
-colocation, source fetch, and jj import. A successful proof still requires the
-later source fetch to reproduce the same OID, materialization, and context
-proof before jj import.
-Split `extensions.worktreeConfig` repositories must fetch the PR head manually
-because the carried single-file configuration digest cannot bind that plane.
-A verified root binding
-hardened only by removing group/other write bits is narrowly reauthenticated
-after stable all-ref Git and jj-operation checks; doctor reports only a
-resulting path-policy-safe candidate as repairable.
-The TUI task-start form is a stateful, cell-aware five-field editor with a
-frozen bounded repository/base/harness/role candidate snapshot. Up/Down, Tab,
-Enter, Shift-Tab, Escape, resize, and whole-cluster backspace preserve exact
-logical values; wide-character input preserves admitted Unicode and candidate
-raw identity remains separate from sanitized display. One aggregate count/byte
-budget bounds the snapshot, and candidate data never bypasses controller validation. It stays
-active during preparation and accepts `Escape` cancellation until launch wins
-the journal race; long, combining, and emoji-cluster goals use a cell-aware
-suffix viewport without changing their logical text. Once v2 preparation may
-have mutated workspace/root filesystem state, cancellation retains those bytes,
-the jj registration, and any created parents, marks the failed task preserved,
-and requires inspection with `jj workspace list` plus the recorded workspace
-and parent paths. It names archive plus explicit confirmed prune only when the
-existing prune preconditions are durably proven; partial creation may require
-manual cleanup. Frozen v1 journals keep their legacy rollback behavior. A
-narrow retained failed/runless `add-intent` creation can be completed forward
-only with `asha task recover ID --adopt --yes --harness H --role ROLE --goal
-'EXACT LABEL'`. That path authenticates repository, registration, operation,
-root, immutable tree, and raw record evidence before recording ownership,
-provisioning context, and launching; it never forgets or deletes. Doctor and
-the TUI distinguish this exact candidate from ambiguous residue that still
-requires manual inspection. Task
-workspaces use compact Git tree plans and streaming object verification, so
-tracked trees are not limited by the legacy inline creation-journal entry or
-byte ceilings. `gh` must be
-installed and authenticated only for `--pr` and
-`--issue`; ad-hoc tasks do not use it. See the focused
-[Asha Control guide](docs/control.md) for the operating contract, state paths,
-status evidence, and preservation rules.
+harness, and an initialized project (`/session:init`). The operating contract,
+state paths, prerequisites, evidence rules, and preservation guarantees live
+in the focused guides: **[docs/control.md](docs/control.md)** (task plane and
+TUI), **[docs/orchestration.md](docs/orchestration.md)** (initiative
+lifecycle, coordinator contract, JSON wrappers), and
+**[docs/control-contracts.md](docs/control-contracts.md)** (frozen v1
+contracts).
 
 ---
 
