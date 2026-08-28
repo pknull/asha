@@ -13,9 +13,12 @@ from typing import Any, Mapping
 
 from .actions import append_event
 from .model import (
+    ACTION_TRANSITIONS,
+    ATTEMPT_TERMINAL_STATES,
     BUNDLE_CONTRACT,
     INITIATIVE_TERMINAL_STATES,
     NODE_TERMINAL_STATES,
+    VERIFICATION_TRANSITIONS,
     new_uuid,
     record_digest,
     validate_bundle,
@@ -360,6 +363,8 @@ def prevalidate_finalization(
     initiative_id: str,
     outcome: str,
     reason: str,
+    *,
+    action_id: str | None = None,
 ) -> dict[str, Any]:
     """Check every deterministic finalization condition without mutation."""
     if outcome not in {"partial", "failed"}:
@@ -367,6 +372,45 @@ def prevalidate_finalization(
     if not isinstance(reason, str) or not reason or len(reason.encode("utf-8")) > 4096:
         raise ReadinessError("finalize reason must contain 1-4096 UTF-8 bytes")
     initiative = store.peek(initiative_id)
+    # Abandonment proves the absence of live work, not a terminal plan graph.
+    if (
+        initiative["active_plan"] is None
+        and initiative["state"] in {"draft", "planning"}
+    ):
+        for node in store.list_nodes_snapshot(initiative_id):
+            if node["state"] not in NODE_TERMINAL_STATES:
+                raise ReadinessError(
+                    f"abandonment blocked by non-terminal node {node['node_id']} "
+                    f"in state {node['state']}"
+                )
+        for attempt in store.list_attempts_snapshot(initiative_id):
+            if attempt["state"] not in ATTEMPT_TERMINAL_STATES:
+                raise ReadinessError(
+                    f"abandonment blocked by non-terminal attempt {attempt['attempt_id']} "
+                    f"in state {attempt['state']}"
+                )
+        for action in store.list_actions_snapshot(initiative_id):
+            if (
+                action["action_id"] != action_id
+                and ACTION_TRANSITIONS[action["state"]]
+            ):
+                raise ReadinessError(
+                    f"abandonment blocked by non-terminal action {action['action_id']} "
+                    f"in state {action['state']}"
+                )
+        for verification in store.list_verifications_snapshot(initiative_id):
+            if VERIFICATION_TRANSITIONS[verification["state"]]:
+                raise ReadinessError(
+                    "abandonment blocked by non-terminal verification "
+                    f"{verification['verification_id']} in state {verification['state']}"
+                )
+        for approval in store.list_approvals_snapshot(initiative_id):
+            if approval["action_class"] == "salvage" and approval["state"] == "approved":
+                raise ReadinessError(
+                    "abandonment blocked by approved salvage request "
+                    f"{approval['request_id']}"
+                )
+        return initiative
     if initiative["state"] != "running":
         raise ReadinessError("only a running initiative may be finalized")
     nodes = store.list_nodes_snapshot(initiative_id)
@@ -384,6 +428,52 @@ def prevalidate_finalization(
     ):
         raise ReadinessError("partial outcome requires useful retained success seal evidence")
     return initiative
+
+
+def _latest_rejected_plan(
+    store: InitiativeStore, initiative_id: str,
+) -> dict[str, str]:
+    plans = {
+        plan["digest"]: plan
+        for plan in store.list_plans_snapshot(initiative_id)
+    }
+    rejected = [
+        event for event in store.list_events_snapshot(initiative_id)
+        if event["type"] == "plan-rejected"
+        and event["payload"].get("digest") in plans
+    ]
+    if not rejected:
+        return {}
+    latest = max(
+        rejected,
+        key=lambda event: (
+            plans[event["payload"]["digest"]]["revision"], event["sequence"],
+        ),
+    )
+    return {
+        "rejected_plan_digest": latest["payload"]["digest"],
+        "plan_rejection_reason": latest["payload"]["reason"],
+    }
+
+
+def _finalization_payload(
+    store: InitiativeStore,
+    initiative_id: str,
+    source_state: str,
+    outcome: str,
+    reason: str,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "from": source_state,
+        "to": outcome,
+        "reason": reason,
+        "retained_seal_ids": [
+            item["seal_id"] for item in store.list_seals_snapshot(initiative_id)
+        ],
+    }
+    if source_state in {"draft", "planning"}:
+        payload.update(_latest_rejected_plan(store, initiative_id))
+    return payload
 
 
 def finalize_initiative(
@@ -404,7 +494,11 @@ def finalize_initiative(
     if initiative["state"] == outcome:
         matching = [
             item["type"] == "initiative-state-changed"
-            and item["payload"].get("from") == "running"
+            and item["payload"].get("from") in {"running", "draft", "planning"}
+            and (
+                source_state is None
+                or item["payload"].get("from") == source_state
+            )
             and item["payload"].get("to") == outcome
             and item["payload"].get("reason") == reason
             and (action_id is None or action_id in item["subject_ids"])
@@ -412,7 +506,7 @@ def finalize_initiative(
         ]
         if any(matching):
             return initiative
-        if action_id is None or source_state != "running":
+        if action_id is None or source_state not in {"running", "draft", "planning"}:
             raise ReadinessError("terminal initiative cannot be finalized again")
         if not any(
             item["action_id"] == action_id
@@ -425,18 +519,18 @@ def finalize_initiative(
             append_event(
                 store, initiative_id, "initiative-state-changed",
                 [initiative_id, action_id],
-                {
-                    "from": "running", "to": outcome, "reason": reason,
-                    "retained_seal_ids": [
-                        item["seal_id"]
-                        for item in store.list_seals_snapshot(initiative_id)
-                    ],
-                },
+                _finalization_payload(
+                    store, initiative_id, source_state, outcome, reason,
+                ),
                 actor_kind="controller", actor_id="finalization-gate",
             )
         return store.peek(initiative_id)
     initiative = prevalidate_finalization(
-        store, initiative_id, outcome, reason,
+        store, initiative_id, outcome, reason, action_id=action_id,
+    )
+    source_state = initiative["state"]
+    terminal_payload = _finalization_payload(
+        store, initiative_id, source_state, outcome, reason,
     )
     changed = copy.deepcopy(initiative)
     changed.update({
@@ -449,10 +543,7 @@ def finalize_initiative(
     append_event(
         store, initiative_id, "initiative-state-changed",
         [initiative_id, *([] if action_id is None else [action_id])],
-        {
-            "from": "running", "to": outcome, "reason": reason,
-            "retained_seal_ids": [item["seal_id"] for item in store.list_seals_snapshot(initiative_id)],
-        },
+        terminal_payload,
         actor_kind="controller", actor_id="finalization-gate",
     )
     return store.peek(initiative_id)

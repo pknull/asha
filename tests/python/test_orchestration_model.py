@@ -666,7 +666,9 @@ class OrchestrationModelTests(unittest.TestCase):
                 ("running", "needs-input"), ("running", "paused"),
                 ("needs-input", "running"), ("paused", "running"),
                 ("running", "ready-for-integration"), ("running", "partial"),
-                ("running", "failed"), ("draft", "cancelled"),
+                ("running", "failed"), ("draft", "failed"),
+                ("draft", "partial"), ("planning", "failed"),
+                ("planning", "partial"), ("draft", "cancelled"),
                 ("planning", "cancelled"), ("awaiting-plan-approval", "cancelled"),
                 ("approved", "cancelled"), ("running", "cancelled"),
                 ("needs-input", "cancelled"), ("paused", "cancelled"),
@@ -1002,6 +1004,33 @@ class OrchestrationModelTests(unittest.TestCase):
         approval["actor_kind"] = "coordinator"
         with self.assertRaises(model.ModelError):
             model.validate_approval(approval)
+
+    def test_action_active_plan_digest_is_nullable_only_for_closure(self) -> None:
+        action = {
+            "contract": model.ACTION_CONTRACT,
+            "action_id": str(uuid.uuid4()),
+            "initiative_id": INITIATIVE_ID,
+            "actor_kind": "operator",
+            "actor_id": "keeper",
+            "action_class": "finalize",
+            "payload_digest": DIGEST,
+            "active_plan_digest": None,
+            "expected_state_revision": 0,
+            "state": "received",
+            "outcome": None,
+            "received_at": TIMESTAMP,
+            "updated_at": TIMESTAMP,
+        }
+        for action_class in ("finalize", "archive", "unarchive"):
+            with self.subTest(action_class=action_class):
+                action["action_class"] = action_class
+                model.validate_action(action)
+        action["action_class"] = "pause"
+        with self.assertRaisesRegex(
+            model.ModelError,
+            "action active_plan_digest may be null only for finalize, archive, or unarchive",
+        ):
+            model.validate_action(action)
 
     def test_review_execution_ids_are_nullable_only_while_pending(self) -> None:
         review = next(
