@@ -1264,8 +1264,16 @@ def salvage_dispatch_binding(
     """Validate one approved salvage authority for scheduler consumption."""
     approval = store.read_approval(initiative["initiative_id"], request_id)
     permitted_states = {"approved", "consumed"} if allow_consumed else {"approved"}
-    if approval["action_class"] != "salvage" or approval["state"] not in permitted_states:
-        raise ActionRefused("salvage approval is not approved and unconsumed")
+    if approval["action_class"] != "salvage":
+        raise ActionRefused("approval request is not a salvage request")
+    if approval["state"] == "consumed" and not allow_consumed:
+        raise ActionRefused("salvage approval was already consumed")
+    if approval["state"] not in permitted_states:
+        if datetime.now(timezone.utc) >= datetime.fromisoformat(
+            approval["expires_at"][:-1] + "+00:00"
+        ):
+            raise ActionRefused("salvage approval expired before dispatch")
+        raise ActionRefused("salvage approval is not approved")
     if approval["active_plan_digest"] != initiative["active_plan"]["digest"]:
         raise ActionRefused("salvage approval active plan is stale")
     # Authority is the approved request's immutable binding digest and active
@@ -1320,8 +1328,12 @@ def consume_salvage_approval(
     approval: dict[str, Any],
 ) -> dict[str, Any]:
     current = store.read_approval(initiative_id, approval["request_id"])
-    if current["state"] != "approved" or record_digest(current) != record_digest(approval):
-        raise ActionRefused("salvage approval was already consumed or changed")
+    if current["state"] == "consumed":
+        raise ActionRefused("salvage approval was already consumed")
+    if current["state"] != "approved":
+        raise ActionRefused("salvage approval is not approved")
+    if record_digest(current) != record_digest(approval):
+        raise ActionRefused("salvage approval changed before consumption")
     changed = copy.deepcopy(current)
     changed.update({"state": "consumed", "updated_at": _now()})
     store.save_approval(

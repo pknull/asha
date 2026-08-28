@@ -5,7 +5,7 @@ import hashlib
 import json
 import unittest
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from contextlib import redirect_stdout
 from io import StringIO
 from unittest import mock
@@ -21,6 +21,7 @@ from lib.control.orchestration.actions import (
     append_event,
     approve_salvage,
     build_action_document,
+    consume_salvage_approval,
     reconcile_actions,
     salvage_dispatch_binding,
     submit_action,
@@ -122,6 +123,337 @@ class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
         stored = submit_action(self.store, self.initiative_id, action)
         self.assertEqual(stored["state"], "completed", stored["outcome"])
         return stored, action_outcome(stored)["request_id"]
+
+    def needs_input(self, *, node_id: str = "implementation-a") -> dict:
+        node = self.store.read_node(self.initiative_id, node_id)
+        if node["state"] == "blocked":
+            ready = copy.deepcopy(node)
+            ready["state"] = "ready"
+            self.store.save_node(
+                self.initiative_id, ready, expected_digest=record_digest(node),
+            )
+            node = ready
+        changed = copy.deepcopy(node)
+        changed["state"] = "needs-input"
+        self.store.save_node(
+            self.initiative_id, changed, expected_digest=record_digest(node),
+        )
+        return changed
+
+    def approved_salvage(self, *, node_id: str = "implementation-a"):
+        failure = self.seal("failure", node_id=node_id)
+        _, request_id = self.request(failure, node_id=node_id)
+        approval = approve_salvage(self.store, self.initiative_id, request_id)
+        return failure, request_id, approval
+
+    def control_start(self, calls: list[list[str]]):
+        def capture(argv, **_kwargs):
+            calls.append(argv)
+            payload = self.control_payload(argv)
+            payload["task"]["jj"]["base_commit_id"] = argv[argv.index("--base") + 1]
+            return 0, json.dumps(payload).encode(), b""
+
+        return capture
+
+    def salvage_release_events(self, request_id: str) -> list[dict]:
+        return [
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "node-state-changed"
+            and event["payload"].get("salvage_request_id") == request_id
+        ]
+
+    def test_approved_salvage_releases_needs_input_and_consumes_once(self) -> None:
+        _, request_id, _ = self.approved_salvage()
+        self.needs_input()
+        calls = []
+        dispatch = build_action_document(
+            self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            },
+        )
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+            side_effect=self.control_start(calls),
+        ), mock.patch(
+            "lib.control.orchestration.actions.consume_salvage_approval",
+            wraps=consume_salvage_approval,
+        ) as consume:
+            result = submit_action(self.store, self.initiative_id, dispatch)
+
+        self.assertEqual(result["state"], "completed", result["outcome"])
+        self.assertEqual(
+            self.store.read_approval(self.initiative_id, request_id)["state"],
+            "consumed",
+        )
+        consume.assert_called_once()
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.store.list_attempts_snapshot(self.initiative_id)), 1)
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "running",
+        )
+        events = self.salvage_release_events(request_id)
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["actor_kind"], "controller")
+        self.assertEqual(events[0]["actor_id"], "scheduler")
+        self.assertEqual(events[0]["payload"], {
+            "from": "needs-input", "to": "ready",
+            "salvage_request_id": request_id,
+        })
+
+    def test_unapproved_salvage_does_not_release_needs_input(self) -> None:
+        failure = self.seal("failure")
+        _, request_id = self.request(failure)
+        self.needs_input()
+
+        refused = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            }),
+        )
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertEqual(
+            action_outcome(refused)["reason"], "salvage approval is not approved",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+        self.assertEqual(self.salvage_release_events(request_id), [])
+
+    def test_consumed_salvage_does_not_release_needs_input(self) -> None:
+        _, request_id, approval = self.approved_salvage()
+        consume_salvage_approval(self.store, self.initiative_id, approval)
+        self.needs_input()
+
+        refused = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            }),
+        )
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertEqual(
+            action_outcome(refused)["reason"], "salvage approval was already consumed",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+        self.assertEqual(self.salvage_release_events(request_id), [])
+
+    def test_expired_salvage_does_not_release_needs_input(self) -> None:
+        _, request_id, approval = self.approved_salvage()
+        self.needs_input()
+
+        expires = datetime.fromisoformat(approval["expires_at"][:-1] + "+00:00")
+
+        class AfterExpiry(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                value = expires + timedelta(microseconds=1)
+                return value if tz is None else value.astimezone(tz)
+
+        with mock.patch("lib.control.orchestration.actions.datetime", AfterExpiry):
+            refused = submit_action(
+                self.store, self.initiative_id,
+                build_action_document(self.initiative(), "dispatch-node", {
+                    "node_id": "implementation-a", "salvage_request_id": request_id,
+                }),
+            )
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertEqual(
+            action_outcome(refused)["reason"], "salvage approval expired before dispatch",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+        self.assertEqual(self.salvage_release_events(request_id), [])
+
+    def test_wrong_node_salvage_does_not_release_needs_input(self) -> None:
+        _, request_id, _ = self.approved_salvage(node_id="review-a")
+        self.needs_input()
+
+        refused = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            }),
+        )
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertEqual(
+            action_outcome(refused)["reason"],
+            "salvage approval cannot be substituted onto another node",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+        self.assertEqual(self.salvage_release_events(request_id), [])
+
+    def test_attempt_cap_refuses_salvage_without_releasing_needs_input(self) -> None:
+        _, request_id, _ = self.approved_salvage()
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        at = now_text()
+        cap = min(
+            self.initiative()["limits"]["max_attempts_per_node"],
+            self.plan["limits"]["max_attempts_per_node"],
+        )
+        for ordinal in range(1, cap + 1):
+            self.store.save_attempt(self.initiative_id, validate_attempt({
+                "contract": ATTEMPT_CONTRACT,
+                "attempt_id": str(uuid.uuid4()),
+                "initiative_id": self.initiative_id,
+                "node_id": node["node_id"],
+                "task_id": str(uuid.uuid4()),
+                "action_id": str(uuid.uuid4()),
+                "ordinal": ordinal,
+                "base": copy.deepcopy(self.plan["nodes"][0]["base"]),
+                "state": "sealed-failure",
+                "result_publication_id": None,
+                "result_id": None,
+                "seal_id": str(uuid.uuid4()),
+                "created_at": at,
+                "updated_at": at,
+            }))
+        self.needs_input()
+
+        refused = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            }),
+        )
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertEqual(
+            action_outcome(refused)["reason"], "node max_attempts_per_node exhausted",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+        self.assertEqual(
+            self.store.read_approval(self.initiative_id, request_id)["state"],
+            "approved",
+        )
+        self.assertEqual(self.salvage_release_events(request_id), [])
+
+    def test_same_dispatch_replay_after_consumption_returns_stored_outcome(self) -> None:
+        _, request_id, _ = self.approved_salvage()
+        self.needs_input()
+        calls = []
+        dispatch = build_action_document(
+            self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            },
+        )
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+            side_effect=self.control_start(calls),
+        ):
+            first = submit_action(self.store, self.initiative_id, dispatch)
+            replay = submit_action(self.store, self.initiative_id, dispatch)
+
+        self.assertEqual(first, replay)
+        self.assertEqual(replay["state"], "completed")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(self.store.list_attempts_snapshot(self.initiative_id)), 1)
+        self.assertEqual(len(self.salvage_release_events(request_id)), 1)
+        self.assertEqual(
+            self.store.read_approval(self.initiative_id, request_id)["state"],
+            "consumed",
+        )
+
+    def test_plain_dispatch_does_not_release_needs_input(self) -> None:
+        self.needs_input()
+
+        refused = submit_action(
+            self.store, self.initiative_id,
+            build_action_document(
+                self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+            ),
+        )
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertEqual(
+            action_outcome(refused)["reason"], "node is not deterministically ready",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+
+    def test_resume_does_not_release_needs_input_node_without_salvage(self) -> None:
+        self.needs_input()
+        initiative = self.initiative()
+        waiting = copy.deepcopy(initiative)
+        waiting.update({
+            "state": "needs-input",
+            "state_revision": initiative["state_revision"] + 1,
+            "updated_at": now_text(),
+        })
+        self.store.save_initiative(
+            waiting, expected_digest=record_digest(initiative),
+        )
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ):
+            resumed = submit_action(
+                self.store, self.initiative_id,
+                build_action_document(self.initiative(), "resume", {}),
+            )
+
+        self.assertEqual(resumed["state"], "completed", resumed["outcome"])
+        self.assertEqual(self.initiative()["state"], "running")
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+
+    def test_dependency_regression_refuses_after_durable_salvage_release(self) -> None:
+        _, request_id, _ = self.approved_salvage(node_id="review-a")
+        self.needs_input(node_id="review-a")
+
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ):
+            refused = submit_action(
+                self.store, self.initiative_id,
+                build_action_document(self.initiative(), "dispatch-node", {
+                    "node_id": "review-a", "salvage_request_id": request_id,
+                }),
+            )
+
+        self.assertEqual(refused["state"], "refused")
+        self.assertEqual(
+            action_outcome(refused)["reason"], "node is not deterministically ready",
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "review-a")["state"], "ready",
+        )
+        self.assertEqual(
+            self.store.read_approval(self.initiative_id, request_id)["state"],
+            "approved",
+        )
+        self.assertEqual(len(self.salvage_release_events(request_id)), 1)
 
     def test_exact_seal_base_ignores_later_seals_from_the_same_node(self) -> None:
         exact = self.seal("success")
@@ -237,7 +569,10 @@ class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
         )
         refused = submit_action(self.store, self.initiative_id, replay)
         self.assertEqual(refused["state"], "refused")
-        self.assertIn("unconsumed", action_outcome(refused)["reason"])
+        self.assertEqual(
+            action_outcome(refused)["reason"],
+            "salvage approval was already consumed",
+        )
         self.assertEqual(len(calls), 1)
 
     def test_crash_after_consumption_reconciles_same_reserved_task_identity(self) -> None:
