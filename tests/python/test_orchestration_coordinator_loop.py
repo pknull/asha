@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import json
-import os
 import time
 import unittest
 from dataclasses import replace
@@ -13,6 +12,7 @@ from unittest import mock
 from lib.control.jj import ImmutableTree, RepositoryFacts
 from lib.control.orchestration import cli
 from lib.control.orchestration.actions import append_event
+from lib.control.orchestration import coordinator as coordinator_module
 from lib.control.orchestration.coordinator import CoordinatorError, claim, wait
 from lib.control.orchestration.model import record_digest
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
@@ -87,18 +87,156 @@ class CoordinatorWaitTests(ExecutionFixture, unittest.TestCase):
         with self.assertRaisesRegex(CoordinatorError, "non-negative"):
             wait(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux, after=0, timeout=-1)
 
-    def test_wait_is_capped_by_the_configured_ceiling(self) -> None:
+    def test_wait_outlives_multiple_revalidation_segments_and_restarts_exactly(self) -> None:
         claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
-        capped = replace(self.store.config, coordinator_wait_seconds=0)
-        with mock.patch.object(self.store, "config", capped):
-            started = time.monotonic()
-            payload = wait(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux, after=self.tail(), timeout=30)
+        cursor = self.tail()
+        segmented = replace(self.store.config, coordinator_wait_seconds=1)
+        clock = [0.0]
+        appended: list[dict] = []
+
+        def sleep(seconds: float) -> None:
+            clock[0] += seconds
+            if clock[0] > 2.0 and not appended:
+                appended.append(append_event(
+                    self.store, self.initiative_id, "node-ready", ["implementation-a"],
+                    {"node_id": "implementation-a"},
+                    actor_kind="controller", actor_id="test",
+                ))
+
+        with mock.patch.object(self.store, "config", segmented), \
+                mock.patch.object(coordinator_module.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(coordinator_module.time, "sleep", side_effect=sleep):
+            payload = wait(
+                self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+                after=cursor, timeout=3,
+            )
+
+        self.assertEqual(clock[0], 2.25)
+        self.assertEqual(payload["events"], appended)
+        self.assertFalse(payload["timed_out"])
+        restart_cursor = payload["last_event_sequence"]
+        later = append_event(
+            self.store, self.initiative_id, "limit-reached", [],
+            {"limit": "max_parallel"}, actor_kind="controller", actor_id="test",
+        )
+        restarted = wait(
+            self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+            after=restart_cursor, timeout=0,
+        )
+        self.assertEqual(
+            [event["sequence"] for event in restarted["events"]], [later["sequence"]],
+        )
+
+    def test_stale_generation_ends_at_the_next_segment_boundary(self) -> None:
+        record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        cursor = self.tail()
+        segmented = replace(self.store.config, coordinator_wait_seconds=1)
+        clock = [0.0]
+        changed = False
+
+        def sleep(seconds: float) -> None:
+            nonlocal changed
+            clock[0] += seconds
+            if not changed:
+                stale = copy.deepcopy(record)
+                stale.update({"state": "stale", "updated_at": record["updated_at"]})
+                self.store.save_coordinator(
+                    self.initiative_id, stale, expected_digest=record_digest(record),
+                )
+                changed = True
+
+        with mock.patch.object(self.store, "config", segmented), \
+                mock.patch.object(coordinator_module.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(coordinator_module.time, "sleep", side_effect=sleep):
+            payload = wait(
+                self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+                after=cursor, timeout=30,
+            )
+
+        self.assertEqual(payload["ended"], "stale-generation")
+        self.assertFalse(payload["timed_out"])
+        self.assertEqual(clock[0], 1.0)
+
+    def test_terminal_initiative_ends_at_the_next_segment_boundary(self) -> None:
+        claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        cursor = self.tail()
+        segmented = replace(self.store.config, coordinator_wait_seconds=1)
+        clock = [0.0]
+        changed = False
+
+        def sleep(seconds: float) -> None:
+            nonlocal changed
+            clock[0] += seconds
+            if not changed:
+                current = self.initiative()
+                terminal = copy.deepcopy(current)
+                terminal.update({
+                    "state": "cancelled",
+                    "state_revision": current["state_revision"] + 1,
+                    "updated_at": current["updated_at"],
+                })
+                self.store.save_initiative(
+                    terminal, expected_digest=record_digest(current),
+                )
+                changed = True
+
+        with mock.patch.object(self.store, "config", segmented), \
+                mock.patch.object(coordinator_module.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(coordinator_module.time, "sleep", side_effect=sleep):
+            payload = wait(
+                self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+                after=cursor, timeout=30,
+            )
+
+        self.assertEqual(payload["ended"], "terminal-initiative")
+        self.assertFalse(payload["timed_out"])
+        self.assertEqual(clock[0], 1.0)
+        already_terminal = wait(
+            self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+            after=cursor, timeout=0,
+        )
+        self.assertEqual(already_terminal["ended"], "terminal-initiative")
+
+    def test_default_timeout_remains_the_configured_segment(self) -> None:
+        claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        expected = {"timed_out": True}
+        with mock.patch.object(cli, "wait_for_events", return_value=expected) as waiting:
+            payload, json_output = cli._wait_command(
+                [self.initiative_id, "--after", str(self.tail()), "--json"],
+                self.store, self.pane_env, self.tmux,
+            )
+        self.assertTrue(json_output)
+        self.assertEqual(payload, expected)
+        self.assertEqual(
+            waiting.call_args.kwargs["timeout"],
+            self.store.config.coordinator_wait_seconds,
+        )
+
+    def test_wait_hard_ceiling_is_one_hour(self) -> None:
+        self.assertEqual(coordinator_module.MAX_COORDINATOR_WAIT_SECONDS, 3600)
+        claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        cursor = self.tail()
+        long_segment = replace(self.store.config, coordinator_wait_seconds=4000)
+        clock = [0.0]
+
+        def sleep(seconds: float) -> None:
+            clock[0] += seconds
+
+        with mock.patch.object(self.store, "config", long_segment), \
+                mock.patch.object(coordinator_module, "_WAIT_TICK_SECONDS", 1000), \
+                mock.patch.object(coordinator_module.time, "monotonic", side_effect=lambda: clock[0]), \
+                mock.patch.object(coordinator_module.time, "sleep", side_effect=sleep):
+            payload = wait(
+                self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+                after=cursor, timeout=7200,
+            )
+
         self.assertTrue(payload["timed_out"])
-        self.assertLess(time.monotonic() - started, 2.0)
+        self.assertEqual(clock[0], 3600)
 
     def test_fenced_generation_cannot_wait(self) -> None:
         claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
-        other = FakeTmux(pane_id="%8", pane_pid=os.getppid())
+        other = FakeTmux(pane_id="%8")
         claim(self.store, self.initiative(), env={**self.env, "TMUX_PANE": "%8"}, tmux=other)
         with self.assertRaisesRegex(CoordinatorError, "not inside the coordinator's anchor pane"):
             wait(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux, after=0, timeout=0)

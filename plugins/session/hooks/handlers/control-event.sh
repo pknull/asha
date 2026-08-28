@@ -49,12 +49,21 @@ if [[ -n "${ASHA_ROOT:-}" && -x "${ASHA_ROOT}/bin/asha" ]]; then
 elif command -v asha >/dev/null 2>&1; then
   ASHA_CMD="asha"
 fi
+CONTROL_RESPONSE=""
 if [[ -n "$ASHA_CMD" ]]; then
   if command -v timeout >/dev/null 2>&1; then
-    timeout --signal=TERM 15 "$ASHA_CMD" "${ARGS[@]}" >/dev/null 2>&1 || true
+    CONTROL_RESPONSE="$(
+      timeout --signal=TERM 15 "$ASHA_CMD" "${ARGS[@]}" 2>/dev/null || true
+    )"
   else
-    "$ASHA_CMD" "${ARGS[@]}" >/dev/null 2>&1 || true
+    CONTROL_RESPONSE="$("$ASHA_CMD" "${ARGS[@]}" 2>/dev/null || true)"
   fi
+fi
+if command -v jq >/dev/null 2>&1 \
+    && [[ "$CONTROL_RESPONSE" == \{* && "$CONTROL_RESPONSE" != *$'\n'* ]] \
+    && printf '%s' "$CONTROL_RESPONSE" | jq -e type >/dev/null 2>&1; then
+  printf '%s\n' "$CONTROL_RESPONSE"
+  exit 0
 fi
 echo '{}'
 exit 0

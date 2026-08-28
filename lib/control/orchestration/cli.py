@@ -116,7 +116,8 @@ Usage:
   asha initiative coordinator attach ID | --session NAME [--json]
   asha initiative coordinator release|show <id> [--json]
   asha initiative propose-plan <id> --file PLAN.json [--json]     (coordinator actor)
-  asha initiative wait <id> --after SEQUENCE --timeout SECONDS --json
+  asha initiative wait <id> --after SEQUENCE [--timeout SECONDS] --json
+                               (default: coordinator_wait_seconds; maximum: 3600 seconds)
   asha initiative checkpoint <id> --file CHECKPOINT.json [--json] (coordinator actor)
   asha initiative dispatch|pause|stop <id> ... --as-coordinator  (coordinator actor)""", file=stream)
 
@@ -919,11 +920,15 @@ def _wait_command(
     initiative = _resolve(store, args[0])
     options = _parse_options(args[1:], flags={"json"})
     _only(options, {"after", "timeout", "json"}, "wait")
-    _required(options, "after", "timeout")
+    _required(options, "after")
     if not options["json"]:
         raise ValueError("wait requires --json")
     after = _non_negative(options["after"], "after")
-    timeout = _non_negative(options["timeout"], "timeout")
+    timeout = (
+        store.config.coordinator_wait_seconds
+        if options.get("timeout") is None
+        else _non_negative(options["timeout"], "timeout")
+    )
     return wait_for_events(
         store, initiative, env=env, tmux=tmux, after=after, timeout=timeout,
     ), True

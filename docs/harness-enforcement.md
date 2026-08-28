@@ -28,6 +28,7 @@ claimed:
 | `tool-completed` | Wired from `PostToolUse` | Wired from `PostToolUse`; interception is known incomplete for `unified_exec` |
 | `permission-requested` | Not claimed. `Notification` is multi-purpose and its payload is unverified. | Wired from `PermissionRequest`; delivery before the operator answers is live-proven on Codex 0.147.0. |
 | `turn-stopped` | Wired from `Stop` | Wired from `Stop`; live-proven on Codex 0.147.0. Delivery remains subject to Codex's hash-bound interactive hook trust. |
+| `turn-stopped` return channel | The Stop hook can return one fail-open `block` wake decision per new coordinator journal cursor. | not claimed; requires a live probe |
 | `session-ended` | Wired from `SessionEnd` | Codex has no equivalent event. |
 
 Copilot and OpenCode provide process liveness only; Asha claims no semantic
