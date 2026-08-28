@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import errno
 import fcntl
+import getpass
 import json
 import os
 import secrets
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -15,9 +17,10 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Iterator, Mapping, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from ..harness import HarnessError, process_identity, verify_process
+from ..process import capture_bytes
 from ..store import (
     StoreError, TaskStore, _close_quietly, _directory_fd, _managed_start,
     _open_existing_file, _validate_open_file,
@@ -31,6 +34,13 @@ from .supervisor import tick
 
 MAX_STATUS_BYTES = 16 * 1024
 _POLL_SECONDS = 1.0
+_SERVICE_COMMAND_LIMIT = 16 * 1024
+_SERVICE_COMMAND_TIMEOUT = 10
+_SERVICE_NAME = "asha-supervisor.service"
+SUPERVISOR_SERVICE_MARKER = (
+    "# Managed by asha control supervisor; edit via 'asha control supervisor', "
+    "not by hand."
+)
 _STATUS_KEYS = frozenset({
     "pid", "process_identity", "started_at", "last_tick_at",
     "last_tick_summary",
@@ -62,6 +72,296 @@ def supervisor_lock_path(config: OrchestrationConfig) -> Path:
 
 def status_path(config: OrchestrationConfig) -> Path:
     return config.control.tasks_dir.parent / "supervisor.json"
+
+
+def supervisor_service_path(env: Mapping[str, str]) -> Path:
+    home = Path(env.get("HOME") or str(Path.home()))
+    config_home = Path(env.get("XDG_CONFIG_HOME") or str(home / ".config"))
+    return config_home / "systemd" / "user" / _SERVICE_NAME
+
+
+def render_supervisor_service(
+    env: Mapping[str, str], asha_root: Path,
+) -> str:
+    home = Path(env.get("HOME") or str(Path.home()))
+    asha_home = env.get("ASHA_HOME")
+    asha_home_line = ""
+    if asha_home and asha_home != str(home / ".asha"):
+        # A non-default root must reach the service, which runs outside any
+        # shell that exported it.
+        asha_home_line = f'Environment="ASHA_HOME={asha_home}"\n'
+    return (
+        "[Unit]\n"
+        f"{SUPERVISOR_SERVICE_MARKER}\n"
+        "Description=Asha Control supervisor\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        'Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
+        f"{asha_home_line}"
+        f"ExecStart={asha_root}/bin/asha control supervisor run\n"
+        "Restart=on-failure\n"
+        "RestartSec=5\n"
+        "WorkingDirectory=%h\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def _unit_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _owned_service(path: Path) -> bool:
+    if not _unit_exists(path) or not path.is_file():
+        return False
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(4097)
+    except OSError:
+        return False
+    if len(prefix) > 4096:
+        return False
+    lines = prefix.decode("utf-8", errors="replace").splitlines()
+    return len(lines) >= 2 and lines[1] == SUPERVISOR_SERVICE_MARKER
+
+
+def _resolve_command(
+    name: str, env: Mapping[str, str], which: Callable[[str], str | None] | None,
+) -> str | None:
+    if which is not None:
+        return which(name)
+    return shutil.which(name, path=env.get("PATH") or os.environ.get("PATH"))
+
+
+def _capture_service_command(
+    argv: list[str], runner: Callable[..., Any] | None,
+) -> tuple[int, bytes, bytes]:
+    return capture_bytes(
+        argv, cwd=None, limit=_SERVICE_COMMAND_LIMIT, runner=runner,
+        error_type=ValueError, deadline_seconds=_SERVICE_COMMAND_TIMEOUT,
+    )
+
+
+def supervisor_service_status(
+    env: Mapping[str, str], *, runner: Callable[..., Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> dict[str, bool | None]:
+    systemctl = _resolve_command("systemctl", env, which)
+    if systemctl is None:
+        return {
+            "service_present": None,
+            "service_enabled": None,
+            "service_active": None,
+        }
+    present = _unit_exists(supervisor_service_path(env))
+    try:
+        enabled, _stdout, _stderr = _capture_service_command(
+            [systemctl, "--user", "is-enabled", _SERVICE_NAME], runner,
+        )
+        active, _stdout, _stderr = _capture_service_command(
+            [systemctl, "--user", "is-active", _SERVICE_NAME], runner,
+        )
+    except ValueError:
+        return {
+            "service_present": present,
+            "service_enabled": None,
+            "service_active": None,
+        }
+    return {
+        "service_present": present,
+        "service_enabled": enabled == 0,
+        "service_active": active == 0,
+    }
+
+
+def _service_summary(status: Mapping[str, Any]) -> str:
+    def label(value: bool | None) -> str:
+        return "unknown" if value is None else "yes" if value else "no"
+
+    return (
+        f"service present={label(status['service_present'])}, "
+        f"enabled={label(status['service_enabled'])}, "
+        f"active={label(status['service_active'])}"
+    )
+
+
+def _write_service(path: Path, body: str) -> None:
+    path.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp.{secrets.token_hex(8)}")
+    raw = body.encode("utf-8")
+    fd = -1
+    try:
+        fd = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
+            0o644,
+        )
+        offset = 0
+        while offset < len(raw):
+            written = os.write(fd, raw[offset:])
+            if written <= 0:
+                raise OSError(errno.EIO, "short supervisor service write")
+            offset += written
+        os.fsync(fd)
+        os.close(fd)
+        fd = -1
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY | getattr(os, "O_CLOEXEC", 0))
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        _close_quietly(fd)
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _linger_status(
+    env: Mapping[str, str], runner: Callable[..., Any] | None,
+    which: Callable[[str], str | None] | None,
+) -> bool | None:
+    loginctl = _resolve_command("loginctl", env, which)
+    if loginctl is None:
+        return None
+    user = env.get("USER") or getpass.getuser()
+    try:
+        returncode, stdout, _stderr = _capture_service_command(
+            [loginctl, "show-user", user, "--property=Linger"], runner,
+        )
+    except ValueError:
+        return None
+    if returncode != 0:
+        return None
+    value = stdout.decode("utf-8", errors="replace").strip()
+    if value.startswith("Linger="):
+        value = value.partition("=")[2]
+    if value == "yes":
+        return True
+    if value == "no":
+        return False
+    return None
+
+
+def _linger_advisory() -> str:
+    return (
+        "Without user lingering the supervisor service starts at login; "
+        "with lingering it starts at boot."
+    )
+
+
+def install_supervisor_service(
+    config: OrchestrationConfig, env: Mapping[str, str], *,
+    asha_root: Path | None = None, dry_run: bool = False,
+    runner: Callable[..., Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[dict[str, Any], int]:
+    root = asha_root or Path(__file__).resolve().parents[3]
+    path = supervisor_service_path(env)
+    body = render_supervisor_service(env, root)
+    if _unit_exists(path) and not _owned_service(path):
+        raise ValueError(f"foreign unit exists at {path}; refusing")
+    commands = [
+        "systemctl --user daemon-reload",
+        f"systemctl --user enable --now {_SERVICE_NAME}",
+    ]
+    if dry_run:
+        message = (
+            f"would write {path}:\n{body}"
+            + "".join(f"would run: {command}\n" for command in commands)
+        ).rstrip()
+        return {
+            "installed": False, "dry_run": True, "unit_path": str(path),
+            "unit_body": body, "commands": commands, "message": message,
+        }, 0
+    systemctl = _resolve_command("systemctl", env, which)
+    if systemctl is None:
+        raise ValueError("systemctl is unavailable; cannot install supervisor service")
+    stopped, _stop_code = stop_supervisor(config)
+    if stopped.get("running") or _lock_held(config):
+        raise ValueError("supervisor is still stopping; retry service installation")
+    _write_service(path, body)
+    returncode, _stdout, stderr = _capture_service_command(
+        [systemctl, "--user", "daemon-reload"], runner,
+    )
+    if returncode != 0:
+        raise ValueError(
+            "systemctl --user daemon-reload failed: "
+            f"{stderr.decode('utf-8', errors='replace').strip() or f'exit {returncode}'}"
+        )
+    returncode, _stdout, stderr = _capture_service_command(
+        [systemctl, "--user", "enable", "--now", _SERVICE_NAME], runner,
+    )
+    if returncode != 0:
+        raise ValueError(
+            "systemctl --user enable --now failed: "
+            f"{stderr.decode('utf-8', errors='replace').strip() or f'exit {returncode}'}"
+        )
+    linger = _linger_status(env, runner, which)
+    linger_text = (
+        "enabled" if linger is True else "not enabled" if linger is False else "unknown"
+    )
+    return {
+        "installed": True, "dry_run": False, "unit_path": str(path),
+        "linger_enabled": linger,
+        "message": f"installed and started; user lingering is {linger_text}. "
+                   f"{_linger_advisory()}",
+    }, 0
+
+
+def uninstall_supervisor_service(
+    env: Mapping[str, str], *, dry_run: bool = False,
+    runner: Callable[..., Any] | None = None,
+    which: Callable[[str], str | None] | None = None,
+) -> tuple[dict[str, Any], int]:
+    path = supervisor_service_path(env)
+    exists = _unit_exists(path)
+    if exists and not _owned_service(path):
+        raise ValueError(f"foreign unit exists at {path}; refusing")
+    commands = [
+        f"systemctl --user disable --now {_SERVICE_NAME}",
+        "systemctl --user daemon-reload",
+    ]
+    if dry_run:
+        message = (
+            f"would run: {commands[0]}\n"
+            f"would remove: {path}\n"
+            f"would run: {commands[1]}"
+        )
+        return {
+            "removed": False, "dry_run": True, "unit_path": str(path),
+            "commands": commands, "message": message,
+        }, 0
+    systemctl = _resolve_command("systemctl", env, which)
+    if systemctl is None:
+        raise ValueError("systemctl is unavailable; cannot uninstall supervisor service")
+    _capture_service_command(
+        [systemctl, "--user", "disable", "--now", _SERVICE_NAME], runner,
+    )
+    removed = False
+    if exists:
+        try:
+            path.unlink()
+            removed = True
+        except FileNotFoundError:
+            pass
+    returncode, _stdout, stderr = _capture_service_command(
+        [systemctl, "--user", "daemon-reload"], runner,
+    )
+    if returncode != 0:
+        raise ValueError(
+            "systemctl --user daemon-reload failed: "
+            f"{stderr.decode('utf-8', errors='replace').strip() or f'exit {returncode}'}"
+        )
+    return {
+        "removed": removed, "dry_run": False, "unit_path": str(path),
+        "message": "removed" if removed else "not installed",
+    }, 0
 
 
 def _control_root(config: OrchestrationConfig) -> tuple[Path, int]:
@@ -257,6 +557,8 @@ def _emit(payload: Mapping[str, Any], json_output: bool) -> None:
 def run_supervisor(
     config: OrchestrationConfig, *, deps=None, json_output: bool = False,
 ) -> int:
+    # A daemon must not pin its caller's cwd or mount.
+    os.chdir(Path.home())
     with _exclusive_lock(config) as acquired:
         if not acquired:
             _emit({"running": True, "message": "already running"}, json_output)
@@ -425,7 +727,11 @@ def stop_supervisor(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
 
 
 def _usage(stream=sys.stdout) -> None:
-    print("Usage: asha control supervisor {run|start|stop|status} [--json]", file=stream)
+    print(
+        "Usage: asha control supervisor {run|start|stop|status} [--json]\n"
+        "       asha control supervisor {install|uninstall} [--dry-run] [--json]",
+        file=stream,
+    )
 
 
 def supervisor_main(
@@ -437,12 +743,17 @@ def supervisor_main(
         _usage(sys.stdout if args else sys.stderr)
         return 0 if args else 2
     command = args[0]
-    if command not in {"run", "start", "stop", "status"}:
+    if command not in {"run", "start", "stop", "status", "install", "uninstall"}:
         _usage(sys.stderr)
         return 2
     tail = args[1:]
-    json_output = tail == ["--json"]
-    if tail and not json_output:
+    json_output = "--json" in tail
+    dry_run = "--dry-run" in tail
+    allowed = (
+        {"--json", "--dry-run"}
+        if command in {"install", "uninstall"} else {"--json"}
+    )
+    if any(item not in allowed for item in tail) or len(tail) != len(set(tail)):
         _usage(sys.stderr)
         return 2
     try:
@@ -453,9 +764,22 @@ def supervisor_main(
             payload, code = start_supervisor(config, values)
         elif command == "stop":
             payload, code = stop_supervisor(config)
+        elif command == "install":
+            payload, code = install_supervisor_service(
+                config, values, dry_run=dry_run,
+            )
+        elif command == "uninstall":
+            payload, code = uninstall_supervisor_service(values, dry_run=dry_run)
         else:
             payload, code = supervisor_status(config)
-        _emit(payload, json_output)
+            service = supervisor_service_status(values)
+            payload.update(service)
+            if not json_output:
+                payload["message"] = f"{payload['message']}; {_service_summary(service)}"
+        if dry_run and not json_output:
+            print(payload["message"])
+        else:
+            _emit(payload, json_output)
         return code
     except (
         HarnessError, OrchestrationConfigError, StoreError, OSError, ValueError,
@@ -469,6 +793,9 @@ def supervisor_main(
 
 
 __all__ = [
-    "run_supervisor", "start_supervisor", "status_path", "stop_supervisor",
-    "supervisor_lock_path", "supervisor_main", "supervisor_status",
+    "SUPERVISOR_SERVICE_MARKER", "install_supervisor_service",
+    "render_supervisor_service", "run_supervisor", "start_supervisor",
+    "status_path", "stop_supervisor", "supervisor_lock_path",
+    "supervisor_main", "supervisor_service_path", "supervisor_service_status",
+    "supervisor_status", "uninstall_supervisor_service",
 ]

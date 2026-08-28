@@ -387,7 +387,7 @@ class ControlDoctorTests(unittest.TestCase):
         task: whether jj exposes the command surface Control depends on, and
         whether the current directory can host a task at all.
         """
-        result = run_doctor(None)
+        result = run_doctor(None, which=lambda _command: None)
         by_name = {probe["name"]: probe for probe in result["probes"]}
         self.assertIn(by_name["tmux"]["outcome"], {"match", "unavailable"})
         self.assertIn("harness", by_name)

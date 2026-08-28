@@ -52,6 +52,7 @@ asha task ingest CONTROL_TASK_ID|INGESTION_ID [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
 asha control supervisor {run|start|stop|status} [--json]
+asha control supervisor {install|uninstall} [--dry-run] [--json]
 asha initiative coordinator claim ID [--harness H] [--json]     (from the Asha pane)
 asha initiative coordinator release|show ID [--json]
 asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
@@ -696,6 +697,24 @@ atomic presentation status are `supervisor.lock` and `supervisor.json` beneath
 the Control state root. A one-second directory-mtime poll of Control event
 snapshots provides the worker-exit fast path between regular ticks. Starting is
 idempotent; no session hook starts the supervisor automatically.
+
+### Supervisor user service
+
+Install the operator-managed systemd user service with:
+
+```bash
+asha control supervisor install
+```
+
+The command writes the marked `asha-supervisor.service` unit beneath
+`${XDG_CONFIG_HOME:-~/.config}/systemd/user/`, stops a manually started
+supervisor, reloads the user manager, and enables and starts the service.
+`status` reports whether the unit is present, enabled, and active. Use
+`uninstall` to disable and remove only Asha's marked unit; both lifecycle
+commands accept `--dry-run` and `--json`.
+
+User lingering is advisory and is never changed: without lingering the service
+starts at login, while with lingering it starts at boot.
 
 Orchestration configuration adds:
 
