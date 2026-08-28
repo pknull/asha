@@ -127,6 +127,30 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
             [event["type"] for event in self.store.list_events_snapshot(self.initiative_id)],
         )
 
+    def test_unchanged_live_status_is_observed_once_until_evidence_changes(self) -> None:
+        task = self.dispatch_one()
+
+        for _ in range(3):
+            self.reconcile(task, "working")
+
+        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        observed = [
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "task-status-observed"
+            and attempt["attempt_id"] in event["subject_ids"]
+        ]
+        self.assertEqual(len(observed), 1)
+
+        self.reconcile(task, "needs-input")
+
+        changed = [
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "task-status-observed"
+            and attempt["attempt_id"] in event["subject_ids"]
+        ]
+        self.assertEqual(len(changed), 2)
+        self.assertEqual(changed[-1]["payload"]["control_state"], "needs-input")
+
     def test_normal_exit_waits_grace_then_reserves_retry_from_original_base(self) -> None:
         task = self.dispatch_one()
         self.store.config = replace(self.store.config, result_grace_seconds=1)
