@@ -393,6 +393,7 @@ def launch_task(
     headless: bool = False,
     result_ingestion_id: str | None = None,
     result_outbox: str | None = None,
+    result_token: str | None = None,
     failure_injector: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Launch exactly one primary run from a prepared creation transaction."""
@@ -448,7 +449,9 @@ def launch_task(
                 asha_home=config.asha_home,
                 result_ingestion_id=result_ingestion_id,
                 result_outbox=outbox_path,
+                result_token=result_token,
             )
+            staging_token = environment.pop("ASHA_CONTROL_RESULT_TOKEN", None)
             _inject(failure_injector, "validated")
 
             session = current["tmux"]["session"]
@@ -488,6 +491,8 @@ def launch_task(
                 pane_options=expected_pane,
                 pane_title=f"asha:{selected_harness}:{selected_role}",
             )
+            if staging_token is not None:
+                adapter.set_result_staging_token(session, staging_token)
             _inject(failure_injector, "tmux-created")
             _verify_created_options(
                 adapter, current, pane_id, expected_session, expected_pane,
@@ -507,6 +512,8 @@ def launch_task(
             journal["launch_attempted"] = True
             _save_phase(journal_store, journal, "launch-attempted", failure_injector)
             adapter.respawn(pane_id, command)
+            if staging_token is not None:
+                adapter.clear_result_staging_token(session)
             _inject(failure_injector, "respawned")
             facts = adapter.pane_facts(pane_id)
             if facts.dead or facts.pane_pid is None:

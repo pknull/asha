@@ -103,6 +103,10 @@ configuration. Custom agents and commands are rendered separately because
 Claude command metadata is not portable to Codex.
 Control-managed launches trust the workspace root through a per-launch
 override; they never modify Codex's persisted trust store.
+Headless Codex result staging remains supported when its sandbox cannot reach
+the tmux socket or host PID ancestry: a digest-bound launch token proves the
+staging reservation, while the pane proof remains primary wherever tmux is
+reachable.
 
 ### GitHub Copilot CLI
 

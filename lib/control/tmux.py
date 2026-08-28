@@ -1,4 +1,4 @@
-"""Argument-vector-only adapter for Asha Control's tmux seam."""
+"""Argument-safe adapter for Asha Control's tmux seam."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
 _PANE_ID = re.compile(r"%[0-9]+", re.ASCII)
 _USER_OPTION = re.compile(r"@[a-z][a-z0-9_]{0,63}", re.ASCII)
 _ENVIRONMENT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}", re.ASCII)
+_RESULT_STAGING_TOKEN = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _PERCENT = re.compile(r"(?:[1-9][0-9]?|100)%", re.ASCII)
 _SESSION_PREFIX = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,30})?", re.ASCII)
 # Every other path this adapter handles reaches tmux as one argv element and is
@@ -213,11 +214,13 @@ class TmuxAdapter:
         cwd: Path | None = None,
         limit: int = MAX_OUTPUT_BYTES,
         deadline_seconds: float = 60,
+        input_data: bytes | None = None,
     ) -> tuple[int, bytes, bytes]:
         argv = [executable, *self._socket_args(), *map(str, args)]
         return capture_bytes(
             argv, cwd=cwd, limit=limit, runner=self.runner, error_type=TmuxError,
             deadline_seconds=deadline_seconds,
+            input_data=input_data,
         )
 
     def _run_bytes(
@@ -509,6 +512,37 @@ class TmuxAdapter:
         args.extend([";", "select-pane", "-t", pane_target, "-T", title])
         created_pane = self._one_line(self._run(args), "created pane id")
         return _validate_pane_id(created_pane)
+
+    def set_result_staging_token(self, session: str, token: str) -> None:
+        """Set the private session token over stdin so it never enters argv."""
+        name = _validate_session_name(session)
+        if (
+            not isinstance(token, str)
+            or _RESULT_STAGING_TOKEN.fullmatch(token) is None
+        ):
+            raise TmuxError("result staging token is invalid")
+        command = (
+            f"set-environment -t {name} ASHA_CONTROL_RESULT_TOKEN {token}\n\n"
+        ).encode("ascii")
+        returncode, stdout, _stderr = self._capture_bytes(
+            self.executable,
+            ["-C", "attach-session", "-t", name],
+            input_data=command,
+        )
+        protocol_error = any(
+            line.startswith(b"%error ") for line in stdout.splitlines()
+        )
+        if returncode != 0 or protocol_error:
+            # Control-mode diagnostics may echo input; never relay them.
+            raise TmuxError("tmux private session environment update failed")
+
+    def clear_result_staging_token(self, session: str) -> None:
+        """Drop the session copy after the worker process has inherited it."""
+        name = _validate_session_name(session)
+        self._run([
+            "set-environment", "-u", "-t", name,
+            "ASHA_CONTROL_RESULT_TOKEN",
+        ])
 
     @staticmethod
     def _validated_environment(

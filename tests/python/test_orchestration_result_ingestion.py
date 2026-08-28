@@ -31,10 +31,11 @@ from lib.control.orchestration.ingestion import (
     stage_result,
 )
 from lib.control.orchestration.model import record_digest
+from lib.control.orchestration.model import validate_result_ingestion
 from lib.control.orchestration.results import ResultRefused, publish_result
 from lib.control.orchestration.seals import prepare_and_publish_seal
 from lib.control.orchestration.reconcile import reconcile_live
-from lib.control.store import TaskStore
+from lib.control.store import StoreError, TaskStore
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 
 
@@ -81,8 +82,11 @@ class SnapshotJj:
 class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
     def setUp(self) -> None:
         super().setUp()
+        self.staging_token = "a5" * 32
+        self.launch_environment = None
 
-        def capture(argv, **_kwargs):
+        def capture(argv, **kwargs):
+            self.launch_environment = kwargs.get("env")
             payload = self.control_payload(argv)
             workspace = self.config.control.workspace_root / payload["task"]["task_id"]
             payload["task"]["jj"]["workspace_path"] = str(workspace)
@@ -99,6 +103,8 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             return_value={"pause_recommended": False},
         ), mock.patch(
             "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ), mock.patch(
+            "secrets.token_hex", return_value=self.staging_token,
         ):
             submitted = submit_action(self.store, self.initiative_id, action)
         self.assertEqual(submitted["state"], "completed")
@@ -126,6 +132,7 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             "ASHA_CONTROL_RESULT_OUTBOX": str(
                 self.workspace.joinpath(*self.ingestion["outbox_path"].split("/"))
             ),
+            "ASHA_CONTROL_RESULT_TOKEN": self.staging_token,
         }
 
     def body(self, **changes) -> dict:
@@ -174,6 +181,7 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
         before = self.store.list_results_snapshot(self.initiative_id)
         receipt = self.stage()
         self.assertEqual(receipt["phase"], "staged")
+        self.assertEqual(receipt["identity_proof"], "pane")
         self.assertEqual(self.store.list_results_snapshot(self.initiative_id), before)
         self.assertEqual(
             self.store.read_result_ingestion(
@@ -192,6 +200,7 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             self.attempt,
             self.store.read_link(self.initiative_id, self.attempt["attempt_id"]),
             self.task,
+            staging_token_digest=self.ingestion["staging_token_digest"],
         )
         self.assertEqual(replayed, self.ingestion)
         self.stage()
@@ -202,9 +211,39 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             self.store.read_attempt(self.initiative_id, self.attempt["attempt_id"]),
             self.store.read_link(self.initiative_id, self.attempt["attempt_id"]),
             self.task,
+            staging_token_digest=self.ingestion["staging_token_digest"],
         )
         self.assertEqual(completed["state"], "completed")
         self.assertEqual(completed["result_id"], accepted["result_id"])
+
+    def test_reservation_staging_token_digest_is_immutable_even_from_null(self) -> None:
+        changed = copy.deepcopy(self.ingestion)
+        changed["staging_token_digest"] = "f" * 64
+        with self.assertRaisesRegex(StoreError, "staging_token_digest"):
+            self.store.save_result_ingestion(
+                self.initiative_id, changed,
+                expected_digest=record_digest(self.ingestion),
+            )
+
+        legacy = copy.deepcopy(self.ingestion)
+        legacy["staging_token_digest"] = None
+        record_path = (
+            self.config.initiatives_dir / self.initiative_id / "result-ingestions"
+            / f"{self.ingestion['ingestion_id']}.json"
+        )
+        record_path.write_text(json.dumps(
+            legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ) + "\n")
+        rebound = copy.deepcopy(legacy)
+        rebound["staging_token_digest"] = "e" * 64
+        retained = self.store.list_result_ingestions_snapshot(
+            self.initiative_id,
+        )[0]
+        with self.assertRaisesRegex(StoreError, "staging_token_digest"):
+            self.store.save_result_ingestion(
+                self.initiative_id, rebound,
+                expected_digest=record_digest(retained),
+            )
 
     def test_reserved_worker_cannot_bypass_outbox_with_direct_publication(self) -> None:
         direct_env = {
@@ -266,8 +305,7 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(returncode, 2)
         self.assertIn("no live coordinator generation", error.getvalue())
 
-    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap required")
-    def test_workspace_sandbox_reproduces_control_state_erofs_then_stages(self) -> None:
+    def _sandbox_arguments(self) -> tuple[dict[str, str], list[str], Path]:
         result_file = self.workspace / ".asha" / "input-result.json"
         result_file.parent.mkdir(mode=0o700, exist_ok=True)
         result_file.write_text(json.dumps(self.body()))
@@ -275,7 +313,50 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
         environment = {
             **os.environ, **self.managed,
             "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+            "RESULT_FILE": str(result_file),
+            "TMUX_PANE": "%9",
         }
+        common = [
+            "bwrap", "--die-with-parent", "--ro-bind", "/", "/",
+            "--tmpfs", "/tmp",
+            "--ro-bind", str(self.root), str(self.root),
+            "--bind", str(self.workspace), str(self.workspace),
+            "--unshare-pid", "--proc", "/proc",
+            "--dev-bind", "/dev", "/dev", "--",
+            sys.executable, "-c",
+        ]
+        return environment, common, result_file
+
+    def _sandbox_stage(self, token: str | None) -> subprocess.CompletedProcess[str]:
+        environment, common, _result_file = self._sandbox_arguments()
+        if token is None:
+            environment.pop("ASHA_CONTROL_RESULT_TOKEN", None)
+        else:
+            environment["ASHA_CONTROL_RESULT_TOKEN"] = token
+        stage_program = """
+import json, os
+from pathlib import Path
+from lib.control.orchestration.config import load_config
+from lib.control.orchestration.ingestion import stage_result
+from lib.control.orchestration.results import read_client_file
+body = read_client_file(Path(os.environ['RESULT_FILE']))
+try:
+    receipt = stage_result(
+        load_config(os.environ), body, os.environ, caller_pid=os.getpid(),
+    )
+except BaseException as exc:
+    print(type(exc).__name__ + ': ' + str(exc))
+    raise SystemExit(31)
+print(json.dumps(receipt, sort_keys=True))
+"""
+        return subprocess.run(
+            [*common, stage_program], env=environment,
+            capture_output=True, text=True, check=False,
+        )
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap required")
+    def test_workspace_sandbox_reproduces_control_state_erofs_then_token_stages(self) -> None:
+        environment, common, result_file = self._sandbox_arguments()
         direct_program = """
 import json, os
 from pathlib import Path
@@ -290,35 +371,64 @@ except BaseException as exc:
     raise SystemExit(30 if 'Read-only file system' in str(exc) else 31)
 raise SystemExit(0)
 """
-        common = [
-            "bwrap", "--die-with-parent", "--ro-bind", "/", "/",
-            "--bind", str(self.workspace), str(self.workspace),
-            "--proc", "/proc", "--dev-bind", "/dev", "/dev", "--",
-            sys.executable, "-c",
-        ]
         direct = subprocess.run(
-            [*common, direct_program], env={**environment, "RESULT_FILE": str(result_file)},
+            [*common, direct_program], env=environment,
             capture_output=True, text=True, check=False,
         )
         self.assertEqual(direct.returncode, 30, direct.stdout + direct.stderr)
         self.assertIn("Read-only file system", direct.stdout)
         self.assertEqual(self.store.list_results_snapshot(self.initiative_id), [])
-        stage_program = """
-import json, os
-from pathlib import Path
-from lib.control.orchestration.config import load_config
-from lib.control.orchestration.ingestion import stage_result
-from lib.control.orchestration.results import read_client_file
-body = read_client_file(Path(os.environ['RESULT_FILE']))
-print(json.dumps(stage_result(load_config(os.environ), body, os.environ), sort_keys=True))
-"""
-        staged = subprocess.run(
-            [*common, stage_program], env={**environment, "RESULT_FILE": str(result_file)},
-            capture_output=True, text=True, check=False,
-        )
+        staged = self._sandbox_stage(self.staging_token)
         self.assertEqual(staged.returncode, 0, staged.stdout + staged.stderr)
-        self.assertEqual(json.loads(staged.stdout)["phase"], "staged")
+        receipt = json.loads(staged.stdout)
+        self.assertEqual(receipt["phase"], "staged")
+        self.assertEqual(receipt["identity_proof"], "token")
         self.assertEqual(self.ingest()["phase"], "completed")
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap required")
+    def test_workspace_sandbox_wrong_token_refuses_without_candidate(self) -> None:
+        staged = self._sandbox_stage("f0" * 32)
+        self.assertEqual(staged.returncode, 31, staged.stdout + staged.stderr)
+        self.assertIn("pane proof unreachable:", staged.stdout)
+        self.assertIn(
+            "token proof failed: staging token is invalid", staged.stdout,
+        )
+        self.assertFalse(Path(self.managed["ASHA_CONTROL_RESULT_OUTBOX"]).exists())
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap required")
+    def test_workspace_sandbox_absent_token_names_both_failed_proofs(self) -> None:
+        staged = self._sandbox_stage(None)
+        self.assertEqual(staged.returncode, 31, staged.stdout + staged.stderr)
+        self.assertIn("pane proof unreachable:", staged.stdout)
+        self.assertIn(
+            "token proof failed: staging token is absent", staged.stdout,
+        )
+        self.assertFalse(Path(self.managed["ASHA_CONTROL_RESULT_OUTBOX"]).exists())
+
+    @unittest.skipUnless(shutil.which("bwrap"), "bubblewrap required")
+    def test_workspace_sandbox_legacy_null_digest_refuses_token(self) -> None:
+        legacy = copy.deepcopy(self.ingestion)
+        legacy["staging_token_digest"] = None
+        record_path = (
+            self.config.initiatives_dir / self.initiative_id / "result-ingestions"
+            / f"{self.ingestion['ingestion_id']}.json"
+        )
+        record_path.write_text(json.dumps(
+            legacy, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        ) + "\n")
+        staged = self._sandbox_stage(self.staging_token)
+        self.assertEqual(staged.returncode, 31, staged.stdout + staged.stderr)
+        self.assertIn("pane proof unreachable:", staged.stdout)
+        self.assertIn(
+            "token proof failed: reservation has no staging token digest",
+            staged.stdout,
+        )
+        self.assertFalse(Path(self.managed["ASHA_CONTROL_RESULT_OUTBOX"]).exists())
+
+    def test_legacy_reservation_without_digest_reads_as_null(self) -> None:
+        legacy = copy.deepcopy(self.ingestion)
+        legacy.pop("staging_token_digest", None)
+        self.assertIsNone(validate_result_ingestion(legacy)["staging_token_digest"])
 
     def test_unreserved_foreign_and_forged_coordinator_staging_are_refused(self) -> None:
         with self.assertRaisesRegex(IngestionRefused, "no controller reservation"):
@@ -335,9 +445,42 @@ print(json.dumps(stage_result(load_config(os.environ), body, os.environ), sort_k
         forged = {
             **self.managed,
             "ASHA_ORCHESTRATION_COORDINATOR_ID": str(uuid.uuid4()),
+            "TMUX_PANE": "%9",
         }
+        fake_tmux = mock.Mock()
         with self.assertRaisesRegex(IngestionRefused, "impersonate"):
-            stage_result(self.config, self.body(), forged)
+            stage_result(
+                self.config, self.body(), forged, caller_pid=os.getpid(),
+                tmux=fake_tmux,
+            )
+        fake_tmux.pane_facts.assert_not_called()
+
+    def test_live_pane_proof_remains_primary_and_is_named_in_receipt(self) -> None:
+        fake_tmux = mock.Mock()
+        fake_tmux.pane_facts.return_value = SimpleNamespace(
+            dead=False, pane_pid=12345, session="owned-session",
+        )
+        fake_tmux.session_option.side_effect = lambda _session, option: {
+            "@asha_managed": "1", "@asha_task_id": self.task["task_id"],
+        }[option]
+        fake_tmux.pane_option.side_effect = lambda _pane, option: {
+            "@asha_run_id": self.task["runs"][0]["run_id"],
+            "@asha_result_ingestion": self.ingestion["ingestion_id"],
+            "@asha_result_outbox_digest": hashlib.sha256(
+                self.managed["ASHA_CONTROL_RESULT_OUTBOX"].encode()
+            ).hexdigest(),
+        }[option]
+        env = {**self.managed, "TMUX_PANE": "%9"}
+        with mock.patch(
+            "lib.control.orchestration.ingestion.caller_descends_from",
+            return_value=True,
+        ):
+            receipt = stage_result(
+                self.config, self.body(), env, caller_pid=os.getpid(),
+                tmux=fake_tmux,
+            )
+        self.assertEqual(receipt["identity_proof"], "pane")
+        fake_tmux.pane_facts.assert_called_once_with("%9")
 
     def test_forged_managed_environment_from_another_process_is_refused(self) -> None:
         fake_tmux = mock.Mock()

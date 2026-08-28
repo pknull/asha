@@ -952,7 +952,11 @@ class InitiativeStore:
             value, validate_result_ingestion, immutable=False,
             expected_digest=expected_digest,
             transition_machine=RESULT_INGESTION_TRANSITIONS,
-            immutable_fields=tuple(field for field in value if field not in mutable),
+            immutable_fields=(
+                "staging_token_digest",
+                *(field for field in value
+                  if field not in mutable and field != "staging_token_digest"),
+            ),
             bind_once_fields=(
                 "candidate_digest", "publication_id", "result_id",
                 "claimed_commit_id", "claimed_tree_digest", "commit_creator", "ingester",
