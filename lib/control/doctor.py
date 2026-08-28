@@ -72,6 +72,14 @@ _CONTROL_EVENT_HANDLER = (
 _SEMANTIC_EVENT_HARNESSES = frozenset({"claude", "codex"})
 
 
+def supervisor_service_status(
+    values: Mapping[str, str], *, runner=None, which=None,
+) -> dict[str, bool | None]:
+    # Keep the supervisor's orchestration dependency graph out of doctor import.
+    from .orchestration.supervisor_daemon import supervisor_service_status as inspect
+    return inspect(values, runner=runner, which=which)
+
+
 def _python_probe(config) -> Probe:
     if sys.version_info >= (3, 11):
         return Probe("python", "match", f"Python {sys.version_info.major}.{sys.version_info.minor} supports the Control core")
@@ -860,10 +868,41 @@ def _migration_probe(config) -> Probe:
     return Probe("migration", "match", "no legacy Asha state present")
 
 
+def _supervisor_service_probe(config, *, env=None, runner=None, which=None) -> Probe:
+    values = dict(os.environ if env is None else env)
+    if config is not None:
+        values["HOME"] = str(config.home)
+        values["ASHA_HOME"] = str(config.asha_home)
+    status = supervisor_service_status(values, runner=runner, which=which)
+    present = status["service_present"]
+    enabled = status["service_enabled"]
+    active = status["service_active"]
+    if present is None:
+        return Probe(
+            "supervisor-service", "unavailable",
+            "systemctl is unavailable; supervisor service state was not probed",
+        )
+    def label(value: bool | None) -> str:
+        return "unknown" if value is None else "yes" if value else "no"
+
+    detail = (
+        f"supervisor service present={label(present)}, "
+        f"enabled={label(enabled)}, active={label(active)}"
+    )
+    if not present:
+        outcome = "missing"
+    elif enabled and active:
+        outcome = "match"
+    else:
+        outcome = "mismatch"
+    return Probe("supervisor-service", outcome, detail)
+
+
 DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "python": _python_probe,
     "configuration": _configuration_probe,
     "migration": _migration_probe,
+    "supervisor-service": _supervisor_service_probe,
     "tmux": _tmux_probe,
     "harness": _harness_probe,
     "gh": _gh_probe,
@@ -878,23 +917,31 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
 }
 
 
-def run_doctor(config, probes: Mapping[str, ProbeFunction] | None = None) -> dict[str, Any]:
+def run_doctor(
+    config, probes: Mapping[str, ProbeFunction] | None = None, *,
+    env: Mapping[str, str] | None = None, runner=None, which=None,
+) -> dict[str, Any]:
     selected = DEFAULT_PROBES if probes is None else probes
     results: list[Probe] = []
     for name, probe in selected.items():
         if (not isinstance(name, str) or
                 re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) is None):
             raise ValueError("invalid doctor probe name")
-        result = probe(config)
+        if probe is _supervisor_service_probe:
+            result = probe(config, env=env, runner=runner, which=which)
+        else:
+            result = probe(config)
         if not isinstance(result, Probe) or result.name != name:
             raise ValueError(f"doctor probe {name} returned an invalid result")
         results.append(Probe(result.name, result.outcome, result.detail))
     limitations = [result.detail for result in results if result.outcome != "match"]
-    # GitHub source support and absence of a repository in the caller's current
-    # directory are contextual; report them without failing the general check.
+    # GitHub source support, supervisor service state, and absence of a
+    # repository in the caller's current directory are contextual; report them
+    # without failing the general check.
     blocking = [
         result for result in results
-        if (result.outcome != "match" and result.name != "gh" and
+        if (result.outcome != "match" and
+            result.name not in {"gh", "supervisor-service"} and
             not (result.name in {"repository", "default-context"} and
                  result.outcome == "unavailable"))
     ]

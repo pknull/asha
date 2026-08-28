@@ -1235,7 +1235,7 @@ class Increment3DoctorTests(unittest.TestCase):
 
         with mock.patch("lib.control.doctor.shutil.which", return_value="/usr/bin/tmux"), \
                 mock.patch.object(TmuxAdapter, "_run_status", autospec=True, side_effect=status) as run:
-            result = run_doctor(None)
+            result = run_doctor(None, which=lambda _command: None)
         probe = next(item for item in result["probes"] if item["name"] == "tmux")
         self.assertEqual(probe["outcome"], "match")
         self.assertEqual(run.call_args_list[0].args[1], ["-V"])

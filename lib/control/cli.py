@@ -97,7 +97,7 @@ Use `asha control --initiatives` to open it in Initiatives mode.
 Use `asha task list --json` as the non-interactive fallback.
 Use `asha control tmux` to print the optional tmux integration snippet.
 Use `asha control supervisor {run|start|stop|status} [--json]` for routine
-initiative progression.""", file=stream)
+initiative progression; `install` manages its systemd user service.""", file=stream)
 
 
 def _parse_event(args: list[str]) -> dict[str, Any]:
@@ -1773,7 +1773,7 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
 
     if tail:
         raise ValueError("task doctor accepts only --json")
-    payload = run_doctor(config)
+    payload = run_doctor(config, env=env)
     if json_output:
         _json(payload)
     else:

@@ -146,8 +146,12 @@ trigger) → the coordinator proposes a plan → you approve and activate →
 workers attempt, results are ingested and sealed, review and verification
 gate the candidate → `ready-for-integration` → you land the diff yourself
 (Control has no merge authority) and `record-integration` advances the
-initiative to `integrated` → you archive. Start the supervisor once per boot
-(`asha control supervisor start`) and the blue edges never wait for you.
+initiative to `integrated` → you archive. Install the systemd user service once
+and the blue edges advance whenever your user service manager is running:
+
+```bash
+asha control supervisor install
+```
 
 Control requires a Git repository, tmux with popup support, an installed
 harness, and an initialized project (`/session:init`). The operating contract,

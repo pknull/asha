@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -39,6 +40,64 @@ class DoctorOkFixture(unittest.TestCase):
 
 
 class DoctorVerdictTests(DoctorOkFixture):
+    def test_supervisor_service_probe_is_advisory_and_reports_all_states(self) -> None:
+        values = dict(self.env, XDG_CONFIG_HOME=str(self.root / "config"))
+        unit = self.root / "config/systemd/user/asha-supervisor.service"
+        unit.parent.mkdir(parents=True)
+        unit.write_text("[Unit]\n", encoding="utf-8")
+        calls = []
+
+        def runner(argv, **_kwargs):
+            calls.append(list(argv))
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+        result = run_doctor(
+            self.config,
+            probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]},
+            env=values, runner=runner, which=lambda command: f"/usr/bin/{command}",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["probes"], [{
+            "name": "supervisor-service",
+            "outcome": "mismatch",
+            "detail": "supervisor service present=yes, enabled=no, active=no",
+        }])
+        self.assertEqual(calls, [
+            ["/usr/bin/systemctl", "--user", "is-enabled", "asha-supervisor.service"],
+            ["/usr/bin/systemctl", "--user", "is-active", "asha-supervisor.service"],
+        ])
+
+    def test_supervisor_service_probe_is_informational_without_systemctl(self) -> None:
+        result = run_doctor(
+            self.config,
+            probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]},
+            env=self.env, which=lambda _command: None,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["probes"][0]["outcome"], "unavailable")
+        self.assertIn("systemctl is unavailable", result["probes"][0]["detail"])
+
+    def test_missing_supervisor_unit_is_informational(self) -> None:
+        values = dict(self.env, XDG_CONFIG_HOME=str(self.root / "config"))
+
+        def runner(argv, **_kwargs):
+            return subprocess.CompletedProcess(argv, 1, b"", b"")
+
+        result = run_doctor(
+            self.config,
+            probes={"supervisor-service": DEFAULT_PROBES["supervisor-service"]},
+            env=values, runner=runner, which=lambda command: f"/usr/bin/{command}",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["probes"][0]["outcome"], "missing")
+        self.assertEqual(
+            result["probes"][0]["detail"],
+            "supervisor service present=no, enabled=no, active=no",
+        )
+
     def test_repository_unavailable_outside_a_repo_is_nonblocking(self) -> None:
         with tempfile.TemporaryDirectory() as outside, contextlib.chdir(outside):
             result = run_doctor(None, probes={

@@ -1,9 +1,13 @@
 from __future__ import annotations
 
 import ast
+import contextlib
 import json
+import os
+import signal
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 import uuid
@@ -30,8 +34,15 @@ from lib.control.orchestration.ingestion import (
 )
 from lib.control.orchestration.supervisor import tick
 from lib.control.orchestration.supervisor_daemon import (
+    SUPERVISOR_SERVICE_MARKER,
+    install_supervisor_service,
+    render_supervisor_service,
+    run_supervisor,
     status_path,
+    supervisor_service_path,
+    supervisor_service_status,
     supervisor_lock_path,
+    uninstall_supervisor_service,
 )
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 
@@ -424,6 +435,28 @@ class SupervisorIsolationTests(unittest.TestCase):
 
 
 class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
+    def test_run_changes_cwd_to_home_before_the_first_tick(self) -> None:
+        observed = []
+
+        def one_tick(_deps):
+            observed.append(Path.cwd())
+            os.kill(os.getpid(), signal.SIGTERM)
+            return {"finished_at": now_text(), "counts": {"transitions": 0}}
+
+        with contextlib.chdir(self.repo), \
+                mock.patch(
+                    "lib.control.orchestration.supervisor_daemon.Path.home",
+                    return_value=Path(self.env["HOME"]),
+                ), \
+                mock.patch(
+                    "lib.control.orchestration.supervisor_daemon.tick",
+                    side_effect=one_tick,
+                ), redirect_stdout(StringIO()):
+            result = run_supervisor(self.config, deps=SimpleNamespace())
+
+        self.assertEqual(result, 0)
+        self.assertEqual(observed, [Path(self.env["HOME"])])
+
     def test_second_run_refuses_while_another_process_holds_the_flock(self) -> None:
         path = supervisor_lock_path(self.config)
         path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -454,7 +487,7 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(child_stdout.readline().strip(), "ready")
         output = StringIO()
 
-        with redirect_stdout(output):
+        with contextlib.chdir(self.repo), redirect_stdout(output):
             status = control_main(
                 ["control", "supervisor", "run", "--json"], env=self.env,
             )
@@ -496,6 +529,276 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
         self.assertFalse(json.loads(output.getvalue())["signalled"])
         self.assertIn("stale", json.loads(output.getvalue())["message"])
         kill.assert_not_called()
+
+
+class SupervisorServiceTests(unittest.TestCase):
+    maxDiff = None
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.home = self.root / "home"
+        self.config_home = self.root / "config"
+        self.home.mkdir(mode=0o700)
+        self.home.chmod(0o700)
+        self.env = {
+            "HOME": str(self.home),
+            "ASHA_HOME": str(self.home / ".asha"),
+            "ASHA_CONFIG": str(self.root / "missing.json"),
+            "XDG_CONFIG_HOME": str(self.config_home),
+            "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+            "USER": "keeper",
+        }
+        Path(self.env["XDG_RUNTIME_DIR"]).mkdir(mode=0o700)
+        Path(self.env["XDG_RUNTIME_DIR"]).chmod(0o700)
+        self.asha_root = Path("/opt/asha")
+        self.config = SimpleNamespace()
+        self.calls: list[list[str]] = []
+
+    def which(self, command: str) -> str | None:
+        if command in {"systemctl", "loginctl"}:
+            return f"/usr/bin/{command}"
+        return None
+
+    def runner(self, argv, **_kwargs):
+        self.calls.append(list(argv))
+        stdout = b"Linger=yes\n" if Path(argv[0]).name == "loginctl" else b""
+        return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+    def expected_unit(self, asha_home_line: str = "") -> str:
+        return (
+            "[Unit]\n"
+            f"{SUPERVISOR_SERVICE_MARKER}\n"
+            "Description=Asha Control supervisor\n"
+            "\n"
+            "[Service]\n"
+            "Type=simple\n"
+            'Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
+            f"{asha_home_line}"
+            "ExecStart=/opt/asha/bin/asha control supervisor run\n"
+            "Restart=on-failure\n"
+            "RestartSec=5\n"
+            "WorkingDirectory=%h\n"
+            "\n"
+            "[Install]\n"
+            "WantedBy=default.target\n"
+        )
+
+    def test_unit_body_renders_exactly_for_default_and_nondefault_asha_home(self) -> None:
+        self.assertEqual(
+            render_supervisor_service(self.env, self.asha_root),
+            self.expected_unit(),
+        )
+
+        custom = dict(self.env, ASHA_HOME=str(self.root / "custom-asha"))
+        self.assertEqual(
+            render_supervisor_service(custom, self.asha_root),
+            self.expected_unit(
+                f'Environment="ASHA_HOME={self.root / "custom-asha"}"\n',
+            ),
+        )
+
+    def test_install_refuses_foreign_unit_and_replaces_owned_unit(self) -> None:
+        path = supervisor_service_path(self.env)
+        path.parent.mkdir(parents=True)
+        path.write_text("[Unit]\nDescription=foreign\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "foreign unit"):
+            install_supervisor_service(
+                self.config, self.env, asha_root=self.asha_root,
+                runner=self.runner, which=self.which,
+            )
+        self.assertEqual(path.read_text(encoding="utf-8"), "[Unit]\nDescription=foreign\n")
+        self.assertEqual(self.calls, [])
+
+        path.write_text(
+            f"[Unit]\n{SUPERVISOR_SERVICE_MARKER}\nDescription=old\n",
+            encoding="utf-8",
+        )
+        with mock.patch(
+            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+            return_value=({"running": False}, 1),
+        ), mock.patch(
+            "lib.control.orchestration.supervisor_daemon._lock_held",
+            return_value=False,
+        ):
+            payload, code = install_supervisor_service(
+                self.config, self.env, asha_root=self.asha_root,
+                runner=self.runner, which=self.which,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["linger_enabled"])
+        self.assertIn("without user lingering", payload["message"].lower())
+        self.assertIn("with lingering it starts at boot", payload["message"])
+        self.assertEqual(path.read_text(encoding="utf-8"), self.expected_unit())
+
+    def test_install_stops_manual_supervisor_before_enable_now(self) -> None:
+        ordering: list[str] = []
+
+        def stop(_config):
+            ordering.append("stop")
+            return {"running": False, "message": "stopped"}, 0
+
+        def runner(argv, **kwargs):
+            ordering.append(" ".join(argv[1:]))
+            return self.runner(argv, **kwargs)
+
+        with mock.patch(
+            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+            side_effect=stop,
+        ), mock.patch(
+            "lib.control.orchestration.supervisor_daemon._lock_held",
+            return_value=False,
+        ):
+            install_supervisor_service(
+                self.config, self.env, asha_root=self.asha_root,
+                runner=runner, which=self.which,
+            )
+
+        self.assertLess(ordering.index("stop"), ordering.index(
+            "--user enable --now asha-supervisor.service",
+        ))
+
+    def test_install_refuses_while_the_single_instance_lock_remains_held(self) -> None:
+        path = supervisor_service_path(self.env)
+        with mock.patch(
+            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+            return_value=({"running": False, "message": "not running"}, 1),
+        ), mock.patch(
+            "lib.control.orchestration.supervisor_daemon._lock_held",
+            return_value=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "still stopping"):
+                install_supervisor_service(
+                    self.config, self.env, asha_root=self.asha_root,
+                    runner=self.runner, which=self.which,
+                )
+
+        self.assertFalse(path.exists())
+        self.assertEqual(self.calls, [])
+
+    def test_uninstall_removes_only_owned_unit_and_is_idempotent(self) -> None:
+        path = supervisor_service_path(self.env)
+        path.parent.mkdir(parents=True)
+        path.write_text("[Unit]\nDescription=foreign\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "foreign unit"):
+            uninstall_supervisor_service(
+                self.env, runner=self.runner, which=self.which,
+            )
+        self.assertTrue(path.exists())
+        self.assertEqual(self.calls, [])
+
+        path.write_text(self.expected_unit(), encoding="utf-8")
+        first, first_code = uninstall_supervisor_service(
+            self.env, runner=self.runner, which=self.which,
+        )
+        second, second_code = uninstall_supervisor_service(
+            self.env, runner=self.runner, which=self.which,
+        )
+
+        self.assertEqual((first_code, second_code), (0, 0))
+        self.assertFalse(path.exists())
+        self.assertTrue(first["removed"])
+        self.assertFalse(second["removed"])
+
+    def test_install_dry_run_writes_nothing_and_prints_commands(self) -> None:
+        path = supervisor_service_path(self.env)
+        with mock.patch(
+            "lib.control.orchestration.supervisor_daemon.stop_supervisor",
+        ) as stop:
+            payload, code = install_supervisor_service(
+                self.config, self.env, asha_root=self.asha_root, dry_run=True,
+                runner=self.runner, which=self.which,
+            )
+
+        self.assertEqual(code, 0)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.calls, [])
+        stop.assert_not_called()
+        self.assertIn(self.expected_unit(), payload["message"])
+        self.assertIn("would run: systemctl --user daemon-reload", payload["message"])
+        self.assertIn(
+            "would run: systemctl --user enable --now asha-supervisor.service",
+            payload["message"],
+        )
+
+        output = StringIO()
+        with redirect_stdout(output):
+            cli_code = control_main(
+                ["control", "supervisor", "install", "--dry-run"], env=self.env,
+            )
+        self.assertEqual(cli_code, 0)
+        self.assertTrue(output.getvalue().startswith(f"would write {path}:\n[Unit]\n"))
+        self.assertNotIn("asha control supervisor:", output.getvalue())
+        self.assertFalse(path.exists())
+
+    def test_service_status_uses_is_enabled_and_is_active(self) -> None:
+        path = supervisor_service_path(self.env)
+        path.parent.mkdir(parents=True)
+        path.write_text(self.expected_unit(), encoding="utf-8")
+
+        def runner(argv, **_kwargs):
+            self.calls.append(list(argv))
+            returncode = 3 if argv[2] == "is-active" else 0
+            return subprocess.CompletedProcess(argv, returncode, b"", b"")
+
+        status = supervisor_service_status(
+            self.env, runner=runner, which=self.which,
+        )
+
+        self.assertEqual(status, {
+            "service_present": True,
+            "service_enabled": True,
+            "service_active": False,
+        })
+        self.assertEqual(self.calls, [
+            ["/usr/bin/systemctl", "--user", "is-enabled", "asha-supervisor.service"],
+            ["/usr/bin/systemctl", "--user", "is-active", "asha-supervisor.service"],
+        ])
+
+    def test_service_status_fields_are_null_without_systemctl(self) -> None:
+        path = supervisor_service_path(self.env)
+        path.parent.mkdir(parents=True)
+        path.write_text(self.expected_unit(), encoding="utf-8")
+
+        status = supervisor_service_status(
+            self.env, runner=self.runner, which=lambda _command: None,
+        )
+
+        self.assertEqual(status, {
+            "service_present": None,
+            "service_enabled": None,
+            "service_active": None,
+        })
+        self.assertEqual(self.calls, [])
+
+        output = StringIO()
+        with mock.patch(
+            "lib.control.orchestration.supervisor_daemon.shutil.which",
+            return_value=None,
+        ), redirect_stdout(output):
+            code = control_main(
+                ["control", "supervisor", "status", "--json"], env=self.env,
+            )
+        self.assertEqual(code, 1)
+        payload = json.loads(output.getvalue())
+        self.assertIsNone(payload["service_present"])
+        self.assertIsNone(payload["service_enabled"])
+        self.assertIsNone(payload["service_active"])
+
+        output = StringIO()
+        with mock.patch(
+            "lib.control.orchestration.supervisor_daemon.shutil.which",
+            return_value=None,
+        ), redirect_stdout(output):
+            control_main(["control", "supervisor", "status"], env=self.env)
+        self.assertIn(
+            "service present=unknown, enabled=unknown, active=unknown",
+            output.getvalue(),
+        )
 
 
 class SupervisorBoundaryTests(unittest.TestCase):
