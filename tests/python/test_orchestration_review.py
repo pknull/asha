@@ -16,9 +16,11 @@ from lib.control.orchestration.actions import (
     submit_action,
 )
 from lib.control.orchestration.model import RESULT_CONTRACT, record_digest, validate_result
+from lib.control.orchestration.ingestion import ingest_result, result_ingestion_id, stage_result
 from lib.control.orchestration.review import _tracked_path_fact, complete_review_attempt
 from lib.control.orchestration.scheduler import refresh_readiness
 from lib.control.orchestration.store import ObservationOnlyPlanError
+from lib.control.store import TaskStore
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 from tests.python.orchestration_increment3_fixtures import (
     advance_node,
@@ -65,10 +67,13 @@ class OrchestrationReviewTests(ExecutionFixture, unittest.TestCase):
     def _dispatch_review(self) -> None:
         def capture(argv, **_kwargs):
             payload = self.control_payload(argv)
+            workspace = self.config.control.workspace_root / payload["task"]["task_id"]
             payload["task"]["jj"].update({
                 "base_commit_id": argv[argv.index("--base") + 1],
                 "working_commit_id": "f" * 40,
+                "workspace_path": str(workspace),
             })
+            payload["workspace"]["path"] = str(workspace)
             self.task = payload["task"]
             return 0, json.dumps(payload).encode(), b""
 
@@ -167,6 +172,59 @@ class OrchestrationReviewTests(ExecutionFixture, unittest.TestCase):
             "completed-readonly",
         )
         self.assertEqual(self.store.read_node(self.initiative_id, "review-a")["state"], "succeeded")
+
+    def test_review_result_recovers_through_workspace_outbox_ingestion(self) -> None:
+        workspace = Path(self.task["jj"]["workspace_path"])
+        workspace.mkdir(parents=True)
+        self.repo.chmod(0o700)
+        current = workspace
+        home = Path(self.env["ASHA_HOME"])
+        while current != home:
+            current.chmod(0o700)
+            current = current.parent
+        TaskStore(self.config.control).save(self.task)
+        ingestion_id = result_ingestion_id(self.attempt["attempt_id"])
+        ingestion = self.store.read_result_ingestion(
+            self.initiative_id, ingestion_id,
+        )
+        body = {
+            "contract": RESULT_CONTRACT,
+            "publication_id": str(uuid.uuid4()),
+            "supersedes_result_id": None,
+            "initiative_id": self.initiative_id,
+            "node_id": "review-a",
+            "attempt_id": self.attempt["attempt_id"],
+            "task_id": self.task["task_id"],
+            "run_id": self.task["runs"][0]["run_id"],
+            "claim_status": "completed",
+            "summary": "Independent staged review completed.",
+            "files_changed": [], "verification_attestations": [],
+            "concerns": [], "follow_up": [], "published_at": now_text(),
+            "review": {
+                "verdict": "pass", "findings": [],
+                "target": copy.deepcopy(self.review["target"]),
+            },
+        }
+        managed = {
+            **self.env, "ASHA_CONTROL_MANAGED": "1",
+            "ASHA_CONTROL_TASK_ID": self.task["task_id"],
+            "ASHA_CONTROL_RUN_ID": self.task["runs"][0]["run_id"],
+            "ASHA_CONTROL_RESULT_INGESTION_ID": ingestion_id,
+            "ASHA_CONTROL_RESULT_OUTBOX": str(
+                workspace.joinpath(*ingestion["outbox_path"].split("/"))
+            ),
+        }
+        self.assertEqual(stage_result(self.config, body, managed)["phase"], "staged")
+        receipt = ingest_result(
+            self.store, self.initiative_id, ingestion_id,
+            control_store=TaskStore(self.config.control),
+            jj=ReviewJj(self.task, self.candidate["tree_digest"]),
+            terminal_reconciliation={"state": "exited"},
+        )
+        self.assertEqual(receipt["phase"], "completed")
+        result = self.store.read_result(self.initiative_id, receipt["result_id"])
+        self.assertEqual(result["commit_provenance"]["creator"], "none")
+        self.assertEqual(self._complete()["state"], "accepted-pass")
 
     def test_direct_review_completion_refuses_historical_plan_before_inspection(self) -> None:
         self.install_historical_active_plan()

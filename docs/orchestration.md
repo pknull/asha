@@ -48,6 +48,7 @@ asha initiative snapshot ID --json
 asha initiative doctor [--json]
 asha initiative projects [--root DIR]... [--depth N] [--match TEXT] [--json]
 asha task report --file PATH [--json]
+asha task ingest CONTROL_TASK_ID|INGESTION_ID [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
 asha initiative coordinator claim ID [--harness H] [--json]     (from the Asha pane)
@@ -406,9 +407,11 @@ sealed diff; a result file written to a tracked path is a hard-scope
 violation and fails the seal. The command is available only inside a
 Control-managed worker environment.
 The assignment also carries exact seal inputs and read-only failure-seal
-evidence when dispatching approved salvage work. It instructs the worker to
-run `jj status` in the workspace before `asha task report` and after every
-later edit. The controller never snapshots the worker workspace.
+evidence when dispatching approved salvage work. It explicitly tells workers
+not to run `jj status`: a workspace-write sandbox can change the working tree
+but cannot write the colocated source repository's Git object store. After a
+normal exit, the controller snapshots the retained tree and independently
+reruns declared result attestations against that exact commit.
 
 The scheduler then invokes one argv-only bounded subprocess, without a shell:
 
@@ -416,6 +419,8 @@ The scheduler then invokes one argv-only bounded subprocess, without a shell:
 <asha_root>/bin/asha task start
   --repo <root>
   --task-id <preallocated-control-task-uuid>
+  --result-ingestion-id <preallocated-ingestion-uuid>
+  --result-outbox .asha/outbox/<ingestion-uuid>.json
   --base <exact-immutable-commit>
   --harness <node-harness>
   --role <node-role>
@@ -438,9 +443,9 @@ Action reconciliation reissues the identical task ID, accepts Control's
 existing task, or records `launch-failed` when neither a task nor creation
 journal exists. It never allocates a replacement task for that action.
 
-## Worker result publication
+## Worker result staging and controller publication
 
-A worker publishes its result and then **ends its session**. The seal is
+A worker stages its result and then **ends its session**. The seal is
 recorded only when the controller observes a normal exit: an interactive
 harness that returns to its prompt leaves the attempt at `reported` and the
 node `running` indefinitely, and stopping such an attempt seals a failure
@@ -473,14 +478,29 @@ object. The client omits controller-owned `result_id` and `payload_digest`:
 ```
 
 The command requires `ASHA_CONTROL_MANAGED=1` plus exact
-`ASHA_CONTROL_TASK_ID` and `ASHA_CONTROL_RUN_ID` bindings from Control. Its
-input must be a bounded regular non-symlink file. Every listed path is
-relative, canonical, non-symlink, and inside the linked task workspace.
-`files_changed` entries must name files, never directories; an existing
-directory claim is refused during publication so the worker can correct and
-republish it before exit.
+`ASHA_CONTROL_TASK_ID`, `ASHA_CONTROL_RUN_ID`,
+`ASHA_CONTROL_RESULT_INGESTION_ID`, and `ASHA_CONTROL_RESULT_OUTBOX` bindings
+from Control. Its input must be a bounded regular non-symlink file. It proves
+the caller descends from the exact managed pane whose private options bind the
+task, run, ingestion UUID, and outbox-path digest, then writes only a closed
+`asha.orchestration-result-candidate.v1` below the workspace's private
+`.asha/outbox/`. It opens neither authoritative task nor initiative state, so
+read-only Control mounts do not prevent staging. A coordinator with forged
+managed environment variables is in another pane and is refused. The worker's
+receipt phase is `staged`, not `completed`.
 
-Publication is an initiative-locked durable journal:
+The controller supervisor (or explicit `asha task ingest`) waits for terminal
+producer evidence. It verifies the unique reservation, active-plan digest,
+attempt/node/task/run binding, immutable Control identity, workspace
+name/path/change ID, closed result schema, hard-scope paths, publication
+lineage, and exact candidate bytes. Every listed path is relative, canonical,
+non-symlink, and inside the linked task workspace; `files_changed` entries
+must name files, never directories. Stale, foreign, modified, duplicate, and
+unreserved candidates fail closed with a precise refusal. Exact completed
+replay returns the same result ID. Review results use the same path without a
+commit.
+
+Authoritative publication is an initiative-locked durable journal:
 `reserved -> validating -> persisting -> completed`. Reservation binds the
 client publication UUID, canonical body digest, task, run, attempt,
 preallocated result UUID, receipt sequence, and attempt revision. Persisting
@@ -496,8 +516,12 @@ superseding publication may name only the current accepted result of the same
 unsealed attempt. Once a completed publication has its immutable result and
 `result-published` event, later supersession does not make the older journal
 incomplete: reconciliation skips it and an identical replay returns its stored
-receipt without semantic revalidation. `asha task result` returns accepted
-immutable results for one Control task.
+receipt without semantic revalidation. Controller-carried results additionally
+bind `publication_provenance` (producer and controller/coordinator ingester),
+`claimed_commit_id`, and `commit_provenance` (`worker|controller|none`). For a
+controller-created commit, exact-materialization verification evidence is
+mandatory and is copied into the later seal provenance. `asha task result`
+returns accepted immutable results for one Control task.
 
 ## Exit evidence and immutable seals
 
@@ -505,8 +529,12 @@ A terminal claim does not prove success. Reconciliation moves `reported` to
 `awaiting-exit`, reads Control's process evidence, then persists a
 no-outcome `asha.orchestration-seal-preparation.v1` record and a
 `seal-preparing` event before collecting jj evidence. Orchestration uses
-Control's read-only `JjAdapter` with `--ignore-working-copy`; it does not
-snapshot or mutate the workspace.
+Control's `JjAdapter`. A staged mutable attempt has already been snapshotted by
+the ingestion controller after terminal producer evidence. Its command-scoped
+auto-track fileset excludes `.asha/`, keeping the private candidate transport
+out of the commit without changing repository ignore policy; later seal
+inspection uses `--ignore-working-copy` and requires the result's claimed
+commit and verification provenance to match exactly.
 
 The tree digest is SHA-256 over compact canonical JSON containing entries
 sorted by path. Each entry is `[path,mode,blob-id]` from one read-only

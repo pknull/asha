@@ -108,6 +108,14 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
             ]
         elif "nonzero" in method:
             command = [sys.executable, "-c", "raise SystemExit(7)"]
+        elif "outside_write" in method:
+            command = [
+                sys.executable, "-c",
+                "from pathlib import Path; "
+                "target=Path.cwd().parent/'outside-marker'; "
+                "target.write_text('sandbox-only'); "
+                "Path('/tmp/isolated-marker').write_text('scratch')",
+            ]
         elif "large_output" in method:
             command = [sys.executable, "-c", "import sys; sys.stdout.write('x' * (2 * 1024 * 1024))"]
         elif "mutation" in method:
@@ -260,6 +268,12 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
         record = self._run()
         self.assertEqual(record["state"], "passed")
         self.assertEqual(record["commands"][0]["exit_code"], 0)
+
+    def test_outside_write_is_read_only_and_tmp_is_isolated(self) -> None:
+        record = self._run()
+        self.assertEqual(record["state"], "passed")
+        self.assertFalse((self.materialization.parent / "outside-marker").exists())
+        self.assertFalse(Path("/tmp/isolated-marker").exists())
 
     def test_detached_descendant_cannot_mutate_after_command_returns(self) -> None:
         record = self._run()

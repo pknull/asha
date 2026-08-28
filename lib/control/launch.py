@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import os
 import sys
 import signal
@@ -178,13 +179,25 @@ def _session_options(task: dict[str, Any]) -> dict[str, str]:
     }
 
 
-def _pane_options(run_id: str, harness: str, role: str) -> dict[str, str]:
-    return {
+def _pane_options(
+    run_id: str, harness: str, role: str, *,
+    result_ingestion_id: str | None = None,
+    result_outbox: Path | None = None,
+) -> dict[str, str]:
+    values = {
         "@asha_run_id": run_id,
         "@asha_harness": harness,
         "@asha_role": role,
         "@asha_state": "starting",
     }
+    if (result_ingestion_id is None) != (result_outbox is None):
+        raise LaunchError("result ingestion pane binding is incomplete")
+    if result_ingestion_id is not None:
+        values["@asha_result_ingestion"] = result_ingestion_id
+        values["@asha_result_outbox_digest"] = hashlib.sha256(
+            str(result_outbox).encode("utf-8")
+        ).hexdigest()
+    return values
 
 
 def _ownership_matches(
@@ -378,6 +391,8 @@ def launch_task(
     goal_args=(),
     role: str = "implementer",
     headless: bool = False,
+    result_ingestion_id: str | None = None,
+    result_outbox: str | None = None,
     failure_injector: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Launch exactly one primary run from a prepared creation transaction."""
@@ -407,10 +422,32 @@ def launch_task(
             selected_harness, selected_role, command = _validate_launch_request(
                 harness, role, tuple(goal_args), headless,
             )
+            if (result_ingestion_id is None) != (result_outbox is None):
+                raise LaunchError(
+                    "result ingestion identity and outbox must be supplied together"
+                )
+            outbox_path = None
+            if result_outbox is not None:
+                relative = Path(result_outbox)
+                expected_outbox = f".asha/outbox/{result_ingestion_id}.json"
+                if (
+                    relative.is_absolute()
+                    or str(relative) != result_outbox
+                    or result_outbox != expected_outbox
+                ):
+                    raise LaunchError(
+                        "result outbox must exactly match its ingestion identity"
+                    )
+                workspace = Path(current["jj"]["workspace_path"])
+                outbox_path = workspace.joinpath(*relative.parts)
+                if outbox_path.parent.resolve() != outbox_path.parent:
+                    raise LaunchError("result outbox parent path is not exact and canonical")
             run_id = new_uuid()
             environment = harness_api.controller_env(
                 task_id=task_id, run_id=run_id, state_dir=config.tasks_dir,
                 asha_home=config.asha_home,
+                result_ingestion_id=result_ingestion_id,
+                result_outbox=outbox_path,
             )
             _inject(failure_injector, "validated")
 
@@ -432,7 +469,11 @@ def launch_task(
             trust_report = _inherit_workspace_trust(config, current)
             _save_phase(journal_store, journal, "tmux-intent", failure_injector)
             expected_session = _session_options(current)
-            expected_pane = _pane_options(run_id, selected_harness, selected_role)
+            expected_pane = _pane_options(
+                run_id, selected_harness, selected_role,
+                result_ingestion_id=result_ingestion_id,
+                result_outbox=outbox_path,
+            )
             # A chained new-session can create the session and then report a
             # later option failure.  Mark the attempt first so cleanup probes
             # for an exact owned survivor instead of assuming no mutation.

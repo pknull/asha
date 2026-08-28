@@ -215,9 +215,8 @@ fi
 if [[ "$mode" == SYMLINK_OUT* ]]; then
   ln -sfn target-b.txt outside-link.txt
 fi
-if [[ "$mode" != NO_SNAPSHOT* && "$mode" != REVIEW* ]]; then
-  jj status >/dev/null
-fi
+# Orchestration workers deliberately leave mutable tracked work unsnapshotted.
+# The controller owns the post-exit snapshot and exact-commit verification.
 printf '%s' "${ASHA_PERSONA:-unset}" >"$XDG_RUNTIME_DIR/persona-$ASHA_CONTROL_TASK_ID"
 result_file="$XDG_RUNTIME_DIR/result-$ASHA_CONTROL_TASK_ID.json"
 python3 -I - "$result_file" "$initiative" "$node" "$attempt" "$mode" "$path" "$assignment" <<'RESULTPY'
@@ -534,24 +533,31 @@ RESULTPY
         _, outside_node, outside = self._dispatch_and_wait_for_seal("OUT_SCOPE")
         self.assertEqual(outside["outcome"], "failure")
         self.assertEqual(outside_node["state"], "failed")
-        self.assertIn("outside/escaped.txt", outside["cumulative_changed_paths"])
+        self.assertEqual(outside["cumulative_changed_paths"], [])
+        outside_ingestion = InitiativeStore(self.config).list_result_ingestions_snapshot(
+            outside["initiative_id"],
+        )[0]
+        self.assertEqual(outside_ingestion["state"], "refused")
+        self.assertIn("hard scope", outside_ingestion["refusal"])
 
         _, nonzero_node, nonzero = self._dispatch_and_wait_for_seal("EXIT_ONE")
         self.assertEqual(nonzero["outcome"], "failure")
         self.assertEqual(nonzero_node["state"], "failed")
         self.assertNotEqual(nonzero["outcome"], "success")
 
-    def test_real_jj_unsnapshotted_claim_and_symlink_retarget_cannot_succeed(self) -> None:
+    def test_real_jj_controller_snapshots_unsnapped_claim_but_refuses_symlink_retarget(self) -> None:
         _, unsnapped_node, unsnapped = self._dispatch_and_wait_for_seal("NO_SNAPSHOT")
-        self.assertEqual(unsnapped["outcome"], "failure")
-        self.assertEqual(unsnapped_node["state"], "failed")
+        self.assertEqual(unsnapped["outcome"], "success")
+        self.assertEqual(unsnapped_node["state"], "succeeded")
+        self.assertEqual(unsnapped["commit_provenance"]["creator"], "controller")
         evidence = InitiativeStore(self.config).read_evidence(
             unsnapped["initiative_id"], unsnapped["process_evidence_id"],
         )
         self.assertEqual(
             json.loads(evidence["summary"])["claimed-but-unsealed"],
-            ["scope/unsnapped.txt"],
+            [],
         )
+        self.assertIn("scope/unsnapped.txt", unsnapped["changed_paths"])
 
         _, symlink_node, symlink = self._dispatch_and_wait_for_seal("SYMLINK_OUT")
         self.assertEqual(symlink["outcome"], "failure")
@@ -861,8 +867,17 @@ RESULTPY
             "done\n"
         )
         session = f"{self.session_prefix}coord-{name}"
+        pane_environment = [
+            value
+            for key in (
+                "HOME", "ASHA_HOME", "XDG_RUNTIME_DIR", "TMUX_TMPDIR",
+                "ASHA_CONFIG", "PATH", "PYTHONPATH", "ASHA_ROOT",
+            )
+            for value in ("-e", f"{key}={self.env[key]}")
+        ]
         self._run_command([
             "tmux", "new-session", "-d", "-s", session, "-x", "160", "-y", "40",
+            *pane_environment,
             "sh", str(loop), str(runner),
         ])
         self.addCleanup(lambda: subprocess.run(

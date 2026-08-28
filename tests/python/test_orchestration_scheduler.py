@@ -117,10 +117,10 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         self.assertIn("exact upstream work", rendered)
         self.assertIn("f" * 64, rendered)
         self.assertIn(
-            "run `jj status` in this workspace to snapshot before `asha task report`, "
-            "and after any later edit",
+            "Do not run `jj status` or any other jj command that snapshots",
             rendered,
         )
+        self.assertIn("The report receipt phase is `staged`", rendered)
 
     def test_parallel_total_deadline_pause_and_storage_limits_block(self) -> None:
         with mock.patch(
