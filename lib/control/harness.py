@@ -58,6 +58,7 @@ _BOOT_ID = re.compile(
 )
 _CONTROL_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
 _ROLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", re.ASCII)
+_RESULT_TOKEN = re.compile(r"[0-9a-f]{64}", re.ASCII)
 
 
 class HarnessError(ValueError):
@@ -158,6 +159,7 @@ def controller_env(
     *, task_id: str, run_id: str, state_dir: Path, asha_home: Path | None = None,
     result_ingestion_id: str | None = None,
     result_outbox: Path | None = None,
+    result_token: str | None = None,
 ) -> dict[str, str]:
     try:
         task_id = canonical_uuid(task_id)
@@ -197,6 +199,17 @@ def controller_env(
             result_outbox,
             "result outbox is not an absolute canonical path",
         ))
+        if result_token is not None:
+            if (
+                not isinstance(result_token, str)
+                or _RESULT_TOKEN.fullmatch(result_token) is None
+            ):
+                raise HarnessError(
+                    "result staging token must be 64 lowercase hexadecimal characters"
+                )
+            environment["ASHA_CONTROL_RESULT_TOKEN"] = result_token
+    elif result_token is not None:
+        raise HarnessError("result staging token requires result ingestion")
     return environment
 
 

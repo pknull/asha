@@ -1282,10 +1282,21 @@ _RESULT_INGESTION_KEYS = frozenset({
     "ingester", "refusal",
     "created_at", "updated_at",
 })
+_RESULT_INGESTION_TOKEN_KEYS = frozenset({"staging_token_digest"})
 
 
 def validate_result_ingestion(value: Any) -> dict[str, Any]:
-    record = _object(value, "result ingestion", _RESULT_INGESTION_KEYS)
+    has_staging_token = (
+        isinstance(value, dict) and bool(_RESULT_INGESTION_TOKEN_KEYS & value.keys())
+    )
+    expected = _RESULT_INGESTION_KEYS | (
+        _RESULT_INGESTION_TOKEN_KEYS if has_staging_token else set()
+    )
+    record = _object(value, "result ingestion", frozenset(expected))
+    # Retained pre-token reservations remain valid observations and cannot
+    # acquire a digest during a later state transition.
+    if not has_staging_token:
+        record["staging_token_digest"] = None
     if record["contract"] != RESULT_INGESTION_CONTRACT:
         raise ModelError(f"result ingestion contract must be {RESULT_INGESTION_CONTRACT}")
     for field in ("ingestion_id", "initiative_id", "attempt_id", "task_id", "run_id"):
@@ -1296,6 +1307,11 @@ def validate_result_ingestion(value: Any) -> dict[str, Any]:
         record["control_task_identity_digest"],
         "result ingestion control_task_identity_digest",
     )
+    if record["staging_token_digest"] is not None:
+        _digest(
+            record["staging_token_digest"],
+            "result ingestion staging_token_digest",
+        )
     if (
         not isinstance(record["workspace_path"], str)
         or not is_canonical_absolute_path(record["workspace_path"], resolved=True)

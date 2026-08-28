@@ -1036,6 +1036,10 @@ def _start_new_task(
         headless=parsed["headless"],
         result_ingestion_id=parsed["result_ingestion_id"],
         result_outbox=parsed["result_outbox"],
+        result_token=(
+            env.get("ASHA_CONTROL_RESULT_TOKEN")
+            if parsed["result_ingestion_id"] is not None else None
+        ),
     )
     trust_mutation = _workspace_trust_mutation(result.pop("workspace_trust", None))
     if trust_mutation is not None:

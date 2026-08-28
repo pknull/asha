@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
+import secrets
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1156,6 +1158,10 @@ def dispatch(
                 "link": None,
                 "control": None,
             }
+        staging_token = secrets.token_hex(32)
+        staging_token_digest = hashlib.sha256(
+            staging_token.encode("utf-8")
+        ).hexdigest()
         try:
             returncode, stdout, stderr = capture_bytes(
                 argv,
@@ -1164,6 +1170,7 @@ def dispatch(
                 runner=None,
                 error_type=SchedulerError,
                 deadline_seconds=DISPATCH_TIMEOUT_SECONDS,
+                env={**os.environ, "ASHA_CONTROL_RESULT_TOKEN": staging_token},
             )
         except SchedulerError as exc:
             action = _mark_indeterminate(
@@ -1208,6 +1215,7 @@ def dispatch(
                 raise SchedulerError("retained Control link differs from replayed task")
             reserve_result_ingestion(
                 store, initiative, node, attempt, stored_link, control["task"],
+                staging_token_digest=staging_token_digest,
             )
         except (SchedulerError, StoreError, OSError, ValueError) as exc:
             action = _mark_indeterminate(

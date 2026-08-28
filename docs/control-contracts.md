@@ -302,15 +302,21 @@ publication UUID, attempt UUID, or Control task UUID.
 
 For these reserved launches only, the private harness environment also carries
 `ASHA_CONTROL_RESULT_INGESTION_ID` and the exact absolute
-`ASHA_CONTROL_RESULT_OUTBOX`. Matching tmux pane options bind their ingestion
-identity and the SHA-256 digest of the outbox path. These are launch ownership
-aids, not authorization to write Control state and not new fields in
+`ASHA_CONTROL_RESULT_OUTBOX`, plus the launch-minted
+`ASHA_CONTROL_RESULT_TOKEN`. The token's SHA-256 digest is bound into the
+reservation; the token is an attribution aid for sandbox-reachable staging,
+not authorization. Matching tmux pane options bind their ingestion identity
+and the SHA-256 digest of the outbox path. These are launch ownership aids, not
+authorization to write Control state and not new fields in
 `asha.control-task.v1`, `asha.control-run.v1`, or
-`asha.control-task-start.v1`. `asha task report` proves the caller descends
-from that exact managed pane and stages a closed
+`asha.control-task-start.v1`. `asha task report` primarily proves the caller
+descends from that exact managed pane. When sandbox isolation makes the tmux
+socket or process ancestry unavailable, it instead compares the private token
+with the reservation digest through lock-free snapshot reads, then stages a closed
 `asha.orchestration-result-candidate.v1` file in the reserved workspace
-outbox. Staging never opens an InitiativeStore or TaskStore and therefore
-continues to work when the worker sees all Control state read-only.
+outbox. Staging never opens a TaskStore or takes an initiative lock and therefore
+continues to work when the worker sees all Control state read-only; its fallback
+InitiativeStore route performs no directory creation, cleanup, or write.
 
 Only the controller-side `asha task ingest`/supervisor path reads a candidate.
 It rechecks the reservation, producer bindings, current active-plan digest,
@@ -343,8 +349,9 @@ layout under `${ASHA_HOME:-~/.asha}/workspaces/`, and the human TUI are
 presentation and ownership aids. Authoritative orchestration task state is
 read through the payloads above, never inferred from tmux or the filesystem.
 The workspace-only candidate staging seam may prove that its caller owns the
-launch reservation through the private pane options described above; the
-controller still revalidates every authoritative binding from retained state.
+launch reservation through the private pane proof or digest-bound token proof
+described above; the controller still revalidates every authoritative binding
+from retained state.
 
 The TUI's selected source, observation timestamp, and freshness are an internal
 projection chosen atomically with the same state returned by

@@ -39,7 +39,7 @@ from lib.control.jj import (
     WorkspaceIdentity,
 )
 from lib.control.launch import (
-    LaunchError, archive_task, launch_task, recover_task, stop_task,
+    LaunchError, archive_task, launch_task, recover_task, run_log_path, stop_task,
     unarchive_task,
 )
 from lib.control.model import RUN_CONTRACT, validate_run, validate_task
@@ -130,6 +130,43 @@ class TmuxAdapterTests(unittest.TestCase):
         self.assertEqual(
             commands[2],
             ["set-option", "-t", "asha-task-12345678:", "automatic-rename", "off"],
+        )
+
+    def test_private_result_token_uses_control_stdin_and_never_argv(self) -> None:
+        token = "6a" * 32
+        run = mock.Mock(return_value=subprocess.CompletedProcess(
+            ["tmux"], 0, b"%begin 1 1 1\n%end 1 1 1\n%exit\n", b"",
+        ))
+        adapter = TmuxAdapter(socket="asha-control", runner=run)
+
+        adapter.set_result_staging_token("asha-task-12345678", token)
+
+        argv = run.call_args.args[0]
+        self.assertNotIn(token, argv)
+        self.assertTrue(all(token not in item for item in argv))
+        self.assertIn(token.encode("ascii"), run.call_args.kwargs["input"])
+        self.assertFalse(run.call_args.kwargs["shell"])
+
+    def test_private_result_token_cleanup_names_only_the_environment_key(self) -> None:
+        token = "6a" * 32
+        responses = iter([
+            subprocess.CompletedProcess(
+                ["tmux"], 0, b"%begin 1 1 1\n%end 1 1 1\n%exit\n", b"",
+            ),
+            subprocess.CompletedProcess(["tmux"], 0, b"", b""),
+        ])
+        run = mock.Mock(side_effect=lambda argv, **kwargs: next(responses))
+        adapter = TmuxAdapter(socket="asha-control", runner=run)
+
+        adapter.set_result_staging_token("asha-task-12345678", token)
+        adapter.clear_result_staging_token("asha-task-12345678")
+
+        cleanup_argv = run.call_args_list[-1].args[0]
+        self.assertNotIn(token, cleanup_argv)
+        self.assertEqual(
+            cleanup_argv[-5:],
+            ["set-environment", "-u", "-t", "asha-task-12345678",
+             "ASHA_CONTROL_RESULT_TOKEN"],
         )
 
     def test_respawn_is_argv_only(self) -> None:
@@ -422,13 +459,29 @@ class HarnessAdapterTests(unittest.TestCase):
             controller_env(
                 task_id=task_id, run_id=run_id, state_dir=state_dir,
                 result_ingestion_id=ingestion_id, result_outbox=outbox,
-            )["ASHA_CONTROL_RESULT_OUTBOX"],
-            str(outbox),
+                result_token="7b" * 32,
+            ),
+            {
+                "ASHA_CONTROL_TASK_ID": task_id,
+                "ASHA_CONTROL_RUN_ID": run_id,
+                "ASHA_CONTROL_STATE_DIR": str(state_dir),
+                "ASHA_CONTROL_MANAGED": "1",
+                "ASHA_PERSONA": "0",
+                "ASHA_CONTROL_RESULT_INGESTION_ID": ingestion_id,
+                "ASHA_CONTROL_RESULT_OUTBOX": str(outbox),
+                "ASHA_CONTROL_RESULT_TOKEN": "7b" * 32,
+            },
         )
         with self.assertRaises(HarnessError):
             controller_env(
                 task_id=task_id, run_id=run_id, state_dir=state_dir,
                 result_ingestion_id=ingestion_id,
+            )
+        with self.assertRaises(HarnessError):
+            controller_env(
+                task_id=task_id, run_id=run_id, state_dir=state_dir,
+                result_ingestion_id=ingestion_id, result_outbox=outbox,
+                result_token="not-a-token",
             )
 
     def test_launch_argv_validates_root_harness_and_extra_arguments(self) -> None:
@@ -512,6 +565,8 @@ class FakeTmux:
         self.pid = 4242
         self.session = ""
         self.window = "work"
+        self.result_staging_tokens: dict[str, str] = {}
+        self.result_staging_token_updates: list[tuple[str, str]] = []
 
     def has_session(self, name):
         return self.present
@@ -529,6 +584,13 @@ class FakeTmux:
         self.session_options = dict(kwargs["session_options"])
         self.pane_options = dict(kwargs["pane_options"])
         return "%1"
+
+    def set_result_staging_token(self, session, token):
+        self.result_staging_tokens[session] = token
+        self.result_staging_token_updates.append((session, token))
+
+    def clear_result_staging_token(self, session):
+        self.result_staging_tokens.pop(session, None)
 
     def pipe_pane(self, pane_id, path):
         _validate_pane_id(pane_id)
@@ -749,6 +811,34 @@ class LaunchFixtureTests(unittest.TestCase):
         self.assertEqual(len(result["task"]["runs"]), 1)
         self.assertEqual(self.journals.read(task["task_id"])["phase"], "run-recorded")
         self.assertEqual(result["session"], task["tmux"]["session"])
+
+    def test_result_launch_forwards_staging_token_only_to_pane_environment(self) -> None:
+        task = self.prepared()
+        adapter = FakeTmux()
+        ingestion_id = "33333333-3333-4333-8333-333333333333"
+        token = "8d" * 32
+        with self.process_evidence(), mock.patch.object(
+            adapter, "create_task_session", wraps=adapter.create_task_session,
+        ) as create:
+            launch_task(
+                self.config, task, tmux=adapter, tasks=self.tasks,
+                journals=self.journals, harness="codex", goal_args=("Do work",),
+                result_ingestion_id=ingestion_id,
+                result_outbox=f".asha/outbox/{ingestion_id}.json",
+                result_token=token,
+            )
+        launched = create.call_args.kwargs
+        self.assertNotIn("ASHA_CONTROL_RESULT_TOKEN", launched["environment"])
+        self.assertEqual(
+            adapter.result_staging_token_updates,
+            [(task["tmux"]["session"], token)],
+        )
+        self.assertEqual(adapter.result_staging_tokens, {})
+        self.assertTrue(all(
+            token not in value
+            for options in (launched["session_options"], launched["pane_options"])
+            for value in options.values()
+        ))
 
     def test_failure_injector_boundaries_rollback_before_exec_and_preserve_after(self) -> None:
         boundaries = {
@@ -1356,6 +1446,39 @@ class Increment3CliGrammarTests(unittest.TestCase):
             "Base commit:", "Tmux:", "Run:",
         ])
 
+    def test_result_start_carries_scheduler_token_into_launch_only(self) -> None:
+        result = self.fake_result()
+        captured = {}
+        token = "9e" * 32
+        ingestion_id = "33333333-3333-4333-8333-333333333333"
+
+        def prepare(config, request, jj=None):
+            return result["task"]
+
+        def launch(config, task, **kwargs):
+            captured.update(kwargs)
+            return result
+
+        environment = {**self.env, "ASHA_CONTROL_RESULT_TOKEN": token}
+        with mock.patch("lib.control.cli._repo_argument", return_value=self.root / "source"), \
+                mock.patch("lib.control.cli.JjAdapter", return_value=self.fake_start_jj()), \
+                mock.patch("lib.control.cli.prepare_task_workspace", side_effect=prepare), \
+                mock.patch("lib.control.cli.launch_task", side_effect=launch), \
+                mock.patch("lib.control.cli.shutil.which", return_value="/usr/bin/codex"), \
+                mock.patch("lib.control.cli._preflight_plain_git_start",
+                           side_effect=self.retained_preflight), \
+                mock.patch("lib.control.cli.revalidate_plain_git_pre_enable_plan"):
+            status = _start_command([
+                "--harness", "codex",
+                "--task-id", result["task"]["task_id"],
+                "--result-ingestion-id", ingestion_id,
+                "--result-outbox", f".asha/outbox/{ingestion_id}.json",
+                "--goal", "Do work", "--detach", "--json",
+            ], environment)
+
+        self.assertEqual(status, 0)
+        self.assertEqual(captured["result_token"], token)
+
     def test_json_start_implies_detach_and_never_opens_popup(self) -> None:
         result = self.fake_result()
 
@@ -1647,6 +1770,37 @@ class RealTmuxLaunchTests(unittest.TestCase):
             Path(stored["jj"]["workspace_path"]), stored["jj"]["workspace_name"],
         )
         self.assertEqual(identity.parent_commit_ids, (stored["jj"]["base_commit_id"],))
+
+    def test_result_staging_token_reaches_real_worker_environment(self) -> None:
+        prepared = self.prepare("live-result-token")
+        ingestion_id = "33333333-3333-4333-8333-333333333333"
+        token = "4f" * 32
+        result = self.launch(
+            prepared,
+            result_ingestion_id=ingestion_id,
+            result_outbox=f".asha/outbox/{ingestion_id}.json",
+            result_token=token,
+        )
+        process_environment = Path(
+            f"/proc/{result['run']['pid']}/environ"
+        ).read_bytes().split(b"\0")
+        self.assertIn(
+            f"ASHA_CONTROL_RESULT_TOKEN={token}".encode("ascii"),
+            process_environment,
+        )
+        self.assertNotIn(
+            token,
+            run_log_path(self.config, result["run"]["run_id"]).read_text(),
+        )
+        retained_environment = subprocess.run(
+            [
+                "tmux", "-L", self.socket, "-f", "/dev/null",
+                "show-environment", "-t", result["session"],
+                "ASHA_CONTROL_RESULT_TOKEN",
+            ],
+            capture_output=True, text=True, check=False,
+        )
+        self.assertNotIn(token, retained_environment.stdout)
 
     def test_prelaunch_failure_removes_tmux_but_retains_v2_workspace(self) -> None:
         prepared = self.prepare("live-pre-failure")

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import copy
+import hashlib
 import os
 import shutil
 import stat
@@ -228,6 +229,46 @@ print(json.dumps({
         self.assertEqual(link["control_task_id"], attempts[0]["task_id"])
         self.assertEqual(link["action_id"], action["action_id"])
         self.assertEqual(link["expected_initiative_revision"], document["expected_state_revision"])
+
+    def test_dispatch_mints_token_only_in_environment_and_reserves_its_digest(self) -> None:
+        token = "3c" * 32
+        captured: dict[str, object] = {}
+
+        def capture(argv, **kwargs):
+            captured["argv"] = list(argv)
+            captured["env"] = dict(kwargs["env"])
+            payload = self.control_payload(argv)
+            return 0, json.dumps(payload, sort_keys=True).encode(), b""
+
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ), mock.patch(
+            "secrets.token_hex", return_value=token,
+        ):
+            action = submit_action(self.store, self.initiative_id, document)
+
+        self.assertEqual(action["state"], "completed", action["outcome"])
+        argv = captured["argv"]
+        environment = captured["env"]
+        self.assertNotIn(token, argv)
+        self.assertTrue(all(token not in item for item in argv))
+        self.assertEqual(environment["ASHA_CONTROL_RESULT_TOKEN"], token)
+        reservation = self.store.list_result_ingestions_snapshot(
+            self.initiative_id,
+        )[0]
+        self.assertEqual(
+            reservation["staging_token_digest"],
+            hashlib.sha256(token.encode()).hexdigest(),
+        )
+        for path in self.root.rglob("*"):
+            if path.is_file() and not path.is_symlink():
+                self.assertNotIn(token.encode("ascii"), path.read_bytes(), str(path))
 
     def test_repair_dispatch_binds_the_accepted_findings_into_the_assignment(self) -> None:
         from tests.python.orchestration_increment3_fixtures import (

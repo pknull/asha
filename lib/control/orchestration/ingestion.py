@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import hmac
 import json
 import os
 import stat
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -115,8 +117,18 @@ def reserve_result_ingestion(
     attempt: Mapping[str, Any],
     link: Mapping[str, Any],
     task: Mapping[str, Any],
+    *,
+    staging_token_digest: str,
 ) -> dict[str, Any]:
     """Persist the controller reservation after the immutable Control link."""
+    if (
+        not isinstance(staging_token_digest, str)
+        or len(staging_token_digest) != 64
+        or any(character not in "0123456789abcdef" for character in staging_token_digest)
+    ):
+        raise IngestionRefused(
+            "staging token digest must be 64 lowercase hexadecimal characters"
+        )
     ingestion_id = result_ingestion_id(attempt["attempt_id"])
     now = _now()
     record = validate_result_ingestion({
@@ -129,6 +141,7 @@ def reserve_result_ingestion(
         "run_id": task["runs"][0]["run_id"],
         "active_plan_digest": link["active_plan_digest"],
         "control_task_identity_digest": link["control_task_identity_digest"],
+        "staging_token_digest": staging_token_digest,
         "workspace_path": task["jj"]["workspace_path"],
         "workspace_name": task["jj"]["workspace_name"],
         "change_id": task["jj"]["change_id"],
@@ -158,7 +171,8 @@ def reserve_result_ingestion(
     reservation_fields = (
         "contract", "ingestion_id", "initiative_id", "node_id", "attempt_id",
         "task_id", "run_id", "active_plan_digest", "control_task_identity_digest",
-        "workspace_path", "workspace_name", "change_id", "outbox_path",
+        "staging_token_digest", "workspace_path", "workspace_name", "change_id",
+        "outbox_path",
     )
     if any(retained[field] != record[field] for field in reservation_fields):
         raise IngestionRefused(
@@ -326,6 +340,85 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return value
 
 
+def _staging_reservation_snapshot(
+    config,
+    *,
+    initiative_id: str,
+    ingestion_id: str,
+) -> dict[str, Any]:
+    """Find a post-launch reservation without locks, writes, or layout upgrades."""
+    try:
+        store = InitiativeStore(config)
+    except StoreError as exc:
+        raise IngestionRefused(
+            f"staging token reservation cannot be read: {exc}"
+        ) from exc
+    deadline = time.monotonic() + config.link_grace_seconds
+    while True:
+        try:
+            matches = [
+                item for item in store.list_result_ingestions_snapshot(initiative_id)
+                if item["ingestion_id"] == ingestion_id
+            ]
+        except StoreError as exc:
+            if "not found" not in str(exc):
+                raise IngestionRefused(
+                    f"staging token reservation cannot be read: {exc}"
+                ) from exc
+            matches = []
+        if len(matches) > 1:
+            raise IngestionRefused(
+                "staging token reservation identity is not unique"
+            )
+        if matches:
+            return matches[0]
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise IngestionRefused(
+                "staging token reservation is not yet available; the report may be retried"
+            )
+        time.sleep(min(0.25, remaining))
+
+
+def _staging_token_failure(
+    config,
+    parsed: Mapping[str, Any],
+    env: Mapping[str, str],
+    *,
+    task_id: str,
+    run_id: str,
+    ingestion_id: str,
+    outbox: str,
+) -> str | None:
+    token = env.get("ASHA_CONTROL_RESULT_TOKEN")
+    if not isinstance(token, str) or not token:
+        return "staging token is absent"
+    try:
+        reservation = _staging_reservation_snapshot(
+            config,
+            initiative_id=parsed["initiative_id"],
+            ingestion_id=ingestion_id,
+        )
+    except IngestionRefused as exc:
+        return str(exc)
+    if reservation["staging_token_digest"] is None:
+        return "reservation has no staging token digest"
+    expected_outbox = str(Path(reservation["workspace_path"]).joinpath(
+        *reservation["outbox_path"].split("/")
+    ))
+    if (
+        reservation["attempt_id"] != parsed["attempt_id"]
+        or reservation["task_id"] != task_id
+        or reservation["run_id"] != run_id
+        or expected_outbox != outbox
+    ):
+        return "staging token reservation binding is foreign"
+    presented = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    if not hmac.compare_digest(presented, reservation["staging_token_digest"]):
+        return "staging token is invalid"
+    return None
+
+
 def stage_result(
     config,
     body: Mapping[str, Any],
@@ -350,11 +443,12 @@ def stage_result(
         task_id, run_id, ingestion_id, outbox,
     )):
         raise IngestionRefused("managed result ingestion environment is incomplete")
-    del config, control_store
+    del control_store
     if parsed.get("task_id") != task_id or parsed.get("run_id") != run_id:
         raise IngestionRefused("result candidate task/run/attempt binding is foreign")
     if result_ingestion_id(parsed.get("attempt_id")) != ingestion_id:
         raise IngestionRefused("managed result ingestion ID is foreign to this attempt")
+    identity_proof = "pane"
     if caller_pid is not None:
         try:
             pane_id = env.get("TMUX_PANE")
@@ -383,7 +477,19 @@ def stage_result(
                 facts.pane_pid, start_pid=caller_pid,
             )
         except (HarnessError, TmuxError) as exc:
-            raise IngestionRefused(f"managed worker process identity is invalid: {exc}") from exc
+            token_failure = _staging_token_failure(
+                config, parsed, env,
+                task_id=task_id, run_id=run_id,
+                ingestion_id=ingestion_id, outbox=outbox,
+            )
+            if token_failure is not None:
+                raise IngestionRefused(
+                    "managed worker identity proof failed: "
+                    f"pane proof unreachable: {exc}; "
+                    f"token proof failed: {token_failure}"
+                ) from exc
+            identity_proof = "token"
+            descended = True
         if not descended:
             raise IngestionRefused(
                 "caller does not descend from the linked managed worker process"
@@ -436,6 +542,7 @@ def stage_result(
         "body_digest": retained["body_digest"],
         "outbox_path": str(path),
         "phase": "staged",
+        "identity_proof": identity_proof,
     }
 
 
