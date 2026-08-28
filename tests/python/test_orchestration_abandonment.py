@@ -11,8 +11,9 @@ from lib.control.orchestration.actions import (
     reconcile_actions,
     submit_action,
 )
-from lib.control.orchestration.cli import _create, _plan, _reject
+from lib.control.orchestration.cli import _approve, _create, _plan, _reject
 from lib.control.orchestration.model import record_digest
+from lib.control.orchestration.readiness import append_event as readiness_append_event
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
 from tests.python.test_orchestration_graph import valid_plan
 
@@ -26,6 +27,14 @@ class OrchestrationAbandonmentTests(ExecutionFixture, unittest.TestCase):
         ], self.config, self.store, self.jj)["initiative"]
 
     def reject_only_plan(self, slug: str, reason: str) -> tuple[dict, dict]:
+        initiative, plan = self.propose_plan(slug)
+        _reject([
+            initiative["initiative_id"], "--digest", plan["digest"],
+            "--reason", reason,
+        ], self.store)
+        return self.store.peek(initiative["initiative_id"]), plan
+
+    def propose_plan(self, slug: str) -> tuple[dict, dict]:
         initiative = self.create_draft(slug)
         value = valid_plan()
         value["initiative_id"] = initiative["initiative_id"]
@@ -39,10 +48,6 @@ class OrchestrationAbandonmentTests(ExecutionFixture, unittest.TestCase):
         plan, _ = _plan([
             initiative["initiative_id"], "--file", str(path),
         ], self.store, self.config, jj=self.jj)
-        _reject([
-            initiative["initiative_id"], "--digest", plan["digest"],
-            "--reason", reason,
-        ], self.store)
         return self.store.peek(initiative["initiative_id"]), plan
 
     def submit(self, initiative: dict, action_class: str, payload: dict) -> tuple[dict, dict]:
@@ -108,6 +113,146 @@ class OrchestrationAbandonmentTests(ExecutionFixture, unittest.TestCase):
             self.store.peek(planning["initiative_id"]), "archive", {},
         )
         self.assertEqual(archived["state"], "completed", archived["outcome"])
+
+    def test_approved_never_activated_cancels_plan_nodes_and_archives(self) -> None:
+        awaiting, plan = self.propose_plan("approved-abandonment")
+        approved, _ = _approve([
+            awaiting["initiative_id"], "--digest", plan["digest"],
+        ], self.store)
+        initiative = approved["initiative"]
+        self.assertEqual(initiative["state"], "approved")
+        self.assertEqual(self.store.list_attempts_snapshot(initiative["initiative_id"]), [])
+
+        document, finalized = self.submit(
+            initiative, "finalize",
+            {"outcome": "failed", "reason": "Coordinator exited before activation."},
+        )
+
+        self.assertEqual(document["active_plan_digest"], plan["digest"])
+        self.assertEqual(finalized["state"], "completed", finalized["outcome"])
+        self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "failed")
+        nodes = self.store.list_nodes_snapshot(initiative["initiative_id"])
+        self.assertTrue(nodes)
+        self.assertTrue(all(node["state"] == "cancelled" for node in nodes))
+        events = self.store.list_events_snapshot(initiative["initiative_id"])
+        cancellations = [
+            event for event in events
+            if event["type"] == "node-state-changed"
+            and event["payload"].get("to") == "cancelled"
+            and event["actor_kind"] == "controller"
+            and event["actor_id"] == "finalization-gate"
+        ]
+        self.assertEqual(len(cancellations), len(nodes))
+        terminal = [
+            event for event in events
+            if event["type"] == "initiative-state-changed"
+            and event["payload"].get("to") == "failed"
+        ][-1]
+        self.assertEqual(terminal["payload"]["from"], "approved")
+        self.assertEqual(
+            terminal["payload"]["abandoned_plan_digest"], plan["digest"],
+        )
+
+        _, archived = self.submit(
+            self.store.peek(initiative["initiative_id"]), "archive", {},
+        )
+        self.assertEqual(archived["state"], "completed", archived["outcome"])
+        self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "archived")
+
+    def test_awaiting_plan_approval_never_activated_cancels_proposed_nodes(self) -> None:
+        awaiting, _ = self.propose_plan("awaiting-approval-abandonment")
+        self.assertEqual(awaiting["state"], "awaiting-plan-approval")
+        self.assertIsNone(awaiting["active_plan"])
+        self.assertEqual(self.store.list_attempts_snapshot(awaiting["initiative_id"]), [])
+
+        _, finalized = self.submit(
+            awaiting, "finalize",
+            {"outcome": "failed", "reason": "No operator approval will arrive."},
+        )
+
+        self.assertEqual(finalized["state"], "completed", finalized["outcome"])
+        self.assertEqual(self.store.peek(awaiting["initiative_id"])["state"], "failed")
+        self.assertTrue(all(
+            node["state"] == "cancelled"
+            for node in self.store.list_nodes_snapshot(awaiting["initiative_id"])
+        ))
+        terminal = [
+            event for event in self.store.list_events_snapshot(awaiting["initiative_id"])
+            if event["type"] == "initiative-state-changed"
+            and event["payload"].get("to") == "failed"
+        ][-1]
+        self.assertEqual(terminal["payload"]["from"], "awaiting-plan-approval")
+        self.assertNotIn("abandoned_plan_digest", terminal["payload"])
+
+    def test_approved_initiative_with_an_attempt_keeps_running_only_refusal(self) -> None:
+        def capture(argv, **_kwargs):
+            return 0, json.dumps(self.control_payload(argv)).encode(), b""
+
+        dispatch = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ):
+            dispatched = submit_action(self.store, self.initiative_id, dispatch)
+        self.assertEqual(dispatched["state"], "completed", dispatched["outcome"])
+        self.assertTrue(self.store.list_attempts_snapshot(self.initiative_id))
+
+        running = self.initiative()
+        approved = copy.deepcopy(running)
+        approved.update({
+            "state": "approved",
+            "state_revision": running["state_revision"] + 1,
+        })
+        # Activation normally makes this state combination unreachable. Bypass
+        # only the transition check to prove the zero-attempt gate remains the
+        # independent defense if an attempt is nevertheless retained.
+        with mock.patch("lib.control.orchestration.store.require_transition"):
+            self.store.save_initiative(
+                approved, expected_digest=record_digest(running),
+            )
+        _, finalized = self.submit(
+            approved, "finalize",
+            {"outcome": "failed", "reason": "An attempt exists."},
+        )
+
+        self.assertEqual(finalized["state"], "refused")
+        self.assertEqual(
+            json.loads(finalized["outcome"])["reason"],
+            "only a running initiative may be finalized",
+        )
+        self.assertEqual(self.store.peek(self.initiative_id)["state"], "approved")
+
+    def test_approved_ready_node_keeps_precise_abandonment_refusal(self) -> None:
+        awaiting, plan = self.propose_plan("approved-ready-node-blocker")
+        approved, _ = _approve([
+            awaiting["initiative_id"], "--digest", plan["digest"],
+        ], self.store)
+        initiative = approved["initiative"]
+        node = self.store.read_node(initiative["initiative_id"], "implementation-a")
+        changed = copy.deepcopy(node)
+        changed["state"] = "ready"
+        self.store.save_node(
+            initiative["initiative_id"], changed,
+            expected_digest=record_digest(node),
+        )
+
+        _, finalized = self.submit(
+            initiative, "finalize",
+            {"outcome": "failed", "reason": "A node reached activation state."},
+        )
+
+        self.assertEqual(finalized["state"], "refused")
+        self.assertEqual(
+            json.loads(finalized["outcome"])["reason"],
+            "abandonment blocked by non-terminal node implementation-a in state ready",
+        )
+        self.assertEqual(
+            self.store.peek(initiative["initiative_id"])["state"], "approved",
+        )
 
     def test_nonterminal_node_blocks_abandonment_by_identity(self) -> None:
         draft = self.create_draft("live-node-blocker")
@@ -208,6 +353,151 @@ class OrchestrationAbandonmentTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(second_archive, first_archive)
         self.assertEqual(
             len(self.store.list_events_snapshot(draft["initiative_id"])), event_count,
+        )
+
+    def test_repeated_approved_finalize_does_not_duplicate_node_cancellations(self) -> None:
+        awaiting, plan = self.propose_plan("idempotent-approved-abandonment")
+        approved, _ = _approve([
+            awaiting["initiative_id"], "--digest", plan["digest"],
+        ], self.store)
+        initiative = approved["initiative"]
+        document = build_action_document(
+            initiative, "finalize",
+            {"outcome": "failed", "reason": "Coordinator did not activate."},
+        )
+
+        first = submit_action(self.store, initiative["initiative_id"], document)
+        first_events = self.store.list_events_snapshot(initiative["initiative_id"])
+        first_cancellations = [
+            event for event in first_events
+            if event["type"] == "node-state-changed"
+            and event["payload"].get("to") == "cancelled"
+            and event["actor_id"] == "finalization-gate"
+        ]
+        second = submit_action(self.store, initiative["initiative_id"], document)
+        second_events = self.store.list_events_snapshot(initiative["initiative_id"])
+        second_cancellations = [
+            event for event in second_events
+            if event["type"] == "node-state-changed"
+            and event["payload"].get("to") == "cancelled"
+            and event["actor_id"] == "finalization-gate"
+        ]
+
+        self.assertEqual(second, first)
+        self.assertEqual(second_events, first_events)
+        self.assertEqual(len(second_cancellations), len(first_cancellations))
+        self.assertEqual(
+            len(second_cancellations),
+            len(self.store.list_nodes_snapshot(initiative["initiative_id"])),
+        )
+
+    def test_interrupted_approved_abandonment_recovers_node_events_once(self) -> None:
+        awaiting, plan = self.propose_plan("recover-approved-abandonment")
+        approved, _ = _approve([
+            awaiting["initiative_id"], "--digest", plan["digest"],
+        ], self.store)
+        initiative = approved["initiative"]
+        document = build_action_document(
+            initiative, "finalize",
+            {"outcome": "failed", "reason": "Coordinator did not activate."},
+        )
+        calls = 0
+
+        def fail_first_node_event(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("injected node cancellation event failure")
+            return readiness_append_event(*args, **kwargs)
+
+        with mock.patch(
+            "lib.control.orchestration.readiness.append_event",
+            side_effect=fail_first_node_event,
+        ):
+            interrupted = submit_action(
+                self.store, initiative["initiative_id"], document,
+            )
+        self.assertEqual(interrupted["state"], "indeterminate")
+        self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "approved")
+
+        recovered = reconcile_actions(
+            self.store, initiative["initiative_id"],
+        )["actions"][0]
+
+        self.assertEqual(recovered["state"], "completed", recovered["outcome"])
+        events = self.store.list_events_snapshot(initiative["initiative_id"])
+        cancellations = [
+            event for event in events
+            if event["type"] == "node-state-changed"
+            and event["payload"].get("to") == "cancelled"
+            and event["actor_id"] == "finalization-gate"
+        ]
+        self.assertEqual(
+            len(cancellations),
+            len(self.store.list_nodes_snapshot(initiative["initiative_id"])),
+        )
+        self.assertEqual(
+            len({event["subject_ids"][0] for event in cancellations}),
+            len(cancellations),
+        )
+
+    def test_interrupted_approved_terminal_event_recovers_source_and_digest(self) -> None:
+        awaiting, plan = self.propose_plan("recover-approved-terminal-event")
+        approved, _ = _approve([
+            awaiting["initiative_id"], "--digest", plan["digest"],
+        ], self.store)
+        initiative = approved["initiative"]
+        document = build_action_document(
+            initiative, "finalize",
+            {"outcome": "failed", "reason": "Coordinator did not activate."},
+        )
+
+        def fail_terminal_event(store, initiative_id, event_type, *args, **kwargs):
+            if event_type == "initiative-state-changed":
+                raise OSError("injected terminal event failure")
+            return readiness_append_event(
+                store, initiative_id, event_type, *args, **kwargs,
+            )
+
+        with mock.patch(
+            "lib.control.orchestration.readiness.append_event",
+            side_effect=fail_terminal_event,
+        ):
+            interrupted = submit_action(
+                self.store, initiative["initiative_id"], document,
+            )
+        self.assertEqual(interrupted["state"], "indeterminate")
+        self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "failed")
+        cancellation_count = sum(
+            event["type"] == "node-state-changed"
+            and event["payload"].get("to") == "cancelled"
+            and event["actor_id"] == "finalization-gate"
+            for event in self.store.list_events_snapshot(initiative["initiative_id"])
+        )
+
+        recovered = reconcile_actions(
+            self.store, initiative["initiative_id"],
+        )["actions"][0]
+
+        self.assertEqual(recovered["state"], "completed", recovered["outcome"])
+        events = self.store.list_events_snapshot(initiative["initiative_id"])
+        self.assertEqual(
+            sum(
+                event["type"] == "node-state-changed"
+                and event["payload"].get("to") == "cancelled"
+                and event["actor_id"] == "finalization-gate"
+                for event in events
+            ),
+            cancellation_count,
+        )
+        terminal = [
+            event for event in events
+            if event["type"] == "initiative-state-changed"
+            and event["payload"].get("to") == "failed"
+        ][-1]
+        self.assertEqual(terminal["payload"]["from"], "approved")
+        self.assertEqual(
+            terminal["payload"]["abandoned_plan_digest"], plan["digest"],
         )
 
     def test_interrupted_abandonment_recovers_original_source_state(self) -> None:
