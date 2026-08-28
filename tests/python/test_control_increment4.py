@@ -615,7 +615,7 @@ class EventCliTests(Increment4Fixture):
                     "--pane-id", "%4", *harness_args,
                 ], {**self.managed_env(), **environment})
 
-            self.assertEqual((status, stdout, stderr), (0, "", ""))
+            self.assertEqual((status, stdout, stderr), (0, "{}\n", ""))
             self.assertEqual(
                 read_snapshot(self.config, self.run_id)["harness"], expected,
             )
@@ -633,7 +633,7 @@ class EventCliTests(Increment4Fixture):
                 "--pane-id", "%4",
             ], self.managed_env())
 
-        self.assertEqual((status, stdout, stderr), (0, "", ""))
+        self.assertEqual((status, stdout, stderr), (0, "{}\n", ""))
         self.assertEqual(
             store.peek.call_args_list,
             [mock.call(self.task_id), mock.call(self.task_id)],
@@ -655,7 +655,7 @@ class EventCliTests(Increment4Fixture):
                 "control", "event", "--event", "turn-stopped", "--pane-id", "%4",
             ], self.managed_env())
 
-        self.assertEqual((status, stdout, stderr), (0, "", ""))
+        self.assertEqual((status, stdout, stderr), (0, "{}\n", ""))
         self.assertIsNone(read_snapshot(self.config, self.run_id))
         publish.assert_not_called()
         publish_summary.assert_called_once()
@@ -686,7 +686,7 @@ class EventCliTests(Increment4Fixture):
                     *pane_args,
                 ], {**self.managed_env(), **environment})
 
-                self.assertEqual((status, stdout), (0, ""))
+                self.assertEqual((status, stdout), (0, "{}\n"))
                 self.assertIn("asha control event:", stderr)
                 self.assertLessEqual(len(stderr), 600)
                 write.assert_not_called()
@@ -702,7 +702,7 @@ class EventCliTests(Increment4Fixture):
             "--pane-id", "%99",
         ], self.managed_env())
 
-        self.assertEqual((status, stdout), (0, ""))
+        self.assertEqual((status, stdout), (0, "{}\n"))
         self.assertIn("asha control event:", stderr)
         self.assertEqual(read_snapshot(self.config, self.run_id), before)
 
@@ -717,7 +717,7 @@ class EventCliTests(Increment4Fixture):
             "--pane-id", "%4",
         ], self.managed_env())
 
-        self.assertEqual((status, stdout), (0, ""))
+        self.assertEqual((status, stdout), (0, "{}\n"))
         self.assertIn("asha control event:", stderr)
         self.assertLessEqual(len(stderr), 600)
 
@@ -726,7 +726,7 @@ class EventCliTests(Increment4Fixture):
         status, stdout, stderr = self.invoke([
             "control", "event", "--event", "unknown", "--pane-id", "%4",
         ], self.managed_env())
-        self.assertEqual((status, stdout), (0, ""))
+        self.assertEqual((status, stdout), (0, "{}\n"))
         self.assertIn("asha control event:", stderr)
 
         status, stdout, stderr = self.invoke(["control", "event", "--bogus"], self.managed_env())

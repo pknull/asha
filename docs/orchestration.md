@@ -58,7 +58,7 @@ asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--j
 asha initiative coordinator sessions [--json]
 asha initiative coordinator attach ID | --session NAME [--json]
 asha initiative propose-plan ID --file PLAN.json [--json]       (coordinator actor)
-asha initiative wait ID --after SEQUENCE --timeout SECONDS --json
+asha initiative wait ID --after SEQUENCE [--timeout SECONDS] --json  # maximum 3600
 asha initiative checkpoint ID --file CHECKPOINT.json [--json]   (coordinator actor)
 asha initiative dispatch|pause|stop ID ... --as-coordinator     (coordinator actor)
 asha initiative authority add NAME --repo PATH --scope PREFIX [...]
@@ -316,9 +316,13 @@ workers and dispatches nothing until a new claim fences it.
 
 `wait --after SEQUENCE --timeout SECONDS` polls `list_events_snapshot` without
 a lock and writes no events; when events arrive it advances this generation's
-durable `event_cursor` once. The timeout is capped by
-`coordinator_wait_seconds`. `propose-plan` runs the same validation as `plan
---file` and records `plan-proposed` under the coordinator actor.
+durable `event_cursor` once. An explicit timeout is honored up to the hard
+3600-second ceiling; without one, the timeout remains
+`coordinator_wait_seconds`. That configured interval also segments longer
+waits so each boundary re-proves the live anchored generation and nonterminal
+initiative, ending distinctly for a stale generation or terminal initiative.
+`propose-plan` runs the same validation as `plan --file` and records
+`plan-proposed` under the coordinator actor.
 
 Coordinator-actor action documents carry `coordinator_id` and
 `coordinator_generation`; `submit_action` journals them and refuses a fenced or
@@ -788,7 +792,7 @@ remain available where their ordinary lifecycle rules permit containment.
 | `coordinator attach` | `asha.orchestration-coordinator-attach.v1` `{contract, initiative_id, session, pane_id, coordinator_id, generation}` |
 | `coordinator show` | `asha.orchestration-coordinator-show.v1` `{contract, initiative_id, coordinator, anchor_live, anchor_detail, generations}` |
 | `propose-plan` | stored `asha.orchestration-plan.v1` record (event actor `coordinator`) |
-| `wait` | `asha.orchestration-event-wait.v1` `{contract, initiative_id, coordinator_id, generation, after, events, last_event_sequence, state_revision, timed_out}` |
+| `wait` | `asha.orchestration-event-wait.v1` `{contract, initiative_id, coordinator_id, generation, after, events, last_event_sequence, state_revision, timed_out, ended?}` |
 | `checkpoint` | stored `asha.orchestration-coordinator-checkpoint.v1` `{contract, initiative_id, coordinator_id, generation, plan_revision, event_cursor, nodes_under_consideration, pending_decision, rationale, prior_checkpoint_digest, recorded_at, digest}` |
 | `dispatch\|pause\|stop --as-coordinator` | stored `asha.orchestration-action.v1` journal record with `actor_kind: coordinator`, `coordinator_id`, `coordinator_generation` |
 | `authority add` | `asha.orchestration-authority-grant.v1` `{contract, authority}` (`authority` is a stored `asha.orchestration-standing-authority.v1` record) |

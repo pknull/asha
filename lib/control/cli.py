@@ -149,6 +149,65 @@ def _event_diagnostic(exc: BaseException) -> None:
     print(f"asha control event: {detail or 'controller failure'}", file=sys.stderr)
 
 
+def _coordinator_wake_response(
+    native_event: str, pane_id: str | None, env: Mapping[str, str],
+) -> dict[str, str]:
+    """Return one best-effort Stop wake for each newly observed journal cursor."""
+    pane = env.get("TMUX_PANE")
+    if native_event != "turn-stopped" or not pane or pane != pane_id:
+        return {}
+    try:
+        from .orchestration.config import load_config as load_orchestration_config
+        from .orchestration.coordinator import (
+            PANE_COORDINATOR_OPTION,
+            PANE_GENERATION_OPTION,
+            PANE_INITIATIVE_OPTION,
+        )
+        from .orchestration.model import (
+            COORDINATOR_LIVE_STATES,
+            INITIATIVE_TERMINAL_STATES,
+        )
+        from .orchestration.store import InitiativeStore
+
+        adapter = TmuxAdapter()
+        coordinator_id = adapter.pane_option(pane, PANE_COORDINATOR_OPTION)
+        initiative_id = adapter.pane_option(pane, PANE_INITIATIVE_OPTION)
+        generation = adapter.pane_option(pane, PANE_GENERATION_OPTION)
+        if not coordinator_id or not initiative_id or not generation:
+            return {}
+        store = InitiativeStore(load_orchestration_config(env))
+        initiative = store.peek(initiative_id)
+        if initiative["state"] in INITIATIVE_TERMINAL_STATES:
+            return {}
+        coordinator = store.current_coordinator(initiative_id)
+        if (
+            coordinator is None
+            or coordinator["state"] not in COORDINATOR_LIVE_STATES
+            or coordinator["coordinator_id"] != coordinator_id
+            or str(coordinator["generation"]) != generation
+        ):
+            return {}
+        cursor = coordinator["event_cursor"]
+        tail = initiative["last_event_sequence"]
+        if tail <= cursor:
+            return {}
+        if adapter.pane_option(pane, "@asha_last_wake_cursor") == str(cursor):
+            return {}
+        adapter.set_pane_option(pane, "@asha_last_wake_cursor", str(cursor))
+        count = tail - cursor
+        return {
+            "decision": "block",
+            "reason": (
+                f"Control: {count} journal event(s) after cursor {cursor} for initiative "
+                f"{initiative_id}; run 'asha initiative wait {initiative_id} --after "
+                f"{cursor}' or read the snapshot before ending the turn."
+            ),
+        }
+    except Exception:
+        # This channel is only a wake aid. Snapshot delivery and Stop stay open.
+        return {}
+
+
 def _event_command(args: list[str], env: Mapping[str, str]) -> int:
     # This is deliberately before parsing or configuration. Ordinary sessions
     # never enter the controller and malformed inherited identity also no-ops.
@@ -180,6 +239,8 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
         }:
             expire_snapshot(config, run_id)
             publish_server_summary(config, TmuxAdapter())
+            if not parsed["json"]:
+                _json({})
             return 0
         pane_id = parsed["pane_id"]
         if pane_id is None:
@@ -218,6 +279,8 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
                 current_run["state"] in {"exited", "failed"}):
             expire_snapshot(config, run_id)
             publish_server_summary(config, TmuxAdapter())
+            if not parsed["json"]:
+                _json({})
             return 0
         _publish_tmux_presentation(config, run_id, pane_id, task_id)
         if parsed["json"]:
@@ -225,8 +288,12 @@ def _event_command(args: list[str], env: Mapping[str, str]) -> int:
             if snapshot is None:
                 raise EventError("event snapshot disappeared after its write")
             _json(snapshot)
+        else:
+            _json(_coordinator_wake_response(parsed["event"], pane_id, env))
     except (ConfigError, EventError, StoreError, OSError, ValueError) as exc:
         _event_diagnostic(exc)
+        if not parsed["json"]:
+            _json({})
     return 0
 
 

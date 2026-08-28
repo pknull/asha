@@ -33,6 +33,7 @@ from .model import (
     COORDINATOR_CONTRACT,
     COORDINATOR_LIVE_STATES,
     COORDINATOR_PROTOCOL_VERSION,
+    INITIATIVE_TERMINAL_STATES,
     ModelError,
     checkpoint_digest,
     new_uuid,
@@ -50,6 +51,7 @@ ENV_GENERATION = "ASHA_ORCHESTRATION_COORDINATOR_GENERATION"
 PANE_COORDINATOR_OPTION = "@asha_coordinator_id"
 PANE_INITIATIVE_OPTION = "@asha_initiative_id"
 PANE_GENERATION_OPTION = "@asha_generation"
+MAX_COORDINATOR_WAIT_SECONDS = 3600
 _WAIT_TICK_SECONDS = 0.25
 
 
@@ -386,28 +388,62 @@ def wait(
     after: int,
     timeout: float,
 ) -> dict[str, Any]:
-    """Bounded lock-free poll for events after a cursor; advances the durable cursor."""
+    """Segmented lock-free poll for events after a cursor; advances the durable cursor."""
     initiative_id = initiative["initiative_id"]
     current = require_live_coordinator(store, initiative_id)
     require_anchored_caller(current, env, tmux)
     if timeout < 0:
         raise CoordinatorError("wait timeout must be non-negative")
-    tail = store.peek(initiative_id)["last_event_sequence"]
+    initial = store.peek(initiative_id)
+    tail = initial["last_event_sequence"]
     if after < 0 or after > tail:
         raise CoordinatorError(f"cursor {after} is outside the durable event tail {tail}")
-    budget = min(float(timeout), float(store.config.coordinator_wait_seconds))
-    deadline = time.monotonic() + budget
-    events = store.list_events_snapshot(initiative_id, after=after)
-    while not events:
-        remaining = deadline - time.monotonic()
+    budget = min(float(timeout), float(MAX_COORDINATOR_WAIT_SECONDS))
+    segment = float(store.config.coordinator_wait_seconds)
+    started = time.monotonic()
+    deadline = started + budget
+    segment_deadline = min(deadline, started + segment)
+    ended = (
+        "terminal-initiative"
+        if initial["state"] in INITIATIVE_TERMINAL_STATES
+        else None
+    )
+    events = (
+        []
+        if ended is not None
+        else store.list_events_snapshot(initiative_id, after=after)
+    )
+    while not events and ended is None:
+        now = time.monotonic()
+        remaining = min(deadline, segment_deadline) - now
         if remaining <= 0:
-            break
+            if now >= deadline:
+                break
+            try:
+                candidate = require_live_coordinator(store, initiative_id)
+                require_anchored_caller(candidate, env, tmux)
+            except CoordinatorError:
+                ended = "stale-generation"
+                break
+            if (
+                candidate["coordinator_id"] != current["coordinator_id"]
+                or candidate["generation"] != current["generation"]
+            ):
+                ended = "stale-generation"
+                break
+            current = candidate
+            head = store.peek(initiative_id)
+            if head["state"] in INITIATIVE_TERMINAL_STATES:
+                ended = "terminal-initiative"
+                break
+            segment_deadline = min(deadline, now + segment)
+            continue
         time.sleep(min(_WAIT_TICK_SECONDS, remaining))
         events = store.list_events_snapshot(initiative_id, after=after)
     if events:
         _advance_cursor(store, initiative_id, current, events[-1]["sequence"])
     head = store.peek(initiative_id)
-    return {
+    payload = {
         "contract": WAIT_CONTRACT,
         "initiative_id": initiative_id,
         "coordinator_id": current["coordinator_id"],
@@ -416,8 +452,11 @@ def wait(
         "events": events,
         "last_event_sequence": head["last_event_sequence"],
         "state_revision": head["state_revision"],
-        "timed_out": not events,
+        "timed_out": not events and ended is None,
     }
+    if ended is not None:
+        payload["ended"] = ended
+    return payload
 
 
 def checkpoint(
@@ -530,7 +569,8 @@ def _advance_cursor(
 
 
 __all__ = [
-    "COORDINATOR_SHOW_CONTRACT", "WAIT_CONTRACT", "CoordinatorError", "actor_id",
+    "COORDINATOR_SHOW_CONTRACT", "MAX_COORDINATOR_WAIT_SECONDS", "WAIT_CONTRACT",
+    "CoordinatorError", "actor_id",
     "anchor_liveness", "caller_anchor", "checkpoint", "claim", "current_live_coordinator",
     "environment_for", "reconcile_coordinator", "refuse_coordinator_pane", "release",
     "require_anchored_caller", "require_live_coordinator", "show", "wait",

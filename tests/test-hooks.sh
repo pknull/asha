@@ -409,6 +409,7 @@ mkdir -p "$FAKE_CONTROL_ROOT/bin"
 cat > "$FAKE_CONTROL_ROOT/bin/asha" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$*" > "$CONTROL_CAPTURE"
+[[ -z "${CONTROL_STUB_OUTPUT:-}" ]] || printf '%s\n' "$CONTROL_STUB_OUTPUT"
 EOF
 chmod +x "$FAKE_CONTROL_ROOT/bin/asha"
 printf '%s' '{"session_id":"permission-live-gate"}' \
@@ -421,6 +422,20 @@ printf '%s' '{"session_id":"permission-live-gate"}' \
    && "$(cat "$CONTROL_CAPTURE")" == *"--session-id permission-live-gate"* ]] \
   && ok "Codex PermissionRequest maps to the bounded Control event" \
   || fail "Codex PermissionRequest maps to the bounded Control event"
+
+CONTROL_BLOCK='{"decision":"block","reason":"Control wake test"}'
+CONTROL_OUTPUT="$(timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$FAKE_CONTROL_ROOT" \
+  CONTROL_CAPTURE="$CONTROL_CAPTURE" CONTROL_STUB_OUTPUT="$CONTROL_BLOCK" \
+  "$CONTROL_HANDLER" Stop </dev/null)"
+[[ "$CONTROL_OUTPUT" == "$CONTROL_BLOCK" ]] \
+  && ok "Control Stop bridge passes through a valid single-line block decision" \
+  || fail "Control Stop bridge passes through a valid single-line block decision"
+CONTROL_OUTPUT="$(timeout 2 env ASHA_CONTROL_MANAGED=1 ASHA_ROOT="$FAKE_CONTROL_ROOT" \
+  CONTROL_CAPTURE="$CONTROL_CAPTURE" CONTROL_STUB_OUTPUT='not json' \
+  "$CONTROL_HANDLER" Stop </dev/null)"
+[[ "$CONTROL_OUTPUT" == '{}' ]] \
+  && ok "Control Stop bridge degrades invalid controller output to an empty object" \
+  || fail "Control Stop bridge degrades invalid controller output to an empty object"
 
 if jq -e '[.hooks.SessionStart[], .hooks.UserPromptSubmit[], .hooks.PostToolUse[]]
     | all(.[] | select(any(.hooks[]?; (.command // "") | contains("control-event.sh")));
