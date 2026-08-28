@@ -20,6 +20,7 @@ from .model import (
 )
 from .store import InitiativeStore
 from .results import reconcile_publications
+from .ingestion import ingest_pending_results
 from .seals import (
     NoSealableArtifact, SealError, prepare_and_publish_seal,
     reconcile_seal_drift,
@@ -665,6 +666,14 @@ def reconcile_live(
     probes: list[dict[str, str]] = []
     recoveries: list[dict[str, Any]] = []
     clock = now or _now
+    # Candidate transport is workspace-local.  The controller ingests only
+    # after independently observing the producing run as terminal, and it does
+    # all potentially long snapshot/verification work outside the initiative
+    # transaction used by ordinary state reconciliation below.
+    ingest_pending_results(
+        store, initiative_id, control_store=control_store,
+        adapters_factory=adapters_factory,
+    )
     with store.transaction_lock(initiative_id):
         initiative = store.peek(initiative_id)
         if initiative["active_plan"] is None:

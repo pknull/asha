@@ -36,6 +36,7 @@ from .model import (
     REVIEW_TRANSITIONS,
     COORDINATOR_TERMINAL_STATES,
     COORDINATOR_TRANSITIONS,
+    RESULT_INGESTION_TRANSITIONS,
     RESULT_PUBLICATION_TRANSITIONS,
     VERIFICATION_TRANSITIONS,
     ModelError,
@@ -57,6 +58,7 @@ from .model import (
     validate_node,
     validate_plan_record,
     validate_result,
+    validate_result_ingestion,
     validate_result_publication,
     validate_review,
     validate_seal,
@@ -73,7 +75,8 @@ _NONBLOCK = getattr(os, "O_NONBLOCK", 0)
 _DIRECTORY_FLAGS = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | _NOFOLLOW | _CLOEXEC
 
 _LAYOUT_DIRECTORIES = (
-    "plans", "nodes", "attempts", "assignments", "links", "result-publications", "results",
+    "plans", "nodes", "attempts", "assignments", "links", "result-ingestions",
+    "result-publications", "results",
     "seal-preparations", "seals", "reviews", "verifications", "bundles", "approvals", "actions",
     "evidence", "outputs", "events", "locks", "coordinators", "checkpoints",
 )
@@ -243,6 +246,31 @@ class InitiativeStore:
         """Hold the re-entrant production lock for one existing initiative."""
         with self._locked_fds(initiative_id):
             yield
+
+    @contextmanager
+    def result_ingestion_lock(
+        self, initiative_id: str, ingestion_id: str,
+    ) -> Iterator[None]:
+        """Single-flight one ingestion without blocking the whole initiative."""
+        try:
+            ingestion_id = canonical_uuid(ingestion_id, "ingestion_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        with self._initiative_directory(
+            initiative_id, create_root=False, create_initiative=False,
+        ) as (_root_fd, initiative_fd):
+            self._ensure_layout(initiative_fd)
+            locks_fd = _open_directory(initiative_fd, "locks", create=True)
+            if locks_fd is None:
+                raise StoreError("initiative lock directory is missing")
+            try:
+                with _task_lock(
+                    locks_fd, f"result-ingestion-{ingestion_id}",
+                    self._lock_wait_hook,
+                ):
+                    yield
+            finally:
+                _close(locks_fd)
 
     @staticmethod
     def _subdirectory(initiative_fd: int, name: str) -> int:
@@ -903,6 +931,35 @@ class InitiativeStore:
             terminal_states=frozenset({"completed", "refused"}),
         )
 
+    def save_result_ingestion(
+        self,
+        initiative_id: str,
+        record: Any,
+        *,
+        expected_digest: str | None = None,
+    ) -> Path:
+        try:
+            value = validate_result_ingestion(record)
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        mutable = {
+            "state", "candidate_digest", "publication_id", "result_id",
+            "claimed_commit_id", "claimed_tree_digest", "verification_evidence_ids",
+            "commit_creator", "ingester", "refusal", "updated_at",
+        }
+        return self._save_subrecord(
+            initiative_id, "result-ingestions", f"{value['ingestion_id']}.json",
+            value, validate_result_ingestion, immutable=False,
+            expected_digest=expected_digest,
+            transition_machine=RESULT_INGESTION_TRANSITIONS,
+            immutable_fields=tuple(field for field in value if field not in mutable),
+            bind_once_fields=(
+                "candidate_digest", "publication_id", "result_id",
+                "claimed_commit_id", "claimed_tree_digest", "commit_creator", "ingester",
+            ),
+            terminal_states=frozenset({"completed", "refused"}),
+        )
+
     def save_result(self, initiative_id: str, record: Any) -> Path:
         return self._save_uuid_immutable(initiative_id, "results", record, validate_result, "result_id")
 
@@ -1396,6 +1453,12 @@ class InitiativeStore:
             re.compile(r"([0-9a-f-]{36})\.json"), "publication_id",
         )
 
+    def list_result_ingestions_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        return self._list_subrecords_snapshot(
+            initiative_id, "result-ingestions", validate_result_ingestion,
+            re.compile(r"([0-9a-f-]{36})\.json"), "ingestion_id",
+        )
+
     def list_results_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
         return self._list_subrecords_snapshot(
             initiative_id, "results", validate_result,
@@ -1446,6 +1509,7 @@ class InitiativeStore:
         identity_fields = {
             "attempts": "attempt_id",
             "links": "attempt_id",
+            "result-ingestions": "ingestion_id",
             "result-publications": "publication_id",
             "results": "result_id",
             "seal-preparations": "seal_id",
@@ -1476,6 +1540,14 @@ class InitiativeStore:
         return self._read_uuid_record(
             initiative_id, "result-publications", publication_id,
             validate_result_publication,
+        )
+
+    def read_result_ingestion(
+        self, initiative_id: str, ingestion_id: str
+    ) -> dict[str, Any]:
+        return self._read_uuid_record(
+            initiative_id, "result-ingestions", ingestion_id,
+            validate_result_ingestion,
         )
 
     def read_result(self, initiative_id: str, result_id: str) -> dict[str, Any]:

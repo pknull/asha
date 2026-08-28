@@ -2615,9 +2615,15 @@ class JjAdapter:
 
     def inspect_workspace(
         self, destination: Path, expected_name: str, *, snapshot: bool = False,
-        require_empty: bool = True,
+        require_empty: bool = True, exclude_control_transport: bool = False,
     ) -> WorkspaceIdentity:
-        prefix = ["-R", str(destination)]
+        if exclude_control_transport and not snapshot:
+            raise JjError("Control transport exclusion is valid only while snapshotting")
+        command_options = (
+            ["--config", 'snapshot.auto-track="~root:.asha"']
+            if exclude_control_transport else []
+        )
+        prefix = [*command_options, "-R", str(destination)]
         if not snapshot:
             prefix.append("--ignore-working-copy")
         prefix.extend(["log", "-r", "@", "--no-graph"])
@@ -2637,7 +2643,7 @@ class JjAdapter:
         description = self._run([*prefix, "-T", "description"]).rstrip("\n")
         if "\n" in description or "\r" in description:
             raise JjError("created workspace description was not one bounded line")
-        diff_args = ["-R", str(destination)]
+        diff_args = [*command_options, "-R", str(destination)]
         if not snapshot:
             diff_args.append("--ignore-working-copy")
         diff_args.extend(["diff", "-r", "@", "--summary"])
