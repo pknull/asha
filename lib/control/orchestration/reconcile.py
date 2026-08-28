@@ -908,6 +908,7 @@ def reconcile_live(
                 seal = prepare_and_publish_seal(
                     store, initiative_id, attempt["attempt_id"], task, observed,
                     jj=(adapters.jj_adapter if isinstance(adapters, LiveAdapters) else None),
+                    now=clock,
                 )
             except NoSealableArtifact:
                 latest = store.read_attempt(initiative_id, attempt["attempt_id"])

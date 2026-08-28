@@ -95,7 +95,9 @@ def _control_usage(stream=sys.stdout) -> None:
 Run `asha control` in a terminal to open the Control TUI.
 Use `asha control --initiatives` to open it in Initiatives mode.
 Use `asha task list --json` as the non-interactive fallback.
-Use `asha control tmux` to print the optional tmux integration snippet.""", file=stream)
+Use `asha control tmux` to print the optional tmux integration snippet.
+Use `asha control supervisor {run|start|stop|status} [--json]` for routine
+initiative progression.""", file=stream)
 
 
 def _parse_event(args: list[str]) -> dict[str, Any]:
@@ -1742,6 +1744,9 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
                 return 0
             if tail and tail[0] == "event":
                 return _event_command(tail[1:], values)
+            if tail and tail[0] == "supervisor":
+                from .orchestration.supervisor_daemon import supervisor_main
+                return supervisor_main(tail[1:], env=values)
             if not tail:
                 from .tui import run_tui
                 return run_tui(values)

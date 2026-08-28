@@ -51,6 +51,7 @@ asha task report --file PATH [--json]
 asha task ingest CONTROL_TASK_ID|INGESTION_ID [--json]
 asha task result CONTROL_TASK_ID [--json]
 asha task seal CONTROL_TASK_ID|ATTEMPT_ID [--json]
+asha control supervisor {run|start|stop|status} [--json]
 asha initiative coordinator claim ID [--harness H] [--json]     (from the Asha pane)
 asha initiative coordinator release|show ID [--json]
 asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
@@ -662,11 +663,30 @@ emits `storage-threshold-reached` when retained storage recommends a pause.
 Reconciliation also pauses when more than one Control task label or marker
 names the same attempt, which is the nested-workflow breaker.
 
+The routine supervisor runs that existing progression on a clock. Each tick
+re-lists active-plan initiatives, ingests terminal producers' staged results,
+then calls the shared single-initiative reconciliation entry point. It retains
+no cursor or timer records: CAS writes, stable event keys, and the existing
+journals make a repeated tick or process restart a no-op after convergence.
+One initiative's exception is retained in that tick's report without stopping
+the remaining sweep. The supervisor never dispatches, submits operator
+actions, records integration, or approves plans or salvage.
+
+`asha control supervisor run` holds the foreground loop. `start` launches that
+same run route detached with argv-only exec, `stop` verifies the retained Linux
+boot/start-ticks process identity before SIGTERM, and `status` exits zero only
+when both the flock and exact process are live. The exclusive 0600 lock and
+atomic presentation status are `supervisor.lock` and `supervisor.json` beneath
+the Control state root. A one-second directory-mtime poll of Control event
+snapshots provides the worker-exit fast path between regular ticks. Starting is
+idempotent; no session hook starts the supervisor automatically.
+
 Orchestration configuration adds:
 
 ```json
 {
   "orchestration": {
+    "supervisor_interval_seconds": 15,
     "link_grace_seconds": 30,
     "result_grace_seconds": 120,
     "max_consecutive_failures": 3
@@ -674,7 +694,8 @@ Orchestration configuration adds:
 }
 ```
 
-All three values must be positive integers. `link_grace_seconds` bounds the
+All four values must be positive integers. `supervisor_interval_seconds`
+bounds routine full sweeps; `link_grace_seconds` bounds the
 launch-to-link publication wait; result publication polls for the immutable
 attempt link every 250 milliseconds before returning a retryable refusal.
 

@@ -518,7 +518,7 @@ Usage:
                                    manage persistent Control tasks and runs
   asha initiative baseline|create|plan|approve|reject|activate|action|dispatch|pause|resume|stop|cancel|list|show|events|reconcile|storage|snapshot|doctor|projects [...]
                                    manage bounded Orchestration Core initiatives
-  asha control [--initiatives|event|tmux]
+  asha control [--initiatives|event|tmux|supervisor]
                                    run the terminal TUI (optionally in Initiatives mode) or Control internals
   asha cockpit [DIR] [--dry-run]   coordinator pane (asha claude at DIR) beside the Initiatives monitor
   asha trigger add|list|remove [...]

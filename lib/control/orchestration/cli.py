@@ -13,12 +13,13 @@ import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from ..context import read_published_snapshot
 from ..jj import DEFAULT_BASE_REVSET, JjAdapter, JjError, colocated_sync_remediation
 from ..prepare import derive_repository_identity
-from ..store import StoreError
+from ..reconcile import LiveAdapters
+from ..store import StoreError, TaskStore
 from .actions import (
     ActionError, ActionRefused, approve_salvage, build_action_document,
     reconcile_actions, submit_action,
@@ -1271,25 +1272,44 @@ _snapshot = snapshot
 
 
 def reconcile_one_initiative(
-    store: InitiativeStore, initiative_id: str, *, tmux: TmuxAdapter | None = None,
+    store: InitiativeStore,
+    initiative_id: str,
+    *,
+    tmux: TmuxAdapter | None = None,
+    control_store: TaskStore | None = None,
+    adapters_factory: Callable[[dict[str, Any]], LiveAdapters] | None = None,
+    now: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Run the CLI's reconciliation sequence without dispatching ready work."""
     action_result = reconcile_actions(store, initiative_id)
-    live_result = reconcile_live(store, initiative_id)
+    live_options = {}
+    if control_store is not None:
+        live_options["control_store"] = control_store
+    if adapters_factory is not None:
+        live_options["adapters_factory"] = adapters_factory
+    if now is not None:
+        live_options["now"] = now
+    live_result = reconcile_live(store, initiative_id, **live_options)
     coordinator_result = reconcile_coordinator(
         store, initiative_id, tmux=tmux or TmuxAdapter(),
     )
     initiative = store.peek(initiative_id)
     snapshot = _snapshot(store, initiative)
+    node_options: dict[str, Any] = {"store": store}
+    if control_store is not None:
+        node_options["control_store"] = control_store
+    if adapters_factory is not None:
+        node_options["adapters_factory"] = adapters_factory
+    node_results = reconcile_nodes(
+        initiative["initiative_id"], snapshot["nodes"], **node_options,
+    )
     return {
         "contract": RECONCILE_LIST_CONTRACT,
         "initiative_id": initiative["initiative_id"],
         "action_reconciliation": action_result,
         "live_reconciliation": live_result,
         "coordinator_reconciliation": coordinator_result,
-        "results": reconcile_nodes(
-            initiative["initiative_id"], snapshot["nodes"], store=store,
-        ),
+        "results": node_results,
         "superseded_nodes": snapshot["superseded_nodes"],
     }
 
