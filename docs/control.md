@@ -50,6 +50,7 @@ asha task doctor [--json]
 asha control
 asha control tmux
 asha control event ...       internal hook-facing route
+asha control supervisor {run|start|stop|status} [--json]
 ```
 
 `--repo` defaults to the jj or Git repository containing the current directory.
@@ -343,7 +344,9 @@ daemon, thread, or runtime supervisor for automatic reconciliation, never
 queues missed refreshes, and reports adapter failures in the status line. The
 task-start modal's bounded, signal-owned child is the deliberate exception.
 Filter input, task actions, the task-start form, and confirmations pause automatic
-reconciliation until the modal closes. A later successful automatic pass clears only its stale
+reconciliation until the modal closes. It does not start the separately managed
+Control supervisor; the operator starts that process explicitly. A later
+successful automatic pass clears only its stale
 automatic-refresh diagnostic; operator action and skipped-registry messages
 remain. `r` remains the explicit selected-task refresh.
 For an archived row, `r` refreshes only the durable lifecycle projection and

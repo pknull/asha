@@ -28,6 +28,7 @@ DEFAULT_MAX_REPAIR_CYCLES = 2
 DEFAULT_MAX_RETAINED_BYTES_BEFORE_PAUSE = 10737418240
 DEFAULT_MAX_RETAINED_INODES_BEFORE_PAUSE = 200000
 DEFAULT_COORDINATOR_WAIT_SECONDS = 120
+DEFAULT_SUPERVISOR_INTERVAL_SECONDS = 15
 DEFAULT_RESULT_GRACE_SECONDS = 120
 DEFAULT_LINK_GRACE_SECONDS = 30
 DEFAULT_MAX_CONSECUTIVE_FAILURES = 3
@@ -42,6 +43,7 @@ _FIELDS = frozenset({
     "max_retained_bytes_before_pause",
     "max_retained_inodes_before_pause",
     "coordinator_wait_seconds",
+    "supervisor_interval_seconds",
     "result_grace_seconds",
     "link_grace_seconds",
     "max_consecutive_failures",
@@ -54,6 +56,7 @@ _LIMIT_FIELDS = (
     "max_retained_bytes_before_pause",
     "max_retained_inodes_before_pause",
     "coordinator_wait_seconds",
+    "supervisor_interval_seconds",
     "result_grace_seconds",
     "link_grace_seconds",
     "max_consecutive_failures",
@@ -77,6 +80,7 @@ class OrchestrationConfig:
     max_retained_bytes_before_pause: int
     max_retained_inodes_before_pause: int
     coordinator_wait_seconds: int
+    supervisor_interval_seconds: int
     result_grace_seconds: int
     link_grace_seconds: int
     max_consecutive_failures: int
@@ -144,6 +148,7 @@ def load_config(env: Mapping[str, str] | None = None) -> OrchestrationConfig:
         "max_retained_bytes_before_pause": DEFAULT_MAX_RETAINED_BYTES_BEFORE_PAUSE,
         "max_retained_inodes_before_pause": DEFAULT_MAX_RETAINED_INODES_BEFORE_PAUSE,
         "coordinator_wait_seconds": DEFAULT_COORDINATOR_WAIT_SECONDS,
+        "supervisor_interval_seconds": DEFAULT_SUPERVISOR_INTERVAL_SECONDS,
         "result_grace_seconds": DEFAULT_RESULT_GRACE_SECONDS,
         "link_grace_seconds": DEFAULT_LINK_GRACE_SECONDS,
         "max_consecutive_failures": DEFAULT_MAX_CONSECUTIVE_FAILURES,

@@ -56,8 +56,10 @@ class NoSealableArtifact(SealError):
     """Final read-only evidence proves that no retained jj artifact exists."""
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
+def _now(clock: Callable[[], datetime] | None = None) -> str:
+    return (clock or (lambda: datetime.now(timezone.utc)))().isoformat(
+        timespec="microseconds",
+    ).replace(
         "+00:00", "Z"
     )
 
@@ -263,11 +265,12 @@ def _transition_attempt(
     target: str,
     *,
     seal_id: str | None = None,
+    now: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     if attempt["state"] == target and (seal_id is None or attempt["seal_id"] == seal_id):
         return attempt
     changed = copy.deepcopy(attempt)
-    changed.update({"state": target, "updated_at": _now()})
+    changed.update({"state": target, "updated_at": _now(now)})
     if seal_id is not None:
         changed["seal_id"] = seal_id
     validate_attempt(changed)
@@ -485,6 +488,7 @@ def prepare_and_publish_seal(
     *,
     jj: JjAdapter | None = None,
     phase_hook: Callable[[str, Mapping[str, Any]], None] | None = None,
+    now: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     """Persist no-outcome intent, capture immutable jj evidence, and seal once."""
     adapter = jj or JjAdapter()
@@ -523,7 +527,7 @@ def prepare_and_publish_seal(
                 store, initiative_id, attempt_id,
                 {"process": process_facts, "phase": "preparing"},
             )
-            at = _now()
+            at = _now(now)
             seal_id = attempt["seal_id"] or new_uuid()
             preparation = validate_seal_preparation({
                 "contract": SEAL_PREPARATION_CONTRACT,
@@ -602,6 +606,7 @@ def prepare_and_publish_seal(
                 hard_scope_valid=hard_scope_valid,
                 scope_violations=scope_violations,
                 advisory_divergence=advisory_divergence,
+                now=now,
             )
         workspace = Path(task["jj"]["workspace_path"])
         try:
@@ -617,7 +622,7 @@ def prepare_and_publish_seal(
             changed_preparation = copy.deepcopy(preparation)
             changed_preparation.update({
                 "state": "indeterminate", "refusal": str(exc)[:2048],
-                "updated_at": _now(),
+                "updated_at": _now(now),
             })
             if preparation["state"] != "indeterminate":
                 store.save_seal_preparation(
@@ -797,7 +802,7 @@ def prepare_and_publish_seal(
             "result_id": None if result is None else result["result_id"],
             "process_evidence_id": process_evidence["evidence_id"],
             "commit_provenance": commit_provenance,
-            "sealed_at": _now(),
+            "sealed_at": _now(now),
         })
         if seal["outcome"] == "success" and node["terminal_candidate"]:
             from .composition import CompositionError, enforce_terminal_candidate
@@ -821,14 +826,18 @@ def prepare_and_publish_seal(
         }[outcome]
         attempt = store.read_attempt(initiative_id, attempt_id)
         if attempt["state"] == "reported":
-            attempt = _transition_attempt(store, initiative_id, attempt, "awaiting-exit")
+            attempt = _transition_attempt(
+                store, initiative_id, attempt, "awaiting-exit", now=now,
+            )
         if attempt["state"] in {"abnormal-exit", "result-missing", "awaiting-exit"}:
             attempt = _transition_attempt(
                 store, initiative_id, attempt, ready_state, seal_id=seal_id,
+                now=now,
             )
         if attempt["state"] == ready_state:
             attempt = _transition_attempt(
                 store, initiative_id, attempt, "sealing", seal_id=seal_id,
+                now=now,
             )
         store.save_seal(initiative_id, seal)
         hook("published", seal)
@@ -837,6 +846,7 @@ def prepare_and_publish_seal(
             retriable=retriable, hard_scope_valid=hard_scope_valid,
             scope_violations=scope_violations,
             advisory_divergence=advisory_divergence,
+            now=now,
         )
 
 
@@ -852,6 +862,7 @@ def _finish_published_seal(
     hard_scope_valid: bool,
     scope_violations: list[str] | None = None,
     advisory_divergence: list[str] | None = None,
+    now: Callable[[], datetime] | None = None,
 ) -> dict[str, Any]:
     initiative_id = initiative["initiative_id"]
     terminal = {
@@ -868,22 +879,29 @@ def _finish_published_seal(
                 "paused": "paused-seal-ready",
             }[seal["outcome"]]
             if attempt["state"] == "reported":
-                attempt = _transition_attempt(store, initiative_id, attempt, "awaiting-exit")
+                attempt = _transition_attempt(
+                    store, initiative_id, attempt, "awaiting-exit", now=now,
+                )
             if attempt["state"] in {"awaiting-exit", "abnormal-exit", "result-missing"}:
                 attempt = _transition_attempt(
                     store, initiative_id, attempt, ready, seal_id=seal["seal_id"],
+                    now=now,
                 )
             if attempt["state"] == ready:
                 attempt = _transition_attempt(
                     store, initiative_id, attempt, "sealing", seal_id=seal["seal_id"],
+                    now=now,
                 )
         attempt = _transition_attempt(
             store, initiative_id, attempt, terminal, seal_id=seal["seal_id"],
+            now=now,
         )
     preparation = store.read_seal_preparation(initiative_id, seal["seal_id"])
     if preparation["state"] != "completed":
         completed = copy.deepcopy(preparation)
-        completed.update({"state": "completed", "refusal": None, "updated_at": _now()})
+        completed.update({
+            "state": "completed", "refusal": None, "updated_at": _now(now),
+        })
         validate_seal_preparation(completed)
         store.save_seal_preparation(
             initiative_id, completed, expected_digest=record_digest(preparation),
@@ -940,7 +958,7 @@ def _finish_published_seal(
             changed.update({
                 "state": "needs-input",
                 "state_revision": current["state_revision"] + 1,
-                "updated_at": _now(),
+                "updated_at": _now(now),
             })
             validate_initiative(changed)
             store.save_initiative(changed, expected_digest=record_digest(current))
@@ -957,7 +975,7 @@ def _finish_published_seal(
             store, initiative_id, store.peek(initiative_id), active_plan, node,
             store.read_attempt(initiative_id, seal["attempt_id"]),
             store.list_attempts_snapshot(initiative_id),
-            datetime.now(timezone.utc),
+            (now or (lambda: datetime.now(timezone.utc)))(),
         )
     elif node["state"] == "evaluating":
         _transition_node(store, initiative_id, node, "failed")
