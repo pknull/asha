@@ -7,6 +7,7 @@ import hashlib
 import json
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from ..jj import JjAdapter, JjError
@@ -43,6 +44,8 @@ _STRAND_RELEASABLE_NODE_STATES = frozenset({"dispatching", "running"})
 _SETTLED_ACTION_STATES = frozenset({"completed", "refused"})
 # Bound on the review identities carried in one recovery event's subject list.
 _MAX_RECOVERY_SUBJECT_REVIEWS = 32
+_RESULT_INGESTION_TERMINAL_STATES = frozenset({"completed", "refused"})
+_PROCESS_TERMINAL_STATES = frozenset({"exited", "failed"})
 
 
 def _unlinked(node_id: str) -> dict[str, Any]:
@@ -218,20 +221,29 @@ def _observe(
 ) -> None:
     from .actions import append_event
 
+    subject_ids = [attempt["node_id"], attempt["attempt_id"], task["task_id"]]
     evidence_raw = json.dumps(
         reconciliation, ensure_ascii=False, sort_keys=True,
         separators=(",", ":"), allow_nan=False,
     ).encode("utf-8")
+    payload = {
+        "control_state": reconciliation["state"],
+        "control_lifecycle": task["lifecycle"],
+        "evidence_digest": hashlib.sha256(evidence_raw).hexdigest(),
+    }
+    previous = next((
+        event for event in reversed(store.list_events_snapshot(initiative_id))
+        if event["type"] == "task-status-observed"
+        and event["subject_ids"] == subject_ids
+    ), None)
+    if previous is not None and previous["payload"] == payload:
+        return
     append_event(
         store,
         initiative_id,
         "task-status-observed",
-        [attempt["node_id"], attempt["attempt_id"], task["task_id"]],
-        {
-            "control_state": reconciliation["state"],
-            "control_lifecycle": task["lifecycle"],
-            "evidence_digest": hashlib.sha256(evidence_raw).hexdigest(),
-        },
+        subject_ids,
+        payload,
         actor_kind="controller",
         actor_id="live-reconciler",
     )
@@ -280,21 +292,64 @@ def _mark_conflict(
     node: dict[str, Any],
     reason: str,
     at: datetime,
+    observed: dict[str, Any] | None = None,
+) -> None:
+    terminal_process = any(
+        item.get("source") == "process"
+        and item.get("state") in _PROCESS_TERMINAL_STATES
+        for item in (observed or {}).get("evidence", [])
+    )
+    # Result staging can win the worker's teardown race before Control's event
+    # snapshot catches up.  Preserve that candidate until process evidence is
+    # terminal, when ingestion or the ordinary missing-result path owns it.
+    staged_candidate = False
+    if observed is not None and not terminal_process:
+        staged_candidate = any(
+            record["attempt_id"] == attempt["attempt_id"]
+            and record["state"] not in _RESULT_INGESTION_TERMINAL_STATES
+            and Path(record["workspace_path"]).joinpath(
+                *record["outbox_path"].split("/")
+            ).is_file()
+            for record in store.list_result_ingestions_snapshot(initiative_id)
+        )
+    if not staged_candidate:
+        if attempt["state"] == "indeterminate":
+            attempt = _transition_attempt(
+                store, initiative_id, attempt, "running", at,
+            )
+        if attempt["state"] in {"dispatching", "running", "reported", "awaiting-exit"}:
+            _transition_attempt(store, initiative_id, attempt, "stale", at)
+        if node["state"] in {"dispatching", "running", "evaluating", "needs-input"}:
+            _transition_node(store, initiative_id, node, "stale")
+    _record_reconciliation_conflict(
+        store, initiative_id, attempt["attempt_id"],
+        [node["node_id"], attempt["attempt_id"]], reason,
+    )
+
+
+def _record_reconciliation_conflict(
+    store: InitiativeStore,
+    initiative_id: str,
+    attempt_id: str,
+    subject_ids: list[str],
+    reason: str,
 ) -> None:
     from .scheduler import pause_for_breaker
 
-    if attempt["state"] == "indeterminate":
-        attempt = _transition_attempt(store, initiative_id, attempt, "running", at)
-    if attempt["state"] in {"dispatching", "running", "reported", "awaiting-exit"}:
-        _transition_attempt(store, initiative_id, attempt, "stale", at)
-    if node["state"] in {"dispatching", "running", "evaluating", "needs-input"}:
-        _transition_node(store, initiative_id, node, "stale")
+    duplicate = any(
+        event["type"] == "reconciliation-conflict"
+        and attempt_id in event["subject_ids"]
+        and event["payload"].get("reason") == reason
+        for event in store.list_events_snapshot(initiative_id)
+    )
+    if duplicate:
+        return
     pause_for_breaker(
         store,
         initiative_id,
         reason,
         event_type="reconciliation-conflict",
-        subject_ids=[node["node_id"], attempt["attempt_id"]],
+        subject_ids=subject_ids,
     )
 
 
@@ -826,7 +881,10 @@ def reconcile_live(
             state = observed["state"]
             if state == "stale":
                 reason = observed.get("blocker") or "Control reconciliation is stale"
-                _mark_conflict(store, initiative_id, attempt, node, reason, current_time)
+                _mark_conflict(
+                    store, initiative_id, attempt, node, reason, current_time,
+                    observed=observed,
+                )
                 conflicts.append({"attempt_id": attempt["attempt_id"], "reason": reason})
                 continue
             if state in {"starting", "working", "needs-input", "idle", "unknown"}:
@@ -892,13 +950,10 @@ def reconcile_live(
                         ),
                     )
                 except (ReviewError, StoreError, JjError, OSError, ValueError) as exc:
-                    from .scheduler import pause_for_breaker
-
                     reason = f"review reconciliation failed: {exc}"
-                    pause_for_breaker(
-                        store, initiative_id, reason[:1000],
-                        event_type="reconciliation-conflict",
-                        subject_ids=[node["node_id"], attempt["attempt_id"]],
+                    _record_reconciliation_conflict(
+                        store, initiative_id, attempt["attempt_id"],
+                        [node["node_id"], attempt["attempt_id"]], reason[:1000],
                     )
                     conflicts.append({
                         "attempt_id": attempt["attempt_id"], "reason": reason,
@@ -928,13 +983,10 @@ def reconcile_live(
                 handled_failures.add(attempt["attempt_id"])
                 continue
             except (SealError, StoreError, JjError, OSError, ValueError) as exc:
-                from .scheduler import pause_for_breaker
-
                 reason = f"seal reconciliation failed: {exc}"
-                pause_for_breaker(
-                    store, initiative_id, reason[:1000],
-                    event_type="reconciliation-conflict",
-                    subject_ids=[node["node_id"], attempt["attempt_id"]],
+                _record_reconciliation_conflict(
+                    store, initiative_id, attempt["attempt_id"],
+                    [node["node_id"], attempt["attempt_id"]], reason[:1000],
                 )
                 conflicts.append({"attempt_id": attempt["attempt_id"], "reason": reason})
                 continue

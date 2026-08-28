@@ -107,6 +107,27 @@ class TerminalAdapters(LiveAdapters):
         return Evidence("event", "missing", "no semantic event")
 
 
+class TeardownRaceAdapters(TerminalAdapters):
+    def tmux(self, task, run):
+        if self.state in {"conflict", "working"}:
+            return Evidence("tmux", "match", "owned pane matched")
+        return super().tmux(task, run)
+
+    def process(self, task, run):
+        if self.state in {"conflict", "working"}:
+            return Evidence("process", "match", "owned process matched")
+        return super().process(task, run)
+
+    def event(self, task, run):
+        if self.state == "conflict":
+            return Evidence(
+                "event", "match", "stale terminal snapshot", state="exited",
+            )
+        if self.state == "working":
+            return Evidence("event", "match", "worker active", state="working")
+        return super().event(task, run)
+
+
 class SupervisorTickTests(ExecutionFixture, unittest.TestCase):
     task: dict
 
@@ -188,9 +209,9 @@ class SupervisorTickTests(ExecutionFixture, unittest.TestCase):
             },
         )]
 
-    def deps(self, at: datetime):
+    def deps(self, at: datetime, adapters=None):
         control = TaskStore(self.config.control)
-        adapters = TerminalAdapters(self.jj)
+        adapters = adapters or TerminalAdapters(self.jj)
 
         def ingest(store, initiative_id, *, control_store):
             with mock.patch(
@@ -239,6 +260,48 @@ class SupervisorTickTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual([item["outcome"] for item in seals], ["success"])
         self.assertEqual(report["counts"]["errors"], 0)
         self.assertGreater(report["counts"]["transitions"], 0)
+
+    def test_staged_candidate_survives_stale_teardown_evidence_until_terminal(self) -> None:
+        stage_result(self.config, self.body(), self.managed)
+        adapters = TeardownRaceAdapters(self.jj, state="conflict")
+        first = datetime.now(timezone.utc) + timedelta(seconds=1)
+
+        tick(self.deps(first, adapters))
+        tick(self.deps(first + timedelta(seconds=1), adapters))
+
+        attempt = self.store.read_attempt(
+            self.initiative_id, self.attempt["attempt_id"],
+        )
+        node = self.store.read_node(self.initiative_id, attempt["node_id"])
+        conflicts = [
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "reconciliation-conflict"
+            and attempt["attempt_id"] in event["subject_ids"]
+        ]
+        self.assertEqual(attempt["state"], "running")
+        self.assertEqual(node["state"], "running")
+        self.assertEqual(len(conflicts), 1)
+        self.assertEqual(
+            conflicts[0]["payload"]["reason"],
+            "event: terminal state contradicts matched live process",
+        )
+
+        adapters.state = "exited"
+        report = tick(self.deps(first + timedelta(seconds=2), adapters))
+
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        attempt = self.store.read_attempt(
+            self.initiative_id, self.attempt["attempt_id"],
+        )
+        self.assertEqual(retained["state"], "completed")
+        self.assertEqual(attempt["state"], "sealed-success")
+        self.assertEqual(
+            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
+            ["success"],
+        )
+        self.assertEqual(report["counts"]["errors"], 0)
 
     def test_tick_expires_missing_result_grace_seals_failure_and_allocates_retry(self) -> None:
         self.store.config = replace(self.store.config, result_grace_seconds=1)
@@ -301,6 +364,19 @@ class SupervisorTickTests(ExecutionFixture, unittest.TestCase):
             "attempts": len(self.store.list_attempts_snapshot(self.initiative_id)),
         }
         self.assertEqual(after, before)
+        self.assertEqual(second["counts"]["transitions"], 0)
+
+    def test_tick_over_unchanged_running_initiative_appends_no_events(self) -> None:
+        adapters = TeardownRaceAdapters(self.jj, state="working")
+        deps = self.deps(datetime.now(timezone.utc) + timedelta(seconds=1), adapters)
+        tick(deps)
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        second = tick(deps)
+
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), before,
+        )
         self.assertEqual(second["counts"]["transitions"], 0)
 
 
