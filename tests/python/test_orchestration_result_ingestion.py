@@ -29,6 +29,7 @@ from lib.control.orchestration.ingestion import (
     reserve_result_ingestion,
     result_ingestion_id,
     stage_result,
+    verify_controller_snapshot,
 )
 from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.model import validate_result_ingestion
@@ -176,6 +177,91 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             terminal_reconciliation={"state": "exited"},
             verifier=self.verifier,
         )
+
+    def _controller_verification_refusal(
+        self, output: bytes, child_status: int,
+    ) -> str:
+        commit_id = "9" * 40
+        tree_digest = "8" * 64
+
+        class ExactSnapshotJj:
+            def inspect_workspace(
+                inner_self, path, name, *, snapshot=False, require_empty=True,
+            ):
+                del inner_self, path, snapshot, require_empty
+                return WorkspaceIdentity(
+                    name=name, change_id="7" * 32, commit_id="6" * 40,
+                    parent_commit_ids=(commit_id,), description="verification",
+                )
+
+            def immutable_tree(inner_self, repository, observed_commit_id):
+                del inner_self, repository
+                return ImmutableTree(observed_commit_id, tree_digest, ())
+
+        captured: dict[str, Path] = {}
+
+        def contained(_bubblewrap, _environment, _argv, **kwargs):
+            captured["output_path"] = kwargs["output_path"]
+            return ["contained-verification"]
+
+        def execute(_argv, **_kwargs):
+            output_id = captured["output_path"].stem
+            self.store.finalize_reserved_output(
+                self.initiative_id, output_id, output,
+            )
+            return 0, {
+                "returncode": child_status,
+                "invocation_error": None,
+                "timed_out": False,
+                "output_truncated": False,
+                "output_original_bytes": len(output),
+                "output_digest": hashlib.sha256(output).hexdigest(),
+            }
+
+        body = self.body(verification_attestations=[{
+            "argv": [sys.executable, "-c", "raise SystemExit(7)"],
+            "cwd": ".", "exit_code": 0, "output_digest": "5" * 64,
+        }])
+        materialization = {
+            "workspace_name": "controller-verification",
+            "workspace_path": str(self.workspace),
+        }
+        with mock.patch(
+            "lib.control.orchestration.ingestion.prepare_materialization",
+            return_value=materialization,
+        ), mock.patch(
+            "lib.control.orchestration.ingestion.tracked_workspace_status",
+            return_value=(True, [], False),
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._bubblewrap_program",
+            return_value=Path("/usr/bin/bwrap"),
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._contained_argv",
+            side_effect=contained,
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._capture_truncated",
+            side_effect=execute,
+        ):
+            with self.assertRaises(IngestionRefused) as refused:
+                verify_controller_snapshot(
+                    self.store, self.ingestion, self.task, body,
+                    commit_id, tree_digest, jj=ExactSnapshotJj(),
+                )
+        return str(refused.exception)
+
+    def test_failing_controller_rerun_refusal_contains_output_tail(self) -> None:
+        refusal = self._controller_verification_refusal(
+            ("é" * 1500).encode() + b"controller-output\x00tail", 7,
+        )
+        self.assertIn("command failure", refusal)
+        self.assertIn("controller-output?tail", refusal)
+        self.assertTrue(all(character.isprintable() for character in refusal))
+        self.assertLessEqual(len(refusal.encode("utf-8")), 2048)
+
+    def test_empty_nonzero_controller_rerun_is_invocation_environment_failure(self) -> None:
+        refusal = self._controller_verification_refusal(b"\n--- stderr ---\n", 127)
+        self.assertIn("invocation/environment failure", refusal)
+        self.assertNotIn("command failure", refusal)
 
     def test_worker_stages_reserved_candidate_without_authoritative_write(self) -> None:
         before = self.store.list_results_snapshot(self.initiative_id)

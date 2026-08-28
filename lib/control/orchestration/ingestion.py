@@ -28,6 +28,7 @@ from ..tmux import TmuxAdapter, TmuxError
 from .links import control_task_identity_digest
 from .model import (
     EVIDENCE_CONTRACT,
+    MAX_REFUSAL_BYTES,
     RESULT_CANDIDATE_CONTRACT,
     RESULT_INGESTION_CONTRACT,
     ModelError,
@@ -54,6 +55,8 @@ from .verification import (
     _capture_truncated,
     _command_cwd,
     _contained_argv,
+    _printable_output_tail,
+    _rerun_failure_kind,
     command_denial,
 )
 
@@ -606,6 +609,33 @@ def _save_verification_evidence(
     return evidence_id
 
 
+def _controller_rerun_refusal(
+    failure_kind: str, output: bytes, *, detail: str | None = None,
+) -> str:
+    """Keep the actionable captured tail inside the ingestion refusal bound."""
+    prefix = (
+        f"controller verification {failure_kind} failure while reproducing "
+        "the declared command"
+    )
+    if detail:
+        sanitized = _printable_output_tail(
+            detail.encode("utf-8", errors="replace"), limit=400,
+        )
+        prefix += f": {sanitized}"
+    marker = "; output tail: "
+    tail = _printable_output_tail(output) or "<empty>"
+    head = prefix + marker
+    available = MAX_REFUSAL_BYTES - len(head.encode("utf-8"))
+    if available <= 0:
+        return head.encode("utf-8")[:MAX_REFUSAL_BYTES].decode(
+            "utf-8", errors="ignore",
+        )
+    tail_bytes = tail.encode("utf-8")
+    if len(tail_bytes) > available:
+        tail = tail_bytes[-available:].decode("utf-8", errors="ignore")
+    return head + tail
+
+
 def verify_controller_snapshot(
     store: InitiativeStore,
     ingestion: Mapping[str, Any],
@@ -665,6 +695,7 @@ def verify_controller_snapshot(
         output_path = store.reserve_output(
             ingestion["initiative_id"], output_path_id,
         )
+        output = b""
         try:
             cwd = _command_cwd(path, attestation["cwd"])
             returncode, status = _capture_truncated(
@@ -691,16 +722,31 @@ def verify_controller_snapshot(
                 ingestion["initiative_id"], output_path_id, output,
             )
         except (VerificationError, StoreError, OSError, ValueError) as exc:
-            raise IngestionRefused(f"controller verification execution failed: {exc}") from exc
+            try:
+                output = store.read_output(
+                    ingestion["initiative_id"], output_path_id,
+                )
+            except StoreError:
+                pass
+            raise IngestionRefused(_controller_rerun_refusal(
+                "invocation/environment", output, detail=str(exc),
+            )) from exc
         child_status = status.get("returncode")
         if (
             returncode != 0 or status.get("timed_out") is not False
             or status.get("invocation_error") is not None
             or child_status != 0 or attestation["exit_code"] != 0
         ):
-            raise IngestionRefused(
-                "controller verification did not reproduce a successful declared command"
+            failure_kind = _rerun_failure_kind(
+                containment_returncode=returncode,
+                child_returncode=child_status,
+                invocation_error=status.get("invocation_error"),
+                timed_out=status.get("timed_out") is True,
+                output=output,
             )
+            raise IngestionRefused(_controller_rerun_refusal(
+                failure_kind, output,
+            ))
         try:
             after_identity = adapter.inspect_workspace(
                 path, materialization["workspace_name"], require_empty=False,

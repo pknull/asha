@@ -6,6 +6,7 @@ import copy
 import hashlib
 import json
 import os
+import pwd
 import re
 import sys
 from datetime import datetime, timezone
@@ -36,6 +37,8 @@ from .store import InitiativeStore, StoreError
 MAX_VERIFICATION_OUTPUT_BYTES = 1024 * 1024
 _STATUS_TAIL_BYTES = 64 * 1024
 _PROCESS_STATUS_PREFIX = b"\nASHA_VERIFICATION_PROCESS_V1:"
+_FAILURE_OUTPUT_TAIL_BYTES = 2048
+_EMPTY_CAPTURED_OUTPUT = b"\n--- stderr ---\n"
 
 
 class VerificationError(ValueError):
@@ -365,6 +368,32 @@ def _minimal_argv(
     ]
 
 
+def _printable_output_tail(
+    output: bytes, *, limit: int = _FAILURE_OUTPUT_TAIL_BYTES,
+) -> str:
+    """Render the bounded end of captured bytes safely in evidence or refusals."""
+    text = output[-limit:].decode("utf-8", errors="replace")
+    return "".join(character if character.isprintable() else "?" for character in text)
+
+
+def _rerun_failure_kind(
+    *, containment_returncode: int, child_returncode: Any,
+    invocation_error: Any, timed_out: bool, output: bytes,
+) -> str:
+    """Separate a likely invocation/environment gap from a command failure."""
+    if containment_returncode != 0 or invocation_error is not None:
+        return "invocation/environment"
+    if (
+        isinstance(child_returncode, int)
+        and not isinstance(child_returncode, bool)
+        and child_returncode > 0
+        and not timed_out
+        and output in {b"", _EMPTY_CAPTURED_OUTPUT}
+    ):
+        return "invocation/environment"
+    return "command"
+
+
 def _bubblewrap_program() -> Path:
     for candidate in (Path("/usr/bin/bwrap"), Path("/bin/bwrap")):
         try:
@@ -404,7 +433,15 @@ def _contained_argv(
         or not output_path.is_file()
     ):
         raise VerificationError("verification containment paths are not exact")
-    minimal_environment = {**environment, "HOME": "/tmp"}
+    minimal_environment = dict(environment)
+    if "HOME" not in minimal_environment:
+        try:
+            minimal_environment["HOME"] = pwd.getpwuid(os.getuid()).pw_dir
+        except KeyError as exc:
+            raise VerificationError("invoking user's home directory is unavailable") from exc
+    # The root is already ro-bound, so HOME remains read-only. Toolchains such
+    # as rustup and cargo anchor required read-only state there; masking it with
+    # the empty /tmp tmpfs makes honest worker results unreproducible.
     return [
         str(bubblewrap), "--unshare-pid", "--die-with-parent",
         "--ro-bind", "/", "/", "--tmpfs", "/tmp",
@@ -743,6 +780,9 @@ def run_verification(
         output_original_bytes = 0
         retained_output_path: Path | None = None
         mutation = False
+        command_failed = False
+        failure_kind: str | None = None
+        failure_summary: str | None = None
         identity_error: str | None = None
         pre_identity_status = "observed"
         pre_change_id: str | None = None
@@ -774,6 +814,9 @@ def run_verification(
             pre_identity_status = "indeterminate"
             identity_error = f"materialization pre-run identity failed: {exc}"
             failed = True
+            command_failed = True
+            failure_kind = "materialization"
+            failure_summary = identity_error
             output = identity_error.encode("utf-8", errors="replace")
         pre_digest = (
             _identity_digest(
@@ -791,6 +834,9 @@ def run_verification(
         elif denial is not None:
             output = f"refused before execution: {denial}".encode("utf-8")
             failed = True
+            command_failed = True
+            failure_kind = "policy"
+            failure_summary = "verification policy refused the declared command"
         else:
             try:
                 cwd = _command_cwd(materialization_path, specification["cwd"])
@@ -823,6 +869,11 @@ def run_verification(
                 output_original_bytes = status["output_original_bytes"]
                 timed_out = status["timed_out"]
                 if returncode != 0 or status["invocation_error"] is not None:
+                    failure_kind = "invocation/environment"
+                    failure_summary = (
+                        "invocation/environment failure while reproducing the "
+                        "declared verification command"
+                    )
                     raise VerificationError(
                         "verification process containment or invocation failed: "
                         f"{status['invocation_error'] or returncode}"
@@ -846,6 +897,18 @@ def run_verification(
                     exit_code = child_returncode
                 if child_returncode != 0 or timed_out:
                     failed = True
+                    command_failed = True
+                    failure_kind = _rerun_failure_kind(
+                        containment_returncode=returncode,
+                        child_returncode=child_returncode,
+                        invocation_error=status["invocation_error"],
+                        timed_out=timed_out,
+                        output=output,
+                    )
+                    failure_summary = (
+                        f"{failure_kind} failure while reproducing the declared "
+                        "verification command"
+                    )
             except (VerificationError, StoreError) as exc:
                 if retained_output_path is not None:
                     try:
@@ -856,6 +919,13 @@ def run_verification(
                 output = output + b"\n" + diagnostic if output else diagnostic
                 timed_out = timed_out or "timed out" in str(exc)
                 failed = True
+                command_failed = True
+                if failure_kind is None:
+                    failure_kind = "invocation/environment"
+                    failure_summary = (
+                        "invocation/environment failure while reproducing the "
+                        "declared verification command"
+                    )
         post_identity_status = "observed"
         post_change_id: str | None = None
         post_commit_id: str | None = None
@@ -885,6 +955,9 @@ def run_verification(
             post_identity_status = "indeterminate"
             mutation = True
             failed = True
+            command_failed = True
+            failure_kind = "materialization"
+            failure_summary = "post-run materialization identity failure"
             output += (
                 "\npost-run materialization identity failed: " + str(exc)
             ).encode("utf-8", errors="replace")
@@ -909,6 +982,10 @@ def run_verification(
         ):
             mutation = True
             failed = True
+            command_failed = True
+            if failure_kind is None:
+                failure_kind = "materialization"
+                failure_summary = "verification materialization identity changed"
         if len(output) > MAX_VERIFICATION_OUTPUT_BYTES:
             original = max(output_original_bytes, len(output))
             marker = (
@@ -950,6 +1027,14 @@ def run_verification(
             "post_jj_commit_id": post_commit_id,
             "post_tree_digest": post_tree_digest,
         }
+        if command_failed:
+            detail.update({
+                "failure_kind": failure_kind or "command",
+                "failure_summary": failure_summary or (
+                    "command failure while reproducing the declared verification command"
+                ),
+                "output_tail": _printable_output_tail(output),
+            })
         _evidence, output_path, output_digest = _save_command_evidence(
             store, initiative_id, evidence_id, verification_id, detail, output,
             output_path=retained_output_path,
