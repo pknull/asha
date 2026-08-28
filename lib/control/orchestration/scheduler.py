@@ -775,6 +775,36 @@ def _transition_node(
     return changed
 
 
+def _promote_salvage_node(
+    store: InitiativeStore,
+    initiative_id: str,
+    node: dict[str, Any],
+    request_id: str,
+) -> dict[str, Any]:
+    """Persist the operator-authorized release before readiness is re-evaluated."""
+    if node["state"] != "needs-input":
+        return node
+    from .actions import append_event
+
+    promoted = _transition_node(store, initiative_id, node, "ready")
+    if not any(
+        event["type"] == "node-state-changed"
+        and event["subject_ids"] == [node["node_id"], request_id]
+        and event["payload"].get("salvage_request_id") == request_id
+        for event in store.list_events_snapshot(initiative_id)
+    ):
+        append_event(
+            store, initiative_id, "node-state-changed",
+            [node["node_id"], request_id],
+            {
+                "from": "needs-input", "to": "ready",
+                "salvage_request_id": request_id,
+            },
+            actor_kind="controller", actor_id="scheduler",
+        )
+    return promoted
+
+
 def _diagnostic(stderr: bytes) -> str:
     text = stderr[:4096].decode("utf-8", errors="replace")
     return "".join(char if char.isprintable() else "?" for char in text).strip()
@@ -902,8 +932,6 @@ def dispatch(
                 raise SchedulerError(reason)
             if initiative["state"] != "running":
                 raise SchedulerError("initiative must be running to dispatch")
-            if node["state"] != "ready" or readiness(store, initiative).get(node_id) != "ready":
-                raise SchedulerError("node is not deterministically ready")
             if len(_active_attempts(attempts)) >= _limit(initiative, plan, "max_parallel"):
                 raise SchedulerError("initiative max_parallel limit reached")
             gate_attempt_ids, pending_gate_reruns = _gate_rerun_attempt_ids(
@@ -913,18 +941,6 @@ def dispatch(
                 1 for item in node_attempts
                 if item["attempt_id"] not in gate_attempt_ids
             )
-            if reserved is None and salvage_approval is None:
-                retained_success = sorted(
-                    (
-                        seal for seal in store.list_seals_snapshot(initiative_id)
-                        if seal["node_id"] == node_id and seal["outcome"] == "success"
-                    ),
-                    key=lambda item: (item["sealed_at"], item["seal_id"]),
-                )
-                if retained_success:
-                    raise SchedulerError(
-                        "use repair-node with seal " + retained_success[-1]["seal_id"]
-                    )
             if (
                 reserved is None
                 and pending_gate_reruns == 0
@@ -941,6 +957,26 @@ def dispatch(
                 )
             ):
                 raise SchedulerError("initiative max_repair_cycles exhausted")
+            if salvage_approval is not None:
+                # Approval releases operator input; dependency readiness remains
+                # authoritative and may still refuse this dispatch.
+                node = _promote_salvage_node(
+                    store, initiative_id, node, salvage_approval["request_id"],
+                )
+            if node["state"] != "ready" or readiness(store, initiative).get(node_id) != "ready":
+                raise SchedulerError("node is not deterministically ready")
+            if reserved is None and salvage_approval is None:
+                retained_success = sorted(
+                    (
+                        seal for seal in store.list_seals_snapshot(initiative_id)
+                        if seal["node_id"] == node_id and seal["outcome"] == "success"
+                    ),
+                    key=lambda item: (item["sealed_at"], item["seal_id"]),
+                )
+                if retained_success:
+                    raise SchedulerError(
+                        "use repair-node with seal " + retained_success[-1]["seal_id"]
+                    )
             if reserved is not None:
                 bound_id = reserved["action_id"]
                 if bound_id not in {None, action["action_id"]}:
