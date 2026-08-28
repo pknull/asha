@@ -657,6 +657,12 @@ class SupervisorServiceTests(unittest.TestCase):
                 runner=runner, which=self.which,
             )
 
+        # The bus must be proven reachable (daemon-reload) BEFORE the manual
+        # supervisor is stopped, and the stop must precede enable --now: a
+        # dead bus must never leave the plane with no supervisor at all.
+        self.assertLess(
+            ordering.index("--user daemon-reload"), ordering.index("stop"),
+        )
         self.assertLess(ordering.index("stop"), ordering.index(
             "--user enable --now asha-supervisor.service",
         ))
@@ -676,8 +682,14 @@ class SupervisorServiceTests(unittest.TestCase):
                     runner=self.runner, which=self.which,
                 )
 
+        # Bus-first ordering: daemon-reload proves the bus before the manual
+        # supervisor is touched, so exactly that one call is expected; the
+        # refusal restores the filesystem as found and never reaches enable.
         self.assertFalse(path.exists())
-        self.assertEqual(self.calls, [])
+        self.assertEqual(
+            [call[1:] for call in self.calls],
+            [["--user", "daemon-reload"]],
+        )
 
     def test_uninstall_removes_only_owned_unit_and_is_idempotent(self) -> None:
         path = supervisor_service_path(self.env)

@@ -282,18 +282,33 @@ def install_supervisor_service(
     systemctl = _resolve_command("systemctl", env, which)
     if systemctl is None:
         raise ValueError("systemctl is unavailable; cannot install supervisor service")
-    stopped, _stop_code = stop_supervisor(config)
-    if stopped.get("running") or _lock_held(config):
-        raise ValueError("supervisor is still stopping; retry service installation")
+    # Prove the user bus is reachable before stopping anything: a detached
+    # shell without DBUS/XDG_RUNTIME_DIR must fail here with the manual
+    # supervisor still running, never after it has been taken down.
+    prior_body = path.read_text() if _unit_exists(path) else None
     _write_service(path, body)
+
+    def _restore_unit() -> None:
+        # A refusal leaves the filesystem as found; the written unit is
+        # inert without enable, but residue would still confuse status.
+        if prior_body is None:
+            path.unlink(missing_ok=True)
+        else:
+            _write_service(path, prior_body)
+
     returncode, _stdout, stderr = _capture_service_command(
         [systemctl, "--user", "daemon-reload"], runner,
     )
     if returncode != 0:
+        _restore_unit()
         raise ValueError(
             "systemctl --user daemon-reload failed: "
             f"{stderr.decode('utf-8', errors='replace').strip() or f'exit {returncode}'}"
         )
+    stopped, _stop_code = stop_supervisor(config)
+    if stopped.get("running") or _lock_held(config):
+        _restore_unit()
+        raise ValueError("supervisor is still stopping; retry service installation")
     returncode, _stdout, stderr = _capture_service_command(
         [systemctl, "--user", "enable", "--now", _SERVICE_NAME], runner,
     )
