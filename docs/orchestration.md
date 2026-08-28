@@ -418,6 +418,15 @@ but cannot write the colocated source repository's Git object store. After a
 normal exit, the controller snapshots the retained tree and independently
 reruns declared result attestations against that exact commit.
 
+An `invocation/environment` rerun failure is evidence of a reproduction gap,
+not a veto: ingestion records a commit/tree-bound
+`snapshot-verification-environment-gap`, skips the remaining attestations, and
+continues through review and sealing. Command-class failures still refuse; a
+successful seal exposes `verification_environment_degraded: true` in its
+process evidence for the operator's integration decision. `asha task seal
+--json` presents the same fact as `verification: "environment-degraded"` (or
+`"reproduced"`).
+
 The scheduler then invokes one argv-only bounded subprocess, without a shell:
 
 ```text
@@ -525,7 +534,10 @@ receipt without semantic revalidation. Controller-carried results additionally
 bind `publication_provenance` (producer and controller/coordinator ingester),
 `claimed_commit_id`, and `commit_provenance` (`worker|controller|none`). For a
 controller-created commit, exact-materialization verification evidence is
-mandatory and is copied into the later seal provenance. `asha task result`
+mandatory and is copied into the later seal provenance. That evidence may be
+an exact commit/tree-bound environment-gap record when controller reproduction
+is unavailable; the later seal records the degradation without changing its
+outcome. `asha task result`
 returns accepted immutable results for one Control task.
 
 ## Exit evidence and immutable seals
@@ -776,7 +788,7 @@ remain available where their ordinary lifecycle rules permit containment.
 | `approve-salvage` | `asha.orchestration-salvage-approval.v1` `{contract, initiative_id, approval}` |
 | `task report` | `asha.orchestration-result-publication-receipt.v1` `{contract, publication_id, result_id, phase, refusal}` |
 | `task result` | `asha.orchestration-task-results.v1` `{contract, task_id, results}` |
-| `task seal` | `asha.orchestration-task-seal.v1` `{contract, seal}` |
+| `task seal` | `asha.orchestration-task-seal.v1` `{contract, seal, verification}` |
 | `list` | `asha.orchestration-initiative-list.v1` `{contract, initiatives, skipped?}` |
 | `show` | `asha.orchestration-initiative-show.v1` `{contract, initiative, graph, action_outcomes, gates, limits, evidence_counts, node_reconciliation, superseded_nodes}` |
 | `events` | `asha.orchestration-event-list.v1` `{contract, initiative_id, events}` |

@@ -197,6 +197,7 @@ class OrchestrationSealTests(ExecutionFixture, unittest.TestCase):
         self.assertTrue(facts["normal_zero_exit"])
         self.assertTrue(facts["clean_identity"])
         self.assertTrue(facts["hard_scope_valid"])
+        self.assertFalse(facts["verification_environment_degraded"])
 
     def test_success_refused_when_claim_process_identity_or_hard_scope_fails(self) -> None:
         self._accept("failed")
@@ -484,7 +485,9 @@ class OrchestrationSealTests(ExecutionFixture, unittest.TestCase):
                     ["task", "seal", identity, "--json"], env=self.env,
                 )
             self.assertEqual(status, 0)
-            self.assertEqual(json.loads(output.getvalue())["seal"]["seal_id"], seal["seal_id"])
+            payload = json.loads(output.getvalue())
+            self.assertEqual(payload["seal"]["seal_id"], seal["seal_id"])
+            self.assertEqual(payload["verification"], "reproduced")
 
 
 if __name__ == "__main__":

@@ -636,6 +636,35 @@ def _controller_rerun_refusal(
     return head + tail
 
 
+def _save_verification_environment_gap(
+    store: InitiativeStore,
+    ingestion: Mapping[str, Any],
+    attestation: Mapping[str, Any],
+    commit_id: str,
+    tree_digest: str,
+    output: bytes,
+    *,
+    detail: str | None = None,
+) -> str:
+    gap = {
+        "kind": "snapshot-verification-environment-gap",
+        "claimed_commit_id": commit_id,
+        "claimed_tree_digest": tree_digest,
+        "argv": list(attestation["argv"]),
+        "cwd": attestation["cwd"],
+        "failure_kind": "invocation/environment",
+        "output_tail": _printable_output_tail(output) or "<empty>",
+        "status": "unreproducible-environment",
+    }
+    if detail:
+        gap["failure_detail"] = _printable_output_tail(
+            detail.encode("utf-8", errors="replace"), limit=400,
+        )
+    return _save_verification_evidence(
+        store, ingestion["initiative_id"], ingestion["ingestion_id"], gap,
+    )
+
+
 def verify_controller_snapshot(
     store: InitiativeStore,
     ingestion: Mapping[str, Any],
@@ -728,9 +757,12 @@ def verify_controller_snapshot(
                 )
             except StoreError:
                 pass
-            raise IngestionRefused(_controller_rerun_refusal(
-                "invocation/environment", output, detail=str(exc),
-            )) from exc
+            evidence_ids.append(_save_verification_environment_gap(
+                store, ingestion, attestation, commit_id, tree_digest, output,
+                detail=str(exc),
+            ))
+            # The same containment wall applies to every later attestation.
+            break
         child_status = status.get("returncode")
         if (
             returncode != 0 or status.get("timed_out") is not False
@@ -744,6 +776,12 @@ def verify_controller_snapshot(
                 timed_out=status.get("timed_out") is True,
                 output=output,
             )
+            if failure_kind == "invocation/environment":
+                evidence_ids.append(_save_verification_environment_gap(
+                    store, ingestion, attestation, commit_id, tree_digest, output,
+                ))
+                # More reruns cannot add reproduction evidence in this environment.
+                break
             raise IngestionRefused(_controller_rerun_refusal(
                 failure_kind, output,
             ))
