@@ -612,7 +612,7 @@ class OrchestrationModelTests(unittest.TestCase):
             "initiative": (
                 "draft", "planning", "awaiting-plan-approval", "approved",
                 "running", "needs-input", "paused", "ready-for-integration",
-                "partial", "failed", "cancelled", "archived",
+                "integrated", "partial", "failed", "cancelled", "archived",
             ),
             "coordinator": (
                 "absent", "starting", "active", "waiting", "needs-input",
@@ -672,9 +672,12 @@ class OrchestrationModelTests(unittest.TestCase):
                 ("planning", "cancelled"), ("awaiting-plan-approval", "cancelled"),
                 ("approved", "cancelled"), ("running", "cancelled"),
                 ("needs-input", "cancelled"), ("paused", "cancelled"),
-                ("ready-for-integration", "archived"), ("partial", "archived"),
+                ("ready-for-integration", "integrated"),
+                ("ready-for-integration", "archived"), ("integrated", "archived"),
+                ("partial", "archived"),
                 ("failed", "archived"), ("cancelled", "archived"),
-                ("archived", "ready-for-integration"), ("archived", "partial"),
+                ("archived", "ready-for-integration"), ("archived", "integrated"),
+                ("archived", "partial"),
                 ("archived", "failed"), ("archived", "cancelled"),
             ],
             "coordinator": [
@@ -861,6 +864,7 @@ class OrchestrationModelTests(unittest.TestCase):
                 ("approved", "approved"), ("running", "running"),
                 ("needs-input", "needs-input"), ("paused", "paused"),
                 ("ready-for-integration", "ready-for-integration"),
+                ("integrated", "integrated"),
                 ("partial", "partial"), ("failed", "failed"),
                 ("cancelled", "cancelled"), ("archived", "archived"),
             ],

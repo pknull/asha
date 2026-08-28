@@ -736,7 +736,9 @@ def _tree_row_line(row, width: int, selected: bool, now, glyphs: str) -> Line:
     return builder.build()
 
 
-_ARCHIVABLE_INITIATIVE_STATES = frozenset({"ready-for-integration", "partial", "failed", "cancelled"})
+_ARCHIVABLE_INITIATIVE_STATES = frozenset({
+    "ready-for-integration", "integrated", "partial", "failed", "cancelled",
+})
 
 
 def _operator_action(

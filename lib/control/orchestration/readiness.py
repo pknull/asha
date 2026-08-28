@@ -587,7 +587,7 @@ def archive_initiative(
                 raise ReadinessError("archive event lacks its retained inventory")
             return initiative, inventory
         if source_state not in {
-            "ready-for-integration", "partial", "failed", "cancelled",
+            "ready-for-integration", "integrated", "partial", "failed", "cancelled",
         }:
             raise ReadinessError("archived initiative lacks a recoverable source outcome")
         inventory = _archive_inventory(store, initiative)
@@ -631,7 +631,7 @@ def unarchive_initiative(
             or action_id is None
             or initiative["state"] != recovery_state
             or recovery_state not in {
-                "ready-for-integration", "partial", "failed", "cancelled",
+                "ready-for-integration", "integrated", "partial", "failed", "cancelled",
             }
         ):
             raise ReadinessError("only an archived initiative may be unarchived")
@@ -658,7 +658,9 @@ def unarchive_initiative(
     if not archive_events:
         raise ReadinessError("archived initiative has no retained archive transition")
     restored = archive_events[-1]["payload"].get("from")
-    if restored not in {"ready-for-integration", "partial", "failed", "cancelled"}:
+    if restored not in {
+        "ready-for-integration", "integrated", "partial", "failed", "cancelled",
+    }:
         raise ReadinessError("archive transition does not retain a terminal outcome")
     changed = copy.deepcopy(initiative)
     changed.update({

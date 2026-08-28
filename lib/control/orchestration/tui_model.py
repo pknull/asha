@@ -119,8 +119,8 @@ TuiModel = InitiativeTreeModel
 
 _STATE_ORDER = {
     "needs-input": 0, "awaiting-plan-approval": 1, "running": 2, "paused": 3, "approved": 4,
-    "planning": 5, "draft": 6, "ready-for-integration": 7, "partial": 8, "failed": 9,
-    "cancelled": 10, "archived": 11,
+    "planning": 5, "draft": 6, "ready-for-integration": 7, "integrated": 8,
+    "partial": 9, "failed": 10, "cancelled": 11, "archived": 12,
 }
 _INITIATIVE_FIXED_LINES = 16
 

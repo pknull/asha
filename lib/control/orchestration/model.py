@@ -471,8 +471,8 @@ def validate_base_policy(value: Any) -> dict[str, Any]:
 
 INITIATIVE_STATES = (
     "draft", "planning", "awaiting-plan-approval", "approved", "running",
-    "needs-input", "paused", "ready-for-integration", "partial", "failed",
-    "cancelled", "archived",
+    "needs-input", "paused", "ready-for-integration", "integrated", "partial",
+    "failed", "cancelled", "archived",
 )
 COORDINATOR_STATES = (
     "absent", "starting", "active", "waiting", "needs-input", "stopping",
@@ -501,7 +501,8 @@ def _edges(states: tuple[str, ...], pairs: list[tuple[str, str]]) -> dict[str, f
 
 
 _INITIATIVE_TERMINAL = frozenset({
-    "ready-for-integration", "partial", "failed", "cancelled", "archived",
+    "ready-for-integration", "integrated", "partial", "failed", "cancelled",
+    "archived",
 })
 _INITIATIVE_NONTERMINAL = frozenset(INITIATIVE_STATES) - _INITIATIVE_TERMINAL
 INITIATIVE_TERMINAL_STATES = _INITIATIVE_TERMINAL
@@ -514,15 +515,16 @@ _initiative_pairs = [
     ("running", "ready-for-integration"), ("running", "partial"),
     ("running", "failed"), ("draft", "failed"), ("draft", "partial"),
     ("planning", "failed"), ("planning", "partial"),
+    ("ready-for-integration", "integrated"),
 ]
 _initiative_pairs += [(state, "cancelled") for state in _INITIATIVE_NONTERMINAL]
 _initiative_pairs += [
     (state, "archived")
-    for state in ("ready-for-integration", "partial", "failed", "cancelled")
+    for state in ("ready-for-integration", "integrated", "partial", "failed", "cancelled")
 ]
 _initiative_pairs += [
     ("archived", state)
-    for state in ("ready-for-integration", "partial", "failed", "cancelled")
+    for state in ("ready-for-integration", "integrated", "partial", "failed", "cancelled")
 ]
 INITIATIVE_TRANSITIONS = _edges(INITIATIVE_STATES, _initiative_pairs)
 

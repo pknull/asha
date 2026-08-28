@@ -378,7 +378,7 @@ fallback.
 `lib/control/tui_style.py` owns the whole visual vocabulary and imports no
 curses; the renderer stays terminal-independent and only `_paint` reads it.
 
-The four record classes carry 56 states (44 distinct words, since `running`,
+The four record classes carry 57 states (45 distinct words, since `running`,
 `failed`, `approved`, `cancelled`, `dispatching`, `needs-input` and `stale` are
 reused across classes). No operator holds that many words in their eye, so
 `tier_for` maps every state to exactly one of five tiers, and the tier is what

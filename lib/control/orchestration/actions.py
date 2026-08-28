@@ -1719,7 +1719,7 @@ def submit_action(
             except ReadinessError as exc:
                 return _refuse(store, action, str(exc))
         if action["action_class"] == "archive" and initiative["state"] not in {
-            "ready-for-integration", "partial", "failed", "cancelled",
+            "ready-for-integration", "integrated", "partial", "failed", "cancelled",
         }:
             return _refuse(store, action, "only a terminal initiative outcome may be archived")
         if action["action_class"] == "unarchive" and initiative["state"] != "archived":
