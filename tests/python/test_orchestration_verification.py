@@ -4,6 +4,7 @@ import copy
 import hashlib
 import json
 import os
+import pwd
 import re
 import sys
 import threading
@@ -106,6 +107,37 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
                 "'open(\\\"/dev/null\\\",\\\"wb\\\").write(b\\\"ok\\\")'],"
                 "stdout=subprocess.DEVNULL)",
             ]
+        elif "home_is_preserved" in method:
+            expected_home = os.environ.get("HOME") or str(Path.home())
+            command = [
+                sys.executable, "-c",
+                "import os; from pathlib import Path; "
+                f"assert os.environ['HOME'] == {expected_home!r}; "
+                "assert os.environ['HOME'] != '/tmp'; "
+                "assert Path(os.environ['HOME']).is_dir()",
+            ]
+        elif "home_is_read_only" in method:
+            expected_home = Path(os.environ.get("HOME") or str(Path.home()))
+            self.home_write_marker = expected_home / f".asha-verification-{uuid.uuid4()}"
+            command = [
+                sys.executable, "-c",
+                "import os; from pathlib import Path; "
+                f"Path(os.environ['HOME'], {self.home_write_marker.name!r}).write_text('no')",
+            ]
+        elif "home_falls_back" in method:
+            expected_home = pwd.getpwuid(os.getuid()).pw_dir
+            command = [
+                sys.executable, "-c",
+                "import os; from pathlib import Path; "
+                f"assert os.environ['HOME'] == {expected_home!r}; "
+                "assert Path(os.environ['HOME']).is_dir()",
+            ]
+        elif "failing_rerun_evidence" in method:
+            command = [
+                sys.executable, "-c",
+                "import sys; sys.stdout.buffer.write(b'controller-tail\\x00visible'); "
+                "sys.stdout.flush(); raise SystemExit(7)",
+            ]
         elif "nonzero" in method:
             command = [sys.executable, "-c", "raise SystemExit(7)"]
         elif "outside_write" in method:
@@ -177,16 +209,24 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
             self.repo, self.candidate, mutate=mutate,
             fail_on_inspection=fail_on_inspection,
         )
+        command_environment = {
+            "PATH": os.environ["PATH"],
+            "LANG": "C.UTF-8",
+            "SECRET_SHOULD_NOT_LEAK": "forbidden",
+        }
+        if "home_falls_back" not in self._testMethodName:
+            command_environment["HOME"] = (
+                os.environ.get("HOME") or str(Path.home())
+                if "home_is_" in self._testMethodName
+                else str(self.root / "home")
+            )
         with mock.patch(
             "lib.control.orchestration.verification.tracked_workspace_status",
             return_value=(not mutate, list(non_tracked or []), False),
         ):
             record = run_verification(
                 self.store, self.initiative_id, "verify-a", jj=adapter,
-                environment={
-                    "PATH": os.environ["PATH"], "HOME": str(self.root / "home"),
-                    "LANG": "C.UTF-8", "SECRET_SHOULD_NOT_LEAK": "forbidden",
-                },
+                environment=command_environment,
                 materializer=self._materializer,
             )
         return record
@@ -265,6 +305,21 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
         self.assertIsNone(command["signal"])
 
     def test_devnull_and_subprocess_work_inside_pid_containment(self) -> None:
+        record = self._run()
+        self.assertEqual(record["state"], "passed")
+        self.assertEqual(record["commands"][0]["exit_code"], 0)
+
+    def test_home_is_preserved_inside_containment(self) -> None:
+        record = self._run()
+        self.assertEqual(record["state"], "passed")
+        self.assertEqual(record["commands"][0]["exit_code"], 0)
+
+    def test_home_is_read_only_inside_containment(self) -> None:
+        record = self._run()
+        self.assertEqual(record["state"], "failed")
+        self.assertFalse(self.home_write_marker.exists())
+
+    def test_home_falls_back_to_pwd_inside_containment(self) -> None:
         record = self._run()
         self.assertEqual(record["state"], "passed")
         self.assertEqual(record["commands"][0]["exit_code"], 0)
@@ -613,6 +668,21 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
         record = self._run()
         self.assertEqual(record["state"], "failed")
         self.assertEqual(record["commands"][0]["exit_code"], 7)
+        detail = json.loads(self.store.read_evidence(
+            self.initiative_id, record["evidence_ids"][0],
+        )["summary"])
+        self.assertEqual(detail["failure_kind"], "invocation/environment")
+
+    def test_failing_rerun_evidence_contains_printable_output_tail(self) -> None:
+        record = self._run()
+        self.assertEqual(record["state"], "failed")
+        detail = json.loads(self.store.read_evidence(
+            self.initiative_id, record["evidence_ids"][0],
+        )["summary"])
+        self.assertEqual(detail["failure_kind"], "command")
+        self.assertIn("command failure", detail["failure_summary"])
+        self.assertIn("controller-tail?visible", detail["output_tail"])
+        self.assertTrue(all(character.isprintable() for character in detail["output_tail"]))
 
     def test_materialization_mutation_fails(self) -> None:
         record = self._run(mutate=True)
