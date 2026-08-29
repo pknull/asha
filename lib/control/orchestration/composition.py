@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import Any, Mapping
 
 from .store import InitiativeStore
+
+
+_MEMBER_IDENTITY = ("repository_id", "seal_id", "jj_commit_id", "tree_digest", "diff_digest")
 
 
 class CompositionError(ValueError):
@@ -64,6 +69,57 @@ def composition_inputs(
     return resolved
 
 
+def bundle_composition_digest(bundle: Mapping[str, Any]) -> str:
+    """Bind one bundle's exact ordered member identities.
+
+    Both the composed gate and the integration attestation derive this from the
+    retained bundle alone, so a verdict can never be replayed onto a different
+    bundle or a bundle whose members differ by one digest.
+    """
+    return hashlib.sha256(json.dumps(
+        [
+            bundle["bundle_id"],
+            [
+                [member[field] for field in _MEMBER_IDENTITY]
+                for member in bundle["members"]
+            ],
+        ],
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def bundle_composition_inputs(
+    store: InitiativeStore,
+    initiative_id: str,
+    bundle: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Resolve a compatible bundle's member seals in exact bundle order.
+
+    This is a sibling of `composition_inputs`, not a reuse of it: that resolver
+    is compose-node shaped -- it needs a compose node plus an `upstream-seal`
+    attempt and refuses inputs outside one repository -- while a bundle carries
+    at most one member per repository and no node or attempt at all.
+    """
+    if bundle["state"] != "compatible" or bundle["outcome"] != "compatible":
+        raise CompositionError("composed verification requires a compatible bundle")
+    resolved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for member in bundle["members"]:
+        seal_id = member["seal_id"]
+        if seal_id in seen:
+            raise CompositionError("bundle member seal IDs must be unique")
+        seen.add(seal_id)
+        seal = store.read_seal(initiative_id, seal_id)
+        if seal["outcome"] != "success":
+            raise CompositionError("bundle members must be success seals")
+        if any(seal[field] != member[field] for field in _MEMBER_IDENTITY):
+            raise CompositionError(
+                f"bundle member seal {seal_id} is unavailable or changed"
+            )
+        resolved.append(seal)
+    return resolved
+
+
 def enforce_terminal_candidate(
     store: InitiativeStore,
     initiative_id: str,
@@ -103,4 +159,7 @@ def enforce_terminal_candidate(
             )
 
 
-__all__ = ["CompositionError", "composition_inputs", "enforce_terminal_candidate"]
+__all__ = [
+    "CompositionError", "bundle_composition_digest", "bundle_composition_inputs",
+    "composition_inputs", "enforce_terminal_candidate",
+]

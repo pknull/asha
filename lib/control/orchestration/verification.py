@@ -21,8 +21,10 @@ from ..prepare import (
     prepare_materialization,
 )
 from .actions import append_event
+from .composition import bundle_composition_digest, bundle_composition_inputs
 from .model import (
     EVIDENCE_CONTRACT,
+    MAX_SUMMARY_BYTES,
     VERIFICATION_CONTRACT,
     new_uuid,
     record_digest,
@@ -35,6 +37,9 @@ from .store import InitiativeStore, StoreError
 
 
 MAX_VERIFICATION_OUTPUT_BYTES = 1024 * 1024
+COMPOSED_VERIFICATION_KIND = "composed-verification"
+COMPOSED_COMMAND_KIND = "composed-verification-command"
+_COMPOSED_OUTCOMES = ("failed", "passed", "indeterminate")
 _STATUS_TAIL_BYTES = 64 * 1024
 _PROCESS_STATUS_PREFIX = b"\nASHA_VERIFICATION_PROCESS_V1:"
 _FAILURE_OUTPUT_TAIL_BYTES = 2048
@@ -504,6 +509,7 @@ def _save_command_evidence(
     output: bytes,
     *,
     output_path: Path | None = None,
+    kind: str = "verification-command",
 ) -> tuple[dict[str, Any], str, str]:
     output_digest = hashlib.sha256(output).hexdigest()
     if output_path is None:
@@ -523,7 +529,7 @@ def _save_command_evidence(
         "contract": EVIDENCE_CONTRACT,
         "evidence_id": evidence_id,
         "initiative_id": initiative_id,
-        "kind": "verification-command",
+        "kind": kind,
         "subject_id": verification_id,
         "digest": hashlib.sha256(summary.encode("utf-8")).hexdigest(),
         "summary": summary,
@@ -1104,7 +1110,381 @@ def run_verification(
     return terminal
 
 
+def _composed_materialization_name(initiative_id: str, bundle_id: str, index: int) -> str:
+    base = f"compose-{initiative_id}-{bundle_id[:8]}"
+    return base if index == 0 else f"{base}-{index}"
+
+
+def composed_roster(
+    bundle: Mapping[str, Any], observed: Mapping[str, str | None] | None = None,
+) -> list[dict[str, Any]]:
+    """Every bundle member with the composed tree digest actually observed."""
+    return [
+        {
+            "repository_id": member["repository_id"],
+            "seal_id": member["seal_id"],
+            "jj_commit_id": member["jj_commit_id"],
+            "tree_digest": member["tree_digest"],
+            "composed_tree_digest": (observed or {}).get(member["seal_id"]),
+        }
+        for member in bundle["members"]
+    ]
+
+
+def composed_verdict_evidence(
+    initiative_id: str,
+    bundle: Mapping[str, Any],
+    *,
+    outcome: str,
+    detail: Mapping[str, Any],
+    observed: Mapping[str, str | None] | None = None,
+) -> dict[str, Any]:
+    """Build the immutable composed verdict bound to one exact composition."""
+    if outcome not in _COMPOSED_OUTCOMES:
+        raise VerificationError("composed verification outcome is invalid")
+    # Descriptive detail may never rebind the identity or the verdict it
+    # describes; the gate reads exactly these three fields.
+    if {"bundle_id", "composition_digest", "outcome", "members"} & set(detail):
+        raise VerificationError("composed verdict detail may not rebind its identity")
+    body: dict[str, Any] = {
+        "bundle_id": bundle["bundle_id"],
+        "composition_digest": bundle_composition_digest(bundle),
+        "outcome": outcome,
+        "members": composed_roster(bundle, observed),
+        "members_elided": False,
+        **copy.deepcopy(dict(detail)),
+    }
+
+    def encoded() -> str:
+        return json.dumps(
+            body, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+
+    summary = encoded()
+    if len(summary.encode("utf-8")) > MAX_SUMMARY_BYTES:
+        # The composition digest already binds every member identity, so a wide
+        # bundle drops the readable roster rather than the verdict.
+        body["members"] = []
+        body["members_elided"] = True
+        summary = encoded()
+    return validate_evidence({
+        "contract": EVIDENCE_CONTRACT,
+        "evidence_id": new_uuid(),
+        "initiative_id": initiative_id,
+        "kind": COMPOSED_VERIFICATION_KIND,
+        "subject_id": bundle["bundle_id"],
+        "digest": hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+        "summary": summary,
+        "recorded_at": _now(),
+    })
+
+
+def composed_verification_verdict(
+    store: InitiativeStore, initiative_id: str, bundle: Mapping[str, Any],
+) -> tuple[str, dict[str, Any] | None]:
+    """The strongest retained composed verdict for this exact composition.
+
+    A recorded failure outranks a later pass: the composition is immutable, so
+    disagreement means the gate did not reproduce and is not permission.
+    """
+    expected = bundle_composition_digest(bundle)
+    found: dict[str, dict[str, Any]] = {}
+    for evidence in store.list_evidence_snapshot(initiative_id):
+        if (
+            evidence["kind"] != COMPOSED_VERIFICATION_KIND
+            or evidence["subject_id"] != bundle["bundle_id"]
+        ):
+            continue
+        try:
+            summary = json.loads(evidence["summary"])
+        except (TypeError, ValueError) as exc:
+            raise VerificationError("composed verification evidence is unreadable") from exc
+        if (
+            not isinstance(summary, dict)
+            or summary.get("bundle_id") != bundle["bundle_id"]
+            or summary.get("composition_digest") != expected
+        ):
+            continue
+        if summary.get("outcome") in _COMPOSED_OUTCOMES:
+            found.setdefault(summary["outcome"], summary)
+    for outcome in _COMPOSED_OUTCOMES:
+        if outcome in found:
+            return outcome, found[outcome]
+    return "absent", None
+
+
+class _ComposedIdentityError(VerificationError):
+    """A composed materialization is not the exact member seal tree."""
+
+
+def _composed_identity(
+    adapter: JjAdapter,
+    materialization: Mapping[str, str],
+    materialization_path: Path,
+    source: Path,
+    seal: Mapping[str, Any],
+) -> tuple[str, str]:
+    """The composed workspace's exact commit and tree, or an identity failure."""
+    identity = adapter.inspect_workspace(
+        materialization_path, materialization["workspace_name"], require_empty=False,
+    )
+    tree = adapter.immutable_tree(materialization_path, identity.commit_id)
+    tracked_unchanged, _paths, _truncated = tracked_workspace_status(
+        adapter, materialization_path, source, seal["jj_commit_id"],
+    )
+    if (
+        identity.parent_commit_ids != (seal["jj_commit_id"],)
+        or tree.digest != seal["tree_digest"]
+        or not tracked_unchanged
+    ):
+        raise _ComposedIdentityError(
+            "composed materialization identity differs from its member seal"
+        )
+    return identity.commit_id, tree.digest
+
+
+def _composed_command(
+    store: InitiativeStore,
+    initiative_id: str,
+    bundle_id: str,
+    adapter: JjAdapter,
+    bubblewrap: Path,
+    environment: Mapping[str, str],
+    *,
+    seal: Mapping[str, Any],
+    materialization: Mapping[str, str],
+    materialization_path: Path,
+    source: Path,
+    specification: Mapping[str, Any],
+    gate: Mapping[str, Any],
+) -> tuple[dict[str, Any], str, str | None]:
+    """Run one declared command against the composed tree.
+
+    The returned failure kind is `command` only for a real declared-command
+    verdict; every other kind is an environment-class outcome that defers under
+    the standing invocation/environment ruling rather than condemning the
+    composition.
+    """
+    evidence_id = new_uuid()
+    started_at = _now()
+    exit_code: int | None = None
+    signal: int | None = None
+    timed_out = False
+    output = b""
+    output_path: Path | None = None
+    failure_kind: str | None = None
+    pre_tree_digest: str | None = None
+    post_tree_digest: str | None = None
+    denial = command_denial(specification["argv"])
+    try:
+        _pre_commit, pre_tree_digest = _composed_identity(
+            adapter, materialization, materialization_path, source, seal,
+        )
+        if denial is not None:
+            failure_kind = "policy"
+            output = f"refused before execution: {denial}".encode("utf-8")
+        else:
+            output_path = store.reserve_output(initiative_id, evidence_id)
+            returncode, status = _capture_truncated(
+                _contained_argv(
+                    bubblewrap, environment, list(specification["argv"]),
+                    writable_root=materialization_path, output_path=output_path,
+                    timeout_seconds=specification["timeout_seconds"],
+                ),
+                cwd=_command_cwd(materialization_path, specification["cwd"]),
+                deadline_seconds=specification["timeout_seconds"],
+            )
+            output = store.read_output(initiative_id, evidence_id)
+            child_returncode = status["returncode"]
+            timed_out = status["timed_out"] is True
+            if (
+                returncode != 0
+                or status["invocation_error"] is not None
+                or not isinstance(status["timed_out"], bool)
+                or isinstance(child_returncode, bool)
+                or not isinstance(child_returncode, int)
+                or status["output_digest"] != hashlib.sha256(output).hexdigest()
+            ):
+                failure_kind = "invocation/environment"
+            elif child_returncode < 0:
+                signal = -child_returncode
+                failure_kind = "command"
+            else:
+                exit_code = child_returncode
+                if child_returncode != 0 or timed_out:
+                    failure_kind = _rerun_failure_kind(
+                        containment_returncode=returncode,
+                        child_returncode=child_returncode,
+                        invocation_error=status["invocation_error"],
+                        timed_out=timed_out, output=output,
+                    )
+            _post_commit, post_tree_digest = _composed_identity(
+                adapter, materialization, materialization_path, source, seal,
+            )
+    except (PreparationError, JjError, StoreError, VerificationError, OSError, ValueError) as exc:
+        diagnostic = str(exc).encode("utf-8", errors="replace")
+        output = output + b"\n" + diagnostic if output else diagnostic
+        # An untrustworthy run never condemns the composition, so even a
+        # command verdict degrades once the tree or the runner misbehaved.
+        if failure_kind is None or failure_kind == "command":
+            failure_kind = (
+                "materialization" if isinstance(exc, _ComposedIdentityError)
+                else "invocation/environment"
+            )
+    output_truncated = len(output) > MAX_VERIFICATION_OUTPUT_BYTES
+    if output_truncated:
+        output = output[:MAX_VERIFICATION_OUTPUT_BYTES]
+    if output_path is not None:
+        store.finalize_reserved_output(initiative_id, evidence_id, output)
+    detail: dict[str, Any] = {
+        "bundle_id": bundle_id,
+        "repository_id": seal["repository_id"],
+        "seal_id": seal["seal_id"],
+        "jj_commit_id": seal["jj_commit_id"],
+        "argv": list(specification["argv"]),
+        "cwd": specification["cwd"],
+        "environment_policy_id": gate["environment_policy"],
+        "started_at": started_at,
+        "finished_at": _now(),
+        "exit_code": exit_code,
+        "signal": signal,
+        "timed_out": timed_out,
+        "denied": denial is not None,
+        "output_truncated": output_truncated,
+        "pre_tree_digest": pre_tree_digest,
+        "post_tree_digest": post_tree_digest,
+        "failure_kind": failure_kind,
+        "failure_summary": (
+            None if failure_kind is None
+            else f"{failure_kind} failure while reproducing the declared command "
+                 "against the composed tree"
+        ),
+        "output_tail": _printable_output_tail(output, limit=1024),
+    }
+    _evidence, _path, _digest = _save_command_evidence(
+        store, initiative_id, evidence_id, bundle_id, detail, output,
+        output_path=output_path, kind=COMPOSED_COMMAND_KIND,
+    )
+    return detail, evidence_id, failure_kind
+
+
+def run_composed_verification(
+    store: InitiativeStore,
+    initiative_id: str,
+    bundle_id: str,
+    *,
+    jj: JjAdapter | None = None,
+    environment: Mapping[str, str] | None = None,
+    materializer: Callable[..., dict[str, str]] = prepare_materialization,
+) -> dict[str, Any]:
+    """Run the approved gate against a compatible bundle's composed members.
+
+    Opt-in by construction: nothing schedules this, and no integration path
+    reaches it unless an operator demands the gate.  It appends evidence and
+    retained materializations only -- it never advances a lifecycle, mutates a
+    bundle, seal or verification record, or removes retained state.
+
+    `failed` is reached only by a real declared-command verdict.  Every other
+    non-passing outcome is `indeterminate`: the gate produced no trustworthy
+    verdict (invocation/environment, materialization identity, or a policy
+    refusal), so it defers to a rerun rather than condemning the composition.
+    """
+    adapter = jj or JjAdapter()
+    initiative = store.peek(initiative_id)
+    if (
+        initiative["state"] not in {"running", "ready-for-integration"}
+        or initiative["active_plan"] is None
+    ):
+        raise VerificationError("composed verification requires an approved active plan")
+    plan = store.read_plan(initiative_id, initiative["active_plan"]["revision"])
+    if plan["digest"] != initiative["active_plan"]["digest"]:
+        raise VerificationError("active plan digest differs from its retained revision")
+    bundle = store.read_bundle(initiative_id, bundle_id)
+    if bundle["active_plan_digest"] != plan["digest"]:
+        raise VerificationError("bundle was bound under a different active plan")
+    members = bundle_composition_inputs(store, initiative_id, bundle)
+    gate = _verification_gate(plan, store.read_verification(
+        initiative_id, bundle["members"][0]["verification_id"],
+    )["node_id"])
+    bubblewrap = _bubblewrap_program()
+    command_environment = environment or os.environ
+
+    def verdict(
+        outcome: str, failure_kind: str | None, failure_summary: str | None,
+        evidence_ids: list[str], observed: Mapping[str, str | None],
+    ) -> dict[str, Any]:
+        evidence = composed_verdict_evidence(
+            initiative_id, bundle, outcome=outcome, observed=observed,
+            detail={
+                "node_id": gate["node_id"],
+                "active_plan_digest": plan["digest"],
+                "aggregate_spec_digest": specification_digest(initiative, plan),
+                "failure_kind": failure_kind,
+                "failure_summary": failure_summary,
+                "command_evidence_ids": evidence_ids,
+            },
+        )
+        store.save_evidence(initiative_id, evidence)
+        return {
+            "bundle_id": bundle_id,
+            "composition_digest": bundle_composition_digest(bundle),
+            "outcome": outcome,
+            "failure_kind": failure_kind,
+            "failure_summary": failure_summary,
+            "evidence_id": evidence["evidence_id"],
+            "command_evidence_ids": evidence_ids,
+            "members": composed_roster(bundle, observed),
+        }
+
+    composed: list[tuple[dict[str, Any], dict[str, str], Path, Path]] = []
+    for index, seal in enumerate(members):
+        source = _member_root(initiative, seal)
+        try:
+            item = materializer(
+                store.config.control, source, seal["jj_commit_id"],
+                _composed_materialization_name(initiative_id, bundle_id, index),
+                jj=adapter,
+            )
+        except (PreparationError, JjError, OSError, ValueError) as exc:
+            return verdict(
+                "indeterminate", "materialization",
+                f"composed materialization failed: {exc}"[:1000], [], {},
+            )
+        composed.append((seal, item, source, Path(item["workspace_path"])))
+
+    evidence_ids: list[str] = []
+    observed: dict[str, str | None] = {}
+    failure_kind: str | None = None
+    failure_summary: str | None = None
+    for seal, item, source, path in composed:
+        for specification in gate["commands"]:
+            detail, evidence_id, kind = _composed_command(
+                store, initiative_id, bundle_id, adapter, bubblewrap,
+                command_environment, seal=seal, materialization=item,
+                materialization_path=path, source=source,
+                specification=specification, gate=gate,
+            )
+            evidence_ids.append(evidence_id)
+            observed[seal["seal_id"]] = (
+                detail["post_tree_digest"] or detail["pre_tree_digest"]
+            )
+            if kind is not None:
+                failure_kind, failure_summary = kind, detail["failure_summary"]
+                break
+        if failure_kind is not None:
+            break
+    outcome = (
+        "passed" if failure_kind is None
+        else "failed" if failure_kind == "command"
+        else "indeterminate"
+    )
+    return verdict(outcome, failure_kind, failure_summary, evidence_ids, observed)
+
+
 __all__ = [
+    "COMPOSED_COMMAND_KIND", "COMPOSED_VERIFICATION_KIND",
     "MAX_VERIFICATION_OUTPUT_BYTES", "VerificationError",
-    "candidate_bundle_digest", "command_denial", "run_verification",
+    "candidate_bundle_digest", "command_denial", "composed_roster",
+    "composed_verdict_evidence", "composed_verification_verdict",
+    "run_composed_verification", "run_verification",
 ]

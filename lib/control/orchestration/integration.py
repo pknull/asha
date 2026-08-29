@@ -20,7 +20,7 @@ from .model import (
     record_digest,
     validate_initiative,
 )
-from .store import InitiativeStore
+from .store import InitiativeStore, StoreError
 
 
 INTEGRATION_EVENT_TYPE = "seal-integration-recorded"
@@ -166,6 +166,34 @@ def integration_snapshot(
     )
 
 
+def _require_composed_verification(
+    store: InitiativeStore, initiative_id: str, bundle: Mapping[str, Any],
+) -> None:
+    """Refuse unless the exact composition has a retained passed verdict.
+
+    Local import keeps the undemanded path -- and Control prune's read path --
+    free of the verification runner's jj, containment and materialization
+    machinery.
+    """
+    from .verification import VerificationError, composed_verification_verdict
+
+    try:
+        outcome, _summary = composed_verification_verdict(store, initiative_id, bundle)
+    except (StoreError, VerificationError) as exc:
+        raise IntegrationError(f"composed verification evidence is unreadable: {exc}") from exc
+    if outcome == "failed":
+        raise IntegrationError(
+            f"bundle {bundle['bundle_id']} composed verification failed on this "
+            "exact member composition"
+        )
+    if outcome != "passed":
+        # An environment-class outcome defers; it never becomes a verdict.
+        raise IntegrationError(
+            f"bundle {bundle['bundle_id']} has no passed composed verification "
+            f"for this exact member composition (retained outcome: {outcome})"
+        )
+
+
 def record_integration(
     store: InitiativeStore,
     initiative_id: str,
@@ -174,8 +202,15 @@ def record_integration(
     seal_id: str | None = None,
     abandoned: bool = False,
     reason: str | None = None,
+    composed_verification: bool = False,
 ) -> dict[str, Any]:
-    """Append one explicit operator attestation, or replay its existing event."""
+    """Append one explicit operator attestation, or replay its existing event.
+
+    `composed_verification` is the operator's opt-in demand that this bundle's
+    members were verified composed together.  It is off by default and every
+    statement it guards is behind it, so an undemanded attestation runs exactly
+    the checks, reads and effects it ran before the gate existed.
+    """
     if (bundle_id is None) == (seal_id is None):
         raise IntegrationError("record-integration requires exactly one of --bundle or --seal")
     with store.transaction_lock(initiative_id):
@@ -207,6 +242,8 @@ def record_integration(
                     raise IntegrationError(
                         f"seal {member['seal_id']} is already recorded as abandoned"
                     )
+            if composed_verification:
+                _require_composed_verification(store, initiative_id, bundle)
             existing = snapshot.source_events.get(("integrated", bundle_id))
             subject_ids = [bundle_id, *(member["seal_id"] for member in members)]
             payload: dict[str, Any] = {
@@ -214,6 +251,10 @@ def record_integration(
             }
         else:
             assert seal_id is not None
+            if composed_verification:
+                raise IntegrationError(
+                    "composed verification applies to the --bundle form only"
+                )
             try:
                 seal_id = canonical_uuid(seal_id, "seal ID")
             except (TypeError, ValueError) as exc:
