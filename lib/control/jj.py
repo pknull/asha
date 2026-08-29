@@ -35,6 +35,12 @@ _GIT_BRANCH_REF = re.compile(r"refs/heads/[^\s\x00-\x1f\x7f]+", re.ASCII)
 _GIT_REMOTE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,127}", re.ASCII)
 _CHANGE_ID = re.compile(r"[k-z]{32}", re.ASCII)
 _OPERATION_ID = re.compile(r"[0-9a-f]{128}", re.ASCII)
+# `jj resolve --list` prints "<path><alignment padding><N-sided conflict ...>".
+# A path may contain spaces, so the descriptor column is stripped from the end
+# rather than the path being split off the front.
+_CONFLICT_DESCRIPTOR = re.compile(
+    r" +[0-9]+-sided conflict(?: including [^\n]*)?\Z", re.ASCII,
+)
 MAX_OUTPUT_BYTES = 64 * 1024
 MAX_TREE_LIST_BYTES = 512 * 1024
 MAX_GIT_SEMANTIC_BYTES = 16 * 1024 * 1024
@@ -50,6 +56,9 @@ MAX_GIT_CONFIG_BYTES = 1024 * 1024
 MAX_CONTEXT_PROOF_PATHS = 64
 MAX_CONTEXT_PROOF_PATH_BYTES = 16 * 1024
 MAX_EXACT_GIT_REF_BYTES = 300
+MAX_WORKSPACE_BASE_COMMITS = 8
+MAX_WORKSPACE_CONFLICT_PATHS = 32
+MAX_WORKSPACE_CONFLICT_BYTES = 64 * 1024
 MAX_BASELINE_DIVERGENCE_COMMITS = 5
 MAX_BASELINE_DIVERGENCE_SUMMARY = 120
 MAX_BASELINE_DIVERGENCE_BYTES = 64 * 1024
@@ -92,6 +101,38 @@ _DEFAULT_BASE_UNRESOLVED = (
 
 class JjError(ValueError):
     """A jj precondition, invocation, or identity check failed."""
+
+
+# jj 0.38 `workspace add` accepts a repeated `--revision`: the working-copy
+# commit is created with all of them as parents, exactly as `jj new r1 r2`. A
+# merge materialization is the only way to prove that two divergent seals in
+# one repository actually compose, so both the add and its operation-ancestry
+# proof build their argv here and can never drift apart.
+def _workspace_base_commit_ids(value: str | Sequence[str], label: str) -> tuple[str, ...]:
+    ids = (value,) if isinstance(value, str) else tuple(value)
+    if not 1 <= len(ids) <= MAX_WORKSPACE_BASE_COMMITS:
+        raise JjError(
+            f"{label} requires 1-{MAX_WORKSPACE_BASE_COMMITS} full base commit IDs"
+        )
+    if any(not isinstance(item, str) or _COMMIT_ID.fullmatch(item) is None for item in ids):
+        raise JjError(f"{label} requires a full commit ID")
+    if len(set(ids)) != len(ids):
+        raise JjError(f"{label} refuses a repeated base commit ID")
+    return ids
+
+
+def _workspace_add_argv(
+    source: Path, destination: Path, name: str,
+    base_commit_ids: tuple[str, ...], message: str, operation_id: str,
+) -> list[str]:
+    argv = [
+        "-R", str(source), "--at-operation", operation_id,
+        "workspace", "add", "--name", name,
+    ]
+    for base_commit_id in base_commit_ids:
+        argv.extend(["--revision", base_commit_id])
+    argv.extend(["--message", message, str(destination)])
+    return argv
 
 
 def _exact_ascii_line(raw: bytes, label: str) -> str:
@@ -2331,30 +2372,72 @@ class JjAdapter:
         source: Path,
         destination: Path,
         name: str,
-        base_commit_id: str,
+        base_commit_id: str | Sequence[str],
         message: str,
         operation_id: str,
     ) -> None:
         if _OPERATION_ID.fullmatch(operation_id) is None:
             raise JjError("workspace add requires a full 128-hex operation ID")
-        if _COMMIT_ID.fullmatch(base_commit_id) is None:
-            raise JjError("workspace add requires a full commit ID")
-        self._run([
-            "-R", str(source), "--at-operation", operation_id,
-            "workspace", "add", "--name", name,
-            "--revision", base_commit_id, "--message", message,
-            str(destination),
-        ])
+        self._run(_workspace_add_argv(
+            source, destination, name,
+            _workspace_base_commit_ids(base_commit_id, "workspace add"),
+            message, operation_id,
+        ))
+
+    def workspace_conflicts(
+        self, workspace: Path,
+    ) -> tuple[bool, tuple[str, ...], bool]:
+        """Whether this workspace's working-copy commit is conflicted, with paths.
+
+        The boolean is the verdict and is read from jj's own `conflict` keyword.
+        The bounded path list is descriptive only: `jj resolve --list` prints one
+        column-aligned line per conflicted path, so an unreadable or oversized
+        listing costs the names, never the verdict.
+        """
+        conflict = self._one_line(self._run([
+            "-R", str(workspace), "--ignore-working-copy", "log", "-r", "@",
+            "--no-graph", "-T", 'conflict ++ "\\n"',
+        ]), "workspace conflict state")
+        if conflict not in {"true", "false"}:
+            raise JjError("jj returned invalid workspace conflict state")
+        if conflict == "false":
+            return False, (), False
+        try:
+            raw = self._run_bytes(
+                self.executable,
+                ["-R", str(workspace), "--ignore-working-copy", "resolve", "--list"],
+                cwd=Path(workspace), limit=MAX_WORKSPACE_CONFLICT_BYTES,
+            )
+            listing = raw.decode("utf-8").splitlines()
+        except (JjError, UnicodeError, OSError):
+            return True, (), True
+        paths: list[str] = []
+        for line in listing:
+            path = _CONFLICT_DESCRIPTOR.sub("", line)
+            if (
+                not path or path.startswith("/") or path.endswith("/")
+                or any(
+                    unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                    for character in path
+                )
+            ):
+                return True, tuple(paths[:MAX_WORKSPACE_CONFLICT_PATHS]), True
+            paths.append(path)
+        return (
+            True, tuple(paths[:MAX_WORKSPACE_CONFLICT_PATHS]),
+            len(paths) > MAX_WORKSPACE_CONFLICT_PATHS,
+        )
 
     def workspace_add_operation_proof(
         self, source: Path, *, pinned_operation_id: str, workspace_name: str,
-        base_commit_id: str, description: str, destination: Path,
+        base_commit_id: str | Sequence[str], description: str, destination: Path,
     ) -> WorkspaceAddOperationProof:
         """Authenticate the public two-operation workspace-add ancestry."""
         if _OPERATION_ID.fullmatch(pinned_operation_id) is None:
             raise JjError("workspace operation ancestry requires a full pinned operation ID")
-        if _COMMIT_ID.fullmatch(base_commit_id) is None:
-            raise JjError("workspace operation ancestry requires a full base commit ID")
+        base_commit_ids = _workspace_base_commit_ids(
+            base_commit_id, "workspace operation ancestry",
+        )
         template = (
             'id ++ "\\0" ++ parents.map(|p| p.id()).join(" ") ++ "\\0" ++ '
             'description.escape_json() ++ "\\0" ++ tags.escape_json() ++ "\\n"'
@@ -2398,12 +2481,10 @@ class JjAdapter:
             operation_id for operation_id, (parents, item_description, _tags) in operations.items()
             if parents == (pinned_operation_id,) and item_description == add_description
         ]
-        expected_argv = [
-            "jj", "-R", str(source), "--at-operation", pinned_operation_id,
-            "workspace", "add", "--name", workspace_name,
-            "--revision", base_commit_id, "--message", description,
-            str(destination),
-        ]
+        expected_argv = ["jj", *_workspace_add_argv(
+            source, destination, workspace_name, base_commit_ids,
+            description, pinned_operation_id,
+        )]
         checkout_matches: list[tuple[str, str]] = []
         for add_operation_id in add_matches:
             for operation_id, (parents, item_description, tags) in operations.items():

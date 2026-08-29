@@ -99,6 +99,7 @@ Usage:
   asha initiative archive <id> [--json]
   asha initiative unarchive <id> [--json]
   asha initiative compose-verify <id> --bundle BUNDLE_ID [--json]
+  asha initiative compose-verify <id> --seal SEAL_ID --seal SEAL_ID [...] [--json]
   asha initiative record-integration <id> --bundle BUNDLE_ID [--composed-verification] [--json]
   asha initiative record-integration <id> --seal SEAL_ID --abandoned --reason TEXT [--json]
   asha initiative list [--all] [--json]
@@ -1479,17 +1480,34 @@ def _compose_verify_command(
     args: list[str], store: InitiativeStore,
     env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
 ) -> tuple[dict[str, Any], bool]:
-    """Run a bundle's declared commands over its members materialized together."""
+    """Run the declared commands over a bundle's members, or over named seals.
+
+    `--bundle` proves one initiative's member set co-present.  Repeated `--seal`
+    proves several same-repository seals merged together, which is the only form
+    that can express two initiatives changing one repository.
+    """
     if not args:
         raise ValueError("compose-verify requires an initiative ID or exact slug")
     env = {} if env is None else env
     initiative = _resolve(store, args[0])
-    options = _parse_options(args[1:], flags={"json"})
-    _only(options, {"bundle", "json"}, "compose-verify")
-    _required(options, "bundle")
+    options = _parse_options(args[1:], repeat={"seal"}, flags={"json"})
+    _only(options, {"bundle", "seal", "json"}, "compose-verify")
+    seal_ids = list(options["seal"])
+    if (options.get("bundle") is None) == (not seal_ids):
+        raise ValueError(
+            "compose-verify requires either --bundle or two or more --seal"
+        )
+    if seal_ids and len(seal_ids) < 2:
+        raise ValueError("compose-verify --seal requires at least two seal IDs")
     refuse_coordinator_pane(
         store, initiative["initiative_id"], env, tmux or TmuxAdapter(),
     )
+    if seal_ids:
+        from .verification import run_cross_composed_verification
+
+        return run_cross_composed_verification(
+            store, initiative["initiative_id"], seal_ids,
+        ), bool(options["json"])
     from .verification import run_composed_verification
 
     return run_composed_verification(

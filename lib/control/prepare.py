@@ -14,7 +14,7 @@ import stat
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Sequence
 
 from .config import ControlConfig, validate_workspace_root
 from .context import (
@@ -487,15 +487,18 @@ def _make_registered_workspace_private(
     source: Path,
     destination: Path,
     name: str,
-    base_commit_id: str,
+    base_commit_id: str | Sequence[str],
     description: str,
 ) -> None:
     """Privatize an exceptional jj result only after exact registration checks."""
+    expected_parents = (
+        (base_commit_id,) if isinstance(base_commit_id, str) else tuple(base_commit_id)
+    )
     observed = adapter.workspace_identities(source).get(name)
     if observed is None:
         return
     identity = adapter.inspect_workspace(destination, name, require_empty=False)
-    if (identity.parent_commit_ids != (base_commit_id,) or
+    if (identity.parent_commit_ids != expected_parents or
             identity.description != description or
             observed != (identity.change_id, identity.commit_id)):
         return
@@ -2943,6 +2946,25 @@ def plan_materialization(
     }
 
 
+def _materialization_parents(base_commit_id: str | Sequence[str]) -> tuple[str, ...]:
+    """The exact ordered parents a materialization's working copy must carry.
+
+    The journal keeps `base_commit_id` in the caller's own shape -- a string for
+    the single-base form, a list for a merge -- so a v1 journal written before
+    merges existed still compares byte-for-byte on the adoption path (#79).
+
+    An input that is neither yields no parents, so the caller's own full-object-ID
+    check refuses it exactly as it did before merges existed, and an unreadable
+    journal never adopts.
+    """
+    if isinstance(base_commit_id, str):
+        return (base_commit_id,)
+    try:
+        return tuple(base_commit_id)
+    except TypeError:
+        return ()
+
+
 def _adopt_ready_materialization(
     adapter: JjAdapter,
     journal_path: Path,
@@ -2950,7 +2972,7 @@ def _adopt_ready_materialization(
     *,
     name: str,
     source: Path,
-    base_commit_id: str,
+    base_commit_id: str | list[str],
     workspace_name: str,
 ) -> dict[str, str] | None:
     """Adopt a retained phase-ready materialization that exactly matches.
@@ -2989,7 +3011,7 @@ def _adopt_ready_materialization(
     except (OSError, JjError, PreparationError):
         return None
     if (
-        identity.parent_commit_ids != (base_commit_id,)
+        identity.parent_commit_ids != _materialization_parents(base_commit_id)
         or identity.change_id != change_id
         or identity.commit_id != working_commit_id
         or identity.description != f"controller materialization {name}"
@@ -3006,7 +3028,7 @@ def _adopt_ready_materialization(
 def prepare_materialization(
     config: ControlConfig,
     source: Path,
-    base_commit_id: str,
+    base_commit_id: str | Sequence[str],
     name: str,
     *,
     jj: JjAdapter | None = None,
@@ -3017,11 +3039,23 @@ def prepare_materialization(
     no task, run, tmux session, harness, or task-context marker. Failures retain
     their journal and any exactly registered partial workspace for inspection;
     this seam never removes data.
+
+    Several ordered base commits produce a merge working copy (`jj workspace add
+    -r A -r B`), which is how two divergent seals in one repository are proven to
+    compose. A merge tree is nobody's single parent tree, and jj records an
+    unresolvable merge as conflict data rather than refusing, so the merge form
+    verifies its exact ordered parent identity and leaves the tracked-tree
+    projection and the conflict verdict to its caller.
     """
     adapter = jj or JjAdapter()
     source = Path(source)
     if not isinstance(name, str) or _MATERIALIZATION_NAME.fullmatch(name) is None:
         raise PreparationError("materialization name uses an invalid restricted grammar")
+    merged = not isinstance(base_commit_id, str)
+    base_commit_ids = _materialization_parents(base_commit_id)
+    journal_base_commit_id: str | list[str] = (
+        base_commit_id if isinstance(base_commit_id, str) else list(base_commit_ids)
+    )
     try:
         target = plan_materialization(config, source, name, jj=adapter)
         repository_identity = target["repository_identity"]
@@ -3029,15 +3063,21 @@ def prepare_materialization(
         destination = Path(target["workspace_path"])
         workspace_name = target["workspace_name"]
         repository = adapter.preflight(source)
-        if (
-            not isinstance(base_commit_id, str)
-            or GIT_OBJECT_ID_PATTERN.fullmatch(base_commit_id) is None
+        if not base_commit_ids or any(
+            not isinstance(item, str)
+            or GIT_OBJECT_ID_PATTERN.fullmatch(item) is None
+            for item in base_commit_ids
         ):
             raise ValueError("base commit ID must be a full Git object ID")
-        adapter.require_visible_commit(source, base_commit_id)
+        if len(set(base_commit_ids)) != len(base_commit_ids):
+            raise ValueError("merge base commit IDs must be distinct")
+        for item in base_commit_ids:
+            adapter.require_visible_commit(source, item)
         operation_id = adapter.pin_operation(source)
-        materialization_plan = adapter.materialization_plan(
-            repository.git_root, base_commit_id, exact_root=source,
+        materialization_plan = (
+            None if merged else adapter.materialization_plan(
+                repository.git_root, base_commit_ids[0], exact_root=source,
+            )
         )
     except (OSError, ValueError, JjError) as exc:
         raise PreparationError(f"materialization preflight failed without mutation: {exc}") from exc
@@ -3073,7 +3113,7 @@ def prepare_materialization(
             # than refused, so ingestion retries can converge (#79).
             adopted = _adopt_ready_materialization(
                 adapter, journal_path, destination, name=name, source=source,
-                base_commit_id=base_commit_id, workspace_name=workspace_name,
+                base_commit_id=journal_base_commit_id, workspace_name=workspace_name,
             )
             if adopted is not None:
                 return adopted
@@ -3083,7 +3123,7 @@ def prepare_materialization(
             "contract": "asha.control-materialization-journal.v1",
             "name": name,
             "source": str(source),
-            "base_commit_id": base_commit_id,
+            "base_commit_id": journal_base_commit_id,
             "workspace_name": workspace_name,
             "workspace_path": str(destination),
             "pinned_operation_id": operation_id,
@@ -3101,7 +3141,7 @@ def prepare_materialization(
             description = f"controller materialization {name}"
             try:
                 adapter.add_workspace(
-                    source, destination, workspace_name, base_commit_id,
+                    source, destination, workspace_name, journal_base_commit_id,
                     description, operation_id,
                 )
             except BaseException:
@@ -3111,7 +3151,7 @@ def prepare_materialization(
                 try:
                     _make_registered_workspace_private(
                         adapter, source, destination, workspace_name,
-                        base_commit_id, description,
+                        base_commit_ids, description,
                     )
                 except (OSError, JjError, PreparationError):
                     pass
@@ -3119,11 +3159,12 @@ def prepare_materialization(
             _make_workspace_private(destination)
             identity = adapter.inspect_workspace(destination, workspace_name)
             if (
-                identity.parent_commit_ids != (base_commit_id,)
+                identity.parent_commit_ids != base_commit_ids
                 or identity.description != description
             ):
                 raise PreparationError("created materialization is not the exact empty requested change")
-            _verify_plan_materialization(destination, source, materialization_plan)
+            if materialization_plan is not None:
+                _verify_plan_materialization(destination, source, materialization_plan)
             final = adapter.inspect_workspace(
                 destination, workspace_name, snapshot=False, require_empty=True,
             )

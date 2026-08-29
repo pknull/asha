@@ -169,13 +169,34 @@ def integration_snapshot(
 def _require_composed_verification(
     store: InitiativeStore, initiative_id: str, bundle: Mapping[str, Any],
 ) -> None:
-    """Refuse unless the exact composition has a retained passed verdict.
+    """Refuse unless this bundle's members were proven composed.
+
+    Two proofs satisfy the demand.  The exact bundle composition is the direct
+    one.  A cross-initiative composition that *covers* every member seal is the
+    other, and it is the proof that matters here: the operator merges the
+    same-repository seals from different initiatives that are landing together,
+    then attests each bundle within that one proven composition.
+
+    Covering is not subset-implication and must not be read as one.  A wider
+    composition passing does not prove a narrower one builds -- two seals each
+    dropping a use of a shared helper pass beside a third that adds one, and
+    fail without it.  What it proves is that the tree the operator verified is
+    the tree they are landing, which holds exactly when the verified
+    composition is what reaches mainline.  Verifying more than is landed
+    therefore proves the wrong tree, and the plane cannot detect that: it never
+    observes mainline.
+
+    Only the exact composition can condemn -- a wider composition's failure may
+    belong entirely to a seal this bundle does not name.
 
     Local import keeps the undemanded path -- and Control prune's read path --
     free of the verification runner's jj, containment and materialization
     machinery.
     """
-    from .verification import VerificationError, composed_verification_verdict
+    from .verification import (
+        VerificationError, composed_verification_verdict,
+        covering_cross_composed_verdict,
+    )
 
     try:
         outcome, _summary = composed_verification_verdict(store, initiative_id, bundle)
@@ -187,11 +208,20 @@ def _require_composed_verification(
             "exact member composition"
         )
     if outcome != "passed":
-        # An environment-class outcome defers; it never becomes a verdict.
-        raise IntegrationError(
-            f"bundle {bundle['bundle_id']} has no passed composed verification "
-            f"for this exact member composition (retained outcome: {outcome})"
-        )
+        try:
+            covering, _covering_summary = covering_cross_composed_verdict(
+                store, initiative_id, bundle["members"],
+            )
+        except (StoreError, VerificationError) as exc:
+            raise IntegrationError(
+                f"composed verification evidence is unreadable: {exc}"
+            ) from exc
+        if covering != "passed":
+            # An environment-class outcome defers; it never becomes a verdict.
+            raise IntegrationError(
+                f"bundle {bundle['bundle_id']} has no passed composed verification "
+                f"for this exact member composition (retained outcome: {outcome})"
+            )
 
 
 def record_integration(
