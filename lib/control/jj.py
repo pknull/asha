@@ -1062,8 +1062,10 @@ def colocated_sync_remediation(
 
 
 class JjAdapter:
-    def __init__(self, *, executable: str = "jj", runner: Callable[..., Any] | None = None):
-        self.executable = executable
+    def __init__(self, *, executable: str | None = None, runner: Callable[..., Any] | None = None):
+        # ASHA_JJ carries the install-time absolute path into daemon contexts
+        # whose sanitized PATH cannot resolve the operator's jj (#75).
+        self.executable = executable or os.environ.get("ASHA_JJ") or "jj"
         self.runner = runner
 
     @staticmethod
