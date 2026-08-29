@@ -922,9 +922,31 @@ def dispatch(
                 raise SchedulerError("node has multiple allocated attempt reservations")
             reserved = allocated[0] if allocated else None
             if salvage_approval is not None and reserved is not None:
-                raise SchedulerError(
-                    "salvage dispatch cannot substitute an existing attempt reservation"
+                if reserved["action_id"] is not None:
+                    raise SchedulerError(
+                        "salvage dispatch cannot substitute an attempt "
+                        "reservation bound to a dispatch action"
+                    )
+                # An unbound reservation is only the automatic retry's
+                # bookkeeping; the Keeper-approved salvage supersedes it, and
+                # a later ordinary dispatch can always allocate afresh (#78).
+                # Bind first (action_id is mutable only while allocated), then
+                # cancel, so the supersession carries this action's provenance.
+                superseded = copy.deepcopy(reserved)
+                superseded.update({
+                    "action_id": action["action_id"], "updated_at": _now(),
+                })
+                validate_attempt(superseded)
+                store.save_attempt(
+                    initiative_id, superseded,
+                    expected_digest=record_digest(reserved),
                 )
+                _transition_attempt(store, initiative_id, superseded, "cancelled")
+                attempts = store.list_attempts_snapshot(initiative_id)
+                node_attempts = [
+                    item for item in attempts if item["node_id"] == node_id
+                ]
+                reserved = None
             breaker = _dispatch_breaker(
                 store, initiative, plan, attempts, has_reservation=reserved is not None,
             )
