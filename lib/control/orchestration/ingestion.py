@@ -79,6 +79,15 @@ class IngestionRefused(ResultRefused):
     """A deterministic ingestion guard refused the candidate."""
 
 
+class IngestionUnavailable(ResultError):
+    """An environment or infrastructure failure interrupted ingestion.
+
+    Nothing about the candidate has been judged: the ingestion record stays
+    non-terminal so the next supervisor pass retries once the environment is
+    repaired, instead of minting a permanent refusal (#76).
+    """
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
         "+00:00", "Z"
@@ -696,8 +705,12 @@ def verify_controller_snapshot(
             raise IngestionRefused(
                 "controller verification materialization differs from the exact snapshot"
             )
+    except IngestionRefused:
+        raise
     except (PreparationError, VerificationError, JjError, OSError, ValueError) as exc:
-        raise IngestionRefused(f"controller snapshot materialization failed: {exc}") from exc
+        raise IngestionUnavailable(
+            f"controller snapshot materialization failed: {exc}"
+        ) from exc
     pre = (identity.change_id, identity.commit_id, identity.parent_commit_ids, tree.digest)
     evidence_ids: list[str] = []
     attestations = body["verification_attestations"]
@@ -1132,11 +1145,19 @@ def _ingest_result(
                     store, record, task, body, claimed_commit, claimed_tree,
                     jj=adapter,
                 ))
-    except (IngestionRefused, JjError, PreparationError, VerificationError, OSError, ValueError) as exc:
+    except IngestionRefused as exc:
         with store.transaction_lock(initiative_id):
             current = store.read_result_ingestion(initiative_id, ingestion_id)
             refused = _refuse(store, current, str(exc))
         return _receipt(refused)
+    except IngestionUnavailable:
+        raise
+    except (JjError, PreparationError, VerificationError, OSError, ValueError) as exc:
+        # Only deterministic guards may refuse; an environment-class failure
+        # leaves the record retryable for the next supervisor pass (#76).
+        raise IngestionUnavailable(
+            f"result ingestion was interrupted: {exc}"
+        ) from exc
 
     with store.transaction_lock(initiative_id):
         current = store.read_result_ingestion(initiative_id, ingestion_id)
@@ -1288,7 +1309,8 @@ def ingest_pending_results(
 
 
 __all__ = [
-    "IngestionError", "IngestionRefused", "RESULT_INGESTION_RECEIPT_CONTRACT",
+    "IngestionError", "IngestionRefused", "IngestionUnavailable",
+    "RESULT_INGESTION_RECEIPT_CONTRACT",
     "RESULT_STAGING_RECEIPT_CONTRACT", "ingest_pending_results", "ingest_result",
     "reserve_result_ingestion", "result_ingestion_id", "result_outbox_path",
     "stage_result", "verify_controller_snapshot",
