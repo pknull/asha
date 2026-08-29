@@ -81,6 +81,55 @@ class JjAdapterTests(unittest.TestCase):
         self.assertIn("--revision", add)
         self.assertEqual(add[add.index("--revision") + 1], "b" * 40)
 
+    def test_merge_workspace_add_repeats_revision_and_leaves_the_single_form_alone(
+        self,
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def runner(argv, **kwargs):
+            calls.append(list(argv))
+            if "operation" in argv:
+                return subprocess.CompletedProcess(argv, 0, "a" * 128 + "\n", "")
+            if "workspace" in argv and "add" in argv:
+                return subprocess.CompletedProcess(argv, 0, "created\n", "")
+            raise AssertionError(argv)
+
+        adapter = JjAdapter(runner=runner)
+        op = adapter.pin_operation(Path("/repo"))
+
+        adapter.add_workspace(
+            Path("/repo"), Path("/work/one"), "asha-materialization-one",
+            "b" * 40, "controller materialization one", op,
+        )
+        single = calls[-1]
+        adapter.add_workspace(
+            Path("/repo"), Path("/work/merge"), "asha-materialization-merge",
+            ["b" * 40, "c" * 40], "controller materialization merge", op,
+        )
+        merge = calls[-1]
+
+        self.assertEqual(single, [
+            "jj", "-R", "/repo", "--at-operation", op, "workspace", "add",
+            "--name", "asha-materialization-one", "--revision", "b" * 40,
+            "--message", "controller materialization one", "/work/one",
+        ])
+        self.assertEqual(merge, [
+            "jj", "-R", "/repo", "--at-operation", op, "workspace", "add",
+            "--name", "asha-materialization-merge",
+            "--revision", "b" * 40, "--revision", "c" * 40,
+            "--message", "controller materialization merge", "/work/merge",
+        ])
+        for bases, expected in (
+            ([], "1-"),
+            (["b" * 40, "zz"], "full commit ID"),
+            (["b" * 40, "b" * 40], "repeated base commit ID"),
+        ):
+            with self.subTest(bases=bases), self.assertRaisesRegex(JjError, expected):
+                adapter.add_workspace(
+                    Path("/repo"), Path("/work/x"), "asha-materialization-x",
+                    bases, "m", op,
+                )
+
     def test_pin_operation_rejects_short_or_multiple_ids(self) -> None:
         for output in ("a" * 64 + "\n", "a" * 128 + "\n" + "b" * 128 + "\n"):
             with self.subTest(output=output):
@@ -847,6 +896,142 @@ class RealJjPreparationTests(unittest.TestCase):
             prepare_materialization(
                 self.config, self.source, base, "mismatch-verification",
             )
+
+    def _diverged_commits(
+        self, left: tuple[str, str], right: tuple[str, str],
+    ) -> tuple[str, str]:
+        """Two sibling Git commits, imported into the colocated jj repository.
+
+        `--ignore-working-copy` deliberately skips the Git ref import, so the
+        helper runs one snapshotting `jj status` exactly as an operator would.
+        """
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+
+        def git(*args: str) -> str:
+            return subprocess.run(
+                ["git", "-C", str(self.source), *args], check=True,
+                capture_output=True, text=True, env=env,
+            ).stdout.strip()
+
+        original = git("rev-parse", "--abbrev-ref", "HEAD")
+        commits: list[str] = []
+        for index, (name, content) in enumerate((left, right)):
+            git("checkout", "-q", original)
+            git("checkout", "-q", "-b", f"side-{index}")
+            (self.source / name).write_text(content, encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-qm", f"side-{index}")
+            commits.append(git("rev-parse", "HEAD"))
+        git("checkout", "-q", original)
+        subprocess.run(
+            ["jj", "-R", str(self.source), "status"], check=True, capture_output=True,
+        )
+        return commits[0], commits[1]
+
+    def test_merge_materialization_has_the_exact_ordered_parents(self) -> None:
+        left, right = self._diverged_commits(("left.txt", "L\n"), ("right.txt", "R\n"))
+
+        materialized = prepare_materialization(
+            self.config, self.source, [left, right], "merge-verification",
+        )
+
+        path = Path(materialized["workspace_path"])
+        identity = JjAdapter().inspect_workspace(
+            path, materialized["workspace_name"], require_empty=True,
+        )
+        self.assertEqual(identity.parent_commit_ids, (left, right))
+        self.assertEqual((path / "left.txt").read_text(encoding="utf-8"), "L\n")
+        self.assertEqual((path / "right.txt").read_text(encoding="utf-8"), "R\n")
+        self.assertEqual(JjAdapter().workspace_conflicts(path), (False, (), False))
+        # #79 adopt-on-retry must match the full ordered parent tuple.
+        self.assertEqual(
+            prepare_materialization(
+                self.config, self.source, [left, right], "merge-verification",
+            ),
+            materialized,
+        )
+        # The reversed order is a different composition, never an adoption.
+        with self.assertRaisesRegex(PreparationError, "already exists"):
+            prepare_materialization(
+                self.config, self.source, [right, left], "merge-verification",
+            )
+
+    def test_merge_materialization_refuses_parents_that_are_not_the_exact_order(
+        self,
+    ) -> None:
+        left, right = self._diverged_commits(("one.txt", "1\n"), ("two.txt", "2\n"))
+
+        class ReorderingAdapter(JjAdapter):
+            def inspect_workspace(inner_self, destination, name, **kwargs):
+                identity = super().inspect_workspace(destination, name, **kwargs)
+                return WorkspaceIdentity(
+                    identity.name, identity.change_id, identity.commit_id,
+                    tuple(reversed(identity.parent_commit_ids)),
+                    identity.description,
+                )
+
+        with self.assertRaisesRegex(PreparationError, "exact empty requested change"):
+            prepare_materialization(
+                self.config, self.source, [left, right], "reordered-verification",
+                jj=ReorderingAdapter(),
+            )
+
+    def test_materialization_journal_keeps_the_single_base_shape_and_lists_a_merge(
+        self,
+    ) -> None:
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+
+        single = prepare_materialization(
+            self.config, self.source, base, "journal-single",
+        )
+        left, right = self._diverged_commits(("one.txt", "1\n"), ("two.txt", "2\n"))
+        merged = prepare_materialization(
+            self.config, self.source, [left, right], "journal-merge",
+        )
+
+        def journal(result: dict, name: str) -> dict:
+            path = (
+                Path(result["workspace_path"]).parent / ".journals" / f"{name}.json"
+            )
+            return json.loads(path.read_text(encoding="utf-8"))
+
+        # A v1 journal written before merges existed still compares byte-for-byte.
+        self.assertEqual(journal(single, "journal-single")["base_commit_id"], base)
+        self.assertEqual(
+            journal(merged, "journal-merge")["base_commit_id"], [left, right],
+        )
+        # Neither form widens its result contract.
+        expected_keys = {
+            "workspace_name", "workspace_path", "change_id", "working_commit_id",
+        }
+        self.assertEqual(set(single), expected_keys)
+        self.assertEqual(set(merged), expected_keys)
+
+    def test_conflicting_merge_materializes_and_names_its_conflicted_paths(self) -> None:
+        left, right = self._diverged_commits(
+            ("tracked.txt", "left side\n"), ("tracked.txt", "right side\n"),
+        )
+
+        materialized = prepare_materialization(
+            self.config, self.source, [left, right], "conflict-verification",
+        )
+
+        path = Path(materialized["workspace_path"])
+        self.assertEqual(
+            JjAdapter().inspect_workspace(
+                path, materialized["workspace_name"], require_empty=True,
+            ).parent_commit_ids,
+            (left, right),
+        )
+        # jj records a conflict as data rather than refusing: the materialization
+        # succeeds and the conflict is the composition's own verdict.
+        self.assertEqual(
+            JjAdapter().workspace_conflicts(path), (True, ("tracked.txt",), False),
+        )
 
     def test_controller_materialization_planner_is_deterministic_and_read_only(self) -> None:
         before_source = self.source_facts()

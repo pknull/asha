@@ -23,15 +23,19 @@ from lib.control.orchestration.actions import (
     _parse_document, action_outcome, build_action_document, reconcile_actions,
     submit_action,
 )
-from lib.control.orchestration.model import record_digest
+from lib.control.orchestration.model import MAX_SUMMARY_BYTES, record_digest
 from lib.control.orchestration.links import build_link
 from lib.control.orchestration.results import publish_result
 from lib.control.orchestration.store import ObservationOnlyPlanError, StoreError
-from lib.control.orchestration.composition import bundle_composition_digest
+from lib.control.orchestration.cli import _create
+from lib.control.orchestration.composition import (
+    bundle_composition_digest, cross_composition_digest,
+)
 from lib.control.orchestration.verification import (
-    COMPOSED_VERIFICATION_KIND, candidate_bundle_digest, command_denial,
+    COMPOSED_VERIFICATION_KIND, CROSS_COMPOSED_VERIFICATION_KIND,
+    VerificationError, candidate_bundle_digest, command_denial,
     prepare_verification_intent, prevalidate_verification,
-    run_composed_verification, run_verification,
+    run_composed_verification, run_cross_composed_verification, run_verification,
 )
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 from tests.python.orchestration_increment3_fixtures import (
@@ -76,6 +80,30 @@ class VerificationJj:
     def immutable_tree(self, repository, commit_id):
         digest = "1" * 64 if commit_id == "1" * 40 else self.candidate["tree_digest"]
         return ImmutableTree(commit_id, digest, ())
+
+
+class CrossComposedJj(VerificationJj):
+    """A merge working copy carrying the exact ordered seal commits as parents."""
+
+    def __init__(self, source, candidate, parents, *, conflicts=(False, (), False)):
+        super().__init__(source, candidate)
+        self.parents = tuple(parents)
+        self.conflicts = conflicts
+
+    def inspect_workspace(self, path, name, *, snapshot=False, require_empty=True):
+        identity = super().inspect_workspace(
+            path, name, snapshot=snapshot, require_empty=require_empty,
+        )
+        return WorkspaceIdentity(
+            name=identity.name,
+            change_id=identity.change_id,
+            commit_id=identity.commit_id,
+            parent_commit_ids=self.parents,
+            description=identity.description,
+        )
+
+    def workspace_conflicts(self, path):
+        return self.conflicts
 
 
 class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
@@ -1063,6 +1091,221 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
             self.initiative_id, record["evidence_id"],
         )["summary"])
         self.assertEqual(summary["outcome"], "indeterminate")
+
+    def _sibling_seal(self, **overrides) -> dict:
+        """A seal in a second initiative that shares this repository.
+
+        `repository_id` is a uuid5 over the repository's own identity, so two
+        initiatives on one repository resolve to the same value -- which is what
+        makes a same-repository cross-initiative composition expressible at all.
+        """
+        other = _create([
+            "--repo", str(self.repo), "--slug", f"sibling-{uuid.uuid4().hex[:8]}",
+            "--label", "Sibling", "--objective", "Change the same repository.",
+        ], self.config, self.store, self.jj)["initiative"]
+        seal = copy.deepcopy(self.candidate)
+        seal.update({
+            "seal_id": str(uuid.uuid4()),
+            "initiative_id": other["initiative_id"],
+            "attempt_id": str(uuid.uuid4()),
+            "task_id": str(uuid.uuid4()),
+            "run_id": str(uuid.uuid4()),
+            "result_id": str(uuid.uuid4()),
+            "jj_commit_id": "a" * 40,
+            "tree_digest": "b" * 64,
+            **overrides,
+        })
+        self.store.save_seal(other["initiative_id"], seal)
+        return seal
+
+    def _run_cross(
+        self, seals: list[dict], *, marker: bool = False,
+        conflicts: tuple = (False, (), False),
+    ) -> dict:
+        materialized: list[Path] = []
+        workspace_root = self.config.control.workspace_root
+        for directory in (workspace_root, *workspace_root.rglob("*")):
+            if directory.is_dir():
+                directory.chmod(0o700)
+        parents = [seal["jj_commit_id"] for seal in seals]
+
+        def materializer(config, source, base_commit_id, name, *, jj):
+            self.assertEqual(base_commit_id, parents)
+            planned = plan_materialization(config, source, name, jj=jj)
+            target = Path(planned["workspace_path"])
+            target.mkdir(mode=0o700, parents=True)
+            if marker:
+                (target / "composition-marker").write_text("composed\n")
+            materialized.append(target)
+            return {
+                "workspace_name": planned["workspace_name"],
+                "workspace_path": str(target),
+                "change_id": "k" * 32,
+                "working_commit_id": "f" * 40,
+            }
+
+        with mock.patch(
+            "lib.control.orchestration.verification.tracked_workspace_status",
+            return_value=(True, [], False),
+        ):
+            record = run_cross_composed_verification(
+                self.store, self.initiative_id,
+                [seal["seal_id"] for seal in seals],
+                jj=CrossComposedJj(
+                    self.repo, self.candidate, parents, conflicts=conflicts,
+                ),
+                environment={"PATH": os.environ["PATH"], "LANG": "C.UTF-8"},
+                materializer=materializer,
+            )
+        self.cross_materializations = materialized
+        return record
+
+    def test_cross_composed_gate_binds_the_exact_ordered_seal_composition(self) -> None:
+        sibling = self._sibling_seal()
+        self.assertEqual(sibling["repository_id"], self.candidate["repository_id"])
+        self.assertNotEqual(sibling["initiative_id"], self.initiative_id)
+
+        record = self._run_cross([self.candidate, sibling])
+
+        self.assertEqual(record["outcome"], "passed")
+        self.assertIsNone(record["failure_kind"])
+        self.assertEqual(
+            record["composition_digest"],
+            cross_composition_digest([self.candidate, sibling]),
+        )
+        self.assertEqual(
+            [item["seal_id"] for item in record["members"]],
+            [self.candidate["seal_id"], sibling["seal_id"]],
+        )
+        evidence = self.store.read_evidence(self.initiative_id, record["evidence_id"])
+        self.assertEqual(evidence["kind"], CROSS_COMPOSED_VERIFICATION_KIND)
+        summary = json.loads(evidence["summary"])
+        self.assertEqual(summary["outcome"], "passed")
+        self.assertEqual(summary["conflicted_paths"], [])
+        # Order is identity: the reverse composition is a different digest.
+        self.assertNotEqual(
+            cross_composition_digest([sibling, self.candidate]),
+            record["composition_digest"],
+        )
+        self.assertTrue(self.cross_materializations[0].is_dir())
+
+    def test_cross_composed_gate_reads_a_declared_command_exit_as_composition_failure(
+        self,
+    ) -> None:
+        sibling = self._sibling_seal()
+
+        record = self._run_cross([self.candidate, sibling], marker=True)
+
+        self.assertEqual(record["outcome"], "failed")
+        self.assertEqual(record["failure_kind"], "command")
+        detail = json.loads(self.store.read_evidence(
+            self.initiative_id, record["command_evidence_ids"][-1],
+        )["summary"])
+        self.assertEqual(detail["exit_code"], 9)
+        self.assertEqual(
+            detail["seal_ids"], [self.candidate["seal_id"], sibling["seal_id"]],
+        )
+
+    def test_cross_composed_conflicted_merge_is_a_composition_failure(self) -> None:
+        sibling = self._sibling_seal()
+
+        record = self._run_cross(
+            [self.candidate, sibling],
+            conflicts=(True, ("src/layout.rs", "src/panel.rs"), False),
+        )
+
+        self.assertEqual(record["outcome"], "failed")
+        self.assertEqual(record["failure_kind"], "conflict")
+        self.assertEqual(
+            record["conflicted_paths"], ["src/layout.rs", "src/panel.rs"],
+        )
+        self.assertIn("src/layout.rs", record["failure_summary"])
+        # A conflict is the composition's own verdict, so no command runs.
+        self.assertEqual(record["command_evidence_ids"], [])
+        summary = json.loads(self.store.read_evidence(
+            self.initiative_id, record["evidence_id"],
+        )["summary"])
+        self.assertEqual(summary["outcome"], "failed")
+        self.assertEqual(summary["failure_kind"], "conflict")
+
+    def test_cross_composed_conflict_evidence_stays_inside_its_summary_bound(
+        self,
+    ) -> None:
+        sibling = self._sibling_seal()
+        paths = tuple(f"src/{'d' * 300}/panel-{index}.rs" for index in range(64))
+
+        record = self._run_cross(
+            [self.candidate, sibling], conflicts=(True, paths, True),
+        )
+
+        self.assertEqual(record["outcome"], "failed")
+        self.assertEqual(len(record["conflicted_paths"]), 12)
+        self.assertTrue(all(len(path) <= 200 for path in record["conflicted_paths"]))
+        self.assertIn("omitted", record["failure_summary"])
+        evidence = self.store.read_evidence(self.initiative_id, record["evidence_id"])
+        self.assertLessEqual(
+            len(evidence["summary"].encode("utf-8")), MAX_SUMMARY_BYTES,
+        )
+
+    def test_cross_composed_environment_class_failure_is_not_a_composition_verdict(
+        self,
+    ) -> None:
+        sibling = self._sibling_seal()
+
+        def contained(_argv, *, cwd, deadline_seconds):
+            del cwd, deadline_seconds
+            return 0, {
+                "pid": 4321, "start_ticks": 11, "pid_namespace": "4026531836",
+                "returncode": 1, "invocation_error": None, "timed_out": False,
+                "output_truncated": False, "output_original_bytes": 0,
+                "output_digest": hashlib.sha256(b"").hexdigest(),
+            }
+
+        with mock.patch(
+            "lib.control.orchestration.verification._capture_truncated",
+            side_effect=contained,
+        ):
+            record = self._run_cross([self.candidate, sibling])
+
+        self.assertEqual(record["outcome"], "indeterminate")
+        self.assertEqual(record["failure_kind"], "invocation/environment")
+
+    def test_cross_composed_refuses_every_seal_it_cannot_resolve_exactly(self) -> None:
+        before = len(self.store.list_evidence_snapshot(self.initiative_id))
+        foreign = self._sibling_seal(repository_id=str(uuid.uuid4()))
+        unsuccessful = self._sibling_seal(outcome="failure")
+        sibling = self._sibling_seal()
+        cases = {
+            "different repository": [self.candidate, foreign],
+            "not a success seal": [self.candidate, unsuccessful],
+            "must be unique": [self.candidate, self.candidate],
+            "2-8 ordered seal IDs": [self.candidate],
+            "does not resolve": [
+                self.candidate, dict(sibling, seal_id=str(uuid.uuid4())),
+            ],
+            "must name distinct commits": [
+                self.candidate,
+                self._sibling_seal(jj_commit_id=self.candidate["jj_commit_id"]),
+            ],
+        }
+        for expected, seals in cases.items():
+            with self.subTest(expected=expected):
+                with self.assertRaisesRegex(VerificationError, expected):
+                    self._run_cross(seals)
+        self.assertEqual(
+            len(self.store.list_evidence_snapshot(self.initiative_id)), before,
+        )
+
+    def test_cross_composed_refuses_a_repository_outside_the_host_scope(self) -> None:
+        # Both seals agree on a repository the host initiative does not hold.
+        outside = str(uuid.uuid4())
+        first = self._sibling_seal(repository_id=outside)
+        second = self._sibling_seal(
+            repository_id=outside, jj_commit_id="c" * 40,
+        )
+
+        with self.assertRaisesRegex(VerificationError, "outside"):
+            self._run_cross([first, second])
 
 
 if __name__ == "__main__":

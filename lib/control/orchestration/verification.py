@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -21,7 +22,15 @@ from ..prepare import (
     prepare_materialization,
 )
 from .actions import append_event
-from .composition import bundle_composition_digest, bundle_composition_inputs
+from .composition import (
+    CompositionError,
+    bundle_composition_digest,
+    bundle_composition_inputs,
+    cross_composition_digest,
+    cross_composition_inputs,
+    cross_composition_members,
+    cross_composition_subject_id,
+)
 from .model import (
     EVIDENCE_CONTRACT,
     MAX_SUMMARY_BYTES,
@@ -39,7 +48,14 @@ from .store import InitiativeStore, StoreError
 MAX_VERIFICATION_OUTPUT_BYTES = 1024 * 1024
 COMPOSED_VERIFICATION_KIND = "composed-verification"
 COMPOSED_COMMAND_KIND = "composed-verification-command"
+CROSS_COMPOSED_VERIFICATION_KIND = "cross-composed-verification"
+CROSS_COMPOSED_COMMAND_KIND = "cross-composed-verification-command"
 _COMPOSED_OUTCOMES = ("failed", "passed", "indeterminate")
+# A verdict summary is capped at MAX_SUMMARY_BYTES, and conflicted paths are
+# candidate-controlled text, so they are bounded twice: per path and in count.
+MAX_CONFLICT_PATHS_IN_SUMMARY = 12
+MAX_CONFLICT_PATH_CHARACTERS = 200
+_CONFLICT_PATHS_IN_PROSE = 4
 _STATUS_TAIL_BYTES = 64 * 1024
 _PROCESS_STATUS_PREFIX = b"\nASHA_VERIFICATION_PROCESS_V1:"
 _FAILURE_OUTPUT_TAIL_BYTES = 2048
@@ -1246,24 +1262,25 @@ def _composed_identity(
 def _composed_command(
     store: InitiativeStore,
     initiative_id: str,
-    bundle_id: str,
-    adapter: JjAdapter,
+    subject_id: str,
     bubblewrap: Path,
     environment: Mapping[str, str],
     *,
-    seal: Mapping[str, Any],
-    materialization: Mapping[str, str],
+    identity: Callable[[], tuple[str, str]],
+    subject_detail: Mapping[str, Any],
     materialization_path: Path,
-    source: Path,
     specification: Mapping[str, Any],
     gate: Mapping[str, Any],
+    kind: str = COMPOSED_COMMAND_KIND,
 ) -> tuple[dict[str, Any], str, str | None]:
     """Run one declared command against the composed tree.
 
     The returned failure kind is `command` only for a real declared-command
     verdict; every other kind is an environment-class outcome that defers under
     the standing invocation/environment ruling rather than condemning the
-    composition.
+    composition.  `identity` is the caller's exact pre/post tree probe: a bundle
+    member proves its own seal tree, a cross-initiative merge proves its ordered
+    parent tuple.
     """
     evidence_id = new_uuid()
     started_at = _now()
@@ -1277,9 +1294,7 @@ def _composed_command(
     post_tree_digest: str | None = None
     denial = command_denial(specification["argv"])
     try:
-        _pre_commit, pre_tree_digest = _composed_identity(
-            adapter, materialization, materialization_path, source, seal,
-        )
+        _pre_commit, pre_tree_digest = identity()
         if denial is not None:
             failure_kind = "policy"
             output = f"refused before execution: {denial}".encode("utf-8")
@@ -1318,9 +1333,7 @@ def _composed_command(
                         invocation_error=status["invocation_error"],
                         timed_out=timed_out, output=output,
                     )
-            _post_commit, post_tree_digest = _composed_identity(
-                adapter, materialization, materialization_path, source, seal,
-            )
+            _post_commit, post_tree_digest = identity()
     except (PreparationError, JjError, StoreError, VerificationError, OSError, ValueError) as exc:
         diagnostic = str(exc).encode("utf-8", errors="replace")
         output = output + b"\n" + diagnostic if output else diagnostic
@@ -1337,10 +1350,7 @@ def _composed_command(
     if output_path is not None:
         store.finalize_reserved_output(initiative_id, evidence_id, output)
     detail: dict[str, Any] = {
-        "bundle_id": bundle_id,
-        "repository_id": seal["repository_id"],
-        "seal_id": seal["seal_id"],
-        "jj_commit_id": seal["jj_commit_id"],
+        **copy.deepcopy(dict(subject_detail)),
         "argv": list(specification["argv"]),
         "cwd": specification["cwd"],
         "environment_policy_id": gate["environment_policy"],
@@ -1362,8 +1372,8 @@ def _composed_command(
         "output_tail": _printable_output_tail(output, limit=1024),
     }
     _evidence, _path, _digest = _save_command_evidence(
-        store, initiative_id, evidence_id, bundle_id, detail, output,
-        output_path=output_path, kind=COMPOSED_COMMAND_KIND,
+        store, initiative_id, evidence_id, subject_id, detail, output,
+        output_path=output_path, kind=kind,
     )
     return detail, evidence_id, failure_kind
 
@@ -1459,10 +1469,17 @@ def run_composed_verification(
     for seal, item, source, path in composed:
         for specification in gate["commands"]:
             detail, evidence_id, kind = _composed_command(
-                store, initiative_id, bundle_id, adapter, bubblewrap,
-                command_environment, seal=seal, materialization=item,
-                materialization_path=path, source=source,
-                specification=specification, gate=gate,
+                store, initiative_id, bundle_id, bubblewrap, command_environment,
+                identity=functools.partial(
+                    _composed_identity, adapter, item, path, source, seal,
+                ),
+                subject_detail={
+                    "bundle_id": bundle_id,
+                    "repository_id": seal["repository_id"],
+                    "seal_id": seal["seal_id"],
+                    "jj_commit_id": seal["jj_commit_id"],
+                },
+                materialization_path=path, specification=specification, gate=gate,
             )
             evidence_ids.append(evidence_id)
             observed[seal["seal_id"]] = (
@@ -1481,10 +1498,367 @@ def run_composed_verification(
     return verdict(outcome, failure_kind, failure_summary, evidence_ids, observed)
 
 
+def _cross_materialization_name(initiative_id: str, composition_digest: str) -> str:
+    return f"cross-{initiative_id}-{composition_digest[:12]}"
+
+
+def cross_composed_verdict_evidence(
+    initiative_id: str,
+    seals: list[Mapping[str, Any]],
+    *,
+    outcome: str,
+    detail: Mapping[str, Any],
+    composed_tree_digest: str | None = None,
+) -> dict[str, Any]:
+    """Build the immutable verdict bound to one exact cross-initiative composition."""
+    if outcome not in _COMPOSED_OUTCOMES:
+        raise VerificationError("composed verification outcome is invalid")
+    # Descriptive detail may never rebind the identity or the verdict it
+    # describes; both the gate and the integration demand read exactly these.
+    if {"composition_digest", "outcome", "members", "members_elided"} & set(detail):
+        raise VerificationError("composed verdict detail may not rebind its identity")
+    composition_digest = cross_composition_digest(seals)
+    body: dict[str, Any] = {
+        "composition_digest": composition_digest,
+        "outcome": outcome,
+        "members": cross_composition_members(seals),
+        "members_elided": False,
+        "composed_tree_digest": composed_tree_digest,
+        **copy.deepcopy(dict(detail)),
+    }
+
+    def encoded() -> str:
+        return json.dumps(
+            body, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        )
+
+    summary = encoded()
+    if len(summary.encode("utf-8")) > MAX_SUMMARY_BYTES:
+        # The composition digest already binds every member identity, so an
+        # oversized composition drops the readable roster rather than the
+        # verdict.  Coverage then cannot be proven, which is the safe direction:
+        # an elided roster never satisfies an integration demand.
+        body["members"] = []
+        body["members_elided"] = True
+        summary = encoded()
+    return validate_evidence({
+        "contract": EVIDENCE_CONTRACT,
+        "evidence_id": new_uuid(),
+        "initiative_id": initiative_id,
+        "kind": CROSS_COMPOSED_VERIFICATION_KIND,
+        "subject_id": cross_composition_subject_id(composition_digest),
+        "digest": hashlib.sha256(summary.encode("utf-8")).hexdigest(),
+        "summary": summary,
+        "recorded_at": _now(),
+    })
+
+
+def _cross_composed_summaries(
+    store: InitiativeStore, initiative_id: str,
+) -> list[dict[str, Any]]:
+    """Every retained cross-initiative verdict whose roster proves its own digest."""
+    summaries: list[dict[str, Any]] = []
+    for evidence in store.list_evidence_snapshot(initiative_id):
+        if evidence["kind"] != CROSS_COMPOSED_VERIFICATION_KIND:
+            continue
+        try:
+            summary = json.loads(evidence["summary"])
+        except (TypeError, ValueError) as exc:
+            raise VerificationError(
+                "cross-initiative composed verification evidence is unreadable"
+            ) from exc
+        if (
+            not isinstance(summary, dict)
+            or summary.get("outcome") not in _COMPOSED_OUTCOMES
+            or not isinstance(summary.get("members"), list)
+            or summary.get("members_elided") is not False
+        ):
+            continue
+        # The roster must reproduce the digest it claims, so a summary can never
+        # name members it was not actually bound to.
+        try:
+            recomputed = cross_composition_digest(summary["members"])
+        except (KeyError, TypeError) as exc:
+            raise VerificationError(
+                "cross-initiative composed verification roster is invalid"
+            ) from exc
+        if recomputed != summary.get("composition_digest"):
+            continue
+        summaries.append(summary)
+    return summaries
+
+
+def cross_composed_verification_verdict(
+    store: InitiativeStore, initiative_id: str, seals: list[Mapping[str, Any]],
+) -> tuple[str, dict[str, Any] | None]:
+    """The strongest retained verdict for this exact ordered composition.
+
+    A recorded failure outranks a later pass: the composition is immutable, so
+    disagreement means the gate did not reproduce and is not permission.
+    """
+    expected = cross_composition_digest(seals)
+    found: dict[str, dict[str, Any]] = {}
+    for summary in _cross_composed_summaries(store, initiative_id):
+        if summary["composition_digest"] == expected:
+            found.setdefault(summary["outcome"], summary)
+    for outcome in _COMPOSED_OUTCOMES:
+        if outcome in found:
+            return outcome, found[outcome]
+    return "absent", None
+
+
+def covering_cross_composed_verdict(
+    store: InitiativeStore, initiative_id: str, members: list[Mapping[str, Any]],
+) -> tuple[str, dict[str, Any] | None]:
+    """A passing cross composition that covers every one of these member seals.
+
+    Covering is deliberately asymmetric.  A composition may legitimately hold
+    more seals than one integration names -- the operator verifies everything
+    landing together, then attests each bundle inside that one proof -- so a
+    passing superset satisfies the demand, while a superset that failed proves
+    nothing about this subset and is never read as condemnation here.  Only
+    the exact composition can condemn.
+
+    A passing superset is not subset-implication: it holds because the proven
+    composition is what lands, not because a narrower tree would also build.
+    See `_require_composed_verification` for why that distinction matters.
+
+    A member counts as covered only at its exact commit and tree digest, so a
+    reseal never inherits an older composition's verdict.
+    """
+    required = {
+        member["seal_id"]: (member["jj_commit_id"], member["tree_digest"])
+        for member in members
+    }
+    if not required:
+        return "absent", None
+    for summary in _cross_composed_summaries(store, initiative_id):
+        if summary["outcome"] != "passed":
+            continue
+        observed = {
+            item["seal_id"]: (item["jj_commit_id"], item["tree_digest"])
+            for item in summary["members"]
+        }
+        if all(observed.get(seal_id) == identity for seal_id, identity in required.items()):
+            return "passed", summary
+    return "absent", None
+
+
+def _cross_identity(
+    adapter: JjAdapter,
+    materialization: Mapping[str, str],
+    materialization_path: Path,
+    source: Path,
+    parents: tuple[str, ...],
+) -> tuple[str, str]:
+    """The merge working copy's exact commit and tree, or an identity failure."""
+    identity = adapter.inspect_workspace(
+        materialization_path, materialization["workspace_name"], require_empty=False,
+    )
+    if identity.parent_commit_ids != parents:
+        raise _ComposedIdentityError(
+            "composed materialization is not the exact ordered seal composition"
+        )
+    tree = adapter.immutable_tree(materialization_path, identity.commit_id)
+    tracked_unchanged, _paths, _truncated = tracked_workspace_status(
+        adapter, materialization_path, source, identity.commit_id,
+    )
+    if not tracked_unchanged:
+        raise _ComposedIdentityError(
+            "composed materialization tracked tree differs from its merge commit"
+        )
+    return identity.commit_id, tree.digest
+
+
+def _cross_verification_gate(
+    plan: Mapping[str, Any], repository_id: str,
+) -> dict[str, Any]:
+    """The one approved verification gate this repository's plan declares."""
+    nodes = [
+        node for node in plan["nodes"]
+        if node["type"] == "verify" and node["repository_id"] == repository_id
+    ]
+    if len(nodes) != 1:
+        raise VerificationError(
+            "cross-initiative composed verification requires exactly one verify "
+            "node for the composed repository in the host active plan"
+        )
+    return _verification_gate(plan, nodes[0]["node_id"])
+
+
+def run_cross_composed_verification(
+    store: InitiativeStore,
+    initiative_id: str,
+    seal_ids: list[str],
+    *,
+    jj: JjAdapter | None = None,
+    environment: Mapping[str, str] | None = None,
+    materializer: Callable[..., dict[str, str]] = prepare_materialization,
+) -> dict[str, Any]:
+    """Run the host initiative's approved gate over several seals merged together.
+
+    This is the shape the reported incident had: two initiatives changing one
+    repository, each sealing green on its own tree, whose composition does not
+    build.  A bundle cannot express it -- it belongs to one initiative and holds
+    at most one member per repository -- so the operator names the seals and the
+    plane merges them into one working copy.
+
+    Opt-in by construction: nothing schedules this.  It appends evidence and a
+    retained materialization only -- it never advances a lifecycle, mutates a
+    bundle, seal or verification record, or removes retained state.
+
+    `failed` is reached by a real declared-command verdict or by a conflicted
+    merge, which is the composition refusing to exist.  Every other non-passing
+    outcome is `indeterminate`: the gate produced no trustworthy verdict, so it
+    defers to a rerun rather than condemning the composition.
+    """
+    adapter = jj or JjAdapter()
+    initiative = store.peek(initiative_id)
+    if (
+        initiative["state"] not in {"running", "ready-for-integration"}
+        or initiative["active_plan"] is None
+    ):
+        raise VerificationError("composed verification requires an approved active plan")
+    plan = store.read_plan(initiative_id, initiative["active_plan"]["revision"])
+    if plan["digest"] != initiative["active_plan"]["digest"]:
+        raise VerificationError("active plan digest differs from its retained revision")
+    try:
+        members = cross_composition_inputs(store, seal_ids)
+    except CompositionError as exc:
+        raise VerificationError(str(exc)) from exc
+    repository_id = members[0]["repository_id"]
+    try:
+        source = _member_root(initiative, members[0])
+    except ValueError as exc:
+        raise VerificationError(
+            f"composed seals name repository {repository_id}, which is outside "
+            f"initiative {initiative_id}'s scope"
+        ) from exc
+    gate = _cross_verification_gate(plan, repository_id)
+    bubblewrap = _bubblewrap_program()
+    command_environment = environment or os.environ
+    composition_digest = cross_composition_digest(members)
+    parents = tuple(seal["jj_commit_id"] for seal in members)
+
+    def verdict(
+        outcome: str, failure_kind: str | None, failure_summary: str | None,
+        evidence_ids: list[str], composed_tree_digest: str | None,
+        conflicted_paths: list[str] | None = None,
+    ) -> dict[str, Any]:
+        evidence = cross_composed_verdict_evidence(
+            initiative_id, members, outcome=outcome,
+            composed_tree_digest=composed_tree_digest,
+            detail={
+                "node_id": gate["node_id"],
+                "repository_id": repository_id,
+                "active_plan_digest": plan["digest"],
+                "aggregate_spec_digest": specification_digest(initiative, plan),
+                "failure_kind": failure_kind,
+                "failure_summary": failure_summary,
+                "conflicted_paths": list(conflicted_paths or []),
+                "command_evidence_ids": evidence_ids,
+            },
+        )
+        store.save_evidence(initiative_id, evidence)
+        return {
+            "initiative_id": initiative_id,
+            "composition_digest": composition_digest,
+            "outcome": outcome,
+            "failure_kind": failure_kind,
+            "failure_summary": failure_summary,
+            "conflicted_paths": list(conflicted_paths or []),
+            "evidence_id": evidence["evidence_id"],
+            "command_evidence_ids": evidence_ids,
+            "members": cross_composition_members(members),
+        }
+
+    try:
+        item = materializer(
+            store.config.control, source, list(parents),
+            _cross_materialization_name(initiative_id, composition_digest),
+            jj=adapter,
+        )
+    except (PreparationError, JjError, OSError, ValueError) as exc:
+        return verdict(
+            "indeterminate", "materialization",
+            f"composed materialization failed: {exc}"[:1000], [], None,
+        )
+    path = Path(item["workspace_path"])
+    try:
+        conflicted, conflicted_paths, truncated = adapter.workspace_conflicts(path)
+    except (JjError, OSError, ValueError) as exc:
+        return verdict(
+            "indeterminate", "invocation/environment",
+            f"composed conflict probe failed: {exc}"[:1000], [], None,
+        )
+    if conflicted:
+        named = [
+            path[:MAX_CONFLICT_PATH_CHARACTERS]
+            for path in conflicted_paths[:MAX_CONFLICT_PATHS_IN_SUMMARY]
+        ]
+        omitted = truncated or len(conflicted_paths) > len(named)
+        prose = ", ".join(named[:_CONFLICT_PATHS_IN_PROSE])
+        return verdict(
+            "failed", "conflict",
+            (
+                "the named seals do not compose: the merged working copy is "
+                "conflicted at "
+                + (prose if prose else "paths jj could not enumerate")
+                + (
+                    "; more conflicted paths were omitted"
+                    if omitted or len(named) > _CONFLICT_PATHS_IN_PROSE else ""
+                )
+            )[:1000],
+            [], None, named,
+        )
+
+    evidence_ids: list[str] = []
+    composed_tree_digest: str | None = None
+    failure_kind: str | None = None
+    failure_summary: str | None = None
+    for specification in gate["commands"]:
+        detail, evidence_id, kind = _composed_command(
+            store, initiative_id, cross_composition_subject_id(composition_digest),
+            bubblewrap, command_environment,
+            identity=functools.partial(
+                _cross_identity, adapter, item, path, source, parents,
+            ),
+            subject_detail={
+                "composition_digest": composition_digest,
+                "repository_id": repository_id,
+                "seal_ids": [seal["seal_id"] for seal in members],
+                "jj_commit_ids": list(parents),
+            },
+            materialization_path=path, specification=specification, gate=gate,
+            kind=CROSS_COMPOSED_COMMAND_KIND,
+        )
+        evidence_ids.append(evidence_id)
+        composed_tree_digest = (
+            detail["post_tree_digest"] or detail["pre_tree_digest"]
+            or composed_tree_digest
+        )
+        if kind is not None:
+            failure_kind, failure_summary = kind, detail["failure_summary"]
+            break
+    # A conflicted merge already returned `failed` above; from here the standing
+    # rule is unchanged -- only a real declared-command verdict condemns.
+    outcome = (
+        "passed" if failure_kind is None
+        else "failed" if failure_kind == "command"
+        else "indeterminate"
+    )
+    return verdict(
+        outcome, failure_kind, failure_summary, evidence_ids, composed_tree_digest,
+    )
+
+
 __all__ = [
     "COMPOSED_COMMAND_KIND", "COMPOSED_VERIFICATION_KIND",
+    "CROSS_COMPOSED_COMMAND_KIND", "CROSS_COMPOSED_VERIFICATION_KIND",
     "MAX_VERIFICATION_OUTPUT_BYTES", "VerificationError",
     "candidate_bundle_digest", "command_denial", "composed_roster",
     "composed_verdict_evidence", "composed_verification_verdict",
-    "run_composed_verification", "run_verification",
+    "covering_cross_composed_verdict", "cross_composed_verdict_evidence",
+    "cross_composed_verification_verdict", "run_composed_verification",
+    "run_cross_composed_verification", "run_verification",
 ]

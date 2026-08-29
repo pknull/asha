@@ -4,12 +4,19 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Mapping
+import uuid
+from typing import Any, Mapping, Sequence
 
-from .store import InitiativeStore
+from .model import ModelError, canonical_uuid
+from .store import InitiativeStore, StoreError
 
 
 _MEMBER_IDENTITY = ("repository_id", "seal_id", "jj_commit_id", "tree_digest", "diff_digest")
+# One merge working copy holds one parent per named seal, so the composition
+# bound matches the workspace bound rather than the (much wider) bundle bound.
+MAX_CROSS_COMPOSITION_SEALS = 8
+CROSS_COMPOSITION_CONTRACT = "asha.cross-initiative-composition.v1"
+_CROSS_MEMBER_IDENTITY = ("initiative_id", "seal_id", "jj_commit_id", "tree_digest")
 
 
 class CompositionError(ValueError):
@@ -120,6 +127,95 @@ def bundle_composition_inputs(
     return resolved
 
 
+def cross_composition_members(seals: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
+    """The ordered identity tuples a cross-initiative verdict is bound to."""
+    return [
+        {field: seal[field] for field in _CROSS_MEMBER_IDENTITY}
+        for seal in seals
+    ]
+
+
+def cross_composition_digest(seals: Sequence[Mapping[str, Any]]) -> str:
+    """Bind one exact ordered cross-initiative seal composition.
+
+    Order is part of the identity because it is the order of the merge parents:
+    a different order is a different working copy and therefore a different
+    composition, never a replay target for this verdict.
+    """
+    return hashlib.sha256(json.dumps(
+        [
+            CROSS_COMPOSITION_CONTRACT,
+            [
+                [member[field] for field in _CROSS_MEMBER_IDENTITY]
+                for member in cross_composition_members(seals)
+            ],
+        ],
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def cross_composition_subject_id(digest: str) -> str:
+    """A deterministic evidence subject that cannot collide with a bundle ID."""
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"{CROSS_COMPOSITION_CONTRACT}:{digest}"))
+
+
+def cross_composition_inputs(
+    store: InitiativeStore, seal_ids: Sequence[str],
+) -> list[dict[str, Any]]:
+    """Resolve operator-named seals across every retained initiative, in order.
+
+    A bundle belongs to exactly one initiative and holds at most one member per
+    repository, so it cannot express two divergent seals in the same repository.
+    This is the sibling path for that shape: the operator names the seals, and
+    every resolution failure is a refusal with its reason -- a foreign
+    repository, a non-success seal, an ambiguous ID or an unknown one is never
+    silently skipped.
+    """
+    requested = () if isinstance(seal_ids, (str, bytes)) else tuple(seal_ids)
+    if not 2 <= len(requested) <= MAX_CROSS_COMPOSITION_SEALS:
+        raise CompositionError(
+            "cross-initiative composition requires 2-"
+            f"{MAX_CROSS_COMPOSITION_SEALS} ordered seal IDs"
+        )
+    canonical: list[str] = []
+    for seal_id in requested:
+        try:
+            canonical.append(canonical_uuid(seal_id, "composed seal ID"))
+        except (TypeError, ValueError) as exc:
+            raise CompositionError(str(exc)) from exc
+    if len(set(canonical)) != len(canonical):
+        raise CompositionError("cross-initiative composition seal IDs must be unique")
+    try:
+        initiatives = store.list_initiatives()
+    except StoreError as exc:
+        raise CompositionError(f"retained initiatives are unreadable: {exc}") from exc
+    resolved: list[dict[str, Any]] = []
+    for seal_id in canonical:
+        found: list[dict[str, Any]] = []
+        for initiative in initiatives:
+            try:
+                found.append(store.read_seal(initiative["initiative_id"], seal_id))
+            except (StoreError, ModelError):
+                continue
+        if len(found) != 1:
+            raise CompositionError(
+                f"seal {seal_id} does not resolve to exactly one retained seal"
+            )
+        seal = found[0]
+        if seal["outcome"] != "success":
+            raise CompositionError(
+                f"composed seal {seal_id} is not a success seal"
+            )
+        if resolved and seal["repository_id"] != resolved[0]["repository_id"]:
+            raise CompositionError(
+                f"composed seal {seal_id} belongs to a different repository"
+            )
+        resolved.append(seal)
+    if len({seal["jj_commit_id"] for seal in resolved}) != len(resolved):
+        raise CompositionError("composed seals must name distinct commits")
+    return resolved
+
+
 def enforce_terminal_candidate(
     store: InitiativeStore,
     initiative_id: str,
@@ -160,6 +256,10 @@ def enforce_terminal_candidate(
 
 
 __all__ = [
-    "CompositionError", "bundle_composition_digest", "bundle_composition_inputs",
-    "composition_inputs", "enforce_terminal_candidate",
+    "CROSS_COMPOSITION_CONTRACT", "CompositionError",
+    "MAX_CROSS_COMPOSITION_SEALS", "bundle_composition_digest",
+    "bundle_composition_inputs", "composition_inputs",
+    "cross_composition_digest", "cross_composition_inputs",
+    "cross_composition_members", "cross_composition_subject_id",
+    "enforce_terminal_candidate",
 ]

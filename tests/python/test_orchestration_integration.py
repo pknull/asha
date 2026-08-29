@@ -15,7 +15,9 @@ from lib.control.orchestration.cli import main
 from lib.control.orchestration.integration import IntegrationError, record_integration
 from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.readiness import bind_readiness
-from lib.control.orchestration.verification import composed_verdict_evidence
+from lib.control.orchestration.verification import (
+    composed_verdict_evidence, cross_composed_verdict_evidence,
+)
 from tests.python.orchestration_increment3_fixtures import (
     advance_node,
     save_passed_verification,
@@ -425,6 +427,111 @@ class ComposedVerificationGateTests(WorkspaceFixture, unittest.TestCase):
 
         with self.assertRaisesRegex(IntegrationError, "has no passed composed"):
             self.record(composed_verification=True)
+
+    def save_cross_verdict(
+        self, outcome: str, members: list[dict], *, extra: bool = True,
+    ) -> dict:
+        """A cross-initiative verdict over these member identities, plus a spare.
+
+        A composition may legitimately hold more seals than one integration
+        names; the spare seal is what makes this a covering superset rather than
+        an exact match.
+        """
+        seals = [
+            {
+                "initiative_id": self.initiative_id,
+                "seal_id": member["seal_id"],
+                "jj_commit_id": member["jj_commit_id"],
+                "tree_digest": member["tree_digest"],
+            }
+            for member in members
+        ]
+        if extra:
+            seals.append({
+                "initiative_id": str(uuid.uuid4()),
+                "seal_id": str(uuid.uuid4()),
+                "jj_commit_id": "7" * 40,
+                "tree_digest": "8" * 64,
+            })
+        evidence = cross_composed_verdict_evidence(
+            self.initiative_id, seals, outcome=outcome,
+            detail={"failure_kind": None, "command_evidence_ids": []},
+        )
+        self.store.save_evidence(self.initiative_id, evidence)
+        return evidence
+
+    def test_demanded_gate_accepts_a_covering_cross_initiative_composition(self) -> None:
+        self.save_cross_verdict("passed", self.bundle["members"])
+
+        event = self.record(composed_verification=True)
+
+        self.assertEqual(event["payload"]["disposition"], "integrated")
+        self.assertEqual(self.initiative()["state"], "integrated")
+
+    def test_covering_requires_every_member_identity_to_match_exactly(self) -> None:
+        drifted = copy.deepcopy(self.bundle["members"])
+        drifted[0]["tree_digest"] = "4" * 64
+
+        self.save_cross_verdict("passed", drifted)
+
+        with self.assertRaisesRegex(IntegrationError, "has no passed composed"):
+            self.record(composed_verification=True)
+        self.assertEqual(self.initiative()["state"], "ready-for-integration")
+
+    def test_a_covering_composition_that_did_not_pass_is_never_permission(self) -> None:
+        for outcome in ("failed", "indeterminate"):
+            with self.subTest(outcome=outcome):
+                self.save_cross_verdict(outcome, self.bundle["members"])
+                with self.assertRaisesRegex(IntegrationError, "has no passed composed"):
+                    self.record(composed_verification=True)
+        self.assertEqual(self.initiative()["state"], "ready-for-integration")
+
+    def test_a_wider_composition_failure_does_not_condemn_this_exact_bundle(self) -> None:
+        # A superset that failed proves nothing about this subset, so the exact
+        # bundle's own passing verdict still stands.
+        self.save_cross_verdict("failed", self.bundle["members"])
+        self.save_verdict("passed")
+
+        event = self.record(composed_verification=True)
+
+        self.assertEqual(event["payload"]["disposition"], "integrated")
+
+    def test_exact_composition_failure_still_outranks_a_covering_pass(self) -> None:
+        self.save_verdict("failed")
+        self.save_cross_verdict("passed", self.bundle["members"])
+
+        with self.assertRaisesRegex(IntegrationError, "composed verification failed"):
+            self.record(composed_verification=True)
+        self.assertEqual(self.initiative()["state"], "ready-for-integration")
+
+    def test_undemanded_integration_reads_no_composition_evidence_at_all(self) -> None:
+        self.save_verdict("failed")
+        self.save_cross_verdict("failed", self.bundle["members"])
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+        reads: list[str] = []
+        original = self.store.list_evidence_snapshot
+
+        def spy(initiative_id):
+            reads.append(initiative_id)
+            return original(initiative_id)
+
+        with mock.patch.object(
+            self.store, "list_evidence_snapshot", side_effect=spy,
+        ), mock.patch(
+            "lib.control.orchestration.verification.composed_verification_verdict",
+            side_effect=AssertionError("the undemanded path must not read a verdict"),
+        ), mock.patch(
+            "lib.control.orchestration.verification.covering_cross_composed_verdict",
+            side_effect=AssertionError("the undemanded path must not read a verdict"),
+        ):
+            event = self.record()
+
+        self.assertEqual(event["payload"]["disposition"], "integrated")
+        self.assertEqual(self.initiative()["state"], "integrated")
+        self.assertEqual(reads, [])
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), before + 2,
+        )
 
     def test_abandonment_form_refuses_the_composed_demand(self) -> None:
         with self.assertRaisesRegex(IntegrationError, "composed verification"):

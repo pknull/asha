@@ -22,8 +22,8 @@ from lib.control.jj import (
     MAX_BASELINE_DIVERGENCE_SUMMARY, RepositoryFacts,
 )
 from lib.control.orchestration.cli import (
-    _approve, _create, _plan, _reject, _repository_scope, _snapshot, main,
-    reconcile_one_initiative,
+    _approve, _compose_verify_command, _create, _plan, _reject,
+    _repository_scope, _snapshot, main, reconcile_one_initiative,
 )
 from lib.control.orchestration.config import load_config
 from lib.control.orchestration.model import record_digest
@@ -73,6 +73,50 @@ class OrchestrationCliTests(unittest.TestCase):
         self.jj.immutable_tree.return_value = ImmutableTree(
             commit_id="b" * 40, digest="c" * 64, entries=(),
         )
+
+    def _compose_verify(self, *args: str) -> tuple[list, dict]:
+        """Drive compose-verify with both runners recorded rather than executed."""
+        calls: list = []
+        store = mock.Mock(spec=InitiativeStore)
+        with mock.patch(
+            "lib.control.orchestration.cli._resolve",
+            return_value={"initiative_id": "12345678-1234-4234-8234-123456789abc"},
+        ), mock.patch(
+            "lib.control.orchestration.cli.refuse_coordinator_pane",
+        ), mock.patch(
+            "lib.control.orchestration.verification.run_composed_verification",
+            side_effect=lambda *a, **k: calls.append(("bundle", a)) or {"outcome": "passed"},
+        ), mock.patch(
+            "lib.control.orchestration.verification.run_cross_composed_verification",
+            side_effect=lambda *a, **k: calls.append(("cross", a)) or {"outcome": "passed"},
+        ):
+            result, json_output = _compose_verify_command(list(args), store, env={})
+        return calls, {"result": result, "json": json_output}
+
+    def test_compose_verify_accepts_repeated_seals_and_keeps_the_bundle_form(self) -> None:
+        first = "22222222-2222-4222-8222-222222222222"
+        second = "33333333-3333-4333-8333-333333333333"
+
+        cross, _ = self._compose_verify(
+            "slug", "--seal", first, "--seal", second, "--json",
+        )
+        bundle, _ = self._compose_verify("slug", "--bundle", "bundle-id")
+
+        self.assertEqual(cross[0][0], "cross")
+        self.assertEqual(cross[0][1][2], [first, second])
+        self.assertEqual(bundle[0][0], "bundle")
+        self.assertEqual(bundle[0][1][2], "bundle-id")
+
+    def test_compose_verify_refuses_an_ambiguous_or_undersized_composition(self) -> None:
+        first = "22222222-2222-4222-8222-222222222222"
+        for args, expected in (
+            (("slug",), "either --bundle or two or more --seal"),
+            (("slug", "--bundle", "b", "--seal", first), "either --bundle"),
+            (("slug", "--seal", first), "at least two seal IDs"),
+            (("slug", "--bundle", "b", "--node", "n"), "does not accept --node"),
+        ):
+            with self.subTest(args=args), self.assertRaisesRegex(ValueError, expected):
+                self._compose_verify(*args)
 
     def test_shared_single_initiative_reconcile_uses_cli_order_and_never_dispatches(self) -> None:
         initiative_id = "12345678-1234-4234-8234-123456789abc"
