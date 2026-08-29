@@ -2943,6 +2943,66 @@ def plan_materialization(
     }
 
 
+def _adopt_ready_materialization(
+    adapter: JjAdapter,
+    journal_path: Path,
+    destination: Path,
+    *,
+    name: str,
+    source: Path,
+    base_commit_id: str,
+    workspace_name: str,
+) -> dict[str, str] | None:
+    """Adopt a retained phase-ready materialization that exactly matches.
+
+    Adoption requires the journal to prove ownership and identity for this
+    precise request, and the live workspace to still carry the journalled jj
+    identity, empty. Anything less returns None and the caller refuses; this
+    seam never mutates retained state beyond re-pinning workspace privacy.
+    """
+    try:
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(journal, dict):
+        return None
+    expected = {
+        "contract": "asha.control-materialization-journal.v1",
+        "name": name,
+        "source": str(source),
+        "base_commit_id": base_commit_id,
+        "workspace_name": workspace_name,
+        "workspace_path": str(destination),
+        "phase": "ready",
+    }
+    if any(journal.get(key) != value for key, value in expected.items()):
+        return None
+    change_id = journal.get("change_id")
+    working_commit_id = journal.get("working_commit_id")
+    if not isinstance(change_id, str) or not isinstance(working_commit_id, str):
+        return None
+    try:
+        _make_workspace_private(destination)
+        identity = adapter.inspect_workspace(
+            destination, workspace_name, snapshot=False, require_empty=True,
+        )
+    except (OSError, JjError, PreparationError):
+        return None
+    if (
+        identity.parent_commit_ids != (base_commit_id,)
+        or identity.change_id != change_id
+        or identity.commit_id != working_commit_id
+        or identity.description != f"controller materialization {name}"
+    ):
+        return None
+    return {
+        "workspace_name": workspace_name,
+        "workspace_path": str(destination),
+        "change_id": change_id,
+        "working_commit_id": working_commit_id,
+    }
+
+
 def prepare_materialization(
     config: ControlConfig,
     source: Path,
@@ -3008,6 +3068,15 @@ def prepare_materialization(
             destination.exists() or destination.is_symlink()
             or journal_path.exists() or journal_path.is_symlink()
         ):
+            # A retry after an interrupted consumer collides with its own
+            # earlier result; a journal-proven exact match is adopted rather
+            # than refused, so ingestion retries can converge (#79).
+            adopted = _adopt_ready_materialization(
+                adapter, journal_path, destination, name=name, source=source,
+                base_commit_id=base_commit_id, workspace_name=workspace_name,
+            )
+            if adopted is not None:
+                return adopted
             raise PreparationError("materialization destination or journal already exists; retained state was not changed")
         at = _now()
         journal: dict[str, Any] = {

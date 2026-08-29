@@ -799,6 +799,55 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertIn(materialized["workspace_name"], after_workspaces)
         self.assertTrue(path.is_dir(), "controller materialization must be retained")
 
+    def test_ready_materialization_is_adopted_on_identical_retry(self) -> None:
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        first = prepare_materialization(
+            self.config, self.source, base, "adopt-verification",
+        )
+        before_workspaces = JjAdapter().workspace_identities(self.source)
+
+        second = prepare_materialization(
+            self.config, self.source, base, "adopt-verification",
+        )
+
+        self.assertEqual(first, second)
+        self.assertEqual(
+            before_workspaces, JjAdapter().workspace_identities(self.source),
+        )
+
+    def test_retained_materialization_mismatch_still_refuses(self) -> None:
+        base = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        materialized = prepare_materialization(
+            self.config, self.source, base, "mismatch-verification",
+        )
+        journal_path = (
+            Path(materialized["workspace_path"]).parent
+            / ".journals" / "mismatch-verification.json"
+        )
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+
+        journal_path.write_text(
+            json.dumps(dict(journal, phase="preserved")), encoding="utf-8",
+        )
+        with self.assertRaisesRegex(PreparationError, "already exists"):
+            prepare_materialization(
+                self.config, self.source, base, "mismatch-verification",
+            )
+
+        journal_path.write_text(
+            json.dumps(dict(journal, base_commit_id="f" * 40)), encoding="utf-8",
+        )
+        with self.assertRaisesRegex(PreparationError, "already exists"):
+            prepare_materialization(
+                self.config, self.source, base, "mismatch-verification",
+            )
+
     def test_controller_materialization_planner_is_deterministic_and_read_only(self) -> None:
         before_source = self.source_facts()
         before_tasks = TaskStore(self.config).list()
