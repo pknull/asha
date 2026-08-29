@@ -199,17 +199,49 @@ def _active_plan(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str
     return plan
 
 
+def _survey_result_ingestions(
+    store: InitiativeStore, initiative_id: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Read the ingestion records reconciliation can trust, and name the rest.
+
+    A record whose payload does not read back as its own filename is not a
+    record: nothing here adopts, repairs or moves it, and it never joins the
+    returned set.  Naming it and continuing is the difference between one
+    unreadable file wedging every reconciliation pass of an initiative and an
+    operator being told which file to quarantine.
+    """
+    problems: list[dict[str, str]] = []
+    records = store.list_result_ingestions_snapshot(
+        initiative_id, problems=problems,
+    )
+    return records, problems
+
+
 def _staged_result_candidate(
     store: InitiativeStore, initiative_id: str, attempt_id: str,
 ) -> bool:
-    """A live outbox candidate whose ingestion record is still non-terminal."""
+    """A live outbox candidate whose ingestion record is still non-terminal.
+
+    The predicate fails closed on staging it cannot read, for the same reason
+    `_node_has_in_flight_action` fails closed on ownership it cannot read.
+    Both callers treat `True` as "leave this attempt alone": one skips the
+    stale transition, the other declines to expire the attempt to
+    `result-missing`.  An unreadable record cannot be attributed to an
+    attempt, so it makes every attempt's staging ambiguous, and the safe
+    reading of that ambiguity is the one that preserves a result which may
+    exist rather than the one that discards it.  The ambiguity lifts as soon
+    as the record is quarantined.
+    """
+    records, problems = _survey_result_ingestions(store, initiative_id)
+    if problems:
+        return True
     return any(
         record["attempt_id"] == attempt_id
         and record["state"] not in _RESULT_INGESTION_TERMINAL_STATES
         and Path(record["workspace_path"]).joinpath(
             *record["outbox_path"].split("/")
         ).is_file()
-        for record in store.list_result_ingestions_snapshot(initiative_id)
+        for record in records
     )
 
 
@@ -734,10 +766,36 @@ def reconcile_live(
     # after independently observing the producing run as terminal, and it does
     # all potentially long snapshot/verification work outside the initiative
     # transaction used by ordinary state reconciliation below.
-    ingest_pending_results(
-        store, initiative_id, control_store=control_store,
-        adapters_factory=adapters_factory,
-    )
+    try:
+        ingest_pending_results(
+            store, initiative_id, control_store=control_store,
+            adapters_factory=adapters_factory,
+        )
+    except StoreError:
+        # The ingestion pass lists `result-ingestions` strictly and so fails
+        # closed on any record that does not read back as its own filename.
+        # Survey the same directory to learn whether that is what happened: a
+        # failure this pass can name is reported and stepped over so the rest
+        # of reconciliation still runs (#84), and any storage failure the
+        # survey cannot name stays fatal.  Nothing is repaired -- the observed
+        # corruption was a verbatim copy of a live record, so adopting a
+        # payload under the filename it landed on would mint a duplicate of
+        # real work.  Quarantine is the operator's call.
+        try:
+            _records, problems = _survey_result_ingestions(store, initiative_id)
+        except StoreError:
+            problems = []
+        if not problems:
+            raise
+        probes.extend({
+            "name": "result-ingestion-records",
+            "outcome": "corrupt",
+            "detail": (
+                f"{problem['directory']}/{problem['name']} does not read back as "
+                f"its own record and was skipped: {problem['reason']}; quarantine "
+                "it (rename it aside) to restore ingestion"
+            ),
+        } for problem in problems)
     with store.transaction_lock(initiative_id):
         initiative = store.peek(initiative_id)
         if initiative["active_plan"] is None:

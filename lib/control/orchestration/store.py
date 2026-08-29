@@ -1377,8 +1377,25 @@ class InitiativeStore:
         filename_pattern: re.Pattern[str],
         identity_field: str,
         identity_parser: Callable[[str], Any] = lambda value: value,
+        *,
+        problems: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
-        """List validated regular records without locks, writes, or cleanup."""
+        """List validated regular records without locks, writes, or cleanup.
+
+        Strict by default: the first record that does not read back as itself
+        fails the whole listing, because a reader that cannot trust one record
+        cannot trust the set.  A caller that passes `problems` instead collects
+        those records by name and continues.  That tolerance never widens what
+        counts as a valid record -- an unreadable record is excluded from the
+        result and reported, never repaired, adopted, renamed or removed --
+        and it is opt-in per call site, so every other reader keeps failing
+        closed.
+        """
+        def _reject(name: str, reason: str) -> None:
+            if problems is None:
+                raise StoreError(reason)
+            problems.append({"directory": directory, "name": name, "reason": reason})
+
         with self._initiative_directory(
             initiative_id, create_root=False, create_initiative=False
         ) as (_, initiative_fd):
@@ -1392,15 +1409,24 @@ class InitiativeStore:
                 for name in names:
                     match = filename_pattern.fullmatch(name)
                     if match is None:
-                        raise StoreError(f"invalid {directory} record filename: {name}")
+                        _reject(name, f"invalid {directory} record filename: {name}")
+                        continue
                     identity = identity_parser(match.group(1))
-                    record = self._validated_read(
-                        directory_fd, name, f"{directory} record", validator
-                    )
+                    try:
+                        record = self._validated_read(
+                            directory_fd, name, f"{directory} record", validator
+                        )
+                    except StoreError as exc:
+                        if problems is None:
+                            raise
+                        _reject(name, str(exc))
+                        continue
                     if record.get("initiative_id", initiative_id) != initiative_id:
-                        raise StoreError("record initiative_id does not match destination initiative")
+                        _reject(name, "record initiative_id does not match destination initiative")
+                        continue
                     if record[identity_field] != identity:
-                        raise StoreError(f"record {identity_field} does not match its filename")
+                        _reject(name, f"record {identity_field} does not match its filename")
+                        continue
                     records.append(record)
                 return records
             finally:
@@ -1457,10 +1483,22 @@ class InitiativeStore:
             re.compile(r"([0-9a-f-]{36})\.json"), "publication_id",
         )
 
-    def list_result_ingestions_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+    def list_result_ingestions_snapshot(
+        self,
+        initiative_id: str,
+        *,
+        problems: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, Any]]:
+        """List ingestion reservations; `problems` surveys instead of raising.
+
+        Only reconciliation passes `problems`, so that a single unreadable
+        record cannot wedge every pass of an initiative.  Identity resolution
+        and the direct-publication refusal gate stay strict.
+        """
         return self._list_subrecords_snapshot(
             initiative_id, "result-ingestions", validate_result_ingestion,
             re.compile(r"([0-9a-f-]{36})\.json"), "ingestion_id",
+            problems=problems,
         )
 
     def list_results_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
