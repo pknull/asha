@@ -22,6 +22,7 @@ from lib.control.orchestration.model import (
     EVIDENCE_CONTRACT,
     EVENT_CONTRACT,
     NODE_CONTRACT,
+    RESULT_INGESTION_CONTRACT,
     record_digest,
 )
 from lib.control.orchestration.store import (
@@ -66,6 +67,37 @@ def event(sequence: int, event_id: str, recorded_at: str) -> dict:
         "payload_digest": hashlib.sha256(raw).hexdigest(),
         "payload": payload,
         "recorded_at": recorded_at,
+    }
+
+
+def result_ingestion(ingestion_id: str, workspace_path: str) -> dict:
+    return {
+        "contract": RESULT_INGESTION_CONTRACT,
+        "ingestion_id": ingestion_id,
+        "initiative_id": INITIATIVE_ID,
+        "node_id": NODE_ID,
+        "attempt_id": "33333333-3333-4333-8333-333333333333",
+        "task_id": "44444444-4444-4444-8444-444444444444",
+        "run_id": "55555555-5555-4555-8555-555555555555",
+        "active_plan_digest": DIGEST,
+        "control_task_identity_digest": DIGEST,
+        "staging_token_digest": DIGEST,
+        "workspace_path": workspace_path,
+        "workspace_name": "workspace",
+        "change_id": "k" * 32,
+        "outbox_path": ".asha/outbox/result.json",
+        "state": "reserved",
+        "candidate_digest": None,
+        "publication_id": None,
+        "result_id": None,
+        "claimed_commit_id": None,
+        "claimed_tree_digest": None,
+        "commit_creator": None,
+        "verification_evidence_ids": [],
+        "ingester": None,
+        "refusal": None,
+        "created_at": TIMESTAMP,
+        "updated_at": TIMESTAMP,
     }
 
 
@@ -773,6 +805,52 @@ with store.transaction_lock({INITIATIVE_ID!r}):
         (attempts_dir / f"{attempt_id}.json").symlink_to(outside)
         with self.assertRaisesRegex(StoreError, "symlink"):
             self.store.list_attempts_snapshot(INITIATIVE_ID)
+
+    def test_ingestion_survey_names_unreadable_records_and_repairs_nothing(self) -> None:
+        self.create()
+        live_id = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        clobbered_id = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
+        unreadable_id = "ffffffff-ffff-4fff-8fff-ffffffffffff"
+        self.store.save_result_ingestion(
+            INITIATIVE_ID,
+            result_ingestion(live_id, str(self.root.resolve() / "workspace")),
+        )
+        directory = self.config.initiatives_dir / INITIATIVE_ID / "result-ingestions"
+        live = directory / f"{live_id}.json"
+        # The observed corruption: a verbatim copy of a live record landed
+        # under another record's filename.
+        clobbered = directory / f"{clobbered_id}.json"
+        clobbered.write_bytes(live.read_bytes())
+        clobbered.chmod(0o600)
+        unreadable = directory / f"{unreadable_id}.json"
+        unreadable.write_text("{ not json")
+        unreadable.chmod(0o600)
+
+        with self.assertRaisesRegex(StoreError, "does not match its filename"):
+            self.store.list_result_ingestions_snapshot(INITIATIVE_ID)
+
+        problems: list[dict[str, str]] = []
+        records = self.store.list_result_ingestions_snapshot(
+            INITIATIVE_ID, problems=problems,
+        )
+        self.assertEqual([record["ingestion_id"] for record in records], [live_id])
+        self.assertEqual(
+            [problem["name"] for problem in problems],
+            [f"{clobbered_id}.json", f"{unreadable_id}.json"],
+        )
+        self.assertEqual({problem["directory"] for problem in problems}, {"result-ingestions"})
+        self.assertIn("does not match its filename", problems[0]["reason"])
+        # Surveying is a read: nothing is renamed, repaired or removed, because
+        # the clobbered payload belongs to the live record and adopting it
+        # under this filename would mint a duplicate of a real record.
+        self.assertEqual(
+            sorted(item.name for item in directory.iterdir()),
+            sorted([live.name, clobbered.name, unreadable.name]),
+        )
+        self.assertEqual(clobbered.read_bytes(), live.read_bytes())
+        # Sibling readers of the same directory keep failing closed.
+        with self.assertRaisesRegex(StoreError, "does not match its filename"):
+            self.store.list_result_ingestions_snapshot(INITIATIVE_ID)
 
     def test_snapshot_inventory_counts_and_preserves_hidden_residue(self) -> None:
         self.create()
