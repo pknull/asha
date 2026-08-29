@@ -34,10 +34,14 @@ from .supervisor import tick
 
 
 MAX_STATUS_BYTES = 16 * 1024
+_ERROR_TEXT_LIMIT = 200
 _POLL_SECONDS = 1.0
 _SERVICE_COMMAND_LIMIT = 16 * 1024
 _SERVICE_COMMAND_TIMEOUT = 10
 _SERVICE_NAME = "asha-supervisor.service"
+# Initiative ids are UUIDs, so this dedupe key for a whole-sweep failure
+# cannot collide with one.
+_SWEEP_SUBJECT = "sweep"
 SUPERVISOR_SERVICE_MARKER = (
     "# Managed by asha control supervisor; edit via 'asha control supervisor', "
     "not by hand."
@@ -593,6 +597,39 @@ def _emit(payload: Mapping[str, Any], json_output: bool) -> None:
         print(f"asha control supervisor: {payload['message']}", flush=True)
 
 
+def _bounded_text(value: Any) -> str:
+    """One printable journal line: a report is data, not a trusted log record."""
+    return "".join(
+        character if character.isprintable() else "?" for character in str(value)
+    )[:_ERROR_TEXT_LIMIT]
+
+
+def _emit_tick_errors(
+    summary: Mapping[str, Any], reported: Mapping[str, str], json_output: bool,
+) -> dict[str, str]:
+    """Print each tick error once and return the set to dedupe the next tick against.
+
+    The per-initiative errors are the authority, not the derived counts. Errored
+    subjects absent from this tick drop out of the returned set, so a recurrence
+    after a clean tick prints again instead of staying deduped forever.
+    """
+    current: dict[str, str] = {}
+    if summary.get("sweep_error"):
+        current[_SWEEP_SUBJECT] = _bounded_text(summary["sweep_error"])
+    for item in summary.get("initiatives") or ():
+        if item.get("error"):
+            current[_bounded_text(item.get("initiative_id"))] = _bounded_text(
+                item["error"],
+            )
+    for subject, text in current.items():
+        if reported.get(subject) != text:
+            _emit({
+                "tick_error": True, "subject": subject, "error": text,
+                "message": f"tick error: {subject}: {text}",
+            }, json_output)
+    return current
+
+
 def run_supervisor(
     config: OrchestrationConfig, *, deps=None, json_output: bool = False,
 ) -> int:
@@ -627,6 +664,7 @@ def run_supervisor(
         last_marker = _snapshot_marker(config)
         next_regular = 0.0
         first = True
+        reported: dict[str, str] = {}
         try:
             while True:
                 marker = _snapshot_marker(config)
@@ -634,6 +672,15 @@ def run_supervisor(
                 if first or monotonic >= next_regular or marker != last_marker:
                     last_marker = marker
                     summary = tick(dependencies)
+                    # Report before the status write: the errors this names are
+                    # exactly the ones the status file cannot carry, so they must
+                    # reach the journal even if that write then fails.
+                    try:
+                        reported = _emit_tick_errors(summary, reported, json_output)
+                    except Exception:
+                        # Visibility never ends the sweep. Retaining the prior set
+                        # retries the unprinted line on the next tick.
+                        pass
                     retained["last_tick_at"] = summary["finished_at"]
                     retained["last_tick_summary"] = summary["counts"]
                     _write_status(config, retained)

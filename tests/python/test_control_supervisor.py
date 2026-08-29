@@ -35,6 +35,7 @@ from lib.control.orchestration.ingestion import (
 from lib.control.orchestration.supervisor import tick
 from lib.control.orchestration.supervisor_daemon import (
     SUPERVISOR_SERVICE_MARKER,
+    _emit_tick_errors,
     install_supervisor_service,
     render_supervisor_service,
     run_supervisor,
@@ -507,6 +508,49 @@ class SupervisorIsolationTests(unittest.TestCase):
         self.assertIsNone(report["initiatives"][1]["error"])
 
 
+class SupervisorVisibilityTests(unittest.TestCase):
+    def emit(self, summary: dict, reported: dict) -> tuple[list[str], dict]:
+        output = StringIO()
+        with redirect_stdout(output):
+            current = _emit_tick_errors(summary, reported, False)
+        return output.getvalue().splitlines(), current
+
+    def test_error_text_is_bounded_and_flattened_to_one_journal_line(self) -> None:
+        initiative_id = "44444444-4444-4444-8444-444444444444"
+        error = "line one\nline two " + "x" * 400
+
+        lines, current = self.emit({
+            "counts": {"errors": 1},
+            "initiatives": [{"initiative_id": initiative_id, "error": error}],
+        }, {})
+
+        self.assertEqual(len(lines), 1)
+        self.assertLessEqual(len(current[initiative_id]), 200)
+        self.assertNotIn("\n", current[initiative_id])
+        self.assertIn("line one?line two", lines[0])
+
+    def test_whole_sweep_failure_prints_even_without_a_named_initiative(self) -> None:
+        summary = {"counts": {"errors": 1}, "sweep_error": "StoreError: catalog is unreadable"}
+
+        lines, current = self.emit(summary, {})
+        repeated, _current = self.emit(summary, current)
+
+        self.assertEqual(len(lines), 1)
+        self.assertIn("catalog is unreadable", lines[0])
+        self.assertEqual(repeated, [])
+
+    def test_clean_tick_prints_nothing_and_clears_the_dedupe_set(self) -> None:
+        lines, current = self.emit(
+            {"counts": {"errors": 0}, "initiatives": [
+                {"initiative_id": "55555555-5555-4555-8555-555555555555", "error": None},
+            ]},
+            {"55555555-5555-4555-8555-555555555555": "stale"},
+        )
+
+        self.assertEqual(lines, [])
+        self.assertEqual(current, {})
+
+
 class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
     def test_run_changes_cwd_to_home_before_the_first_tick(self) -> None:
         observed = []
@@ -529,6 +573,105 @@ class SupervisorProcessTests(ExecutionFixture, unittest.TestCase):
 
         self.assertEqual(result, 0)
         self.assertEqual(observed, [Path(self.env["HOME"])])
+
+    def drive_ticks(self, reports: list[dict], output: StringIO):
+        """Run the loop over one report per tick, stopping after the last."""
+        pending = list(reports)
+        markers = iter(range(len(pending) + 2))
+
+        def one_tick(_deps):
+            report = pending.pop(0)
+            if not pending:
+                os.kill(os.getpid(), signal.SIGTERM)
+            return report
+
+        with contextlib.chdir(self.repo), \
+                mock.patch(
+                    "lib.control.orchestration.supervisor_daemon.Path.home",
+                    return_value=Path(self.env["HOME"]),
+                ), \
+                mock.patch(
+                    "lib.control.orchestration.supervisor_daemon.tick",
+                    side_effect=one_tick,
+                ), \
+                mock.patch(
+                    "lib.control.orchestration.supervisor_daemon._snapshot_marker",
+                    side_effect=lambda _config: next(markers),
+                ), \
+                mock.patch(
+                    "lib.control.orchestration.supervisor_daemon._POLL_SECONDS", 0,
+                ), redirect_stdout(output):
+            result = run_supervisor(self.config, deps=SimpleNamespace())
+
+        self.assertEqual(result, 0)
+        self.assertEqual(pending, [])
+        return result
+
+    def errored_tick(self, initiative_id: str, error: str) -> dict:
+        return {
+            "finished_at": now_text(),
+            "counts": {
+                "eligible": 1, "succeeded": 0, "errors": 1,
+                "ingested": 0, "transitions": 0,
+            },
+            "initiatives": [{"initiative_id": initiative_id, "error": error}],
+        }
+
+    def test_tick_error_prints_once_and_reprints_only_when_the_text_changes(self) -> None:
+        initiative_id = "11111111-1111-4111-8111-111111111111"
+        first = "StoreError: result ingestion listing is unreadable"
+        changed = "StoreError: outbox path vanished"
+        output = StringIO()
+
+        self.drive_ticks([
+            self.errored_tick(initiative_id, first),
+            self.errored_tick(initiative_id, first),
+            self.errored_tick(initiative_id, changed),
+        ], output)
+
+        lines = [
+            line for line in output.getvalue().splitlines() if initiative_id in line
+        ]
+        self.assertEqual(len(lines), 2)
+        self.assertIn(first, lines[0])
+        self.assertIn(changed, lines[1])
+
+    def test_recovered_initiative_reprints_a_recurrence_of_the_same_error(self) -> None:
+        initiative_id = "22222222-2222-4222-8222-222222222222"
+        error = "StoreError: result ingestion listing is unreadable"
+        clean = {
+            "finished_at": now_text(),
+            "counts": {
+                "eligible": 1, "succeeded": 1, "errors": 0,
+                "ingested": 0, "transitions": 0,
+            },
+            "initiatives": [{"initiative_id": initiative_id, "error": None}],
+        }
+        output = StringIO()
+
+        self.drive_ticks([
+            self.errored_tick(initiative_id, error), clean,
+            self.errored_tick(initiative_id, error),
+        ], output)
+
+        lines = [
+            line for line in output.getvalue().splitlines() if initiative_id in line
+        ]
+        self.assertEqual(len(lines), 2)
+
+    def test_failing_error_print_does_not_end_the_sweep_or_skip_the_status_write(
+        self,
+    ) -> None:
+        initiative_id = "33333333-3333-4333-8333-333333333333"
+        output = StringIO()
+
+        with mock.patch(
+            "lib.control.orchestration.supervisor_daemon._emit_tick_errors",
+            side_effect=RuntimeError("stdout is gone"),
+        ):
+            self.drive_ticks([self.errored_tick(initiative_id, "boom")], output)
+
+        self.assertIsNotNone(json.loads(status_path(self.config).read_text())["last_tick_at"])
 
     def test_second_run_refuses_while_another_process_holds_the_flock(self) -> None:
         path = supervisor_lock_path(self.config)
