@@ -638,7 +638,12 @@ class InitiativeStore:
                             raise StoreError(f"write-once terminal record already exists: {name}")
                         self._same_fields(current, validated, immutable_fields)
                         for field in bind_once_fields:
-                            if current[field] is not None and current[field] != validated[field]:
+                            # An additive optional field is absent from records
+                            # written before it existed; absent binds like null.
+                            if (
+                                current.get(field) is not None
+                                and current.get(field) != validated.get(field)
+                            ):
                                 raise StoreError(f"immutable record field changed: {field}")
                         for field, states in (mutable_while_states or {}).items():
                             if (
@@ -1098,11 +1103,15 @@ class InitiativeStore:
             request_id = validate_approval(record)["request_id"]
         except ModelError as exc:
             raise StoreError(str(exc)) from exc
-        mutable = {"state", "rationale", "updated_at"}
+        # `decided_by` is absent until a decision lands, so it cannot be
+        # derived as immutable from the requested record; bind-once lets it go
+        # absent -> signer exactly once and never be rewritten (#83).
+        mutable = {"state", "rationale", "updated_at", "decided_by"}
         return self._save_subrecord(
             initiative_id, "approvals", f"{request_id}.json", record, validate_approval,
             immutable=False, expected_digest=expected_digest,
             transition_machine=APPROVAL_TRANSITIONS,
+            bind_once_fields=("decided_by",),
             immutable_fields=tuple(field for field in validate_approval(record) if field not in mutable),
             terminal_states=frozenset({
                 "rejected", "expired", "cancelled", "consumed",

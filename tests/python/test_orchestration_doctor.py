@@ -6,7 +6,121 @@ from pathlib import Path
 from unittest import mock
 
 from lib.control.orchestration.config import load_config
-from lib.control.orchestration.doctor import _contracts_probe, run_orchestration_doctor
+from lib.control.orchestration.doctor import (
+    Probe,
+    _approval_decider,
+    _approval_provenance_probe,
+    _contracts_probe,
+    _suspect_approvals,
+    run_orchestration_doctor,
+)
+
+
+def approval(request_id: str, state: str = "approved", **extra) -> dict:
+    return {"request_id": request_id, "state": state, "actor_kind": "operator", **extra}
+
+
+def decided_event(request_id: str, actor_kind: str, actor_id: str) -> dict:
+    return {
+        "type": "approval-decided", "subject_ids": [request_id],
+        "actor_kind": actor_kind, "actor_id": actor_id,
+    }
+
+
+class OrchestrationApprovalProvenanceTests(unittest.TestCase):
+    def test_decider_reads_the_record_first_and_the_journal_after(self) -> None:
+        signed = approval("a", decided_by={"actor_id": "cli", "actor_kind": "operator"})
+        self.assertEqual(
+            _approval_decider(signed, [decided_event("a", "controller", "ignored")]),
+            {"actor_id": "cli", "actor_kind": "operator"},
+        )
+        # Pre-split records carry no decider; the journal is their provenance.
+        self.assertEqual(
+            _approval_decider(approval("a"), [decided_event("a", "operator", "cli")]),
+            {"actor_id": "cli", "actor_kind": "operator"},
+        )
+        self.assertIsNone(_approval_decider(approval("a"), []))
+        self.assertIsNone(
+            _approval_decider(approval("a"), [decided_event("b", "operator", "cli")]),
+        )
+
+    def test_operator_kind_decisions_need_an_operator_surface_or_named_authority(self) -> None:
+        coordinator = "coordinator:74a1f315-642b-40e0-8eba-05dc1620e594"
+        quiet = [
+            (approval("a"), [decided_event("a", "operator", "cli")]),
+            (approval("a"), [decided_event("a", "operator", "tui")]),
+            (approval("a"), [decided_event("a", "operator", "standing-authority:74a1f315")]),
+            # The standing authority journals its decision as a controller act.
+            (approval("a"), [decided_event("a", "controller", "standing-authority")]),
+            (approval("a", state="requested"), [decided_event("a", "operator", coordinator)]),
+            (approval("a"), []),
+        ]
+        for record, events in quiet:
+            with self.subTest(events=events, state=record["state"]):
+                self.assertEqual(_suspect_approvals([record], events), [])
+
+        flagged = _suspect_approvals(
+            [approval("a")], [decided_event("a", "operator", coordinator)],
+        )
+        self.assertEqual(len(flagged), 1)
+        self.assertIn(coordinator, flagged[0])
+        self.assertIn("a", flagged[0])
+        # A coordinator never signs; no live producer records that kind.
+        self.assertEqual(
+            len(_suspect_approvals(
+                [approval("a")], [decided_event("a", "coordinator", coordinator)],
+            )),
+            1,
+        )
+        self.assertEqual(
+            len(_suspect_approvals(
+                [approval("a", decided_by={"actor_id": "cli", "actor_kind": "operator"})],
+                [decided_event("a", "operator", coordinator)],
+            )),
+            0,
+            "the record's own decider outranks the journal",
+        )
+
+    def test_probe_reports_per_initiative_and_stays_quiet_on_a_clean_plane(self) -> None:
+        coordinator = "coordinator:74a1f315-642b-40e0-8eba-05dc1620e594"
+        store = mock.Mock()
+        store.list_initiatives.return_value = [
+            {"initiative_id": "one"}, {"initiative_id": "two"},
+        ]
+        store.list_approvals_snapshot.side_effect = lambda name: {
+            "one": [approval("a")], "two": [approval("b", state="requested")],
+        }[name]
+        store.list_events_snapshot.side_effect = lambda name: {
+            "one": [decided_event("a", "operator", "cli")], "two": [],
+        }[name]
+        with mock.patch(
+            "lib.control.orchestration.store.InitiativeStore", return_value=store,
+        ):
+            probe = _approval_provenance_probe(mock.Mock())
+        self.assertEqual(probe.outcome, "match")
+        # An undecided approval needs no journal read.
+        self.assertEqual(store.list_events_snapshot.call_args_list, [mock.call("one")])
+
+        store.list_events_snapshot.side_effect = lambda name: {
+            "one": [decided_event("a", "operator", coordinator)], "two": [],
+        }[name]
+        with mock.patch(
+            "lib.control.orchestration.store.InitiativeStore", return_value=store,
+        ):
+            probe = _approval_provenance_probe(mock.Mock())
+        self.assertEqual(probe.outcome, "mismatch")
+        self.assertIn(coordinator, probe.detail)
+        self.assertLessEqual(len(probe.detail), 400)
+
+    def test_probe_is_unavailable_rather_than_raising_on_an_unreadable_store(self) -> None:
+        store = mock.Mock()
+        store.list_initiatives.side_effect = OSError("registry gone")
+        with mock.patch(
+            "lib.control.orchestration.store.InitiativeStore", return_value=store,
+        ):
+            probe = _approval_provenance_probe(mock.Mock())
+        self.assertEqual(probe.outcome, "unavailable")
+        self.assertIn("registry gone", probe.detail)
 
 
 class OrchestrationDoctorTests(unittest.TestCase):
@@ -35,6 +149,7 @@ class OrchestrationDoctorTests(unittest.TestCase):
             self.assertEqual([probe["name"] for probe in payload["probes"]], [
                 "orchestration-config", "initiatives-root", "control-contracts",
                 "create-by-id", "control-doctor", "coordinator-seam",
+                "approval-provenance",
             ])
 
     def test_coordinator_seam_probe_is_advisory_and_never_blocks_ok(self) -> None:
@@ -62,6 +177,60 @@ class OrchestrationDoctorTests(unittest.TestCase):
                 payload = run_orchestration_doctor(config)
             seam = next(probe for probe in payload["probes"] if probe["name"] == "coordinator-seam")
             self.assertEqual(seam["outcome"], "match")
+
+    def test_record_audit_is_opt_out_for_the_activation_handshake(self) -> None:
+        """Activation asks whether this installation can run work, not whether
+        history is clean, and must not walk every journal under the lock."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
+                   "ASHA_HOME": str(root / "asha"),
+                   "XDG_RUNTIME_DIR": str(root / "runtime")}
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
+                Path(env[key]).mkdir(mode=0o700)
+            config = load_config(env)
+            config.initiatives_dir.mkdir(parents=True, mode=0o700)
+            for path in (config.initiatives_dir.parent, config.initiatives_dir.parent.parent):
+                path.chmod(0o700)
+            with mock.patch(
+                "lib.control.orchestration.doctor.run_control_doctor",
+                return_value={"ok": True},
+            ), mock.patch(
+                "lib.control.orchestration.doctor._approval_provenance_probe",
+            ) as probe:
+                payload = run_orchestration_doctor(config, audit_records=False)
+            probe.assert_not_called()
+            self.assertNotIn(
+                "approval-provenance", [item["name"] for item in payload["probes"]],
+            )
+            self.assertTrue(payload["ok"])
+
+    def test_approval_provenance_probe_is_advisory_and_never_blocks_ok(self) -> None:
+        """One suspect historical approval must not brick activation plane-wide."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
+                   "ASHA_HOME": str(root / "asha"),
+                   "XDG_RUNTIME_DIR": str(root / "runtime")}
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
+                Path(env[key]).mkdir(mode=0o700)
+            config = load_config(env)
+            config.initiatives_dir.mkdir(parents=True, mode=0o700)
+            for path in (config.initiatives_dir.parent, config.initiatives_dir.parent.parent):
+                path.chmod(0o700)
+            suspect = Probe("approval-provenance", "mismatch", "one suspect approval")
+            with mock.patch(
+                "lib.control.orchestration.doctor.run_control_doctor",
+                return_value={"ok": True},
+            ), mock.patch(
+                "lib.control.orchestration.doctor.shutil.which", return_value="/usr/bin/tmux",
+            ), mock.patch(
+                "lib.control.orchestration.doctor._approval_provenance_probe",
+                return_value=suspect,
+            ):
+                payload = run_orchestration_doctor(config)
+            self.assertTrue(payload["ok"])
+            self.assertIn("one suspect approval", payload["limitations"])
 
     def test_private_existing_root_and_control_ok_make_doctor_ok(self) -> None:
         with tempfile.TemporaryDirectory() as td:

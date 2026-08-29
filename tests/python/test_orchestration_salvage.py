@@ -38,7 +38,9 @@ from lib.control.orchestration.seals import prepare_and_publish_seal
 from lib.control.orchestration.scheduler import _exact_base
 from lib.control.orchestration.scheduler import readiness
 from lib.control.orchestration.store import InitiativeStore, ObservationOnlyPlanError
+from lib.control.store import StoreError
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
+from tests.python.test_orchestration_actions import CoordinatorEnvelope
 from tests.python.test_orchestration_seals import SealJj, _entry
 from tests.python.test_orchestration_store import contract_record
 
@@ -47,7 +49,9 @@ class SimulatedDeath(BaseException):
     pass
 
 
-class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
+class OrchestrationRecoveryActionTests(
+    CoordinatorEnvelope, ExecutionFixture, unittest.TestCase
+):
     def seal(self, outcome: str, *, node_id: str = "implementation-a") -> dict:
         node = self.store.read_node(self.initiative_id, node_id)
         result_id = str(uuid.uuid4()) if outcome in {"success", "paused"} else None
@@ -161,6 +165,137 @@ class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
             if event["type"] == "node-state-changed"
             and event["payload"].get("salvage_request_id") == request_id
         ]
+
+    def approval_event(self, event_type: str, request_id: str) -> dict:
+        return next(
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == event_type and request_id in event["subject_ids"]
+        )
+
+    def coordinator_request(self, seal: dict, *, node_id: str = "implementation-a"):
+        document = self.coordinator_document("request-salvage", {
+            "node_id": node_id,
+            "failure_seal_id": seal["seal_id"],
+            "plan": "Recover the bounded useful work without inheriting its base.",
+        })
+        stored = submit_action(self.store, self.initiative_id, document)
+        self.assertEqual(stored["state"], "completed", stored["outcome"])
+        return document, action_outcome(stored)["request_id"]
+
+    def test_coordinator_salvage_request_records_the_coordinator_as_requester(self) -> None:
+        failure = self.seal("failure")
+        document, request_id = self.coordinator_request(failure)
+        requested = self.store.read_approval(self.initiative_id, request_id)
+        self.assertEqual(
+            model.approval_requester(requested),
+            {"actor_id": document["actor_id"], "actor_kind": "coordinator"},
+        )
+        self.assertIsNone(model.approval_decider(requested))
+        # The mirrored event-side conflation: the request is the coordinator's
+        # own act and must not be journalled as an operator-kind write.
+        requested_event = self.approval_event("approval-requested", request_id)
+        self.assertEqual(requested_event["actor_kind"], "coordinator")
+        self.assertEqual(requested_event["actor_id"], document["actor_id"])
+
+        approved = approve_salvage(self.store, self.initiative_id, request_id)
+        self.assertEqual(approved["state"], "approved")
+        self.assertEqual(
+            model.approval_requester(approved), model.approval_requester(requested),
+            "the decision must not rewrite who asked",
+        )
+        decided_event = self.approval_event("approval-decided", request_id)
+        self.assertEqual(
+            (decided_event["actor_kind"], decided_event["actor_id"]), ("operator", "cli"),
+        )
+
+    def test_operator_salvage_request_records_the_operator_as_requester(self) -> None:
+        failure = self.seal("failure")
+        _, request_id = self.request(failure)
+        requested = self.store.read_approval(self.initiative_id, request_id)
+        self.assertEqual(
+            model.approval_requester(requested),
+            {"actor_id": "cli", "actor_kind": "operator"},
+        )
+        self.assertEqual(
+            self.approval_event("approval-requested", request_id)["actor_kind"], "operator",
+        )
+
+    def test_approve_salvage_refuses_a_signer_that_is_not_an_operator_surface(self) -> None:
+        failure = self.seal("failure")
+        document, request_id = self.coordinator_request(failure)
+        # Standing authorities never cover salvage, so only the operator's own
+        # surface signs one; the requesting pane least of all.
+        for signer in (document["actor_id"], "standing-authority:74a1f315", "scheduler"):
+            with self.subTest(signer=signer):
+                with self.assertRaisesRegex(ActionRefused, "operator surface"):
+                    approve_salvage(
+                        self.store, self.initiative_id, request_id, actor_id=signer,
+                    )
+        self.assertEqual(
+            self.store.read_approval(self.initiative_id, request_id)["state"], "requested",
+        )
+        self.assertEqual(
+            [event for event in self.store.list_events_snapshot(self.initiative_id)
+             if event["type"] == "approval-decided"],
+            [],
+        )
+        approve_salvage(
+            self.store, self.initiative_id, request_id, actor_id="tui",
+        )
+        self.assertEqual(
+            self.approval_event("approval-decided", request_id)["actor_id"], "tui",
+        )
+
+    def test_pre_split_approval_record_still_reads_and_still_approves(self) -> None:
+        """Records written before the provenance split stay readable and signable."""
+        failure = self.seal("failure")
+        _, request_id = self.request(failure)
+        stored = self.store.read_approval(self.initiative_id, request_id)
+        historical = copy.deepcopy(stored)
+        historical.pop("requested_by")
+        self.store.save_approval(
+            self.initiative_id, historical, expected_digest=record_digest(stored),
+        )
+        reread = self.store.read_approval(self.initiative_id, request_id)
+        self.assertNotIn("requested_by", reread)
+        self.assertIsNone(model.approval_requester(reread))
+        approved = approve_salvage(self.store, self.initiative_id, request_id)
+        self.assertEqual(approved["state"], "approved")
+        self.assertNotIn("requested_by", approved)
+        self.assertEqual(
+            self.approval_event("approval-decided", request_id)["actor_id"], "cli",
+        )
+
+    def test_decision_records_the_signer_and_binds_it_once(self) -> None:
+        failure = self.seal("failure")
+        _, request_id = self.request(failure)
+        requested = self.store.read_approval(self.initiative_id, request_id)
+        self.assertNotIn("decided_by", requested)
+
+        approve_salvage(self.store, self.initiative_id, request_id)
+
+        decided = self.store.read_approval(self.initiative_id, request_id)
+        self.assertEqual(
+            decided["decided_by"], {"actor_id": "cli", "actor_kind": "operator"},
+        )
+        self.assertEqual(
+            model.approval_decider(decided),
+            {"actor_id": "cli", "actor_kind": "operator"},
+        )
+        # The requester stays the coordinator that asked; only the decider is
+        # the operator surface that signed.
+        self.assertEqual(
+            model.approval_requester(decided)["actor_id"],
+            requested["actor_id"],
+        )
+
+        rewritten = copy.deepcopy(decided)
+        rewritten["decided_by"] = {"actor_id": "tui", "actor_kind": "operator"}
+        with self.assertRaisesRegex(StoreError, "decided_by"):
+            self.store.save_approval(
+                self.initiative_id, rewritten,
+                expected_digest=record_digest(decided),
+            )
 
     def test_approved_salvage_releases_needs_input_and_consumes_once(self) -> None:
         _, request_id, _ = self.approved_salvage()

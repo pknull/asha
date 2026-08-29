@@ -32,6 +32,7 @@ from .model import (
     ModelError,
     NODE_TERMINAL_STATES,
     NULL_ACTIVE_PLAN_ACTION_CLASSES,
+    OPERATOR_SURFACE_ACTOR_IDS,
     canonical_uuid,
     new_uuid,
     record_digest,
@@ -458,7 +459,7 @@ def _activate(
         validate_goal_capacity(store.config, initiative, plan["nodes"])
     except SchedulerError as exc:
         raise ActionRefused(str(exc)) from exc
-    doctor = run_orchestration_doctor(store.config)
+    doctor = run_orchestration_doctor(store.config, audit_records=False)
     if doctor.get("ok") is not True:
         failed = [
             probe["name"] for probe in doctor.get("probes", [])
@@ -1173,7 +1174,7 @@ def _request_salvage(
                 store, initiative_id, "approval-requested",
                 [approval["request_id"], seal["seal_id"], node["node_id"]],
                 {"action_class": "salvage", "binding_digest": approval["binding_digest"]},
-                actor_kind="operator", actor_id=action["actor_id"],
+                actor_kind=action["actor_kind"], actor_id=action["actor_id"],
             )
         return {
             "status": "salvage-requested",
@@ -1189,8 +1190,14 @@ def _request_salvage(
         "binding_digest": binding_digest,
         "active_plan_digest": action["active_plan_digest"],
         "expected_state_revision": action["expected_state_revision"],
+        # The legacy pair keeps its frozen meaning: an operator must decide
+        # this, and the recorded actor is the one that asked.  `requested_by`
+        # says so without the kind reading as the requester's own.
         "actor_kind": "operator",
         "actor_id": action["actor_id"],
+        "requested_by": {
+            "actor_id": action["actor_id"], "actor_kind": action["actor_kind"],
+        },
         "state": "requested",
         "expires_at": (
             datetime.now(timezone.utc) + timedelta(days=1)
@@ -1204,7 +1211,7 @@ def _request_salvage(
         store, initiative_id, "approval-requested",
         [approval["request_id"], seal["seal_id"], node["node_id"]],
         {"action_class": "salvage", "binding_digest": approval["binding_digest"]},
-        actor_kind="operator", actor_id=action["actor_id"],
+        actor_kind=action["actor_kind"], actor_id=action["actor_id"],
     )
     return {
         "status": "salvage-requested",
@@ -1220,6 +1227,13 @@ def approve_salvage(
     *,
     actor_id: str = "cli",
 ) -> dict[str, Any]:
+    # The decision is journalled as an operator-kind write, so the signer must
+    # be an operator surface: the pane that requests salvage must never be able
+    # to sign it, and standing authorities never cover salvage.
+    if actor_id not in OPERATOR_SURFACE_ACTOR_IDS:
+        raise ActionRefused(
+            "salvage approval must be signed from an operator surface"
+        )
     with store.transaction_lock(initiative_id):
         approval = store.read_approval(initiative_id, request_id)
         if approval["action_class"] != "salvage":
@@ -1243,7 +1257,13 @@ def approve_salvage(
         ):
             raise ActionRefused("salvage approval request expired")
         changed = copy.deepcopy(approval)
-        changed.update({"state": "approved", "updated_at": _now()})
+        changed.update({
+            "state": "approved",
+            # The record says who signed, not only who asked (#83). The signer
+            # is fenced to an operator surface above, so the kind is exact.
+            "decided_by": {"actor_id": actor_id, "actor_kind": "operator"},
+            "updated_at": _now(),
+        })
         store.save_approval(
             initiative_id, changed, expected_digest=record_digest(approval),
         )

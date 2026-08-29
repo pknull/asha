@@ -8,7 +8,7 @@ import shutil
 import stat
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from .. import cli as control_cli
 from .. import doctor as control_doctor_module
@@ -23,6 +23,7 @@ from ..config import (
 )
 from ..doctor import run_doctor as run_control_doctor
 from .config import OrchestrationConfig
+from .model import approval_decider, is_operator_decider_actor
 
 
 DOCTOR_CONTRACT = "asha.orchestration-doctor.v1"
@@ -87,8 +88,107 @@ def _root_probe(path: Path) -> Probe:
 
 
 # Advisory probes inform `limitations` but never block `ok`: `activate-initiative`
-# refuses on a false `ok`, and coordinator support must not gate operator-only use.
-_ADVISORY_PROBES = frozenset({"coordinator-seam"})
+# refuses on a false `ok`, coordinator support must not gate operator-only use,
+# and one suspect historical approval must not brick activation plane-wide.
+_ADVISORY_PROBES = frozenset({"coordinator-seam", "approval-provenance"})
+
+# Bound the mismatch detail the way `_root_probe` bounds its own.
+_MAX_SUSPECT_APPROVALS = 5
+
+
+def _approval_decider(
+    approval: Mapping[str, Any], events: list[Mapping[str, Any]]
+) -> dict[str, Any] | None:
+    """Who signed one approval: the record first, then its journal.
+
+    Records written before the requester/decider split carry no `decided_by`,
+    so for those the `approval-decided` event is the only decider provenance.
+    An approval with neither is unresolved, not suspect.
+    """
+    decider = approval_decider(approval)
+    if decider is not None:
+        return decider
+    for event in reversed(events):
+        if (
+            event["type"] == "approval-decided"
+            and approval["request_id"] in event["subject_ids"]
+        ):
+            return {"actor_id": event["actor_id"], "actor_kind": event["actor_kind"]}
+    return None
+
+
+def _suspect_approvals(
+    approvals: list[Mapping[str, Any]], events: list[Mapping[str, Any]]
+) -> list[str]:
+    """Decided approvals whose decider cannot stand behind an operator decision.
+
+    An operator-kind decision demands an operator surface or a named standing
+    authority, and no live producer ever records a coordinator-kind decision.
+    A `controller` decider is legitimate: that is how a standing authority
+    journals its own pre-signed approval.
+    """
+    suspect = []
+    for approval in approvals:
+        if approval["state"] == "requested":
+            continue
+        decider = _approval_decider(approval, events)
+        if decider is None:
+            continue
+        if decider["actor_kind"] == "coordinator" or (
+            decider["actor_kind"] == "operator"
+            and not is_operator_decider_actor(decider["actor_id"])
+        ):
+            suspect.append(
+                f"{approval['request_id']} decided by {decider['actor_kind']} "
+                f"{decider['actor_id']}"
+            )
+    return suspect
+
+
+def _approval_provenance_probe(config: OrchestrationConfig) -> Probe:
+    """Audit recorded approval deciders across every retained initiative.
+
+    Advisory by design: the enforcing fences are `validate_approval` and
+    `approve_salvage`, and this probe only reports what is already on disk.
+    """
+    from .store import InitiativeStore
+
+    suspect: list[str] = []
+    decided = 0
+    try:
+        store = InitiativeStore(config)
+        for initiative in store.list_initiatives():
+            initiative_id = initiative["initiative_id"]
+            approvals = [
+                approval for approval in store.list_approvals_snapshot(initiative_id)
+                if approval["state"] != "requested"
+            ]
+            if not approvals:
+                continue
+            decided += len(approvals)
+            events = (
+                store.list_events_snapshot(initiative_id)
+                if any(approval_decider(approval) is None for approval in approvals)
+                else []
+            )
+            suspect.extend(_suspect_approvals(approvals, events))
+    except (OSError, ValueError) as exc:
+        return Probe(
+            "approval-provenance", "unavailable",
+            f"retained approvals could not be read: {exc}"[:400],
+        )
+    if suspect:
+        return Probe(
+            "approval-provenance", "mismatch",
+            (
+                "approval decisions lack an operator surface or a named standing "
+                f"authority: {', '.join(suspect[:_MAX_SUSPECT_APPROVALS])}"
+            )[:400],
+        )
+    return Probe(
+        "approval-provenance", "match",
+        f"{decided} decided approval(s) name an operator surface or a named authority",
+    )
 
 
 def _coordinator_seam_probe() -> Probe:
@@ -117,7 +217,16 @@ def _coordinator_seam_probe() -> Probe:
     return Probe("coordinator-seam", "match", "coordinator claim, wait, and show have live producers and tmux is present")
 
 
-def run_orchestration_doctor(config: OrchestrationConfig) -> dict[str, Any]:
+def run_orchestration_doctor(
+    config: OrchestrationConfig, *, audit_records: bool = True
+) -> dict[str, Any]:
+    """Probe this installation; `audit_records` also walks retained approvals.
+
+    The record audit reads every initiative's approvals and, where a record
+    predates the requester/decider split, its journal.  That cost belongs to
+    the operator's diagnostic, not to the runtime capability handshake, which
+    asks whether this installation can run work at all.
+    """
     probes = [
         Probe("orchestration-config", "match", "orchestration configuration parsed and passed static safety validation"),
         _root_probe(config.initiatives_dir),
@@ -140,6 +249,8 @@ def run_orchestration_doctor(config: OrchestrationConfig) -> dict[str, Any]:
     except (OSError, ValueError) as exc:
         probes.append(Probe("control-doctor", "unavailable", f"Control doctor failed: {exc}"))
     probes.append(_coordinator_seam_probe())
+    if audit_records:
+        probes.append(_approval_provenance_probe(config))
     limitations = [probe.detail for probe in probes if probe.outcome != "match"]
     return {
         "contract": DOCTOR_CONTRACT,
