@@ -1261,6 +1261,36 @@ def _ingest_result(
         return _receipt(completed)
 
 
+def _record_ingestion_deferral(
+    store: InitiativeStore,
+    initiative_id: str,
+    record: Mapping[str, Any],
+    reason: str,
+) -> None:
+    """Best-effort durable trace of a retryable ingestion abort, deduplicated."""
+    from .actions import append_event
+
+    subject_ids = [record["node_id"], record["attempt_id"], record["ingestion_id"]]
+    # The record's own state moves between retries; only the reason carries
+    # diagnostic weight, and only a changed reason deserves a new event.
+    payload = {"reason": reason[:500]}
+    try:
+        previous = next((
+            event for event in reversed(store.list_events_snapshot(initiative_id))
+            if event["type"] == "result-ingestion-deferred"
+            and event["subject_ids"] == subject_ids
+        ), None)
+        if previous is not None and previous["payload"] == payload:
+            return
+        append_event(
+            store, initiative_id, "result-ingestion-deferred", subject_ids,
+            payload, actor_kind="controller", actor_id="live-reconciler",
+        )
+    except (StoreError, OSError, ValueError):
+        # Visibility must never break the retry itself.
+        pass
+
+
 def ingest_pending_results(
     store: InitiativeStore,
     initiative_id: str,
@@ -1301,6 +1331,11 @@ def ingest_pending_results(
                 jj=(adapters.jj_adapter if isinstance(adapters, LiveAdapters) else None),
                 terminal_reconciliation=observed,
             ))
+        except IngestionUnavailable as exc:
+            # Retryable, but never silent: the deferral reason is the only
+            # trace of why an ingest pass aborted (#77).
+            _record_ingestion_deferral(store, initiative_id, record, str(exc))
+            continue
         except (ResultError, StoreError, JjError, OSError, ValueError):
             # The authoritative ingestion journal retains precise refusals.
             # Unavailable live evidence is retried by the next supervisor pass.

@@ -199,6 +199,20 @@ def _active_plan(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str
     return plan
 
 
+def _staged_result_candidate(
+    store: InitiativeStore, initiative_id: str, attempt_id: str,
+) -> bool:
+    """A live outbox candidate whose ingestion record is still non-terminal."""
+    return any(
+        record["attempt_id"] == attempt_id
+        and record["state"] not in _RESULT_INGESTION_TERMINAL_STATES
+        and Path(record["workspace_path"]).joinpath(
+            *record["outbox_path"].split("/")
+        ).is_file()
+        for record in store.list_result_ingestions_snapshot(initiative_id)
+    )
+
+
 def _first_exit_observation(
     store: InitiativeStore, initiative_id: str, attempt_id: str
 ) -> datetime | None:
@@ -304,13 +318,8 @@ def _mark_conflict(
     # terminal, when ingestion or the ordinary missing-result path owns it.
     staged_candidate = False
     if observed is not None and not terminal_process:
-        staged_candidate = any(
-            record["attempt_id"] == attempt["attempt_id"]
-            and record["state"] not in _RESULT_INGESTION_TERMINAL_STATES
-            and Path(record["workspace_path"]).joinpath(
-                *record["outbox_path"].split("/")
-            ).is_file()
-            for record in store.list_result_ingestions_snapshot(initiative_id)
+        staged_candidate = _staged_result_candidate(
+            store, initiative_id, attempt["attempt_id"],
         )
     if not staged_candidate:
         if attempt["state"] == "indeterminate":
@@ -905,6 +914,13 @@ def reconcile_live(
                     continue
             elif state == "exited" and attempt["result_id"] is None:
                 if previous_exit is None:
+                    continue
+                if _staged_result_candidate(
+                    store, initiative_id, attempt["attempt_id"],
+                ):
+                    # Ingestion owns a staged candidate however long its
+                    # attestation reruns or environment retries take; grace
+                    # may only expire an attempt with nothing staged (#77).
                     continue
                 if (current_time - previous_exit).total_seconds() < store.config.result_grace_seconds:
                     continue
