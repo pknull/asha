@@ -431,6 +431,50 @@ class SupervisorTickTests(ExecutionFixture, unittest.TestCase):
             [item["type"] for item in self.store.list_events_snapshot(self.initiative_id)],
         )
 
+    def test_live_worker_with_staged_publication_reads_as_reported(self) -> None:
+        adapters = TeardownRaceAdapters(self.jj, state="working")
+        at = datetime.now(timezone.utc) + timedelta(seconds=1)
+        tick(self.deps(at, adapters))
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
+            "running",
+        )
+
+        stage_result(self.config, self.body(), self.managed)
+        tick(self.deps(at + timedelta(seconds=1), adapters))
+
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
+            "reported",
+        )
+
+    def test_reported_attempt_whose_candidate_vanished_still_expires(self) -> None:
+        self.store.config = replace(self.store.config, result_grace_seconds=1)
+        adapters = TeardownRaceAdapters(self.jj, state="working")
+        at = datetime.now(timezone.utc) + timedelta(seconds=1)
+        tick(self.deps(at, adapters))
+        stage_result(self.config, self.body(), self.managed)
+        tick(self.deps(at + timedelta(seconds=1), adapters))
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
+            "reported",
+        )
+
+        # The worker exits and its candidate is gone: the grace path must be
+        # able to expire a `reported` attempt rather than raise on an illegal
+        # transition.
+        self.workspace.joinpath(
+            *self.ingestion["outbox_path"].split("/")
+        ).unlink()
+        tick(self.deps(at + timedelta(seconds=2)))
+        report = tick(self.deps(at + timedelta(seconds=5)))
+
+        self.assertEqual(report["counts"]["errors"], 0)
+        self.assertEqual(
+            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
+            ["failure"],
+        )
+
     def test_tick_restart_is_idempotent(self) -> None:
         stage_result(self.config, self.body(), self.managed)
         deps = self.deps(datetime.now(timezone.utc) + timedelta(seconds=1))
