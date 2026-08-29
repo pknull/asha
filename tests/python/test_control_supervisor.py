@@ -21,7 +21,7 @@ from unittest import mock
 
 from lib.control.cli import main as control_main
 from lib.control.harness import process_identity
-from lib.control.jj import ImmutableTree, WorkspaceIdentity
+from lib.control.jj import ImmutableTree, JjAdapter, WorkspaceIdentity
 from lib.control.reconcile import Evidence, LiveAdapters
 from lib.control.store import TaskStore
 from lib.control.orchestration.actions import build_action_document, submit_action
@@ -566,7 +566,7 @@ class SupervisorServiceTests(unittest.TestCase):
         stdout = b"Linger=yes\n" if Path(argv[0]).name == "loginctl" else b""
         return subprocess.CompletedProcess(argv, 0, stdout, b"")
 
-    def expected_unit(self, asha_home_line: str = "") -> str:
+    def expected_unit(self, asha_home_line: str = "", jj_line: str = "") -> str:
         return (
             "[Unit]\n"
             f"{SUPERVISOR_SERVICE_MARKER}\n"
@@ -575,6 +575,7 @@ class SupervisorServiceTests(unittest.TestCase):
             "[Service]\n"
             "Type=simple\n"
             'Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
+            f"{jj_line}"
             f"{asha_home_line}"
             "ExecStart=/opt/asha/bin/asha control supervisor run\n"
             "Restart=on-failure\n"
@@ -587,17 +588,59 @@ class SupervisorServiceTests(unittest.TestCase):
 
     def test_unit_body_renders_exactly_for_default_and_nondefault_asha_home(self) -> None:
         self.assertEqual(
-            render_supervisor_service(self.env, self.asha_root),
+            render_supervisor_service(self.env, self.asha_root, which=self.which),
             self.expected_unit(),
         )
 
         custom = dict(self.env, ASHA_HOME=str(self.root / "custom-asha"))
         self.assertEqual(
-            render_supervisor_service(custom, self.asha_root),
+            render_supervisor_service(custom, self.asha_root, which=self.which),
             self.expected_unit(
                 f'Environment="ASHA_HOME={self.root / "custom-asha"}"\n',
             ),
         )
+
+    def test_unit_pins_install_time_jj_path_for_the_sanitized_daemon_path(self) -> None:
+        def which(command: str) -> str | None:
+            if command == "jj":
+                return str(self.home / "bin" / "jj")
+            return self.which(command)
+
+        self.assertEqual(
+            render_supervisor_service(self.env, self.asha_root, which=which),
+            self.expected_unit(
+                jj_line=f'Environment="ASHA_JJ={self.home / "bin" / "jj"}"\n',
+            ),
+        )
+
+    def test_unit_pin_normalizes_dotdot_path_entries_to_the_real_binary(self) -> None:
+        def which(command: str) -> str | None:
+            if command == "jj":
+                return str(self.home / ".local" / "share" / ".." / "bin" / "jj")
+            return self.which(command)
+
+        self.assertEqual(
+            render_supervisor_service(self.env, self.asha_root, which=which),
+            self.expected_unit(
+                jj_line=(
+                    f'Environment="ASHA_JJ={self.home / ".local" / "bin" / "jj"}"\n'
+                ),
+            ),
+        )
+
+    def test_unit_omits_jj_pin_for_unresolvable_or_unit_unsafe_paths(self) -> None:
+        for resolved in (None, "/home/user name/jj", '/home/a"b/jj',
+                         "/home/%h/jj"):
+            with self.subTest(resolved=resolved):
+                self.assertEqual(
+                    render_supervisor_service(
+                        self.env, self.asha_root,
+                        which=lambda command, value=resolved: (
+                            value if command == "jj" else self.which(command)
+                        ),
+                    ),
+                    self.expected_unit(),
+                )
 
     def test_install_refuses_foreign_unit_and_replaces_owned_unit(self) -> None:
         path = supervisor_service_path(self.env)
@@ -811,6 +854,20 @@ class SupervisorServiceTests(unittest.TestCase):
             "service present=unknown, enabled=unknown, active=unknown",
             output.getvalue(),
         )
+
+
+class JjExecutablePinTests(unittest.TestCase):
+    def test_adapter_prefers_explicit_executable_then_asha_jj_then_bare_name(self) -> None:
+        with mock.patch.dict(os.environ, {"ASHA_JJ": "/pinned/bin/jj"}):
+            self.assertEqual(JjAdapter().executable, "/pinned/bin/jj")
+            self.assertEqual(
+                JjAdapter(executable="/explicit/jj").executable, "/explicit/jj",
+            )
+        environment = {
+            key: value for key, value in os.environ.items() if key != "ASHA_JJ"
+        }
+        with mock.patch.dict(os.environ, environment, clear=True):
+            self.assertEqual(JjAdapter().executable, "jj")
 
 
 class SupervisorBoundaryTests(unittest.TestCase):

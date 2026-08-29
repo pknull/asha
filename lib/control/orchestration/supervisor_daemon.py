@@ -19,6 +19,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterator, Mapping, Sequence
 
+from ..config import is_canonical_absolute_path
 from ..harness import HarnessError, process_identity, verify_process
 from ..process import capture_bytes
 from ..store import (
@@ -80,8 +81,20 @@ def supervisor_service_path(env: Mapping[str, str]) -> Path:
     return config_home / "systemd" / "user" / _SERVICE_NAME
 
 
+def _unit_safe_path(value: str) -> bool:
+    """Accept only values that survive a quoted systemd Environment= verbatim."""
+    return (
+        is_canonical_absolute_path(value)
+        and all(
+            char not in '"\\%' and not char.isspace() and char.isprintable()
+            for char in value
+        )
+    )
+
+
 def render_supervisor_service(
-    env: Mapping[str, str], asha_root: Path,
+    env: Mapping[str, str], asha_root: Path, *,
+    which: Callable[[str], str | None] | None = None,
 ) -> str:
     home = Path(env.get("HOME") or str(Path.home()))
     asha_home = env.get("ASHA_HOME")
@@ -90,6 +103,16 @@ def render_supervisor_service(
         # A non-default root must reach the service, which runs outside any
         # shell that exported it.
         asha_home_line = f'Environment="ASHA_HOME={asha_home}"\n'
+    # The service PATH is deliberately sanitized, so jj must be resolved here,
+    # in the installing operator's environment, and pinned by absolute path;
+    # resolution at daemon start would only see the sanitized PATH (#75).
+    jj_line = ""
+    resolved_jj = _resolve_command("jj", env, which)
+    if resolved_jj is not None:
+        # PATH entries may carry '..' or symlinks; pin the real binary.
+        resolved_jj = os.path.realpath(resolved_jj)
+        if _unit_safe_path(resolved_jj):
+            jj_line = f'Environment="ASHA_JJ={resolved_jj}"\n'
     return (
         "[Unit]\n"
         f"{SUPERVISOR_SERVICE_MARKER}\n"
@@ -98,6 +121,7 @@ def render_supervisor_service(
         "[Service]\n"
         "Type=simple\n"
         'Environment="PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin"\n'
+        f"{jj_line}"
         f"{asha_home_line}"
         f"ExecStart={asha_root}/bin/asha control supervisor run\n"
         "Restart=on-failure\n"
@@ -263,7 +287,7 @@ def install_supervisor_service(
 ) -> tuple[dict[str, Any], int]:
     root = asha_root or Path(__file__).resolve().parents[3]
     path = supervisor_service_path(env)
-    body = render_supervisor_service(env, root)
+    body = render_supervisor_service(env, root, which=which)
     if _unit_exists(path) and not _owned_service(path):
         raise ValueError(f"foreign unit exists at {path}; refusing")
     commands = [
