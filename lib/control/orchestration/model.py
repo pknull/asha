@@ -1679,9 +1679,73 @@ _APPROVAL_KEYS = frozenset({
     "state", "expires_at", "rationale", "created_at", "updated_at",
 })
 
+# Requester and decider are two different actors and the frozen v1 record had
+# one field for both.  `actor_id`/`actor_kind` are written when the record is
+# created, so a salvage a coordinator asked for and the operator later signed
+# read as "a coordinator performed an operator-kind write" -- alarming and
+# false.  These two objects say who asked and who signed.  They are additive
+# and optional: records written before the split omit them, still validate, and
+# mean "the legacy pair is the record's creation-time actor and the decision
+# provenance is the journal's `approval-decided` event".  The legacy
+# `actor_kind` keeps its frozen meaning -- the kind the decision demands, which
+# is always `operator` -- and is not the requester's own kind.
+#
+# `decided_by` is written when the decision lands.  `save_approval` admits it
+# as bind-once, so it goes absent -> signer exactly once and can never be
+# rewritten.  Records written before the split carry no `decided_by`, so
+# readers still fall back to the journal's `approval-decided` event -- which
+# is exactly what the doctor audit does.
+_APPROVAL_PROVENANCE_KEYS = frozenset({"requested_by", "decided_by"})
+_APPROVAL_ACTOR_KEYS = frozenset({"actor_id", "actor_kind"})
+_APPROVAL_ACTOR_KINDS = frozenset({"operator", "coordinator", "controller"})
+
+# An operator-kind decision is signed from the operator's own surface or by a
+# named standing-authority proxy, whose actor is the authority's own short id
+# (`cli.py` renders `authority_id[:8]`).  A coordinator actor never qualifies.
+OPERATOR_SURFACE_ACTOR_IDS = frozenset({"cli", "tui"})
+STANDING_AUTHORITY_ACTOR = re.compile(r"standing-authority:[0-9a-f]{8}", re.ASCII)
+
+
+def is_operator_decider_actor(actor_id: Any) -> bool:
+    """Whether `actor_id` may stand behind an operator-kind approval decision."""
+    if not isinstance(actor_id, str):
+        return False
+    return (
+        actor_id in OPERATOR_SURFACE_ACTOR_IDS
+        or STANDING_AUTHORITY_ACTOR.fullmatch(actor_id) is not None
+    )
+
+
+def _approval_actor(value: Any, name: str) -> dict[str, Any]:
+    actor = _object(value, name, _APPROVAL_ACTOR_KEYS)
+    if actor["actor_kind"] not in _APPROVAL_ACTOR_KINDS:
+        raise ModelError(f"{name} actor_kind is invalid")
+    _text(actor["actor_id"], f"{name} actor_id", maximum=MAX_ACTOR_ID_BYTES)
+    return actor
+
+
+def approval_requester(record: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The actor that asked for this approval, or None on a pre-split record."""
+    requester = record.get("requested_by")
+    return copy.deepcopy(requester) if isinstance(requester, dict) else None
+
+
+def approval_decider(record: Mapping[str, Any]) -> dict[str, Any] | None:
+    """The actor that signed this approval, or None when the record is silent.
+
+    Silence means either an undecided approval or a record written before the
+    provenance split; for the latter the journal's `approval-decided` event is
+    the only decider provenance and readers must fall back to it.
+    """
+    decider = record.get("decided_by")
+    return copy.deepcopy(decider) if isinstance(decider, dict) else None
+
 
 def validate_approval(value: Any) -> dict[str, Any]:
-    record = _object(value, "approval", _APPROVAL_KEYS)
+    if not isinstance(value, dict):
+        raise ModelError("approval must be an object")
+    provenance = _APPROVAL_PROVENANCE_KEYS & value.keys()
+    record = _object(value, "approval", _APPROVAL_KEYS | provenance)
     if record["contract"] != APPROVAL_CONTRACT:
         raise ModelError(f"approval contract must be {APPROVAL_CONTRACT}")
     canonical_uuid(record["request_id"], "approval request_id")
@@ -1695,6 +1759,22 @@ def validate_approval(value: Any) -> dict[str, Any]:
     _text(record["actor_id"], "approval actor_id", maximum=MAX_ACTOR_ID_BYTES)
     if record["state"] not in APPROVAL_TRANSITIONS:
         raise ModelError("approval state is invalid")
+    if "requested_by" in record:
+        requester = _approval_actor(record["requested_by"], "approval requested_by")
+        if requester["actor_id"] != record["actor_id"]:
+            raise ModelError("approval requested_by must name the recorded request actor")
+    if "decided_by" in record:
+        decider = _approval_actor(record["decided_by"], "approval decided_by")
+        if record["state"] == "requested":
+            raise ModelError("approval decided_by requires a decided approval")
+        if (
+            decider["actor_kind"] == "operator"
+            and not is_operator_decider_actor(decider["actor_id"])
+        ):
+            raise ModelError(
+                "approval decided_by of operator kind must be an operator surface "
+                "or a named standing authority"
+            )
     expires = _timestamp(record["expires_at"], "approval expires_at")
     _optional_text(record["rationale"], "approval rationale", maximum=MAX_SUMMARY_BYTES)
     created = _timestamp(record["created_at"], "approval created_at")
@@ -2095,6 +2175,7 @@ __all__ = [name for name in globals() if name.isupper()] + [
     "validate_attempt", "validate_result_publication", "validate_result_ingestion",
     "validate_result_candidate", "validate_result",
     "validate_seal", "validate_review", "validate_verification", "validate_approval",
+    "approval_requester", "approval_decider", "is_operator_decider_actor",
     "validate_action", "validate_event", "validate_link", "validate_evidence",
     "validate_bundle", "validate_coordinator", "validate_coordinator_checkpoint",
     "checkpoint_digest", "validate_record", "record_digest",

@@ -1013,6 +1013,87 @@ class OrchestrationModelTests(unittest.TestCase):
         with self.assertRaises(model.ModelError):
             model.validate_approval(approval)
 
+    def approval_record(self) -> dict:
+        return next(
+            record for validator, record in self.contract_records()
+            if validator is model.validate_approval
+        )
+
+    def test_approval_provenance_splits_requester_from_decider(self) -> None:
+        legacy = self.approval_record()
+        # The pre-split shape still reads; absent provenance is history, not a defect.
+        self.assertIsNone(model.approval_requester(model.validate_approval(legacy)))
+        self.assertIsNone(model.approval_decider(model.validate_approval(legacy)))
+
+        coordinator_id = "coordinator:74a1f315-642b-40e0-8eba-05dc1620e594"
+        requested = copy.deepcopy(legacy)
+        requested["actor_id"] = coordinator_id
+        requested["requested_by"] = {
+            "actor_id": coordinator_id, "actor_kind": "coordinator",
+        }
+        self.assertEqual(
+            model.approval_requester(model.validate_approval(requested)),
+            {"actor_id": coordinator_id, "actor_kind": "coordinator"},
+        )
+        self.assertIsNone(model.approval_decider(model.validate_approval(requested)))
+
+        decided = copy.deepcopy(requested)
+        decided["state"] = "approved"
+        decided["decided_by"] = {"actor_id": "cli", "actor_kind": "operator"}
+        self.assertEqual(
+            model.approval_decider(model.validate_approval(decided)),
+            {"actor_id": "cli", "actor_kind": "operator"},
+        )
+        authority = copy.deepcopy(decided)
+        authority["decided_by"] = {
+            "actor_id": "standing-authority:74a1f315", "actor_kind": "operator",
+        }
+        model.validate_approval(authority)
+
+    def test_approval_decider_refuses_an_operator_kind_without_an_operator_actor(self) -> None:
+        coordinator_id = "coordinator:74a1f315-642b-40e0-8eba-05dc1620e594"
+        decided = self.approval_record()
+        decided["actor_id"] = coordinator_id
+        decided["requested_by"] = {
+            "actor_id": coordinator_id, "actor_kind": "coordinator",
+        }
+        decided["state"] = "approved"
+        decided["decided_by"] = {"actor_id": "cli", "actor_kind": "operator"}
+        model.validate_approval(decided)
+
+        forged = copy.deepcopy(decided)
+        forged["decided_by"] = {"actor_id": coordinator_id, "actor_kind": "operator"}
+        with self.assertRaisesRegex(model.ModelError, "operator surface"):
+            model.validate_approval(forged)
+        for shape in (
+            "standing-authority:", "standing-authority:zzzzzzzz",
+            "standing-authority:74a1f31", "standing-authority:74a1f315x", "operator",
+        ):
+            malformed = copy.deepcopy(decided)
+            malformed["decided_by"] = {"actor_id": shape, "actor_kind": "operator"}
+            with self.subTest(actor_id=shape):
+                with self.assertRaisesRegex(model.ModelError, "operator surface"):
+                    model.validate_approval(malformed)
+
+        undecided = copy.deepcopy(decided)
+        undecided["state"] = "requested"
+        with self.assertRaisesRegex(model.ModelError, "decided approval"):
+            model.validate_approval(undecided)
+        divergent = copy.deepcopy(decided)
+        divergent["requested_by"] = {"actor_id": "cli", "actor_kind": "operator"}
+        with self.assertRaisesRegex(model.ModelError, "request actor"):
+            model.validate_approval(divergent)
+        for malformed in (
+            None,
+            {"actor_id": coordinator_id},
+            {"actor_id": coordinator_id, "actor_kind": "worker"},
+            {"actor_id": "", "actor_kind": "coordinator"},
+        ):
+            candidate = copy.deepcopy(decided)
+            candidate["requested_by"] = malformed
+            with self.assertRaises(model.ModelError):
+                model.validate_approval(candidate)
+
     def test_action_active_plan_digest_is_nullable_only_for_closure(self) -> None:
         action = {
             "contract": model.ACTION_CONTRACT,
