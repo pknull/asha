@@ -17,13 +17,14 @@ from io import StringIO
 from pathlib import Path
 from unittest import mock
 
-from lib.control.jj import ImmutableTree, JjAdapter, WorkspaceIdentity
+from lib.control.jj import ImmutableTree, JjAdapter, JjError, WorkspaceIdentity
 from lib.control.reconcile import Evidence, LiveAdapters
 from lib.control.orchestration.actions import build_action_document, submit_action
 from lib.control.orchestration.cli import task_main
 from lib.control.orchestration.coordinator import CoordinatorError
 from lib.control.orchestration.ingestion import (
     IngestionRefused,
+    IngestionUnavailable,
     _save_verification_evidence,
     ingest_result,
     reserve_result_ingestion,
@@ -1001,6 +1002,106 @@ raise SystemExit(0)
         self.assertFalse(
             json.loads(seal_evidence["summary"])["commit_provenance_verified"]
         )
+
+
+    @staticmethod
+    def _enoent_jj(task: dict) -> SnapshotJj:
+        class EnoentJj(SnapshotJj):
+            def inspect_workspace(self, *_args, **_kwargs):
+                raise JjError(
+                    "command invocation failed: "
+                    "[Errno 2] No such file or directory: 'jj'"
+                )
+
+        return EnoentJj(task)
+
+    def test_environment_failure_leaves_ingestion_retryable_then_seals(self) -> None:
+        self.stage()
+        with self.assertRaisesRegex(IngestionUnavailable, "command invocation failed"):
+            ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                control_store=TaskStore(self.config.control),
+                jj=self._enoent_jj(self.task),
+                terminal_reconciliation={"state": "exited"},
+                verifier=self.verifier,
+            )
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        self.assertNotIn(retained["state"], {"completed", "refused"})
+
+        self.ingest()
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        self.assertEqual(retained["state"], "completed")
+
+    def test_snapshot_materialization_environment_failure_is_not_a_refusal(self) -> None:
+        with mock.patch(
+            "lib.control.orchestration.ingestion.prepare_materialization",
+            side_effect=JjError(
+                "command invocation failed: "
+                "[Errno 2] No such file or directory: 'jj'"
+            ),
+        ):
+            with self.assertRaisesRegex(
+                IngestionUnavailable, "controller snapshot materialization failed",
+            ):
+                verify_controller_snapshot(
+                    self.store, self.ingestion, self.task, self.body(),
+                    "a" * 40, "b" * 64, jj=self.jj,
+                )
+
+    def test_live_pass_retries_after_environment_failure_and_then_seals(self) -> None:
+        self.stage()
+
+        class TerminalAdapters(LiveAdapters):
+            def __init__(inner_self, jj):
+                super().__init__(config=None, tmux=mock.Mock(), jj=jj)
+
+            def tmux(inner_self, _task, _run):
+                return Evidence("tmux", "missing", "owned pane exited")
+
+            def process(inner_self, _task, _run):
+                return Evidence(
+                    "process", "missing", "tmux pane process exited with status 0",
+                    state="exited",
+                )
+
+            def jj(inner_self, _task):
+                return Evidence("jj", "match", "owned")
+
+            def event(inner_self, _task, _run):
+                return Evidence("event", "missing", "none")
+
+        with mock.patch(
+            "lib.control.orchestration.ingestion.verify_controller_snapshot",
+            side_effect=self.verifier,
+        ):
+            first = reconcile_live(
+                self.store, self.initiative_id,
+                control_store=TaskStore(self.config.control),
+                adapters_factory=lambda _task: TerminalAdapters(
+                    self._enoent_jj(self.task),
+                ),
+            )
+            retained = self.store.read_result_ingestion(
+                self.initiative_id, self.ingestion["ingestion_id"],
+            )
+            self.assertNotIn(retained["state"], {"completed", "refused"})
+            self.assertEqual(first["seals"], [])
+
+            second = reconcile_live(
+                self.store, self.initiative_id,
+                control_store=TaskStore(self.config.control),
+                adapters_factory=lambda _task: TerminalAdapters(self.jj),
+            )
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        self.assertEqual(retained["state"], "completed")
+        self.assertEqual(len(second["seals"]), 1)
+        self.assertEqual(second["seals"][0]["outcome"], "success")
 
 
 @unittest.skipUnless(shutil.which("bwrap") and shutil.which("jj"), "bwrap and jj required")
