@@ -11,6 +11,7 @@ from lib.control.orchestration.doctor import (
     _approval_decider,
     _approval_provenance_probe,
     _contracts_probe,
+    _coordinator_cursor_probe,
     _suspect_approvals,
     run_orchestration_doctor,
 )
@@ -149,7 +150,7 @@ class OrchestrationDoctorTests(unittest.TestCase):
             self.assertEqual([probe["name"] for probe in payload["probes"]], [
                 "orchestration-config", "initiatives-root", "control-contracts",
                 "create-by-id", "control-doctor", "coordinator-seam",
-                "approval-provenance",
+                "approval-provenance", "coordinator-cursor",
             ])
 
     def test_coordinator_seam_probe_is_advisory_and_never_blocks_ok(self) -> None:
@@ -231,6 +232,55 @@ class OrchestrationDoctorTests(unittest.TestCase):
                 payload = run_orchestration_doctor(config)
             self.assertTrue(payload["ok"])
             self.assertIn("one suspect approval", payload["limitations"])
+
+    def test_coordinator_cursor_probe_names_a_parked_coordinator_and_is_advisory(self) -> None:
+        """A signed decision a parked coordinator never observed must be visible."""
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
+                   "ASHA_HOME": str(root / "asha"),
+                   "XDG_RUNTIME_DIR": str(root / "runtime")}
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
+                Path(env[key]).mkdir(mode=0o700)
+            config = load_config(env)
+            config.initiatives_dir.mkdir(parents=True, mode=0o700)
+            for path in (config.initiatives_dir.parent, config.initiatives_dir.parent.parent):
+                path.chmod(0o700)
+            behind = Probe(
+                "coordinator-cursor", "mismatch",
+                "coordinators may not have observed decided events: "
+                "6fc3419e coordinator cursor 21 is 1 event(s) behind tail 22",
+            )
+            with mock.patch(
+                "lib.control.orchestration.doctor.run_control_doctor",
+                return_value={"ok": True},
+            ), mock.patch(
+                "lib.control.orchestration.doctor.shutil.which", return_value="/usr/bin/tmux",
+            ), mock.patch(
+                "lib.control.orchestration.doctor._coordinator_cursor_probe",
+                return_value=behind,
+            ):
+                payload = run_orchestration_doctor(config)
+            self.assertTrue(payload["ok"])
+            self.assertIn("1 event(s) behind tail 22", " ".join(payload["limitations"]))
+
+    def test_coordinator_cursor_probe_is_quiet_without_initiatives(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            env = {"HOME": str(root / "home"), "ASHA_CONFIG": str(root / "missing"),
+                   "ASHA_HOME": str(root / "asha"),
+                   "XDG_RUNTIME_DIR": str(root / "runtime")}
+            for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
+                Path(env[key]).mkdir(mode=0o700)
+            config = load_config(env)
+            config.initiatives_dir.mkdir(parents=True, mode=0o700)
+            for path in (config.initiatives_dir.parent, config.initiatives_dir.parent.parent):
+                path.chmod(0o700)
+
+            probe = _coordinator_cursor_probe(config)
+
+            self.assertEqual(probe.outcome, "match")
+            self.assertIn("0 live coordinator", probe.detail)
 
     def test_private_existing_root_and_control_ok_make_doctor_ok(self) -> None:
         with tempfile.TemporaryDirectory() as td:
