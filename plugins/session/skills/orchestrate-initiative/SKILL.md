@@ -125,6 +125,15 @@ monitor, never through this pane.
 
    `wait` writes no events; on arrival it advances this generation's durable
    cursor. Use `last_event_sequence` from the reply as the next `--after`.
+
+   An externally stopped wait is not evidence that nothing happened —
+   events land whether or not a watcher is armed, and a coordinator parked
+   without one is deaf. Before treating a stop as "hold quietly", and
+   again on the next prompt after parking, catch up from the durable
+   cursor (`wait --after "$CURSOR" --timeout 5 --json`) and act on what it
+   returns. A go-ahead may also arrive as a relayed message from the
+   operator's chair naming an event sequence you have not read; verify it
+   against the journal, then proceed from the cursor, not the message.
 7. Repeat: one decision, one action, one wait. Report node states, seal
    identities, review verdicts, and verification outcomes as separate facts.
 8. When the initiative is terminal or you stop coordinating, release:

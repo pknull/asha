@@ -62,6 +62,14 @@ informed:
   REQUEST_ID`, only on the word, only after explaining what the salvage
   reuses from the failure seal.
 
+A signed act is recorded, not delivered. The coordinator hears events only
+while its own wait is armed; a stopped watcher leaves it deaf, and an
+approval landing then sits unseen in the journal while the plane holds.
+After signing any act a coordinator is blocked on, relay the fact into that
+coordinator's conversation — a cross-session message where the harness has
+one, else `coordinator attach` so the Keeper can say it — naming the event
+and its sequence. Never by typing into its pane.
+
 ## Monitoring
 
 Read, then narrate — the chair translates records into short truthful
@@ -77,6 +85,33 @@ asha initiative snapshot ID --json       # one bounded whole-state read
 `asha control` is the visual: five colour tiers answer whose turn it is,
 and the six-stage rail (`plan approve build review verify integrate`) ticks
 only on record evidence. Suggest it; never require it.
+
+For a live initiative keep a standing watch instead of polling by hand:
+loop `events ID --after N --json` in a background monitor and narrate only
+state-changing events — `task-status-observed` is heartbeat, everything
+else is news. A `result-ingestion-deferred` event is an ingestion retrying
+through an environment failure: not terminal, and its reason is the only
+trace of what broke.
+
+## The supervisor
+
+Nothing advances unless the supervisor is running — it alone ingests
+results, seals, and ticks the graph. `asha control supervisor status`
+answers first; `install|uninstall` manage the systemd user service, `run`
+is the manual foreground form. From a detached shell, systemd needs the
+user bus named explicitly:
+
+```bash
+XDG_RUNTIME_DIR=/run/user/$(id -u) \
+DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus \
+  systemctl --user restart asha-supervisor.service
+```
+
+Install resolves the operator's jj and pins it into the unit as `ASHA_JJ`;
+after moving jj or changing toolchains, reinstall the service rather than
+editing the unit. A restart is safe mid-initiative — ticks are stateless —
+but the running process only has the code it imported at start: after a
+plane fix lands, restart before the next act depends on it.
 
 ## When it goes sideways
 
