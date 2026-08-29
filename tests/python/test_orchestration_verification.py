@@ -27,9 +27,11 @@ from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.links import build_link
 from lib.control.orchestration.results import publish_result
 from lib.control.orchestration.store import ObservationOnlyPlanError, StoreError
+from lib.control.orchestration.composition import bundle_composition_digest
 from lib.control.orchestration.verification import (
-    candidate_bundle_digest, command_denial, prepare_verification_intent,
-    prevalidate_verification, run_verification,
+    COMPOSED_VERIFICATION_KIND, candidate_bundle_digest, command_denial,
+    prepare_verification_intent, prevalidate_verification,
+    run_composed_verification, run_verification,
 )
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 from tests.python.orchestration_increment3_fixtures import (
@@ -79,7 +81,15 @@ class VerificationJj:
 class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
     def setUp(self) -> None:
         method = self._testMethodName
-        if "denied" in method:
+        if "composed" in method:
+            # Passes on the seal tree and fails on a composed tree carrying the
+            # marker: the exact shape of a composition-blind per-seal green.
+            command = [
+                sys.executable, "-c",
+                "import os,sys; sys.stdout.write('composed build check\\n'); "
+                "sys.exit(9 if os.path.exists('composition-marker') else 0)",
+            ]
+        elif "denied" in method:
             command = ["gh", "api", "repos/example/project"]
         elif "timeout_large_output" in method:
             command = [
@@ -939,6 +949,120 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
             and verification_id in event["subject_ids"]
             for event in events
         ))
+
+    def _compatible_bundle(self) -> dict:
+        self.assertEqual(self._run()["state"], "passed")
+        self.assertEqual(self.initiative()["state"], "ready-for-integration")
+        return self.store.list_bundles_snapshot(self.initiative_id)[0]
+
+    def _run_composed(self, bundle: dict, *, marker: bool = False) -> dict:
+        composed_paths: list[Path] = []
+        # `_materializer` creates the shared workspace parents with the process
+        # umask; the real preparer creates them private.
+        workspace_root = self.config.control.workspace_root
+        for directory in (workspace_root, *workspace_root.rglob("*")):
+            if directory.is_dir():
+                directory.chmod(0o700)
+
+        def materializer(config, source, base_commit_id, name, *, jj):
+            target = Path(plan_materialization(config, source, name, jj=jj)["workspace_path"])
+            target.mkdir(mode=0o700, parents=True)
+            if marker:
+                (target / "composition-marker").write_text("composed\n")
+            composed_paths.append(target)
+            self.assertEqual(base_commit_id, self.candidate["jj_commit_id"])
+            return {
+                "workspace_name": plan_materialization(
+                    config, source, name, jj=jj,
+                )["workspace_name"],
+                "workspace_path": str(target),
+                "change_id": "k" * 32,
+                "working_commit_id": "f" * 40,
+            }
+
+        with mock.patch(
+            "lib.control.orchestration.verification.tracked_workspace_status",
+            return_value=(True, [], False),
+        ):
+            record = run_composed_verification(
+                self.store, self.initiative_id, bundle["bundle_id"],
+                jj=VerificationJj(self.repo, self.candidate),
+                environment={"PATH": os.environ["PATH"], "LANG": "C.UTF-8"},
+                materializer=materializer,
+            )
+        self.composed_paths = composed_paths
+        return record
+
+    def test_composed_gate_passes_and_binds_the_exact_bundle_composition(self) -> None:
+        bundle = self._compatible_bundle()
+
+        record = self._run_composed(bundle)
+
+        self.assertEqual(record["outcome"], "passed")
+        self.assertIsNone(record["failure_kind"])
+        self.assertEqual(
+            record["composition_digest"], bundle_composition_digest(bundle),
+        )
+        evidence = self.store.read_evidence(self.initiative_id, record["evidence_id"])
+        self.assertEqual(evidence["kind"], COMPOSED_VERIFICATION_KIND)
+        self.assertEqual(evidence["subject_id"], bundle["bundle_id"])
+        summary = json.loads(evidence["summary"])
+        self.assertEqual(summary["outcome"], "passed")
+        self.assertEqual(summary["bundle_id"], bundle["bundle_id"])
+        self.assertEqual(
+            [item["seal_id"] for item in summary["members"]],
+            [item["seal_id"] for item in bundle["members"]],
+        )
+        self.assertEqual(
+            summary["members"][0]["composed_tree_digest"],
+            self.candidate["tree_digest"],
+        )
+        # The composed materialization is retained beside the seal's own.
+        self.assertTrue(self.composed_paths[0].is_dir())
+        self.assertNotEqual(self.composed_paths[0], self.materialization)
+
+    def test_composed_gate_reads_a_declared_command_exit_as_composition_failure(
+        self,
+    ) -> None:
+        bundle = self._compatible_bundle()
+
+        record = self._run_composed(bundle, marker=True)
+
+        self.assertEqual(record["outcome"], "failed")
+        self.assertEqual(record["failure_kind"], "command")
+        detail = json.loads(self.store.read_evidence(
+            self.initiative_id, record["command_evidence_ids"][-1],
+        )["summary"])
+        self.assertEqual(detail["exit_code"], 9)
+        self.assertEqual(detail["bundle_id"], bundle["bundle_id"])
+        self.assertEqual(detail["seal_id"], self.candidate["seal_id"])
+
+    def test_composed_gate_environment_class_failure_is_not_a_composition_verdict(
+        self,
+    ) -> None:
+        bundle = self._compatible_bundle()
+
+        def contained(_argv, *, cwd, deadline_seconds):
+            del cwd, deadline_seconds
+            return 0, {
+                "pid": 4321, "start_ticks": 11, "pid_namespace": "4026531836",
+                "returncode": 1, "invocation_error": None, "timed_out": False,
+                "output_truncated": False, "output_original_bytes": 0,
+                "output_digest": hashlib.sha256(b"").hexdigest(),
+            }
+
+        with mock.patch(
+            "lib.control.orchestration.verification._capture_truncated",
+            side_effect=contained,
+        ):
+            record = self._run_composed(bundle)
+
+        self.assertEqual(record["outcome"], "indeterminate")
+        self.assertEqual(record["failure_kind"], "invocation/environment")
+        summary = json.loads(self.store.read_evidence(
+            self.initiative_id, record["evidence_id"],
+        )["summary"])
+        self.assertEqual(summary["outcome"], "indeterminate")
 
 
 if __name__ == "__main__":

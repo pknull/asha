@@ -12,8 +12,10 @@ from unittest import mock
 
 from lib.control.orchestration.actions import build_action_document, submit_action
 from lib.control.orchestration.cli import main
+from lib.control.orchestration.integration import IntegrationError, record_integration
 from lib.control.orchestration.model import record_digest
 from lib.control.orchestration.readiness import bind_readiness
+from lib.control.orchestration.verification import composed_verdict_evidence
 from tests.python.orchestration_increment3_fixtures import (
     advance_node,
     save_passed_verification,
@@ -323,6 +325,113 @@ class IntegrationRecordingTests(WorkspaceFixture, unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("refused inside a coordinator session", stderr.getvalue())
         self.assertEqual(len(self.store.list_events_snapshot(self.initiative_id)), before)
+
+
+class ComposedVerificationGateTests(WorkspaceFixture, unittest.TestCase):
+    """The composed gate is demanded per call; nothing else may notice it."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        created = self.create_initiative()
+        self.approve_and_run(created, self.two_member_plan(created))
+        members = self.initiative()["scope"]["workspace"]["repositories"]
+        for node_id in (
+            "impl-first", "impl-second", "review-first", "review-second", "verify-a",
+        ):
+            advance_node(
+                self, node_id,
+                ["ready", "dispatching", "running", "evaluating", "succeeded"],
+            )
+        self.first = self.save_member_candidate("impl-first", members[0]["repository_id"])
+        self.second = self.save_member_candidate(
+            "impl-second", members[1]["repository_id"], tree_digest="9" * 64,
+        )
+        self.save_member_review("review-first")
+        self.save_member_review("review-second")
+        save_passed_verification(self, [self.first, self.second])
+        self.bundle = bind_readiness(self.store, self.initiative_id)
+
+    def save_verdict(self, outcome: str, *, bundle: dict | None = None) -> dict:
+        evidence = composed_verdict_evidence(
+            self.initiative_id, bundle or self.bundle, outcome=outcome,
+            detail={"failure_kind": None, "command_evidence_ids": []},
+        )
+        self.store.save_evidence(self.initiative_id, evidence)
+        return evidence
+
+    def record(self, **options: object) -> dict:
+        return record_integration(
+            self.store, self.initiative_id,
+            bundle_id=self.bundle["bundle_id"], **options,
+        )
+
+    def test_undemanded_integration_is_unchanged_by_a_retained_composition_failure(
+        self,
+    ) -> None:
+        self.save_verdict("failed")
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        event = self.record()
+
+        self.assertEqual(event["payload"]["disposition"], "integrated")
+        self.assertEqual(self.initiative()["state"], "integrated")
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), before + 2,
+        )
+
+    def test_demanded_gate_blocks_integration_on_a_recorded_composition_failure(
+        self,
+    ) -> None:
+        self.save_verdict("failed")
+        before_state = self.initiative()
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        with self.assertRaisesRegex(IntegrationError, "composed verification failed"):
+            self.record(composed_verification=True)
+
+        self.assertEqual(self.initiative(), before_state)
+        self.assertEqual(
+            len(self.store.list_events_snapshot(self.initiative_id)), before,
+        )
+
+    def test_demanded_gate_permits_integration_on_a_passing_composition(self) -> None:
+        self.save_verdict("passed")
+
+        event = self.record(composed_verification=True)
+
+        self.assertEqual(event["payload"]["disposition"], "integrated")
+        self.assertEqual(self.initiative()["state"], "integrated")
+
+    def test_demanded_gate_refuses_when_no_composed_verification_was_run(self) -> None:
+        with self.assertRaisesRegex(IntegrationError, "has no passed composed"):
+            self.record(composed_verification=True)
+        self.assertEqual(self.initiative()["state"], "ready-for-integration")
+
+    def test_environment_class_outcome_is_not_read_as_a_composition_failure(self) -> None:
+        self.save_verdict("indeterminate")
+
+        # It defers -- the operator may rerun -- and never becomes a verdict.
+        with self.assertRaisesRegex(IntegrationError, "has no passed composed"):
+            self.record(composed_verification=True)
+        self.assertEqual(self.initiative()["state"], "ready-for-integration")
+
+        self.assertEqual(self.record()["payload"]["disposition"], "integrated")
+        self.assertEqual(self.initiative()["state"], "integrated")
+
+    def test_verdict_bound_to_other_members_does_not_satisfy_the_demand(self) -> None:
+        other = copy.deepcopy(self.bundle)
+        other["members"][0]["tree_digest"] = "4" * 64
+        self.save_verdict("passed", bundle=other)
+
+        with self.assertRaisesRegex(IntegrationError, "has no passed composed"):
+            self.record(composed_verification=True)
+
+    def test_abandonment_form_refuses_the_composed_demand(self) -> None:
+        with self.assertRaisesRegex(IntegrationError, "composed verification"):
+            record_integration(
+                self.store, self.initiative_id, seal_id=self.first["seal_id"],
+                abandoned=True, reason="No.", composed_verification=True,
+            )
 
 
 if __name__ == "__main__":

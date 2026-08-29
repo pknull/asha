@@ -98,7 +98,8 @@ Usage:
   asha initiative finalize <id> --outcome partial|failed --reason TEXT [--json]
   asha initiative archive <id> [--json]
   asha initiative unarchive <id> [--json]
-  asha initiative record-integration <id> --bundle BUNDLE_ID [--json]
+  asha initiative compose-verify <id> --bundle BUNDLE_ID [--json]
+  asha initiative record-integration <id> --bundle BUNDLE_ID [--composed-verification] [--json]
   asha initiative record-integration <id> --seal SEAL_ID --abandoned --reason TEXT [--json]
   asha initiative list [--all] [--json]
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
@@ -1439,8 +1440,14 @@ def _record_integration_command(
         raise ValueError("record-integration requires an initiative ID or exact slug")
     env = {} if env is None else env
     initiative = _resolve(store, args[0])
-    options = _parse_options(args[1:], flags={"json", "abandoned"})
-    _only(options, {"bundle", "seal", "abandoned", "reason", "json"}, "record-integration")
+    options = _parse_options(
+        args[1:], flags={"json", "abandoned", "composed-verification"},
+    )
+    _only(
+        options,
+        {"bundle", "seal", "abandoned", "reason", "json", "composed-verification"},
+        "record-integration",
+    )
     bundle_id, seal_id = options.get("bundle"), options.get("seal")
     if (bundle_id is None) == (seal_id is None):
         raise ValueError("record-integration requires exactly one of --bundle or --seal")
@@ -1449,6 +1456,10 @@ def _record_integration_command(
             raise ValueError("record-integration --bundle does not accept --abandoned")
         if options.get("reason") is not None:
             raise ValueError("record-integration --bundle does not accept --reason")
+    elif options["composed-verification"]:
+        raise ValueError(
+            "record-integration --composed-verification applies to --bundle only"
+        )
     else:
         if not options["abandoned"]:
             raise ValueError("record-integration --seal requires --abandoned")
@@ -1459,8 +1470,31 @@ def _record_integration_command(
     event = record_integration(
         store, initiative["initiative_id"], bundle_id=bundle_id, seal_id=seal_id,
         abandoned=bool(options["abandoned"]), reason=options.get("reason"),
+        composed_verification=bool(options["composed-verification"]),
     )
     return event, bool(options["json"])
+
+
+def _compose_verify_command(
+    args: list[str], store: InitiativeStore,
+    env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
+) -> tuple[dict[str, Any], bool]:
+    """Run a bundle's declared commands over its members materialized together."""
+    if not args:
+        raise ValueError("compose-verify requires an initiative ID or exact slug")
+    env = {} if env is None else env
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={"json"})
+    _only(options, {"bundle", "json"}, "compose-verify")
+    _required(options, "bundle")
+    refuse_coordinator_pane(
+        store, initiative["initiative_id"], env, tmux or TmuxAdapter(),
+    )
+    from .verification import run_composed_verification
+
+    return run_composed_verification(
+        store, initiative["initiative_id"], options["bundle"],
+    ), bool(options["json"])
 
 
 def _approve_salvage_command(
@@ -1565,6 +1599,10 @@ def _initiative_command(
         result, json_output = _record_integration_command(tail, store, env, tmux)
         _payload(result, json_output)
         return 0
+    if command == "compose-verify":
+        result, json_output = _compose_verify_command(tail, store, env, tmux)
+        _payload(result, json_output)
+        return 0 if result.get("outcome") == "passed" else 3
     if command == "checkpoint":
         result, json_output = _checkpoint_command(tail, store, env, tmux)
         _payload(result, json_output)
