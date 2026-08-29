@@ -90,10 +90,13 @@ def _root_probe(path: Path) -> Probe:
 # Advisory probes inform `limitations` but never block `ok`: `activate-initiative`
 # refuses on a false `ok`, coordinator support must not gate operator-only use,
 # and one suspect historical approval must not brick activation plane-wide.
-_ADVISORY_PROBES = frozenset({"coordinator-seam", "approval-provenance"})
+_ADVISORY_PROBES = frozenset({
+    "coordinator-seam", "approval-provenance", "coordinator-cursor",
+})
 
 # Bound the mismatch detail the way `_root_probe` bounds its own.
 _MAX_SUSPECT_APPROVALS = 5
+_MAX_BEHIND_COORDINATORS = 5
 
 
 def _approval_decider(
@@ -143,6 +146,59 @@ def _suspect_approvals(
                 f"{decider['actor_id']}"
             )
     return suspect
+
+
+def _coordinator_cursor_probe(config: OrchestrationConfig) -> Probe:
+    """Name live coordinators whose durable cursor is behind their journal.
+
+    A coordinator only observes events while its own wait is armed, and the
+    Stop-hook wake channel fires on that coordinator's turn boundary, so a
+    session that has already parked cannot be reached by the plane at all
+    (#86).  A decision it is blocked on can therefore sit signed and unseen.
+    Nothing here delivers anything -- delivery is the chair's relay -- but a
+    coordinator parked behind its journal stops being invisible.
+    """
+    from .model import COORDINATOR_LIVE_STATES, INITIATIVE_TERMINAL_STATES
+    from .store import InitiativeStore
+
+    behind: list[str] = []
+    live = 0
+    try:
+        store = InitiativeStore(config)
+        for initiative in store.list_initiatives():
+            if initiative["state"] in INITIATIVE_TERMINAL_STATES:
+                continue
+            initiative_id = initiative["initiative_id"]
+            coordinator = store.current_coordinator(initiative_id)
+            if coordinator is None or coordinator["state"] not in COORDINATOR_LIVE_STATES:
+                continue
+            live += 1
+            tail = initiative["last_event_sequence"]
+            cursor = coordinator["event_cursor"]
+            if cursor < tail:
+                behind.append(
+                    f"{initiative_id} coordinator cursor {cursor} is "
+                    f"{tail - cursor} event(s) behind tail {tail}"
+                )
+    except (OSError, ValueError) as exc:
+        return Probe(
+            "coordinator-cursor", "unavailable",
+            f"live coordinators could not be read: {exc}"[:400],
+        )
+    if behind:
+        return Probe(
+            "coordinator-cursor", "mismatch",
+            "coordinators may not have observed decided events: "
+            + "; ".join(behind[:_MAX_BEHIND_COORDINATORS])
+            + (
+                f" (+{len(behind) - _MAX_BEHIND_COORDINATORS} more)"
+                if len(behind) > _MAX_BEHIND_COORDINATORS else ""
+            ),
+        )
+    return Probe(
+        "coordinator-cursor", "match",
+        f"{live} live coordinator(s) are current with their journal",
+    )
 
 
 def _approval_provenance_probe(config: OrchestrationConfig) -> Probe:
@@ -251,6 +307,7 @@ def run_orchestration_doctor(
     probes.append(_coordinator_seam_probe())
     if audit_records:
         probes.append(_approval_provenance_probe(config))
+        probes.append(_coordinator_cursor_probe(config))
     limitations = [probe.detail for probe in probes if probe.outcome != "match"]
     return {
         "contract": DOCTOR_CONTRACT,
