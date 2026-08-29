@@ -959,6 +959,17 @@ def reconcile_live(
                     attempt = _transition_attempt(
                         store, initiative_id, attempt, "running", current_time,
                     )
+                if attempt["state"] == "running" and _staged_result_candidate(
+                    store, initiative_id, attempt["attempt_id"],
+                ):
+                    # The worker published and is only waiting to be closed.
+                    # Reading that as `running` is indistinguishable from a
+                    # stalled worker, which is what made finished sessions look
+                    # hung for hours (#80).  Only reached while the attempt is
+                    # `running`, so the survey costs nothing once it has moved.
+                    attempt = _transition_attempt(
+                        store, initiative_id, attempt, "reported", current_time,
+                    )
                 current_node = store.read_node(initiative_id, node["node_id"])
                 if current_node["state"] == "dispatching":
                     _transition_node(store, initiative_id, current_node, "running")

@@ -595,7 +595,13 @@ _attempt_pairs = [
     ("failure-seal-ready", "sealing"), ("paused-seal-ready", "sealing"),
     ("sealing", "sealed-success"), ("sealing", "sealed-failure"),
     ("sealing", "sealed-paused"), ("readonly-ready", "completed-readonly"),
-    ("running", "result-missing"), ("dispatching", "abnormal-exit"),
+    ("running", "result-missing"),
+    # A staged publication moves a live attempt to `reported`, which the
+    # publication pass then promotes to `awaiting-exit` (#80).  Grace must be
+    # able to expire from either when the candidate later vanishes; both only
+    # ever expire an attempt that has no result_id and nothing staged.
+    ("reported", "result-missing"), ("awaiting-exit", "result-missing"),
+    ("dispatching", "abnormal-exit"),
     ("running", "abnormal-exit"), ("reported", "abnormal-exit"),
     ("awaiting-exit", "abnormal-exit"),
 ]

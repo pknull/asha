@@ -744,6 +744,8 @@ class OrchestrationModelTests(unittest.TestCase):
                 ("sealing", "sealed-paused"),
                 ("readonly-ready", "completed-readonly"),
                 ("running", "result-missing"),
+                ("reported", "result-missing"),
+                ("awaiting-exit", "result-missing"),
                 ("dispatching", "abnormal-exit"),
                 ("running", "abnormal-exit"), ("reported", "abnormal-exit"),
                 ("awaiting-exit", "abnormal-exit"),
