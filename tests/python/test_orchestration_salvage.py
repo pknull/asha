@@ -575,6 +575,84 @@ class OrchestrationRecoveryActionTests(ExecutionFixture, unittest.TestCase):
         )
         self.assertEqual(len(calls), 1)
 
+    def retry_reservation(self, *, action_id: str | None = None) -> dict:
+        """The automatic retry's bookkeeping row, as the failure path leaves it."""
+        node_attempts = [
+            item for item in self.store.list_attempts_snapshot(self.initiative_id)
+            if item["node_id"] == "implementation-a"
+        ]
+        reservation = model.validate_attempt({
+            "contract": model.ATTEMPT_CONTRACT,
+            "attempt_id": str(uuid.uuid4()),
+            "initiative_id": self.initiative_id,
+            "node_id": "implementation-a",
+            "task_id": str(uuid.uuid4()),
+            "action_id": action_id,
+            "ordinal": max((item["ordinal"] for item in node_attempts), default=0) + 1,
+            "base": copy.deepcopy(self.plan["nodes"][0]["base"]),
+            "state": "allocated",
+            "result_publication_id": None,
+            "result_id": None,
+            "seal_id": None,
+            "created_at": now_text(),
+            "updated_at": now_text(),
+        })
+        self.store.save_attempt(self.initiative_id, reservation)
+        return reservation
+
+    def test_salvage_dispatch_supersedes_unbound_retry_reservation(self) -> None:
+        failure, request_id, _approval = self.approved_salvage()
+        reservation = self.retry_reservation()
+
+        calls: list[list[str]] = []
+        dispatch = build_action_document(
+            self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            },
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+            side_effect=self.control_start(calls),
+        ):
+            result = submit_action(self.store, self.initiative_id, dispatch)
+        self.assertEqual(result["state"], "completed", result["outcome"])
+
+        retained = self.store.read_attempt(
+            self.initiative_id, reservation["attempt_id"],
+        )
+        self.assertEqual(retained["state"], "cancelled")
+        salvage_attempts = [
+            item for item in self.store.list_attempts_snapshot(self.initiative_id)
+            if item["base"]["policy"] == "scope-baseline"
+        ]
+        self.assertEqual(len(salvage_attempts), 1)
+        self.assertEqual(
+            salvage_attempts[0]["base"]["scope_origin"]["jj_commit_id"],
+            failure["scope_origin"]["jj_commit_id"],
+        )
+
+    def test_salvage_dispatch_still_refuses_a_bound_reservation(self) -> None:
+        _failure, request_id, _approval = self.approved_salvage()
+        reservation = self.retry_reservation(action_id=str(uuid.uuid4()))
+
+        dispatch = build_action_document(
+            self.initiative(), "dispatch-node", {
+                "node_id": "implementation-a", "salvage_request_id": request_id,
+            },
+        )
+        refused = submit_action(self.store, self.initiative_id, dispatch)
+        self.assertEqual(refused["state"], "refused")
+        self.assertIn(
+            "bound to a dispatch action", action_outcome(refused)["reason"],
+        )
+        retained = self.store.read_attempt(
+            self.initiative_id, reservation["attempt_id"],
+        )
+        self.assertEqual(retained["state"], "allocated")
+
     def test_crash_after_consumption_reconciles_same_reserved_task_identity(self) -> None:
         failure = self.seal("failure")
         _, request_id = self.request(failure)
