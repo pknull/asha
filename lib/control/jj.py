@@ -50,6 +50,9 @@ MAX_GIT_CONFIG_BYTES = 1024 * 1024
 MAX_CONTEXT_PROOF_PATHS = 64
 MAX_CONTEXT_PROOF_PATH_BYTES = 16 * 1024
 MAX_EXACT_GIT_REF_BYTES = 300
+MAX_BASELINE_DIVERGENCE_COMMITS = 5
+MAX_BASELINE_DIVERGENCE_SUMMARY = 120
+MAX_BASELINE_DIVERGENCE_BYTES = 64 * 1024
 TRUSTED_GIT_EXECUTABLE = "/usr/bin/git"
 TRUSTED_SSH_EXECUTABLE = "/usr/bin/ssh"
 _EXACT_GIT_CONFIG = (
@@ -153,6 +156,53 @@ class DefaultBaseResolution:
     references: tuple[str, ...]
     commit_id: str
     tier: str
+
+
+@dataclass(frozen=True)
+class BaselineDivergence:
+    """Bounded advisory evidence that landed commits sit above one baseline.
+
+    Display-only. No baseline is ever re-selected from these facts: silently
+    moving the base to a newer commit would be far more dangerous than the
+    stale plan this evidence exists to warn about (#81).
+    """
+
+    reference: str
+    baseline_commit_id: str
+    working_copy_parent_commit_id: str
+    ahead_count: int
+    commits: tuple[tuple[str, str], ...]
+
+    def warning(self) -> str:
+        """Render the bounded one-line operator warning."""
+        plural = "commit" if self.ahead_count == 1 else "commits"
+        if not self.commits:
+            shown = "(commit summaries unavailable)"
+        else:
+            shown = "; ".join(
+                f"{commit_id[:12]} {summary}"
+                for commit_id, summary in self.commits
+            )
+            remaining = self.ahead_count - len(self.commits)
+            if remaining > 0:
+                shown += f"; and {remaining} more"
+        return (
+            f"baseline {self.reference} is {self.ahead_count} {plural} behind "
+            f"the working copy; plans will not see: {shown}"
+        )
+
+    def record(self) -> dict[str, Any]:
+        return {
+            "reference": self.reference,
+            "baseline_commit_id": self.baseline_commit_id,
+            "working_copy_parent_commit_id": self.working_copy_parent_commit_id,
+            "ahead_count": self.ahead_count,
+            "commits": [
+                {"commit_id": commit_id, "summary": summary}
+                for commit_id, summary in self.commits
+            ],
+            "warning": self.warning(),
+        }
 
 
 @dataclass(frozen=True)
@@ -1038,6 +1088,16 @@ def discover_git_root(start: Path) -> Path | None:
     return None
 
 
+def _bounded_display_text(raw: str, limit: int) -> str:
+    """Collapse one untrusted line into bounded printable display text."""
+    text = "".join(
+        character if character.isprintable() else " " for character in raw
+    ).strip()
+    if len(text) > limit:
+        text = text[:limit - 3] + "..."
+    return text
+
+
 def colocated_sync_remediation(
     root: Path, git_head: str | None, working_copy_parent: str,
 ) -> str | None:
@@ -1873,6 +1933,90 @@ class JjAdapter:
         """Compatibility wrapper for callers that only consume one ref."""
         resolution = self.resolve_default_base(root)
         return resolution.references[0], resolution.commit_id
+
+    @staticmethod
+    def _divergence_reference(references: Sequence[str]) -> str:
+        """Name a resolved baseline the way an operator names its bookmark."""
+        names = [
+            _bounded_display_text(
+                reference[len("refs/heads/"):]
+                if reference.startswith("refs/heads/") else reference,
+                MAX_BASELINE_DIVERGENCE_SUMMARY,
+            )
+            for reference in list(references)[:MAX_BASELINE_DIVERGENCE_COMMITS]
+        ]
+        return ", ".join(name for name in names if name) or "the default base"
+
+    def _divergence_commits(
+        self, root: Path, head: str, baseline_commit_id: str,
+    ) -> tuple[tuple[str, str], ...]:
+        """Read at most a handful of bounded first lines, newest first."""
+        try:
+            raw = self._exact_git_bytes(root, [
+                "log", "--no-show-signature", "--no-decorate",
+                f"--max-count={MAX_BASELINE_DIVERGENCE_COMMITS}",
+                "--format=%H%x00%s", "--end-of-options",
+                head, f"^{baseline_commit_id}",
+            ], limit=MAX_BASELINE_DIVERGENCE_BYTES)
+        except JjError:
+            # One pathological first line must not cost the count warning.
+            return ()
+        commits: list[tuple[str, str]] = []
+        for line in raw.split(b"\n"):
+            if not line:
+                continue
+            commit_raw, _separator, summary_raw = line.partition(b"\0")
+            commit_id = commit_raw.decode("ascii", errors="replace")
+            if _COMMIT_ID.fullmatch(commit_id) is None:
+                return ()
+            summary = _bounded_display_text(
+                summary_raw.decode("utf-8", errors="replace"),
+                MAX_BASELINE_DIVERGENCE_SUMMARY,
+            )
+            commits.append((commit_id, summary or "(no description)"))
+            if len(commits) == MAX_BASELINE_DIVERGENCE_COMMITS:
+                break
+        return tuple(commits)
+
+    def detect_baseline_divergence(
+        self, root: Path, baseline_commit_id: str, *,
+        references: Sequence[str] = (),
+    ) -> BaselineDivergence | None:
+        """Report landed commits sitting above an already-resolved baseline.
+
+        Read-only and advisory (#81). The baseline is never re-selected from
+        what this finds, and a probe that cannot complete reports nothing
+        rather than refusing a baseline that already resolved, so a grafted or
+        partial history costs an operator a warning and never the command.
+        Returns ``None`` whenever the landed chain is at or behind the base.
+        """
+        if _COMMIT_ID.fullmatch(baseline_commit_id) is None:
+            raise JjError("baseline divergence check requires a full commit ID")
+        # jj exports `@-` as Git HEAD, so HEAD -- not `@` -- is the landed
+        # chain. The working-copy commit itself is ordinary in-progress work
+        # that no baseline is ever expected to contain.
+        head = self.git_head_exact(root)
+        if head is None or head == baseline_commit_id:
+            return None
+        returncode, stdout, _stderr = self._exact_git_status(root, [
+            "rev-list", "--count", "--end-of-options",
+            head, f"^{baseline_commit_id}",
+        ])
+        if returncode != 0:
+            return None
+        value = _exact_ascii_line(stdout, "Git divergence count")
+        if len(value) > 12 or not value.isdigit():
+            raise JjError("Git divergence count was not one bounded integer")
+        ahead_count = int(value)
+        if ahead_count == 0:
+            return None
+        return BaselineDivergence(
+            reference=self._divergence_reference(references),
+            baseline_commit_id=baseline_commit_id,
+            working_copy_parent_commit_id=head,
+            ahead_count=ahead_count,
+            commits=self._divergence_commits(root, head, baseline_commit_id),
+        )
 
     @staticmethod
     def _execution_capable_config_key(key: str) -> bool:

@@ -286,9 +286,11 @@ def _baseline(
     root = Path(options["repo"]).expanduser().resolve()
     facts = jj.preflight(root)
     _guard_colocated_sync(jj, facts.root, facts.git_root)
+    resolution = None
     try:
         if revision_omitted:
-            commit_id = jj.resolve_default_base(facts.root).commit_id
+            resolution = jj.resolve_default_base(facts.root)
+            commit_id = resolution.commit_id
             jj.require_visible_commit(facts.root, commit_id)
         else:
             commit_id = jj.resolve_base(facts.root, revision)
@@ -307,6 +309,16 @@ def _baseline(
             f"the revision or bookmark but jj does not, run `jj status` in "
             f"{facts.root} to import it, then retry"
         ) from exc
+    # Advisory only (#81). An omitted revision tracks the bookmark, which an
+    # operator's landed-but-unbookmarked chain can sit above; say so loudly and
+    # keep the same commit. An explicit --revision is already a deliberate
+    # choice, so it is not probed.
+    divergence = (
+        None if resolution is None
+        else jj.detect_baseline_divergence(
+            facts.root, commit_id, references=resolution.references,
+        )
+    )
     tree = jj.immutable_tree(facts.root, commit_id)
     repository = _repository_scope(facts.root, jj)
     return {
@@ -318,6 +330,7 @@ def _baseline(
         "jj_commit_id": commit_id,
         "tree_digest": tree.digest,
         "entry_count": len(tree.entries),
+        "baseline_divergence": None if divergence is None else divergence.record(),
     }, bool(options["json"])
 
 
@@ -1486,6 +1499,14 @@ def _initiative_command(
     tmux = tmux or TmuxAdapter()
     if command == "baseline":
         result, json_output = _baseline(tail, jj or JjAdapter())
+        divergence = result["baseline_divergence"]
+        if divergence is not None:
+            print(f"asha initiative: {divergence['warning']}", file=sys.stderr)
+            print(
+                "asha initiative: move the bookmark or pass --revision to plan "
+                "against the newer tree.",
+                file=sys.stderr,
+            )
         if json_output:
             _json(result)
         else:
