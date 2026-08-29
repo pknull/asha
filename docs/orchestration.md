@@ -388,7 +388,6 @@ hard scope and read-only review; a headless run cannot answer a prompt.
 Interactive assignments now state that the worker cannot end its own session
 and must ask the operator to close it (the `X` key in `asha control`).
 
-
 Dispatch preallocates the attempt UUID and Control task UUID and stores both in
 the action outcome before calling Control. It writes this immutable file first:
 
@@ -467,7 +466,6 @@ node `running` indefinitely, and stopping such an attempt seals a failure
 because a killed process is not a normal exit. The assignment states this
 requirement; `asha task attach` plus a normal exit is the recovery when a
 worker has published but stayed open.
-
 
 `asha task report` accepts one closed `asha.orchestration-result.v1` client
 object. The client omits controller-owned `result_id` and `payload_digest`:
@@ -603,7 +601,6 @@ findings are the goal of the attempt, so the correction reaches the worker
 through the assignment record, never through direct pane input. A running
 attempt can additionally receive a journaled `directive` (recorded before any
 relay; delivery stays pending by design).
-
 
 Autonomous retries consume the configured attempt budget and resolve the
 node's original approved base, never the failed attempt's inherited base.
@@ -798,7 +795,7 @@ remain available where their ordinary lifecycle rules permit containment.
 
 | Command | Exact payload |
 |---|---|
-| `baseline` | `asha.orchestration-baseline.v1` `{contract, repository: {root, control_repository_id}, jj_commit_id, tree_digest, entry_count}` |
+| `baseline` | `asha.orchestration-baseline.v1` `{contract, repository: {root, control_repository_id}, jj_commit_id, tree_digest, entry_count, baseline_divergence}` (`baseline_divergence` is null unless an omitted `--revision` resolved a bookmark the working copy sits above, and is advisory only: the selected commit never moves, and the warning is written to stderr) |
 | `create` | `asha.orchestration-initiative-create.v1` `{contract, initiative}` (`initiative` is a stored `asha.orchestration-initiative.v2` record with `scope.kind` `repository` or `workspace`) |
 | `plan`, `plan --show` | stored `asha.orchestration-plan.v1` record |
 | `approve` | `asha.orchestration-plan-approval.v1` `{contract, initiative, plan, approval}` |

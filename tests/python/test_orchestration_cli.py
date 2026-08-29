@@ -17,8 +17,9 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 from lib.control.jj import (
-    DEFAULT_BASE_REVSET, DefaultBaseResolution, ImmutableTree, JjAdapter,
-    JjError, RepositoryFacts,
+    BaselineDivergence, DEFAULT_BASE_REVSET, DefaultBaseResolution, ImmutableTree,
+    JjAdapter, JjError, MAX_BASELINE_DIVERGENCE_COMMITS,
+    MAX_BASELINE_DIVERGENCE_SUMMARY, RepositoryFacts,
 )
 from lib.control.orchestration.cli import (
     _approve, _create, _plan, _reject, _repository_scope, _snapshot, main,
@@ -68,6 +69,7 @@ class OrchestrationCliTests(unittest.TestCase):
             ("refs/heads/master",), "b" * 40, "attached-local",
         )
         self.jj.require_visible_commit.return_value = None
+        self.jj.detect_baseline_divergence.return_value = None
         self.jj.immutable_tree.return_value = ImmutableTree(
             commit_id="b" * 40, digest="c" * 64, entries=(),
         )
@@ -220,10 +222,91 @@ class OrchestrationCliTests(unittest.TestCase):
             [
                 "preflight", "working_copy_parent", "git_head_exact",
                 "resolve_default_base", "require_visible_commit",
-                "immutable_tree", "preflight",
+                "detect_baseline_divergence", "immutable_tree", "preflight",
             ],
         )
         self.jj.import_git.assert_not_called()
+
+    @staticmethod
+    def divergence(ahead_count: int = 2) -> BaselineDivergence:
+        return BaselineDivergence(
+            reference="master",
+            baseline_commit_id="b" * 40,
+            working_copy_parent_commit_id="e" * 40,
+            ahead_count=ahead_count,
+            commits=(
+                ("e" * 40, "feat(panel): btop-shaped disk panel"),
+                ("f" * 40, "feat(panel): inline swap meter"),
+            ),
+        )
+
+    def test_baseline_warns_on_divergence_without_changing_the_selected_commit(self) -> None:
+        self.jj.detect_baseline_divergence.return_value = self.divergence()
+
+        status, stdout, stderr = self.invoke([
+            "baseline", "--repo", str(self.repo),
+        ])
+
+        self.assertEqual(status, 0)
+        # The warning must not move the baseline: the same two stdout lines.
+        self.assertEqual(stdout, f"Commit: {'b' * 40}\nTree digest: {'c' * 64}\n")
+        self.assertIn(
+            "baseline master is 2 commits behind the working copy; "
+            "plans will not see:",
+            stderr,
+        )
+        self.assertIn("feat(panel): btop-shaped disk panel", stderr)
+        self.assertIn("feat(panel): inline swap meter", stderr)
+        self.assertIn("move the bookmark or pass --revision", stderr)
+        self.jj.detect_baseline_divergence.assert_called_once_with(
+            self.repo, "b" * 40, references=("refs/heads/master",),
+        )
+
+    def test_baseline_json_carries_the_divergence_beside_the_same_commit(self) -> None:
+        self.jj.detect_baseline_divergence.return_value = self.divergence(5)
+
+        status, stdout, stderr = self.invoke([
+            "baseline", "--repo", str(self.repo), "--json",
+        ])
+
+        self.assertEqual(status, 0)
+        payload = json.loads(stdout)
+        self.assertEqual(payload["jj_commit_id"], "b" * 40)
+        self.assertEqual(payload["tree_digest"], "c" * 64)
+        divergence = payload["baseline_divergence"]
+        self.assertEqual(divergence["reference"], "master")
+        self.assertEqual(divergence["ahead_count"], 5)
+        self.assertEqual(divergence["baseline_commit_id"], "b" * 40)
+        self.assertEqual(divergence["working_copy_parent_commit_id"], "e" * 40)
+        self.assertEqual([entry["summary"] for entry in divergence["commits"]], [
+            "feat(panel): btop-shaped disk panel",
+            "feat(panel): inline swap meter",
+        ])
+        self.assertIn(
+            "baseline master is 5 commits behind the working copy",
+            divergence["warning"],
+        )
+        # Bounded: only the listed commits, with the remainder counted.
+        self.assertIn("and 3 more", divergence["warning"])
+        self.assertIn(divergence["warning"], stderr)
+
+    def test_baseline_json_divergence_is_null_when_nothing_is_ahead(self) -> None:
+        status, stdout, stderr = self.invoke([
+            "baseline", "--repo", str(self.repo), "--json",
+        ])
+
+        self.assertEqual((status, stderr), (0, ""))
+        payload = json.loads(stdout)
+        self.assertIsNone(payload["baseline_divergence"])
+        self.assertEqual(payload["jj_commit_id"], "b" * 40)
+
+    def test_baseline_explicit_revision_is_a_deliberate_choice_and_is_not_probed(self) -> None:
+        status, _stdout, stderr = self.invoke([
+            "baseline", "--repo", str(self.repo), "--revision", "main",
+        ])
+
+        self.assertEqual((status, stderr), (0, ""))
+        self.jj.detect_baseline_divergence.assert_not_called()
 
     def test_baseline_default_trunk_error_translates_only_supported_guidance(self) -> None:
         self.jj.resolve_default_base.side_effect = JjError(
@@ -1106,8 +1189,9 @@ class RealJjOrchestrationCreateTests(unittest.TestCase):
         self.assertEqual(payload["repository"]["root"], str(self.repo))
         self.assertEqual(set(payload), {
             "contract", "repository", "jj_commit_id", "tree_digest",
-            "entry_count",
+            "entry_count", "baseline_divergence",
         })
+        self.assertIsNone(payload["baseline_divergence"])
         self.assertEqual(
             set(payload["repository"]), {"root", "control_repository_id"},
         )
@@ -1151,6 +1235,182 @@ class RealJjOrchestrationCreateTests(unittest.TestCase):
             self.store.peek(initiative["initiative_id"])["state"],
             "awaiting-plan-approval",
         )
+
+
+@unittest.skipUnless(shutil.which("jj") and shutil.which("git"), "jj and git are required")
+class RealJjBaselineDivergenceTests(unittest.TestCase):
+    """#81: landed commits above the bookmark are named, never silently dropped."""
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name).resolve()
+        self.git_env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+            "JJ_CONFIG": str(self.root / "jj-config.toml"),
+            "XDG_CONFIG_HOME": str(self.root / "config"),
+        }
+        Path(self.git_env["JJ_CONFIG"]).write_text(
+            '[user]\nname = "t"\nemail = "t@t"\n'
+        )
+        self.env = {
+            "HOME": str(self.root / "home"),
+            "ASHA_CONFIG": str(self.root / "missing"),
+            "ASHA_HOME": str(self.root / "asha"),
+            "XDG_RUNTIME_DIR": str(self.root / "runtime"),
+        }
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
+            Path(self.env[key]).mkdir(mode=0o700)
+
+    def git(self, repo: Path, *args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True, capture_output=True, text=True, env=self.git_env,
+        ).stdout.strip()
+
+    def jj_run(self, repo: Path, *args: str) -> None:
+        subprocess.run(
+            ["jj", "-R", str(repo), *args],
+            check=True, capture_output=True, env=self.git_env, cwd=self.root,
+        )
+
+    def colocated_repo(self, name: str) -> Path:
+        """One colocated repository whose `master` bookmark sits at its tip."""
+        repo = self.root / name
+        repo.mkdir()
+        subprocess.run(
+            ["git", "init", "-q", "-b", "master", str(repo)],
+            check=True, capture_output=True, env=self.git_env,
+        )
+        (repo / "tracked").write_text("base\n")
+        self.git(repo, "add", "tracked")
+        self.git(repo, "commit", "-qm", "base commit")
+        subprocess.run(
+            ["jj", "git", "init", "--colocate", str(repo)],
+            check=True, capture_output=True, env=self.git_env, cwd=self.root,
+        )
+        (repo / ".asha").mkdir()
+        (repo / "Memory").mkdir()
+        (repo / "Work/session-state").mkdir(parents=True)
+        (repo / ".asha/config.json").write_text(json.dumps({
+            "initialized": True, "memory_version": 2,
+            "project_id": "divergence-project",
+        }) + "\n")
+        (repo / "Memory/activeContext.md").write_text(
+            "# Objective\n\nO\n\n# State\n\nS\n\n# Next\n\n- N\n\n# Blockers\n\n- None.\n"
+        )
+        (repo / "Memory/decisions.md").write_text("# Decisions\n\n- One.\n")
+        return repo
+
+    def land(self, repo: Path, *subjects: str) -> None:
+        """Land a chain above the bookmark, exactly as an operator's does.
+
+        The first subject describes the working copy jj created at colocation
+        so the chain holds only the named commits; the trailing `jj new` leaves
+        an empty working copy, which is what makes Git HEAD the landed tip.
+        """
+        for index, subject in enumerate(subjects):
+            self.jj_run(repo, "describe" if index == 0 else "new", "-m", subject)
+            (repo / "tracked").write_text(f"{subject}\n")
+        self.jj_run(repo, "new")
+
+    def invoke(self, args: list[str]) -> tuple[int, str, str]:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with redirect_stdout(stdout), redirect_stderr(stderr):
+            status = main(["initiative", *args], env=self.env)
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_baseline_names_the_landed_commits_the_plan_will_not_see(self) -> None:
+        repo = self.colocated_repo("ahead")
+        bookmark = self.git(repo, "rev-parse", "refs/heads/master")
+        self.land(
+            repo,
+            "feat(panel): inline swap meter",
+            "feat(panel): btop-shaped disk panel",
+        )
+        head = self.git(repo, "rev-parse", "HEAD")
+        self.assertNotEqual(head, bookmark)
+
+        status, stdout, stderr = self.invoke([
+            "baseline", "--repo", str(repo), "--json",
+        ])
+
+        self.assertEqual(status, 0)
+        payload = json.loads(stdout)
+        # The warning never re-selects the baseline: it is still the bookmark.
+        self.assertEqual(payload["jj_commit_id"], bookmark)
+        divergence = payload["baseline_divergence"]
+        self.assertEqual(divergence["reference"], "master")
+        self.assertEqual(divergence["ahead_count"], 2)
+        self.assertEqual(divergence["baseline_commit_id"], bookmark)
+        self.assertEqual(divergence["working_copy_parent_commit_id"], head)
+        self.assertEqual([entry["summary"] for entry in divergence["commits"]], [
+            "feat(panel): btop-shaped disk panel",
+            "feat(panel): inline swap meter",
+        ])
+        self.assertIn(
+            "baseline master is 2 commits behind the working copy; "
+            "plans will not see:",
+            stderr,
+        )
+        self.assertIn("feat(panel): btop-shaped disk panel", stderr)
+
+    def test_the_listed_commits_and_their_first_lines_are_both_bounded(self) -> None:
+        repo = self.colocated_repo("bounded")
+        self.land(
+            repo, "feat: one", "feat: two", "feat: three", "feat: four",
+            "feat: five", "L" * 300,
+        )
+
+        status, stdout, stderr = self.invoke([
+            "baseline", "--repo", str(repo), "--json",
+        ])
+
+        self.assertEqual(status, 0)
+        divergence = json.loads(stdout)["baseline_divergence"]
+        self.assertEqual(divergence["ahead_count"], 6)
+        # Bounded on both axes: a capped list of capped first lines, newest
+        # first, with the unlisted remainder counted rather than dumped.
+        self.assertEqual(
+            len(divergence["commits"]), MAX_BASELINE_DIVERGENCE_COMMITS,
+        )
+        summary = divergence["commits"][0]["summary"]
+        self.assertEqual(len(summary), MAX_BASELINE_DIVERGENCE_SUMMARY)
+        self.assertTrue(summary.endswith("..."))
+        self.assertIn("and 1 more", divergence["warning"])
+        self.assertNotIn("feat: one", divergence["warning"])
+        self.assertIn(divergence["warning"], stderr)
+
+    def test_baseline_is_silent_when_the_bookmark_is_already_the_tip(self) -> None:
+        repo = self.colocated_repo("current")
+        bookmark = self.git(repo, "rev-parse", "refs/heads/master")
+
+        status, stdout, stderr = self.invoke([
+            "baseline", "--repo", str(repo), "--json",
+        ])
+
+        self.assertEqual((status, stderr), (0, ""))
+        payload = json.loads(stdout)
+        self.assertEqual(payload["jj_commit_id"], bookmark)
+        self.assertIsNone(payload["baseline_divergence"])
+
+    def test_baseline_is_silent_once_the_bookmark_moves_up_to_the_landings(self) -> None:
+        repo = self.colocated_repo("caught-up")
+        self.land(repo, "feat: one", "feat: two")
+        head = self.git(repo, "rev-parse", "HEAD")
+        self.git(repo, "branch", "-f", "master", head)
+
+        status, stdout, stderr = self.invoke([
+            "baseline", "--repo", str(repo), "--json",
+        ])
+
+        self.assertEqual((status, stderr), (0, ""))
+        payload = json.loads(stdout)
+        self.assertEqual(payload["jj_commit_id"], head)
+        self.assertIsNone(payload["baseline_divergence"])
 
 
 if __name__ == "__main__":
