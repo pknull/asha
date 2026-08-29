@@ -21,7 +21,7 @@ from unittest import mock
 
 from lib.control.cli import main as control_main
 from lib.control.harness import process_identity
-from lib.control.jj import ImmutableTree, JjAdapter, WorkspaceIdentity
+from lib.control.jj import ImmutableTree, JjAdapter, JjError, WorkspaceIdentity
 from lib.control.reconcile import Evidence, LiveAdapters
 from lib.control.store import TaskStore
 from lib.control.orchestration.actions import build_action_document, submit_action
@@ -355,6 +355,79 @@ class SupervisorTickTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(
             [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
             ["success"],
+        )
+
+    def env_failing_deps(self, at: datetime):
+        """Tick deps whose every ingest pass aborts environment-class."""
+        control = TaskStore(self.config.control)
+        adapters = TerminalAdapters(self.jj)
+        boom = JjError(
+            "command invocation failed: [Errno 2] No such file or directory: 'jj'"
+        )
+
+        def ingest(store, initiative_id, *, control_store):
+            with mock.patch(
+                "lib.control.orchestration.ingestion.verify_controller_snapshot",
+                side_effect=boom,
+            ):
+                return ingest_pending_results(
+                    store, initiative_id, control_store=control_store,
+                    adapters_factory=lambda _task: adapters,
+                )
+
+        def reconcile(store, initiative_id, *, control_store, now):
+            with mock.patch(
+                "lib.control.orchestration.scheduler.storage_report",
+                return_value={"pause_recommended": False},
+            ), mock.patch(
+                "lib.control.orchestration.ingestion.verify_controller_snapshot",
+                side_effect=boom,
+            ):
+                return reconcile_one_initiative(
+                    store, initiative_id, control_store=control_store,
+                    adapters_factory=lambda _task: adapters, now=now,
+                )
+
+        return SimpleNamespace(
+            store_factory=lambda _initiative_id: self.store,
+            control_store=control,
+            now=lambda: at,
+            reconcile=reconcile,
+            ingest=ingest,
+            list_initiatives=self.store.list_initiatives,
+        )
+
+    def test_expired_grace_holds_open_while_staged_ingestion_retries(self) -> None:
+        self.store.config = replace(self.store.config, result_grace_seconds=1)
+        first = datetime.now(timezone.utc) + timedelta(seconds=1)
+        tick(self.deps(first))
+        stage_result(self.config, self.body(), self.managed)
+
+        tick(self.env_failing_deps(first + timedelta(seconds=2)))
+        tick(self.env_failing_deps(first + timedelta(seconds=3)))
+
+        events = self.store.list_events_snapshot(self.initiative_id)
+        self.assertNotIn("result-missing", [item["type"] for item in events])
+        deferred = [
+            item for item in events if item["type"] == "result-ingestion-deferred"
+        ]
+        self.assertEqual(len(deferred), 1)
+        self.assertIn("command invocation failed", deferred[0]["payload"]["reason"])
+        self.assertEqual(self.store.list_seals_snapshot(self.initiative_id), [])
+
+        tick(self.deps(first + timedelta(seconds=4)))
+
+        self.assertEqual(
+            self.store.list_attempts_snapshot(self.initiative_id)[0]["state"],
+            "sealed-success",
+        )
+        self.assertEqual(
+            [item["outcome"] for item in self.store.list_seals_snapshot(self.initiative_id)],
+            ["success"],
+        )
+        self.assertNotIn(
+            "result-missing",
+            [item["type"] for item in self.store.list_events_snapshot(self.initiative_id)],
         )
 
     def test_tick_restart_is_idempotent(self) -> None:
