@@ -1244,19 +1244,23 @@ def _ingest_result(
                 commit_creator=creator,
                 verification_evidence_ids=evidence_ids,
             )
+        publication_ingester = current["ingester"] or actor
         provenance = {
             "method": "controller-ingestion",
             "producer_run_id": record["run_id"],
             "ingestion_id": ingestion_id,
-            "ingester_actor_kind": actor["actor_kind"],
-            "ingester_actor_id": actor["actor_id"],
-            "ingester_coordinator_generation": actor["coordinator_generation"],
+            "ingester_actor_kind": publication_ingester["actor_kind"],
+            "ingester_actor_id": publication_ingester["actor_id"],
+            "ingester_coordinator_generation": publication_ingester[
+                "coordinator_generation"
+            ],
         }
         commit_provenance = {
             "creator": creator,
             "actor_id": (
                 None if creator == "none" else
-                actor["actor_id"] if creator == "controller" else record["run_id"]
+                publication_ingester["actor_id"]
+                if creator == "controller" else record["run_id"]
             ),
             "verification_evidence_ids": evidence_ids,
         }

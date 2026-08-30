@@ -755,8 +755,24 @@ raise SystemExit(0)
             result["publication_provenance"]["method"], "controller-ingestion",
         )
         self.assertEqual(result["publication_provenance"]["producer_run_id"], result["run_id"])
+        self.assertEqual(
+            {
+                "actor_kind": result["publication_provenance"]["ingester_actor_kind"],
+                "actor_id": result["publication_provenance"]["ingester_actor_id"],
+                "coordinator_generation": result["publication_provenance"][
+                    "ingester_coordinator_generation"
+                ],
+            },
+            {
+                "actor_kind": "controller", "actor_id": "result-ingester",
+                "coordinator_generation": None,
+            },
+        )
         self.assertEqual(result["claimed_commit_id"], "d" * 40)
         self.assertEqual(result["commit_provenance"]["creator"], "controller")
+        self.assertEqual(
+            result["commit_provenance"]["actor_id"], "result-ingester",
+        )
         self.assertTrue(result["commit_provenance"]["verification_evidence_ids"])
         self.assertEqual(self.ingest(), receipt)
 
@@ -1222,6 +1238,86 @@ raise SystemExit(0)
         self.assertEqual(replay, [])
         results = self.store.list_results_snapshot(self.initiative_id)
         self.assertEqual([item["result_id"] for item in results], [first[0]["result_id"]])
+
+    def test_cross_actor_retry_preserves_original_ingester_provenance(self) -> None:
+        self.stage()
+        original_ingester = {
+            "actor_kind": "coordinator",
+            "actor_id": "coordinator-before-interruption",
+            "coordinator_generation": 7,
+        }
+        retry_ingester = {
+            "actor_kind": "controller",
+            "actor_id": "controller-retrying-ingestion",
+            "coordinator_generation": None,
+        }
+
+        def interrupted(*_args, **_kwargs):
+            raise IngestionUnavailable(
+                "controller verification runner was interrupted"
+            )
+
+        with self.assertRaisesRegex(IngestionUnavailable, "was interrupted"):
+            ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                ingester=original_ingester,
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation={"state": "exited"},
+                verifier=interrupted,
+            )
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        self.assertEqual(retained["state"], "ingesting")
+        self.assertEqual(retained["ingester"], original_ingester)
+
+        receipt = ingest_result(
+            self.store, self.initiative_id, self.ingestion["ingestion_id"],
+            ingester=retry_ingester,
+            control_store=TaskStore(self.config.control), jj=self.jj,
+            terminal_reconciliation={"state": "exited"},
+            verifier=self.verifier,
+        )
+        self.assertEqual(receipt["phase"], "completed")
+        completed = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        result = self.store.read_result(self.initiative_id, receipt["result_id"])
+        provenance = result["publication_provenance"]
+        self.assertEqual(completed["ingester"], original_ingester)
+        self.assertEqual(
+            {
+                "actor_kind": provenance["ingester_actor_kind"],
+                "actor_id": provenance["ingester_actor_id"],
+                "coordinator_generation": provenance[
+                    "ingester_coordinator_generation"
+                ],
+            },
+            completed["ingester"],
+        )
+        self.assertEqual(result["commit_provenance"]["creator"], "controller")
+        self.assertEqual(
+            result["commit_provenance"]["actor_id"],
+            original_ingester["actor_id"],
+        )
+
+        replay = ingest_result(
+            self.store, self.initiative_id, self.ingestion["ingestion_id"],
+            ingester=retry_ingester,
+            control_store=TaskStore(self.config.control), jj=self.jj,
+            terminal_reconciliation={"state": "exited"},
+            verifier=self.verifier,
+        )
+        self.assertEqual(replay, receipt)
+        self.assertEqual(
+            ingest_pending_results(self.store, self.initiative_id), []
+        )
+        self.assertEqual(
+            [item["result_id"] for item in self.store.list_results_snapshot(
+                self.initiative_id,
+            )],
+            [receipt["result_id"]],
+        )
 
     def test_interrupted_ingesting_snapshot_replays_once_through_cli(self) -> None:
         self.stage()
