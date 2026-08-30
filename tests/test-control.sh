@@ -201,6 +201,7 @@ PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_control_task_start_smoke_fixes \
   tests.python.test_control_tui_initiatives_mode \
   tests.python.test_control_tui_style \
+  tests.python.test_control_tui_focus \
   tests.python.test_control_create_by_id \
   tests.python.test_control_colocated_sync \
   tests.python.test_control_doctor_ok \

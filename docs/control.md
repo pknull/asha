@@ -157,7 +157,7 @@ kind:
 | `Enter` | Room row: attach it. Initiative row: attach its coordinator. Node/attempt/task row: open the worker popup. |
 | `!` | Show only rows waiting on a human (plan approvals, needs-input, workers at prompts, published-awaiting-exit). |
 | `n` | New intent: Control starts a coordinator session at the projects root with your intent as its first message. |
-| `o` | Open the Room form: choose an indexed project, name, installed harness, and opening prompt. Launch stays detached. |
+| `o` | Open the Room form: enter an exact initialized project path or choose an indexed project, then set its name, installed harness, and opening prompt. Launch stays detached. |
 | `N` | Open the ad-hoc task-start form. |
 | `X` | Room row: after exact `yes`, kill only its exact-owned session. Worker row: after `yes`, send its quit command as your keystroke. |
 | `a` | Initiative row: decide a pending plan approval (`approve`/`reject`). Task row: archive after confirmation. |
@@ -168,6 +168,25 @@ kind:
 | `p` / `s` | After `yes`: pause/resume the initiative / stop the selected attempt's task. |
 | `A` | Toggle the `active` / `all` lifecycle scope for tasks. |
 | `/` | Filter rows. `?` help. `q` exits the TUI only. |
+
+The bottom line always labels tree focus as `[NAVIGATION]`. Every prompt and
+form instead labels its active input `[TYPING] >`; while that label is visible,
+all letters and punctuation belong to the field and no tree shortcut fires.
+The cursor is shown only for the lifetime of the editor and restored when the
+editor submits, is cancelled with `Esc`, or fails. Active input is emphasized
+with reverse/bold where curses supports it; explanatory and inactive material
+is dimmed, while a selected candidate keeps its own marker and emphasis. The
+text labels remain authoritative on monochrome terminals.
+
+Single-field prompts show their exact controls: `Enter` submits and `Esc`
+cancels; prompts with candidates additionally support `Up`/`Down` selection
+and `Tab` completion. The task and Room forms use `Tab` for the next field,
+`Shift-Tab` for the previous field, `Enter` to accept (and submit on the final
+field), `Esc` to cancel, and `Up`/`Down` for candidates. On the final field,
+`Tab` stays in place and points to `Enter` as the submit action. Validation
+stays beside the active field without discarding other field values. A Room
+form is one four-field editor—Project, Room name, Harness, Opening prompt—and
+launches only after all required fields are valid.
 
 `asha initiative attention [--json]` is the CLI twin of `!`: one list of
 everything waiting on a human across initiatives and tasks, each item naming

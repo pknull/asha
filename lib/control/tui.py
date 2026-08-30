@@ -13,9 +13,11 @@ import subprocess
 import sys
 import time
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, TextIO
 
@@ -71,6 +73,17 @@ _TREE_FOOTER = (
     "Enter attach  o room  ! need  a approve  X close  p pause  s stop  n new  ? help  q quit  |  "
     "N task  r reconcile  d diff  e events  c seals  v verify  t storage  x actions  A scope  / filter"
 )
+
+
+def _tree_footer(width: int) -> str:
+    """Keep the focus mode legible before navigation hints may be clipped."""
+    marker = "[NAVIGATION]"
+    stable_prefix = "Enter attach  o room  ! need  a approve"
+    if width >= len(stable_prefix) + len(marker) + 2:
+        return _TREE_FOOTER.replace(stable_prefix, f"{stable_prefix}  {marker}", 1)
+    return f"{marker} Enter ! approve ? help"
+
+
 def _glyph_mode(env: Mapping[str, str] | None = None) -> str:
     """Unicode by default; ASCII where ambiguous-width glyphs would shift columns.
 
@@ -239,6 +252,7 @@ class ModalFrame:
     cursor: tuple[int, int] | None
     visible_start: int
     visible_end: int
+    row_roles: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1040,7 +1054,7 @@ def _render_tree(model: TuiModel) -> list[str]:
     body_budget = max(0, available - len(status_lines))
     lines = lines[:body_budget] + status_lines
     if model.height:
-        lines.append(_TREE_FOOTER)
+        lines.append(_tree_footer(model.width))
     return [
         line.clipped(model.width) if isinstance(line, Line) else _clip(line, model.width)
         for line in lines
@@ -1617,16 +1631,17 @@ def modal_frame(
     width = max(0, int(width))
     budget = max(0, width - 1)
     if height == 0:
-        return ModalFrame((), None, 0, 0)
+        return ModalFrame((), None, 0, 0, ())
     bounded = _bounded_modal_candidates(candidates)
     if selected is not None and bounded:
         selected = min(max(0, int(selected)), len(bounded) - 1)
     else:
         selected = None
 
-    prefix = f"{label}: " if label else ""
+    field_prompt = f"{label}: " if label else ""
+    prefix = f"[TYPING] > {field_prompt if prompt is None else prompt}"
     viewport, cursor_x = _prompt_viewport(
-        prefix if prompt is None else prompt,
+        prefix,
         None if prompt is None else hint,
         value, budget,
     )
@@ -1645,7 +1660,7 @@ def modal_frame(
     decoration_omitted = len(decoration) > decoration_capacity
     if decoration_omitted and decoration_capacity == 0:
         viewport, cursor_x = _prompt_viewport(
-            "… " + (prefix if prompt is None else prompt),
+            "… " + prefix,
             None if prompt is None else hint,
             value, budget,
         )
@@ -1656,6 +1671,7 @@ def modal_frame(
     else:
         decoration = decoration[:decoration_capacity]
     header: list[str] = [viewport, *decoration]
+    header_roles: list[str] = ["input", *("context" for _ in decoration)]
     cursor = (0, min(cursor_x, budget))
 
     remaining = max(0, height - len(header))
@@ -1673,6 +1689,7 @@ def modal_frame(
             )
         end = start + visible_count
         candidate_rows: list[str] = []
+        candidate_roles: list[str] = []
         for index in range(start, end):
             candidate = bounded[index]
             marker = "> " if index == selected else "  "
@@ -1680,13 +1697,15 @@ def modal_frame(
             if candidate.detail:
                 shown += f"  {candidate.detail}"
             candidate_rows.append(_prefix_cells(marker + shown, budget))
+            candidate_roles.append("selected" if index == selected else "inactive")
         if start and candidate_rows:
             candidate_rows[0] = _prefix_cells("↑ " + candidate_rows[0], budget)
         if end < len(bounded) and candidate_rows:
             candidate_rows[-1] = _prefix_cells("↓ " + candidate_rows[-1], budget)
         rows = tuple((header + candidate_rows)[:height])
-        return ModalFrame(rows, cursor, start, end)
-    return ModalFrame(tuple(header), cursor, 0, 0)
+        roles = tuple((header_roles + candidate_roles)[:height])
+        return ModalFrame(rows, cursor, start, end, roles)
+    return ModalFrame(tuple(header), cursor, 0, 0, tuple(header_roles))
 
 
 def _dedupe_candidates(
@@ -1946,6 +1965,46 @@ def _read_modal_key(stdscr, curses_module) -> int | str:
     return key if isinstance(key, int) else -1
 
 
+@contextmanager
+def _visible_cursor(curses_module):
+    """Temporarily show the cursor, preserving nested editor ownership."""
+    setter = getattr(curses_module, "curs_set", None)
+    changed = False
+    previous = 0
+    if callable(setter):
+        try:
+            observed = setter(1)
+            previous = observed if isinstance(observed, int) else 0
+            changed = True
+        except Exception:
+            pass
+    try:
+        yield
+    finally:
+        if changed:
+            try:
+                setter(previous)
+            except Exception:
+                pass
+
+
+def _cursor_editor(function):
+    """Give every synchronous editor the same exception-safe cursor contract."""
+    @wraps(function)
+    def wrapped(stdscr, curses_module, *args, **kwargs):
+        with _visible_cursor(curses_module):
+            return function(stdscr, curses_module, *args, **kwargs)
+    return wrapped
+
+
+def _modal_controls(*, candidates: bool = False) -> str:
+    controls = "Controls: Enter submit  Esc cancel"
+    if candidates:
+        controls += "  Up/Down candidates  Tab complete"
+    return controls
+
+
+@_cursor_editor
 def _prompt_line(
     stdscr, curses_module, model: TuiModel, prompt: str,
     *, initial: str = "", maximum: int = 500, hint: str | None = None,
@@ -1959,23 +2018,40 @@ def _prompt_line(
         _paint(stdscr, curses_module, model)
         height, width = stdscr.getmaxyx()
         if height:
+            controls = _modal_controls(candidates=bool(bounded_candidates))
+            modal_context = f"{context}\n{controls}" if context else controls
             frame = modal_frame(
-                title=title, context=context, label="", hint=hint or "",
+                title=title, context=modal_context, label="", hint=hint or "",
                 value="".join(value), candidates=bounded_candidates,
                 selected=candidate_selection, height=height, width=width,
                 prompt=prompt,
             )
             try:
                 start = max(0, height - len(frame.rows))
-                for offset, line in enumerate(frame.rows):
+                # Overlay prompts keep explanatory material above the active
+                # input. This preserves the long-standing bottom-line
+                # viewport/cursor contract while forms can still lead with
+                # their active field after clearing the screen.
+                order = [*range(1, len(frame.rows)), 0] if frame.rows else []
+                for offset, frame_index in enumerate(order):
+                    line = frame.rows[frame_index]
                     y = start + offset
                     stdscr.move(y, 0)
                     stdscr.clrtoeol()
                     if line and width > 1:
-                        stdscr.addnstr(y, 0, line, len(line))
+                        role = (
+                            frame.row_roles[frame_index]
+                            if frame_index < len(frame.row_roles) else "inactive"
+                        )
+                        attribute = _modal_row_attribute(curses_module, role)
+                        try:
+                            stdscr.addnstr(y, 0, line, len(line), attribute)
+                        except TypeError:
+                            stdscr.addnstr(y, 0, line, len(line))
                 if frame.cursor is not None:
                     cursor_y, cursor_x = frame.cursor
-                    stdscr.move(start + cursor_y, cursor_x)
+                    physical_y = order.index(cursor_y) if cursor_y in order else 0
+                    stdscr.move(start + physical_y, cursor_x)
                 stdscr.refresh()
             except curses_module.error:
                 pass
@@ -2425,13 +2501,30 @@ def _ascii_prefix(candidate: str, prefix: str) -> bool:
         return False
 
 
+def _modal_row_attribute(curses_module, role: str) -> int:
+    def supported(name: str) -> int:
+        value = getattr(curses_module, name, 0)
+        return value if isinstance(value, int) else 0
+
+    if role == "input":
+        return supported("A_REVERSE") | supported("A_BOLD")
+    if role == "selected":
+        return supported("A_BOLD") | supported("A_UNDERLINE")
+    return supported("A_DIM")
+
+
 def _draw_modal_frame(stdscr, curses_module, frame: ModalFrame) -> None:
     height, width = stdscr.getmaxyx()
     stdscr.erase()
     if width > 1:
         for y, row in enumerate(frame.rows[:height]):
             try:
-                stdscr.addnstr(y, 0, row, len(row))
+                role = frame.row_roles[y] if y < len(frame.row_roles) else "inactive"
+                attribute = _modal_row_attribute(curses_module, role)
+                try:
+                    stdscr.addnstr(y, 0, row, len(row), attribute)
+                except TypeError:
+                    stdscr.addnstr(y, 0, row, len(row))
             except curses_module.error:
                 pass
     if frame.cursor is not None and height and width:
@@ -2487,6 +2580,7 @@ def _canonical_field_value(
     return value
 
 
+@_cursor_editor
 def _prerequisite_action_modal(
     stdscr, curses_module, model: TuiModel, offer: StartPrerequisiteOffer,
 ) -> str:
@@ -2515,7 +2609,8 @@ def _prerequisite_action_modal(
                 "Git, or authorize the old base."
                 f"{instruction_note}"
             ),
-            label="Action", hint="Enter selects; Esc returns to form",
+            label="Action",
+            hint="Controls: Up/Down candidates  Enter selects  Esc returns to form",
             value=candidates[selected].value, candidates=candidates,
             selected=selected, height=height, width=width,
         )
@@ -2548,6 +2643,7 @@ def _prerequisite_action_modal(
             return "cancel"
 
 
+@_cursor_editor
 def _start_form(
     stdscr, curses_module, model: TuiModel,
     env: Mapping[str, str], config: ControlConfig, *,
@@ -2654,11 +2750,13 @@ def _start_form(
         frame = modal_frame(
             title="Start task",
             context=(
-                f"Field {field + 1}/5  Up/Down select  Tab complete  "
-                "Shift-Tab back  Esc cancel"
-                + (f"\nNotice: {form_notice}" if form_notice else "")
+                f"Field {field + 1}/5  Controls: Tab next  "
+                "Shift-Tab previous  Enter accept/submit  Esc cancel  "
+                "Up/Down candidates"
+                + (f"\nNotice: {form_notice} (beside {_START_FIELDS[field]})"
+                   if form_notice else "")
             ),
-            label=_START_FIELDS[field], hint="Enter accepts",
+            label=_START_FIELDS[field], hint="",
             value=values[field], candidates=candidates, selected=selected,
             height=height, width=width,
         )
@@ -2691,34 +2789,42 @@ def _start_form(
             else:
                 selected = min(max(0, selected + delta), len(candidates) - 1)
             continue
-        if key == 9 and candidates:
-            matches = [
-                index for index, item in enumerate(candidates)
-                if (
-                    _ascii_prefix(item.value, values[field])
-                    if field in {2, 3} else
-                    item.value.startswith(values[field])
-                )
-            ]
-            if matches:
-                selected = matches[0] if selected not in matches else selected
-                values[field] = candidates[selected].value
-            continue
-        if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
+        if key == 9 or key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
+            if key == 9 and field == len(_START_FIELDS) - 1:
+                set_form_notice("Tab has no next field; Enter submits the task.")
+                selected = None
+                continue
+            if key == 9 and candidates and selected is None:
+                matches = [
+                    index for index, item in enumerate(candidates)
+                    if (
+                        _ascii_prefix(item.value, values[field])
+                        if field in {2, 3} else
+                        item.value.startswith(values[field])
+                    )
+                ]
+                if matches:
+                    selected = matches[0]
             accepted = (
                 candidates[selected].value if selected is not None and candidates
                 else values[field]
             )
             canonical = _canonical_field_value(field, accepted, candidates)
-            if field == 4 and not terminal_text_is_complete(accepted):
+            if field == 0 and not accepted.strip():
+                canonical = None
+            if field == 4 and (
+                not accepted.strip() or not terminal_text_is_complete(accepted)
+            ):
                 canonical = None
             if canonical is None:
-                model.message = (
+                set_form_notice(
+                    "Repo is required."
+                    if field == 0 else
                     "Harness must be one installed-status candidate from the closed allowlist."
                     if field == 2 else
                     "Role uses an invalid restricted grammar."
                     if field == 3 else
-                    "Goal ends with an unsupported Unicode cluster."
+                    "Goal is required and must end with a complete supported Unicode cluster."
                 )
                 selected = None
                 continue
@@ -3415,17 +3521,21 @@ def _tui_asha_root(env: Mapping[str, str]) -> Path:
     return root
 
 
+@_cursor_editor
 def _open_room_form(
     stdscr, curses_module, model: TuiModel, config: ControlConfig,
     env: Mapping[str, str],
 ) -> str:
     """Collect one bounded Room request and launch it detached."""
     from .orchestration.projects import list_projects_across, resolve_roots
-    from .rooms import RoomError, open_room, room_harness_available
+    from .rooms import (
+        RoomError, _room_name, open_room, resolve_project,
+        room_harness_available,
+    )
 
     roots, source = resolve_roots(env=env)
     payload = list_projects_across(roots, depth=3, source_of_roots=source)
-    project_candidates = tuple(
+    project_candidates = _bounded_modal_candidates(
         ModalCandidate(
             item["root"],
             f"{item.get('name') or item.get('directory')}  {item.get('project_id') or 'uninitialized'}",
@@ -3433,42 +3543,152 @@ def _open_room_form(
         for item in payload["projects"]
         if item.get("asha_project") and item.get("project_id")
     )
-    if not project_candidates:
-        return "room open refused: no initialized projects are indexed"
-    project = _prompt_line(
-        stdscr, curses_module, model, "Project: ", title="Open Room",
-        context="Rooms work directly in one initialized project's canonical checkout.",
-        maximum=4096, candidates=project_candidates, selected=0,
-    )
-    if not project:
-        return "room open cancelled"
-    name = _prompt_line(
-        stdscr, curses_module, model, "Room name: ", title="Open Room",
-        context=f"Project: {project}", maximum=120,
-    )
-    if not name:
-        return "room open cancelled"
-    harness_candidates = tuple(
+    harness_candidates = _bounded_modal_candidates(
         ModalCandidate(name, "installed")
         for name in sorted(HARNESSES)
         if room_harness_available(name, env)
     )
     if not harness_candidates:
         return "room open refused: no supported interactive harness is installed"
-    harness = _prompt_line(
-        stdscr, curses_module, model, "Harness: ", title="Open Room",
-        context=f"Project: {project}\nRoom: {name}", maximum=16,
-        candidates=harness_candidates, selected=0,
-    )
-    if not harness:
-        return "room open cancelled"
-    prompt = _prompt_line(
-        stdscr, curses_module, model, "Opening prompt: ", title="Open Room",
-        context=f"Project: {project}\nRoom: {name}\nHarness: {harness}",
-        maximum=4000,
-    )
-    if not prompt:
-        return "room open cancelled"
+
+    fields = ("Project", "Room name", "Harness", "Opening prompt")
+    maximums = (4096, 120, 16, 4000)
+    values = [
+        project_candidates[0].value if project_candidates else "",
+        "", harness_candidates[0].value, "",
+    ]
+    field = 0
+    selected: int | None = 0 if project_candidates else None
+    form_notice = ""
+
+    def candidates_for(index: int) -> tuple[ModalCandidate, ...]:
+        if index == 0:
+            return project_candidates
+        if index == 2:
+            return harness_candidates
+        return ()
+
+    while field < len(fields):
+        candidates = candidates_for(field)
+        height, width = stdscr.getmaxyx()
+        completed = "  ".join(
+            f"{fields[index]}: {values[index]}"
+            for index in range(field) if values[index]
+        )
+        context_lines = [
+            f"Field {field + 1}/4  Controls: Tab next  Shift-Tab previous  "
+            "Enter accept/submit  Esc cancel  Up/Down candidates",
+        ]
+        if completed:
+            context_lines.append(completed)
+        if form_notice:
+            context_lines.append(f"Error beside {fields[field]}: {form_notice}")
+        context_lines.append(
+            "Rooms work directly in one initialized project's canonical checkout."
+        )
+        frame = modal_frame(
+            title="Open Room", context="\n".join(context_lines),
+            label=fields[field], hint="", value=values[field],
+            candidates=candidates, selected=selected,
+            height=height, width=width,
+        )
+        _draw_modal_frame(stdscr, curses_module, frame)
+        key = _read_modal_key(stdscr, curses_module)
+        if key == -1:
+            continue
+        if key == getattr(curses_module, "KEY_RESIZE", -998):
+            continue
+        form_notice = ""
+        if key == 27:
+            return "room open cancelled"
+        if key == getattr(curses_module, "KEY_BTAB", -994):
+            if field:
+                field -= 1
+            selected = None
+            continue
+        if key in {
+            getattr(curses_module, "KEY_UP", -997),
+            getattr(curses_module, "KEY_DOWN", -996),
+        } and candidates:
+            delta = -1 if key == getattr(curses_module, "KEY_UP", -997) else 1
+            if selected is None:
+                selected = len(candidates) - 1 if delta < 0 else 0
+            else:
+                selected = min(max(0, selected + delta), len(candidates) - 1)
+            continue
+        if key == 9 or key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
+            if key == 9 and field == len(fields) - 1:
+                form_notice = "Tab has no next field; Enter submits the Room."
+                model.message = form_notice
+                selected = None
+                continue
+            if key == 9 and candidates and selected is None:
+                matches = [
+                    index for index, item in enumerate(candidates)
+                    if (
+                        _ascii_prefix(item.value, values[field])
+                        if field == 2 else item.value.startswith(values[field])
+                    )
+                ]
+                if matches:
+                    selected = matches[0]
+            accepted = (
+                candidates[selected].value if selected is not None and candidates
+                else values[field]
+            )
+            canonical: str | None = accepted
+            if field == 0:
+                try:
+                    canonical = resolve_project(accepted, env=env)["root"]
+                except RoomError as exc:
+                    canonical = None
+                    form_notice = _safe_error(exc)
+            elif field == 1:
+                if not accepted.strip():
+                    canonical = None
+                    form_notice = "Room name is required."
+                else:
+                    try:
+                        canonical, _slug = _room_name(accepted)
+                    except RoomError as exc:
+                        canonical = None
+                        form_notice = _safe_error(exc)
+            elif field == 2:
+                canonical = _canonical_field_value(field, accepted, candidates)
+                if canonical is None:
+                    form_notice = "Harness must be one installed supported candidate."
+            elif field == 3 and (
+                not accepted.strip() or not terminal_text_is_complete(accepted)
+            ):
+                canonical = None
+                form_notice = (
+                    "Opening prompt is required and must end with a complete "
+                    "supported Unicode cluster."
+                )
+            if canonical is None:
+                model.message = form_notice
+                selected = None
+                continue
+            values[field] = canonical
+            field += 1
+            selected = None
+            continue
+        if key in {8, 127, getattr(curses_module, "KEY_BACKSPACE", -997)}:
+            clusters = _display_clusters(values[field])
+            if clusters:
+                values[field] = "".join(clusters[:-1])
+            selected = None
+            continue
+        if ((isinstance(key, str) and len(key) == 1) or
+                (isinstance(key, int) and 0 <= key <= 0x10FFFF)) and \
+                len(values[field]) < maximums[field]:
+            character = key if isinstance(key, str) else chr(key)
+            logical = list(values[field])
+            if _prompt_character_allowed(logical, character):
+                values[field] += character
+                selected = None
+
+    project, name, harness, prompt = values
     try:
         launched = open_room(
             name=name, project=project, harness=harness, prompt=prompt,
