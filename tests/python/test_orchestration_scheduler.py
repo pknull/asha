@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import re
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -10,7 +11,15 @@ from unittest import mock
 from lib.control.orchestration.actions import (
     _parse_document, build_action_document, submit_action,
 )
-from lib.control.orchestration.model import ATTEMPT_CONTRACT, record_digest
+from lib.control.orchestration.model import (
+    ATTEMPT_CONTRACT,
+    MAX_ARGV_ITEMS,
+    MAX_ARG_BYTES,
+    MAX_ATTESTATIONS,
+    MAX_PATH_BYTES,
+    MAX_SUMMARY_BYTES,
+    record_digest,
+)
 from lib.control.orchestration.scheduler import (
     SchedulerError,
     _goal,
@@ -121,6 +130,30 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
             rendered,
         )
         self.assertIn("The report receipt phase is `staged`", rendered)
+
+    def test_assignment_documents_closed_verification_attestation_schema(self) -> None:
+        initiative = self.initiative()
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        attempt = self.attempt(state="allocated")
+
+        rendered = assignment_bytes(
+            initiative, self.plan, node, attempt,
+            attempt["base"]["scope_origin"]["jj_commit_id"],
+        ).decode()
+
+        key_line = next(
+            line for line in rendered.splitlines()
+            if line.startswith("Exact required element keys:")
+        )
+        self.assertEqual(
+            re.findall(r"`([^`]+)`", key_line),
+            ["argv", "cwd", "exit_code", "finished_at", "output_digest", "summary"],
+        )
+        self.assertIn(f"at most {MAX_ATTESTATIONS} elements", rendered)
+        self.assertIn(f"at most {MAX_ARGV_ITEMS} unique text arguments", rendered)
+        self.assertIn(f"1-{MAX_ARG_BYTES} UTF-8 bytes", rendered)
+        self.assertIn(f"1-{MAX_PATH_BYTES} UTF-8 bytes", rendered)
+        self.assertIn(f"1-{MAX_SUMMARY_BYTES} UTF-8 bytes", rendered)
 
     def test_parallel_total_deadline_pause_and_storage_limits_block(self) -> None:
         with mock.patch(
