@@ -26,6 +26,7 @@ from lib.control.orchestration.ingestion import (
     IngestionRefused,
     IngestionUnavailable,
     _save_verification_evidence,
+    ingest_pending_results,
     ingest_result,
     reserve_result_ingestion,
     result_ingestion_id,
@@ -178,6 +179,41 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             terminal_reconciliation={"state": "exited"},
             verifier=self.verifier,
         )
+
+    def install_foreign_mismatched_ingestion(
+        self, *, task_id: str | None = None,
+    ) -> dict[str, str]:
+        foreign_id = str(uuid.uuid4())
+        foreign = copy.deepcopy(self.initiative())
+        foreign.update({
+            "initiative_id": foreign_id,
+            "slug": f"foreign-{foreign_id[:8]}",
+            "label": "Foreign retained initiative",
+            "state": "draft",
+            "active_plan": None,
+            "state_revision": 0,
+            "last_event_sequence": 0,
+        })
+        self.store.save_initiative(foreign)
+        embedded = copy.deepcopy(self.ingestion)
+        embedded.update({
+            "initiative_id": foreign_id,
+            "ingestion_id": str(uuid.uuid4()),
+            "attempt_id": str(uuid.uuid4()),
+            "task_id": task_id or str(uuid.uuid4()),
+            "run_id": str(uuid.uuid4()),
+        })
+        retained = self.store.save_result_ingestion(foreign_id, embedded)
+        filename_id = str(uuid.uuid4())
+        mismatched = retained.with_name(f"{filename_id}.json")
+        retained.rename(mismatched)
+        return {
+            "initiative_id": foreign_id,
+            "filename_id": filename_id,
+            "embedded_id": embedded["ingestion_id"],
+            "task_id": embedded["task_id"],
+            "path": str(mismatched),
+        }
 
     @staticmethod
     def _exact_snapshot_jj(commit_id: str, tree_digest: str):
@@ -389,6 +425,97 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             },
         )
         refuse_coordinator.assert_called_once()
+
+    def test_controller_cli_lookup_isolates_unrelated_corrupt_initiative(self) -> None:
+        self.stage()
+        foreign = self.install_foreign_mismatched_ingestion()
+
+        def ingest_fixture(store, initiative_id, ingestion_id, **kwargs):
+            return ingest_result(
+                store, initiative_id, ingestion_id,
+                ingester=kwargs["ingester"],
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation={"state": "exited"},
+                verifier=self.verifier,
+            )
+
+        receipts = []
+        for identity in (self.ingestion["ingestion_id"], self.task["task_id"]):
+            with self.subTest(identity=identity), mock.patch(
+                "lib.control.orchestration.cli.ingest_result", side_effect=ingest_fixture,
+            ), mock.patch(
+                "lib.control.orchestration.cli.refuse_coordinator_pane",
+            ):
+                output = StringIO()
+                with redirect_stdout(output):
+                    returncode = task_main(
+                        ["ingest", identity, "--json"], env=self.env,
+                    )
+            self.assertEqual(returncode, 0)
+            receipts.append(json.loads(output.getvalue()))
+        self.assertEqual(receipts[0], receipts[1])
+        self.assertEqual(receipts[0]["phase"], "completed")
+        self.assertEqual(len(self.store.list_results_snapshot(self.initiative_id)), 1)
+        self.assertTrue(Path(foreign["path"]).is_file())
+
+    def test_controller_cli_malformed_owner_is_named_and_cannot_hide_ambiguity(self) -> None:
+        foreign = self.install_foreign_mismatched_ingestion(
+            task_id=self.task["task_id"],
+        )
+        for identity in (
+            foreign["filename_id"], foreign["embedded_id"], foreign["task_id"],
+        ):
+            error = StringIO()
+            with self.subTest(identity=identity), redirect_stderr(error):
+                returncode = task_main(["ingest", identity, "--json"], env=self.env)
+            detail = error.getvalue()
+            self.assertEqual(returncode, 2)
+            self.assertIn(foreign["initiative_id"], detail)
+            self.assertIn(foreign["path"], detail)
+            self.assertIn("field ingestion_id", detail)
+            self.assertIn(foreign["filename_id"], detail)
+            self.assertIn(foreign["embedded_id"], detail)
+
+    def test_controller_cli_duplicate_task_identity_still_refuses(self) -> None:
+        foreign = self.install_foreign_mismatched_ingestion(
+            task_id=self.task["task_id"],
+        )
+        Path(foreign["path"]).rename(
+            Path(foreign["path"]).with_name(f"{foreign['embedded_id']}.json")
+        )
+        error = StringIO()
+        with redirect_stderr(error):
+            returncode = task_main(
+                ["ingest", self.task["task_id"], "--json"], env=self.env,
+            )
+        self.assertEqual(returncode, 2)
+        self.assertIn("not uniquely reserved", error.getvalue())
+
+    def test_controller_cli_matching_initiative_remains_strict(self) -> None:
+        sibling = copy.deepcopy(self.ingestion)
+        sibling.update({
+            "ingestion_id": str(uuid.uuid4()),
+            "attempt_id": str(uuid.uuid4()),
+            "task_id": str(uuid.uuid4()),
+            "run_id": str(uuid.uuid4()),
+        })
+        retained = self.store.save_result_ingestion(self.initiative_id, sibling)
+        filename_id = str(uuid.uuid4())
+        mismatched = retained.with_name(f"{filename_id}.json")
+        retained.rename(mismatched)
+
+        error = StringIO()
+        with redirect_stderr(error):
+            returncode = task_main(
+                ["ingest", self.ingestion["ingestion_id"], "--json"],
+                env=self.env,
+            )
+        detail = error.getvalue()
+        self.assertEqual(returncode, 2)
+        self.assertIn(self.initiative_id, detail)
+        self.assertIn(str(mismatched), detail)
+        self.assertIn(filename_id, detail)
+        self.assertIn(sibling["ingestion_id"], detail)
 
     def test_coordinator_ingest_refusal_is_a_typed_cli_error(self) -> None:
         error = StringIO()
@@ -628,8 +755,24 @@ raise SystemExit(0)
             result["publication_provenance"]["method"], "controller-ingestion",
         )
         self.assertEqual(result["publication_provenance"]["producer_run_id"], result["run_id"])
+        self.assertEqual(
+            {
+                "actor_kind": result["publication_provenance"]["ingester_actor_kind"],
+                "actor_id": result["publication_provenance"]["ingester_actor_id"],
+                "coordinator_generation": result["publication_provenance"][
+                    "ingester_coordinator_generation"
+                ],
+            },
+            {
+                "actor_kind": "controller", "actor_id": "result-ingester",
+                "coordinator_generation": None,
+            },
+        )
         self.assertEqual(result["claimed_commit_id"], "d" * 40)
         self.assertEqual(result["commit_provenance"]["creator"], "controller")
+        self.assertEqual(
+            result["commit_provenance"]["actor_id"], "result-ingester",
+        )
         self.assertTrue(result["commit_provenance"]["verification_evidence_ids"])
         self.assertEqual(self.ingest(), receipt)
 
@@ -1035,6 +1178,233 @@ raise SystemExit(0)
             self.initiative_id, self.ingestion["ingestion_id"],
         )
         self.assertEqual(retained["state"], "completed")
+
+    def test_interrupted_ingesting_snapshot_completes_once_in_supervisor_pass(self) -> None:
+        self.stage()
+
+        def interrupted(*_args, **_kwargs):
+            raise IngestionUnavailable(
+                "controller verification runner was interrupted"
+            )
+
+        with self.assertRaisesRegex(IngestionUnavailable, "was interrupted"):
+            ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation={"state": "exited"},
+                verifier=interrupted,
+            )
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        self.assertEqual(retained["state"], "ingesting")
+        self.assertIsNotNone(retained["claimed_commit_id"])
+        self.assertEqual(len(retained["verification_evidence_ids"]), 1)
+
+        class TerminalAdapters(LiveAdapters):
+            def __init__(inner_self):
+                super().__init__(config=None, tmux=mock.Mock(), jj=self.jj)
+
+            def tmux(inner_self, _task, _run):
+                return Evidence("tmux", "missing", "owned pane exited")
+
+            def process(inner_self, _task, _run):
+                return Evidence(
+                    "process", "missing", "producer exited", state="exited",
+                )
+
+            def jj(inner_self, _task):
+                return Evidence("jj", "match", "owned")
+
+            def event(inner_self, _task, _run):
+                return Evidence("event", "missing", "none")
+
+        with mock.patch(
+            "lib.control.orchestration.ingestion.verify_controller_snapshot",
+            side_effect=self.verifier,
+        ):
+            first = ingest_pending_results(
+                self.store, self.initiative_id,
+                control_store=TaskStore(self.config.control),
+                adapters_factory=lambda _task: TerminalAdapters(),
+            )
+            replay = ingest_pending_results(
+                self.store, self.initiative_id,
+                control_store=TaskStore(self.config.control),
+                adapters_factory=lambda _task: TerminalAdapters(),
+            )
+        self.assertEqual(len(first), 1)
+        self.assertEqual(first[0]["phase"], "completed")
+        self.assertEqual(replay, [])
+        results = self.store.list_results_snapshot(self.initiative_id)
+        self.assertEqual([item["result_id"] for item in results], [first[0]["result_id"]])
+
+    def test_cross_actor_retry_preserves_original_ingester_provenance(self) -> None:
+        self.stage()
+        original_ingester = {
+            "actor_kind": "coordinator",
+            "actor_id": "coordinator-before-interruption",
+            "coordinator_generation": 7,
+        }
+        retry_ingester = {
+            "actor_kind": "controller",
+            "actor_id": "controller-retrying-ingestion",
+            "coordinator_generation": None,
+        }
+
+        def interrupted(*_args, **_kwargs):
+            raise IngestionUnavailable(
+                "controller verification runner was interrupted"
+            )
+
+        with self.assertRaisesRegex(IngestionUnavailable, "was interrupted"):
+            ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                ingester=original_ingester,
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation={"state": "exited"},
+                verifier=interrupted,
+            )
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        self.assertEqual(retained["state"], "ingesting")
+        self.assertEqual(retained["ingester"], original_ingester)
+
+        receipt = ingest_result(
+            self.store, self.initiative_id, self.ingestion["ingestion_id"],
+            ingester=retry_ingester,
+            control_store=TaskStore(self.config.control), jj=self.jj,
+            terminal_reconciliation={"state": "exited"},
+            verifier=self.verifier,
+        )
+        self.assertEqual(receipt["phase"], "completed")
+        completed = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        result = self.store.read_result(self.initiative_id, receipt["result_id"])
+        provenance = result["publication_provenance"]
+        self.assertEqual(completed["ingester"], original_ingester)
+        self.assertEqual(
+            {
+                "actor_kind": provenance["ingester_actor_kind"],
+                "actor_id": provenance["ingester_actor_id"],
+                "coordinator_generation": provenance[
+                    "ingester_coordinator_generation"
+                ],
+            },
+            completed["ingester"],
+        )
+        self.assertEqual(result["commit_provenance"]["creator"], "controller")
+        self.assertEqual(
+            result["commit_provenance"]["actor_id"],
+            original_ingester["actor_id"],
+        )
+
+        replay = ingest_result(
+            self.store, self.initiative_id, self.ingestion["ingestion_id"],
+            ingester=retry_ingester,
+            control_store=TaskStore(self.config.control), jj=self.jj,
+            terminal_reconciliation={"state": "exited"},
+            verifier=self.verifier,
+        )
+        self.assertEqual(replay, receipt)
+        self.assertEqual(
+            ingest_pending_results(self.store, self.initiative_id), []
+        )
+        self.assertEqual(
+            [item["result_id"] for item in self.store.list_results_snapshot(
+                self.initiative_id,
+            )],
+            [receipt["result_id"]],
+        )
+
+    def test_interrupted_ingesting_snapshot_replays_once_through_cli(self) -> None:
+        self.stage()
+
+        def interrupted(*_args, **_kwargs):
+            raise IngestionUnavailable(
+                "controller verification runner was interrupted"
+            )
+
+        with self.assertRaisesRegex(IngestionUnavailable, "was interrupted"):
+            ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation={"state": "exited"},
+                verifier=interrupted,
+            )
+
+        def resume(store, initiative_id, ingestion_id, **kwargs):
+            return ingest_result(
+                store, initiative_id, ingestion_id,
+                ingester=kwargs["ingester"],
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation={"state": "exited"},
+                verifier=self.verifier,
+            )
+
+        receipts = []
+        with mock.patch(
+            "lib.control.orchestration.cli.ingest_result", side_effect=resume,
+        ), mock.patch(
+            "lib.control.orchestration.cli.refuse_coordinator_pane",
+        ):
+            for identity in (self.ingestion["ingestion_id"], self.task["task_id"]):
+                output = StringIO()
+                with redirect_stdout(output):
+                    returncode = task_main(["ingest", identity, "--json"], env=self.env)
+                self.assertEqual(returncode, 0)
+                receipts.append(json.loads(output.getvalue()))
+
+        self.assertEqual(receipts[0], receipts[1])
+        self.assertEqual(receipts[0]["phase"], "completed")
+        results = self.store.list_results_snapshot(self.initiative_id)
+        self.assertEqual([item["result_id"] for item in results], [receipts[0]["result_id"]])
+
+    def test_malformed_interrupted_ingestion_refuses_once_with_schema_fields(self) -> None:
+        body = self.body(verification_attestations=[{
+            "command": ["python3", "-m", "unittest"],
+            "exit_status": 0,
+            "detail": "worker reported success",
+        }])
+        staged = self.stage(body)
+        candidate = json.loads(Path(staged["outbox_path"]).read_text())
+        digest = hashlib.sha256(json.dumps(
+            candidate, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+            allow_nan=False,
+        ).encode()).hexdigest()
+        retained = self.store.read_result_ingestion(
+            self.initiative_id, self.ingestion["ingestion_id"],
+        )
+        interrupted = copy.deepcopy(retained)
+        interrupted.update({
+            "state": "ingesting",
+            "candidate_digest": digest,
+            "publication_id": body["publication_id"],
+            "claimed_commit_id": "d" * 40,
+            "claimed_tree_digest": "e" * 64,
+            "commit_creator": "controller",
+            "verification_evidence_ids": [str(uuid.uuid4())],
+            "ingester": {
+                "actor_kind": "controller", "actor_id": "result-ingester",
+                "coordinator_generation": None,
+            },
+            "updated_at": now_text(),
+        })
+        self.store.save_result_ingestion(
+            self.initiative_id, interrupted,
+            expected_digest=record_digest(retained),
+        )
+
+        refused = self.ingest()
+        replay = self.ingest()
+        self.assertEqual(refused, replay)
+        self.assertEqual(refused["phase"], "refused")
+        self.assertIn("result candidate body is invalid", refused["refusal"])
+        self.assertIn("verification_attestations[0]", refused["refusal"])
+        self.assertIn("argv", refused["refusal"])
+        self.assertEqual(self.store.list_results_snapshot(self.initiative_id), [])
 
     def test_snapshot_materialization_environment_failure_is_not_a_refusal(self) -> None:
         with mock.patch(
