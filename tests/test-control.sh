@@ -196,6 +196,7 @@ printf 'ok - batch reads publish only tmux summary; doctor probes tmux+jj; Codex
 # restore the real PATH so this section exercises the installed jj 0.38 binary.
 PATH="$REAL_PATH" PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_control_finish_increment \
+  tests.python.test_control_rooms \
   tests.python.test_control_terminal_actions \
   tests.python.test_control_task_start_smoke_fixes \
   tests.python.test_control_tui_initiatives_mode \

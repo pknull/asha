@@ -68,7 +68,7 @@ _FIXED_SCREEN_LINES = 15
 _STATUS_MAX_LINES = 6
 _TREE_FOOTER = (
     # Most-used keys first: narrow terminals clip the tail, `?` shows everything.
-    "Enter attach  ! need you  a approve  X close worker  p pause  s stop  n new  ? help  q quit  |  "
+    "Enter attach  o room  ! need  a approve  X close  p pause  s stop  n new  ? help  q quit  |  "
     "N task  r reconcile  d diff  e events  c seals  v verify  t storage  x actions  A scope  / filter"
 )
 def _glyph_mode(env: Mapping[str, str] | None = None) -> str:
@@ -132,6 +132,9 @@ class IntentKind(Enum):
     INIT_COLLAPSE = "initiative-collapse"
     INIT_NEW = "initiative-new"
     INIT_ATTACH = "initiative-attach"
+    ROOM_OPEN = "room-open"
+    ROOM_ATTACH = "room-attach"
+    ROOM_CLOSE = "room-close"
 
 
 @dataclass(frozen=True)
@@ -502,6 +505,8 @@ class TuiModel:
             return TuiIntent(IntentKind.INIT_COLLAPSE)
         if key == "n":
             return TuiIntent(IntentKind.INIT_NEW)
+        if key == "o":
+            return TuiIntent(IntentKind.ROOM_OPEN)
         if key == "N":
             return TuiIntent(IntentKind.START)
         screen = self.initiatives
@@ -510,6 +515,10 @@ class TuiModel:
             return TuiIntent(IntentKind.NONE, reason="no row is selected")
         task_bound = row.kind in {"node", "attempt", "task"} and row.task_id is not None
         if key == "ENTER":
+            if row.kind == "room":
+                return TuiIntent(IntentKind.ROOM_ATTACH, target=row.id)
+            if row.kind == "rooms-root":
+                return TuiIntent(IntentKind.INIT_EXPAND)
             if row.kind == "initiative":
                 return TuiIntent(IntentKind.INIT_ATTACH, initiative_id=row.initiative_id, target=row.id)
             if row.kind == "tasks-root":
@@ -524,6 +533,11 @@ class TuiModel:
                 )
             return TuiIntent(IntentKind.INIT_OPEN, initiative_id=row.initiative_id, target=row.id)
         if key == "X":
+            if row.kind == "room":
+                return TuiIntent(
+                    IntentKind.ROOM_CLOSE, target=row.id,
+                    requires_confirmation=True,
+                )
             if not task_bound:
                 return TuiIntent(IntentKind.NONE, reason="close targets a row with a linked worker")
             return TuiIntent(IntentKind.CLOSE_WORKER, task_id=row.task_id, requires_confirmation=True)
@@ -558,7 +572,7 @@ class TuiModel:
             return TuiIntent(IntentKind.NONE)
         if row.kind in {"node", "attempt"} and key == "d" and task_bound:
             return TuiIntent(IntentKind.DIFF, task_id=row.task_id)
-        if row.kind == "tasks-root":
+        if row.kind in {"tasks-root", "rooms-root", "room"}:
             return TuiIntent(IntentKind.NONE)
         kind = _INITIATIVE_KEYS.get(key)
         if kind is None:
@@ -708,14 +722,21 @@ def _tree_row_line(row, width: int, selected: bool, now, glyphs: str) -> Line:
     waiting = "" if row.attention in ("-", "") else row.attention
     paused = row.state == "paused"
     values = {
-        "glyph": (ROW_GLYPH[glyphs][tier] if row.kind != "tasks-root" else "", tier),
+        "glyph": (
+            ROW_GLYPH[glyphs][tier]
+            if row.kind not in {"tasks-root", "rooms-root"} else "", tier
+        ),
         "state": (display[1] if display else short_label(row.state), tier),
-        "name": ("  " * row.depth + (row.label if row.kind in {"initiative", "task", "tasks-root"} else row.id), None),
+        "name": ("  " * row.depth + (
+            row.label if row.kind in {
+                "initiative", "task", "tasks-root", "rooms-root", "room",
+            } else row.id
+        ), None),
         "worker": (_row_worker(row), None),
         "age": (_age(row.observed_at, now) if row.observed_at else "", None),
         "waiting": (waiting, tier if waiting else None),
     }
-    if row.kind == "tasks-root":
+    if row.kind in {"tasks-root", "rooms-root"}:
         values["name"] = ("  " * row.depth + row.label, None)
         values["state"] = ("", None)
         values["worker"] = (row.state, None)
@@ -950,16 +971,17 @@ def _render_tree(model: TuiModel) -> list[str]:
             "ASHA CONTROL HELP",
             "",
             "Keys: Up/Down select | Right/Left expand/collapse | ! only rows waiting on a human",
-            "      Enter: initiative row attaches its coordinator; node/task rows open the worker popup",
-            "      n new intent (Control starts the coordinator) | N start an ad-hoc task | A archived scope",
-            "      X close a published worker (sends its quit command as you) | x context actions on a task",
+            "      Enter: attach a room/coordinator/worker; Right/Left opens branch rows",
+            "      o open Room | n new intent | N start ad-hoc task | A archived scope",
+            "      X close a Room/published worker | x context actions on a task",
             "      r reconcile | d diff | e events | a approve plan / archive task | c candidate seals",
             "      v review+verification evidence | t retained storage | p pause/resume | s stop attempt",
             "      / filter | ? help | q quit",
             "",
             "Facts: claim, seal, review verdict, and verification outcome are shown separately.",
             "Approval: the operator decides here or in the CLI; the coordinator pane is refused.",
-            "No merge, rebase, bookmark, push, publication, workspace removal, or deletion exists here.",
+            "Room close ends only its exact-owned tmux session; project files are untouched.",
+            "No merge, rebase, bookmark, push, publication, or workspace removal exists here.",
             "Status: every state is derived from qualified tmux, process, jj, and event evidence.",
             "Limitations: prune requires separate confirmation; no automated integration.",
             "Refresh: synchronous bounded adapter calls may delay keys after a pass starts.",
@@ -991,7 +1013,9 @@ def _render_tree(model: TuiModel) -> list[str]:
                 model.now, glyphs,
             ))
         if not screen.rows():
-            lines.append("Nothing to show: no initiatives or tasks match.")
+            lines.append("Nothing to show: no Rooms, initiatives, or tasks match.")
+        if screen.rooms_error:
+            lines.append(_clip(f"Rooms unavailable: {screen.rooms_error}", model.width))
         if screen.orchestration_error:
             lines.append(_clip(f"Initiatives unavailable: {screen.orchestration_error}", model.width))
         lines.append("")
@@ -1064,6 +1088,14 @@ def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[st
     return views
 
 
+def _load_room_rows(env: Mapping[str, str], *, tmux=None) -> list[dict[str, Any]]:
+    """Reconciled Room facts; failure is isolated from every other tree branch."""
+    from .rooms import RoomStore, list_rooms
+
+    config = load_config(env)
+    return list_rooms(RoomStore(config), tmux=tmux or TmuxAdapter())["rooms"]
+
+
 
 def _enter_tree(model: TuiModel, env: Mapping[str, str]) -> None:
     """Build or refresh the unified tree; orchestration failure degrades to a note.
@@ -1071,22 +1103,7 @@ def _enter_tree(model: TuiModel, env: Mapping[str, str]) -> None:
     Tasks always render: a malformed orchestration configuration leaves the
     unbound-task branch (and every task action) fully usable.
     """
-    try:
-        _refresh_initiatives(model, env)
-    except Exception as exc:  # noqa: BLE001 - degrade initiatives only, keep tasks
-        from .orchestration.tui_model import InitiativesScreen
-
-        error = f"{_safe_error(exc)}"
-        if model.initiatives is None:
-            model.initiatives = InitiativesScreen(
-                [], height=model.height, width=model.width,
-                task_rows=model.rows, orchestration_error=error,
-            )
-        else:
-            model.initiatives.resize(model.height, model.width)
-            model.initiatives.replace_views([], task_rows=model.rows)
-            model.initiatives.orchestration_error = error
-        model.initiatives_error = error
+    _refresh_initiatives(model, env)
 
 
 # The Increment 6 name; the tree is now the only view.
@@ -1096,16 +1113,32 @@ _enter_initiatives = _enter_tree
 def _refresh_initiatives(model: TuiModel, env: Mapping[str, str], *, tmux=None) -> None:
     from .orchestration.tui_model import InitiativesScreen
 
-    views = _load_initiative_views(env, tmux=tmux)
+    try:
+        views = _load_initiative_views(env, tmux=tmux)
+        initiatives_error = None
+    except Exception as exc:  # noqa: BLE001 - degrade this branch only
+        views = []
+        initiatives_error = _safe_error(exc)
+    try:
+        rooms = _load_room_rows(env, tmux=tmux)
+        rooms_error = None
+    except Exception as exc:  # noqa: BLE001 - degrade this branch only
+        rooms = []
+        rooms_error = _safe_error(exc)
     if model.initiatives is None:
         model.initiatives = InitiativesScreen(
             views, height=model.height, width=model.width, task_rows=model.rows,
+            room_rows=rooms, orchestration_error=initiatives_error,
+            rooms_error=rooms_error,
         )
     else:
         model.initiatives.resize(model.height, model.width)
-        model.initiatives.replace_views(views, task_rows=model.rows)
-        model.initiatives.orchestration_error = None
-    model.initiatives_error = None
+        model.initiatives.replace_views(
+            views, task_rows=model.rows, room_rows=rooms,
+        )
+        model.initiatives.orchestration_error = initiatives_error
+        model.initiatives.rooms_error = rooms_error
+    model.initiatives_error = initiatives_error
 
 
 def _wrap_status(message: str, width: int) -> list[str]:
@@ -3274,6 +3307,10 @@ _INITIATIVE_INTENTS = frozenset({
     IntentKind.INIT_NEW, IntentKind.INIT_ATTACH,
 })
 
+_ROOM_INTENTS = frozenset({
+    IntentKind.ROOM_OPEN, IntentKind.ROOM_ATTACH, IntentKind.ROOM_CLOSE,
+})
+
 
 def _linked_task_for_row(screen, row) -> tuple[str | None, str | None]:
     """(control_task_id, attempt_id) for a node or attempt row, from the initiative's links."""
@@ -3355,12 +3392,137 @@ def _popup_session(stdscr, curses_module, config: ControlConfig, env: Mapping[st
         _repaint_after_suspend(stdscr)
 
 
+def _popup_room_command(
+    stdscr, curses_module, config: ControlConfig, env: Mapping[str, str],
+    adapter, command: list[str], attach: str, label: str,
+) -> str | None:
+    from .cli import _run_command_popup
+
+    curses_module.endwin()
+    try:
+        return _run_command_popup(
+            adapter, config, command, attach, label, env,
+        )
+    finally:
+        _repaint_after_suspend(stdscr)
+
+
 def _tui_asha_root(env: Mapping[str, str]) -> Path:
     raw_root = env.get("ASHA_ROOT")
     root = Path(__file__).resolve().parents[2] if raw_root is None else Path(raw_root)
     if not root.is_absolute() or root.resolve() != root:
         raise ValueError("ASHA_ROOT must be an exact canonical absolute path")
     return root
+
+
+def _open_room_form(
+    stdscr, curses_module, model: TuiModel, config: ControlConfig,
+    env: Mapping[str, str],
+) -> str:
+    """Collect one bounded Room request and launch it detached."""
+    from .orchestration.projects import list_projects_across, resolve_roots
+    from .rooms import RoomError, open_room, room_harness_available
+
+    roots, source = resolve_roots(env=env)
+    payload = list_projects_across(roots, depth=3, source_of_roots=source)
+    project_candidates = tuple(
+        ModalCandidate(
+            item["root"],
+            f"{item.get('name') or item.get('directory')}  {item.get('project_id') or 'uninitialized'}",
+        )
+        for item in payload["projects"]
+        if item.get("asha_project") and item.get("project_id")
+    )
+    if not project_candidates:
+        return "room open refused: no initialized projects are indexed"
+    project = _prompt_line(
+        stdscr, curses_module, model, "Project: ", title="Open Room",
+        context="Rooms work directly in one initialized project's canonical checkout.",
+        maximum=4096, candidates=project_candidates, selected=0,
+    )
+    if not project:
+        return "room open cancelled"
+    name = _prompt_line(
+        stdscr, curses_module, model, "Room name: ", title="Open Room",
+        context=f"Project: {project}", maximum=120,
+    )
+    if not name:
+        return "room open cancelled"
+    harness_candidates = tuple(
+        ModalCandidate(name, "installed")
+        for name in sorted(HARNESSES)
+        if room_harness_available(name, env)
+    )
+    if not harness_candidates:
+        return "room open refused: no supported interactive harness is installed"
+    harness = _prompt_line(
+        stdscr, curses_module, model, "Harness: ", title="Open Room",
+        context=f"Project: {project}\nRoom: {name}", maximum=16,
+        candidates=harness_candidates, selected=0,
+    )
+    if not harness:
+        return "room open cancelled"
+    prompt = _prompt_line(
+        stdscr, curses_module, model, "Opening prompt: ", title="Open Room",
+        context=f"Project: {project}\nRoom: {name}\nHarness: {harness}",
+        maximum=4000,
+    )
+    if not prompt:
+        return "room open cancelled"
+    try:
+        launched = open_room(
+            name=name, project=project, harness=harness, prompt=prompt,
+            config=config, env=env, tmux=_coordinator_tmux(),
+            asha_root=_tui_asha_root(env),
+        )
+    except (RoomError, TmuxError, OSError, ValueError) as exc:
+        return f"room open refused: {_safe_error(exc)}"
+    _refresh_initiatives(model, env)
+    return (
+        f"Room {launched['name']} started detached in {launched['project_name']}; "
+        "select it and press Enter to attach"
+    )
+
+
+def _execute_room_intent(
+    intent: TuiIntent, *, stdscr, curses_module, model: TuiModel,
+    config: ControlConfig, env: Mapping[str, str],
+) -> str:
+    from .rooms import RoomError, RoomStore, attach_room, close_room
+
+    if intent.kind is IntentKind.ROOM_OPEN:
+        return _open_room_form(stdscr, curses_module, model, config, env)
+    if not intent.target:
+        return "no Room is selected"
+    adapter = _coordinator_tmux()
+    store = RoomStore(config)
+    if intent.kind is IntentKind.ROOM_ATTACH:
+        try:
+            target = attach_room(store, intent.target, tmux=adapter)
+        except (RoomError, TmuxError, ValueError) as exc:
+            return f"room attach refused: {_safe_error(exc)}"
+        refusal = _popup_room_command(
+            stdscr, curses_module, config, env,
+            adapter, target["attach_argv"], target["attach"], target["name"],
+        )
+        return refusal or "Room popup closed; the Room keeps running"
+    answer = _prompt_line(
+        stdscr, curses_module, model, "Confirm [yes/N]: ", title="Close Room",
+        context=(
+            f"Room ID: {intent.target}\n"
+            "This permanently ends only the exact-owned tmux session. Project files, "
+            "Memory, and /session:save state are untouched.\n"
+            "Authorization: type exact yes (lowercase)."
+        ), maximum=4,
+    )
+    if answer != "yes":
+        return "Room close cancelled"
+    try:
+        closed = close_room(store, intent.target, tmux=adapter)
+    except (RoomError, TmuxError, ValueError) as exc:
+        return f"Room close refused: {_safe_error(exc)}"
+    _refresh_initiatives(model, env)
+    return f"Room {closed['name']} closed; project files were untouched"
 
 
 def _execute_initiative_intent(
@@ -3565,6 +3727,12 @@ def _execute_intent(
         model.message = (
             "showing only rows waiting on a human (! shows everything)"
             if screen.attention_only else "showing everything"
+        )
+        return True
+    if intent.kind in _ROOM_INTENTS:
+        model.message = _execute_room_intent(
+            intent, stdscr=stdscr, curses_module=curses_module,
+            model=model, config=config, env=env,
         )
         return True
     if intent.kind is IntentKind.CLOSE_WORKER:

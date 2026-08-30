@@ -6,7 +6,8 @@ describe the supported release.
 
 ## Purpose and prerequisites
 
-Control turns one unit of agent work into a persistent local task. A task owns
+Control supports persistent Rooms for fluid project collaboration and isolated
+tasks for bounded agent work. A task owns
 a versioned registry record, an explicit-base jj workspace and change, a
 detached tmux session, and its harness runs. Closing the TUI, popup, or shell
 does not end the task.
@@ -30,6 +31,11 @@ because those harnesses claim process liveness only.
 ## Command surface
 
 ```text
+asha room open NAME --project PROJECT --harness H --prompt TEXT [--json]
+asha room list [--json]
+asha room attach NAME|UUID [--json]
+asha room close NAME|UUID [--yes] [--json]
+
 asha task start [--repo PATH] (--pr N | --issue N | [--base REVSET])
                 [--task-id UUID] [--slug SLUG]
                 [--harness H|--agent H] (--goal TEXT | -- TEXT...)
@@ -102,9 +108,43 @@ branch such as `dev` is a default candidate; a detached repository with missing
 or conflicting fallback candidates refuses before mutation and requests an
 explicit `--base`.
 
+## Rooms: dynamic project sessions
+
+A Room is a detached tmux session running the full Asha persona and operational
+layer directly in one initialized Memory v2 project's canonical directory. It
+creates no Git or jj workspace and has no plan, seal, integration, TTL,
+archive, reopen, or `/session:save` lifecycle. Detaching leaves it running;
+only an explicit confirmed close ends its exact-owned tmux session.
+
+An exact existing `PROJECT` path is validated directly, including outside the
+configured roots. Friendly names, directory names, and `project_id` selectors
+resolve case-insensitively through the configured multi-root project index and
+must select exactly one project. Rooms do not require Git or jj.
+`H` is one installed `claude`, `codex`, `copilot`, or `opencode`; their prompt
+forms are positional for Claude/Codex, `--interactive PROMPT` for Copilot, and
+`--prompt PROMPT` for OpenCode. The `ASHA_CLAUDE_CMD`, `ASHA_CODEX_CMD`,
+`ASHA_COPILOT_CMD`, and `ASHA_OPENCODE_CMD` executable overrides are honored by
+both CLI/TUI preflight and launch. `open` is detached and returns immediately
+with the UUID, tmux identity, and exact attach command.
+
+Room records live under `${ASHA_HOME:-~/.asha}/state/control/rooms/` and retain
+only a digest of the opening prompt. Attach and close revalidate the recorded
+immutable tmux session/pane IDs and UUID/project markers in the same tmux
+server action; a readable tmux name is never ownership evidence. Missing or
+ended owned Rooms remain safely closable, while a foreign collision is reported
+as `mismatch` and never killed. `close --json`
+and other non-interactive closes require `--yes`; the TUI requires exact
+lowercase `yes` every time.
+
+Multiple Rooms may share a project checkout. The CLI and TUI mark every live
+member `shared working tree`; concurrent edits are therefore immediately
+visible and need human coordination. Use a Control task or initiative when
+isolation is required.
+
 ## Terminal TUI: one control tree
 
-`asha control` opens a single tree in the current terminal: every non-archived
+`asha control` opens a single tree in the current terminal: an expanded
+**Rooms** branch when at least one durable Room record exists, every non-archived
 initiative (expandable to its nodes and attempts, each showing its linked
 worker's live state inline) followed by an **Unbound tasks** branch holding
 Control tasks bound to no initiative. With no initiatives on screen the branch
@@ -114,11 +154,12 @@ kind:
 | Key | Action |
 |---|---|
 | `Up`/`Down`, `Right`/`Left` | Move; expand or collapse (`Left` on a child returns to its parent). |
-| `Enter` | Initiative row: attach its coordinator session. Node/attempt/task row: open the worker's tmux popup. |
+| `Enter` | Room row: attach it. Initiative row: attach its coordinator. Node/attempt/task row: open the worker popup. |
 | `!` | Show only rows waiting on a human (plan approvals, needs-input, workers at prompts, published-awaiting-exit). |
 | `n` | New intent: Control starts a coordinator session at the projects root with your intent as its first message. |
+| `o` | Open the Room form: choose an indexed project, name, installed harness, and opening prompt. Launch stays detached. |
 | `N` | Open the ad-hoc task-start form. |
-| `X` | After `yes`, send the worker's quit command (`/exit`, `/quit`) into its pane **as your keystroke** — for a published worker whose seal awaits its normal exit. |
+| `X` | Room row: after exact `yes`, kill only its exact-owned session. Worker row: after `yes`, send its quit command as your keystroke. |
 | `a` | Initiative row: decide a pending plan approval (`approve`/`reject`). Task row: archive after confirmation. |
 | `x` | Task row: controller-revalidated context actions. |
 | `r` | Initiative row: reconcile it. Task row: reconcile the task. |

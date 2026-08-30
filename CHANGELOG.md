@@ -12,6 +12,25 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Project Rooms
+
+- Added `asha room open NAME --project PROJECT --harness H --prompt TEXT`,
+  plus `list`, `attach`, and confirmed `close`. Rooms are detached,
+  persona-bearing tmux sessions working directly in one exactly resolved
+  Memory v2 project; they create no workspace and have no reopen, archive,
+  prune, TTL, or integration lifecycle.
+- Room records retain UUID/project/tmux identity and a prompt digest (never the
+  prompt text). Session and pane ownership markers are revalidated before
+  attach or close; foreign collisions are reported and never killed. Launches
+  force persona on, chair stance off, scrub inherited Control roles in the
+  actual child process, and preserve uncertain post-respawn residue for an
+  explicit close.
+- The unified `asha control` tree now has an expanded Rooms branch whenever
+  durable Room records exist. `o` opens
+  the project/name/harness/prompt form, `Enter` attaches through the caller-
+  bound popup seam, and `X` requires exact `yes` before close. Multiple live
+  Rooms in one project are allowed and carry a shared-checkout warning.
+
 #### Bare `asha` opens the seat
 
 - Every wrapped no-argument launch now opens the seat: the harness word in

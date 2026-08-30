@@ -326,7 +326,7 @@ launch() {
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
       local -a coordinator_args=()
-      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" || "${ASHA_SEAT:-0}" == "1" ]]; then
+      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" || -n "${ASHA_ROOM_ID:-}" || "${ASHA_SEAT:-0}" == "1" ]]; then
         trust_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
           || trust_root="$PWD"
         if [[ "$trust_root" =~ [[:cntrl:]] ]]; then
@@ -516,6 +516,8 @@ Usage:
                                    manage shared knowledge and optional coordination
   asha task start|list|show|attach|stop|archive|reconcile|doctor [...]
                                    manage persistent Control tasks and runs
+  asha room open|list|attach|close [...]
+                                   manage persistent project conversations
   asha initiative baseline|create|plan|approve|reject|activate|action|dispatch|pause|resume|stop|cancel|list|show|events|reconcile|storage|snapshot|doctor|projects [...]
                                    manage bounded Orchestration Core initiatives
   asha control [--initiatives|event|tmux|supervisor]
@@ -584,7 +586,7 @@ fi
 
 # Asha Control owns these public nouns. Route them before harness selection so
 # neither can fall through and become a default-harness argument.
-if [[ "${1:-}" == "task" || "${1:-}" == "control" || "${1:-}" == "initiative" || "${1:-}" == "migrate" ]]; then
+if [[ "${1:-}" == "task" || "${1:-}" == "room" || "${1:-}" == "control" || "${1:-}" == "initiative" || "${1:-}" == "migrate" ]]; then
   control_route="$1"; shift
   # shellcheck disable=SC1090
   source "$ASHA_ROOT/lib/control.sh"
