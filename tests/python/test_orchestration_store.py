@@ -840,6 +840,18 @@ with store.transaction_lock({INITIATIVE_ID!r}):
         )
         self.assertEqual({problem["directory"] for problem in problems}, {"result-ingestions"})
         self.assertIn("does not match its filename", problems[0]["reason"])
+        self.assertIn(INITIATIVE_ID, problems[0]["reason"])
+        self.assertIn(str(clobbered), problems[0]["reason"])
+        self.assertIn("field ingestion_id", problems[0]["reason"])
+        self.assertIn(f"filename stem='{clobbered_id}'", problems[0]["reason"])
+        self.assertIn(f"record value='{live_id}'", problems[0]["reason"])
+        with self.assertRaises(StoreError) as mismatch:
+            self.store.read_result_ingestion(INITIATIVE_ID, clobbered_id)
+        exact_detail = str(mismatch.exception)
+        self.assertIn(INITIATIVE_ID, exact_detail)
+        self.assertIn(str(clobbered), exact_detail)
+        self.assertIn(f"filename stem='{clobbered_id}'", exact_detail)
+        self.assertIn(f"record value='{live_id}'", exact_detail)
         # Surveying is a read: nothing is renamed, repaired or removed, because
         # the clobbered payload belongs to the live record and adopting it
         # under this filename would mint a duplicate of a real record.

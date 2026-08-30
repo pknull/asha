@@ -1783,10 +1783,14 @@ def _task_2b_command(args: list[str], env: Mapping[str, str]) -> int:
             )
         store = InitiativeStore(config)
         matches = []
+        relevant_problems: list[dict[str, str]] = []
         for initiative in store.list_initiatives():
             initiative_id = initiative["initiative_id"]
+            problems: list[dict[str, str]] = []
             try:
-                records = store.list_result_ingestions_snapshot(initiative_id)
+                records = store.list_result_ingestions_snapshot(
+                    initiative_id, problems=problems,
+                )
             except StoreError as exc:
                 if (
                     "initiative storage directory is missing: result-ingestions"
@@ -1797,9 +1801,28 @@ def _task_2b_command(args: list[str], env: Mapping[str, str]) -> int:
                 # absent additive sidecar. Keep identity resolution read-only;
                 # caller attribution is checked before ingestion may write.
                 records = []
-            matches.extend(
+            initiative_matches = [
                 (initiative, record) for record in records
                 if record["ingestion_id"] == identity or record["task_id"] == identity
+            ]
+            if initiative_matches:
+                # A matching initiative must remain strict as a set: a bad
+                # sibling could conceal a duplicate task identity there.
+                relevant_problems.extend(problems)
+            else:
+                relevant_problems.extend(
+                    problem for problem in problems
+                    if identity in {
+                        problem.get("filename_identity"),
+                        problem.get("record_identity"),
+                        problem.get("task_id"),
+                    }
+                )
+            matches.extend(initiative_matches)
+        if relevant_problems:
+            raise IngestionRefused(
+                "result ingestion identity resolves to a malformed reservation: "
+                f"{relevant_problems[0]['reason']}"
             )
         if len(matches) != 1:
             raise IngestionRefused(

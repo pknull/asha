@@ -35,6 +35,7 @@ from .model import (
     new_uuid,
     record_digest,
     validate_evidence,
+    validate_result,
     validate_result_candidate,
     validate_result_ingestion,
 )
@@ -69,6 +70,9 @@ RESULT_INGESTION_RECEIPT_CONTRACT = (
 )
 MAX_CANDIDATE_BYTES = MAX_RESULT_BODY_BYTES + 16 * 1024
 _INGESTION_NAMESPACE = uuid.UUID("89b98b7c-90e6-4a25-8b6f-dd0062989a40")
+_VERIFICATION_ATTESTATION_FIELDS = frozenset({
+    "argv", "cwd", "exit_code", "finished_at", "output_digest", "summary",
+})
 
 
 class IngestionError(ResultError):
@@ -562,6 +566,29 @@ def _candidate_digest(candidate: Mapping[str, Any]) -> str:
     return hashlib.sha256(_canonical(candidate)).hexdigest()
 
 
+def _validate_ingestion_body(body: Mapping[str, Any]) -> None:
+    """Validate the closed worker schema before using any body subfields."""
+    attestations = body.get("verification_attestations")
+    if isinstance(attestations, list):
+        for index, attestation in enumerate(attestations):
+            if isinstance(attestation, Mapping):
+                missing = _VERIFICATION_ATTESTATION_FIELDS - attestation.keys()
+                if missing:
+                    raise ModelError(
+                        f"result verification_attestations[{index}] is missing "
+                        f"required field(s): {', '.join(sorted(missing))}"
+                    )
+    candidate = copy.deepcopy(dict(body))
+    result_id = new_uuid()
+    while result_id == candidate.get("supersedes_result_id"):
+        result_id = new_uuid()
+    candidate.update({
+        "result_id": result_id,
+        "payload_digest": hashlib.sha256(canonical_body_bytes(body)).hexdigest(),
+    })
+    validate_result(candidate)
+
+
 def _transition_ingestion(
     store: InitiativeStore,
     record: Mapping[str, Any],
@@ -978,7 +1005,14 @@ def _ingest_result(
         ):
             refused = _refuse(store, record, "result candidate was modified after reservation")
             return _receipt(refused)
-        body = parse_client_body(canonical_body_bytes(candidate["body"]))
+        try:
+            body = parse_client_body(canonical_body_bytes(candidate["body"]))
+            _validate_ingestion_body(body)
+        except (ModelError, ResultError) as exc:
+            refused = _refuse(
+                store, record, f"result candidate body is invalid: {exc}",
+            )
+            return _receipt(refused)
         if candidate["body_digest"] != hashlib.sha256(canonical_body_bytes(body)).hexdigest():
             refused = _refuse(store, record, "result candidate body digest changed")
             return _receipt(refused)
