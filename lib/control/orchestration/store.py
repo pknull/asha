@@ -1363,19 +1363,33 @@ class InitiativeStore:
         identity_field: str | None = None,
         identity_value: Any = None,
     ) -> dict[str, Any]:
+        path = self.config.initiatives_dir / initiative_id / directory / name
         with self._locked_fds(initiative_id) as (_, initiative_fd):
             directory_fd = self._subdirectory(initiative_fd, directory)
             try:
                 self._sweep_write_residue(directory_fd)
-                record = self._validated_read(
-                    directory_fd, name, f"{directory} record", validator
-                )
+                try:
+                    record = self._validated_read(
+                        directory_fd, name, f"{directory} record", validator
+                    )
+                except StoreError as exc:
+                    raise type(exc)(
+                        f"initiative {initiative_id} record {path}: {exc}"
+                    ) from exc
             finally:
                 _close(directory_fd)
         if "initiative_id" in record and record["initiative_id"] != initiative_id:
-            raise StoreError("record initiative_id does not match destination initiative")
+            raise StoreError(
+                f"initiative {initiative_id} record {path}: field initiative_id "
+                "does not match its destination initiative: "
+                f"destination={initiative_id!r}, record value={record['initiative_id']!r}"
+            )
         if identity_field is not None and record[identity_field] != identity_value:
-            raise StoreError(f"record {identity_field} does not match its filename")
+            raise StoreError(
+                f"initiative {initiative_id} record {path}: field {identity_field} "
+                "does not match its filename: "
+                f"filename stem={identity_value!r}, record value={record[identity_field]!r}"
+            )
         return record
 
     def _list_subrecords_snapshot(
@@ -1400,10 +1414,15 @@ class InitiativeStore:
         and it is opt-in per call site, so every other reader keeps failing
         closed.
         """
-        def _reject(name: str, reason: str) -> None:
+        def _reject(name: str, reason: str, **detail: str) -> None:
+            path = self.config.initiatives_dir / initiative_id / directory / name
+            contextual = f"initiative {initiative_id} record {path}: {reason}"
             if problems is None:
-                raise StoreError(reason)
-            problems.append({"directory": directory, "name": name, "reason": reason})
+                raise StoreError(contextual)
+            problems.append({
+                "directory": directory, "name": name, "path": str(path),
+                "reason": contextual, **detail,
+            })
 
         with self._initiative_directory(
             initiative_id, create_root=False, create_initiative=False
@@ -1426,15 +1445,41 @@ class InitiativeStore:
                             directory_fd, name, f"{directory} record", validator
                         )
                     except StoreError as exc:
-                        if problems is None:
-                            raise
-                        _reject(name, str(exc))
+                        _reject(
+                            name, str(exc), filename_identity=str(identity),
+                        )
                         continue
                     if record.get("initiative_id", initiative_id) != initiative_id:
-                        _reject(name, "record initiative_id does not match destination initiative")
+                        detail = {
+                            "filename_identity": str(identity),
+                            "record_initiative_id": str(record["initiative_id"]),
+                        }
+                        if "task_id" in record:
+                            detail["task_id"] = str(record["task_id"])
+                        if identity_field in record:
+                            detail["record_identity"] = str(record[identity_field])
+                        _reject(
+                            name,
+                            "field initiative_id does not match its destination "
+                            f"initiative: destination={initiative_id!r}, "
+                            f"record value={record['initiative_id']!r}",
+                            **detail,
+                        )
                         continue
                     if record[identity_field] != identity:
-                        _reject(name, f"record {identity_field} does not match its filename")
+                        detail = {
+                            "filename_identity": str(identity),
+                            "record_identity": str(record[identity_field]),
+                        }
+                        if "task_id" in record:
+                            detail["task_id"] = str(record["task_id"])
+                        _reject(
+                            name,
+                            f"field {identity_field} does not match its filename: "
+                            f"filename stem={identity!r}, "
+                            f"record value={record[identity_field]!r}",
+                            **detail,
+                        )
                         continue
                     records.append(record)
                 return records
