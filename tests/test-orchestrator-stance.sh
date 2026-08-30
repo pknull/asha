@@ -136,6 +136,22 @@ else
   fail "codex coordinator launch omits the chair brief (stderr: $(cat "$WORK/stderr"))"
 fi
 
+# Rooms are full-persona project sessions, never operator chairs.
+run_harness claude ASHA_ROOM_ID=11111111-1111-4111-8111-111111111111 ASHA_PERSONA=1 ASHA_ORCHESTRATOR_STANCE=0
+if instructions_contain 'SOUL' && ! instructions_contain "orchestrator's chair"; then
+  ok "claude Room launch carries persona without the chair brief (operations remain SessionStart-wired)"
+else
+  fail "claude Room launch posture is wrong (stderr: $(cat "$WORK/stderr"))"
+fi
+
+run_harness codex ASHA_ROOM_ID=11111111-1111-4111-8111-111111111111 ASHA_PERSONA=1 ASHA_ORCHESTRATOR_STANCE=0
+if instructions_contain 'SOUL' && instructions_contain 'OPERATION RULES' \
+   && ! instructions_contain "orchestrator's chair"; then
+  ok "codex Room launch carries persona+operations without the chair brief"
+else
+  fail "codex Room launch posture is wrong (stderr: $(cat "$WORK/stderr"))"
+fi
+
 run_harness claude ASHA_PERSONA=0
 if [[ -s "$CAPTURE" ]] && ! argv_joined | grep -q -- '--append-system-prompt-file'; then
   ok "claude ASHA_PERSONA=0 keeps the worker launch path unchanged"
@@ -264,4 +280,4 @@ else
 fi
 
 echo "test-orchestrator-stance: $PASS passed, $FAIL failed"
-[[ $PASS -eq 17 && $FAIL -eq 0 ]]
+[[ $PASS -eq 19 && $FAIL -eq 0 ]]

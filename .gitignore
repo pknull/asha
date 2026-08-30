@@ -51,3 +51,5 @@ Work/
 # Asha Memory v2 recovery (managed)
 /Work/memory-migration/
 /Work/session-state/
+# Asha Control private context (managed)
+/.asha/control-task.json

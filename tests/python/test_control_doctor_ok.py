@@ -40,6 +40,23 @@ class DoctorOkFixture(unittest.TestCase):
 
 
 class DoctorVerdictTests(DoctorOkFixture):
+    def test_rooms_registry_probe_accepts_absent_store_and_refuses_corruption(self) -> None:
+        clean = run_doctor(
+            self.config, probes={"rooms-registry": DEFAULT_PROBES["rooms-registry"]},
+        )
+        self.assertTrue(clean["ok"])
+        self.assertIn("0 durable Room", clean["probes"][0]["detail"])
+
+        rooms = self.config.asha_home / "state/control/rooms"
+        rooms.mkdir(parents=True)
+        (rooms / "11111111-1111-4111-8111-111111111111.json").write_text("{}")
+        broken = run_doctor(
+            self.config, probes={"rooms-registry": DEFAULT_PROBES["rooms-registry"]},
+        )
+        self.assertFalse(broken["ok"])
+        self.assertEqual(broken["probes"][0]["outcome"], "mismatch")
+        self.assertIn("could not be authenticated", broken["probes"][0]["detail"])
+
     def test_supervisor_service_probe_is_advisory_and_reports_all_states(self) -> None:
         values = dict(self.env, XDG_CONFIG_HOME=str(self.root / "config"))
         unit = self.root / "config/systemd/user/asha-supervisor.service"

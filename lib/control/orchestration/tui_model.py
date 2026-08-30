@@ -149,7 +149,7 @@ class InitiativeRow:
 
     @property
     def needs_human(self) -> bool:
-        return self.attention not in ("-", "")
+        return self.kind != "room" and self.attention not in ("-", "")
 
 
 def _attention(view: dict[str, Any]) -> str:
@@ -190,6 +190,7 @@ def _nodes_text(view: dict[str, Any]) -> str:
 
 
 _TASKS_ROOT_KEY = ("tasks-root", "unbound", "unbound")
+_ROOMS_ROOT_KEY = ("rooms-root", "rooms", "rooms")
 _WORKER_ATTENTION_STATES = {"needs-input"}
 
 
@@ -357,6 +358,8 @@ class InitiativesScreen:
         task_rows: Iterable[Any] = (),
         attention_only: bool = False,
         orchestration_error: str | None = None,
+        room_rows: Iterable[dict[str, Any]] = (),
+        rooms_error: str | None = None,
     ) -> None:
         self.views = [copy.deepcopy(view) for view in views]
         self.height = max(0, int(height))
@@ -364,13 +367,16 @@ class InitiativesScreen:
         # The unbound-tasks branch starts open: plain Control tasks must stay
         # visible without a keystroke, exactly as the old Tasks view showed them.
         self.expanded: set[tuple[str, str]] = (
-            {("tasks-root", "unbound")} if expanded is None else set(expanded)
+            {("tasks-root", "unbound"), ("rooms-root", "rooms")}
+            if expanded is None else set(expanded)
         )
         self.selection = selection
         self.filter_string = filter_string
         self.task_rows: tuple[Any, ...] = tuple(task_rows)
         self.attention_only = bool(attention_only)
         self.orchestration_error = orchestration_error
+        self.room_rows: list[dict[str, Any]] = copy.deepcopy(list(room_rows))
+        self.rooms_error = rooms_error
         self.scroll_offset = 0
         self.help_visible = False
         self.message: str | None = None
@@ -394,7 +400,7 @@ class InitiativesScreen:
         task_index = {
             getattr(row, "task", {}).get("task_id"): row for row in self.task_rows
         }
-        rows: list[InitiativeRow] = []
+        rows: list[InitiativeRow] = self._room_branch(needle)
         for view in self._sorted_views():
             initiative = view["initiative"]
             initiative_id = initiative["initiative_id"]
@@ -435,6 +441,32 @@ class InitiativesScreen:
         rows.extend(self._task_branch(bound, needle))
         return rows
 
+    def _room_branch(self, needle: str) -> list[InitiativeRow]:
+        """Persistent project conversations under one expanded root."""
+        if not self.room_rows:
+            return []
+        head = InitiativeRow(
+            "rooms-root", 0, "rooms", "rooms", "Rooms",
+            str(len(self.room_rows)), "rooms",
+        )
+        children: list[InitiativeRow] = []
+        if ("rooms-root", "rooms") in self.expanded:
+            for room in sorted(
+                self.room_rows,
+                key=lambda item: (item.get("state") != "open", item.get("name", "").casefold()),
+            ):
+                children.append(InitiativeRow(
+                    "room", 1, room["room_id"], "rooms",
+                    room.get("name", room["room_id"][:8]), room.get("state", "?"),
+                    room.get("harness", "?"), coordinator=room.get("project_name", "?"),
+                    attention=(
+                        "shared working tree" if room.get("shared_working_tree") else "-"
+                    ),
+                    worker=room.get("harness", "?"),
+                    observed_at=room.get("updated_at"),
+                ))
+        return self._narrow([head, *children], head, needle)
+
     def _narrow(
         self, candidates: list[InitiativeRow], head: InitiativeRow, needle: str,
     ) -> list[InitiativeRow]:
@@ -471,7 +503,7 @@ class InitiativesScreen:
             return []
         # With no initiatives on screen the branch flattens: the tree is then
         # exactly the task list, no header row stealing the first selection.
-        flat = not self.views
+        flat = not self.views and not self.room_rows
         head = InitiativeRow(
             "tasks-root", 0, "unbound", "unbound",
             "Unbound tasks", str(len(unbound)), "tasks",
@@ -524,6 +556,16 @@ class InitiativesScreen:
         row = self.selected_row
         return None if row is None else self.view_for(row.initiative_id)
 
+    @property
+    def selected_room(self) -> dict[str, Any] | None:
+        row = self.selected_row
+        if row is None or row.kind != "room":
+            return None
+        return next(
+            (copy.deepcopy(room) for room in self.room_rows if room["room_id"] == row.id),
+            None,
+        )
+
     # -- mutation ---------------------------------------------------------
 
     def _clamp_selection(self) -> None:
@@ -563,9 +605,11 @@ class InitiativesScreen:
 
     def expand(self) -> bool:
         row = self.selected_row
-        if row is None or row.kind in {"attempt", "task"}:
+        if row is None or row.kind in {"attempt", "task", "room"}:
             return False
-        if row.kind == "tasks-root":
+        if row.kind == "rooms-root":
+            key = ("rooms-root", "rooms")
+        elif row.kind == "tasks-root":
             key = ("tasks-root", "unbound")
         elif row.kind == "initiative":
             key = ("initiative", row.id)
@@ -581,7 +625,9 @@ class InitiativesScreen:
         row = self.selected_row
         if row is None:
             return False
-        if row.kind == "initiative":
+        if row.kind == "rooms-root":
+            key = ("rooms-root", "rooms")
+        elif row.kind == "initiative":
             key = ("initiative", row.id)
         elif row.kind == "node":
             key = ("node", f"{row.initiative_id}:{row.id}")
@@ -616,11 +662,14 @@ class InitiativesScreen:
 
     def replace_views(
         self, views: list[dict[str, Any]], task_rows: Iterable[Any] | None = None,
+        room_rows: Iterable[dict[str, Any]] | None = None,
     ) -> None:
         selected = None if self.selected_row is None else self.selected_row.key
         self.views = [copy.deepcopy(view) for view in views]
         if task_rows is not None:
             self.task_rows = tuple(task_rows)
+        if room_rows is not None:
+            self.room_rows = copy.deepcopy(list(room_rows))
         rows = self.rows()
         self.selection = next(
             (index for index, row in enumerate(rows) if row.key == selected),
@@ -631,6 +680,16 @@ class InitiativesScreen:
     # -- facts --------------------------------------------------------------
 
     def detail_lines(self) -> list[str]:
+        room = self.selected_room
+        if room is not None:
+            return [
+                f"{room.get('name', '?')}  [{room.get('state', '?')}]  {room.get('harness', '?')}",
+                f"Project: {room.get('project_name', '?')}  {room.get('project_root', '?')}",
+                f"Room ID: {room.get('room_id', '?')}",
+                f"Tmux: {room.get('session', '?')}  pane {room.get('pane_id') or '-'}",
+                f"Shared checkout: {'yes' if room.get('shared_working_tree') else 'no'}",
+                f"Evidence: {room.get('detail', '?')}",
+            ]
         view = self.selected_view
         if view is None:
             return ["No initiative is selected."]

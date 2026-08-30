@@ -20,6 +20,12 @@ from .text import terminal_text_is_complete
 MAX_OUTPUT_BYTES = 64 * 1024
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
 _PANE_ID = re.compile(r"%[0-9]+", re.ASCII)
+_SESSION_ID = re.compile(r"\$[0-9]+", re.ASCII)
+_ROOM_UUID = re.compile(
+    r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+    re.ASCII,
+)
+_SHA256 = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _USER_OPTION = re.compile(r"@[a-z][a-z0-9_]{0,63}", re.ASCII)
 _ENVIRONMENT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}", re.ASCII)
 _RESULT_STAGING_TOKEN = re.compile(r"[0-9a-f]{64}", re.ASCII)
@@ -41,6 +47,9 @@ _POPUP_CHILD_EXEC = (
 _PANE_FORMAT = (
     "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}\t"
     "#{pane_dead_signal}\t#{session_name}\t#{window_name}\t#{pane_title}"
+)
+_ROOM_REFUSAL = (
+    'display-message -p ASHA_ROOM_OWNERSHIP_REFUSED ; run-shell "exit 66"'
 )
 
 
@@ -76,6 +85,14 @@ def _validate_session_name(value: Any) -> str:
     return value
 
 
+def _validate_session_target(value: Any) -> str:
+    if isinstance(value, str) and (
+        _NAME.fullmatch(value) is not None or _SESSION_ID.fullmatch(value) is not None
+    ):
+        return value
+    raise TmuxError("tmux session target is invalid")
+
+
 def _validate_window_name(value: Any) -> str:
     if not isinstance(value, str) or _NAME.fullmatch(value) is None:
         raise TmuxError("tmux window name is invalid")
@@ -85,6 +102,12 @@ def _validate_window_name(value: Any) -> str:
 def _validate_pane_id(value: Any) -> str:
     if not isinstance(value, str) or _PANE_ID.fullmatch(value) is None:
         raise TmuxError("tmux pane id is invalid")
+    return value
+
+
+def _validate_session_id(value: Any) -> str:
+    if not isinstance(value, str) or _SESSION_ID.fullmatch(value) is None:
+        raise TmuxError("tmux session id is invalid")
     return value
 
 
@@ -311,7 +334,7 @@ class TmuxAdapter:
         return names
 
     def has_session(self, name: str) -> bool:
-        session = _validate_session_name(name)
+        session = _validate_session_target(name)
         returncode, _stdout, stderr = self._run_status(
             ["has-session", "-t", session],
         )
@@ -334,7 +357,7 @@ class TmuxAdapter:
     def session_option(
         self, name: str, option: str, *, deadline_seconds: float = 60,
     ) -> str | None:
-        session = _validate_session_name(name)
+        session = _validate_session_target(name)
         key = _validate_user_option_key(option)
         returncode, stdout, stderr = self._run_status(
             ["show-options", "-v", "-t", session, key],
@@ -404,6 +427,74 @@ class TmuxAdapter:
             expected_pane, expected_pane=expected_pane,
             deadline_seconds=deadline_seconds,
         )
+
+    def session_id(
+        self, pane_id: str, *, deadline_seconds: float = 60,
+    ) -> str:
+        """Return tmux's server-scoped immutable session identifier."""
+        pane = _validate_pane_id(pane_id)
+        value = self._one_line(
+            self._run([
+                "display-message", "-p", "-t", pane, "#{session_id}",
+            ], deadline_seconds=deadline_seconds),
+            "session id",
+        )
+        return _validate_session_id(value)
+
+    @staticmethod
+    def _room_condition(
+        *, room_id: str, project_marker: str, pane_id: str, session_id: str,
+    ) -> tuple[str, str, str]:
+        if not isinstance(room_id, str) or _ROOM_UUID.fullmatch(room_id) is None:
+            raise TmuxError("room id is invalid")
+        if (not isinstance(project_marker, str)
+                or _SHA256.fullmatch(project_marker) is None):
+            raise TmuxError("room project marker is invalid")
+        pane = _validate_pane_id(pane_id)
+        session = _validate_session_id(session_id)
+        condition = (
+            f"#{{&&:#{{==:#{{session_id}},{session}}},"
+            f"#{{&&:#{{==:#{{pane_id}},{pane}}},"
+            f"#{{&&:#{{==:#{{@asha_room_session_id}},{room_id}}},"
+            f"#{{&&:#{{==:#{{@asha_room_id}},{room_id}}},"
+            f"#{{==:#{{@asha_room_project_id}},{project_marker}}}}}}}}}}}}}"
+        )
+        return pane, session, condition
+
+    def room_attach_argv(
+        self, *, room_id: str, project_marker: str,
+        pane_id: str, session_id: str,
+    ) -> list[str]:
+        """One fail-closed server action: revalidate ownership, then attach."""
+        pane, session, condition = self._room_condition(
+            room_id=room_id, project_marker=project_marker,
+            pane_id=pane_id, session_id=session_id,
+        )
+        return [
+            self.executable, *self._socket_args(),
+            "if-shell", "-F", "-t", pane, condition,
+            f"attach-session -t {session}", _ROOM_REFUSAL,
+        ]
+
+    def kill_owned_room(
+        self, *, room_id: str, project_marker: str,
+        pane_id: str, session_id: str,
+    ) -> None:
+        """Atomically revalidate immutable Room identity and kill only that session."""
+        pane, session, condition = self._room_condition(
+            room_id=room_id, project_marker=project_marker,
+            pane_id=pane_id, session_id=session_id,
+        )
+        returncode, stdout, stderr = self._run_status([
+            "if-shell", "-F", "-t", pane, condition,
+            f"display-message -p ASHA_ROOM_OWNED ; kill-session -t {session}",
+            _ROOM_REFUSAL,
+        ])
+        if returncode == 0 and stdout == b"ASHA_ROOM_OWNED\n":
+            return
+        if returncode == 66 or b"ASHA_ROOM_OWNERSHIP_REFUSED" in stdout:
+            raise TmuxError("room ownership changed; no session was killed")
+        self._raise_failure(returncode, stderr)
 
     def window_pane_facts(
         self, session: str, window: str, *, deadline_seconds: float = 60,
@@ -608,18 +699,30 @@ class TmuxAdapter:
     def popup_argv(
         self, *, client: str, session: str, width: str, height: str,
     ) -> list[str]:
-        client = _validate_client_tty(client)
         session = _validate_session_name(session)
+        socket_args = self._socket_args()
+        command = [
+            self.executable, *socket_args,
+            "attach-session", "-t", session,
+        ]
+        return self.popup_command_argv(
+            client=client, command=command, width=width, height=height,
+        )
+
+    def popup_command_argv(
+        self, *, client: str, command: list[str], width: str, height: str,
+    ) -> list[str]:
+        """Run one already-tokenized command in the caller-bound popup seam."""
+        client = _validate_client_tty(client)
+        child = _validate_argv(command)
         width = _validate_popup_dimension(width)
         height = _validate_popup_dimension(height)
-        socket_args = self._socket_args()
         return [
-            self.executable, *socket_args,
+            self.executable, *self._socket_args(),
             "display-popup", "-c", client, "-E",
             "-w", width, "-h", height, "--",
             sys.executable, "-I", "-S", "-c", _POPUP_CHILD_EXEC,
-            self.executable, *socket_args,
-            "attach-session", "-t", session,
+            *child,
         ]
 
     def send_line(self, pane_id: str, text: str) -> None:

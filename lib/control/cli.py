@@ -100,6 +100,20 @@ Use `asha control supervisor {run|start|stop|status} [--json]` for routine
 initiative progression; `install` manages its systemd user service.""", file=stream)
 
 
+def _room_usage(stream=sys.stdout) -> None:
+    print("""asha room: persistent project conversations with the Asha persona
+
+Usage:
+  asha room open NAME --project PROJECT --harness H --prompt TEXT [--json]
+  asha room list [--json]
+  asha room attach NAME|UUID [--json]
+  asha room close NAME|UUID [--yes] [--json]
+
+Rooms run detached in the initialized project's canonical checkout. They do
+not create a Control workspace. Closing permanently ends the tmux session.""",
+          file=stream)
+
+
 def _parse_event(args: list[str]) -> dict[str, Any]:
     values: dict[str, Any] = {
         "event": None,
@@ -542,6 +556,38 @@ def _run_popup(
         return (
             f"asha control: popup attach failed with status {result.returncode}; "
             f"task {slug} is still running; attach with: {attach}"
+        )
+    return None
+
+
+def _run_command_popup(
+    adapter: TmuxAdapter,
+    config,
+    command: list[str],
+    attach: str,
+    label: str,
+    env: Mapping[str, str],
+) -> str | None:
+    """Use the caller-bound popup seam for an identity-checked command."""
+    pane = env.get("TMUX_PANE")
+    client = None if not pane else adapter.caller_client(pane)
+    if client is None:
+        return (
+            "asha control: no tmux client is attached to this session; "
+            f"attach with: {attach}"
+        )
+    argv = adapter.popup_command_argv(
+        client=client, command=command,
+        width=config.popup_width, height=config.popup_height,
+    )
+    try:
+        result = subprocess.run(argv, shell=False, check=False)
+    except OSError as exc:
+        raise LaunchError(f"tmux popup could not be invoked: {exc}") from exc
+    if result.returncode != 0:
+        return (
+            f"asha control: popup attach failed with status {result.returncode}; "
+            f"Room {label} is still registered; retry with: {attach}"
         )
     return None
 
@@ -1782,6 +1828,150 @@ def _task_command(args: list[str], env: Mapping[str, str]) -> int:
     return 0 if payload["ok"] else 1
 
 
+def _room_parse(args: list[str]) -> tuple[str, list[str], dict[str, Any]]:
+    """Strict small parser for the public Room surface."""
+    if not args or args[0] in {"-h", "--help", "help"}:
+        return "help", [], {}
+    command = args[0]
+    if command not in {"open", "list", "attach", "close"}:
+        raise ValueError(f"unknown room command: {command}")
+    positional: list[str] = []
+    options: dict[str, Any] = {"json": False, "yes": False}
+    value_options = {
+        "--project": "project", "--harness": "harness", "--prompt": "prompt",
+    }
+    index = 1
+    seen: set[str] = set()
+    while index < len(args):
+        argument = args[index]
+        if argument in {"--json", "--yes"}:
+            key = argument[2:]
+            if key in seen:
+                raise ValueError(f"{argument} may be specified only once")
+            seen.add(key)
+            options[key] = True
+            index += 1
+            continue
+        destination = value_options.get(argument)
+        if destination is not None:
+            if destination in seen:
+                raise ValueError(f"{argument} may be specified only once")
+            if index + 1 >= len(args):
+                raise ValueError(f"{argument} requires a value")
+            seen.add(destination)
+            options[destination] = args[index + 1]
+            index += 2
+            continue
+        if argument.startswith("--"):
+            raise ValueError(f"unknown room argument: {argument}")
+        positional.append(argument)
+        index += 1
+    allowed = {
+        "open": {"json", "project", "harness", "prompt"},
+        "list": {"json"}, "attach": {"json"}, "close": {"json", "yes"},
+    }[command]
+    extra = seen - allowed
+    if extra:
+        raise ValueError(f"room {command} does not accept --{sorted(extra)[0]}")
+    expected = 1 if command in {"open", "attach", "close"} else 0
+    if len(positional) != expected:
+        raise ValueError(
+            f"room {command} requires exactly {expected} name or UUID argument(s)"
+        )
+    if command == "open":
+        missing = [key for key in ("project", "harness", "prompt") if key not in options]
+        if missing:
+            raise ValueError(f"room open requires --{missing[0]}")
+    return command, positional, options
+
+
+def _room_root(env: Mapping[str, str]) -> Path:
+    raw = env.get("ASHA_ROOT")
+    root = Path(__file__).resolve().parents[2] if raw is None else Path(raw)
+    if not root.is_absolute() or root.resolve() != root:
+        raise ValueError("ASHA_ROOT must be an exact canonical absolute path")
+    return root
+
+
+def _room_command(args: list[str], env: Mapping[str, str]) -> int:
+    from .rooms import RoomStore, attach_room, close_room, list_rooms, open_room
+
+    command, positional, options = _room_parse(args)
+    if command == "help":
+        _room_usage()
+        return 0
+    config = load_config(env)
+    store = RoomStore(config)
+    adapter = TmuxAdapter()
+    if command == "open":
+        payload = open_room(
+            name=positional[0], project=options["project"],
+            harness=options["harness"], prompt=options["prompt"],
+            config=config, env=env, tmux=adapter, asha_root=_room_root(env),
+        )
+        if options["json"]:
+            _json(payload)
+        else:
+            print(f"Room: {payload['name']} ({payload['room_id']})")
+            print(f"Project: {payload['project_name']}  {payload['project_root']}")
+            print(f"Harness: {payload['harness']}")
+            print(f"Tmux: {payload['session']}:{payload['window']} {payload['pane_id']}")
+            print(f"Attach: {payload['attach']}")
+        return 0
+    if command == "list":
+        payload = list_rooms(store, tmux=adapter)
+        if options["json"]:
+            _json(payload)
+        elif not payload["rooms"]:
+            print("No Rooms.")
+        else:
+            for room in payload["rooms"]:
+                warning = "  SHARED CHECKOUT" if room["shared_working_tree"] else ""
+                print(
+                    f"{room['name']:<24} {room['harness']:<8} {room['state']:<11} "
+                    f"{room['project_name']}  {room['room_id']}{warning}"
+                )
+        return 0
+    if command == "attach":
+        payload = attach_room(store, positional[0], tmux=adapter)
+        if options["json"]:
+            _json(payload)
+            return 0
+        if env.get("TMUX"):
+            refusal = _run_command_popup(
+                adapter, config, payload["attach_argv"], payload["attach"],
+                payload["name"], env,
+            )
+            if refusal is not None:
+                print(refusal, file=sys.stderr)
+                return 2
+        else:
+            print(payload["attach"])
+        return 0
+    assert command == "close"
+    if not options["yes"]:
+        interactive = (
+            not options["json"]
+            and getattr(sys.stdin, "isatty", lambda: False)()
+            and getattr(sys.stderr, "isatty", lambda: False)()
+        )
+        if not interactive:
+            raise ValueError("room close requires --yes in non-interactive or JSON mode")
+        print(
+            "Room close permanently ends its tmux session. Type exact yes: ",
+            end="", file=sys.stderr, flush=True,
+        )
+        if sys.stdin.readline().rstrip("\n") != "yes":
+            raise ValueError("room close cancelled")
+    payload = close_room(store, positional[0], tmux=adapter)
+    if options["json"]:
+        _json(payload)
+    else:
+        suffix = " (already closed)" if payload["already_closed"] else ""
+        print(f"Closed Room: {payload['name']} ({payload['room_id']}){suffix}")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     values = os.environ if env is None else env
@@ -1798,6 +1988,8 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             return migrate_main(tail, values)
         if domain == "task":
             return _task_command(tail, values)
+        if domain == "room":
+            return _room_command(tail, values)
         if domain == "initiative":
             # Lazy by contract: malformed orchestration configuration must not
             # change any ordinary Control command.
@@ -1838,9 +2030,17 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             TmuxError, JournalError, ValueError) as exc:
         print(f"asha control: {exc}", file=sys.stderr)
         return 2
-    except KeyboardInterrupt:
+    except KeyboardInterrupt as exc:
+        guidance = getattr(exc, "asha_room_guidance", None)
+        if isinstance(guidance, str) and guidance:
+            print(f"asha control: {guidance}", file=sys.stderr)
         print("asha control: interrupted", file=sys.stderr)
         return 130
+    except SystemExit as exc:
+        guidance = getattr(exc, "asha_room_guidance", None)
+        if isinstance(guidance, str) and guidance:
+            print(f"asha control: {guidance}", file=sys.stderr)
+        raise
 
 
 if __name__ == "__main__":

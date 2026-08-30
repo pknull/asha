@@ -21,7 +21,7 @@ asha codex                     # the chair, held by Codex
 From the chair you converse: Asha launches one fenced coordinator per piece of
 work, you approve plans and activate initiatives, workers run sandboxed in
 their own jj workspaces, and integration stays your hand. See
-[Control: tasks and initiatives](#control-tasks-and-initiatives).
+[Control: Rooms, tasks, and initiatives](#control-rooms-tasks-and-initiatives).
 
 To work **directly in a repository** instead, pass arguments (arguments keep
 the caller's working directory), or drive the repo through a Control task or
@@ -108,10 +108,12 @@ updates.
 
 ---
 
-## Control: tasks and initiatives
+## Control: Rooms, tasks, and initiatives
 
-Asha Control has two planes over one durable state store
-(`~/.asha/state/control/`): **tasks** — one persistent local container per
+Asha Control has three surfaces over one durable state root
+(`~/.asha/state/control/`): **Rooms** — persistent persona-bearing tmux
+conversations working directly in an initialized project's checkout;
+**tasks** — one persistent local container per
 piece of agent work (task record, jj workspace and change, detached tmux
 session, harness runs) — and **initiatives** — bounded orchestration
 lifecycles over those tasks (plan, approval, dispatch, seals, review,
@@ -125,9 +127,10 @@ progresses on its own.
 
 | Piece | What it is |
 |---|---|
+| **Rooms** | `asha room open\|list\|attach\|close` — detached, project-bound creative or exploratory sessions using Claude, Codex, Copilot, or OpenCode. Rooms create no workspace and never close for inactivity. |
 | **State store** | The only stateful thing. Write-once journals, CAS revisions, per-initiative locks. |
 | **Supervisor** | `asha control supervisor run\|start\|stop\|status` — the one long-lived controller process. Sweeps every non-terminal initiative on a clock: ingests staged worker results after terminal process evidence, reconciles, runs the result-grace path. Stateless (re-derives from the store each tick) and structurally unable to sign operator acts. |
-| **Monitor** | bare `asha control` — the interactive TUI: initiative tree, six-stage pipeline rail (`plan approve build review verify integrate`), attention rows, operator keys (`a` approve/activate/archive, `n` new intent, `Enter` attach, `p`/`s` pause/stop, `r` reconcile, `!` attention filter). |
+| **Monitor** | bare `asha control` — the interactive TUI: an expanded Rooms branch when Rooms are registered, initiative tree, workers, attention rows, and operator keys (`o` open Room, `Enter` attach, `X` close Room/worker, `a` approve/activate/archive, `n` new intent). |
 | **Coordinator** | One fenced LLM session per initiative (generation-fenced, pane-anchored). Proposes plans, dispatches within the approved envelope, asks questions. Never lifecycle authority. |
 | **Workers** | One sandboxed harness session per attempt in its own jj workspace. Stage results to a workspace outbox; the controller validates, snapshots, verifies, and publishes with provenance — workers never write the store. |
 
@@ -135,6 +138,7 @@ Command surface, at a glance:
 
 | Command | Purpose |
 |---|---|
+| `asha room open NAME --project PROJECT --harness H --prompt TEXT` | Start a Room detached in exactly one initialized Memory v2 project, selected by exact path or indexed name/ID. `list`, `attach`, and confirmed `close` manage it. |
 | `asha task start\|list\|show\|attach\|stop\|archive\|recover\|prune\|doctor …` | The task plane: create and manage persistent containers directly. |
 | `asha initiative create\|plan\|approve\|activate\|dispatch\|resume\|finalize\|record-integration\|archive …` | The orchestration plane: the full lifecycle, with `list`/`show`/`events`/`snapshot`/`reconcile` for inspection. |
 | `asha control` | The monitor TUI. `asha control supervisor …` manages the daemon; `event`/`tmux` are Control internals. |

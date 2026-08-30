@@ -804,6 +804,29 @@ def _transactions_probe(config) -> Probe:
     )
 
 
+def _rooms_registry_probe(config) -> Probe:
+    """Authenticate durable Room records without mutating or contacting tmux."""
+    if config is None:
+        return Probe(
+            "rooms-registry", "unavailable",
+            "configuration was not supplied to the Rooms registry probe",
+        )
+    from .rooms import RoomError, RoomStore
+
+    try:
+        rooms = RoomStore(config).list()
+    except (RoomError, OSError) as exc:
+        return Probe(
+            "rooms-registry", "mismatch",
+            "durable Room records could not be authenticated: " + _safe_detail(exc),
+        )
+    open_count = sum(1 for room in rooms if room.get("lifecycle") != "ended")
+    return Probe(
+        "rooms-registry", "match",
+        f"{len(rooms)} durable Room record(s) authenticated; {open_count} not closed",
+    )
+
+
 def _prunable_probe(config) -> Probe:
     """Report reclaimable residue of archived tasks; never a failure by itself."""
     if config is None:
@@ -910,6 +933,7 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "repository": _repository_probe,
     "default-context": _default_context_probe,
     "transactions": _transactions_probe,
+    "rooms-registry": _rooms_registry_probe,
     "prunable": _prunable_probe,
     "harness-events": _harness_events_probe,
     "hooks": _hooks_probe,

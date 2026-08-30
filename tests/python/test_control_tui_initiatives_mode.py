@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+from types import SimpleNamespace
 import unittest
 from unittest import mock
 
@@ -56,6 +57,25 @@ def _view(slug: str, state: str, *, nodes=None, coordinator=None, coordinator_li
 
 
 class InitiativesScreenTests(unittest.TestCase):
+    def test_rooms_branch_is_expanded_and_warns_on_shared_project_checkout(self) -> None:
+        rooms = [{
+            "room_id": "11111111-1111-4111-8111-111111111111",
+            "name": "Draft", "project_id": "novel", "project_name": "My Novel",
+            "project_root": "/projects/novel", "harness": "codex", "state": "open",
+            "session": "asha-control-room-11111111", "pane_id": "%7",
+            "shared_working_tree": True, "detail": "verified",
+        }]
+        screen = InitiativesScreen([], room_rows=rooms, height=30, width=100)
+        self.assertEqual([row.kind for row in screen.rows()], ["rooms-root", "room"])
+        room = screen.rows()[1]
+        self.assertEqual(room.label, "Draft")
+        self.assertEqual(room.type, "codex")
+        self.assertEqual(room.coordinator, "My Novel")
+        self.assertEqual(room.attention, "shared working tree")
+        screen.move_selection(1)
+        self.assertIn("Project: My Novel  /projects/novel", screen.detail_lines())
+        self.assertIn("Shared checkout: yes", screen.detail_lines())
+
     def test_rows_order_by_attention_then_slug_and_project_facts(self) -> None:
         screen = InitiativesScreen([
             _view("zeta-running", "running"),
@@ -159,7 +179,7 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         self.assertIn("WAITING ON", header)
         self.assertNotIn("WORKER", header)
         self.assertTrue(any("plan approval" in line for line in lines))
-        self.assertTrue(lines[-1].startswith("Enter attach  ! need you  a approve"))
+        self.assertTrue(lines[-1].startswith("Enter attach  o room  ! need  a approve"))
         model.help_visible = True
         help_lines = render(model)
         self.assertEqual(help_lines[0], "ASHA CONTROL HELP")
@@ -211,6 +231,53 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         # Without a screen, row keys explain themselves instead of acting.
         bare = TuiModel([], height=24, width=60)
         self.assertIs(bare.dispatch_key("a").kind, IntentKind.NONE)
+
+    def test_room_keys_open_attach_and_close_only_room_rows(self) -> None:
+        rooms = [{
+            "room_id": "11111111-1111-4111-8111-111111111111",
+            "name": "Draft", "project_id": "novel", "project_name": "My Novel",
+            "project_root": "/projects/novel", "harness": "codex", "state": "open",
+            "session": "asha-control-room-11111111", "pane_id": "%7",
+            "shared_working_tree": False, "detail": "verified",
+        }]
+        model = TuiModel([], height=24, width=100)
+        model.initiatives = InitiativesScreen([], room_rows=rooms, height=24, width=100)
+        self.assertIs(model.dispatch_key("o").kind, IntentKind.ROOM_OPEN)
+        self.assertIs(model.dispatch_key("ENTER").kind, IntentKind.INIT_EXPAND)
+        model.initiatives.move_selection(1)
+        attach = model.dispatch_key("ENTER")
+        self.assertIs(attach.kind, IntentKind.ROOM_ATTACH)
+        self.assertEqual(attach.target, rooms[0]["room_id"])
+        close = model.dispatch_key("X")
+        self.assertIs(close.kind, IntentKind.ROOM_CLOSE)
+        self.assertTrue(close.requires_confirmation)
+
+    def test_room_close_intent_requires_exact_yes_before_the_owned_close(self) -> None:
+        room_id = "11111111-1111-4111-8111-111111111111"
+        intent = tui.TuiIntent(IntentKind.ROOM_CLOSE, target=room_id)
+        model = TuiModel([])
+        config = SimpleNamespace(asha_home="/tmp/asha-room-tui-test")
+        with mock.patch("lib.control.tui._prompt_line", return_value="YES"), \
+                mock.patch("lib.control.rooms.close_room") as close:
+            result = tui._execute_room_intent(
+                intent, stdscr=mock.Mock(), curses_module=mock.Mock(), model=model,
+                config=config, env={},
+            )
+        self.assertEqual(result, "Room close cancelled")
+        close.assert_not_called()
+
+        with mock.patch("lib.control.tui._prompt_line", return_value="yes"), \
+                mock.patch("lib.control.tui._coordinator_tmux", return_value=mock.sentinel.tmux), \
+                mock.patch("lib.control.rooms.close_room", return_value={"name": "Draft"}) as close, \
+                mock.patch("lib.control.tui._refresh_initiatives"):
+            result = tui._execute_room_intent(
+                intent, stdscr=mock.Mock(), curses_module=mock.Mock(), model=model,
+                config=config, env={},
+            )
+        self.assertIn("project files were untouched", result)
+        close.assert_called_once()
+        self.assertEqual(close.call_args.args[1], room_id)
+        self.assertIs(close.call_args.kwargs["tmux"], mock.sentinel.tmux)
 
     def test_no_forbidden_action_class_is_reachable_from_the_tui(self) -> None:
         tui_classes = {"pause", "resume", "stop-attempt"}
@@ -443,6 +510,14 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
         self.assertIn("Initiatives unavailable: boom", screen.text())
         self.assertIsNotNone(model.initiatives, "the task branch must survive orchestration failure")
         self.assertEqual(model.initiatives.orchestration_error, "boom")
+
+    def test_rooms_loading_failure_does_not_hide_initiatives_or_tasks(self) -> None:
+        with mock.patch("lib.control.tui._load_room_rows", side_effect=ValueError("room store broken")):
+            screen, model = self.run_loop([ord("q")])
+        self.assertIn("Rooms unavailable: room store broken", screen.text())
+        self.assertIsNotNone(model.initiatives)
+        self.assertTrue(model.initiatives.views)
+        self.assertEqual(model.initiatives.rooms_error, "room store broken")
 
 
 
