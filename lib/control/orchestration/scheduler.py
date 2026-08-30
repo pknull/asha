@@ -26,6 +26,11 @@ from .model import (
     ATTEMPT_ACTIVE_STATES,
     ATTEMPT_CONTRACT,
     EVENT_CONTRACT,
+    MAX_ARGV_ITEMS,
+    MAX_ARG_BYTES,
+    MAX_ATTESTATIONS,
+    MAX_PATH_BYTES,
+    MAX_SUMMARY_BYTES,
     MUTATING_NODE_TYPES,
     record_digest,
     validate_attempt,
@@ -510,6 +515,26 @@ except controller-generated `result_id` and `payload_digest`: `publication_id`,
 `files_changed`, `verification_attestations`, `concerns`, `follow_up`, and
 `published_at`. Paths are canonical repository-relative paths inside the task
 workspace. Reuse a publication ID only to replay the identical document.
+
+`verification_attestations` is an array of at most {MAX_ATTESTATIONS} elements.
+Each element is a closed object: all six keys are required, no key may be
+omitted, and no additional key is permitted.
+Exact required element keys: `argv`, `cwd`, `exit_code`, `finished_at`, `output_digest`, `summary`.
+
+Element field constraints:
+
+- `argv`: an array of at most {MAX_ARGV_ITEMS} unique text arguments; each argument is
+  1-{MAX_ARG_BYTES} UTF-8 bytes and contains no Unicode control, format, or surrogate
+  character.
+- `cwd`: a canonical workspace-relative POSIX path containing 1-{MAX_PATH_BYTES} UTF-8
+  bytes; `.` names the workspace root, and the path must stay inside the task
+  workspace without traversing an existing symlink.
+- `exit_code`: a signed 32-bit integer (-2147483648 through 2147483647).
+- `finished_at`: an RFC3339 UTC timestamp in bounded ASCII `Z` form, with whole
+  seconds or 1-6 fractional-second digits.
+- `output_digest`: exactly 64 lowercase hexadecimal characters.
+- `summary`: text containing 1-{MAX_SUMMARY_BYTES} UTF-8 bytes and no Unicode control,
+  format, or surrogate character.
 """
     raw = text.encode("utf-8")
     if len(raw) > MAX_ASSIGNMENT_BYTES:

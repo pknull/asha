@@ -535,6 +535,20 @@ class OrchestrationModelTests(unittest.TestCase):
             "plan approval binds content, not lifecycle status",
         )
 
+    def test_result_with_documented_attestation_schema_validates(self) -> None:
+        result = next(
+            record for validator, record in self.contract_records()
+            if validator is model.validate_result
+        )
+        attestation = result["verification_attestations"][0]
+        self.assertEqual(set(attestation), {
+            "argv", "cwd", "exit_code", "finished_at", "output_digest", "summary",
+        })
+
+        validated = model.validate_result(result)
+
+        self.assertEqual(validated["verification_attestations"], [attestation])
+
     def test_hostile_common_fields_refuse(self) -> None:
         mutations = []
         extra = initiative()
