@@ -284,17 +284,25 @@ class RoomTests(unittest.TestCase):
         override.parent.mkdir()
         override.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
         override.chmod(0o700)
-        selected: list[tuple] = []
 
-        def prompt(_screen, _curses, _model, label, **kwargs):
-            if label == "Project: ":
-                return str(self.project)
-            if label == "Room name: ":
-                return "Draft Room"
-            if label == "Harness: ":
-                selected.extend((item.value, item.detail) for item in kwargs["candidates"])
-                return "codex"
-            return "Revise the chapter"
+        class Curses:
+            KEY_RESIZE = 410
+            KEY_UP = 259
+            KEY_DOWN = 258
+            KEY_ENTER = 343
+            KEY_BACKSPACE = 263
+            KEY_BTAB = 353
+            error = RuntimeError
+
+        screen = unittest.mock.Mock()
+        screen.getmaxyx.return_value = (18, 80)
+        frames = []
+        # Accept Project; type and advance Room name; replace whichever
+        # installed harness sorts first with codex; type the opening prompt.
+        keys = iter(
+            [10, *"Draft Room", 9] + [127] * 16 +
+            [*"codex", 10, *"Revise the chapter", 10]
+        )
 
         launched = {
             "name": "Draft Room", "project_name": "My Novel",
@@ -311,17 +319,26 @@ class RoomTests(unittest.TestCase):
         ), unittest.mock.patch(
             "lib.control.orchestration.projects.list_projects_across",
             return_value=project_payload,
-        ), unittest.mock.patch(
-            "lib.control.tui._prompt_line", side_effect=prompt,
+        ), unittest.mock.patch.object(
+            tui, "_draw_modal_frame",
+            side_effect=lambda _screen, _curses, frame: frames.append(frame),
+        ), unittest.mock.patch.object(
+            tui, "_read_modal_key", side_effect=lambda *_args: next(keys),
         ), unittest.mock.patch(
             "lib.control.rooms.open_room", return_value=launched,
         ) as open_call, unittest.mock.patch("lib.control.tui._refresh_initiatives"):
             result = tui._open_room_form(
-                unittest.mock.Mock(), unittest.mock.Mock(), unittest.mock.Mock(),
+                screen, Curses(), unittest.mock.Mock(),
                 self.config, env,
             )
 
-        self.assertIn(("codex", "installed"), selected)
+        harness_frames = [
+            frame for frame in frames if any("Harness" in row for row in frame.rows)
+        ]
+        self.assertTrue(any(
+            "codex" in row and "installed" in row
+            for frame in harness_frames for row in frame.rows
+        ))
         self.assertIn("started detached", result)
         self.assertEqual(open_call.call_args.kwargs["env"]["ASHA_CODEX_CMD"], str(override))
 
