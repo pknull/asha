@@ -102,6 +102,7 @@ Usage:
   asha initiative compose-verify <id> --seal SEAL_ID --seal SEAL_ID [...] [--json]
   asha initiative record-integration <id> --bundle BUNDLE_ID [--composed-verification] [--json]
   asha initiative record-integration <id> --seal SEAL_ID --abandoned --reason TEXT [--json]
+  asha initiative record-integration <id> --fallback ATTESTATION.json [--json]
   asha initiative list [--all] [--json]
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
   asha initiative doctor [--json]
@@ -504,6 +505,175 @@ def _verify_approved_baselines(
             )
 
 
+def _invalid_gate_reason(
+    store: InitiativeStore, initiative: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    """Return the active plan and its structural gate refusal, or fail."""
+    active = initiative.get("active_plan")
+    if not isinstance(active, Mapping):
+        raise ValueError("running gate recovery requires an active plan")
+    plan = store.read_plan(initiative["initiative_id"], active["revision"])
+    if plan["digest"] != active["digest"]:
+        raise StoreError("active plan digest differs from its retained revision")
+    from .verification import VerificationError, preflight_verification_gates
+
+    try:
+        preflight_verification_gates(plan, initiative)
+    except VerificationError as exc:
+        return plan, str(exc)
+    raise ValueError("active verification gate is structurally valid")
+
+
+def _accepted_terminal_candidate(
+    store: InitiativeStore, initiative_id: str, plan: Mapping[str, Any],
+) -> bool:
+    terminal = {
+        node["node_id"] for node in plan["nodes"]
+        if node["terminal_candidate"] is True
+    }
+    return any(
+        seal["node_id"] in terminal and seal["outcome"] == "success"
+        for seal in store.list_seals_snapshot(initiative_id)
+    )
+
+
+def _gate_recovery_event(
+    events: list[dict[str, Any]], event_type: str, digest: str,
+) -> dict[str, Any] | None:
+    return next((
+        event for event in events
+        if event["type"] == event_type
+        and isinstance(event.get("payload"), dict)
+        and event["payload"].get("invalid_plan_digest") == digest
+    ), None)
+
+
+def _propose_gate_recovery_plan(
+    store: InitiativeStore,
+    initiative: dict[str, Any],
+    raw: dict[str, Any],
+    *,
+    config,
+    jj: JjAdapter,
+    actor_kind: str,
+    actor_id: str,
+) -> dict[str, Any]:
+    """Retain a coordinator replacement while the invalid plan stays active."""
+    if actor_kind != "coordinator":
+        raise ValueError(
+            "only the live coordinator may propose a running gate recovery"
+        )
+    active_plan, reason = _invalid_gate_reason(store, initiative)
+    initiative_id = initiative["initiative_id"]
+    if _accepted_terminal_candidate(store, initiative_id, active_plan):
+        raise ValueError(
+            "gate recovery is unavailable after a terminal candidate was accepted"
+        )
+    active_attempts = [
+        item for item in store.list_attempts_snapshot(initiative_id)
+        if item["state"] in {
+            "allocated", "dispatching", "running", "reported", "awaiting-exit",
+            "success-seal-ready", "failure-seal-ready", "paused-seal-ready",
+            "sealing", "readonly-ready", "indeterminate",
+        }
+    ]
+    if active_attempts:
+        raise ValueError(
+            "gate recovery requires every existing attempt to reach retained evidence"
+        )
+    existing = store.list_plans_snapshot(initiative_id)
+    events = store.list_events_snapshot(initiative_id)
+    pending = (
+        existing[-1]
+        if existing and existing[-1]["revision"] > active_plan["revision"]
+        else None
+    )
+    retry = pending is not None
+    revision = pending["revision"] if pending is not None else len(existing) + 1
+    plan = _candidate_plan(raw, revision, initiative, config)
+    if pending is not None and pending["digest"] != plan["digest"]:
+        raise ValueError(
+            "running gate recovery already has a different proposed revision"
+        )
+    if plan["digest"] == active_plan["digest"]:
+        raise ValueError("gate recovery may not reuse the known-invalid plan")
+    from .verification import preflight_verification_gates
+
+    preflight_verification_gates(plan, initiative)
+    nodes = [validate_node(node) for node in plan["nodes"]]
+    if any(node["state"] != "proposed" for node in nodes):
+        raise ValueError("new plan nodes must be proposed")
+    _verify_approved_baselines(nodes, plan, jj)
+    validate_goal_capacity(config, initiative, nodes)
+    retained = {
+        node["node_id"]: node
+        for node in store.list_nodes_snapshot(initiative_id)
+    }
+    active_ids = {node["node_id"] for node in active_plan["nodes"]}
+    collisions: list[str] = []
+    for node in nodes:
+        current = retained.get(node["node_id"])
+        if current is None:
+            continue
+        comparable = copy.deepcopy(current)
+        comparable["state"] = "proposed"
+        reusable = (
+            (
+                retry
+                and current["state"] == "proposed"
+                and current == node
+            )
+            or (
+                node["node_id"] in active_ids
+                and current["state"] in {"approved", "blocked", "ready"}
+                and comparable == node
+            )
+        )
+        if not reusable:
+            collisions.append(node["node_id"])
+    if collisions:
+        raise ValueError(
+            "gate recovery may reuse only exact uncompleted active nodes: "
+            + ", ".join(sorted(collisions))
+        )
+    at = _now()
+    with store.transaction_lock(initiative_id):
+        current = store.peek(initiative_id)
+        if record_digest(current) != record_digest(initiative):
+            raise StoreError("initiative changed; reload before proposing gate recovery")
+        if not retry:
+            store.save_plan(initiative_id, plan)
+        for node in nodes:
+            if node["node_id"] not in retained:
+                store.save_node(initiative_id, node)
+        if _gate_recovery_event(
+            store.list_events_snapshot(initiative_id),
+            "plan-gate-invalid", active_plan["digest"],
+        ) is None:
+            store.append_event(initiative_id, _event(
+                current, "plan-gate-invalid",
+                {
+                    "revision": active_plan["revision"],
+                    "digest": active_plan["digest"],
+                    "invalid_plan_digest": active_plan["digest"],
+                    "reason": reason[:2048],
+                },
+                at, actor_kind="controller", actor_id="gate-preflight",
+            ))
+        if not _has_plan_event(
+            store.list_events_snapshot(initiative_id), "plan-proposed", plan["digest"],
+        ):
+            store.append_event(initiative_id, _event(
+                store.peek(initiative_id), "plan-proposed",
+                {
+                    "revision": plan["revision"], "digest": plan["digest"],
+                    "supersedes_invalid_digest": active_plan["digest"],
+                },
+                at, actor_kind=actor_kind, actor_id=actor_id,
+            ))
+    return store.read_plan(initiative_id, plan["revision"])
+
+
 def _plan(
     args: list[str], store: InitiativeStore, config, *, jj: JjAdapter,
     env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
@@ -547,6 +717,11 @@ def propose_plan(
     actor_id: str = "cli",
 ) -> dict[str, Any]:
     """Validate and retain one proposed plan revision; approval stays a separate operator act."""
+    if initiative["state"] == "running":
+        return _propose_gate_recovery_plan(
+            store, initiative, raw, config=config, jj=jj,
+            actor_kind=actor_kind, actor_id=actor_id,
+        )
     if initiative["state"] not in {"draft", "planning", "awaiting-plan-approval"}:
         raise ValueError(
             "initiative must be draft, planning, or awaiting plan approval "
@@ -579,6 +754,9 @@ def propose_plan(
             plan = _candidate_plan(raw, len(existing) + 1, initiative, config)
     else:
         plan = _candidate_plan(raw, len(existing) + 1, initiative, config)
+    from .verification import preflight_verification_gates
+
+    preflight_verification_gates(plan, initiative)
     nodes = [validate_node(node) for node in plan["nodes"]]
     if any(node["state"] != "proposed" for node in nodes):
         raise ValueError("new plan nodes must be proposed")
@@ -1008,15 +1186,305 @@ def _approve(
     return approve_plan(store, initiative, options["digest"]), bool(options["json"])
 
 
+def _finish_gate_recovery_records(
+    store: InitiativeStore,
+    initiative_id: str,
+    plan: Mapping[str, Any],
+    approval_id: str,
+    invalid_plan_digest: str,
+    superseded_node_ids: list[str],
+    *,
+    at: str,
+) -> None:
+    """Complete the replayable approval/event tail after active-plan rebinding."""
+    with store.transaction_lock(initiative_id):
+        current = store.peek(initiative_id)
+        current_active = current.get("active_plan")
+        if (
+            current["state"] != "running"
+            or not isinstance(current_active, Mapping)
+            or current_active.get("digest") != plan["digest"]
+            or current_active.get("approval_id") != approval_id
+        ):
+            raise StoreError("recovery plan is not the exact active plan")
+        approval = store.read_approval(initiative_id, approval_id)
+        if approval["state"] == "approved":
+            consumed = copy.deepcopy(approval)
+            consumed.update({"state": "consumed", "updated_at": at})
+            store.save_approval(
+                initiative_id, consumed,
+                expected_digest=record_digest(approval),
+            )
+            approval = consumed
+        elif approval["state"] != "consumed":
+            raise StoreError("recovery plan approval is not consumable")
+        if not _has_plan_event(
+            store.list_events_snapshot(initiative_id),
+            "plan-approved", plan["digest"],
+        ):
+            store.append_event(initiative_id, _event(
+                store.peek(initiative_id), "plan-approved",
+                {
+                    "revision": plan["revision"], "digest": plan["digest"],
+                    "approval_id": approval_id,
+                    "invalid_plan_digest": invalid_plan_digest,
+                },
+                at, actor_id=approval["actor_id"],
+            ))
+        if _gate_recovery_event(
+            store.list_events_snapshot(initiative_id),
+            "plan-gate-superseded", invalid_plan_digest,
+        ) is None:
+            store.append_event(initiative_id, _event(
+                store.peek(initiative_id), "plan-gate-superseded",
+                {
+                    "invalid_plan_digest": invalid_plan_digest,
+                    "replacement_plan_digest": plan["digest"],
+                    "approval_id": approval_id,
+                    "rebound_node_ids": sorted(
+                        node["node_id"] for node in plan["nodes"]
+                    ),
+                    "superseded_node_ids": sorted(superseded_node_ids),
+                },
+                at, actor_id=approval["actor_id"],
+            ))
+
+
+def _approve_gate_recovery(
+    store: InitiativeStore,
+    initiative: dict[str, Any],
+    plan: dict[str, Any],
+    digest: str,
+    *,
+    actor_id: str,
+) -> dict[str, Any]:
+    """Operator-sign one coordinator-proposed replacement of an invalid gate."""
+    if actor_id.startswith("standing-authority:"):
+        raise ValueError("running gate recovery requires an explicit operator approval")
+    if (
+        not isinstance(digest, str)
+        or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        or digest != plan["digest"]
+    ):
+        raise ValueError("approval digest does not match the latest proposed plan")
+    active = initiative.get("active_plan")
+    if not isinstance(active, Mapping):
+        raise ValueError("running gate recovery requires an active plan")
+    if active["digest"] == plan["digest"]:
+        events = store.list_events_snapshot(initiative["initiative_id"])
+        recovery_proposal = next((
+            event for event in events
+            if event["type"] == "plan-proposed"
+            and event["payload"].get("digest") == plan["digest"]
+            and event["payload"].get("supersedes_invalid_digest") is not None
+            and event["actor_kind"] == "coordinator"
+        ), None)
+        if recovery_proposal is not None:
+            invalid_digest = recovery_proposal["payload"][
+                "supersedes_invalid_digest"
+            ]
+            old_plan = next((
+                item for item in store.list_plans_snapshot(
+                    initiative["initiative_id"],
+                )
+                if item["digest"] == invalid_digest
+            ), None)
+            if old_plan is None:
+                raise StoreError("recovery plan's invalid predecessor is unavailable")
+            new_ids = {node["node_id"] for node in plan["nodes"]}
+            old_ids = {node["node_id"] for node in old_plan["nodes"]}
+            superseded_ids = [
+                node["node_id"]
+                for node in store.list_nodes_snapshot(initiative["initiative_id"])
+                if node["node_id"] in old_ids - new_ids
+                and node["state"] == "superseded"
+            ]
+            _finish_gate_recovery_records(
+                store, initiative["initiative_id"], plan,
+                active["approval_id"], invalid_digest, superseded_ids,
+                at=_now(),
+            )
+            from .scheduler import refresh_readiness
+
+            refresh_readiness(store, initiative["initiative_id"])
+        approval = store.read_approval(
+            initiative["initiative_id"], active["approval_id"],
+        )
+        return {
+            "contract": APPROVAL_RESULT_CONTRACT,
+            "initiative": initiative,
+            "plan": plan,
+            "approval": approval,
+        }
+    invalid_plan, _reason = _invalid_gate_reason(store, initiative)
+    if _accepted_terminal_candidate(
+        store, initiative["initiative_id"], invalid_plan,
+    ):
+        raise ValueError(
+            "gate recovery is unavailable after a terminal candidate was accepted"
+        )
+    events = store.list_events_snapshot(initiative["initiative_id"])
+    proof = _gate_recovery_event(
+        events, "plan-gate-invalid", invalid_plan["digest"],
+    )
+    proposed = next((
+        event for event in events
+        if event["type"] == "plan-proposed"
+        and event["payload"].get("digest") == plan["digest"]
+        and event["payload"].get("supersedes_invalid_digest")
+        == invalid_plan["digest"]
+        and event["actor_kind"] == "coordinator"
+    ), None)
+    # Re-run the current structural check above, but do not require its prose
+    # to equal the retained first observation.  A direct script can remain
+    # invalid while changing from missing to non-executable; the immutable
+    # plan digest, not mutable filesystem wording, is the proof identity.
+    if proof is None:
+        raise StoreError("running gate recovery lacks exact invalid-gate evidence")
+    if proposed is None:
+        raise StoreError("running gate recovery was not proposed by the coordinator")
+    from .verification import preflight_verification_gates
+
+    preflight_verification_gates(plan, initiative)
+    retained = {
+        node["node_id"]: node
+        for node in store.list_nodes_snapshot(initiative["initiative_id"])
+    }
+    plan_nodes = {node["node_id"]: node for node in plan["nodes"]}
+    if any(node_id not in retained for node_id in plan_nodes):
+        raise StoreError("replacement plan node records are incomplete")
+    for node_id, expected in plan_nodes.items():
+        current = retained[node_id]
+        comparable = copy.deepcopy(current)
+        comparable["state"] = "proposed"
+        if comparable != expected or current["state"] not in {
+            "proposed", "approved", "blocked", "ready",
+        }:
+            raise StoreError(
+                "replacement plan may bind only exact uncompleted node records"
+            )
+    active_ids = {node["node_id"] for node in invalid_plan["nodes"]}
+    superseded = [
+        node for node_id, node in retained.items()
+        if node_id in active_ids and node_id not in plan_nodes
+        and node["state"] in {
+            "proposed", "approved", "blocked", "ready", "needs-input",
+            "superseded",
+        }
+    ]
+    unsafe = [
+        node["node_id"] for node_id, node in retained.items()
+        if node_id in active_ids and node_id not in plan_nodes
+        and node["state"] in {"dispatching", "running", "evaluating"}
+    ]
+    if unsafe:
+        raise StoreError(
+            "replacement plan cannot rebind active nodes: "
+            + ", ".join(sorted(unsafe))
+        )
+    at = _now()
+    now_value = datetime.fromisoformat(at[:-1] + "+00:00")
+    matches = [
+        item for item in store.list_approvals_snapshot(initiative["initiative_id"])
+        if item["binding_digest"] == plan["digest"]
+        and item["active_plan_digest"] == plan["digest"]
+        and item["action_class"] == "plan-approval"
+        and item["state"] in {"approved", "consumed"}
+    ]
+    if len(matches) > 1:
+        raise StoreError("multiple retained approvals match the recovery plan")
+    approval = matches[0] if matches else validate_approval({
+        "contract": APPROVAL_CONTRACT,
+        "request_id": new_uuid(),
+        "initiative_id": initiative["initiative_id"],
+        "action_class": "plan-approval",
+        "binding_digest": plan["digest"],
+        "active_plan_digest": plan["digest"],
+        "expected_state_revision": initiative["state_revision"],
+        "actor_kind": "operator", "actor_id": actor_id,
+        "state": "approved",
+        "expires_at": (
+            now_value + timedelta(days=1)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z"),
+        "rationale": "Replace a structurally invalid active verification gate.",
+        "created_at": at, "updated_at": at,
+    })
+    with store.transaction_lock(initiative["initiative_id"]):
+        current = store.peek(initiative["initiative_id"])
+        if record_digest(current) != record_digest(initiative):
+            raise StoreError("initiative changed; reload before approving gate recovery")
+        if not matches:
+            store.save_approval(initiative["initiative_id"], approval)
+        for node_id in sorted(plan_nodes):
+            current_node = store.read_node(initiative["initiative_id"], node_id)
+            if current_node["state"] != "proposed":
+                continue
+            changed_node = copy.deepcopy(current_node)
+            changed_node["state"] = "approved"
+            store.save_node(
+                initiative["initiative_id"], changed_node,
+                expected_digest=record_digest(current_node),
+            )
+        for old_node in superseded:
+            current_node = store.read_node(
+                initiative["initiative_id"], old_node["node_id"],
+            )
+            if current_node["state"] == "superseded":
+                continue
+            changed_node = copy.deepcopy(current_node)
+            changed_node["state"] = "superseded"
+            store.save_node(
+                initiative["initiative_id"], changed_node,
+                expected_digest=record_digest(current_node),
+            )
+        current = store.peek(initiative["initiative_id"])
+        changed = copy.deepcopy(current)
+        changed.update({
+            "active_plan": {
+                "revision": plan["revision"], "digest": plan["digest"],
+                "approval_id": approval["request_id"],
+            },
+            "state_revision": current["state_revision"] + 1,
+            "updated_at": at,
+        })
+        validate_initiative(changed)
+        store.save_initiative(
+            changed, expected_digest=record_digest(current),
+        )
+        _finish_gate_recovery_records(
+            store, initiative["initiative_id"], plan,
+            approval["request_id"], invalid_plan["digest"],
+            [node["node_id"] for node in superseded], at=at,
+        )
+    from .scheduler import refresh_readiness
+
+    refresh_readiness(store, initiative["initiative_id"])
+    return {
+        "contract": APPROVAL_RESULT_CONTRACT,
+        "initiative": store.peek(initiative["initiative_id"]),
+        "plan": plan,
+        "approval": store.read_approval(
+            initiative["initiative_id"], approval["request_id"],
+        ),
+    }
+
+
 def approve_plan(
     store: InitiativeStore, initiative: dict[str, Any], digest: str, *, actor_id: str = "cli",
 ) -> dict[str, Any]:
     """Operator plan approval core shared by the CLI and the Control TUI."""
     plan = _latest_executable_plan(store, initiative["initiative_id"])
+    if initiative["state"] == "running":
+        return _approve_gate_recovery(
+            store, initiative, plan, digest, actor_id=actor_id,
+        )
     if initiative["state"] not in {"awaiting-plan-approval", "approved"}:
         raise ValueError("initiative is not awaiting plan approval")
     if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest) or digest != plan["digest"]:
         raise ValueError("approval digest does not match the latest proposed plan")
+    from .verification import preflight_verification_gates
+
+    preflight_verification_gates(plan, initiative)
     nodes = store.list_nodes_snapshot(initiative["initiative_id"])
     plan_ids = {node["node_id"] for node in plan["nodes"]}
     selected = [node for node in nodes if node["node_id"] in plan_ids]
@@ -1436,6 +1904,7 @@ def _operator_action(
 def _record_integration_command(
     args: list[str], store: InitiativeStore,
     env: Mapping[str, str] | None = None, tmux: TmuxAdapter | None = None,
+    *, jj: JjAdapter | None = None,
 ) -> tuple[dict[str, Any], bool]:
     if not args:
         raise ValueError("record-integration requires an initiative ID or exact slug")
@@ -1446,25 +1915,45 @@ def _record_integration_command(
     )
     _only(
         options,
-        {"bundle", "seal", "abandoned", "reason", "json", "composed-verification"},
+        {
+            "bundle", "seal", "fallback", "abandoned", "reason", "json",
+            "composed-verification",
+        },
         "record-integration",
     )
     bundle_id, seal_id = options.get("bundle"), options.get("seal")
-    if (bundle_id is None) == (seal_id is None):
-        raise ValueError("record-integration requires exactly one of --bundle or --seal")
+    fallback_path = options.get("fallback")
+    if sum(item is not None for item in (bundle_id, seal_id, fallback_path)) != 1:
+        raise ValueError(
+            "record-integration requires exactly one of --bundle or --seal, "
+            "or use --fallback alone"
+        )
+    fallback = None
     if bundle_id is not None:
         if options["abandoned"]:
             raise ValueError("record-integration --bundle does not accept --abandoned")
         if options.get("reason") is not None:
             raise ValueError("record-integration --bundle does not accept --reason")
-    elif options["composed-verification"]:
+    elif seal_id is not None and options["composed-verification"]:
         raise ValueError(
             "record-integration --composed-verification applies to --bundle only"
         )
-    else:
+    elif seal_id is not None:
         if not options["abandoned"]:
             raise ValueError("record-integration --seal requires --abandoned")
         _required(options, "reason")
+    else:
+        if options["abandoned"] or options.get("reason") is not None:
+            raise ValueError(
+                "record-integration --fallback does not accept abandonment or reason"
+            )
+        if options["composed-verification"]:
+            raise ValueError(
+                "record-integration --fallback does not accept --composed-verification"
+            )
+        fallback = _read_json_file(Path(fallback_path), "fallback attestation")
+        if not isinstance(fallback, dict):
+            raise ValueError("fallback attestation file must contain an object")
     refuse_coordinator_pane(
         store, initiative["initiative_id"], env, tmux or TmuxAdapter(),
     )
@@ -1472,6 +1961,7 @@ def _record_integration_command(
         store, initiative["initiative_id"], bundle_id=bundle_id, seal_id=seal_id,
         abandoned=bool(options["abandoned"]), reason=options.get("reason"),
         composed_verification=bool(options["composed-verification"]),
+        fallback=fallback, jj=jj,
     )
     return event, bool(options["json"])
 
@@ -1614,7 +2104,9 @@ def _initiative_command(
         _payload(result, json_output)
         return 2 if result["state"] == "refused" else 3 if result["state"] == "indeterminate" else 0
     if command == "record-integration":
-        result, json_output = _record_integration_command(tail, store, env, tmux)
+        result, json_output = _record_integration_command(
+            tail, store, env, tmux, jj=jj or JjAdapter(),
+        )
         _payload(result, json_output)
         return 0
     if command == "compose-verify":

@@ -47,7 +47,17 @@ compatible bundle ID followed by every member seal ID and the exact payload is
 `--seal SEAL_ID --abandoned --reason TEXT`, `subject_ids` is that seal ID and
 the exact payload is
 `{disposition: "abandoned", members: [{seal_id, jj_commit_id}], reason}`.
-Neither form performs or infers a merge, rebase, bookmark move, push, or any
+For `--fallback ATTESTATION.json`, `subject_ids` is the replay-safe attestation
+ID followed by its retained failure-seal lineage and the exact payload is
+`{disposition: "fallback-integrated", attestation_id, evidence_digest,
+repository_id, candidate_jj_commit_id, candidate_tree_digest,
+failure_seal_ids, members: [{seal_id, jj_commit_id}, ...], source_state}`. The named
+`fallback-integration-attestation` evidence contains the closed
+`asha.orchestration-fallback-integration.v1` document and every member remains
+an immutable failure seal. Acceptance revalidates repository identity and the
+attested immutable baseline, candidate, hard-scope diff, review, verification,
+and integration-target evidence before writing this permission fact.
+No form performs or infers a merge, rebase, bookmark move, push, or any
 other repository mutation.  Ready-for-integration and archived initiative
 states are not integration evidence.  Missing, malformed, conflicting, or
 partially unreadable orchestration evidence makes prune refuse and keep the

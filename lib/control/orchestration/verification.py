@@ -9,6 +9,8 @@ import json
 import os
 import pwd
 import re
+import shlex
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -356,6 +358,189 @@ def command_denial(argv: list[str]) -> str | None:
             ):
                 return "recursive rm"
     return None
+
+
+def _exact_directory(root: Path, relative: str) -> Path:
+    """Resolve one declared cwd without accepting a symlink traversal."""
+    target = root if relative == "." else root.joinpath(*relative.split("/"))
+    current = root
+    try:
+        for part in target.relative_to(root).parts:
+            current /= part
+            if current.is_symlink():
+                raise VerificationError(
+                    "verification command cwd traverses a symlink"
+                )
+    except ValueError as exc:
+        raise VerificationError(
+            "verification command cwd escapes its repository"
+        ) from exc
+    if not target.is_dir() or target.resolve() != target:
+        raise VerificationError(
+            "verification command cwd must be an exact existing directory"
+        )
+    return target
+
+
+def _usable_shebang(
+    executable: Path, *, environment: Mapping[str, str],
+) -> str | None:
+    """Return why a direct script cannot be execve'd in the minimal environment.
+
+    Native ELF executables do not need a shebang.  For scripts, Linux requires
+    an absolute interpreter.  ``/usr/bin/env`` is useful only when the named
+    interpreter resolves from the same bounded PATH that the verification
+    runner retains.
+    """
+    try:
+        with executable.open("rb") as stream:
+            prefix = stream.read(4096)
+    except OSError as exc:
+        return f"cannot read direct executable: {exc}"
+    if prefix.startswith(b"\x7fELF"):
+        return None
+    first = prefix.split(b"\n", 1)[0]
+    if not first.startswith(b"#!"):
+        return "direct script has no usable shebang"
+    # Linux's binfmt script header is bounded (BINPRM_BUF_SIZE); accepting a
+    # longer first line here would promise an invocation the kernel may reject.
+    if len(first) > 255:
+        return "direct script shebang exceeds the kernel header limit"
+    if b"\r" in first or b"\x00" in first:
+        return "direct script shebang contains an unusable control byte"
+    try:
+        text = first[2:].decode("utf-8").strip()
+        words = shlex.split(text, posix=True)
+    except (UnicodeError, ValueError):
+        return "direct script shebang is not valid bounded text"
+    if not words or not words[0].startswith("/"):
+        return "direct script shebang must name an absolute interpreter"
+    interpreter = Path(words[0])
+    try:
+        if (
+            not interpreter.is_file()
+            or not os.access(interpreter, os.X_OK)
+        ):
+            return "direct script shebang interpreter is unavailable"
+    except OSError:
+        return "direct script shebang interpreter is unavailable"
+    if interpreter.name != "env":
+        return None
+    arguments = words[1:]
+    split_arguments = arguments[:1] == ["-S"]
+    if arguments[:1] == ["-S"]:
+        arguments = arguments[1:]
+    # The minimal runner supplies no arbitrary environment assignments or env
+    # options.  Refuse instead of approximating env's larger command grammar.
+    if not arguments or arguments[0].startswith("-") or "=" in arguments[0]:
+        return "direct script env shebang has no usable interpreter command"
+    if not split_arguments and len(arguments) != 1:
+        return "direct script env shebang arguments require the -S option"
+    path = environment.get("PATH", "/usr/bin:/bin")
+    if shutil.which(arguments[0], path=path) is None:
+        return (
+            "direct script env shebang interpreter is unavailable on the "
+            "minimal PATH"
+        )
+    return None
+
+
+def _preflight_direct_argv(
+    root: Path,
+    specification: Mapping[str, Any],
+    *,
+    environment: Mapping[str, str],
+) -> str | None:
+    """Check a direct executable recommendation against its declared cwd."""
+    token = specification["argv"][0]
+    requested = Path(token)
+    # Every command needs its declared cwd.  A direct path adds an executable
+    # check; PATH programs remain the exec runner's bounded PATH lookup.
+    cwd = _exact_directory(root, specification["cwd"])
+    if "/" not in token:
+        return None
+    executable = requested if requested.is_absolute() else cwd / requested
+    try:
+        resolved = executable.resolve(strict=True)
+        if (
+            not requested.is_absolute()
+            and (resolved != executable or executable.is_symlink())
+        ):
+            return "direct executable traverses a symlink"
+        if not resolved.is_file():
+            return "direct executable is not a regular file"
+        if not os.access(resolved, os.X_OK):
+            return "direct executable is not executable"
+    except (OSError, RuntimeError):
+        return (
+            "direct executable does not exist"
+            if requested.is_absolute()
+            else "direct executable does not exist at the declared cwd"
+        )
+    return _usable_shebang(resolved, environment=environment)
+
+
+def preflight_verification_gates(
+    plan: Mapping[str, Any],
+    initiative: Mapping[str, Any],
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> list[dict[str, Any]]:
+    """Fail closed before authority binds an impossible verification gate.
+
+    The denial decision deliberately calls :func:`command_denial`, the same
+    policy used at result ingestion and by the controller verification runner.
+    No caller may maintain a second allow/deny approximation.
+    """
+    from .model import scope_repositories
+
+    exact_environment = dict(os.environ if environment is None else environment)
+    checked: list[dict[str, Any]] = []
+    command_index = 0
+    for gate in plan["declared_gates"]:
+        if gate["kind"] != "verification":
+            continue
+        for specification in gate["commands"]:
+            argv = list(specification["argv"])
+            denial = command_denial(argv)
+            rendered = json.dumps(
+                argv, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+            )
+            if denial is not None:
+                raise VerificationError(
+                    f"verification command index {command_index} argv {rendered} "
+                    f"is denied by Control command policy: {denial}"
+                )
+            for repository in scope_repositories(initiative):
+                reason = _preflight_direct_argv(
+                    Path(repository["root"]), specification,
+                    environment=exact_environment,
+                )
+                if reason is not None:
+                    raise VerificationError(
+                        f"verification command index {command_index} argv "
+                        f"{rendered} is not runnable in the minimal environment "
+                        f"for repository {repository['repository_id']}: {reason}"
+                    )
+            checked.append({
+                "index": command_index,
+                "argv": argv,
+                "cwd": specification["cwd"],
+            })
+            command_index += 1
+    return checked
+
+
+def gate_is_known_invalid(
+    store: InitiativeStore, initiative_id: str, plan_digest: str,
+) -> bool:
+    """Whether retained structural proof forbids any further use of this gate."""
+    return any(
+        event["type"] == "plan-gate-invalid"
+        and isinstance(event.get("payload"), dict)
+        and event["payload"].get("invalid_plan_digest") == plan_digest
+        for event in store.list_events_snapshot(initiative_id)
+    )
 
 
 def _command_cwd(materialization: Path, relative: str) -> Path:
@@ -1860,5 +2045,7 @@ __all__ = [
     "composed_verdict_evidence", "composed_verification_verdict",
     "covering_cross_composed_verdict", "cross_composed_verdict_evidence",
     "cross_composed_verification_verdict", "run_composed_verification",
-    "run_cross_composed_verification", "run_verification",
+    "gate_is_known_invalid", "preflight_verification_gates",
+    "run_cross_composed_verification",
+    "run_verification",
 ]

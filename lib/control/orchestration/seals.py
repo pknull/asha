@@ -106,6 +106,18 @@ def _in_scope(path: str, scopes: list[str]) -> bool:
     )
 
 
+def immutable_tree_diff(
+    before: ImmutableTree, after: ImmutableTree,
+) -> tuple[list[str], str]:
+    """Public exact-tree diff shared by sealing and fallback attestation."""
+    return _diff(before, after)
+
+
+def path_in_scope(path: str, scopes: list[str]) -> bool:
+    """Public hard-scope predicate; keep one path policy across evidence rails."""
+    return _in_scope(path, scopes)
+
+
 def _process_kind(reconciliation: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
     """Classify Control terminal facts, preferring structured evidence state.
 
@@ -1108,6 +1120,7 @@ def seal_for_task_or_attempt(
 
 
 __all__ = [
-    "TASK_SEAL_CONTRACT", "NoSealableArtifact", "SealError", "prepare_and_publish_seal",
+    "TASK_SEAL_CONTRACT", "NoSealableArtifact", "SealError",
+    "immutable_tree_diff", "path_in_scope", "prepare_and_publish_seal",
     "reconcile_seal_drift", "seal_for_task_or_attempt",
 ]

@@ -41,6 +41,7 @@ EVIDENCE_CONTRACT = "asha.orchestration-evidence.v1"
 BUNDLE_CONTRACT = "asha.orchestration-bundle.v1"
 COORDINATOR_CONTRACT = "asha.orchestration-coordinator.v1"
 COORDINATOR_CHECKPOINT_CONTRACT = "asha.orchestration-coordinator-checkpoint.v1"
+FALLBACK_INTEGRATION_CONTRACT = "asha.orchestration-fallback-integration.v1"
 COORDINATOR_PROTOCOL_VERSION = 1
 MAX_CHECKPOINT_RATIONALE_BYTES = 4096
 MAX_CHECKPOINT_NODES = 64
@@ -519,6 +520,12 @@ _initiative_pairs = [
     ("awaiting-plan-approval", "partial"),
     ("approved", "failed"), ("approved", "partial"),
     ("ready-for-integration", "integrated"),
+    # A validated, operator-signed fallback attestation is the sole caller for
+    # these recovery edges.  It preserves failure seals while closing work
+    # independently proven and already landed (#87).
+    ("running", "integrated"), ("paused", "integrated"),
+    ("needs-input", "integrated"), ("partial", "integrated"),
+    ("failed", "integrated"),
 ]
 _initiative_pairs += [(state, "cancelled") for state in _INITIATIVE_NONTERMINAL]
 _initiative_pairs += [
@@ -1846,6 +1853,7 @@ _EVENT_KEYS = frozenset({
 
 EVENT_TYPES = frozenset({
     "initiative-created", "plan-proposed", "plan-approved", "plan-rejected",
+    "plan-gate-invalid", "plan-gate-superseded",
     "approval-requested", "approval-decided",
     "initiative-state-changed", "coordinator-handshake-accepted",
     "coordinator-generation-fenced", "node-ready", "action-received",
@@ -1940,7 +1948,10 @@ def validate_evidence(value: Any) -> dict[str, Any]:
         record["summary"], "evidence summary",
         maximum=(
             MAX_EVIDENCE_SUMMARY_BYTES
-            if record["kind"] in {"seal-evidence", "verification-command"}
+            if record["kind"] in {
+                "seal-evidence", "verification-command",
+                "fallback-integration-attestation",
+            }
             else MAX_SUMMARY_BYTES
         ),
     )
@@ -1949,6 +1960,148 @@ def validate_evidence(value: Any) -> dict[str, Any]:
     ).hexdigest():
         raise ModelError("evidence digest does not match its summary")
     _timestamp(record["recorded_at"], "evidence recorded_at")
+    return copy.deepcopy(record)
+
+
+_FALLBACK_BASELINE_KEYS = frozenset({"jj_commit_id", "tree_digest"})
+_FALLBACK_CANDIDATE_KEYS = frozenset({
+    "jj_commit_id", "tree_digest", "diff_digest", "changed_paths",
+})
+_FALLBACK_REVIEW_KEYS = frozenset({
+    "reviewer_id", "independent", "verdict", "evidence_digest", "summary",
+    "reviewed_at",
+})
+_FALLBACK_VERIFICATION_KEYS = frozenset({
+    "argv", "cwd", "exit_code", "finished_at", "output_digest", "summary",
+})
+_FALLBACK_TARGET_KEYS = frozenset({
+    "repository_id", "ref", "jj_commit_id", "tree_digest",
+})
+_FALLBACK_INTEGRATION_KEYS = frozenset({
+    "contract", "attestation_id", "initiative_id", "repository_id",
+    "active_plan_digest", "baseline", "candidate", "hard_write_scope",
+    "failure_seal_ids", "review", "verification", "integration_target",
+    "attested_at",
+})
+
+
+def validate_fallback_integration(value: Any) -> dict[str, Any]:
+    """Validate the closed operator fallback attestation transport."""
+    record = _object(value, "fallback integration", _FALLBACK_INTEGRATION_KEYS)
+    if record["contract"] != FALLBACK_INTEGRATION_CONTRACT:
+        raise ModelError(
+            f"fallback integration contract must be {FALLBACK_INTEGRATION_CONTRACT}"
+        )
+    for field in ("attestation_id", "initiative_id", "repository_id"):
+        canonical_uuid(record[field], f"fallback integration {field}")
+    _digest(record["active_plan_digest"], "fallback integration active_plan_digest")
+    baseline = _object(
+        record["baseline"], "fallback integration baseline",
+        _FALLBACK_BASELINE_KEYS,
+    )
+    _git_object_id(baseline["jj_commit_id"], "fallback integration baseline commit")
+    _digest(baseline["tree_digest"], "fallback integration baseline tree")
+    candidate = _object(
+        record["candidate"], "fallback integration candidate",
+        _FALLBACK_CANDIDATE_KEYS,
+    )
+    _git_object_id(candidate["jj_commit_id"], "fallback integration candidate commit")
+    _digest(candidate["tree_digest"], "fallback integration candidate tree")
+    _digest(candidate["diff_digest"], "fallback integration candidate diff")
+    changed_paths = _string_list(
+        candidate["changed_paths"], "fallback integration candidate changed_paths",
+        maximum_items=MAX_PATH_ITEMS, maximum_bytes=MAX_PATH_BYTES,
+        validator=_relative_path,
+    )
+    if not changed_paths:
+        raise ModelError("fallback integration candidate changed_paths must not be empty")
+    hard_scope = _string_list(
+        record["hard_write_scope"], "fallback integration hard_write_scope",
+        maximum_items=MAX_PATH_ITEMS, maximum_bytes=MAX_PATH_BYTES,
+        validator=_relative_path,
+    )
+    if not hard_scope:
+        raise ModelError("fallback integration hard_write_scope must not be empty")
+    failure_seals = _string_list(
+        record["failure_seal_ids"], "fallback integration failure_seal_ids",
+        # Fallback integration events use the same bounded member encoding as
+        # bundle integration.  Do not accept an attestation that its retained
+        # event reader could never replay.
+        maximum_items=MAX_BUNDLE_MEMBERS, maximum_bytes=36,
+        validator=canonical_uuid,
+    )
+    if not failure_seals:
+        raise ModelError("fallback integration requires retained failure seal lineage")
+    review = _object(
+        record["review"], "fallback integration review", _FALLBACK_REVIEW_KEYS,
+    )
+    _text(review["reviewer_id"], "fallback integration reviewer_id", maximum=MAX_ACTOR_ID_BYTES)
+    if review["independent"] is not True:
+        raise ModelError("fallback integration review must attest independence")
+    if review["verdict"] != "pass":
+        raise ModelError("fallback integration review verdict must be pass")
+    _digest(review["evidence_digest"], "fallback integration review evidence_digest")
+    _text(review["summary"], "fallback integration review summary", maximum=MAX_SUMMARY_BYTES)
+    reviewed_at = _timestamp(
+        review["reviewed_at"], "fallback integration review reviewed_at",
+    )
+    verification = _array(
+        record["verification"], "fallback integration verification",
+        MAX_VERIFICATION_COMMANDS,
+    )
+    if not verification:
+        raise ModelError("fallback integration verification must not be empty")
+    verification_finished_at: list[datetime] = []
+    for index, raw in enumerate(verification):
+        command = _object(
+            raw, f"fallback integration verification[{index}]",
+            _FALLBACK_VERIFICATION_KEYS,
+        )
+        argv = _string_list(
+            command["argv"], f"fallback integration verification[{index}].argv",
+            maximum_items=MAX_ARGV_ITEMS, maximum_bytes=MAX_ARG_BYTES,
+            unique=False,
+        )
+        if not argv:
+            raise ModelError("fallback integration verification argv must not be empty")
+        _relative_path(command["cwd"], f"fallback integration verification[{index}].cwd")
+        _integer(
+            command["exit_code"],
+            f"fallback integration verification[{index}].exit_code",
+            minimum=-(2**31), maximum=2**31 - 1,
+        )
+        if command["exit_code"] != 0:
+            raise ModelError("fallback integration verification commands must pass")
+        verification_finished_at.append(_timestamp(
+            command["finished_at"],
+            f"fallback integration verification[{index}].finished_at",
+        ))
+        _digest(
+            command["output_digest"],
+            f"fallback integration verification[{index}].output_digest",
+        )
+        _text(
+            command["summary"],
+            f"fallback integration verification[{index}].summary",
+            maximum=MAX_SUMMARY_BYTES,
+        )
+    target = _object(
+        record["integration_target"], "fallback integration target",
+        _FALLBACK_TARGET_KEYS,
+    )
+    canonical_uuid(target["repository_id"], "fallback integration target repository_id")
+    _text(target["ref"], "fallback integration target ref", maximum=MAX_PATH_BYTES)
+    _git_object_id(target["jj_commit_id"], "fallback integration target commit")
+    _digest(target["tree_digest"], "fallback integration target tree")
+    attested_at = _timestamp(
+        record["attested_at"], "fallback integration attested_at",
+    )
+    if reviewed_at > attested_at or any(
+        finished > attested_at for finished in verification_finished_at
+    ):
+        raise ModelError(
+            "fallback integration review and verification must precede attestation"
+        )
     return copy.deepcopy(record)
 
 
@@ -2140,6 +2293,7 @@ _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     LINK_CONTRACT: validate_link,
     EVIDENCE_CONTRACT: validate_evidence,
     BUNDLE_CONTRACT: validate_bundle,
+    FALLBACK_INTEGRATION_CONTRACT: validate_fallback_integration,
 }
 
 
@@ -2183,7 +2337,8 @@ __all__ = [name for name in globals() if name.isupper()] + [
     "validate_seal", "validate_review", "validate_verification", "validate_approval",
     "approval_requester", "approval_decider", "is_operator_decider_actor",
     "validate_action", "validate_event", "validate_link", "validate_evidence",
-    "validate_bundle", "validate_coordinator", "validate_coordinator_checkpoint",
+    "validate_bundle", "validate_fallback_integration", "validate_coordinator",
+    "validate_coordinator_checkpoint",
     "checkpoint_digest", "validate_record", "record_digest",
     "plan_digest", "require_transition",
 ]
