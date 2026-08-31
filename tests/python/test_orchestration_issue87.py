@@ -19,7 +19,8 @@ from lib.control.orchestration.integration import (
     integration_snapshot, record_fallback_integration,
 )
 from lib.control.orchestration.model import (
-    EVIDENCE_CONTRACT, FALLBACK_INTEGRATION_CONTRACT, record_digest,
+    EVIDENCE_CONTRACT, FALLBACK_INTEGRATION_CONTRACT, MAX_SUMMARY_BYTES,
+    record_digest,
 )
 from lib.control.orchestration.scheduler import readiness
 from lib.control.orchestration.seals import immutable_tree_diff
@@ -115,6 +116,25 @@ class GatePreflightTests(ExecutionFixture, unittest.TestCase):
         script.chmod(0o755)
         retained = self._propose(initiative, value, "usable-direct.json")
         self.assertEqual(retained["declared_gates"][1]["commands"][0]["argv"], ["./checks/run"])
+
+    def test_direct_script_cwd_refusal_names_command_index_and_exact_argv(self) -> None:
+        initiative = self._new_initiative("direct-script-cwd-preflight")
+        value = self._plan_value(initiative, [
+            {
+                "argv": ["python3", "-c", "print('first')"],
+                "cwd": ".", "timeout_seconds": 30,
+            },
+            {
+                "argv": ["./checks/run"],
+                "cwd": "missing", "timeout_seconds": 30,
+            },
+        ])
+
+        with self.assertRaisesRegex(
+            ValueError,
+            r'command index 1 argv \["\./checks/run"\].*cwd must be an exact',
+        ):
+            self._propose(initiative, value, "missing-cwd.json")
 
     def test_activation_repeats_preflight_before_any_runtime_handshake(self) -> None:
         initiative = self._new_initiative("activation-preflight")
@@ -310,6 +330,76 @@ class InvalidGateRecoveryTests(ExecutionFixture, unittest.TestCase):
             and event["payload"].get("digest") == replayed["digest"]
         ]), 1)
 
+    def test_recovery_rebinds_a_quiescent_needs_input_node(self) -> None:
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        waiting = copy.deepcopy(node)
+        waiting["state"] = "needs-input"
+        self.store.save_node(
+            self.initiative_id, waiting,
+            expected_digest=record_digest(node),
+        )
+
+        proposed = propose_plan(
+            self.store, self.initiative(), self._replacement(),
+            config=self.config, jj=self.jj, actor_kind="coordinator",
+            actor_id="coordinator:issue87",
+        )
+        approved = approve_plan(
+            self.store, self.initiative(), proposed["digest"], actor_id="cli",
+        )
+
+        self.assertEqual(
+            approved["initiative"]["active_plan"]["digest"], proposed["digest"],
+        )
+        self.assertEqual(
+            self.store.read_node(self.initiative_id, "implementation-a")["state"],
+            "needs-input",
+        )
+
+    def test_recovery_never_reuses_a_dynamically_repaired_invalid_gate(self) -> None:
+        checks = self.repo / "checks"
+        checks.mkdir()
+
+        def script_plan(name: str) -> dict:
+            path = checks / name
+            path.write_text("#!/usr/bin/env python3\nprint('verified')\n")
+            path.chmod(0o755)
+            replacement = self._replacement()
+            replacement["declared_gates"][1]["commands"][0]["argv"] = [
+                f"./checks/{name}",
+            ]
+            return replacement
+
+        first = propose_plan(
+            self.store, self.initiative(), script_plan("first"),
+            config=self.config, jj=self.jj, actor_kind="coordinator",
+            actor_id="coordinator:issue87",
+        )
+        approve_plan(
+            self.store, self.initiative(), first["digest"], actor_id="cli",
+        )
+        (checks / "first").unlink()
+
+        second = propose_plan(
+            self.store, self.initiative(), script_plan("second"),
+            config=self.config, jj=self.jj, actor_kind="coordinator",
+            actor_id="coordinator:issue87",
+        )
+        approve_plan(
+            self.store, self.initiative(), second["digest"], actor_id="cli",
+        )
+        (checks / "second").unlink()
+
+        repaired_first = script_plan("first")
+        with self.assertRaisesRegex(
+            ValueError, "reuses a known-invalid frozen gate command",
+        ):
+            propose_plan(
+                self.store, self.initiative(), repaired_first,
+                config=self.config, jj=self.jj, actor_kind="coordinator",
+                actor_id="coordinator:issue87",
+            )
+
 
 class FallbackIntegrationTests(ExecutionFixture, unittest.TestCase):
     def setUp(self) -> None:
@@ -498,6 +588,17 @@ class FallbackIntegrationTests(ExecutionFixture, unittest.TestCase):
         self.assertTrue(json_output)
         self.assertEqual(event["payload"]["disposition"], "fallback-integrated")
         self.assertEqual(self.initiative()["state"], "integrated")
+
+    def test_fallback_refuses_a_document_too_large_for_retained_evidence(self) -> None:
+        oversized = copy.deepcopy(self.attestation)
+        command = copy.deepcopy(oversized["verification"][0])
+        command["summary"] = "x" * MAX_SUMMARY_BYTES
+        oversized["verification"] = [copy.deepcopy(command) for _ in range(17)]
+
+        with self.assertRaisesRegex(ValueError, "retained evidence capacity"):
+            record_fallback_integration(
+                self.store, self.initiative_id, oversized, jj=self.jj,
+            )
 
     def test_fallback_replays_an_exact_orphaned_attestation_evidence_prefix(self) -> None:
         from lib.control.orchestration import actions
