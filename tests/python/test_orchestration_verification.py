@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
@@ -204,10 +205,18 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
             specification["timeout_seconds"] = 1 if "timeout" in method else 30
             return value
 
+        denied_preflight = (
+            mock.patch(
+                "lib.control.orchestration.verification.preflight_verification_gates",
+                return_value=[],
+            )
+            if command_denial(command) is not None
+            else nullcontext()
+        )
         with mock.patch(
             "tests.python.orchestration_execution_fixtures.valid_plan",
             side_effect=plan_for_command,
-        ):
+        ), denied_preflight:
             super().setUp()
         self.candidate = save_candidate(self)
         advance_node(self, "implementation-a", ["evaluating", "succeeded"])

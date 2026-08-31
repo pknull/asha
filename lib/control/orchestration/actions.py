@@ -455,6 +455,12 @@ def _activate(
     plan = store.read_plan(
         initiative_id, initiative["active_plan"]["revision"],
     )
+    from .verification import VerificationError, preflight_verification_gates
+
+    try:
+        preflight_verification_gates(plan, initiative)
+    except VerificationError as exc:
+        raise ActionRefused(str(exc)) from exc
     try:
         validate_goal_capacity(store.config, initiative, plan["nodes"])
     except SchedulerError as exc:

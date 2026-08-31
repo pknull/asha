@@ -39,6 +39,9 @@ asha initiative cancel ID --node NODE [--json]
 asha initiative finalize ID --outcome partial|failed --reason TEXT [--json]
 asha initiative archive ID [--json]
 asha initiative unarchive ID [--json]
+asha initiative record-integration ID --bundle BUNDLE_ID [--composed-verification] [--json]
+asha initiative record-integration ID --seal SEAL_ID --abandoned --reason TEXT [--json]
+asha initiative record-integration ID --fallback ATTESTATION.json [--json]
 asha initiative list [--all] [--json]
 asha initiative show ID [--json]
 asha initiative events ID [--after SEQUENCE] [--json]
@@ -95,6 +98,29 @@ the node and prints the exact
 `asha initiative baseline --repo <root> --revision <commit>` command needed to
 regenerate the authoring values. This check is read-only; it does not import
 refs.
+
+Proposal and approval also preflight every declared verification argv through
+the same `command_denial` function used by result ingestion and the controller
+verification runner. A refusal identifies the zero-based command index, exact
+JSON argv, and denial reason. No approval is written for an impossible gate.
+Activation repeats this preflight before its doctor and repository handshake.
+A repository-relative direct executable such as `./tests/check` must exist at
+the declared cwd, be a non-symlink regular executable, and be either a native
+ELF program or a script with an interpreter usable under the minimal
+`PATH`/`HOME`/`LANG` environment. Control never rewrites a shell recommendation
+into a different argv.
+
+If an older active plan reached `running` with a gate that this structural
+preflight now refuses, the live coordinator may propose one replacement
+revision from `running`. This recovery is unavailable after a terminal
+candidate has a success seal or while an attempt is active. The invalid plan
+remains active until the operator explicitly approves the replacement;
+standing authorities cannot approve this path. Exact uncompleted active node
+records may be rebound, new node IDs may replace other uncompleted nodes, and
+the old plan, approval, attempts, refusals, and seals remain unchanged. The
+controller records `plan-gate-invalid` and `plan-gate-superseded`; while the
+invalid digest is active, scheduler readiness is blocked so no retry can reuse
+the proven-invalid gate.
 
 `activate` performs the runtime handshake before changing `approved` to
 `running`: Orchestration doctor and Control doctor must pass, Control's
@@ -802,6 +828,7 @@ remain available where their ordinary lifecycle rules permit containment.
 | `reject` | `asha.orchestration-plan-rejection.v1` `{contract, initiative, plan_digest, reason}` |
 | `activate`, `dispatch`, `pause`, `resume`, `stop`, `cancel`, `finalize`, `archive`, `unarchive`, `action` | stored `asha.orchestration-action.v1` journal record |
 | `approve-salvage` | `asha.orchestration-salvage-approval.v1` `{contract, initiative_id, approval}` |
+| `record-integration` | stored `asha.orchestration-event.v1` `seal-integration-recorded`; bundle, abandonment, and fallback forms are mutually exclusive |
 | `task report` | `asha.orchestration-result-publication-receipt.v1` `{contract, publication_id, result_id, phase, refusal}` |
 | `task result` | `asha.orchestration-task-results.v1` `{contract, task_id, results}` |
 | `task seal` | `asha.orchestration-task-seal.v1` `{contract, seal, verification}` |
@@ -904,6 +931,11 @@ visibility through a wrapper. This conservative argv policy is not hostile-code
 or general filesystem containment; approved program internals remain outside
 the deny classifier.
 
+That exact policy is run when the plan is proposed, immediately before plan
+approval, and again at activation; the execution-time check remains as
+defense-in-depth. A structurally denied command therefore cannot freeze a
+running graph behind a gate Control will never execute.
+
 Each command retains immutable evidence binding the verification and candidate
 bundle digests; repository, seal, and materialization identities; approved
 argv and relative cwd; environment policy and process identity; start and
@@ -931,6 +963,60 @@ that exact bundle externally, `record-integration --bundle` records the durable
 attestation and advances `ready-for-integration -> integrated`. The same fact
 recorded in another state does not move lifecycle, and `--seal --abandoned`
 never advances it.
+
+`record-integration --fallback ATTESTATION.json` is the operator-only recovery
+for work that retained failure seals but was independently reviewed, verified,
+and landed outside the normal success-bundle rail. It accepts the closed
+`asha.orchestration-fallback-integration.v1` object:
+
+```json
+{
+  "contract": "asha.orchestration-fallback-integration.v1",
+  "attestation_id": "UUID",
+  "initiative_id": "UUID",
+  "repository_id": "UUID",
+  "active_plan_digest": "SHA256",
+  "baseline": {"jj_commit_id": "OID", "tree_digest": "SHA256"},
+  "candidate": {
+    "jj_commit_id": "OID", "tree_digest": "SHA256",
+    "diff_digest": "SHA256", "changed_paths": ["relative/path"]
+  },
+  "hard_write_scope": ["relative/prefix"],
+  "failure_seal_ids": ["UUID"],
+  "review": {
+    "reviewer_id": "bounded-text", "independent": true, "verdict": "pass",
+    "evidence_digest": "SHA256", "summary": "bounded-text",
+    "reviewed_at": "RFC3339-Z"
+  },
+  "verification": [{
+    "argv": ["program", "arg"], "cwd": ".", "exit_code": 0,
+    "finished_at": "RFC3339-Z", "output_digest": "SHA256",
+    "summary": "bounded-text"
+  }],
+  "integration_target": {
+    "repository_id": "UUID", "ref": "refs/heads/master",
+    "jj_commit_id": "OID", "tree_digest": "SHA256"
+  },
+  "attested_at": "RFC3339-Z"
+}
+```
+
+Acceptance reauthenticates the initiative repository, reads the exact baseline,
+candidate, and integration-target commits, recomputes the candidate diff with
+the sealing path policy, refuses any hard-scope violation, and requires the
+target tree to contain the candidate's exact entries at every changed path.
+The target `ref` is bound operator context only: Control never resolves a
+bookmark, branch tip, push, or ambient repository state into success. Every
+named seal must remain a failure seal on the active plan and the final lineage
+seal must exactly match the candidate commit, tree, diff, and complete path
+list. Verification commands must be passing and non-denied. The immutable
+attestation is stored separately as
+`fallback-integration-attestation` evidence and the original seals remain
+failures. Its UUID is replay-safe: identical replay is a no-op; changed,
+foreign, drifting, incomplete, or conflicting evidence is refused before the
+terminal transition. A validated fallback may advance an incomplete
+`running`, `paused`, `needs-input`, `partial`, or `failed` rail to `integrated`.
+Archiving remains a separate operator decision.
 When every graph node is terminal without a qualifying candidate, the operator
 may acknowledge `partial` or `failed` with `finalize --reason`; partial requires
 at least one retained success seal as useful work. Failure-only evidence must
@@ -952,6 +1038,8 @@ workspace directory is gone as reclaimed, not as drift.
 The node transition graph includes `succeeded -> ready` when accepted review
 findings make the exact candidate repairable. The initiative transition graph
 includes `ready-for-integration -> integrated` and
+`running | paused | needs-input | partial | failed -> integrated` only through
+a validated operator fallback attestation, plus
 `archived -> ready-for-integration | integrated | partial | failed | cancelled`
 when integration is recorded or `unarchive` restores the terminal outcome
 retained by the latest archive cycle. These are explicit lifecycle edges, not

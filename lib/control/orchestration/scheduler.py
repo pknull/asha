@@ -145,8 +145,13 @@ def readiness(
     dependency = dependency_states(
         plan, {node_id: node["state"] for node_id, node in nodes.items()}, seals,
     )
+    from .verification import gate_is_known_invalid
+
     globally_blocked = (
         initiative["state"] != "running"
+        or gate_is_known_invalid(
+            store, initiative["initiative_id"], plan["digest"],
+        )
         or _deadline_reached(initiative, plan)
         or len(_active_attempts(attempts)) >= _limit(initiative, plan, "max_parallel")
         or _storage_paused(store, initiative)
