@@ -68,6 +68,22 @@ class VerificationError(ValueError):
     """A verification specification, command, or candidate identity failed."""
 
 
+class GatePreflightError(VerificationError):
+    """One exact declared command is structurally impossible to run."""
+
+    def __init__(
+        self,
+        command_index: int,
+        specification: Mapping[str, Any],
+        message: str,
+    ) -> None:
+        self.command_index = command_index
+        self.argv = list(specification["argv"])
+        self.cwd = specification["cwd"]
+        self.command_digest = _gate_command_digest(specification)
+        super().__init__(message)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace(
         "+00:00", "Z"
@@ -360,6 +376,29 @@ def command_denial(argv: list[str]) -> str | None:
     return None
 
 
+def _gate_command_digest(specification: Mapping[str, Any]) -> str:
+    """Bind the structural command fields independently of plan revision."""
+    payload = {
+        "argv": list(specification["argv"]),
+        "cwd": specification["cwd"],
+    }
+    return hashlib.sha256(json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")).hexdigest()
+
+
+def _verification_command_specs(
+    plan: Mapping[str, Any],
+) -> list[Mapping[str, Any]]:
+    return [
+        specification
+        for gate in plan["declared_gates"]
+        if gate["kind"] == "verification"
+        for specification in gate["commands"]
+    ]
+
+
 def _exact_directory(root: Path, relative: str) -> Path:
     """Resolve one declared cwd without accepting a symlink traversal."""
     target = root if relative == "." else root.joinpath(*relative.split("/"))
@@ -375,7 +414,13 @@ def _exact_directory(root: Path, relative: str) -> Path:
         raise VerificationError(
             "verification command cwd escapes its repository"
         ) from exc
-    if not target.is_dir() or target.resolve() != target:
+    try:
+        exact = target.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise VerificationError(
+            "verification command cwd must be an exact existing directory"
+        ) from exc
+    if not target.is_dir() or exact != target:
         raise VerificationError(
             "verification command cwd must be an exact existing directory"
         )
@@ -456,7 +501,10 @@ def _preflight_direct_argv(
     requested = Path(token)
     # Every command needs its declared cwd.  A direct path adds an executable
     # check; PATH programs remain the exec runner's bounded PATH lookup.
-    cwd = _exact_directory(root, specification["cwd"])
+    try:
+        cwd = _exact_directory(root, specification["cwd"])
+    except VerificationError as exc:
+        return str(exc)
     if "/" not in token:
         return None
     executable = requested if requested.is_absolute() else cwd / requested
@@ -497,38 +545,112 @@ def preflight_verification_gates(
     exact_environment = dict(os.environ if environment is None else environment)
     checked: list[dict[str, Any]] = []
     command_index = 0
-    for gate in plan["declared_gates"]:
-        if gate["kind"] != "verification":
-            continue
-        for specification in gate["commands"]:
-            argv = list(specification["argv"])
-            denial = command_denial(argv)
-            rendered = json.dumps(
-                argv, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+    for specification in _verification_command_specs(plan):
+        argv = list(specification["argv"])
+        denial = command_denial(argv)
+        rendered = json.dumps(
+            argv, ensure_ascii=False, separators=(",", ":"), allow_nan=False,
+        )
+        if denial is not None:
+            raise GatePreflightError(
+                command_index, specification,
+                f"verification command index {command_index} argv {rendered} "
+                f"is denied by Control command policy: {denial}",
             )
-            if denial is not None:
-                raise VerificationError(
-                    f"verification command index {command_index} argv {rendered} "
-                    f"is denied by Control command policy: {denial}"
+        for repository in scope_repositories(initiative):
+            reason = _preflight_direct_argv(
+                Path(repository["root"]), specification,
+                environment=exact_environment,
+            )
+            if reason is not None:
+                raise GatePreflightError(
+                    command_index, specification,
+                    f"verification command index {command_index} argv "
+                    f"{rendered} is not runnable in the minimal environment "
+                    f"for repository {repository['repository_id']}: {reason}",
                 )
-            for repository in scope_repositories(initiative):
-                reason = _preflight_direct_argv(
-                    Path(repository["root"]), specification,
-                    environment=exact_environment,
-                )
-                if reason is not None:
-                    raise VerificationError(
-                        f"verification command index {command_index} argv "
-                        f"{rendered} is not runnable in the minimal environment "
-                        f"for repository {repository['repository_id']}: {reason}"
-                    )
-            checked.append({
-                "index": command_index,
-                "argv": argv,
-                "cwd": specification["cwd"],
-            })
-            command_index += 1
+        checked.append({
+            "index": command_index,
+            "argv": argv,
+            "cwd": specification["cwd"],
+        })
+        command_index += 1
     return checked
+
+
+def known_invalid_gate_reuse(
+    store: InitiativeStore,
+    initiative_id: str,
+    plan: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """Return a proposed command that repeats retained invalid-gate proof.
+
+    Plan digests include their revision, so digest comparison alone cannot
+    prevent a later revision from replaying the same command after a missing
+    direct script has appeared. New proof records carry the command digest;
+    the fallback reconstructs it from retained pre-fix events and plans.
+    """
+    plans = {
+        item["digest"]: item
+        for item in store.list_plans_snapshot(initiative_id)
+    }
+    invalid: set[str] = set()
+    for event in store.list_events_snapshot(initiative_id):
+        if event["type"] != "plan-gate-invalid":
+            continue
+        payload = event.get("payload")
+        if not isinstance(payload, Mapping):
+            raise VerificationError(
+                "known-invalid gate evidence has no readable payload"
+            )
+        invalid_plan = plans.get(payload.get("invalid_plan_digest"))
+        index = payload.get("invalid_command_index")
+        if isinstance(index, bool) or not isinstance(index, int):
+            reason = payload.get("reason")
+            match = (
+                re.match(r"verification command index ([0-9]+) argv ", reason)
+                if isinstance(reason, str) else None
+            )
+            index = int(match.group(1)) if match is not None else None
+        if invalid_plan is None:
+            raise VerificationError(
+                "known-invalid gate evidence has no retained plan"
+            )
+        specifications = _verification_command_specs(invalid_plan)
+        if not specifications:
+            raise VerificationError(
+                "known-invalid gate evidence has no retained command"
+            )
+        if index is None:
+            # The first candidate briefly recorded cwd failures without command
+            # context. Preserve recovery without guessing: every command in
+            # that retained gate must change before it can be rebound.
+            invalid.update(
+                _gate_command_digest(specification)
+                for specification in specifications
+            )
+            continue
+        if index < 0 or index >= len(specifications):
+            raise VerificationError(
+                "known-invalid gate evidence names an unavailable command"
+            )
+        command_digest = _gate_command_digest(specifications[index])
+        retained_digest = payload.get("invalid_command_digest")
+        if retained_digest is not None and retained_digest != command_digest:
+            raise VerificationError(
+                "known-invalid gate evidence command digest does not match its plan"
+            )
+        invalid.add(command_digest)
+    for index, specification in enumerate(_verification_command_specs(plan)):
+        digest = _gate_command_digest(specification)
+        if digest in invalid:
+            return {
+                "index": index,
+                "argv": list(specification["argv"]),
+                "cwd": specification["cwd"],
+                "command_digest": digest,
+            }
+    return None
 
 
 def gate_is_known_invalid(
@@ -2040,12 +2162,13 @@ def run_cross_composed_verification(
 __all__ = [
     "COMPOSED_COMMAND_KIND", "COMPOSED_VERIFICATION_KIND",
     "CROSS_COMPOSED_COMMAND_KIND", "CROSS_COMPOSED_VERIFICATION_KIND",
-    "MAX_VERIFICATION_OUTPUT_BYTES", "VerificationError",
+    "MAX_VERIFICATION_OUTPUT_BYTES", "GatePreflightError", "VerificationError",
     "candidate_bundle_digest", "command_denial", "composed_roster",
     "composed_verdict_evidence", "composed_verification_verdict",
     "covering_cross_composed_verdict", "cross_composed_verdict_evidence",
     "cross_composed_verification_verdict", "run_composed_verification",
-    "gate_is_known_invalid", "preflight_verification_gates",
+    "gate_is_known_invalid", "known_invalid_gate_reuse",
+    "preflight_verification_gates",
     "run_cross_composed_verification",
     "run_verification",
 ]

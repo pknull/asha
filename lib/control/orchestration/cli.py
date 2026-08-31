@@ -507,7 +507,7 @@ def _verify_approved_baselines(
 
 def _invalid_gate_reason(
     store: InitiativeStore, initiative: Mapping[str, Any],
-) -> tuple[dict[str, Any], str]:
+) -> tuple[dict[str, Any], Any]:
     """Return the active plan and its structural gate refusal, or fail."""
     active = initiative.get("active_plan")
     if not isinstance(active, Mapping):
@@ -515,12 +515,12 @@ def _invalid_gate_reason(
     plan = store.read_plan(initiative["initiative_id"], active["revision"])
     if plan["digest"] != active["digest"]:
         raise StoreError("active plan digest differs from its retained revision")
-    from .verification import VerificationError, preflight_verification_gates
+    from .verification import GatePreflightError, preflight_verification_gates
 
     try:
         preflight_verification_gates(plan, initiative)
-    except VerificationError as exc:
-        return plan, str(exc)
+    except GatePreflightError as exc:
+        return plan, exc
     raise ValueError("active verification gate is structurally valid")
 
 
@@ -563,7 +563,7 @@ def _propose_gate_recovery_plan(
         raise ValueError(
             "only the live coordinator may propose a running gate recovery"
         )
-    active_plan, reason = _invalid_gate_reason(store, initiative)
+    active_plan, failure = _invalid_gate_reason(store, initiative)
     initiative_id = initiative["initiative_id"]
     if _accepted_terminal_candidate(store, initiative_id, active_plan):
         raise ValueError(
@@ -597,8 +597,18 @@ def _propose_gate_recovery_plan(
         )
     if plan["digest"] == active_plan["digest"]:
         raise ValueError("gate recovery may not reuse the known-invalid plan")
-    from .verification import preflight_verification_gates
+    from .verification import known_invalid_gate_reuse, preflight_verification_gates
 
+    reused = known_invalid_gate_reuse(store, initiative_id, plan)
+    if reused is not None:
+        rendered = json.dumps(
+            reused["argv"], ensure_ascii=False, separators=(",", ":"),
+            allow_nan=False,
+        )
+        raise ValueError(
+            f"gate recovery command index {reused['index']} argv {rendered} "
+            "reuses a known-invalid frozen gate command"
+        )
     preflight_verification_gates(plan, initiative)
     nodes = [validate_node(node) for node in plan["nodes"]]
     if any(node["state"] != "proposed" for node in nodes):
@@ -625,7 +635,9 @@ def _propose_gate_recovery_plan(
             )
             or (
                 node["node_id"] in active_ids
-                and current["state"] in {"approved", "blocked", "ready"}
+                and current["state"] in {
+                    "approved", "blocked", "ready", "needs-input",
+                }
                 and comparable == node
             )
         )
@@ -656,7 +668,9 @@ def _propose_gate_recovery_plan(
                     "revision": active_plan["revision"],
                     "digest": active_plan["digest"],
                     "invalid_plan_digest": active_plan["digest"],
-                    "reason": reason[:2048],
+                    "reason": str(failure)[:2048],
+                    "invalid_command_index": failure.command_index,
+                    "invalid_command_digest": failure.command_digest,
                 },
                 at, actor_kind="controller", actor_id="gate-preflight",
             ))
@@ -1316,7 +1330,7 @@ def _approve_gate_recovery(
             "plan": plan,
             "approval": approval,
         }
-    invalid_plan, _reason = _invalid_gate_reason(store, initiative)
+    invalid_plan, _failure = _invalid_gate_reason(store, initiative)
     if _accepted_terminal_candidate(
         store, initiative["initiative_id"], invalid_plan,
     ):
@@ -1358,7 +1372,7 @@ def _approve_gate_recovery(
         comparable = copy.deepcopy(current)
         comparable["state"] = "proposed"
         if comparable != expected or current["state"] not in {
-            "proposed", "approved", "blocked", "ready",
+            "proposed", "approved", "blocked", "ready", "needs-input",
         }:
             raise StoreError(
                 "replacement plan may bind only exact uncompleted node records"

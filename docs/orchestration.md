@@ -120,7 +120,9 @@ records may be rebound, new node IDs may replace other uncompleted nodes, and
 the old plan, approval, attempts, refusals, and seals remain unchanged. The
 controller records `plan-gate-invalid` and `plan-gate-superseded`; while the
 invalid digest is active, scheduler readiness is blocked so no retry can reuse
-the proven-invalid gate.
+the proven-invalid gate. Invalid-gate evidence also binds the refused command
+independently of plan revision, so a later revision cannot reuse a dynamically
+repaired direct-script recommendation that was already proven invalid.
 
 `activate` performs the runtime handshake before changing `approved` to
 `running`: Orchestration doctor and Control doctor must pass, Control's
@@ -1001,6 +1003,8 @@ and landed outside the normal success-bundle rail. It accepts the closed
 }
 ```
 
+The complete canonical attestation must fit the 128 KiB retained-evidence
+capacity; individually valid fields cannot create an unstorable document.
 Acceptance reauthenticates the initiative repository, reads the exact baseline,
 candidate, and integration-target commits, recomputes the candidate diff with
 the sealing path policy, refuses any hard-scope violation, and requires the

@@ -2102,6 +2102,10 @@ def validate_fallback_integration(value: Any) -> dict[str, Any]:
         raise ModelError(
             "fallback integration review and verification must precede attestation"
         )
+    if len(_canonical_bytes(record)) > MAX_EVIDENCE_SUMMARY_BYTES:
+        raise ModelError(
+            "fallback integration exceeds the retained evidence capacity"
+        )
     return copy.deepcopy(record)
 
 
