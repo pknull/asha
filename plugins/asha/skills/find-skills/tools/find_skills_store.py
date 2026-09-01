@@ -179,6 +179,13 @@ def _read_actual_files(
                 "path": str(file_path.relative_to(destination)),
             })
             continue
+        if file_path.is_dir():
+            if not any(file_path.iterdir()):
+                issues.append({
+                    "kind": "unsupported-local-node",
+                    "path": str(file_path.relative_to(destination)),
+                })
+            continue
         if file_path.is_file():
             relative = file_path.relative_to(destination).as_posix()
             data = file_path.read_bytes()
@@ -187,6 +194,11 @@ def _read_actual_files(
                 "bytes": len(data),
                 "executable": bool(file_path.stat().st_mode & stat.S_IXUSR),
             }
+            continue
+        issues.append({
+            "kind": "unsupported-local-node",
+            "path": str(file_path.relative_to(destination)),
+        })
     return records
 
 
@@ -477,6 +489,8 @@ def _backup_destination(destination: Path, name: str) -> Path | None:
     backup_root = destination.parent / ".find-skills-backups"
     if backup_root.is_symlink():
         raise ValidationError(f"imported skill backup root must not be a symlink: {backup_root}")
+    if backup_root.exists() and not backup_root.is_dir():
+        raise ValidationError(f"imported skill backup root must be a directory: {backup_root}")
     backup_root.mkdir(exist_ok=True)
     suffix = f"{utc_now().replace(':', '')}-{uuid.uuid4().hex[:8]}"
     backup = backup_root / f"{name}-{suffix}"
