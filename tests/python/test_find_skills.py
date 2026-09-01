@@ -6,6 +6,7 @@ from contextlib import redirect_stderr, redirect_stdout
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import threading
@@ -54,16 +55,18 @@ def inspection_fixture(
     support_files=None,
     skill_root="skills/demo",
     requested_path=None,
+    skill_md=None,
 ):
     revision = "a" * 40
-    skill_md = (
-        "---\n"
-        "name: demo\n"
-        "description: A small portable demonstration skill.\n"
-        f"{frontmatter_extra}"
-        "---\n"
-        "\n# Demo\n\nFollow the reviewed procedure.\n"
-    ).encode()
+    if skill_md is None:
+        skill_md = (
+            "---\n"
+            "name: demo\n"
+            "description: A small portable demonstration skill.\n"
+            f"{frontmatter_extra}"
+            "---\n"
+            "\n# Demo\n\nFollow the reviewed procedure.\n"
+        ).encode()
     support_files = support_files or {"reference.txt": (b"fixed reference\n", "100644")}
     prefix = "" if skill_root == "." else f"{skill_root}/"
     tree = [
@@ -281,6 +284,26 @@ class InspectionTests(unittest.TestCase):
         self.assertEqual(parsed["description"], "it's portable")
         self.assertEqual(parsed["license"], "MIT")
         self.assertEqual(errors, [])
+
+    def test_block_scalar_name_is_an_import_blocker_before_store_write(self):
+        skill_md = (
+            b"---\nname: |-\n  demo\n"
+            b"description: Block scalar name fixture.\n---\n# Demo\n"
+        )
+        inspection, _client, _skill_md = inspection_fixture(skill_md=skill_md)
+        report = find_skills.inspection_report(inspection)
+        blocker = "frontmatter:name must use a plain or quoted YAML scalar"
+        self.assertFalse(report["importable"])
+        self.assertIn(blocker, report["import_blockers"])
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with self.assertRaisesRegex(
+                find_skills.ValidationError, "plain or quoted YAML scalar"
+            ):
+                find_skills.build_import_proposal(
+                    inspection, root / "asha-home", root / "repo"
+                )
+            self.assertFalse((root / "asha-home").exists())
 
     def test_metadata_keys_are_blockers_and_json_sorting_remains_safe(self):
         inspection, _client, _skill_md = inspection_fixture(
@@ -650,6 +673,26 @@ class ImportAndStatusTests(unittest.TestCase):
             find_skills._write_import(retry, approve=True, replace=False)
         self.assertEqual(changed.read_bytes(), before)
 
+    def test_status_reports_empty_directories_and_special_nodes_as_drift(self):
+        inspection, _client, _skill_md = inspection_fixture()
+        proposal = find_skills.build_import_proposal(
+            inspection, self.asha_home, self.repo
+        )
+        find_skills._write_import(proposal, approve=True, replace=False)
+        destination = self.asha_home / "skills/demo"
+        (destination / "extra-dir").mkdir()
+        os.mkfifo(destination / "pipe")
+
+        status = find_skills.status_store(self.asha_home)
+
+        self.assertEqual(status["state"], "drifted")
+        issues = {
+            (issue["kind"], issue["path"])
+            for issue in status["skills"][0]["issues"]
+        }
+        self.assertIn(("unsupported-local-node", "extra-dir"), issues)
+        self.assertIn(("unsupported-local-node", "pipe"), issues)
+
     def test_replace_needs_separate_approval_and_preserves_backup_and_history(self):
         inspection, _client, _skill_md = inspection_fixture()
         first = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
@@ -685,6 +728,27 @@ class ImportAndStatusTests(unittest.TestCase):
         self.assertEqual(changed.read_bytes(), b"Keeper local bytes\n")
         self.assertEqual(lock_path.read_bytes(), lock_before)
         self.assertEqual(list(outside.iterdir()), [])
+
+    def test_replace_refuses_nondirectory_backup_root_before_moving_destination(self):
+        inspection, _client, _skill_md = inspection_fixture()
+        first = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
+        find_skills._write_import(first, approve=True, replace=False)
+        destination = self.asha_home / "skills/demo"
+        changed = destination / "reference.txt"
+        changed.write_bytes(b"Keeper local bytes\n")
+        retry = find_skills.build_import_proposal(inspection, self.asha_home, self.repo)
+        lock_path = self.asha_home / "skills/imported.lock.json"
+        lock_before = lock_path.read_bytes()
+        backup_root = self.asha_home / "skills/.find-skills-backups"
+        backup_root.write_bytes(b"not a directory\n")
+
+        with self.assertRaisesRegex(find_skills.ValidationError, "must be a directory"):
+            find_skills._write_import(retry, approve=True, replace=True)
+
+        self.assertTrue(destination.is_dir())
+        self.assertEqual(changed.read_bytes(), b"Keeper local bytes\n")
+        self.assertEqual(lock_path.read_bytes(), lock_before)
+        self.assertEqual(backup_root.read_bytes(), b"not a directory\n")
 
     def test_plugin_and_already_imported_name_collisions_are_refused(self):
         inspection, _client, _skill_md = inspection_fixture()

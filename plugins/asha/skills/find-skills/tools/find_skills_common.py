@@ -309,11 +309,58 @@ def _frontmatter_errors(parsed: Mapping[str, Any]) -> list[str]:
     return errors
 
 
+def _frontmatter_name_representation_errors(events: Sequence[Any]) -> list[str]:
+    root = next(
+        (
+            index
+            for index, event in enumerate(events)
+            if isinstance(event, yaml.events.MappingStartEvent)
+        ),
+        -1,
+    )
+    if root < 0:
+        return []
+
+    def consume(index: int) -> int:
+        event = events[index]
+        if not isinstance(
+            event, (yaml.events.MappingStartEvent, yaml.events.SequenceStartEvent)
+        ):
+            return index + 1
+        end_type = (
+            yaml.events.MappingEndEvent
+            if isinstance(event, yaml.events.MappingStartEvent)
+            else yaml.events.SequenceEndEvent
+        )
+        index += 1
+        while not isinstance(events[index], end_type):
+            index = consume(index)
+        return index + 1
+
+    name_values: list[Any] = []
+    index = root + 1
+    while not isinstance(events[index], yaml.events.MappingEndEvent):
+        key_index = index
+        index = consume(index)
+        value_index = index
+        index = consume(index)
+        key = events[key_index]
+        if isinstance(key, yaml.events.ScalarEvent) and key.value == "name":
+            name_values.append(events[value_index])
+    if any(
+        not isinstance(value, yaml.events.ScalarEvent)
+        or value.style not in (None, "'", '"')
+        for value in name_values
+    ):
+        return ["name must use a plain or quoted YAML scalar"]
+    return []
+
+
 def parse_frontmatter(data: bytes) -> tuple[dict[str, Any], str, list[str]]:
     frontmatter, body = _frontmatter_parts(data)
     if yaml is None:
         raise FindSkillsError("PyYAML is required to parse SKILL.md frontmatter")
-    _validate_yaml_structure(frontmatter)
+    events = _validate_yaml_structure(frontmatter)
     try:
         loaded = yaml.safe_load(frontmatter)
     except (yaml.YAMLError, RecursionError, ValueError) as exc:
@@ -327,11 +374,15 @@ def parse_frontmatter(data: bytes) -> tuple[dict[str, Any], str, list[str]]:
         raise ValidationError("frontmatter YAML keys must be strings")
     else:
         parsed = dict(loaded)
-    return parsed, body, _frontmatter_errors(parsed)
+    errors = _frontmatter_errors(parsed)
+    if isinstance(parsed.get("name"), str):
+        errors.extend(_frontmatter_name_representation_errors(events))
+    return parsed, body, errors
 
 
-def _validate_yaml_structure(frontmatter: str) -> None:
+def _validate_yaml_structure(frontmatter: str) -> list[Any]:
     depth = 0
+    events: list[Any] = []
     try:
         for count, event in enumerate(
             yaml.parse(frontmatter, Loader=yaml.SafeLoader), start=1
@@ -352,11 +403,13 @@ def _validate_yaml_structure(frontmatter: str) -> None:
                 event, (yaml.events.MappingEndEvent, yaml.events.SequenceEndEvent)
             ):
                 depth -= 1
+            events.append(event)
     except ValidationError:
         raise
     except (yaml.YAMLError, RecursionError, ValueError) as exc:
         detail = str(exc).splitlines()[0]
         raise ValidationError(f"frontmatter is not valid YAML: {detail}") from exc
+    return events
 
 
 def split_declared(value: Any) -> list[str]:

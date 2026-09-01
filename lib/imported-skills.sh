@@ -86,33 +86,41 @@ validate_skill_source() {
 import sys
 from pathlib import Path
 
-sys.path.insert(0, sys.argv[1])
-from find_skills_common import ValidationError
-from find_skills_store import load_lock, status_store
-
-lock_path = Path(sys.argv[2])
 try:
-    document = load_lock(lock_path)
-    asha_home = lock_path.parent.parent
-    for name in document["skills"]:
-        status = status_store(asha_home, name)["skills"][0]
-        if status["state"] != "clean":
-            unsafe = (lock_path.parent / name).is_symlink() or any(
-                issue["kind"] == "unsupported-local-symlink"
-                for issue in status["issues"]
-            )
-            raise SystemExit(
-                f"imported skill has drifted: {name} at {lock_path.parent / name}"
-                if not unsafe else 3
-            )
-except ValidationError:
-    raise SystemExit(2) from None
+    sys.path.insert(0, sys.argv[1])
+    from find_skills_common import ValidationError
+    from find_skills_store import load_lock, status_store
+
+    lock_path = Path(sys.argv[2])
+    try:
+        document = load_lock(lock_path)
+        asha_home = lock_path.parent.parent
+        for name in document["skills"]:
+            status = status_store(asha_home, name)["skills"][0]
+            if status["state"] != "clean":
+                skill_path = lock_path.parent / name
+                unsafe = skill_path.is_symlink() or any(
+                    issue["kind"] == "unsupported-local-symlink"
+                    for issue in status["issues"]
+                )
+                if unsafe:
+                    print(
+                        f"imported skill has unsafe symlink drift: {name} at {skill_path}",
+                        file=sys.stderr,
+                    )
+                    raise SystemExit(3)
+                raise SystemExit(f"imported skill has drifted: {name} at {skill_path}")
+    except ValidationError:
+        raise SystemExit(2) from None
+except Exception:
+    raise SystemExit(4) from None
 PY
   case "$drift_rc" in
     0) ;;
-    1) ASHA_IMPORTED_SKILLS_DRIFTED=1 ;;
-    3) die "imported skill has unsafe symlink drift: $src_dir" 4 ;;
-    *) die "invalid imported skill lockfile: $lock" 4 ;;
+    1|3) ASHA_IMPORTED_SKILLS_DRIFTED=1 ;;
+    2) die "invalid imported skill lockfile: $lock" 4 ;;
+    4) die "imported skill drift probe failed: $src_dir" 4 ;;
+    *) die "imported skill drift probe exited unexpectedly: $src_dir" 4 ;;
   esac
 }
 

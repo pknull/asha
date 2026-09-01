@@ -784,22 +784,42 @@ done
 reset_sandbox
 seed_native_configs
 seed_imported_skill
-outside_skill="$SANDBOX/outside-SKILL.md"
-cp "$SANDBOX/.asha/skills/demo/SKILL.md" "$outside_skill"
+outside_skill="$SANDBOX/outside.txt"
+printf 'foreign bytes\n' > "$outside_skill"
 outside_before="$(sha256sum "$outside_skill" | awk '{print $1}')"
-rm "$SANDBOX/.asha/skills/demo/SKILL.md"
-ln -s "$outside_skill" "$SANDBOX/.asha/skills/demo/SKILL.md"
+ln -s "$outside_skill" "$SANDBOX/.asha/skills/demo/link.txt"
 symlink_out=""
 if symlink_out="$(run_install --target claude 2>&1)"; then
-  fail "drifted imported SKILL.md symlink is refused"
-else
   outside_after="$(sha256sum "$outside_skill" | awk '{print $1}')"
-  [[ "$outside_before" == "$outside_after" \
+  [[ "$symlink_out" == *"imported skill has unsafe symlink drift: demo at $SANDBOX/.asha/skills/demo"* \
+     && "$outside_before" == "$outside_after" \
+     && -L "$SANDBOX/.claude/skills/asha-find-skills" \
      && ! -e "$SANDBOX/.claude/skills/imported-demo" \
      && ! -e "$SANDBOX/.asha/skills/.mounts" ]] \
-    && ok "imported symlink drift cannot overwrite a foreign file" \
-    || fail "imported symlink refusal is write-free (output: $(tail -5 <<<"$symlink_out"))"
+    && ok "imported symlink drift is isolated without touching its target" \
+    || fail "imported symlink drift isolation is clear and write-free (output: $(tail -8 <<<"$symlink_out"))"
+else
+  fail "imported symlink drift does not abort the Claude target (output: $(tail -8 <<<"$symlink_out"))"
 fi
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+touch "$SANDBOX/.asha/skills/demo/secret.txt"
+chmod 000 "$SANDBOX/.asha/skills/demo/secret.txt"
+probe_out=""
+if probe_out="$(run_install --target claude 2>&1)"; then
+  fail "hard imported drift-probe I/O failures abort the target"
+else
+  [[ "$probe_out" == *"imported skill drift probe failed: $SANDBOX/.asha/skills"* \
+     && "$probe_out" != *"Traceback"* \
+     && "$probe_out" != *"imported skill has drifted"* \
+     && ! -e "$SANDBOX/.claude/skills/imported-demo" \
+     && ! -e "$SANDBOX/.claude/skills/asha-find-skills" ]] \
+    && ok "hard imported drift-probe failures are distinct and abort safely" \
+    || fail "hard imported drift-probe failure is clear and distinct (output: $(tail -8 <<<"$probe_out"))"
+fi
+chmod 600 "$SANDBOX/.asha/skills/demo/secret.txt"
 
 reset_sandbox
 seed_native_configs
