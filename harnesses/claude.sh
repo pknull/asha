@@ -60,18 +60,25 @@ claude_backup_settings_once() {
 # ---------------------------------------------------------------------------
 
 claude_install_skills() {
-  local plugin_dir="$1" ns="$2"
-  local src_dir="$PLUGINS_DIR/$plugin_dir/skills"
+  local src_dir="$1" ns="$2" kind="${3:-plugin}"
   [[ -d "$src_dir" ]] || return 0
+  validate_skill_source "$src_dir" "$kind"
 
   local skill
-  for skill in "$src_dir"/*/; do
-    [[ -d "$skill" ]] || continue
+  while IFS= read -r skill; do
+    [[ -n "$skill" && -d "$skill" ]] || continue
     local skill_name
     skill_name="$(basename "$skill")"
     [[ -f "$skill/SKILL.md" ]] || { log "skip skill (no SKILL.md): $skill"; continue; }
-    mklink "${skill%/}" "$CLAUDE_HOME/skills/${ns}-${skill_name}" "skill-dir"
-  done
+    local source="${skill%/}" dest_name="${ns}-${skill_name}"
+    if [[ "$kind" == imported ]]; then
+      prepare_imported_skill_adapter "$source" "$dest_name"
+      mklink_imported_skill "$source" "$ASHA_IMPORTED_SKILL_ADAPTER" \
+        "$CLAUDE_HOME/skills/$dest_name" "skill-dir"
+      continue
+    fi
+    mklink "$source" "$CLAUDE_HOME/skills/$dest_name" "skill-dir"
+  done < <(skill_dirs_from_source "$src_dir" "$kind")
 }
 
 claude_install_agents() {
@@ -124,14 +131,21 @@ claude_install() {
 
   say "[claude] target = $CLAUDE_HOME"
 
-  local plugin_dir ns
+  local plugin_dir ns src_dir kind label
+  while IFS=$'\t' read -r src_dir ns kind label; do
+    [[ -n "$src_dir" ]] || continue
+    say ""
+    say "== [claude] $label skills  (ns=$ns) =="
+    claude_install_skills "$src_dir" "$ns" "$kind"
+  done < <(selected_imported_skill_sources)
+
   while read -r plugin_dir; do
     [[ -n "$plugin_dir" ]] || continue
     [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || { echo "WARN: not a plugin dir: $plugin_dir" >&2; continue; }
     ns="$(ns_for "$plugin_dir")"
     say ""
     say "== [claude] $plugin_dir  (ns=$ns) =="
-    claude_install_skills   "$plugin_dir" "$ns"
+    claude_install_skills   "$PLUGINS_DIR/$plugin_dir/skills" "$ns" plugin
     claude_install_agents   "$plugin_dir" "$ns"
     claude_install_commands "$plugin_dir" "$ns"
   done < <(selected_plugins)

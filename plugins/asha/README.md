@@ -1,6 +1,6 @@
 # Asha
 
-**Version**: 3.0.0
+**Version**: 3.1.0
 
 Asha is the optional identity layer for Claude Code, OpenAI Codex, GitHub
 Copilot CLI, and OpenCode. It keeps ordinary launches small: three compact hot
@@ -63,6 +63,21 @@ The installer creates missing `soul.md`, `voice.md`, and `keeper.md` from this
 plugin's templates. It never overwrites existing identity files and does not
 invent cold references. Identity maintenance is a separate reviewed edit;
 Memory v2 saves and recovery hooks never modify this corpus.
+
+## Third-party skills
+
+The bundled `find-skills` skill can search Skills.sh, inspect candidate bytes at
+an immutable upstream revision, and import an explicitly approved portable
+Agent Skill. Approved content stays outside this repository under
+`$ASHA_HOME/skills/`; provenance and hashes live only in
+`imported.lock.json`. The existing installer mounts recorded imports under the
+`imported-` namespace for every harness. It never uses Node, a package manager,
+telemetry, publication, or automatic updates. Its Skills.sh search transport
+uses only the Python 3 standard library. Both pinned-revision inspection and
+installer mount-name adaptation use PyYAML for `SKILL.md` frontmatter. When
+PyYAML is unavailable, inspection fails without writing, and installation
+refuses the imported mount with a dependency-and-remedy message. See
+[`docs/find-skills.md`](../../docs/find-skills.md) for the trust boundary.
 
 ## Harness injection
 

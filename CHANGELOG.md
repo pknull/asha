@@ -12,6 +12,36 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Keeper-approved third-party skills
+
+- Added the bundled `find-skills` workflow. Its Skills.sh search transport uses
+  the Python standard library; PyYAML parses candidate frontmatter during
+  inspection and produces a clear no-write failure when absent. Skills.sh
+  supplies discovery metadata only; inspection resolves public
+  upstream content to an immutable revision, hashes every skill file, reports
+  dependencies, permissions, licence evidence, and unsafe shapes, and executes
+  nothing. Imports require explicit approval and keep provenance solely in the
+  user store's `imported.lock.json`.
+- The existing installer, uninstall ownership sweep, retired-link prune, and
+  doctor now include lock-recorded `$ASHA_HOME/skills/` sources under the
+  `imported-` namespace across Claude, Codex, Copilot, and OpenCode. There is no
+  Node dependency, package-manager path, telemetry, publication, automatic
+  update, or duplicated harness installer in the skill. Imported mount names
+  are checked against the Agent Skills 64-character cap before adapter writes.
+- Hardened candidate and lockfile validation: metadata keys, YAML-native scalar
+  evidence, malformed GitHub tree entries, and incomplete lock records now fail
+  clearly without suppressing JSON or doctor output. Extensionless Python
+  support files with Python shebangs receive the same AST alias analysis as
+  `.py` files, and all YAML-disallowed control characters have regressions.
+- Extracted the shared imported-skill enumeration and mount adapter into
+  `lib/imported-skills.sh`; quoted YAML `name` keys are rewritten in derived
+  adapters without changing canonical imported bytes.
+- Closed the accepted find-skills review findings: derived YAML adapters now
+  handle flow and indented merge mappings and verify their output; drift is
+  isolated with its real store path; unmountable names, deeply nested locks,
+  and symlinked backup roots fail before unsafe writes; and every PyYAML
+  boundary now reports the dependency and remedy.
+
 #### Project Rooms
 
 - Added `asha room open NAME --project PROJECT --harness H --prompt TEXT`,
