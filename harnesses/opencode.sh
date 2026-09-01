@@ -70,19 +70,28 @@ opencode_check_version() {
 }
 
 opencode_install_skills() {
-  local plugin_dir="$1" ns="$2" src_dir skill declared dest_name
-  src_dir="$PLUGINS_DIR/$plugin_dir/skills"
+  local src_dir="$1" ns="$2" kind="${3:-plugin}" skill declared dest_name
   [[ -d "$src_dir" ]] || return 0
-  for skill in "$src_dir"/*/; do
+  validate_skill_source "$src_dir" "$kind"
+  while IFS= read -r skill; do
+    [[ -n "$skill" ]] || continue
     [[ -f "$skill/SKILL.md" ]] || continue
     declared="$(_opencode_field "$skill/SKILL.md" name)"
-    dest_name="${declared:-${ns}-$(basename "$skill")}"
+    if [[ "$kind" == imported ]]; then
+      dest_name="${ns}-$(basename "$skill")"
+      prepare_imported_skill_adapter "${skill%/}" "$dest_name"
+      mklink_imported_skill "${skill%/}" "$ASHA_IMPORTED_SKILL_ADAPTER" \
+        "$OPENCODE_SKILLS_DIR/$dest_name" "opencode-skill"
+      continue
+    else
+      dest_name="${declared:-${ns}-$(basename "$skill")}"
+    fi
     if ! _opencode_valid_name "$dest_name"; then
       echo "WARN: invalid OpenCode skill name '$dest_name' in $skill/SKILL.md; skipping" >&2
       continue
     fi
     mklink "${skill%/}" "$OPENCODE_SKILLS_DIR/$dest_name" "opencode-skill"
-  done
+  done < <(skill_dirs_from_source "$src_dir" "$kind")
 }
 
 _opencode_emit_command() {
@@ -307,14 +316,20 @@ opencode_install() {
   ensure_dir "$OPENCODE_SKILLS_DIR"
   asha_artifact_begin opencode
   say "[opencode] target = $OPENCODE_HOME"
-  local plugin_dir ns
+  local plugin_dir ns src_dir kind label
+  while IFS=$'\t' read -r src_dir ns kind label; do
+    [[ -n "$src_dir" ]] || continue
+    say ""
+    say "== [opencode] $label skills  (ns=$ns) =="
+    opencode_install_skills "$src_dir" "$ns" "$kind"
+  done < <(selected_imported_skill_sources)
   while read -r plugin_dir; do
     [[ -n "$plugin_dir" ]] || continue
     [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || { echo "WARN: not a plugin dir: $plugin_dir" >&2; continue; }
     ns="$(ns_for "$plugin_dir")"
     say ""
     say "== [opencode] $plugin_dir  (ns=$ns) =="
-    opencode_install_skills "$plugin_dir" "$ns"
+    opencode_install_skills "$PLUGINS_DIR/$plugin_dir/skills" "$ns" plugin
     opencode_install_commands "$plugin_dir" "$ns"
     opencode_install_agents "$plugin_dir" "$ns"
   done < <(selected_plugins)

@@ -70,7 +70,30 @@ EOF
   bash "$MARKET_ROOT/bin/asha-drift-check.sh" "${args[@]}" || drift_rc=$?
   local ws_rc=0
   _asha_doctor_workspace_section "$target" || ws_rc=$?
-  [[ $drift_rc -eq 0 && $ws_rc -eq 0 ]]
+  local imported_rc=0
+  _asha_doctor_imported_skills_section || imported_rc=$?
+  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 ]]
+}
+
+# Imported skills are a user-owned source plane, so repository drift checks
+# cannot attest their bytes. Reuse the bundled importer's offline status verb;
+# it recomputes every recorded file hash and never contacts Skills.sh/GitHub.
+_asha_doctor_imported_skills_section() {
+  local asha_home="${ASHA_HOME:-$HOME/.asha}"
+  local store="$asha_home/skills"
+  local tool="$MARKET_ROOT/plugins/asha/skills/find-skills/tools/find_skills.py"
+  [[ -d "$store" ]] || return 0
+  [[ -f "$tool" ]] || {
+    echo "FAIL  imported skill store exists but status tool is missing: $tool"
+    return 1
+  }
+  command -v python3 >/dev/null 2>&1 || {
+    echo "FAIL  imported skill store exists but python3 is unavailable"
+    return 1
+  }
+  echo ""
+  echo "── Imported skills ──"
+  python3 "$tool" status --asha-home "$asha_home"
 }
 
 # Workspace v1 (issue #35): report workspace state from CWD. No workspace is

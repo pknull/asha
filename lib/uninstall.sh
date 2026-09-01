@@ -27,6 +27,8 @@ MARKET_ROOT="${MARKET_ROOT:-$(dirname "$__ASHA_LIB_DIR")}"
 # shellcheck source=lib/portable.sh
 source "$MARKET_ROOT/lib/portable.sh"
 ABS_MARKET_ROOT="$(resolve_path "$MARKET_ROOT")"
+ASHA_IMPORTED_SKILLS_ROOT="${ASHA_HOME:-$HOME/.asha}/skills"
+ABS_ASHA_IMPORTED_SKILLS_ROOT="$(resolve_path "$ASHA_IMPORTED_SKILLS_ROOT" 2>/dev/null || true)"
 HARNESSES_DIR="$MARKET_ROOT/harnesses"
 # Part of the harness-adapter sourcing contract (see harnesses/codex.sh header):
 # adapters may dereference it, and this file runs under set -u.
@@ -55,8 +57,9 @@ ns_for() {
   echo "$ns"
 }
 
-# Remove symlinks under $1 whose realpath starts with $ABS_MARKET_ROOT, plus
-# our own broken bin shims. Echoes count to stdout (everything else to stderr).
+# Remove symlinks under $1 whose realpath starts with $ABS_MARKET_ROOT or the
+# Asha-managed imported skill store, plus our own broken bin shims. Echoes count
+# to stdout (everything else to stderr).
 remove_symlinks_under() {
   local dir="$1" maxdepth="${2:-2}" count=0
   [[ -d "$dir" ]] || { echo "0"; return 0; }
@@ -71,17 +74,25 @@ remove_symlinks_under() {
     if [[ ! -e "$link" ]]; then
       local raw
       raw="$(readlink "$link" 2>/dev/null || true)"
+      local owned_broken=0
       case "$raw" in
-        asha|asha-*|"$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*|"$MARKET_ROOT"|"$MARKET_ROOT"/*)
-          if [[ ${DRY_RUN:-0} -eq 1 ]]; then
-            info "  RM  $link (broken -> $raw)"
-          else
-            rm -f "$link"; log "removed broken: $link"
-          fi
-          count=$((count+1))
+        asha|asha-*|"$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*|"$MARKET_ROOT"|"$MARKET_ROOT"/*|"$ASHA_IMPORTED_SKILLS_ROOT"/*)
+          owned_broken=1
           ;;
-        *) log "skip (foreign broken): $link -> $raw" ;;
       esac
+      if [[ $owned_broken -eq 0 && -n "$ABS_ASHA_IMPORTED_SKILLS_ROOT" ]]; then
+        case "$raw" in "$ABS_ASHA_IMPORTED_SKILLS_ROOT"/*) owned_broken=1 ;; esac
+      fi
+      if [[ $owned_broken -eq 1 ]]; then
+        if [[ ${DRY_RUN:-0} -eq 1 ]]; then
+          info "  RM  $link (broken -> $raw)"
+        else
+          rm -f "$link"; log "removed broken: $link"
+        fi
+        count=$((count+1))
+      else
+        log "skip (foreign broken): $link -> $raw"
+      fi
       continue
     fi
 
@@ -89,7 +100,7 @@ remove_symlinks_under() {
     target="$(resolve_path "$link" 2>/dev/null || true)"
     [[ -z "$target" ]] && { log "dangling: $link (removing)"; rm -f "$link"; count=$((count+1)); continue; }
     case "$target" in
-      "$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*)
+      "$ABS_MARKET_ROOT"|"$ABS_MARKET_ROOT"/*|"$ASHA_IMPORTED_SKILLS_ROOT"/*)
         if [[ ${DRY_RUN:-0} -eq 1 ]]; then
           info "  RM  $link (-> $target)"
         else
@@ -98,7 +109,23 @@ remove_symlinks_under() {
         fi
         count=$((count+1))
         ;;
-      *) log "skip (foreign target): $link -> $target" ;;
+      *)
+        if [[ -n "$ABS_ASHA_IMPORTED_SKILLS_ROOT" ]]; then
+          case "$target" in
+            "$ABS_ASHA_IMPORTED_SKILLS_ROOT"/*)
+              if [[ ${DRY_RUN:-0} -eq 1 ]]; then
+                info "  RM  $link (-> $target)"
+              else
+                rm -f "$link"
+                log "removed: $link"
+              fi
+              count=$((count+1))
+              continue
+              ;;
+          esac
+        fi
+        log "skip (foreign target): $link -> $target"
+        ;;
     esac
   done < <(find "$dir/" -mindepth 1 -maxdepth "$maxdepth" -type l -print0)
 

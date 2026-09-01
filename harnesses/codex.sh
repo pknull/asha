@@ -114,24 +114,35 @@ PYEOF
 # directory name comes from the SKILL.md's `name:` frontmatter so dir name
 # matches the invocation key.
 codex_install_skills() {
-  local plugin_dir="$1" ns="$2"
-  _codex_is_skip_plugin "$plugin_dir" && return 0
-  local src_dir="$PLUGINS_DIR/$plugin_dir/skills"
+  local src_dir="$1" ns="$2" kind="${3:-plugin}" label="${4:-}"
+  if [[ "$kind" == plugin ]] && _codex_is_skip_plugin "$label"; then
+    return 0
+  fi
   [[ -d "$src_dir" ]] || return 0
+  validate_skill_source "$src_dir" "$kind"
 
   local skill
-  for skill in "$src_dir"/*/; do
-    [[ -d "$skill" ]] || continue
+  while IFS= read -r skill; do
+    [[ -n "$skill" && -d "$skill" ]] || continue
     local skill_name; skill_name="$(basename "$skill")"
     [[ -f "$skill/SKILL.md" ]] || { log "skip skill (no SKILL.md): $skill"; continue; }
 
     # Prefer the SKILL.md's name field; fall back to <ns>-<dir-name>.
     local declared_name
     declared_name="$(_codex_skill_name_from_md "$skill/SKILL.md")"
-    local dest_name="${declared_name:-${ns}-${skill_name}}"
+    local dest_name
+    if [[ "$kind" == imported ]]; then
+      dest_name="${ns}-${skill_name}"
+      prepare_imported_skill_adapter "${skill%/}" "$dest_name"
+      mklink_imported_skill "${skill%/}" "$ASHA_IMPORTED_SKILL_ADAPTER" \
+        "$CODEX_SKILLS_DIR/${dest_name}" "codex-skill"
+      continue
+    else
+      dest_name="${declared_name:-${ns}-${skill_name}}"
+    fi
 
     mklink "${skill%/}" "$CODEX_SKILLS_DIR/${dest_name}" "codex-skill"
-  done
+  done < <(skill_dirs_from_source "$src_dir" "$kind")
 }
 
 # Install command MDs as Codex skills. Codex 0.125's skill loader rejects
@@ -771,7 +782,14 @@ codex_install() {
 
   _codex_migrate_legacy
 
-  local plugin_dir ns
+  local plugin_dir ns src_dir kind label
+  while IFS=$'\t' read -r src_dir ns kind label; do
+    [[ -n "$src_dir" ]] || continue
+    say ""
+    say "== [codex] $label skills  (ns=$ns) =="
+    codex_install_skills "$src_dir" "$ns" "$kind" "$label"
+  done < <(selected_imported_skill_sources)
+
   while read -r plugin_dir; do
     [[ -n "$plugin_dir" ]] || continue
     [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || { echo "WARN: not a plugin dir: $plugin_dir" >&2; continue; }
@@ -783,7 +801,7 @@ codex_install() {
     ns="$(ns_for "$plugin_dir")"
     say ""
     say "== [codex] $plugin_dir  (ns=$ns) =="
-    codex_install_skills         "$plugin_dir" "$ns"
+    codex_install_skills         "$PLUGINS_DIR/$plugin_dir/skills" "$ns" plugin "$plugin_dir"
     codex_install_agents         "$plugin_dir" "$ns"
     codex_install_command_skills "$plugin_dir" "$ns"
   done < <(selected_plugins)

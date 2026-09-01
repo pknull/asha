@@ -36,16 +36,172 @@ seed_native_configs() {
   printf '# sandbox codex config\n' > "$SANDBOX/.codex/config.toml"
 }
 
+seed_imported_lock() {
+  local name="$1" skill_file file_sha file_bytes tree_sha
+  skill_file="$SANDBOX/.asha/skills/$name/SKILL.md"
+  file_sha="$(sha256sum "$skill_file" | awk '{print $1}')"
+  file_bytes="$(wc -c < "$skill_file")"
+  tree_sha="$(printf 'SKILL.md\0%s\n' "$file_sha" | sha256sum | awk '{print $1}')"
+  jq -n \
+    --arg name "$name" \
+    --arg file_sha "$file_sha" \
+    --argjson file_bytes "$file_bytes" \
+    --arg tree_sha "$tree_sha" \
+    '{
+      schema_version: 1,
+      skills: {
+        ($name): {
+          source: "fixture/repo",
+          skill_id: $name,
+          revision: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          upstream_path: ("skills/" + $name),
+          files: {
+            "SKILL.md": {
+              sha256: $file_sha,
+              bytes: $file_bytes,
+              executable: false,
+              upstream_mode: "100644"
+            }
+          },
+          tree_digest: $tree_sha,
+          license: {},
+          state: "clean"
+        }
+      },
+      history: {}
+    }' > "$SANDBOX/.asha/skills/imported.lock.json"
+}
+
+frontmatter_name_is() {
+  python3 - "$1" "$2" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    frontmatter = handle.read().split("---", 2)[1]
+raise SystemExit(0 if yaml.safe_load(frontmatter).get("name") == sys.argv[2] else 1)
+PY
+}
+
+seed_imported_skill() {
+  mkdir -p "$SANDBOX/.asha/skills/demo" "$SANDBOX/.asha/skills/untracked"
+  cat > "$SANDBOX/.asha/skills/demo/SKILL.md" <<'EOF'
+---
+name: demo
+description: Imported installer integration fixture.
+---
+# Demo
+EOF
+  cat > "$SANDBOX/.asha/skills/untracked/SKILL.md" <<'EOF'
+---
+name: untracked
+description: Must never mount without provenance.
+---
+# Untracked
+EOF
+  seed_imported_lock demo
+}
+
+seed_imported_skill_with_name_key() {
+  local key="$1" indent="${2:-}"
+  mkdir -p "$SANDBOX/.asha/skills/demo"
+  printf '%s\n' \
+    '---' \
+    "${indent}${key}: demo" \
+    "${indent}description: Quoted YAML name fixture." \
+    '---' \
+    '# Demo' \
+    > "$SANDBOX/.asha/skills/demo/SKILL.md"
+  seed_imported_lock demo
+}
+
+seed_imported_skill_with_aliases() {
+  mkdir -p "$SANDBOX/.asha/skills/demo"
+  cat > "$SANDBOX/.asha/skills/demo/SKILL.md" <<'EOF'
+---
+name: &skill_name demo
+description: *skill_name
+metadata: {name: nested-value}
+---
+# Demo
+EOF
+  seed_imported_lock demo
+}
+
+seed_imported_skill_with_merge() {
+  mkdir -p "$SANDBOX/.asha/skills/demo"
+  cat > "$SANDBOX/.asha/skills/demo/SKILL.md" <<'EOF'
+---
+<<: &identity
+  name: demo
+  description: Merged imported fixture.
+---
+# Demo
+EOF
+  seed_imported_lock demo
+}
+
+seed_imported_skill_with_flow_merge() {
+  mkdir -p "$SANDBOX/.asha/skills/demo"
+  cat > "$SANDBOX/.asha/skills/demo/SKILL.md" <<'EOF'
+---
+{base: &identity {name: demo, description: Flow merged imported fixture.}, <<: *identity}
+---
+# Demo
+EOF
+  seed_imported_lock demo
+}
+
+seed_imported_skill_with_indented_merge() {
+  mkdir -p "$SANDBOX/.asha/skills/demo"
+  cat > "$SANDBOX/.asha/skills/demo/SKILL.md" <<'EOF'
+---
+  base: &identity
+    name: demo
+    description: Indented merged imported fixture.
+  <<: *identity
+---
+# Demo
+EOF
+  seed_imported_lock demo
+}
+
+seed_imported_skill_with_length() {
+  local length="$1"
+  printf -v SEEDED_NAME '%*s' "$length" ''
+  SEEDED_NAME="${SEEDED_NAME// /a}"
+  mkdir -p "$SANDBOX/.asha/skills/$SEEDED_NAME"
+  printf '%s\n' \
+    '---' \
+    "name: $SEEDED_NAME" \
+    'description: Imported name-length fixture.' \
+    '---' \
+    '# Length fixture' \
+    > "$SANDBOX/.asha/skills/$SEEDED_NAME/SKILL.md"
+  seed_imported_lock "$SEEDED_NAME"
+}
+
+seed_legacy_imported_mounts() {
+  local path
+  for path in \
+    "$SANDBOX/.claude/skills/imported-demo" \
+    "$SANDBOX/.codex/skills/imported-demo" \
+    "$SANDBOX/.copilot/skills/imported-demo" \
+    "$SANDBOX/.config/opencode/skills/imported-demo"; do
+    mkdir -p "$(dirname "$path")"
+    ln -s "$SANDBOX/.asha/skills/demo" "$path"
+  done
+}
+
 run_install() {
-  local fake_opencode="$SANDBOX/fake-opencode"
+  local fake_opencode="$SANDBOX/fake-opencode" pythonpath
   cat >"$fake_opencode" <<'EOF'
 #!/usr/bin/env bash
 echo 1.17.18
 EOF
   chmod +x "$fake_opencode"
+  pythonpath="${ASHA_TEST_PYTHONPATH:-$PYTHON_USER_SITE${PYTHONPATH:+:$PYTHONPATH}}"
   env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u ASHA_HOME HOME="$SANDBOX" \
     ASHA_OPENCODE_CMD="$fake_opencode" \
-    PYTHONPATH="$PYTHON_USER_SITE${PYTHONPATH:+:$PYTHONPATH}" \
+    PYTHONPATH="$pythonpath" \
     bash "$REPO_ROOT/install.sh" "$@"
 }
 
@@ -68,6 +224,8 @@ asha_hook_event_count() {
 echo "--- test 1: full install mounts every harness ---"
 reset_sandbox
 seed_native_configs
+seed_imported_skill
+seed_legacy_imported_mounts
 if full_out="$(run_install --target all 2>&1)"; then
   ok "install --target all exits 0"
 else
@@ -145,6 +303,33 @@ for skill_path in \
   [[ -f "$skill_path" || -L "$skill_path" ]] \
     && ok "cold identity reference skill installed: $skill_path" \
     || fail "cold identity reference skill installed: $skill_path"
+done
+for imported_path in \
+  "$SANDBOX/.claude/skills/imported-demo" \
+  "$SANDBOX/.codex/skills/imported-demo" \
+  "$SANDBOX/.copilot/skills/imported-demo" \
+  "$SANDBOX/.config/opencode/skills/imported-demo"; do
+  if [[ -L "$imported_path" \
+     && "$(readlink "$imported_path")" == "$SANDBOX/.asha/skills/.mounts/imported-demo" \
+     && "$(sed -n 's/^name: //p' "$imported_path/SKILL.md")" == imported-demo ]]; then
+    ok "portable imported skill adapter mounted: $imported_path"
+  else
+    fail "portable imported skill adapter mounted: $imported_path"
+  fi
+done
+if [[ "$(sed -n 's/^name: //p' "$SANDBOX/.asha/skills/demo/SKILL.md")" == demo ]]; then
+  ok "import adapter preserves canonical upstream frontmatter"
+else
+  fail "import adapter preserves canonical upstream frontmatter"
+fi
+for untracked_path in \
+  "$SANDBOX/.claude/skills/imported-untracked" \
+  "$SANDBOX/.codex/skills/imported-untracked" \
+  "$SANDBOX/.copilot/skills/imported-untracked" \
+  "$SANDBOX/.config/opencode/skills/imported-untracked"; do
+  [[ ! -e "$untracked_path" && ! -L "$untracked_path" ]] \
+    && ok "untracked user skill is not mounted: $untracked_path" \
+    || fail "untracked user skill is not mounted: $untracked_path"
 done
 if jq -e '
     (.hooks.sessionStart[0].bash | endswith("session-start.sh")) and
@@ -355,6 +540,287 @@ malformed_marker_out="$(run_install --target copilot 2>&1)"
 [[ "$malformed_marker_out" == *"/session:consolidate"* ]] \
   && ok "malformed migration marker cannot suppress legacy guidance" \
   || fail "malformed migration marker cannot suppress legacy guidance"
+
+# ---------------------------------------------------------------------------
+# Test 7: imported store ownership covers retirement and uninstall
+# ---------------------------------------------------------------------------
+echo "--- test 7: imported skill links are fully owned ---"
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+if run_install --target all >/dev/null 2>&1; then
+  ok "imported ownership fixture installs"
+else
+  fail "imported ownership fixture installs"
+fi
+# Retire the lock entry while retaining its canonical source. A full install
+# must prune the now-revoked links while leaving canonical content alone.
+jq '.skills = {}' "$SANDBOX/.asha/skills/imported.lock.json" \
+  > "$SANDBOX/.asha/skills/imported.lock.json.tmp"
+mv "$SANDBOX/.asha/skills/imported.lock.json.tmp" \
+   "$SANDBOX/.asha/skills/imported.lock.json"
+if run_install --target all >/dev/null 2>&1; then
+  retired_left=0
+  for retired_path in \
+    "$SANDBOX/.claude/skills/imported-demo" \
+    "$SANDBOX/.codex/skills/imported-demo" \
+    "$SANDBOX/.copilot/skills/imported-demo" \
+    "$SANDBOX/.config/opencode/skills/imported-demo"; do
+    [[ -L "$retired_path" || -e "$retired_path" ]] && retired_left=$((retired_left + 1))
+  done
+  [[ $retired_left -eq 0 && -f "$SANDBOX/.asha/skills/demo/SKILL.md" ]] \
+    && ok "full install prunes retired imported skill links" \
+    || fail "full install prunes retired imported skill links ($retired_left remain)"
+else
+  fail "full install reconciles a retired imported skill"
+fi
+
+# Restore one active lock-recorded import, then prove uninstall claims its links
+# without touching the canonical source directory.
+jq '.skills = {demo: {source: "fixture/repo"}}' \
+  "$SANDBOX/.asha/skills/imported.lock.json" \
+  > "$SANDBOX/.asha/skills/imported.lock.json.tmp"
+mv "$SANDBOX/.asha/skills/imported.lock.json.tmp" \
+   "$SANDBOX/.asha/skills/imported.lock.json"
+run_install --target all >/dev/null 2>&1 || true
+if env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u ASHA_HOME \
+     HOME="$SANDBOX" PYTHONPATH="$PYTHON_USER_SITE${PYTHONPATH:+:$PYTHONPATH}" \
+     bash "$REPO_ROOT/uninstall.sh" --target all >/dev/null 2>&1; then
+  imported_left=0
+  for imported_path in \
+    "$SANDBOX/.claude/skills/imported-demo" \
+    "$SANDBOX/.codex/skills/imported-demo" \
+    "$SANDBOX/.copilot/skills/imported-demo" \
+    "$SANDBOX/.config/opencode/skills/imported-demo"; do
+    [[ -L "$imported_path" || -e "$imported_path" ]] && imported_left=$((imported_left + 1))
+  done
+  if [[ $imported_left -eq 0 && -f "$SANDBOX/.asha/skills/demo/SKILL.md" ]]; then
+    ok "uninstall removes imported mounts but preserves canonical content"
+  else
+    fail "uninstall removes imported mounts but preserves canonical content"
+  fi
+else
+  fail "uninstall owns active imported skill links"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 8: quoted YAML name keys mount through every harness
+# ---------------------------------------------------------------------------
+echo "--- test 8: imported adapters accept quoted YAML name keys ---"
+quoted_keys=("'name'" '"name"')
+quoted_indents=('' '  ')
+for quoted_index in 0 1; do
+  reset_sandbox
+  seed_native_configs
+  quoted_key="${quoted_keys[$quoted_index]}"
+  quoted_indent="${quoted_indents[$quoted_index]}"
+  seed_imported_skill_with_name_key "$quoted_key" "$quoted_indent"
+  if quoted_out="$(run_install --target all 2>&1)"; then
+    quoted_ok=1
+    for quoted_path in \
+      "$SANDBOX/.claude/skills/imported-demo" \
+      "$SANDBOX/.codex/skills/imported-demo" \
+      "$SANDBOX/.copilot/skills/imported-demo" \
+      "$SANDBOX/.config/opencode/skills/imported-demo"; do
+      [[ -L "$quoted_path" ]] \
+        && frontmatter_name_is "$quoted_path/SKILL.md" imported-demo \
+        || quoted_ok=0
+    done
+    [[ $quoted_ok -eq 1 ]] \
+      && ok "quoted imported name key mounts on every harness: $quoted_key" \
+      || fail "quoted imported name key mounts on every harness: $quoted_key"
+    grep -Fq "${quoted_indent}${quoted_key}: demo" \
+      "$SANDBOX/.asha/skills/demo/SKILL.md" \
+      && ok "quoted adapter leaves canonical frontmatter unchanged: $quoted_key" \
+      || fail "quoted adapter leaves canonical frontmatter unchanged: $quoted_key"
+  else
+    fail "quoted imported name key installs: $quoted_key (output: $(tail -5 <<<"$quoted_out"))"
+  fi
+done
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill_with_aliases
+if alias_out="$(run_install --target all 2>&1)"; then
+  alias_adapter="$SANDBOX/.asha/skills/.mounts/imported-demo/SKILL.md"
+  if python3 - "$alias_adapter" <<'PY'
+import sys, yaml
+with open(sys.argv[1], encoding="utf-8") as handle:
+    frontmatter = handle.read().split("---", 2)[1]
+parsed = yaml.safe_load(frontmatter)
+assert parsed["name"] == "imported-demo"
+assert parsed["description"] == "demo"
+assert parsed["metadata"]["name"] == "nested-value"
+PY
+  then
+    ok "adapter rewrites only the top-level semantic name"
+  else
+    fail "adapter preserves anchored aliases and nested name keys"
+  fi
+  grep -Fq 'name: &skill_name demo' "$SANDBOX/.asha/skills/demo/SKILL.md" \
+    && grep -Fq 'description: *skill_name' "$SANDBOX/.asha/skills/demo/SKILL.md" \
+    && ok "structural adapter leaves canonical anchored YAML unchanged" \
+    || fail "structural adapter leaves canonical anchored YAML unchanged"
+else
+  fail "structural imported name installs (output: $(tail -5 <<<"$alias_out"))"
+fi
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill_with_merge
+if merge_out="$(run_install --target all 2>&1)"; then
+  merge_adapter="$SANDBOX/.asha/skills/.mounts/imported-demo/SKILL.md"
+  if frontmatter_name_is "$merge_adapter" imported-demo \
+     && grep -Fq '<<: &identity' "$merge_adapter" \
+     && grep -Fq 'name: demo' "$SANDBOX/.asha/skills/demo/SKILL.md"; then
+    ok "adapter materializes a top-level name over merged YAML identity"
+  else
+    fail "adapter preserves merged YAML while overriding its semantic name"
+  fi
+else
+  fail "merged imported name installs (output: $(tail -5 <<<"$merge_out"))"
+fi
+
+for merge_shape in flow indented; do
+  reset_sandbox
+  seed_native_configs
+  "seed_imported_skill_with_${merge_shape}_merge"
+  shaped_out=""
+  if shaped_out="$(run_install --target all 2>&1)"; then
+    shaped_adapter="$SANDBOX/.asha/skills/.mounts/imported-demo/SKILL.md"
+    if frontmatter_name_is "$shaped_adapter" imported-demo \
+       && frontmatter_name_is "$SANDBOX/.asha/skills/demo/SKILL.md" demo; then
+      ok "$merge_shape merged frontmatter mounts with a derived name"
+    else
+      fail "$merge_shape merged adapter is valid YAML with the derived name"
+    fi
+  else
+    fail "$merge_shape merged imported name installs (output: $(tail -5 <<<"$shaped_out"))"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# Test 9: imported locks require complete provenance before mounting
+# ---------------------------------------------------------------------------
+echo "--- test 9: malformed imported provenance never mounts ---"
+for malformed_kind in scalar missing-source; do
+  reset_sandbox
+  seed_native_configs
+  seed_imported_skill
+  if [[ "$malformed_kind" == scalar ]]; then
+    jq '.skills.demo = 42' "$SANDBOX/.asha/skills/imported.lock.json" \
+      > "$SANDBOX/.asha/skills/imported.lock.json.tmp"
+  else
+    jq 'del(.skills.demo.source)' "$SANDBOX/.asha/skills/imported.lock.json" \
+      > "$SANDBOX/.asha/skills/imported.lock.json.tmp"
+  fi
+  mv "$SANDBOX/.asha/skills/imported.lock.json.tmp" \
+     "$SANDBOX/.asha/skills/imported.lock.json"
+  malformed_out=""
+  if malformed_out="$(run_install --target claude 2>&1)"; then
+    fail "malformed imported lock entry is refused: $malformed_kind"
+  else
+    [[ "$malformed_out" == *"invalid imported skill lockfile"* \
+       && ! -e "$SANDBOX/.claude/skills/imported-demo" \
+       && ! -e "$SANDBOX/.asha/skills/.mounts" ]] \
+      && ok "malformed imported lock entry is refused before mounts: $malformed_kind" \
+      || fail "malformed imported lock refusal is clear and write-free: $malformed_kind"
+  fi
+done
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+printf '\n# local drift\n' >> "$SANDBOX/.asha/skills/demo/SKILL.md"
+drift_out=""
+if drift_out="$(run_install --target claude 2>&1)"; then
+  if [[ "$drift_out" == *"imported skill has drifted: demo at $SANDBOX/.asha/skills/demo"* \
+     && "$drift_out" != *"invalid imported skill lockfile"* \
+     && -L "$SANDBOX/.claude/skills/asha-find-skills" \
+     && ! -e "$SANDBOX/.claude/skills/imported-demo" ]]; then
+    ok "imported drift reports its store path without aborting repository plugins"
+  else
+    fail "imported drift is isolated with its true cause (output: $(tail -8 <<<"$drift_out"))"
+  fi
+else
+  fail "imported drift does not abort the Claude target (output: $(tail -8 <<<"$drift_out"))"
+fi
+
+# ---------------------------------------------------------------------------
+# Test 10: imported mount names enforce the Agent Skills 64-character cap
+# ---------------------------------------------------------------------------
+echo "--- test 10: imported mount names stay within 64 characters ---"
+for name_length in 55 56 64 65; do
+  reset_sandbox
+  seed_native_configs
+  seed_imported_skill_with_length "$name_length"
+  length_out=""
+  if length_out="$(run_install --target claude 2>&1)"; then
+    if [[ $name_length -eq 55 \
+       && ${#SEEDED_NAME} -eq 55 \
+       && -L "$SANDBOX/.claude/skills/imported-$SEEDED_NAME" \
+       && $((9 + ${#SEEDED_NAME})) -eq 64 ]]; then
+      ok "55-character upstream name mounts at exactly 64 characters"
+    else
+      fail "$name_length-character upstream name is refused when over limit"
+    fi
+  else
+    if [[ $name_length -eq 56 || $name_length -eq 64 ]]; then
+      [[ "$length_out" == *"mount name exceeds Agent Skills 64-character limit"* \
+         && ! -e "$SANDBOX/.asha/skills/.mounts" ]] \
+        && ok "$name_length-character upstream name is refused before adapter writes" \
+        || fail "$name_length-character upstream name refusal is clear and write-free"
+    elif [[ $name_length -eq 65 ]]; then
+      [[ "$length_out" == *"must be 1-64 characters"* \
+         && ! -e "$SANDBOX/.asha/skills/.mounts" ]] \
+        && ok "65-character upstream name is rejected before adapter writes" \
+        || fail "65-character upstream name rejection is clear and write-free"
+    else
+      fail "55-character upstream name mounts successfully (output: $(tail -5 <<<"$length_out"))"
+    fi
+  fi
+done
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+outside_skill="$SANDBOX/outside-SKILL.md"
+cp "$SANDBOX/.asha/skills/demo/SKILL.md" "$outside_skill"
+outside_before="$(sha256sum "$outside_skill" | awk '{print $1}')"
+rm "$SANDBOX/.asha/skills/demo/SKILL.md"
+ln -s "$outside_skill" "$SANDBOX/.asha/skills/demo/SKILL.md"
+symlink_out=""
+if symlink_out="$(run_install --target claude 2>&1)"; then
+  fail "drifted imported SKILL.md symlink is refused"
+else
+  outside_after="$(sha256sum "$outside_skill" | awk '{print $1}')"
+  [[ "$outside_before" == "$outside_after" \
+     && ! -e "$SANDBOX/.claude/skills/imported-demo" \
+     && ! -e "$SANDBOX/.asha/skills/.mounts" ]] \
+    && ok "imported symlink drift cannot overwrite a foreign file" \
+    || fail "imported symlink refusal is write-free (output: $(tail -5 <<<"$symlink_out"))"
+fi
+
+reset_sandbox
+seed_native_configs
+seed_imported_skill
+mkdir -p "$SANDBOX/no-pyyaml"
+cat > "$SANDBOX/no-pyyaml/yaml.py" <<'PY'
+raise ImportError("PyYAML intentionally unavailable")
+PY
+ASHA_TEST_PYTHONPATH="$SANDBOX/no-pyyaml"
+pyyaml_out=""
+if pyyaml_out="$(run_install --only imported --target claude 2>&1)"; then
+  fail "installer refuses an imported mount when PyYAML is unavailable"
+else
+  [[ "$pyyaml_out" == *"PyYAML is required to adapt imported skill imported-demo"* \
+     && "$pyyaml_out" == *"install PyYAML for python3 and retry"* \
+     && "$pyyaml_out" != *"Traceback"* \
+     && ! -e "$SANDBOX/.claude/skills/imported-demo" ]] \
+    && ok "installer names the PyYAML mount dependency and remedy" \
+    || fail "installer PyYAML refusal is clear and write-free (output: $(tail -8 <<<"$pyyaml_out"))"
+fi
+unset ASHA_TEST_PYTHONPATH
 
 echo ""
 echo "=== Install Test Summary ==="

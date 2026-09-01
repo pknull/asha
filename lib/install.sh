@@ -33,6 +33,8 @@ HARNESSES_DIR="$MARKET_ROOT/harnesses"
 # Cross-platform shims (resolve_path); re-exported to sourced harness scripts.
 # shellcheck source=lib/portable.sh
 source "$MARKET_ROOT/lib/portable.sh"
+# shellcheck source=lib/imported-skills.sh
+source "$MARKET_ROOT/lib/imported-skills.sh"
 # shellcheck source=../harnesses/registry.sh
 source "$HARNESSES_DIR/registry.sh"
 # shellcheck source=../harnesses/generated-artifacts.sh
@@ -66,7 +68,8 @@ ensure_dir() {
 mklink() {
   local src="$1" dest="$2" kind="$3"
   local abs_src
-  abs_src="$(resolve_path "$src")"
+  abs_src="$(resolve_path "$src" 2>/dev/null || true)"
+  [[ -n "$abs_src" ]] || abs_src="$src"
 
   if [[ -L "$dest" ]]; then
     local existing
@@ -108,8 +111,14 @@ ns_for() {
 
 selected_plugins() {
   if [[ -n "${ONLY:-}" ]]; then
+    local -a arr
     IFS=',' read -ra arr <<<"$ONLY"
-    printf '%s\n' "${arr[@]}"
+    local item
+    for item in "${arr[@]}"; do
+      # `imported` is the user skill source namespace, not a repository plugin.
+      # It is enumerated by selected_imported_skill_sources() below.
+      [[ "$item" == imported ]] || printf '%s\n' "$item"
+    done
   else
     all_plugin_dirs
   fi
@@ -128,11 +137,14 @@ all_plugin_dirs() {
   done | sort
 }
 
-# Remove only broken symlinks whose stored target points into this Asha source
-# tree. Full installs use this to reconcile primitives removed or renamed since
-# the previous install; foreign broken links are preserved.
+# Remove broken Asha-owned links and imported mounts no longer recorded in the
+# canonical store's lockfile. Full installs reconcile removed or renamed
+# primitives while preserving foreign links and canonical imported content.
 prune_retired_asha_symlinks() {
-  local home="$1" root link raw n=0
+  local home="$1" root link raw n=0 imported_root abs_imported_root imported_name lock
+  imported_root="$(asha_imported_skills_root)"
+  abs_imported_root="$(resolve_path "$imported_root" 2>/dev/null || true)"
+  lock="$imported_root/imported.lock.json"
   [[ -d "$home" ]] || return 0
   # The harness's primitive roots may themselves be user-managed symlinks
   # (for example ~/.claude/agents -> a dotfiles checkout). Plain `find` does
@@ -142,19 +154,33 @@ prune_retired_asha_symlinks() {
   for root in "$home" "$home/agents" "$home/commands" "$home/skills"; do
     [[ -d "$root" ]] || continue
     while IFS= read -r -d '' link; do
-      [[ ! -e "$link" ]] || continue
       raw="$(readlink "$link" 2>/dev/null || true)"
+      if [[ -e "$link" ]]; then
+        if ! imported_name="$(
+          imported_skill_name_from_target "$raw" "$imported_root" "$abs_imported_root"
+        )"; then
+          continue
+        fi
+        if [[ -f "$lock" ]] && jq -e --arg name "$imported_name" \
+          '.skills | has($name)' "$lock" >/dev/null 2>&1; then
+          continue
+        fi
+      fi
+      local owned=0
       case "$raw" in
-        "$MARKET_ROOT"/plugins/*|"${ABS_MARKET_ROOT:-$MARKET_ROOT}"/plugins/*)
-          if [[ ${DRY_RUN:-0} -eq 1 ]]; then
-            say "  RM [retired-link]  $link -> $raw"
-          else
-            rm -f "$link"
-            log "removed retired Asha symlink: $link -> $raw"
-          fi
-          n=$((n + 1))
-          ;;
+        "$MARKET_ROOT"/plugins/*|"${ABS_MARKET_ROOT:-$MARKET_ROOT}"/plugins/*|"$imported_root"/*) owned=1 ;;
       esac
+      if [[ $owned -eq 0 && -n "$abs_imported_root" ]]; then
+        case "$raw" in "$abs_imported_root"/*) owned=1 ;; esac
+      fi
+      [[ $owned -eq 1 ]] || continue
+      if [[ ${DRY_RUN:-0} -eq 1 ]]; then
+        say "  RM [retired-link]  $link -> $raw"
+      else
+        rm -f "$link"
+        log "removed retired Asha symlink: $link -> $raw"
+      fi
+      n=$((n + 1))
     done < <(find -H "$root" -mindepth 1 -maxdepth 4 -type l -print0 2>/dev/null)
   done
   [[ $n -gt 0 ]] && say "[$(basename "$home")] removed $n retired symlink(s)"
