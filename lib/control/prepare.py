@@ -218,9 +218,17 @@ def preflight_plain_git_enablement(
         source_binding = inspect_pre_enable_binding(source)
         git_binding = source_binding.git_binding
         if existing_jj:
-            delivery_problem = untracked_remote_bookmark_remediation(
-                jj.untracked_remote_bookmarks(source),
-            )
+            try:
+                delivery_problem = untracked_remote_bookmark_remediation(
+                    jj.untracked_remote_bookmarks(source),
+                )
+            except JjError as exc:
+                # This probe explains a possible later delivery failure; it
+                # does not establish any safety precondition for enablement.
+                diagnostics.append(
+                    f"untracked remote bookmark inspection unavailable: {exc}"
+                )
+                delivery_problem = None
             if delivery_problem is not None:
                 # Advisory by design: an untracked remote bookmark prevents a
                 # push of that name, but may be unrelated to this task's

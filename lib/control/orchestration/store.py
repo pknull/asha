@@ -1676,13 +1676,13 @@ class InitiativeStore:
         return self._read_uuid_record(initiative_id, "evidence", evidence_id, validate_evidence)
 
     def _event_records(
-        self, events_fd: int, initiative_id: str
+        self, events_fd: int, initiative_id: str, *, tail: int | None = None,
     ) -> list[dict[str, Any]]:
         try:
             names = sorted(name for name in os.listdir(events_fd) if not name.startswith("."))
         except OSError as exc:
             raise StoreError(f"cannot list initiative events: {exc}") from exc
-        records: list[dict[str, Any]] = []
+        indexed: list[tuple[str, re.Match[str], int]] = []
         seen_sequences: set[int] = set()
         for name in names:
             match = re.fullmatch(r"([0-9]{6})-([0-9a-f-]{36})\.json", name)
@@ -1692,6 +1692,13 @@ class InitiativeStore:
             if sequence in seen_sequences:
                 raise StoreError(f"duplicate event sequence: {sequence}")
             seen_sequences.add(sequence)
+            indexed.append((name, match, sequence))
+        sequences = [sequence for _name, _match, sequence in indexed]
+        if sequences != list(range(1, len(indexed) + 1)):
+            raise StoreError("event sequence contains a gap")
+        selected = indexed if tail is None else indexed[-tail:] if tail else []
+        records: list[dict[str, Any]] = []
+        for name, match, sequence in selected:
             record = self._validated_read(events_fd, name, "event record", validate_event)
             if (
                 record["sequence"] != sequence
@@ -1700,9 +1707,6 @@ class InitiativeStore:
             ):
                 raise StoreError(f"event identity does not match filename: {name}")
             records.append(record)
-        sequences = [record["sequence"] for record in records]
-        if sequences != list(range(1, len(records) + 1)):
-            raise StoreError("event sequence contains a gap")
         return records
 
     def _event_tail(
@@ -1782,18 +1786,25 @@ class InitiativeStore:
                 _close(events_fd)
 
     def list_events_snapshot(
-        self, initiative_id: str, *, after: int = 0
+        self, initiative_id: str, *, after: int = 0, tail: int | None = None,
     ) -> list[dict[str, Any]]:
         """Read the immutable journal without acquiring locks or sweeping residue."""
         if isinstance(after, bool) or not isinstance(after, int) or after < 0:
             raise StoreError("event sequence cursor must be a nonnegative integer")
+        if (
+            tail is not None
+            and (isinstance(tail, bool) or not isinstance(tail, int) or tail < 0)
+        ):
+            raise StoreError("event tail limit must be a nonnegative integer")
         with self._initiative_directory(
             initiative_id, create_root=False, create_initiative=False
         ) as (_, initiative_fd):
             events_fd = self._subdirectory(initiative_fd, "events")
             try:
                 return [
-                    event for event in self._event_records(events_fd, initiative_id)
+                    event for event in self._event_records(
+                        events_fd, initiative_id, tail=tail,
+                    )
                     if event["sequence"] > after
                 ]
             finally:

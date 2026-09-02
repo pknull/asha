@@ -150,6 +150,7 @@ def _matches(entry: Mapping[str, Any], text: str) -> bool:
         return True
     return needle in {
         entry["name"].lower(), str(entry.get("directory") or "").lower(),
+        str(entry.get("relative_path") or "").lower(),
         Path(entry["root"]).name.lower(), str(entry["project_id"] or "").lower(),
     }
 

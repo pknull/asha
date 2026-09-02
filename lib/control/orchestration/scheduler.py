@@ -1255,6 +1255,10 @@ def dispatch(
                 "link": None,
                 "control": {"returncode": returncode, "diagnostic": reason},
             }
+        launch_diagnostic = _diagnostic(stderr)
+        diagnostic_payload = (
+            {"diagnostic": launch_diagnostic} if launch_diagnostic else {}
+        )
         try:
             control = _parse_start(stdout, attempt["task_id"])
             link = build_link(initiative, node, attempt, action, control["task"])
@@ -1310,6 +1314,7 @@ def dispatch(
                     "existing": control["existing"],
                     "control_task_record_digest": task_digest(control["task"]),
                     "workspace_trust": trust_detail,
+                    **diagnostic_payload,
                 },
                 actor_kind="controller", actor_id="scheduler",
             )
@@ -1327,6 +1332,7 @@ def dispatch(
                     "status": "running",
                     "existing": control["existing"],
                     "workspace_trust": trust_detail,
+                    **diagnostic_payload,
                 },
             )
         except (SchedulerError, StoreError, OSError, ValueError) as exc:

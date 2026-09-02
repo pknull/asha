@@ -568,7 +568,10 @@ the coordinator's chat; the right pane runs `asha control --initiatives`, the
 Keeper's monitor and approval surface. `DIR` is the projects root the
 coordinator resolves intents against through `asha initiative projects`
 (declared workspace manifest first, otherwise the jj-colocated Asha projects at
-and one level below `DIR`). Inside tmux the window is added to the current
+or within three directory levels below `DIR` by default). Every project-list
+entry includes the additive `relative_path` field, which can be passed exactly
+to `--match` when nested projects share an otherwise ambiguous directory name.
+Inside tmux the window is added to the current
 session; outside tmux a detached session named `asha-cockpit-<dir>` is created
 once and attached. Before opening, a preflight runs `asha doctor claude`,
 `asha initiative doctor`, and the project index for `DIR`, and refuses with

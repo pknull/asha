@@ -103,6 +103,20 @@ class ProjectIndexTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertIn("[bots/pk.zalgo]", out.getvalue())
 
+    def test_match_resolves_a_nested_project_by_relative_path(self) -> None:
+        bots = self.root / "bots"
+        write_member(bots, "bots-container")
+        nested = bots / "pk.zalgo"
+        write_member(nested, "pk-zalgo-project")
+        (nested / ".jj").mkdir()
+
+        payload = list_projects(self.root, match="BOTS/pk.zalgo")
+
+        self.assertEqual(
+            [item["relative_path"] for item in payload["projects"]],
+            ["bots/pk.zalgo"],
+        )
+
     def test_start_inside_a_project_lists_that_project_first(self) -> None:
         payload = list_projects(self.root / "termart")
         self.assertEqual([item["name"] for item in payload["projects"]], ["termart"])

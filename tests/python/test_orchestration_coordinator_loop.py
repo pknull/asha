@@ -88,6 +88,31 @@ class CoordinatorWaitTests(ExecutionFixture, unittest.TestCase):
             "active",
         )
 
+    def test_second_wait_cannot_rearm_a_waiting_generation(self) -> None:
+        record = claim(
+            self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+        )
+        waiting = coordinator_module._begin_wait(
+            self.store, self.initiative_id, record,
+        )
+        try:
+            with self.assertRaisesRegex(
+                CoordinatorError, "already has an armed event watch",
+            ):
+                coordinator_module._begin_wait(
+                    self.store, self.initiative_id, record,
+                )
+            self.assertEqual(
+                self.store.read_coordinator(
+                    self.initiative_id, record["coordinator_id"],
+                )["state"],
+                "waiting",
+            )
+        finally:
+            coordinator_module._end_wait(
+                self.store, self.initiative_id, waiting,
+            )
+
     def test_arrival_returns_events_after_the_cursor_and_advances_it(self) -> None:
         record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
         cursor = self.tail()

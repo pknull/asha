@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import json
 import re
 import unittest
 import uuid
@@ -241,6 +242,29 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         too_long = Path("/") / ("a" * 170) / f"{attempt_id}.md"
         with self.assertRaisesRegex(SchedulerError, "absolute assignment path"):
             _goal(initiative, node, too_long)
+
+    def test_successful_dispatch_surfaces_delivery_preflight_stderr(self) -> None:
+        diagnostic = (
+            "Delivery preflight: untracked remote bookmarks at origin: release; "
+            "remediate with: jj bookmark track NAME --remote=origin"
+        )
+
+        def capture(argv, **_kwargs):
+            return 0, json.dumps(self.control_payload(argv)).encode(), diagnostic.encode()
+
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ):
+            action = submit_action(self.store, self.initiative_id, document)
+
+        self.assertEqual(action["state"], "completed")
+        self.assertEqual(json.loads(action["outcome"])["diagnostic"], diagnostic)
 
     def test_storage_breaker_refuses_dispatch_and_pauses(self) -> None:
         document = build_action_document(
