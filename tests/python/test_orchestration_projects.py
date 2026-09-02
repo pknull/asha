@@ -47,20 +47,23 @@ class ProjectIndexTests(unittest.TestCase):
         self.assertEqual(rc, 0)
         return json.loads(out.getvalue())
 
-    def test_discovery_lists_asha_projects_one_level_down_in_name_order(self) -> None:
+    def test_discovery_lists_bounded_asha_projects_in_name_order(self) -> None:
         payload = list_projects(self.root)
         self.assertEqual(payload["contract"], PROJECT_LIST_CONTRACT)
         self.assertEqual(payload["source"], "discovery")
         self.assertEqual(payload["root"], str(self.root))
         self.assertIsNone(payload["match"])
-        self.assertEqual([item["name"] for item in payload["projects"]], ["asha", "termart"])
-        termart = payload["projects"][1]
+        self.assertEqual(
+            [item["name"] for item in payload["projects"]],
+            ["asha", "deep", "termart"],
+        )
+        termart = payload["projects"][2]
         # `directory` is an additive label under v1, following the
         # `repository_id` precedent on storage `workspaces[]` entries: the
         # friendly `name` may be the project's own, so the directory it lives
         # in stays available for anyone who needs the path.
         self.assertEqual(set(termart), {
-            "name", "directory", "root", "project_id", "role", "declared",
+            "name", "directory", "relative_path", "root", "project_id", "role", "declared",
             "asha_project", "jj_colocated",
         })
         self.assertEqual(termart["project_id"], "termart-project")
@@ -70,11 +73,35 @@ class ProjectIndexTests(unittest.TestCase):
         self.assertIsNone(termart["role"])
 
     def test_depth_reaches_nested_projects_and_is_bounded(self) -> None:
+        self.assertEqual(
+            [item["name"] for item in list_projects(self.root, depth=1)["projects"]],
+            ["asha", "termart"],
+        )
         self.assertEqual([item["name"] for item in list_projects(self.root, depth=2)["projects"]], ["asha", "deep", "termart"])
         with self.assertRaisesRegex(ProjectIndexError, "depth must be between 1 and 3"):
             list_projects(self.root, depth=4)
         with self.assertRaisesRegex(ProjectIndexError, "not a directory"):
             list_projects(self.root / "missing")
+
+    def test_non_colocated_project_container_does_not_hide_nested_repository(self) -> None:
+        bots = self.root / "bots"
+        write_member(bots, "bots-container")
+        nested = bots / "pk.zalgo"
+        write_member(nested, "pk-zalgo-project")
+        (nested / ".jj").mkdir()
+
+        payload = list_projects(self.root)
+
+        entry = next(item for item in payload["projects"] if item["name"] == "pk.zalgo")
+        self.assertTrue(entry["jj_colocated"])
+        self.assertEqual(entry["relative_path"], "bots/pk.zalgo")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli.main(
+                ["initiative", "projects", "--root", str(self.root)], env=self.env,
+            )
+        self.assertEqual(rc, 0)
+        self.assertIn("[bots/pk.zalgo]", out.getvalue())
 
     def test_start_inside_a_project_lists_that_project_first(self) -> None:
         payload = list_projects(self.root / "termart")

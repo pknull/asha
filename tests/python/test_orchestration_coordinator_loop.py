@@ -38,7 +38,7 @@ class CoordinatorWaitTests(ExecutionFixture, unittest.TestCase):
         with self.assertRaisesRegex(CoordinatorError, "not inside the coordinator's anchor pane"):
             wait(self.store, self.initiative(), env={**self.env, "TMUX_PANE": "%9"}, tmux=self.tmux, after=0, timeout=0)
 
-    def test_timeout_returns_no_events_and_writes_nothing(self) -> None:
+    def test_timeout_returns_no_events_and_leaves_the_coordinator_active(self) -> None:
         record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
         cursor = self.tail()
         before = self.store.read_coordinator(self.initiative_id, record["coordinator_id"])
@@ -50,10 +50,43 @@ class CoordinatorWaitTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(payload["after"], cursor)
         self.assertEqual(payload["last_event_sequence"], cursor)
         self.assertEqual(payload["contract"], "asha.orchestration-event-wait.v1")
-        self.assertEqual(
-            self.store.read_coordinator(self.initiative_id, record["coordinator_id"]), before,
-        )
+        after = self.store.read_coordinator(self.initiative_id, record["coordinator_id"])
+        self.assertEqual(after["state"], "active")
+        self.assertEqual(after["event_cursor"], before["event_cursor"])
+        self.assertGreaterEqual(after["updated_at"], before["updated_at"])
         self.assertEqual(self.tail(), cursor)
+
+    def test_wait_state_distinguishes_an_armed_watch_from_a_parked_session(self) -> None:
+        record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        cursor = self.tail()
+        observed: list[str] = []
+
+        def sleep(_seconds: float) -> None:
+            observed.append(
+                self.store.read_coordinator(
+                    self.initiative_id, record["coordinator_id"],
+                )["state"]
+            )
+            append_event(
+                self.store, self.initiative_id, "node-ready", ["implementation-a"],
+                {"node_id": "implementation-a"},
+                actor_kind="controller", actor_id="test",
+            )
+
+        with mock.patch.object(coordinator_module.time, "sleep", side_effect=sleep):
+            payload = wait(
+                self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+                after=cursor, timeout=5,
+            )
+
+        self.assertEqual(observed, ["waiting"])
+        self.assertFalse(payload["timed_out"])
+        self.assertEqual(
+            self.store.read_coordinator(
+                self.initiative_id, record["coordinator_id"],
+            )["state"],
+            "active",
+        )
 
     def test_arrival_returns_events_after_the_cursor_and_advances_it(self) -> None:
         record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)

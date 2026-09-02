@@ -624,6 +624,39 @@ class UnifiedTreeTests(unittest.TestCase):
         self.assertIn("asha initiative approve", plan["resolution"])
         self.assertIn("d" * 64, plan["resolution"])
 
+    def test_ready_zero_attempt_node_distinguishes_parked_from_armed_coordinator(self) -> None:
+        from lib.control.orchestration.tui_model import attention_items
+
+        coordinator = {
+            "harness": "claude", "generation": 1, "state": "active",
+            "updated_at": "2000-01-01T00:00:00Z", "anchor": {"pane_id": "%7"},
+        }
+        view = _view(
+            "parked", "running", coordinator=coordinator, coordinator_live=True,
+            nodes=[{
+                "node_id": "implementation-a", "state": "ready",
+                "type": "work", "goal": "Implement A",
+            }],
+        )
+        view["attempts"] = []
+        view["events"] = []
+
+        items = attention_items([view])
+
+        self.assertEqual([item["kind"] for item in items], ["coordinator-parked"])
+        self.assertIn("zero attempts", items[0]["detail"])
+        self.assertIn("300 seconds", items[0]["detail"])
+        self.assertIn("coordinator attach", items[0]["resolution"])
+        filtered = self.screen([view], (), attention_only=True).rows()
+        self.assertEqual([row.label for row in filtered], ["parked"])
+        self.assertEqual(filtered[0].attention, "coordinator parked")
+
+        armed = copy.deepcopy(view)
+        armed["coordinator"]["state"] = "waiting"
+        armed["coordinator"]["updated_at"] = "2999-01-01T00:00:00Z"
+        self.assertEqual(attention_items([armed]), [])
+        self.assertEqual(self.screen([armed], (), attention_only=True).rows(), [])
+
     def test_close_worker_sends_the_quit_command_only_after_an_exact_yes(self) -> None:
         worker = _FakeTaskRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "review-worker", display_state="idle")
         sent: list = []

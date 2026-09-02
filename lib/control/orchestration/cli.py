@@ -1006,8 +1006,11 @@ def _print_project_index(payload: dict[str, Any]) -> None:
             mark = "*" if entry["jj_colocated"] else "-"
             note = "" if entry["jj_colocated"] else "  (no jj - cannot run an initiative)"
             renamed = ""
-            if entry.get("directory") and entry["directory"] != entry["name"]:
-                renamed = f"  [{entry['directory']}]"
+            location = entry.get("relative_path") or entry.get("directory")
+            if location == "." and entry.get("directory") != entry["name"]:
+                location = entry.get("directory")
+            if location not in {None, ".", entry["name"]}:
+                renamed = f"  [{location}]"
             print(f"   {mark} {entry['name']:<{width}}{renamed}{note}")
         print()
     for item in payload.get("skipped", []):
@@ -2228,11 +2231,11 @@ def _initiative_command(
     if command == "projects":
         options = _parse_options(tail, repeat={"root"}, flags={"json"})
         _only(options, {"root", "depth", "match", "json"}, "projects")
-        from .projects import list_projects_across, resolve_roots
+        from .projects import DEFAULT_DEPTH, list_projects_across, resolve_roots
 
         depth_option = options.get("depth")
         try:
-            depth = 1 if depth_option is None else int(depth_option)
+            depth = DEFAULT_DEPTH if depth_option is None else int(depth_option)
         except ValueError as exc:
             raise ValueError("projects --depth must be an integer") from exc
         roots, roots_from = resolve_roots(list(options.get("root") or []), env=env)

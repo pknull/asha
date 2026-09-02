@@ -1933,6 +1933,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
         adapter.resolve_default_base.return_value = DefaultBaseResolution(
             ("refs/heads/main",), head, "attached-local",
         )
+        adapter.untracked_remote_bookmarks.return_value = ()
         adapter.materialization_plan.return_value = real.materialization_plan(
             self.source / ".git", head, exact_root=self.source,
         )
@@ -1947,6 +1948,52 @@ class PlainGitPreEnableTests(unittest.TestCase):
             ("refs/heads/main",), head, "attached-local",
         ))
         adapter.resolve_base.assert_not_called()
+
+    def test_existing_jj_preflight_reports_untracked_origin_bookmarks_without_mutation(self) -> None:
+        head = subprocess.run(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], check=True,
+            capture_output=True, text=True,
+        ).stdout.strip()
+        real = JjAdapter()
+        adapter = mock.Mock(spec=JjAdapter)
+        adapter.untracked_remote_bookmarks.return_value = ("master", "release")
+        adapter.resolve_default_base.return_value = DefaultBaseResolution(
+            ("refs/heads/main",), head, "attached-local",
+        )
+        adapter.materialization_plan.return_value = real.materialization_plan(
+            self.source / ".git", head, exact_root=self.source,
+        )
+
+        plan = preflight_plain_git_enablement(
+            self.config, self.request(base=DEFAULT_BASE_REVSET), jj=adapter,
+            base_explicit=False, existing_jj=True,
+        )
+
+        self.assertEqual(len(plan.diagnostics), 1)
+        self.assertIn("untracked remote bookmarks at origin: master, release", plan.diagnostics[0])
+        self.assertIn(
+            "jj bookmark track NAME --remote=origin", plan.diagnostics[0],
+        )
+        adapter.untracked_remote_bookmarks.assert_called_once_with(self.source)
+        self.assertFalse((self.source / ".jj").exists())
+
+    def test_remote_bookmark_inspection_is_bounded_read_only_and_sorted(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(argv, **_kwargs):
+            calls.append(list(argv))
+            return SimpleNamespace(
+                args=argv, returncode=0, stdout=b"release\nmaster\n", stderr=b"",
+            )
+
+        names = JjAdapter(runner=runner).untracked_remote_bookmarks(self.source)
+
+        self.assertEqual(names, ("master", "release"))
+        self.assertEqual(len(calls), 1)
+        self.assertIn("--ignore-working-copy", calls[0])
+        self.assertIn("--at-operation=@", calls[0])
+        self.assertEqual(calls[0][calls[0].index("--remote") + 1], "exact:origin")
+        self.assertNotIn("track", calls[0])
 
     def test_pre_enable_revalidation_refuses_a_default_ref_race(self) -> None:
         plan = preflight_plain_git_enablement(
@@ -2470,6 +2517,7 @@ class PlainGitPreEnableTests(unittest.TestCase):
         ).stdout.strip()
         real = JjAdapter()
         adapter = mock.Mock(spec=JjAdapter)
+        adapter.untracked_remote_bookmarks.return_value = ()
         adapter.resolve_base.return_value = head
         adapter.materialization_plan.return_value = real.materialization_plan(
             self.source / ".git", head, exact_root=self.source,
@@ -3310,7 +3358,7 @@ class CliColocationTests(unittest.TestCase):
         )
         return adapter
 
-    def invoke(self, adapter, *, prepare=None):
+    def invoke(self, adapter, *, prepare=None, diagnostics=()):
         stdout, stderr = io.StringIO(), io.StringIO()
         prepare_call = prepare or (lambda config, request, jj=None: self.task)
         with mock.patch("lib.control.cli.JjAdapter", return_value=adapter), \
@@ -3322,6 +3370,7 @@ class CliColocationTests(unittest.TestCase):
                         "repo:test", "repo-key", self.workspace,
                         inspect_pre_enable_binding(self.source),
                         "refs/heads/main", "b" * 40, False, None,
+                        diagnostics=tuple(diagnostics),
                     ),
                 ), \
                 mock.patch(
@@ -3334,6 +3383,19 @@ class CliColocationTests(unittest.TestCase):
                 "--harness", "codex", "--goal", "Auto init", "--json",
             ], env=self.env)
         return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_start_surfaces_delivery_preflight_diagnostics_on_stderr(self) -> None:
+        status, _stdout, stderr = self.invoke(
+            self.adapter(),
+            diagnostics=(
+                "untracked remote bookmarks at origin: master; remediate with: "
+                "jj bookmark track NAME --remote=origin",
+            ),
+        )
+
+        self.assertEqual(status, 0)
+        self.assertIn("Delivery preflight: untracked remote bookmarks", stderr)
+        self.assertIn("jj bookmark track NAME --remote=origin", stderr)
 
     def test_new_plain_git_task_initializes_once_and_reports_mutation_first(self) -> None:
         adapter = self.adapter()

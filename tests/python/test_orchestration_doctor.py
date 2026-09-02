@@ -282,6 +282,41 @@ class OrchestrationDoctorTests(unittest.TestCase):
             self.assertEqual(probe.outcome, "match")
             self.assertIn("0 live coordinator", probe.detail)
 
+    def test_coordinator_probe_distinguishes_parked_ready_work_from_an_armed_watch(self) -> None:
+        store = mock.Mock()
+        initiative = {
+            "initiative_id": "11111111-1111-4111-8111-111111111111",
+            "state": "running", "last_event_sequence": 8,
+        }
+        coordinator = {
+            "coordinator_id": "22222222-2222-4222-8222-222222222222",
+            "generation": 1, "state": "active", "event_cursor": 8,
+            "updated_at": "2000-01-01T00:00:00Z",
+        }
+        store.list_initiatives.return_value = [initiative]
+        store.current_coordinator.return_value = coordinator
+        store.list_nodes_snapshot.return_value = [{
+            "node_id": "implementation-a", "state": "ready",
+        }]
+        store.list_attempts_snapshot.return_value = []
+        store.list_events_snapshot.return_value = []
+        with mock.patch(
+            "lib.control.orchestration.store.InitiativeStore", return_value=store,
+        ):
+            parked = _coordinator_cursor_probe(mock.Mock())
+        self.assertEqual(parked.outcome, "mismatch")
+        self.assertIn("implementation-a", parked.detail)
+        self.assertIn("parked", parked.detail)
+
+        coordinator["state"] = "waiting"
+        coordinator["event_cursor"] = 7
+        coordinator["updated_at"] = "2999-01-01T00:00:00Z"
+        with mock.patch(
+            "lib.control.orchestration.store.InitiativeStore", return_value=store,
+        ):
+            armed = _coordinator_cursor_probe(mock.Mock())
+        self.assertEqual(armed.outcome, "match")
+
     def test_private_existing_root_and_control_ok_make_doctor_ok(self) -> None:
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)

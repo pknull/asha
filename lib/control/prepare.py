@@ -29,6 +29,7 @@ from .jj import (
     MAX_TRACKED_BLOB_BYTES, MAX_TRACKED_TOTAL_BYTES, inspect_git_marker,
     RepositoryPreEnableBinding, inspect_pre_enable_binding,
     require_pre_enable_binding,
+    untracked_remote_bookmark_remediation,
 )
 from .model import (
     GIT_OBJECT_ID_PATTERN, TASK_CONTRACT, canonical_uuid, validate_task,
@@ -145,6 +146,7 @@ class PlainGitPreEnablePlan:
     default_base_resolution: DefaultBaseResolution | None = None
     source_object_available: bool = True
     pr_remote_config_digest: str | None = None
+    diagnostics: tuple[str, ...] = ()
 
 
 def revalidate_plain_git_pre_enable_plan(
@@ -197,6 +199,7 @@ def preflight_plain_git_enablement(
 ) -> PlainGitPreEnablePlan:
     """Run every feasible source/task refusal before durable colocation."""
     source = Path(request.repository)
+    diagnostics: list[str] = []
     try:
         canonical_uuid(request.task_id)
         slug = validate_task_slug(request.slug)
@@ -214,6 +217,16 @@ def preflight_plain_git_enablement(
         snapshot = read_published_snapshot(source)
         source_binding = inspect_pre_enable_binding(source)
         git_binding = source_binding.git_binding
+        if existing_jj:
+            delivery_problem = untracked_remote_bookmark_remediation(
+                jj.untracked_remote_bookmarks(source),
+            )
+            if delivery_problem is not None:
+                # Advisory by design: an untracked remote bookmark prevents a
+                # push of that name, but may be unrelated to this task's
+                # intended delivery bookmark. Refusing every otherwise healthy
+                # source would turn detection into a new enablement outage.
+                diagnostics.append(delivery_problem)
         repository_identity, repo_key = derive_repository_identity(
             snapshot.project_id, source, git_binding.target,
         )
@@ -386,6 +399,7 @@ def preflight_plain_git_enablement(
         default_base_resolution=default_base_resolution,
         source_object_available=source_object_available,
         pr_remote_config_digest=pr_remote_config_digest,
+        diagnostics=tuple(diagnostics),
     )
 
 
