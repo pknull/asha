@@ -7,6 +7,7 @@ from unittest import mock
 
 from lib.control.orchestration.config import load_config
 from lib.control.orchestration.doctor import (
+    COORDINATOR_CURSOR_EVENT_TAIL,
     Probe,
     _approval_decider,
     _approval_provenance_probe,
@@ -316,6 +317,61 @@ class OrchestrationDoctorTests(unittest.TestCase):
         ):
             armed = _coordinator_cursor_probe(mock.Mock())
         self.assertEqual(armed.outcome, "match")
+
+    def test_coordinator_cursor_probe_reports_an_expired_wait_without_ready_work(self) -> None:
+        store = mock.Mock()
+        initiative = {
+            "initiative_id": "11111111-1111-4111-8111-111111111111",
+            "state": "running", "last_event_sequence": 9,
+        }
+        store.list_initiatives.return_value = [initiative]
+        store.current_coordinator.return_value = {
+            "coordinator_id": "22222222-2222-4222-8222-222222222222",
+            "generation": 1, "state": "waiting", "event_cursor": 8,
+            "updated_at": "2000-01-01T00:00:00Z",
+        }
+        store.list_nodes_snapshot.return_value = [{
+            "node_id": "implementation-a", "state": "running",
+        }]
+        store.list_attempts_snapshot.return_value = [{
+            "node_id": "implementation-a",
+        }]
+        store.list_events_snapshot.return_value = []
+
+        with mock.patch(
+            "lib.control.orchestration.store.InitiativeStore", return_value=store,
+        ):
+            probe = _coordinator_cursor_probe(mock.Mock())
+
+        self.assertEqual(probe.outcome, "mismatch")
+        self.assertIn("cursor 8 is 1 event(s) behind tail 9", probe.detail)
+        self.assertNotIn("node implementation-a is ready", probe.detail)
+
+    def test_coordinator_cursor_probe_reads_only_the_named_recent_event_tail(self) -> None:
+        store = mock.Mock()
+        initiative_id = "11111111-1111-4111-8111-111111111111"
+        store.list_initiatives.return_value = [{
+            "initiative_id": initiative_id,
+            "state": "running", "last_event_sequence": 999,
+        }]
+        store.current_coordinator.return_value = {
+            "coordinator_id": "22222222-2222-4222-8222-222222222222",
+            "generation": 1, "state": "active", "event_cursor": 999,
+            "updated_at": "2999-01-01T00:00:00Z",
+        }
+        store.list_nodes_snapshot.return_value = []
+        store.list_attempts_snapshot.return_value = []
+        store.list_events_snapshot.return_value = []
+
+        with mock.patch(
+            "lib.control.orchestration.store.InitiativeStore", return_value=store,
+        ):
+            probe = _coordinator_cursor_probe(mock.Mock())
+
+        self.assertEqual(probe.outcome, "match")
+        store.list_events_snapshot.assert_called_once_with(
+            initiative_id, tail=COORDINATOR_CURSOR_EVENT_TAIL,
+        )
 
     def test_private_existing_root_and_control_ok_make_doctor_ok(self) -> None:
         with tempfile.TemporaryDirectory() as td:

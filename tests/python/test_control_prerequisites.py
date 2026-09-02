@@ -17,7 +17,8 @@ from lib.control.config import load_config
 from lib.control.cli import _parse_start, _start_new_task, main as control_main
 from lib.control.doctor import _default_context_probe
 from lib.control.jj import (
-    ContextCompatibilityError, DefaultBaseResolution, JjAdapter,
+    ContextCompatibilityError, DefaultBaseResolution, JjAdapter, JjError,
+    MaterializationPlan,
 )
 from lib.control.prerequisites import (
     CONTROL_IGNORE_RULE, StartPrerequisiteRefusal,
@@ -118,6 +119,29 @@ class PrerequisiteRepository:
 
 
 class TypedImmutableProofTests(PrerequisiteRepository, unittest.TestCase):
+    def test_existing_jj_bookmark_probe_failure_is_advisory(self) -> None:
+        resolved = self.git("rev-parse", "HEAD")
+        adapter = mock.create_autospec(JjAdapter, instance=True)
+        adapter.untracked_remote_bookmarks.side_effect = JjError(
+            "bookmark inspection unavailable"
+        )
+        adapter.resolve_base.return_value = resolved
+        adapter.materialization_plan.return_value = MaterializationPlan(
+            resolved, "a" * 64, (), 0, 0, 0,
+        )
+        adapter.prove_context_compatibility.return_value = mock.sentinel.context_proof
+
+        plan = preflight_plain_git_enablement(
+            self.config, self.request, jj=adapter, base_explicit=True,
+            existing_jj=True,
+        )
+
+        self.assertEqual(plan.resolved_base_commit_id, resolved)
+        self.assertEqual(plan.diagnostics, (
+            "untracked remote bookmark inspection unavailable: "
+            "bookmark inspection unavailable",
+        ))
+
     def test_missing_marker_ignore_has_exact_typed_evidence(self) -> None:
         plan = JjAdapter().materialization_plan(
             self.repository / ".git", self.git("rev-parse", "HEAD"),

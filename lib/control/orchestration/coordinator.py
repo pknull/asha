@@ -481,7 +481,7 @@ def _begin_wait(
         ):
             raise CoordinatorError("coordinator generation changed before its wait armed")
         if latest["state"] == "waiting":
-            return latest
+            raise CoordinatorError("coordinator already has an armed event watch")
         if latest["state"] != "active":
             raise CoordinatorError(
                 f"coordinator state {latest['state']} cannot arm an event watch"

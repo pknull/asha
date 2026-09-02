@@ -7,7 +7,7 @@ import os
 import shutil
 import stat
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -98,6 +98,29 @@ _ADVISORY_PROBES = frozenset({
 # Bound the mismatch detail the way `_root_probe` bounds its own.
 _MAX_SUSPECT_APPROVALS = 5
 _MAX_BEHIND_COORDINATORS = 5
+COORDINATOR_CURSOR_EVENT_TAIL = 256
+
+
+def _waiting_watch_is_current(
+    coordinator: Mapping[str, Any], *, now: datetime,
+) -> bool:
+    """Whether one waiting marker is still within its bounded watch lease."""
+    if coordinator.get("state") != "waiting":
+        return False
+    from .coordinator import MAX_COORDINATOR_WAIT_SECONDS
+    from .tui_model import PARKED_COORDINATOR_ATTENTION_SECONDS
+
+    updated_text = coordinator.get("updated_at")
+    if not isinstance(updated_text, str) or not updated_text.endswith("Z"):
+        raise ValueError("coordinator updated_at is not a UTC timestamp")
+    updated = datetime.fromisoformat(updated_text[:-1] + "+00:00")
+    lease = timedelta(
+        seconds=(
+            MAX_COORDINATOR_WAIT_SECONDS
+            + PARKED_COORDINATOR_ATTENTION_SECONDS
+        ),
+    )
+    return now - updated < lease
 
 
 def _approval_decider(
@@ -164,6 +187,7 @@ def _coordinator_cursor_probe(config: OrchestrationConfig) -> Probe:
     behind: list[str] = []
     parked: list[str] = []
     live = 0
+    observed_now = datetime.now(timezone.utc)
     try:
         store = InitiativeStore(config)
         for initiative in store.list_initiatives():
@@ -177,15 +201,20 @@ def _coordinator_cursor_probe(config: OrchestrationConfig) -> Probe:
             tail = initiative["last_event_sequence"]
             cursor = coordinator["event_cursor"]
             acknowledged = cursor
+            waiting_watch_current = _waiting_watch_is_current(
+                coordinator, now=observed_now,
+            )
             armed_watch = coordinator.get("armed_watch")
             if armed_watch is not None:
                 deadline = datetime.fromisoformat(
                     armed_watch["deadline"][:-1] + "+00:00"
                 )
-                if deadline > datetime.now(timezone.utc):
+                if deadline > observed_now:
                     acknowledged = max(acknowledged, armed_watch["after"])
-            events = store.list_events_snapshot(initiative_id)
-            if coordinator["state"] != "waiting" and acknowledged < tail:
+            events = store.list_events_snapshot(
+                initiative_id, tail=COORDINATOR_CURSOR_EVENT_TAIL,
+            )
+            if not waiting_watch_current and acknowledged < tail:
                 behind.append(
                     f"{initiative_id} coordinator cursor {acknowledged} is "
                     f"{tail - acknowledged} event(s) behind tail {tail}"
@@ -196,7 +225,7 @@ def _coordinator_cursor_probe(config: OrchestrationConfig) -> Probe:
                 "nodes": store.list_nodes_snapshot(initiative_id),
                 "attempts": store.list_attempts_snapshot(initiative_id),
                 "events": events,
-            }):
+            }, now=observed_now):
                 parked.append(
                     f"{initiative_id} node {node_id} is ready with zero attempts "
                     "and its coordinator is parked"
@@ -343,4 +372,7 @@ def run_orchestration_doctor(
 
 run_doctor = run_orchestration_doctor
 
-__all__ = ["DOCTOR_CONTRACT", "Probe", "run_doctor", "run_orchestration_doctor"]
+__all__ = [
+    "COORDINATOR_CURSOR_EVENT_TAIL", "DOCTOR_CONTRACT", "Probe", "run_doctor",
+    "run_orchestration_doctor",
+]
