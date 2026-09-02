@@ -138,10 +138,13 @@ class CoordinatorWaitTests(ExecutionFixture, unittest.TestCase):
             nonlocal changed
             clock[0] += seconds
             if not changed:
-                stale = copy.deepcopy(record)
-                stale.update({"state": "stale", "updated_at": record["updated_at"]})
+                live = self.store.read_coordinator(
+                    self.initiative_id, record["coordinator_id"],
+                )
+                stale = copy.deepcopy(live)
+                stale.update({"state": "stale", "updated_at": live["updated_at"]})
                 self.store.save_coordinator(
-                    self.initiative_id, stale, expected_digest=record_digest(record),
+                    self.initiative_id, stale, expected_digest=record_digest(live),
                 )
                 changed = True
 

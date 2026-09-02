@@ -29,7 +29,7 @@ from .config import OrchestrationConfigError, load_config
 from .coordinator import (
     CoordinatorError, checkpoint as checkpoint_coordinator, claim as claim_coordinator,
     environment_for, reconcile_coordinator, refuse_coordinator_pane,
-    release as release_coordinator, require_anchored_caller, require_live_coordinator,
+    release_with_details as release_coordinator, require_anchored_caller, require_live_coordinator,
     show as show_coordinator, wait as wait_for_events,
 )
 from .doctor import run_orchestration_doctor
@@ -95,7 +95,7 @@ Usage:
   asha initiative pause|resume <id> [--json]
   asha initiative stop <id> --attempt ATTEMPT [--json]
   asha initiative cancel <id> --node NODE [--json]
-  asha initiative finalize <id> --outcome partial|failed --reason TEXT [--json]
+  asha initiative finalize <id> --outcome partial|failed --reason TEXT [--cancel-pending] [--json]
   asha initiative archive <id> [--json]
   asha initiative unarchive <id> [--json]
   asha initiative compose-verify <id> --bundle BUNDLE_ID [--json]
@@ -1067,11 +1067,14 @@ def _coordinator_command(
         }, bool(options["json"])
     _only(options, {"json"}, f"coordinator {verb}")
     if verb == "release":
-        record = release_coordinator(store, initiative, env=env, tmux=tmux)
+        record, reaped_pane_id = release_coordinator(
+            store, initiative, env=env, tmux=tmux,
+        )
         return {
             "contract": COORDINATOR_RELEASE_CONTRACT,
             "initiative_id": initiative["initiative_id"],
             "coordinator": record,
+            "reaped_pane_id": reaped_pane_id,
         }, bool(options["json"])
     return show_coordinator(store, initiative, tmux=tmux), bool(options["json"])
 
@@ -1764,6 +1767,7 @@ def snapshot(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, An
         "attempts": store.list_attempts_snapshot(initiative["initiative_id"]),
         "links": store.list_links_snapshot(initiative["initiative_id"]),
         "actions": store.list_actions_snapshot(initiative["initiative_id"]),
+        "bundles": store.list_bundles_snapshot(initiative["initiative_id"]),
         "coordinator": store.current_coordinator(initiative["initiative_id"]),
         "last_event_sequence": initiative["last_event_sequence"],
         "state_revision": initiative["state_revision"],
@@ -1771,6 +1775,35 @@ def snapshot(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str, An
 
 
 _snapshot = snapshot
+
+
+def _print_snapshot(payload: Mapping[str, Any]) -> None:
+    """Render the operator-sized facts needed to act on one snapshot."""
+    initiative = payload["initiative"]
+    slug = initiative.get("slug") or initiative["initiative_id"]
+    print(f"Initiative: {slug} ({initiative['initiative_id']})")
+    print(f"State: {initiative['state']}")
+    plan = payload.get("active_plan")
+    if plan is None:
+        print("Plan: none")
+    else:
+        print(f"Plan: revision {plan['revision']} digest {plan['digest']}")
+    nodes = payload.get("nodes", [])
+    if not nodes:
+        print("Nodes: none")
+    else:
+        print("Nodes:")
+        for node in nodes:
+            print(f"  {node['node_id']}: {node['state']}")
+    bundles = payload.get("bundles", [])
+    if not bundles:
+        print("Bundles: none")
+    else:
+        print("Bundles:")
+        for bundle in bundles:
+            seal_ids = ", ".join(member["seal_id"] for member in bundle["members"])
+            print(f"  {bundle['bundle_id']}: {bundle['state']} (seals: {seal_ids})")
+    print(f"Last event sequence: {payload['last_event_sequence']}")
 
 
 def reconcile_one_initiative(
@@ -1864,7 +1897,10 @@ def _operator_action(
         raise ValueError(f"{command} requires an initiative ID or exact slug")
     env = {} if env is None else env
     initiative = _resolve(store, args[0])
-    options = _parse_options(args[1:], flags={"json", "as_coordinator"})
+    flags = {"json", "as_coordinator"}
+    if command == "finalize":
+        flags.add("cancel_pending")
+    options = _parse_options(args[1:], flags=flags)
     allowed = {"json", "as_coordinator"}
     payload: dict[str, Any]
     action_class = command
@@ -1887,7 +1923,7 @@ def _operator_action(
         _required(options, "node")
         action_class, payload = "cancel-node", {"node_id": options["node"]}
     elif command == "finalize":
-        allowed.update({"outcome", "reason"})
+        allowed.update({"outcome", "reason", "cancel_pending"})
         _required(options, "outcome", "reason")
         action_class, payload = "finalize", {
             "outcome": options["outcome"], "reason": options["reason"],
@@ -1897,6 +1933,8 @@ def _operator_action(
     else:
         raise ValueError(f"unknown operator action: {command}")
     _only(options, allowed, command)
+    if options.get("cancel_pending") and options["as_coordinator"]:
+        raise ValueError("finalize --cancel-pending is an operator-only action")
     if not options["as_coordinator"]:
         refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux or TmuxAdapter())
     if options["as_coordinator"]:
@@ -1907,6 +1945,31 @@ def _operator_action(
             actor_id=f"coordinator:{coordinator['coordinator_id']}", coordinator=coordinator,
         )
         return submit_action(store, initiative["initiative_id"], document), bool(options["json"])
+    if command == "finalize" and options.get("cancel_pending"):
+        cancelled_node_ids: list[str] = []
+        pending_nodes = sorted(
+            (
+                node for node in store.list_nodes_snapshot(initiative["initiative_id"])
+                if node["state"] in NODE_NONTERMINAL_STATES
+            ),
+            key=lambda node: node["node_id"],
+        )
+        for node in pending_nodes:
+            cancellation = _submit_convenience_action(
+                store, store.peek(initiative["initiative_id"]), "cancel-node",
+                {"node_id": node["node_id"]},
+            )
+            if cancellation["state"] != "completed":
+                result = copy.deepcopy(cancellation)
+                result["cancelled_node_ids"] = cancelled_node_ids
+                return result, bool(options["json"])
+            cancelled_node_ids.append(node["node_id"])
+        result = _submit_convenience_action(
+            store, store.peek(initiative["initiative_id"]), action_class, payload,
+        )
+        result = copy.deepcopy(result)
+        result["cancelled_node_ids"] = cancelled_node_ids
+        return result, bool(options["json"])
     return (
         _submit_convenience_action(
             store, initiative, action_class, payload,
@@ -2160,7 +2223,7 @@ def _initiative_command(
             for item in payload["items"]:
                 where = item.get("slug") or item.get("task_id", "")
                 print(f"{item['kind']:<18} {str(where)[:28]:<28} {item['detail'][:70]}")
-                print(f"{'':<18} -> {item['resolution'][:90]}")
+                print(f"{'':<18} -> {item['resolution']}")
         return 0
     if command == "projects":
         options = _parse_options(tail, repeat={"root"}, flags={"json"})
@@ -2211,8 +2274,6 @@ def _initiative_command(
             after = int(raw_after)
         payload = {"contract": EVENT_LIST_CONTRACT, "initiative_id": initiative["initiative_id"], "events": store.list_events_snapshot(initiative["initiative_id"], after=after)}
     elif command == "snapshot":
-        if not json_output:
-            raise ValueError("snapshot requires --json")
         payload = _snapshot(store, initiative)
     elif command == "reconcile":
         payload = reconcile_one_initiative(store, initiative["initiative_id"])
@@ -2220,7 +2281,10 @@ def _initiative_command(
         payload = storage_report(initiative, store=store)
     else:
         payload = show_payload(store, initiative)
-    _payload(payload, json_output)
+    if command == "snapshot" and not json_output:
+        _print_snapshot(payload)
+    else:
+        _payload(payload, json_output)
     return 0
 
 
@@ -2236,6 +2300,7 @@ def show_payload(store: InitiativeStore, initiative: dict[str, Any]) -> dict[str
             "attempts": current["attempts"], "links": current["links"],
         },
         "action_outcomes": current["actions"],
+        "bundles": current["bundles"],
         "gates": [] if current["active_plan"] is None else current["active_plan"]["declared_gates"],
         "limits": initiative["limits"],
         "evidence_counts": evidence_counts,

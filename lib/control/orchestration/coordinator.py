@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import copy
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
 
 from ..harness import (
@@ -244,6 +244,14 @@ def _clear_pane(tmux: TmuxAdapter, pane: str) -> None:
         return
 
 
+def _reap_pane(tmux: TmuxAdapter, pane: str) -> None:
+    """Kill exactly the proven anchor pane through the tmux adapter seam."""
+    try:
+        tmux._run(["kill-pane", "-t", pane])
+    except TmuxError as exc:
+        raise CoordinatorError(f"coordinator pane reap failed: {exc}") from exc
+
+
 def _fence(store: InitiativeStore, initiative_id: str, current: dict[str, Any], at: str, successor: int) -> None:
     fenced = copy.deepcopy(current)
     fenced.update({"state": "fenced", "updated_at": at})
@@ -301,6 +309,7 @@ def claim(
                 "protocol_version": COORDINATOR_PROTOCOL_VERSION,
                 "claimed_at": at,
                 "event_cursor": tail,
+                "armed_watch": None,
                 "last_accepted_action_id": None,
                 "predecessor_coordinator_id": predecessor,
                 "created_at": at,
@@ -324,6 +333,96 @@ def claim(
     return record
 
 
+def release_with_details(
+    store: InitiativeStore,
+    initiative: Mapping[str, Any],
+    *,
+    env: Mapping[str, str],
+    tmux: TmuxAdapter,
+) -> tuple[dict[str, Any], str | None]:
+    """Retire a live generation, with a terminal-only operator reap path.
+
+    A non-terminal initiative still requires the anchored coordinator process.
+    Once the initiative itself is terminal, an operator outside that pane may
+    retire the generation and reap its exact anchor pane.  The returned
+    pane ID is transient reporting data; it is never added to the coordinator
+    record.
+    """
+    initiative_id = initiative["initiative_id"]
+    current = require_live_coordinator(store, initiative_id)
+    selected_coordinator_id = current["coordinator_id"]
+    selected_generation = current["generation"]
+    caller_is_anchor = env.get("TMUX_PANE") == current["anchor"]["pane_id"]
+    terminal = store.peek(initiative_id)["state"] in INITIATIVE_TERMINAL_STATES
+    if caller_is_anchor or not terminal:
+        require_anchored_caller(current, env, tmux)
+        with store.transaction_lock(initiative_id):
+            current = require_live_coordinator(store, initiative_id)
+            require_anchored_caller(current, env, tmux)
+            at = _now()
+            stopping = copy.deepcopy(current)
+            stopping.update({"state": "stopping", "armed_watch": None, "updated_at": at})
+            store.save_coordinator(
+                initiative_id, stopping, expected_digest=record_digest(current),
+            )
+            exited = copy.deepcopy(stopping)
+            exited["state"] = "exited"
+            store.save_coordinator(
+                initiative_id, exited, expected_digest=record_digest(stopping),
+            )
+        _clear_pane(tmux, current["anchor"]["pane_id"])
+        return exited, None
+
+    if any(env.get(key) for key in (ENV_INITIATIVE_ID, ENV_COORDINATOR_ID, ENV_GENERATION)):
+        raise CoordinatorError(
+            "terminal coordinator reap is an operator act; coordinator selectors must be unset"
+        )
+    liveness, detail = anchor_liveness(current["anchor"], tmux)
+    if liveness == "unknown":
+        raise CoordinatorError(detail)
+    reap_live_pane = False
+    if liveness == "live":
+        try:
+            facts = tmux.pane_facts(current["anchor"]["pane_id"])
+        except TmuxError as exc:
+            raise CoordinatorError(f"anchor pane unavailable: {exc}") from exc
+        if facts.dead or facts.pane_pid != current["anchor"]["pane_pid"]:
+            raise CoordinatorError("anchor pane identity changed")
+        reap_live_pane = True
+
+    with store.transaction_lock(initiative_id):
+        current = require_live_coordinator(store, initiative_id)
+        if (
+            current["coordinator_id"] != selected_coordinator_id
+            or current["generation"] != selected_generation
+        ):
+            raise CoordinatorError("coordinator generation changed during terminal reap")
+        if current["state"] != "stopping":
+            stopping = copy.deepcopy(current)
+            stopping.update({
+                "state": "stopping", "armed_watch": None, "updated_at": _now(),
+            })
+            store.save_coordinator(
+                initiative_id, stopping, expected_digest=record_digest(current),
+            )
+
+    reaped_pane_id: str | None = None
+    if reap_live_pane:
+        _reap_pane(tmux, current["anchor"]["pane_id"])
+        reaped_pane_id = current["anchor"]["pane_id"]
+
+    with store.transaction_lock(initiative_id):
+        stopping = store.read_coordinator(initiative_id, current["coordinator_id"])
+        if stopping["state"] != "stopping":
+            raise CoordinatorError("coordinator generation changed during terminal reap")
+        exited = copy.deepcopy(stopping)
+        exited.update({"state": "exited", "updated_at": _now()})
+        store.save_coordinator(
+            initiative_id, exited, expected_digest=record_digest(stopping),
+        )
+    return exited, reaped_pane_id
+
+
 def release(
     store: InitiativeStore,
     initiative: Mapping[str, Any],
@@ -331,20 +430,11 @@ def release(
     env: Mapping[str, str],
     tmux: TmuxAdapter,
 ) -> dict[str, Any]:
-    """The anchored caller retires its live generation: active -> stopping -> exited."""
-    initiative_id = initiative["initiative_id"]
-    with store.transaction_lock(initiative_id):
-        current = require_live_coordinator(store, initiative_id)
-        require_anchored_caller(current, env, tmux)
-        at = _now()
-        stopping = copy.deepcopy(current)
-        stopping.update({"state": "stopping", "updated_at": at})
-        store.save_coordinator(initiative_id, stopping, expected_digest=record_digest(current))
-        exited = copy.deepcopy(stopping)
-        exited["state"] = "exited"
-        store.save_coordinator(initiative_id, exited, expected_digest=record_digest(stopping))
-    _clear_pane(tmux, current["anchor"]["pane_id"])
-    return exited
+    """Compatibility wrapper returning only the retired coordinator record."""
+    record, _reaped_pane_id = release_with_details(
+        store, initiative, env=env, tmux=tmux,
+    )
+    return record
 
 
 def show(
@@ -413,35 +503,50 @@ def wait(
         if ended is not None
         else store.list_events_snapshot(initiative_id, after=after)
     )
-    while not events and ended is None:
-        now = time.monotonic()
-        remaining = min(deadline, segment_deadline) - now
-        if remaining <= 0:
-            if now >= deadline:
-                break
-            try:
-                candidate = require_live_coordinator(store, initiative_id)
-                require_anchored_caller(candidate, env, tmux)
-            except CoordinatorError:
-                ended = "stale-generation"
-                break
-            if (
-                candidate["coordinator_id"] != current["coordinator_id"]
-                or candidate["generation"] != current["generation"]
-            ):
-                ended = "stale-generation"
-                break
-            current = candidate
-            head = store.peek(initiative_id)
-            if head["state"] in INITIATIVE_TERMINAL_STATES:
-                ended = "terminal-initiative"
-                break
-            segment_deadline = min(deadline, now + segment)
-            continue
-        time.sleep(min(_WAIT_TICK_SECONDS, remaining))
-        events = store.list_events_snapshot(initiative_id, after=after)
-    if events:
-        _advance_cursor(store, initiative_id, current, events[-1]["sequence"])
+    armed_watch: dict[str, Any] | None = None
+    if not events and ended is None and budget > 0:
+        watch_deadline = (
+            datetime.now(timezone.utc) + timedelta(seconds=budget)
+        ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+        current, armed_watch = _arm_watch(
+            store, initiative_id, current, after, watch_deadline,
+        )
+    try:
+        while not events and ended is None:
+            now = time.monotonic()
+            remaining = min(deadline, segment_deadline) - now
+            if remaining <= 0:
+                if now >= deadline:
+                    break
+                try:
+                    candidate = require_live_coordinator(store, initiative_id)
+                    require_anchored_caller(candidate, env, tmux)
+                except CoordinatorError:
+                    ended = "stale-generation"
+                    break
+                if (
+                    candidate["coordinator_id"] != current["coordinator_id"]
+                    or candidate["generation"] != current["generation"]
+                ):
+                    ended = "stale-generation"
+                    break
+                current = candidate
+                head = store.peek(initiative_id)
+                if head["state"] in INITIATIVE_TERMINAL_STATES:
+                    ended = "terminal-initiative"
+                    break
+                segment_deadline = min(deadline, now + segment)
+                continue
+            time.sleep(min(_WAIT_TICK_SECONDS, remaining))
+            events = store.list_events_snapshot(initiative_id, after=after)
+    finally:
+        newest = None if not events else events[-1]["sequence"]
+        if armed_watch is not None:
+            _finish_watch(
+                store, initiative_id, current, armed_watch, newest=newest,
+            )
+        elif newest is not None:
+            _advance_cursor(store, initiative_id, current, newest)
     head = store.peek(initiative_id)
     payload = {
         "contract": WAIT_CONTRACT,
@@ -568,11 +673,71 @@ def _advance_cursor(
             store.save_coordinator(initiative_id, advanced, expected_digest=record_digest(latest))
 
 
+def _arm_watch(
+    store: InitiativeStore,
+    initiative_id: str,
+    current: Mapping[str, Any],
+    after: int,
+    deadline: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Durably acknowledge the cursor a blocking wait is watching."""
+    watch = {"after": after, "deadline": deadline}
+    with store.transaction_lock(initiative_id):
+        latest = store.read_coordinator(initiative_id, current["coordinator_id"])
+        if (
+            latest["state"] not in COORDINATOR_LIVE_STATES
+            or latest["generation"] != current["generation"]
+        ):
+            raise CoordinatorError(
+                f"coordinator generation {current['generation']} is no longer live"
+            )
+        existing = latest.get("armed_watch")
+        if existing is not None:
+            existing_deadline = datetime.fromisoformat(
+                existing["deadline"][:-1] + "+00:00"
+            )
+            if existing_deadline > datetime.now(timezone.utc):
+                raise CoordinatorError("coordinator already has an armed event watch")
+        armed = copy.deepcopy(latest)
+        armed.update({"armed_watch": watch, "updated_at": _now()})
+        store.save_coordinator(
+            initiative_id, armed, expected_digest=record_digest(latest),
+        )
+    return armed, watch
+
+
+def _finish_watch(
+    store: InitiativeStore,
+    initiative_id: str,
+    current: Mapping[str, Any],
+    watch: Mapping[str, Any],
+    *,
+    newest: int | None,
+) -> None:
+    """Clear this wait's watch and commit any event cursor it observed."""
+    with store.transaction_lock(initiative_id):
+        latest = store.read_coordinator(initiative_id, current["coordinator_id"])
+        if (
+            latest["state"] not in COORDINATOR_LIVE_STATES
+            or latest["generation"] != current["generation"]
+            or latest.get("armed_watch") != dict(watch)
+        ):
+            return
+        finished = copy.deepcopy(latest)
+        if newest is not None:
+            finished["event_cursor"] = max(finished["event_cursor"], newest)
+        finished.update({"armed_watch": None, "updated_at": _now()})
+        store.save_coordinator(
+            initiative_id, finished, expected_digest=record_digest(latest),
+        )
+
+
 __all__ = [
     "COORDINATOR_SHOW_CONTRACT", "MAX_COORDINATOR_WAIT_SECONDS", "WAIT_CONTRACT",
     "CoordinatorError", "actor_id",
     "anchor_liveness", "caller_anchor", "checkpoint", "claim", "current_live_coordinator",
     "environment_for", "reconcile_coordinator", "refuse_coordinator_pane", "release",
+    "release_with_details",
     "require_anchored_caller", "require_live_coordinator", "show", "wait",
 ]
 
