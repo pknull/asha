@@ -45,6 +45,7 @@ from lib.control.launch import (
 from lib.control.model import RUN_CONTRACT, validate_run, validate_task
 from lib.control.prepare import PrepareRequest, prepare_task_workspace
 from lib.control.reconcile import Evidence, LiveAdapters, reconcile_task
+from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control.store import StoreError, TaskStore, task_digest
 from lib.control.tmux import (
     PaneFacts, TmuxAdapter, TmuxError, _validate_argv, _validate_pane_id,
@@ -1666,6 +1667,7 @@ class RealTmuxLaunchTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.socket = f"asha-control-test-{os.getpid()}"
+        self.enterContext(TmuxSocketReaper(self.socket))
         capability = subprocess.run(
             ["tmux", "-L", self.socket, "-f", "/dev/null",
              "list-commands", "display-popup"],
@@ -1729,12 +1731,6 @@ class RealTmuxLaunchTests(unittest.TestCase):
         launcher = self.asha_root / "bin" / "asha"
         launcher.write_text("#!/bin/sh\nexec /bin/sleep 3600\n", encoding="utf-8")
         launcher.chmod(0o700)
-
-    def tearDown(self) -> None:
-        subprocess.run(
-            ["tmux", "-L", self.socket, "-f", "/dev/null", "kill-server"],
-            capture_output=True, check=False,
-        )
 
     def prepare(self, slug: str = "live-launch", *, base: str = "@-") -> dict:
         request = __import__(

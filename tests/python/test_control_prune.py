@@ -26,6 +26,7 @@ from lib.control.prune import (
     PRUNE_CONTRACT, PruneError, PruneRecordStore, _remove_owned_tree,
     orchestration_bindings, prunable_summary, prune_task,
 )
+from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control.store import StoreError, TaskStore, task_digest
 from lib.control.tmux import TmuxAdapter
 from lib.control.transaction import CreationJournalStore
@@ -744,16 +745,13 @@ class RealTmuxPruneTests(PruneFixture):
     def setUp(self) -> None:
         super().setUp()
         self.socket = f"asha-prune-test-{os.getpid()}"
+        self.enterContext(TmuxSocketReaper(self.socket))
         capability = subprocess.run(
             ["tmux", "-L", self.socket, "-f", "/dev/null", "list-commands", "kill-session"],
             capture_output=True, text=True, check=False,
         )
         if capability.returncode != 0:
             self.skipTest("isolated tmux sockets are unavailable in this execution sandbox")
-        self.addCleanup(
-            subprocess.run, ["tmux", "-L", self.socket, "kill-server"],
-            capture_output=True, check=False,
-        )
         self.adapter = TmuxAdapter(socket=self.socket)
 
     def session_for(self, task: dict, *, holder: list[str]) -> str:

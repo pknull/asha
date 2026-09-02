@@ -15,6 +15,7 @@ from lib.control.reconcile import (
     reconcile_task,
     reconcile_task_with_observation,
 )
+from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control.tmux import PaneFacts, TmuxAdapter, TmuxError
 from tests.python.test_control_config_model import task_record
 
@@ -195,16 +196,13 @@ class VisiblePromptTests(unittest.TestCase):
 class RealTmuxPaneTailTests(unittest.TestCase):
     def setUp(self) -> None:
         self.socket = f"asha-tail-test-{os.getpid()}"
+        self.enterContext(TmuxSocketReaper(self.socket))
         capability = subprocess.run(
             ["tmux", "-L", self.socket, "-f", "/dev/null", "list-commands", "capture-pane"],
             capture_output=True, text=True, check=False,
         )
         if capability.returncode != 0:
             self.skipTest("isolated tmux sockets are unavailable in this execution sandbox")
-        self.addCleanup(
-            subprocess.run, ["tmux", "-L", self.socket, "kill-server"],
-            capture_output=True, check=False,
-        )
         self.adapter = TmuxAdapter(socket=self.socket)
 
     def test_pane_tail_returns_the_last_visible_lines(self) -> None:
