@@ -33,6 +33,7 @@ from lib.control.rooms import (
 )
 from lib.control.tmux import PaneFacts, TmuxError
 from lib.control.tmux import TmuxAdapter
+from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control import cli, tui
 
 
@@ -791,10 +792,19 @@ class RoomTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
     def test_real_tmux_replacement_is_refused_by_atomic_attach_and_kill(self) -> None:
+        socket = f"asha-room-race-{uuid.uuid4().hex[:12]}"
+        self.enterContext(TmuxSocketReaper(socket))
         adapter = TmuxAdapter(
-            socket=f"asha-room-race-{uuid.uuid4().hex[:12]}",
+            socket=socket,
             config_file=Path("/dev/null"),
         )
+        returncode, _stdout, _stderr = adapter._run_status([
+            "list-commands", "new-session",
+        ])
+        if returncode != 0:
+            self.skipTest(
+                "isolated tmux sockets are unavailable in this execution sandbox"
+            )
         room_id = "44444444-1111-4111-8111-111111111111"
         project_marker = hashlib.sha256(b"novel-project").hexdigest()
         session = "asha-room-race"
@@ -867,10 +877,16 @@ class RoomTests(unittest.TestCase):
             encoding="utf-8",
         )
         launcher.chmod(0o700)
-        adapter = TmuxAdapter(
-            socket=f"asha-room-test-{uuid.uuid4().hex[:12]}",
-            config_file=Path("/dev/null"),
-        )
+        socket = f"asha-room-test-{uuid.uuid4().hex[:12]}"
+        self.enterContext(TmuxSocketReaper(socket))
+        adapter = TmuxAdapter(socket=socket, config_file=Path("/dev/null"))
+        returncode, _stdout, _stderr = adapter._run_status([
+            "list-commands", "new-session",
+        ])
+        if returncode != 0:
+            self.skipTest(
+                "isolated tmux sockets are unavailable in this execution sandbox"
+            )
         inherited = {
             "ROOM_PROBE": str(probe), "ASHA_SEAT": "1",
             "ASHA_COORDINATOR_LAUNCH": "stale", "ASHA_CONTROL_MANAGED": "1",

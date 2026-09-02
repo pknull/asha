@@ -24,6 +24,7 @@ from lib.control.cli import _run_popup, main as control_main
 from lib.control.config import load_config
 from lib.control.jj import DefaultBaseResolution, RepositoryFacts
 from lib.control.prepare import PrepareRequest
+from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control.store import TaskStore
 from lib.control.tmux import TmuxAdapter, TmuxError
 from lib.control import tui as tui_module
@@ -672,6 +673,7 @@ class RealTmuxPopupClientTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.socket = f"asha-popup-client-{os.getpid()}"
+        self.enterContext(TmuxSocketReaper(self.socket))
         self.prefix = ["tmux", "-L", self.socket, "-f", "/dev/null"]
         capability = subprocess.run(
             [*self.prefix, "list-commands", "display-popup"],
@@ -705,8 +707,6 @@ class RealTmuxPopupClientTests(unittest.TestCase):
             )
         self.pane = created.stdout.strip()
         self.adapter = TmuxAdapter(socket=self.socket, config_file="/dev/null")
-        self.addCleanup(subprocess.run, [*self.prefix, "kill-server"],
-                        capture_output=True, check=False)
 
     def test_caller_client_distinguishes_detached_from_real_control_mode_client(self) -> None:
         self.assertIsNone(self.adapter.caller_client(self.pane))
@@ -798,6 +798,12 @@ class RealTmuxPopupAttachTests(unittest.TestCase):
         clean_env.pop("TMUX_PANE", None)
         socket_args = [] if socket is None else ["-L", socket]
         prefix = ["tmux", *socket_args, "-f", "/dev/null"]
+        reaper = None
+        if socket is not None:
+            reaper = TmuxSocketReaper(
+                socket, environ=clean_env, runner=subprocess.run,
+            ).arm()
+            self.addCleanup(reaper.close)
 
         caller = subprocess.run(
             [*prefix, "new-session", "-d", "-P", "-F", "#{pane_id}",
@@ -805,7 +811,13 @@ class RealTmuxPopupAttachTests(unittest.TestCase):
             capture_output=True, text=True, check=False, env=clean_env,
         )
         if caller.returncode != 0:
-            self.fail(f"isolated caller creation failed: {caller.stderr.strip()}")
+            diagnostic = caller.stderr.strip()
+            if any(marker in diagnostic.casefold() for marker in (
+                "operation not permitted", "permission denied",
+                "read-only file system", "not supported",
+            )):
+                self.skipTest(f"isolated tmux session unavailable: {diagnostic}")
+            self.fail(f"isolated caller creation failed: {diagnostic}")
         master_fd = -1
         slave_fd = -1
         caller_client = None
@@ -920,10 +932,13 @@ class RealTmuxPopupAttachTests(unittest.TestCase):
                 target_after.stdout.strip(), f"{target_pane}\t{target_pid}\t0",
             )
         finally:
-            subprocess.run(
-                [*prefix, "kill-server"], capture_output=True, check=False,
-                env=clean_env,
-            )
+            if reaper is None:
+                subprocess.run(
+                    [*prefix, "kill-server"], capture_output=True, check=False,
+                    env=clean_env,
+                )
+            else:
+                reaper.close()
             if caller_client is not None:
                 try:
                     caller_client.wait(timeout=2)

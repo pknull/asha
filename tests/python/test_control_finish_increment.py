@@ -17,6 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from lib.control.config import load_config
+from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control.store import TaskStore
 from lib.control.transaction import CreationJournalStore
 from lib.control.orchestration.actions import build_action_document, submit_action
@@ -746,15 +747,19 @@ class RealControlFinishPtyTests(unittest.TestCase):
             "PATH": str(self.fake_root / "bin") + os.pathsep + self.env["PATH"],
         })
         self.socket = f"asha-finish-{os.getpid()}-{time.time_ns()}"
+        self.enterContext(TmuxSocketReaper(self.socket, environ=self.env))
+        capability = subprocess.run(
+            ["tmux", "-L", self.socket, "-f", "/dev/null",
+             "list-commands", "new-session"],
+            capture_output=True, text=True, check=False, env=self.env,
+        )
+        if capability.returncode != 0:
+            self.skipTest("isolated tmux sockets are unavailable in this execution sandbox")
         subprocess.run(
             ["tmux", "-L", self.socket, "-f", "/dev/null", "new-session", "-d",
              "-s", "anchor", "/bin/sleep", "120"],
             check=True, env=self.env,
         )
-        self.addCleanup(lambda: subprocess.run(
-            ["tmux", "-L", self.socket, "-f", "/dev/null", "kill-server"],
-            capture_output=True, check=False,
-        ))
         server_pid = subprocess.run(
             ["tmux", "-L", self.socket, "-f", "/dev/null", "display-message",
              "-p", "#{pid}"], capture_output=True, text=True, check=True,

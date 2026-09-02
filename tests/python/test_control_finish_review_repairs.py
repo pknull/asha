@@ -18,6 +18,7 @@ from lib.control.harness import HarnessError, launch_argv
 from lib.control.model import ModelError, validate_task
 from lib.control.process import bounded_process
 from lib.control.reconcile import Evidence, LiveAdapters, reconcile_task
+from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control.store import TaskStore
 from lib.control.text import prompt_character_allowed, terminal_text_is_complete
 from lib.control.tmux import PaneFacts, TmuxError, _validate_argv
@@ -358,6 +359,14 @@ class RealConfirmationCursesTests(unittest.TestCase):
         self.root.chmod(0o700)
         self.socket = f"asha-confirm-{os.getpid()}-{time.time_ns()}"
         self.env = {**os.environ, "TERM": "xterm-256color"}
+        self.enterContext(TmuxSocketReaper(self.socket, environ=self.env))
+        capability = subprocess.run(
+            ["tmux", "-L", self.socket, "-f", "/dev/null",
+             "list-commands", "new-session"],
+            capture_output=True, text=True, check=False, env=self.env,
+        )
+        if capability.returncode != 0:
+            self.skipTest("isolated tmux sockets are unavailable in this execution sandbox")
         self.helper = self.root / "confirm.py"
         repository = Path(__file__).resolve().parents[2]
         context = (
@@ -385,10 +394,6 @@ class RealConfirmationCursesTests(unittest.TestCase):
             "tmux", "-L", self.socket, "-f", "/dev/null", "new-session",
             "-d", "-s", "anchor", "/bin/sleep", "120",
         ], env=self.env, check=True)
-        self.addCleanup(lambda: subprocess.run(
-            ["tmux", "-L", self.socket, "-f", "/dev/null", "kill-server"],
-            env=self.env, capture_output=True, check=False,
-        ))
 
     def _launch(self, width: int, name: str) -> Path:
         result = self.root / f"{name}.result"

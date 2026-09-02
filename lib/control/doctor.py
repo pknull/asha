@@ -30,6 +30,7 @@ from .jj import (
 from .process import capture_bytes
 from .prepare import retained_recovery_guidance
 from .prepare import derive_repository_identity
+from .socket_reaper import TmuxSocketReaper
 from .store import StoreError, TaskStore, validate_task_paths
 from .tmux import TmuxAdapter, TmuxError
 from .transaction import CreationJournalStore, JournalError
@@ -113,25 +114,26 @@ def _tmux_probe(config) -> Probe:
         if re.fullmatch(r"tmux [0-9]+(?:\.[0-9]+)?[a-z]?", version) is None:
             return Probe("tmux", "unavailable", "tmux -V returned an unrecognized version")
         socket = f"asha-doctor-probe-{os.getpid()}"
-        probe = TmuxAdapter(
-            executable=executable, socket=socket, config_file=Path("/dev/null"),
-        )
-        returncode, popup, stderr = probe._run_status([
-            "list-commands", "display-popup",
-        ])
-        if returncode != 0:
-            return Probe(
-                "tmux", "unavailable",
-                "tmux display-popup capability probe failed: "
-                + _safe_detail(stderr.decode("utf-8", errors="replace")),
+        with TmuxSocketReaper(socket, executable=executable):
+            probe = TmuxAdapter(
+                executable=executable, socket=socket, config_file=Path("/dev/null"),
             )
-        output = popup.decode("utf-8")
-        if "display-popup" not in output:
-            return Probe("tmux", "unavailable", "tmux does not report display-popup support")
-        return Probe(
-            "tmux", "match",
-            f"{version} resolves and supports display-popup on an isolated no-server probe",
-        )
+            returncode, popup, stderr = probe._run_status([
+                "list-commands", "display-popup",
+            ])
+            if returncode != 0:
+                return Probe(
+                    "tmux", "unavailable",
+                    "tmux display-popup capability probe failed: "
+                    + _safe_detail(stderr.decode("utf-8", errors="replace")),
+                )
+            output = popup.decode("utf-8")
+            if "display-popup" not in output:
+                return Probe("tmux", "unavailable", "tmux does not report display-popup support")
+            return Probe(
+                "tmux", "match",
+                f"{version} resolves and supports display-popup on an isolated no-server probe",
+            )
     except (TmuxError, UnicodeError, OSError) as exc:
         return Probe(
             "tmux", "unavailable",
