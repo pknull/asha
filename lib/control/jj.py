@@ -62,6 +62,9 @@ MAX_WORKSPACE_CONFLICT_BYTES = 64 * 1024
 MAX_BASELINE_DIVERGENCE_COMMITS = 5
 MAX_BASELINE_DIVERGENCE_SUMMARY = 120
 MAX_BASELINE_DIVERGENCE_BYTES = 64 * 1024
+MAX_REMOTE_BOOKMARKS = 1024
+MAX_REMOTE_BOOKMARKS_DISPLAYED = 8
+MAX_REMOTE_BOOKMARK_NAME_BYTES = 300
 TRUSTED_GIT_EXECUTABLE = "/usr/bin/git"
 TRUSTED_SSH_EXECUTABLE = "/usr/bin/ssh"
 _EXACT_GIT_CONFIG = (
@@ -1160,6 +1163,24 @@ def colocated_sync_remediation(
     if len(root_text) > root_budget:
         root_text = root_text[:root_budget - 3] + "..."
     return prefix + middle + root_text + suffix
+
+
+def untracked_remote_bookmark_remediation(
+    names: Sequence[str], *, remote: str = "origin",
+) -> str | None:
+    """Bound one read-only tracking problem and its operator-owned remedy."""
+    if not names:
+        return None
+    shown = ", ".join(
+        _bounded_display_text(name, MAX_REMOTE_BOOKMARK_NAME_BYTES)
+        for name in names[:MAX_REMOTE_BOOKMARKS_DISPLAYED]
+    )
+    if len(names) > MAX_REMOTE_BOOKMARKS_DISPLAYED:
+        shown += f", ... (+{len(names) - MAX_REMOTE_BOOKMARKS_DISPLAYED} more)"
+    return (
+        f"untracked remote bookmarks at {remote}: {shown}; remediate with: "
+        f"jj bookmark track NAME --remote={remote}"
+    )
 
 
 class JjAdapter:
@@ -2345,6 +2366,44 @@ class JjAdapter:
                 "--base main, or add a remote."
             )
         return resolved
+
+    def untracked_remote_bookmarks(
+        self, source: Path, *, remote: str = "origin",
+    ) -> tuple[str, ...]:
+        """List untracked bookmarks remembered for one remote without mutation.
+
+        ``--ignore-working-copy`` is load-bearing: this delivery preflight must
+        not snapshot the source merely to explain why a later push would fail.
+        The template emits only untracked remote refs, and the parser keeps the
+        result bounded before any name reaches a diagnostic.
+        """
+        if _GIT_REMOTE_NAME.fullmatch(remote) is None:
+            raise JjError("remote bookmark inspection requires a valid remote name")
+        output = self._run([
+            "-R", str(source), "--ignore-working-copy", "--at-operation=@",
+            "bookmark", "list",
+            "--remote", f"exact:{remote}", "--template",
+            'if(present && !tracked, name ++ "\\n")',
+        ])
+        names: list[str] = []
+        for line in output.splitlines():
+            if (
+                not line
+                or len(line.encode("utf-8")) > MAX_REMOTE_BOOKMARK_NAME_BYTES
+                or any(
+                    unicodedata.category(character) in {"Cc", "Cf", "Cs"}
+                    for character in line
+                )
+            ):
+                raise JjError("jj returned a malformed remote bookmark name")
+            names.append(line)
+            if len(names) > MAX_REMOTE_BOOKMARKS:
+                raise JjError(
+                    f"remote bookmark inspection exceeds {MAX_REMOTE_BOOKMARKS} entries"
+                )
+        if len(set(names)) != len(names):
+            raise JjError("jj returned duplicate remote bookmark names")
+        return tuple(sorted(names))
 
     def require_visible_commit(self, source: Path, commit_id: str) -> None:
         """Confirm an already-resolved full commit ID is visible to this jj repo."""

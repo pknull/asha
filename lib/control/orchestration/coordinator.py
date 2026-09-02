@@ -469,6 +469,46 @@ def show(
     }
 
 
+def _begin_wait(
+    store: InitiativeStore, initiative_id: str, current: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Mark the generation as observably armed without writing an event."""
+    with store.transaction_lock(initiative_id):
+        latest = store.read_coordinator(initiative_id, current["coordinator_id"])
+        if (
+            latest["generation"] != current["generation"]
+            or latest["state"] not in COORDINATOR_LIVE_STATES
+        ):
+            raise CoordinatorError("coordinator generation changed before its wait armed")
+        if latest["state"] == "waiting":
+            return latest
+        if latest["state"] != "active":
+            raise CoordinatorError(
+                f"coordinator state {latest['state']} cannot arm an event watch"
+            )
+        waiting = copy.deepcopy(latest)
+        waiting.update({"state": "waiting", "updated_at": _now()})
+        store.save_coordinator(
+            initiative_id, waiting, expected_digest=record_digest(latest),
+        )
+        return waiting
+
+
+def _end_wait(
+    store: InitiativeStore, initiative_id: str, current: Mapping[str, Any],
+) -> None:
+    """Return this generation to active if it still owns the armed watch."""
+    with store.transaction_lock(initiative_id):
+        latest = store.read_coordinator(initiative_id, current["coordinator_id"])
+        if latest["generation"] != current["generation"] or latest["state"] != "waiting":
+            return
+        active = copy.deepcopy(latest)
+        active.update({"state": "active", "updated_at": _now()})
+        store.save_coordinator(
+            initiative_id, active, expected_digest=record_digest(latest),
+        )
+
+
 def wait(
     store: InitiativeStore,
     initiative: Mapping[str, Any],
@@ -489,79 +529,83 @@ def wait(
     if after < 0 or after > tail:
         raise CoordinatorError(f"cursor {after} is outside the durable event tail {tail}")
     budget = min(float(timeout), float(MAX_COORDINATOR_WAIT_SECONDS))
-    segment = float(store.config.coordinator_wait_seconds)
-    started = time.monotonic()
-    deadline = started + budget
-    segment_deadline = min(deadline, started + segment)
-    ended = (
-        "terminal-initiative"
-        if initial["state"] in INITIATIVE_TERMINAL_STATES
-        else None
-    )
-    events = (
-        []
-        if ended is not None
-        else store.list_events_snapshot(initiative_id, after=after)
-    )
-    armed_watch: dict[str, Any] | None = None
-    if not events and ended is None and budget > 0:
-        watch_deadline = (
-            datetime.now(timezone.utc) + timedelta(seconds=budget)
-        ).isoformat(timespec="microseconds").replace("+00:00", "Z")
-        current, armed_watch = _arm_watch(
-            store, initiative_id, current, after, watch_deadline,
-        )
+    current = _begin_wait(store, initiative_id, current)
     try:
-        while not events and ended is None:
-            now = time.monotonic()
-            remaining = min(deadline, segment_deadline) - now
-            if remaining <= 0:
-                if now >= deadline:
-                    break
-                try:
-                    candidate = require_live_coordinator(store, initiative_id)
-                    require_anchored_caller(candidate, env, tmux)
-                except CoordinatorError:
-                    ended = "stale-generation"
-                    break
-                if (
-                    candidate["coordinator_id"] != current["coordinator_id"]
-                    or candidate["generation"] != current["generation"]
-                ):
-                    ended = "stale-generation"
-                    break
-                current = candidate
-                head = store.peek(initiative_id)
-                if head["state"] in INITIATIVE_TERMINAL_STATES:
-                    ended = "terminal-initiative"
-                    break
-                segment_deadline = min(deadline, now + segment)
-                continue
-            time.sleep(min(_WAIT_TICK_SECONDS, remaining))
-            events = store.list_events_snapshot(initiative_id, after=after)
-    finally:
-        newest = None if not events else events[-1]["sequence"]
-        if armed_watch is not None:
-            _finish_watch(
-                store, initiative_id, current, armed_watch, newest=newest,
+        segment = float(store.config.coordinator_wait_seconds)
+        started = time.monotonic()
+        deadline = started + budget
+        segment_deadline = min(deadline, started + segment)
+        ended = (
+            "terminal-initiative"
+            if initial["state"] in INITIATIVE_TERMINAL_STATES
+            else None
+        )
+        events = (
+            []
+            if ended is not None
+            else store.list_events_snapshot(initiative_id, after=after)
+        )
+        armed_watch: dict[str, Any] | None = None
+        if not events and ended is None and budget > 0:
+            watch_deadline = (
+                datetime.now(timezone.utc) + timedelta(seconds=budget)
+            ).isoformat(timespec="microseconds").replace("+00:00", "Z")
+            current, armed_watch = _arm_watch(
+                store, initiative_id, current, after, watch_deadline,
             )
-        elif newest is not None:
-            _advance_cursor(store, initiative_id, current, newest)
-    head = store.peek(initiative_id)
-    payload = {
-        "contract": WAIT_CONTRACT,
-        "initiative_id": initiative_id,
-        "coordinator_id": current["coordinator_id"],
-        "generation": current["generation"],
-        "after": after,
-        "events": events,
-        "last_event_sequence": head["last_event_sequence"],
-        "state_revision": head["state_revision"],
-        "timed_out": not events and ended is None,
-    }
-    if ended is not None:
-        payload["ended"] = ended
-    return payload
+        try:
+            while not events and ended is None:
+                now = time.monotonic()
+                remaining = min(deadline, segment_deadline) - now
+                if remaining <= 0:
+                    if now >= deadline:
+                        break
+                    try:
+                        candidate = require_live_coordinator(store, initiative_id)
+                        require_anchored_caller(candidate, env, tmux)
+                    except CoordinatorError:
+                        ended = "stale-generation"
+                        break
+                    if (
+                        candidate["coordinator_id"] != current["coordinator_id"]
+                        or candidate["generation"] != current["generation"]
+                    ):
+                        ended = "stale-generation"
+                        break
+                    current = candidate
+                    head = store.peek(initiative_id)
+                    if head["state"] in INITIATIVE_TERMINAL_STATES:
+                        ended = "terminal-initiative"
+                        break
+                    segment_deadline = min(deadline, now + segment)
+                    continue
+                time.sleep(min(_WAIT_TICK_SECONDS, remaining))
+                events = store.list_events_snapshot(initiative_id, after=after)
+        finally:
+            newest = None if not events else events[-1]["sequence"]
+            if armed_watch is not None:
+                _finish_watch(
+                    store, initiative_id, current, armed_watch, newest=newest,
+                )
+            elif newest is not None:
+                _advance_cursor(store, initiative_id, current, newest)
+        head = store.peek(initiative_id)
+        payload = {
+            "contract": WAIT_CONTRACT,
+            "initiative_id": initiative_id,
+            "coordinator_id": current["coordinator_id"],
+            "generation": current["generation"],
+            "after": after,
+            "events": events,
+            "last_event_sequence": head["last_event_sequence"],
+            "state_revision": head["state_revision"],
+            "timed_out": not events and ended is None,
+        }
+        if ended is not None:
+            payload["ended"] = ended
+        return payload
+    finally:
+        _end_wait(store, initiative_id, current)
 
 
 def checkpoint(

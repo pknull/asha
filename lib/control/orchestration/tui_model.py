@@ -5,8 +5,12 @@ from __future__ import annotations
 import copy
 import json
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from typing import Any, Iterable
 from ..tui_style import display_state, rail_tiers
+
+
+PARKED_COORDINATOR_ATTENTION_SECONDS = 300
 
 
 class InitiativeTreeModel:
@@ -167,6 +171,8 @@ def _attention(view: dict[str, Any]) -> str:
         return "salvage approval"
     if state == "paused":
         return "paused"
+    if parked_ready_nodes(view):
+        return "coordinator parked"
     failed = sum(1 for node in view.get("nodes", []) if node.get("state") == "failed")
     if failed:
         return f"{failed} failed"
@@ -255,6 +261,63 @@ def _latest_attempt(view: dict[str, Any], node_id: str) -> dict[str, Any] | None
     return attempts[-1] if attempts else None
 
 
+def _utc_timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.endswith("Z"):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00")
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo == timezone.utc else None
+
+
+def parked_ready_nodes(
+    view: dict[str, Any], *, now: datetime | None = None,
+) -> tuple[str, ...]:
+    """Ready zero-attempt nodes whose live coordinator is no longer watching.
+
+    ``waiting`` is the durable armed-watch state. ``active`` means the wait
+    command returned; only after the named grace period does that parked state
+    become human-actionable. Recent coordinator-authored journal activity also
+    refreshes the grace period without trusting worker prose.
+    """
+    coordinator = view.get("coordinator")
+    if not isinstance(coordinator, dict) or view.get("coordinator_live") is False:
+        return ()
+    state = coordinator.get("state")
+    if state not in {"active", "waiting"}:
+        return ()
+    activity = _utc_timestamp(coordinator.get("updated_at"))
+    for event in view.get("events", []) or []:
+        if event.get("actor_kind") != "coordinator":
+            continue
+        observed = _utc_timestamp(event.get("recorded_at"))
+        if observed is not None and (activity is None or observed > activity):
+            activity = observed
+    if activity is None:
+        return ()
+    observed_now = now or datetime.now(timezone.utc)
+    if observed_now.tzinfo != timezone.utc:
+        raise ValueError("parked coordinator observation time must be UTC")
+    age = (observed_now - activity).total_seconds()
+    if state == "waiting":
+        # A wait cannot remain armed past the coordinator command's hard
+        # ceiling. This bounded lease keeps a killed wait process from leaving
+        # a generation falsely healthy forever.
+        from .coordinator import MAX_COORDINATOR_WAIT_SECONDS
+        if age < MAX_COORDINATOR_WAIT_SECONDS + PARKED_COORDINATOR_ATTENTION_SECONDS:
+            return ()
+    elif age < PARKED_COORDINATOR_ATTENTION_SECONDS:
+        return ()
+    attempted = {
+        item.get("node_id") for item in view.get("attempts", []) or []
+    }
+    return tuple(sorted(
+        node["node_id"] for node in view.get("nodes", []) or []
+        if node.get("state") == "ready" and node.get("node_id") not in attempted
+    ))
+
+
 def _pending_directives(view: dict[str, Any]) -> list[dict[str, Any]]:
     pending = []
     for action in view.get("actions", []) or []:
@@ -287,6 +350,7 @@ def attention_items(
             "slug": initiative.get("slug", ""),
         }
         state = initiative.get("state")
+        parked = set(parked_ready_nodes(view))
         if state == "awaiting-plan-approval":
             plan = view.get("plan") or {}
             items.append({
@@ -302,6 +366,21 @@ def attention_items(
                     "resolution": f"asha initiative approve-salvage {initiative['initiative_id']} --request {approval.get('request_id', '?')}",
                 })
         for node in view.get("nodes", []) or []:
+            if node["node_id"] in parked:
+                items.append({
+                    **identity, "kind": "coordinator-parked",
+                    "node_id": node["node_id"],
+                    "detail": (
+                        f"node {node['node_id']} is ready with zero attempts and "
+                        f"no coordinator activity for at least "
+                        f"{PARKED_COORDINATOR_ATTENTION_SECONDS} seconds"
+                    ),
+                    "resolution": (
+                        f"asha initiative coordinator attach "
+                        f"{initiative['initiative_id']}; resume the event watch "
+                        "or launch a replacement coordinator"
+                    ),
+                })
             if node.get("state") == "needs-input":
                 items.append({
                     **identity, "kind": "needs-input", "node_id": node["node_id"],
@@ -411,6 +490,7 @@ class InitiativesScreen:
                 rail=tuple(rail_tiers(view)), display=display_state(view),
             )
             children: list[InitiativeRow] = []
+            parked = set(parked_ready_nodes(view))
             if ("initiative", initiative_id) in self.expanded:
                 for node in sorted(view.get("nodes", []), key=lambda item: item["node_id"]):
                     attempt = _latest_attempt(view, node["node_id"])
@@ -419,7 +499,11 @@ class InitiativesScreen:
                         "node", 1, node["node_id"], initiative_id,
                         node.get("goal", node["node_id"]), node.get("state", "?"),
                         node.get("type", "?"),
-                        attention=worker_attention if node.get("state") != "needs-input" else "needs input",
+                        attention=(
+                            "coordinator parked" if node["node_id"] in parked
+                            else worker_attention if node.get("state") != "needs-input"
+                            else "needs input"
+                        ),
                         worker=worker, task_id=task_id, observed_at=observed,
                     )
                     children.append(node_row)

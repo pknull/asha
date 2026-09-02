@@ -1286,6 +1286,9 @@ def _start_command_inner(args: list[str], env: Mapping[str, str]) -> int:
                     existing_jj=not selection.plain_git,
                     request=preflight_request,
                 )
+                diagnostics = getattr(pre_enable_plan, "diagnostics", ())
+                for diagnostic in diagnostics if isinstance(diagnostics, tuple) else ():
+                    print(f"Delivery preflight: {diagnostic}", file=sys.stderr)
                 revalidate_plain_git_pre_enable_plan(pre_enable_plan, jj=jj)
             except PreparationPrerequisiteError as exc:
                 offer = capture_prerequisite_offer(config, exc)

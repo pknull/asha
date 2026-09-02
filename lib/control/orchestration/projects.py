@@ -3,7 +3,7 @@
 A declared workspace manifest (`.asha/workspace.json` at or above the start
 directory) is the index when present. Otherwise the index is a bounded,
 read-only discovery of jj-colocated Asha projects (Memory v2 project plus a
-colocated jj/git pair) at the start directory and its immediate children.
+colocated jj/git pair) within the bounded discovery depth.
 Nothing here writes, touches jj, or infers identity beyond what the project's
 own published configuration states.
 """
@@ -21,6 +21,7 @@ from ..context import detect_workspace, read_published_snapshot, validate_manife
 PROJECT_LIST_CONTRACT = "asha.orchestration-project-list.v1"
 MAX_DISCOVERED_DIRECTORIES = 512
 MAX_DEPTH = 3
+DEFAULT_DEPTH = MAX_DEPTH
 
 
 class ProjectIndexError(ValueError):
@@ -67,10 +68,14 @@ def _project_id(root: Path) -> str | None:
     return project_id if isinstance(project_id, str) and project_id else None
 
 
-def _entry(root: Path, *, name: str, role: str | None, declared: bool) -> dict[str, Any]:
+def _entry(
+    root: Path, *, name: str, role: str | None, declared: bool,
+    relative_path: str,
+) -> dict[str, Any]:
     return {
         "name": display_name(root, name),
         "directory": name,
+        "relative_path": relative_path,
         "root": str(root),
         "project_id": _project_id(root),
         "role": role,
@@ -85,14 +90,23 @@ def _declared_entries(workspace_root: Path, manifest: Mapping[str, Any]) -> list
     for item in manifest.get("repositories", []):
         root = (workspace_root / item["path"]).resolve()
         role = item.get("role")
-        entries.append(_entry(root, name=Path(item["path"]).name, role=role if isinstance(role, str) else None, declared=True))
+        entries.append(_entry(
+            root, name=Path(item["path"]).name,
+            role=role if isinstance(role, str) else None, declared=True,
+            relative_path=Path(item["path"]).as_posix(),
+        ))
     return entries
 
 
 def _discovered_entries(start: Path, depth: int) -> list[dict[str, Any]]:
     found: list[dict[str, Any]] = []
     if _is_asha_project(start):
-        found.append(_entry(start, name=start.name, role=None, declared=False))
+        start_entry = _entry(
+            start, name=start.name, role=None, declared=False, relative_path=".",
+        )
+        found.append(start_entry)
+        if start_entry["jj_colocated"]:
+            return found
     queue: deque[tuple[Path, int]] = deque([(start, 0)])
     scanned = 0
     while queue:
@@ -113,7 +127,18 @@ def _discovered_entries(start: Path, depth: int) -> list[dict[str, Any]]:
                     f"discovery stopped after {MAX_DISCOVERED_DIRECTORIES} directories; use --root or a workspace manifest"
                 )
             if _is_asha_project(child):
-                found.append(_entry(child, name=child.name, role=None, declared=False))
+                entry = _entry(
+                    child, name=child.name, role=None, declared=False,
+                    relative_path=child.relative_to(start).as_posix(),
+                )
+                found.append(entry)
+                # A non-colocated Asha directory is a project-shaped
+                # container, not a repository accepted by `create --repo`.
+                # Keep walking through it so nested accepted repositories do
+                # not disappear from the index. A real colocated repository
+                # remains a discovery boundary, avoiding a scan of its tree.
+                if not entry["jj_colocated"]:
+                    queue.append((child, level + 1))
             else:
                 queue.append((child, level + 1))
     return sorted(found, key=lambda item: (item["name"], item["root"]))
@@ -129,7 +154,9 @@ def _matches(entry: Mapping[str, Any], text: str) -> bool:
     }
 
 
-def list_projects(start: Path, *, depth: int = 1, match: str | None = None) -> dict[str, Any]:
+def list_projects(
+    start: Path, *, depth: int = DEFAULT_DEPTH, match: str | None = None,
+) -> dict[str, Any]:
     """Build the closed project-list payload for `start`."""
     if not 1 <= depth <= MAX_DEPTH:
         raise ProjectIndexError(f"depth must be between 1 and {MAX_DEPTH}")
@@ -214,7 +241,7 @@ def resolve_roots(
 
 
 def list_projects_across(
-    roots: list[str], *, depth: int = 1, match: str | None = None,
+    roots: list[str], *, depth: int = DEFAULT_DEPTH, match: str | None = None,
     source_of_roots: str = "argument",
 ) -> dict[str, Any]:
     """Index several roots into one closed payload, keeping each root's group.
@@ -251,6 +278,6 @@ def list_projects_across(
 
 
 __all__ = [
-    "PROJECT_LIST_CONTRACT", "ProjectIndexError", "configured_roots", "display_name",
+    "DEFAULT_DEPTH", "PROJECT_LIST_CONTRACT", "ProjectIndexError", "configured_roots", "display_name",
     "list_projects", "list_projects_across", "resolve_roots",
 ]

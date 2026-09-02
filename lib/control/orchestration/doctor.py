@@ -150,19 +150,19 @@ def _suspect_approvals(
 
 
 def _coordinator_cursor_probe(config: OrchestrationConfig) -> Probe:
-    """Name live coordinators whose durable cursor is behind their journal.
+    """Name coordinators behind their journal or parked before ready work.
 
-    A coordinator only observes events while its own wait is armed, and the
-    Stop-hook wake channel fires on that coordinator's turn boundary, so a
-    session that has already parked cannot be reached by the plane at all
-    (#86).  A decision it is blocked on can therefore sit signed and unseen.
-    Nothing here delivers anything -- delivery is the chair's relay -- but a
-    coordinator parked behind its journal stops being invisible.
+    The durable ``waiting`` state distinguishes an armed watch from an
+    ``active`` generation whose wait returned. The latter becomes suspect only
+    when a zero-attempt ready node outlives the bounded activity threshold.
+    Nothing here delivers or repairs anything.
     """
     from .model import COORDINATOR_LIVE_STATES, INITIATIVE_TERMINAL_STATES
     from .store import InitiativeStore
+    from .tui_model import parked_ready_nodes
 
     behind: list[str] = []
+    parked: list[str] = []
     live = 0
     try:
         store = InitiativeStore(config)
@@ -184,24 +184,37 @@ def _coordinator_cursor_probe(config: OrchestrationConfig) -> Probe:
                 )
                 if deadline > datetime.now(timezone.utc):
                     acknowledged = max(acknowledged, armed_watch["after"])
-            if acknowledged < tail:
+            events = store.list_events_snapshot(initiative_id)
+            if coordinator["state"] != "waiting" and acknowledged < tail:
                 behind.append(
                     f"{initiative_id} coordinator cursor {acknowledged} is "
                     f"{tail - acknowledged} event(s) behind tail {tail}"
+                )
+            for node_id in parked_ready_nodes({
+                "initiative": initiative,
+                "coordinator": coordinator,
+                "nodes": store.list_nodes_snapshot(initiative_id),
+                "attempts": store.list_attempts_snapshot(initiative_id),
+                "events": events,
+            }):
+                parked.append(
+                    f"{initiative_id} node {node_id} is ready with zero attempts "
+                    "and its coordinator is parked"
                 )
     except (OSError, ValueError) as exc:
         return Probe(
             "coordinator-cursor", "unavailable",
             f"live coordinators could not be read: {exc}"[:400],
         )
-    if behind:
+    findings = [*parked, *behind]
+    if findings:
         return Probe(
             "coordinator-cursor", "mismatch",
-            "coordinators may not have observed decided events: "
-            + "; ".join(behind[:_MAX_BEHIND_COORDINATORS])
+            "coordinators need attention: "
+            + "; ".join(findings[:_MAX_BEHIND_COORDINATORS])
             + (
-                f" (+{len(behind) - _MAX_BEHIND_COORDINATORS} more)"
-                if len(behind) > _MAX_BEHIND_COORDINATORS else ""
+                f" (+{len(findings) - _MAX_BEHIND_COORDINATORS} more)"
+                if len(findings) > _MAX_BEHIND_COORDINATORS else ""
             ),
         )
     return Probe(
