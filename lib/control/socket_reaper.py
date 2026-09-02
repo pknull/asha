@@ -11,6 +11,7 @@ import socket
 import subprocess
 import time
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from types import FrameType
 from typing import Any
@@ -20,6 +21,15 @@ _ASHA_SOCKET = re.compile(r"asha-[A-Za-z0-9][A-Za-z0-9._-]{0,122}", re.ASCII)
 _TERMINATING_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 _LIVENESS_ATTEMPTS = 20
 _FORCE_KILL_ATTEMPT = _LIVENESS_ATTEMPTS // 2
+
+
+@dataclass(frozen=True, slots=True)
+class SocketOwner:
+    """One retained Linux process identity holding an exact socket inode."""
+
+    pid: int
+    uid: int
+    start_ticks: int
 
 
 def is_asha_socket_name(value: Any) -> bool:
@@ -75,14 +85,27 @@ def unix_socket_is_live(
     return _socket_connects(path)
 
 
-def unix_socket_owner_pids(
+def _process_identity(process_dir: Path) -> SocketOwner:
+    """Read the procfs identity needed to distinguish reuse of one PID."""
+    metadata = process_dir.stat()
+    raw = (process_dir / "stat").read_text(encoding="utf-8")
+    fields = raw[raw.rfind(")") + 2:].split()
+    start_ticks = int(fields[19])
+    if start_ticks < 0:
+        raise ValueError("process start ticks are invalid")
+    return SocketOwner(
+        pid=int(process_dir.name), uid=metadata.st_uid, start_ticks=start_ticks,
+    )
+
+
+def unix_socket_owners(
     path: Path,
     *,
     proc_net_unix: Path = Path("/proc/net/unix"),
     proc_root: Path = Path("/proc"),
     uid: int | None = None,
-) -> tuple[int, ...]:
-    """Return same-user processes holding the socket bound at *path*.
+) -> tuple[SocketOwner, ...]:
+    """Return same-user process identities holding the socket at *path*.
 
     The kernel socket inode, rather than the unrelated filesystem inode, joins
     ``/proc/net/unix`` to process file descriptors.  An empty tuple is the
@@ -104,7 +127,7 @@ def unix_socket_owner_pids(
         return ()
 
     expected_uid = os.getuid() if uid is None else uid
-    owners: set[int] = set()
+    owners: set[SocketOwner] = set()
     try:
         entries = tuple(proc_root.iterdir())
     except OSError:
@@ -116,11 +139,13 @@ def unix_socket_owner_pids(
         if pid <= 1 or pid == os.getpid():
             continue
         try:
-            if process_dir.stat().st_uid != expected_uid:
+            identity = _process_identity(process_dir)
+            if identity.uid != expected_uid:
                 continue
             descriptors = tuple((process_dir / "fd").iterdir())
-        except OSError:
+        except (OSError, ValueError, IndexError):
             continue
+        owns_socket = False
         for descriptor in descriptors:
             try:
                 target = os.readlink(descriptor)
@@ -128,28 +153,89 @@ def unix_socket_owner_pids(
                 continue
             if target.startswith("socket:[") and target.endswith("]"):
                 if target[8:-1] in inodes:
-                    owners.add(pid)
+                    owns_socket = True
                     break
-    return tuple(sorted(owners))
+        if not owns_socket:
+            continue
+        try:
+            # The process can exit while its descriptors are being inspected.
+            # Retain an identity only if the same process still occupies the
+            # PID after the exact socket descriptor has been observed.
+            if _process_identity(process_dir) == identity:
+                owners.add(identity)
+        except (OSError, ValueError, IndexError):
+            continue
+    return tuple(sorted(owners, key=lambda owner: owner.pid))
+
+
+def unix_socket_owner_pids(
+    path: Path,
+    *,
+    proc_net_unix: Path = Path("/proc/net/unix"),
+    proc_root: Path = Path("/proc"),
+    uid: int | None = None,
+) -> tuple[int, ...]:
+    """Return same-user owner PIDs for compatibility with older callers."""
+    return tuple(
+        owner.pid for owner in unix_socket_owners(
+            path, proc_net_unix=proc_net_unix, proc_root=proc_root, uid=uid,
+        )
+    )
+
+
+def _signal_process_owner(
+    owner: SocketOwner, signum: int, *, proc_root: Path = Path("/proc"),
+) -> None:
+    """Signal the retained process instance without a PID-reuse race."""
+    if owner.uid != os.getuid():
+        return
+    descriptor: int | None = None
+    try:
+        # A pidfd pins the process instance even if it exits and its numeric PID
+        # is reused before the signal.  Revalidation after opening the pidfd
+        # proves that it was opened for the identity observed holding the socket.
+        descriptor = os.pidfd_open(owner.pid)
+        if _process_identity(proc_root / str(owner.pid)) != owner:
+            return
+        signal.pidfd_send_signal(descriptor, signum)
+    except (AttributeError, OSError, ValueError, IndexError):
+        # Kernels or Python builds without pidfds fail closed: falling back to
+        # os.kill would reintroduce the exact PID-reuse race this path prevents.
+        return
+    finally:
+        if descriptor is not None:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def _signal_socket_owners(
     path: Path,
     signum: int,
     *,
-    owner_probe: Callable[[Path], Iterable[int]],
-    process_signaler: Callable[[int, int], Any],
+    owner_probe: Callable[[Path], Iterable[SocketOwner]],
+    process_signaler: Callable[[SocketOwner, int], Any],
 ) -> None:
     """Best-effort direct termination of only the exact socket's owners."""
     try:
         owners = tuple(owner_probe(path))
     except BaseException:
         return
-    for pid in set(owners):
-        if type(pid) is not int or pid <= 1 or pid == os.getpid():
+    for owner in set(owners):
+        if (
+            not isinstance(owner, SocketOwner)
+            or owner.pid <= 1
+            or owner.pid == os.getpid()
+        ):
             continue
         try:
-            process_signaler(pid, signum)
+            # The owner may have closed the socket, exited, or had its PID
+            # reused since the first procfs walk.  Require the exact retained
+            # identity to still own the socket immediately before signaling.
+            if owner not in set(owner_probe(path)):
+                continue
+            process_signaler(owner, signum)
         except BaseException:
             # A vanished process and a denied signal are both resolved by the
             # authoritative liveness proof below.  Teardown must never escape.
@@ -165,8 +251,8 @@ def reap_isolated_tmux_socket(
     uid: int | None = None,
     runner: Callable[..., Any] = subprocess.run,
     liveness_probe: Callable[[Path], bool] = unix_socket_is_live,
-    owner_probe: Callable[[Path], Iterable[int]] = unix_socket_owner_pids,
-    process_signaler: Callable[[int, int], Any] = os.kill,
+    owner_probe: Callable[[Path], Iterable[SocketOwner]] = unix_socket_owners,
+    process_signaler: Callable[[SocketOwner, int], Any] = _signal_process_owner,
     sleeper: Callable[[float], None] = time.sleep,
 ) -> bool:
     """Kill, verify, and unlink one private socket; never raise from teardown.
