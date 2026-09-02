@@ -36,7 +36,7 @@ asha initiative pause ID [--json]
 asha initiative resume ID [--json]
 asha initiative stop ID --attempt ATTEMPT [--json]
 asha initiative cancel ID --node NODE [--json]
-asha initiative finalize ID --outcome partial|failed --reason TEXT [--json]
+asha initiative finalize ID --outcome partial|failed --reason TEXT [--cancel-pending] [--json]
 asha initiative archive ID [--json]
 asha initiative unarchive ID [--json]
 asha initiative record-integration ID --bundle BUNDLE_ID [--composed-verification] [--json]
@@ -47,9 +47,10 @@ asha initiative show ID [--json]
 asha initiative events ID [--after SEQUENCE] [--json]
 asha initiative reconcile ID [--json]
 asha initiative storage ID [--json]
-asha initiative snapshot ID --json
+asha initiative snapshot ID [--json]
 asha initiative doctor [--json]
 asha initiative projects [--root DIR]... [--depth N] [--match TEXT] [--json]
+asha initiative attention [--json]
 asha task report --file PATH [--json]
 asha task ingest CONTROL_TASK_ID|INGESTION_ID [--json]
 asha task result CONTROL_TASK_ID [--json]
@@ -342,10 +343,17 @@ anchor pane, the pane still holds the same process identity, and the caller
 descends from it. `reconcile` marks a live generation `stale` when its anchor
 pane or process is gone (`reconciliation-conflict` event); stale keeps running
 workers and dispatches nothing until a new claim fences it.
+The one release exception is operator cleanup after the initiative reaches a
+terminal state: an operator outside the anchor may mark the generation exited
+and reap the still-owned coordinator pane through Control's tmux adapter.
+Non-terminal initiatives retain the anchor-pane refusal.
 
 `wait --after SEQUENCE --timeout SECONDS` polls `list_events_snapshot` without
-a lock and writes no events; when events arrive it advances this generation's
-durable `event_cursor` once. An explicit timeout is honored up to the hard
+a lock and writes no events. While blocked it retains an optional
+`armed_watch: {after, deadline}` on the coordinator record, then clears the
+watch and advances the durable `event_cursor` when events arrive. Doctor uses
+the greater of the durable cursor and a non-expired watch's acknowledged
+`after` position. An explicit timeout is honored up to the hard
 3600-second ceiling; without one, the timeout remains
 `coordinator_wait_seconds`. That configured interval also segments longer
 waits so each boundary re-proves the live anchored generation and nonterminal
@@ -808,7 +816,11 @@ actions use digest-guarded transitions. Multi-record mutations hold the
 reentrant initiative lock.
 
 All payloads below are closed. Adding a field requires a new contract version,
-except the explicitly conditional `skipped` member on the list payload.
+except the explicitly conditional `skipped` member on the list payload and the
+operator-observation additions (`bundles`, `reaped_pane_id`, and
+`cancelled_node_ids`) described below. Coordinator v1 records also accept the
+optional transient `armed_watch` described above so pre-existing generations
+remain readable.
 
 One retained Increment 1 form of `asha.orchestration-plan.v1` predates
 controller verification command authority: every verification gate has exactly
@@ -828,22 +840,23 @@ remain available where their ordinary lifecycle rules permit containment.
 | `plan`, `plan --show` | stored `asha.orchestration-plan.v1` record |
 | `approve` | `asha.orchestration-plan-approval.v1` `{contract, initiative, plan, approval}` |
 | `reject` | `asha.orchestration-plan-rejection.v1` `{contract, initiative, plan_digest, reason}` |
-| `activate`, `dispatch`, `pause`, `resume`, `stop`, `cancel`, `finalize`, `archive`, `unarchive`, `action` | stored `asha.orchestration-action.v1` journal record |
+| `activate`, `dispatch`, `pause`, `resume`, `stop`, `cancel`, `finalize`, `archive`, `unarchive`, `action` | stored `asha.orchestration-action.v1` journal record; `finalize --cancel-pending` first submits one ordinary operator `cancel-node` action per non-terminal node and adds `cancelled_node_ids` to the returned final action |
 | `approve-salvage` | `asha.orchestration-salvage-approval.v1` `{contract, initiative_id, approval}` |
 | `record-integration` | stored `asha.orchestration-event.v1` `seal-integration-recorded`; bundle, abandonment, and fallback forms are mutually exclusive |
 | `task report` | `asha.orchestration-result-publication-receipt.v1` `{contract, publication_id, result_id, phase, refusal}` |
 | `task result` | `asha.orchestration-task-results.v1` `{contract, task_id, results}` |
 | `task seal` | `asha.orchestration-task-seal.v1` `{contract, seal, verification}` |
 | `list` | `asha.orchestration-initiative-list.v1` `{contract, initiatives, skipped?}` |
-| `show` | `asha.orchestration-initiative-show.v1` `{contract, initiative, graph, action_outcomes, gates, limits, evidence_counts, node_reconciliation, superseded_nodes}` |
+| `show` | `asha.orchestration-initiative-show.v1` `{contract, initiative, graph, action_outcomes, bundles, gates, limits, evidence_counts, node_reconciliation, superseded_nodes}` |
 | `events` | `asha.orchestration-event-list.v1` `{contract, initiative_id, events}` |
 | `reconcile` | `asha.orchestration-reconcile-list.v1` `{contract, initiative_id, action_reconciliation, live_reconciliation, coordinator_reconciliation, results, superseded_nodes}` |
 | `storage` | `asha.orchestration-storage-report.v1` `{contract, initiative_id, inventory, workspaces, materializations, totals, thresholds, pause_recommended}`; `workspaces[]` and `materializations[]` entries carry `repository_id` (additive label under v1, following the `coordinator_reconciliation`/`coordinator` precedent) |
-| `snapshot` | `asha.orchestration-snapshot.v1` `{contract, initiative, active_plan, nodes, superseded_nodes, attempts, links, actions, coordinator, last_event_sequence, state_revision}` |
+| `snapshot` | `asha.orchestration-snapshot.v1` `{contract, initiative, active_plan, nodes, superseded_nodes, attempts, links, actions, bundles, coordinator, last_event_sequence, state_revision}`; without `--json`, renders the initiative/state, plan, node states, bundle/member seal IDs, and event tail |
 | `doctor` | `asha.orchestration-doctor.v1` `{contract, ok, probes, limitations}` |
 | `projects` | `asha.orchestration-project-list.v1` `{contract, root, roots_from, source, match, groups, projects, skipped}`; each project is `{name, directory, root, project_id, role, declared, asha_project, jj_colocated}` — `source` is `manifest` (declared workspace at or above the root) or `discovery` (jj-colocated Asha projects at and below it, depth 1-3, 512-directory bound per root). `directory` is an additive label under v1, following the `repository_id` precedent, because `name` may be the project's own. `root` is null when several roots were indexed; `groups` keeps each root's projects, `projects` is their flat union, and `skipped` names roots that could not be indexed. Read-only |
+| `attention` | `asha.orchestration-attention.v1` `{contract, items}`; JSON retains complete detail and resolution strings, while only the human renderer may elide descriptive columns, and runnable resolution commands are printed whole |
 | `coordinator claim` | `asha.orchestration-coordinator-claim.v1` `{contract, initiative_id, coordinator, environment}` |
-| `coordinator release` | `asha.orchestration-coordinator-release.v1` `{contract, initiative_id, coordinator}` |
+| `coordinator release` | `asha.orchestration-coordinator-release.v1` `{contract, initiative_id, coordinator, reaped_pane_id}` (`reaped_pane_id` is non-null only for terminal operator cleanup that killed the exact anchor pane) |
 | `coordinator launch` | `asha.orchestration-coordinator-launch.v1` `{contract, session, pane_id, root, harness, intent, launched_at}` |
 | `coordinator sessions` | `asha.orchestration-coordinator-sessions.v1` `{contract, sessions: [{session, initiative_id, slug, coordinator_id, generation, state}]}` |
 | `coordinator attach` | `asha.orchestration-coordinator-attach.v1` `{contract, initiative_id, session, pane_id, coordinator_id, generation}` |
@@ -1024,7 +1037,12 @@ Archiving remains a separate operator decision.
 When every graph node is terminal without a qualifying candidate, the operator
 may acknowledge `partial` or `failed` with `finalize --reason`; partial requires
 at least one retained success seal as useful work. Failure-only evidence must
-be finalized with outcome `failed`; a `partial` request is refused.
+be finalized with outcome `failed`; a `partial` request is refused. A refused
+finalize names every non-terminal node and its state; when the initiative is
+`needs-input`, it names `asha initiative resume ID` as the prerequisite.
+`--cancel-pending`
+explicitly routes those nodes through ordinary operator `cancel-node` actions,
+reports their IDs, and then retries finalization.
 
 `archive` changes a terminal outcome to `archived` and records a retained
 inventory without deleting records, evidence, tasks, or workspaces.

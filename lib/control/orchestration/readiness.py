@@ -426,10 +426,25 @@ def prevalidate_finalization(
                 )
         return initiative
     if initiative["state"] != "running":
+        if initiative["state"] == "needs-input":
+            raise ReadinessError(
+                "initiative is needs-input; run "
+                f"'asha initiative resume {initiative_id}' before finalize"
+            )
         raise ReadinessError("only a running initiative may be finalized")
     nodes = store.list_nodes_snapshot(initiative_id)
-    if any(item["state"] not in NODE_TERMINAL_STATES for item in nodes):
-        raise ReadinessError("finalize requires a terminal graph")
+    non_terminal = sorted(
+        (
+            f"{item['node_id']} ({item['state']})"
+            for item in nodes
+            if item["state"] not in NODE_TERMINAL_STATES
+        ),
+    )
+    if non_terminal:
+        raise ReadinessError(
+            "finalize requires a terminal graph; non-terminal nodes: "
+            + ", ".join(non_terminal)
+        )
     try:
         _qualification(store, initiative_id)
     except (ReadinessError, ObservationOnlyPlanError):

@@ -1134,7 +1134,7 @@ class InitiativeStore:
         )
 
     _COORDINATOR_MUTABLE_FIELDS = frozenset({
-        "state", "event_cursor", "last_accepted_action_id", "updated_at",
+        "state", "event_cursor", "armed_watch", "last_accepted_action_id", "updated_at",
     })
 
     def save_coordinator(
@@ -1143,7 +1143,7 @@ class InitiativeStore:
         """Persist one coordinator generation; identity, generation, and anchor are fixed.
 
         A new record must carry exactly the next generation and name an existing
-        predecessor (or none). Mutable fields: state, event_cursor,
+        predecessor (or none). Mutable fields: state, event_cursor, armed_watch,
         last_accepted_action_id, updated_at. Terminal generations are write-once.
         """
         try:

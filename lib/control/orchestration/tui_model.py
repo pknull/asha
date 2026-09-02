@@ -208,10 +208,10 @@ def _task_attention(task_row: Any) -> str:
             if isinstance(item, dict) and item.get("state") == "needs-input":
                 detail = str(item.get("detail", ""))
                 break
-        return "at prompt" + (f": {detail[:60]}" if detail else "")
+        return "at prompt" + (f": {detail}" if detail else "")
     blocker = reconciliation.get("blocker")
     if blocker:
-        return str(blocker)[:70]
+        return str(blocker)
     return "-"
 
 
@@ -320,7 +320,7 @@ def attention_items(
         for directive in _pending_directives(view):
             items.append({
                 **identity, "kind": "directive-pending", "node_id": directive.get("node_id"),
-                "detail": f"directive {directive['action_id'][:8]} awaits delivery",
+                "detail": f"directive {directive['action_id']} awaits delivery",
                 "resolution": "relay to the attempt's pane or let the next attempt carry it",
             })
     for task_id, row in task_index.items():

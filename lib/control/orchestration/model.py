@@ -2171,6 +2171,7 @@ _COORDINATOR_KEYS = frozenset({
     "anchor", "protocol_version", "claimed_at", "event_cursor",
     "last_accepted_action_id", "predecessor_coordinator_id", "created_at", "updated_at",
 })
+_COORDINATOR_ARMED_WATCH_KEYS = frozenset({"after", "deadline"})
 _COORDINATOR_ANCHOR_KEYS = frozenset({
     "tmux_socket", "session", "pane_id", "pane_pid", "process_start_identity",
     "server_pid", "server_start_identity",
@@ -2187,7 +2188,12 @@ def validate_coordinator(value: Any) -> dict[str, Any]:
     The anchor binds the generation to the claiming tmux pane and its process
     identity; every coordinator-actor verb re-verifies it before acting.
     """
-    record = _object(value, "coordinator", _COORDINATOR_KEYS)
+    keys = (
+        _COORDINATOR_KEYS | {"armed_watch"}
+        if isinstance(value, dict) and "armed_watch" in value
+        else _COORDINATOR_KEYS
+    )
+    record = _object(value, "coordinator", keys)
     if record["contract"] != COORDINATOR_CONTRACT:
         raise ModelError(f"coordinator contract must be {COORDINATOR_CONTRACT}")
     canonical_uuid(record["initiative_id"], "coordinator initiative_id")
@@ -2214,6 +2220,16 @@ def validate_coordinator(value: Any) -> dict[str, Any]:
         raise ModelError(f"coordinator protocol_version must be {COORDINATOR_PROTOCOL_VERSION}")
     claimed = _timestamp(record["claimed_at"], "coordinator claimed_at")
     _integer(record["event_cursor"], "coordinator event_cursor", maximum=MAX_EVENT_SEQUENCE)
+    armed_watch = record.get("armed_watch")
+    if armed_watch is not None:
+        watch = _object(
+            armed_watch, "coordinator armed_watch", _COORDINATOR_ARMED_WATCH_KEYS,
+        )
+        _integer(
+            watch["after"], "coordinator armed_watch after",
+            maximum=MAX_EVENT_SEQUENCE,
+        )
+        _timestamp(watch["deadline"], "coordinator armed_watch deadline")
     if record["last_accepted_action_id"] is not None:
         canonical_uuid(record["last_accepted_action_id"], "coordinator last_accepted_action_id")
     if record["predecessor_coordinator_id"] is not None:

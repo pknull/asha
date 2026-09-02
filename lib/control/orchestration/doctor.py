@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 from dataclasses import asdict, dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -175,10 +176,18 @@ def _coordinator_cursor_probe(config: OrchestrationConfig) -> Probe:
             live += 1
             tail = initiative["last_event_sequence"]
             cursor = coordinator["event_cursor"]
-            if cursor < tail:
+            acknowledged = cursor
+            armed_watch = coordinator.get("armed_watch")
+            if armed_watch is not None:
+                deadline = datetime.fromisoformat(
+                    armed_watch["deadline"][:-1] + "+00:00"
+                )
+                if deadline > datetime.now(timezone.utc):
+                    acknowledged = max(acknowledged, armed_watch["after"])
+            if acknowledged < tail:
                 behind.append(
-                    f"{initiative_id} coordinator cursor {cursor} is "
-                    f"{tail - cursor} event(s) behind tail {tail}"
+                    f"{initiative_id} coordinator cursor {acknowledged} is "
+                    f"{tail - acknowledged} event(s) behind tail {tail}"
                 )
     except (OSError, ValueError) as exc:
         return Probe(

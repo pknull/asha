@@ -1739,6 +1739,13 @@ def submit_action(
             and initiative["state"] != "running"
             and not abandonment
         ):
+            if initiative["state"] == "needs-input":
+                return _refuse(
+                    store,
+                    action,
+                    "initiative is needs-input; run "
+                    f"'asha initiative resume {initiative_id}' before finalize",
+                )
             return _refuse(store, action, "only a running initiative may be finalized")
         if action["action_class"] == "finalize":
             from .readiness import ReadinessError, prevalidate_finalization
