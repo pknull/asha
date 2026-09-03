@@ -53,7 +53,7 @@ assert "plugin injects shell identity" 'grep -q "shell.env" "$OC1/plugins/asha.j
 assert "plugin routes prompt recovery directly" 'grep -q "user-prompt-submit.sh" "$OC1/plugins/asha.js"'
 assert "plugin queues style output after tool execution" 'grep -q "tool.execute.after" "$OC1/plugins/asha.js" && grep -q "append(sid, run" "$OC1/plugins/asha.js"'
 assert "plugin checks declared passes at idle" 'grep -q "session.idle" "$OC1/plugins/asha.js" && grep -q "verify-pass-complete.sh" "$OC1/plugins/asha.js"'
-assert "plugin avoids root lifecycle side effects for known child sessions" 'grep -q "childSessions" "$OC1/plugins/asha.js"'
+assert "plugin explicitly suppresses verification for known child idles" 'grep -q "if (childSessions.has(sid)) return" "$OC1/plugins/asha.js"'
 assert "plugin seals recovery on dispose without semantic save" 'grep -q "session-end.sh" "$OC1/plugins/asha.js" && ! grep -Eq "detached-save|save-session|setsid" "$OC1/plugins/asha.js"'
 if command -v node >/dev/null 2>&1 && node --check "$OC1/plugins/asha.js" >/dev/null 2>&1; then
   ok "generated plugin parses as JavaScript"
@@ -61,6 +61,48 @@ elif command -v node >/dev/null 2>&1; then
   fail "generated plugin parses as JavaScript"
 else
   echo "  - node absent; JavaScript parse check skipped"
+fi
+if command -v node >/dev/null 2>&1; then
+  BRIDGE_PLUGIN="$WORK/asha-plugin.mjs"
+  python3 - "$OC1/plugins/asha.js" "$BRIDGE_PLUGIN" <<'PY'
+import pathlib, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+source = source.replace(
+    'import { spawnSync } from "node:child_process"',
+    '''globalThis.__ashaSpawnCalls = []
+const spawnSync = (command, args, options) => {
+  globalThis.__ashaSpawnCalls.push({ command, args, input: options.input })
+  return { status: 0, stdout: "", stderr: "" }
+}''',
+    1,
+)
+pathlib.Path(sys.argv[2]).write_text(source)
+PY
+  if node --input-type=module - "$BRIDGE_PLUGIN" \
+      >"$WORK/bridge.out" 2>"$WORK/bridge.err" <<'NODE'
+import { pathToFileURL } from "node:url"
+
+const pluginPath = process.argv[2]
+const { AshaPlugin } = await import(pathToFileURL(pluginPath).href)
+const hooks = await AshaPlugin({ directory: "/project" })
+
+await hooks.event({ event: { type: "session.created", properties: { info: { id: "child-1", parentID: "parent-1" } } } })
+await hooks.event({ event: { type: "session.idle", properties: { info: { id: "child-1" } } } })
+if (globalThis.__ashaSpawnCalls.length !== 0) throw new Error("child idle invoked a handler")
+
+await hooks.event({ event: { type: "session.idle", properties: { info: { id: "parent-1" } } } })
+const calls = globalThis.__ashaSpawnCalls
+if (calls.length !== 1 || !calls[0].command.endsWith("verify-pass-complete.sh")) {
+  throw new Error("root idle did not invoke only verification")
+}
+NODE
+  then
+    ok "generated plugin ignores child idle and verifies at root idle"
+  else
+    fail "generated plugin ignores child idle and verifies at root idle ($(tail -1 "$WORK/bridge.err"))"
+  fi
+else
+  echo "  - node absent; child-idle behavior check skipped"
 fi
 if HOME="$H1" XDG_CONFIG_HOME="$H1/config" ASHA_HOME="$H1/.asha" \
     ASHA_OPENCODE_CMD="$OPENCODE_OK" \

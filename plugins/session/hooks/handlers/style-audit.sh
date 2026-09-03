@@ -38,7 +38,7 @@ if [[ -z "$EDITED_PATH" ]]; then
     (.tool_input // .toolArgs // .args // {}) as $raw
     | (if ($raw | type) == "string" then ($raw | fromjson? // {})
        elif ($raw | type) == "object" then $raw else {} end)
-    | .patch // empty
+    | .patchText // .patch // empty
   ' 2>/dev/null || true)"
   EDITED_PATH="$(printf '%s\n' "$PATCH" | sed -nE \
     's/^\*\*\* (Update|Add|Delete) File: (.*)$/\2/p' | head -1)"

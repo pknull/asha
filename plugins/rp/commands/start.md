@@ -145,7 +145,11 @@ scene:
 
 4. **Scenes start in the middle.** The room was already doing something before the PC arrived. The PC walks into a situation, not an empty room.
 
-5. **Rule of three.** Drive at least 2-3 NPC/environmental beats between player input requests. The world moves.
+5. **One complete beat.** Give each Keeper turn exactly one dramatic beat,
+   including the immediate response needed to make its consequence legible.
+   Never stop mid-dialogue, and stop before beginning a second beat. Close the
+   visible draft with the one-line `Scene: ... | Location: ... | Present: ...`
+   anchor required by `/rp:turn` and the roleplay-gm contract.
 
 6. **Every significant NPC interaction costs something visible.** Track what's taken or changed. Show it in subsequent scenes, not in the moment itself.
 

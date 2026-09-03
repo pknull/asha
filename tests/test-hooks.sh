@@ -230,6 +230,71 @@ VERIFY_NONE="$(run_hook verify-pass-complete.sh \
   && ok "verification handler with no marker is a fail-open no-op" \
   || fail "verification handler with no marker is a fail-open no-op"
 
+BINARY_TOKEN="binary-old-$RANDOM-should-disappear"
+printf '%s\0binary-tail\n' "$BINARY_TOKEN" > "$PROJECT/src/pass-proof.bin"
+(cd "$PROJECT" && HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+  "$REPO_ROOT/plugins/session/tools/declare-pass.sh" "$BINARY_TOKEN" replacement \
+  >/dev/null)
+VERIFY_BINARY="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-binary","cwd":"'"$PROJECT"'","stop_hook_active":false}')"
+printf '%s' "$VERIFY_BINARY" | jq -e \
+  '.decision == "block" and (.reason | contains("src/pass-proof.bin"))' \
+  >/dev/null 2>&1 \
+  && ok "verification proof finds fixed strings in binary/NUL-containing files" \
+  || fail "verification proof finds fixed strings in binary/NUL-containing files"
+rm -f "$PROJECT/src/pass-proof.bin" "$PROJECT/Work/markers/pass-declaration.json"
+
+RACE_OLD="race-old-$RANDOM"
+RACE_NEW="race-new-$RANDOM"
+(cd "$PROJECT" && HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+  "$REPO_ROOT/plugins/session/tools/declare-pass.sh" "$RACE_OLD" replacement \
+  >/dev/null)
+RACE_BIN="$WORK/race-bin"
+RACE_STARTED="$WORK/race-started"
+RACE_RELEASE="$WORK/race-release"
+RACE_OUTPUT="$WORK/race-output"
+mkdir -p "$RACE_BIN"
+cat > "$RACE_BIN/grep" <<'EOF'
+#!/usr/bin/env bash
+: > "$ASHA_TEST_GREP_STARTED"
+for ((i = 0; i < 500; i++)); do
+  [[ -e "$ASHA_TEST_GREP_RELEASE" ]] && exit 1
+  sleep 0.01
+done
+exit 2
+EOF
+chmod +x "$RACE_BIN/grep"
+printf '%s' '{"session_id":"verify-race","cwd":"'"$PROJECT"'","stop_hook_active":false}' \
+  | HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+      CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" ASHA_HARNESS=claude \
+      ASHA_TEST_GREP_STARTED="$RACE_STARTED" ASHA_TEST_GREP_RELEASE="$RACE_RELEASE" \
+      PATH="$RACE_BIN:$PATH" "$HANDLERS/verify-pass-complete.sh" > "$RACE_OUTPUT" &
+RACE_PID=$!
+for ((i = 0; i < 500; i++)); do
+  [[ -e "$RACE_STARTED" ]] && break
+  sleep 0.01
+done
+if [[ -e "$RACE_STARTED" ]] \
+   && (cd "$PROJECT" && HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+       "$REPO_ROOT/plugins/session/tools/declare-pass.sh" "$RACE_NEW" replacement \
+       >/dev/null); then
+  touch "$RACE_RELEASE"
+  wait "$RACE_PID"
+  RACE_HANDLER_OUTPUT="$(cat "$RACE_OUTPUT")"
+  if [[ "$RACE_HANDLER_OUTPUT" == '{}' ]] \
+     && jq -e --arg old "$RACE_NEW" '.old == $old' \
+          "$PROJECT/Work/markers/pass-declaration.json" >/dev/null 2>&1; then
+    ok "empty proof never clears a concurrently replaced declaration"
+  else
+    fail "empty proof never clears a concurrently replaced declaration"
+  fi
+else
+  touch "$RACE_RELEASE"
+  wait "$RACE_PID" 2>/dev/null || true
+  fail "empty proof never clears a concurrently replaced declaration"
+fi
+rm -f "$PROJECT/Work/markers/pass-declaration.json"
+
 cat > "$PROJECT/.asha/style-audit" <<'EOF'
 #!/usr/bin/env bash
 ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
@@ -298,11 +363,11 @@ COPILOT_HOSTILE_STYLE="$(run_hook user-prompt-submit.sh \
   || fail "Copilot style queue confines hostile session identifiers"
 rm -f "$PROJECT/Work/markers/keep.md"
 OPENCODE_STYLE="$(run_hook post-tool-use.sh \
-  '{"session_id":"style-opencode","cwd":"'"$PROJECT"'","tool_name":"apply_patch","tool_input":{"patch":"*** Update File: src/open.py\n@@"}}' opencode)"
+  '{"session_id":"style-opencode","cwd":"'"$PROJECT"'","tool_name":"apply_patch","tool_input":{"patchText":"*** Update File: src/open.py\n@@"}}' opencode)"
 [[ "$OPENCODE_STYLE" == *"STYLE AUDIT FINDING"* \
    && "$OPENCODE_STYLE" == *"src/open.py"* ]] \
-  && ok "OpenCode receives style findings as pending-context text" \
-  || fail "OpenCode receives style findings as pending-context text"
+  && ok "OpenCode apply_patch patchText produces pending style context" \
+  || fail "OpenCode apply_patch patchText produces pending style context"
 
 BEFORE="$(sha256sum "$PROJECT/Memory/activeContext.md" "$PROJECT/Memory/decisions.md")"
 LAST_ACTION_BEFORE="$(jq -r '.last_action' "$PROJECT/Work/session-state/claude-p1.json")"

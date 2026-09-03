@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || { echo '{}'; e
 source "$SCRIPT_DIR/common.sh" 2>/dev/null || { echo '{}'; exit 0; }
 source "$SCRIPT_DIR/harness-response.sh" 2>/dev/null || { echo '{}'; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo '{}'; exit 0; }
+command -v flock >/dev/null 2>&1 || { echo '{}'; exit 0; }
+command -v stat >/dev/null 2>&1 || { echo '{}'; exit 0; }
 
 INPUT="$(cat 2>/dev/null || true)"
 if printf '%s' "$INPUT" | jq -e '.stop_hook_active == true' >/dev/null 2>&1; then
@@ -16,7 +18,12 @@ fi
 PROJECT_DIR="$(resolve_hook_project_dir "$INPUT" 2>/dev/null || true)"
 [[ -n "$PROJECT_DIR" && -f "$PROJECT_DIR/.asha/config.json" ]] || { echo '{}'; exit 0; }
 MARKER="$PROJECT_DIR/Work/markers/pass-declaration.json"
+MARKER_DIR="$PROJECT_DIR/Work/markers"
+exec {LOCK_FD}<"$MARKER_DIR" 2>/dev/null || { echo '{}'; exit 0; }
+flock -w 1 -x "$LOCK_FD" 2>/dev/null || { echo '{}'; exit 0; }
 [[ -f "$MARKER" && ! -L "$MARKER" ]] || { echo '{}'; exit 0; }
+MARKER_ID="$(stat -Lc '%d:%i' -- "$MARKER" 2>/dev/null || true)"
+[[ -n "$MARKER_ID" ]] || { echo '{}'; exit 0; }
 
 OLD_VALUE="$(jq -r \
   'select(.schema_version == 1) | (.old // .old_value) | select(type == "string" and length > 0)' \
@@ -24,15 +31,22 @@ OLD_VALUE="$(jq -r \
 [[ -n "$OLD_VALUE" ]] || { echo '{}'; exit 0; }
 NEW_VALUE="$(jq -r '.new // .new_value // empty | select(type == "string")' \
   "$MARKER" 2>/dev/null || true)"
+flock -u "$LOCK_FD" 2>/dev/null || { echo '{}'; exit 0; }
 
 HITS_FILE="$(mktemp "${TMPDIR:-/tmp}/asha-verify-pass.XXXXXX" 2>/dev/null || true)"
 [[ -n "$HITS_FILE" ]] || { echo '{}'; exit 0; }
 trap 'rm -f "$HITS_FILE"' EXIT
-grep -rIlF --exclude-dir=.git --exclude-dir=.jj --exclude-dir=Work \
+grep -rlF --exclude-dir=.git --exclude-dir=.jj --exclude-dir=Work \
   -- "$OLD_VALUE" "$PROJECT_DIR" >"$HITS_FILE" 2>/dev/null
 GREP_RC=$?
 if [[ $GREP_RC -eq 1 ]]; then
-  rm -f "$MARKER" 2>/dev/null || true
+  if flock -w 1 -x "$LOCK_FD" 2>/dev/null; then
+    CURRENT_MARKER_ID="$(stat -Lc '%d:%i' -- "$MARKER" 2>/dev/null || true)"
+    if [[ -n "$CURRENT_MARKER_ID" && "$CURRENT_MARKER_ID" == "$MARKER_ID" ]]; then
+      rm -f "$MARKER" 2>/dev/null || true
+    fi
+    flock -u "$LOCK_FD" 2>/dev/null || true
+  fi
   echo '{}'
   exit 0
 fi
