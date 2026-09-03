@@ -171,6 +171,85 @@ class ControlTuiFocusTests(unittest.TestCase):
             )
         self.assertEqual(curses_module.cursor_changes, [1, 0])
 
+    def test_prompt_timeout_does_not_repaint_the_tree_or_prompt(self):
+        immediate = FakeScreen([27])
+        polled = FakeScreen([-1, 27])
+
+        tui._prompt_line(immediate, FakeCurses(), TuiModel([]), "Reason: ")
+        tui._prompt_line(polled, FakeCurses(), TuiModel([]), "Reason: ")
+
+        self.assertEqual(polled.writes, immediate.writes)
+
+    def test_start_and_room_form_timeouts_do_not_redraw_the_modal(self):
+        with mock.patch.object(
+            tui, "freeze_start_candidates", return_value=_stub_snapshot(),
+        ):
+            immediate_start = FakeScreen([27])
+            polled_start = FakeScreen([-1, 27])
+            self.assertEqual(
+                tui._start_form(
+                    immediate_start, FakeCurses(), TuiModel([]),
+                    self.env, self.config,
+                ),
+                "task start cancelled",
+            )
+            self.assertEqual(
+                tui._start_form(
+                    polled_start, FakeCurses(), TuiModel([]),
+                    self.env, self.config,
+                ),
+                "task start cancelled",
+            )
+        self.assertEqual(polled_start.writes, immediate_start.writes)
+
+        project, payload = self._room_payload()
+        with mock.patch(
+            "lib.control.orchestration.projects.resolve_roots",
+            return_value=([str(project.parent)], "test"),
+        ), mock.patch(
+            "lib.control.orchestration.projects.list_projects_across",
+            return_value=payload,
+        ), mock.patch(
+            "lib.control.rooms.room_harness_available",
+            side_effect=lambda name, _env: name == "codex",
+        ):
+            immediate_room = FakeScreen([27])
+            polled_room = FakeScreen([-1, 27])
+            self.assertEqual(
+                tui._open_room_form(
+                    immediate_room, FakeCurses(), TuiModel([]),
+                    self.config, self.env,
+                ),
+                "room open cancelled",
+            )
+            self.assertEqual(
+                tui._open_room_form(
+                    polled_room, FakeCurses(), TuiModel([]),
+                    self.config, self.env,
+                ),
+                "room open cancelled",
+            )
+        self.assertEqual(polled_room.writes, immediate_room.writes)
+
+    def test_idle_input_poll_does_not_repaint_the_tree(self):
+        model = TuiModel([])
+        model._ensure_screen()
+        screen = FakeScreen([-1, ord("q")])
+        runner = mock.Mock()
+        runner.poll.side_effect = [None, None]
+
+        with mock.patch.object(tui, "_paint") as paint:
+            status = tui._curses_loop(
+                screen, FakeCurses(), model, self.config, self.env,
+                mock.Mock(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
+            )
+
+        self.assertEqual(status, 0)
+        paint.assert_called_once()
+        runner.start.assert_called_once_with()
+        runner.stop.assert_called_once_with()
+
     def test_cursor_visibility_is_nested_safe(self):
         curses_module = FakeCurses(cursor=0)
         with tui._visible_cursor(curses_module):

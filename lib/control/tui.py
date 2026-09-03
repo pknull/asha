@@ -11,6 +11,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import unicodedata
 from contextlib import contextmanager
@@ -266,6 +267,73 @@ class StartCandidateSnapshot:
         return self.bases.get(repository, (ModalCandidate("", "default"),))
 
 
+@dataclass(frozen=True)
+class RefreshSnapshot:
+    """One complete automatic-refresh handoff from worker to curses."""
+
+    rows: tuple[TuiRow, ...]
+    initiative_views: tuple[dict[str, Any], ...]
+    room_rows: tuple[dict[str, Any], ...]
+    initiatives_error: str | None = None
+    rooms_error: str | None = None
+
+
+class BackgroundRefresh:
+    """Run one scheduled refresh pass at a time outside the curses thread."""
+
+    def __init__(
+        self,
+        load: Callable[[], RefreshSnapshot],
+        *,
+        interval: float = _AUTO_REFRESH_SECONDS,
+    ) -> None:
+        self._load = load
+        self._interval = float(interval)
+        self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._ready: RefreshSnapshot | Exception | None = None
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> None:
+        """Start the daemon once; the first pass is due after one interval."""
+        with self._lock:
+            if self._thread is not None:
+                return
+            self._thread = threading.Thread(
+                target=self._run,
+                name="asha-control-refresh",
+                daemon=True,
+            )
+            thread = self._thread
+        thread.start()
+
+    def _run(self) -> None:
+        # Waiting at the top makes every deadline relative to the preceding
+        # pass's completion, so a slow pass cannot create a catch-up queue.
+        while not self._stop_event.wait(self._interval):
+            try:
+                ready: RefreshSnapshot | Exception = self._load()
+            except Exception as exc:  # noqa: BLE001 - handed to the UI thread
+                ready = exc
+            with self._lock:
+                self._ready = ready
+
+    def poll(self) -> RefreshSnapshot | Exception | None:
+        """Take the latest completed pass without waiting for the worker."""
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            ready = self._ready
+            self._ready = None
+            return ready
+        finally:
+            self._lock.release()
+
+    def stop(self) -> None:
+        """Prevent another pass; an in-flight daemon is allowed to finish."""
+        self._stop_event.set()
+
+
 def _row_sort_key(row: TuiRow) -> tuple[Any, ...]:
     summary = row.summary
     return (
@@ -328,8 +396,9 @@ class TuiModel:
         self._clock_pinned = now is not None
         self.scroll_offset = 0
         self.diffs: dict[str, DiffSummary] = {}
-        self.message: str | None = None
-        self.automatic_refresh_error: str | None = None
+        self.dirty = True
+        self._message: str | None = None
+        self._automatic_refresh_error: str | None = None
         self.help_visible = False
         # Set once by the curses loop; the renderer stays terminal-independent
         # and the painter falls back to bold-only when this is False.
@@ -342,6 +411,26 @@ class TuiModel:
         self.initiatives: Any = None
         self.initiatives_error: str | None = None
         self._clamp_selection()
+
+    @property
+    def message(self) -> str | None:
+        return self._message
+
+    @message.setter
+    def message(self, value: str | None) -> None:
+        if value != self._message:
+            self._message = value
+            self.dirty = True
+
+    @property
+    def automatic_refresh_error(self) -> str | None:
+        return self._automatic_refresh_error
+
+    @automatic_refresh_error.setter
+    def automatic_refresh_error(self, value: str | None) -> None:
+        if value != self._automatic_refresh_error:
+            self._automatic_refresh_error = value
+            self.dirty = True
 
     @property
     def filtered_rows(self) -> tuple[TuiRow, ...]:
@@ -422,24 +511,36 @@ class TuiModel:
         self.scroll_offset = min(max(0, self.scroll_offset), maximum)
 
     def move_selection(self, delta: int) -> TuiRow | None:
+        before = (self.selection, self.scroll_offset)
         rows = self.filtered_rows
         if not rows:
             self.selection = None
+            if (self.selection, self.scroll_offset) != before:
+                self.dirty = True
             return None
         current = 0 if self.selection is None else self.selection
         self.selection = min(max(current + int(delta), 0), len(rows) - 1)
         self._ensure_visible()
+        if (self.selection, self.scroll_offset) != before:
+            self.dirty = True
         return self.selected_row
 
     def set_filter(self, value: str) -> None:
+        before = (self.filter_string, self.selection, self.scroll_offset)
         self.filter_string = value
         self.selection = 0
         self.scroll_offset = 0
         self._clamp_selection()
+        if (self.filter_string, self.selection, self.scroll_offset) != before:
+            self.dirty = True
 
     def resize(self, height: int, width: int) -> tuple[TuiRow, ...]:
-        self.height = max(0, int(height))
-        self.width = max(0, int(width))
+        resized_height = max(0, int(height))
+        resized_width = max(0, int(width))
+        if (resized_height, resized_width) != (self.height, self.width):
+            self.dirty = True
+        self.height = resized_height
+        self.width = resized_width
         self._ensure_visible()
         return self.visible_rows
 
@@ -450,6 +551,7 @@ class TuiModel:
             # forever for any task started afterwards.
             self.now = datetime.now(timezone.utc)
         self.rows = sort_rows(rows)
+        self.dirty = True
         visible = self.filtered_rows
         self.selection = next(
             (index for index, row in enumerate(visible)
@@ -471,6 +573,8 @@ class TuiModel:
     def select_task(self, task_id: str) -> bool:
         for index, row in enumerate(self.filtered_rows):
             if row.task["task_id"] == task_id:
+                if self.selection != index:
+                    self.dirty = True
                 self.selection = index
                 self._ensure_visible()
                 return True
@@ -480,6 +584,7 @@ class TuiModel:
         if all(row.task["task_id"] != task_id for row in self.rows):
             raise ValueError("diff summary does not belong to a displayed task")
         self.diffs[task_id] = diff
+        self.dirty = True
 
     def _ensure_screen(self):
         """The tree self-builds from the model's own rows when nothing loaded it."""
@@ -490,6 +595,7 @@ class TuiModel:
                 [], height=self.height, width=self.width, task_rows=self.rows,
                 orchestration_error=self.initiatives_error,
             )
+            self.dirty = True
         return self.initiatives
 
     def dispatch_key(self, key: str) -> TuiIntent:
@@ -998,8 +1104,8 @@ def _render_tree(model: TuiModel) -> list[str]:
             "No merge, rebase, bookmark, push, publication, or workspace removal exists here.",
             "Status: every state is derived from qualified tmux, process, jj, and event evidence.",
             "Limitations: prune requires separate confirmation; no automated integration.",
-            "Refresh: synchronous bounded adapter calls may delay keys after a pass starts.",
-            "Modal prompts pause automatic reconciliation until they close.",
+            "Refresh: periodic reconciliation runs off the input loop; snapshots apply between keys.",
+            "Modal prompts pause snapshot application, not background loading, until they close.",
             "Closing a popup detaches only. SIGKILL and hard crashes cannot restore terminal mode.",
         ]
         return [_clip(line, model.width) for line in lines[:model.height]]
@@ -1124,35 +1230,51 @@ def _enter_tree(model: TuiModel, env: Mapping[str, str]) -> None:
 _enter_initiatives = _enter_tree
 
 
-def _refresh_initiatives(model: TuiModel, env: Mapping[str, str], *, tmux=None) -> None:
+def _refresh_initiatives(
+    model: TuiModel,
+    env: Mapping[str, str],
+    *,
+    tmux=None,
+    views: Iterable[dict[str, Any]] | None = None,
+    rooms: Iterable[dict[str, Any]] | None = None,
+    initiatives_error: str | None = None,
+    rooms_error: str | None = None,
+) -> None:
     from .orchestration.tui_model import InitiativesScreen
 
-    try:
-        views = _load_initiative_views(env, tmux=tmux)
-        initiatives_error = None
-    except Exception as exc:  # noqa: BLE001 - degrade this branch only
-        views = []
-        initiatives_error = _safe_error(exc)
-    try:
-        rooms = _load_room_rows(env, tmux=tmux)
-        rooms_error = None
-    except Exception as exc:  # noqa: BLE001 - degrade this branch only
-        rooms = []
-        rooms_error = _safe_error(exc)
+    if views is None:
+        try:
+            loaded_views = _load_initiative_views(env, tmux=tmux)
+            initiatives_error = None
+        except Exception as exc:  # noqa: BLE001 - degrade this branch only
+            loaded_views = []
+            initiatives_error = _safe_error(exc)
+    else:
+        loaded_views = list(views)
+    if rooms is None:
+        try:
+            loaded_rooms = _load_room_rows(env, tmux=tmux)
+            rooms_error = None
+        except Exception as exc:  # noqa: BLE001 - degrade this branch only
+            loaded_rooms = []
+            rooms_error = _safe_error(exc)
+    else:
+        loaded_rooms = list(rooms)
     if model.initiatives is None:
         model.initiatives = InitiativesScreen(
-            views, height=model.height, width=model.width, task_rows=model.rows,
-            room_rows=rooms, orchestration_error=initiatives_error,
+            loaded_views, height=model.height, width=model.width, task_rows=model.rows,
+            room_rows=loaded_rooms, orchestration_error=initiatives_error,
             rooms_error=rooms_error,
         )
     else:
         model.initiatives.resize(model.height, model.width)
         model.initiatives.replace_views(
-            views, task_rows=model.rows, room_rows=rooms,
+            loaded_views, task_rows=model.rows, room_rows=loaded_rooms,
         )
         model.initiatives.orchestration_error = initiatives_error
         model.initiatives.rooms_error = rooms_error
     model.initiatives_error = initiatives_error
+    model.dirty = True
 
 
 def _wrap_status(message: str, width: int) -> list[str]:
@@ -1264,6 +1386,40 @@ def _surface_skipped(model: TuiModel, store: TaskStore) -> None:
     model.message = f"{model.message}; {detail}" if model.message else detail
 
 
+def _load_refresh_snapshot(
+    config: ControlConfig,
+    store: TaskStore,
+    journals: CreationJournalStore,
+    jj: JjAdapter,
+    env: Mapping[str, str],
+    *,
+    include_archived: bool = False,
+) -> RefreshSnapshot:
+    """Load every automatic branch without mutating the curses model."""
+    rows = tuple(_load_rows(
+        config, store, journals, jj, include_archived=include_archived,
+    ))
+    try:
+        views = tuple(_load_initiative_views(env))
+        initiatives_error = None
+    except Exception as exc:  # noqa: BLE001 - degrade this branch only
+        views = ()
+        initiatives_error = _safe_error(exc)
+    try:
+        rooms = tuple(_load_room_rows(env))
+        rooms_error = None
+    except Exception as exc:  # noqa: BLE001 - degrade this branch only
+        rooms = ()
+        rooms_error = _safe_error(exc)
+    return RefreshSnapshot(
+        rows=rows,
+        initiative_views=views,
+        room_rows=rooms,
+        initiatives_error=initiatives_error,
+        rooms_error=rooms_error,
+    )
+
+
 def init_colours(curses_module) -> bool:
     """Five tier pairs plus one decoration pair, or nothing on a mono terminal.
 
@@ -1325,6 +1481,8 @@ def _attribute(curses_module, tier: str | None, coloured: bool) -> int:
 
 
 def _paint(stdscr, curses_module, model: TuiModel) -> None:
+    if not model.dirty:
+        return
     height, width = stdscr.getmaxyx()
     model.resize(height, width)
     if model.initiatives is not None:
@@ -1343,6 +1501,7 @@ def _paint(stdscr, curses_module, model: TuiModel) -> None:
         except curses_module.error:
             pass
     stdscr.refresh()
+    model.dirty = False
 
 
 def _paint_spans(stdscr, curses_module, y: int, line, spans, width: int, coloured: bool) -> None:
@@ -2014,50 +2173,53 @@ def _prompt_line(
     value = list(initial[:maximum])
     bounded_candidates = _bounded_modal_candidates(candidates)
     candidate_selection = selected
+    redraw = True
     while True:
-        _paint(stdscr, curses_module, model)
-        height, width = stdscr.getmaxyx()
-        if height:
-            controls = _modal_controls(candidates=bool(bounded_candidates))
-            modal_context = f"{context}\n{controls}" if context else controls
-            frame = modal_frame(
-                title=title, context=modal_context, label="", hint=hint or "",
-                value="".join(value), candidates=bounded_candidates,
-                selected=candidate_selection, height=height, width=width,
-                prompt=prompt,
-            )
-            try:
-                start = max(0, height - len(frame.rows))
-                # Overlay prompts keep explanatory material above the active
-                # input. This preserves the long-standing bottom-line
-                # viewport/cursor contract while forms can still lead with
-                # their active field after clearing the screen.
-                order = [*range(1, len(frame.rows)), 0] if frame.rows else []
-                for offset, frame_index in enumerate(order):
-                    line = frame.rows[frame_index]
-                    y = start + offset
-                    stdscr.move(y, 0)
-                    stdscr.clrtoeol()
-                    if line and width > 1:
-                        role = (
-                            frame.row_roles[frame_index]
-                            if frame_index < len(frame.row_roles) else "inactive"
-                        )
-                        attribute = _modal_row_attribute(curses_module, role)
-                        try:
-                            stdscr.addnstr(y, 0, line, len(line), attribute)
-                        except TypeError:
-                            stdscr.addnstr(y, 0, line, len(line))
-                if frame.cursor is not None:
-                    cursor_y, cursor_x = frame.cursor
-                    physical_y = order.index(cursor_y) if cursor_y in order else 0
-                    stdscr.move(start + physical_y, cursor_x)
-                stdscr.refresh()
-            except curses_module.error:
-                pass
+        if redraw:
+            height, width = stdscr.getmaxyx()
+            if height:
+                controls = _modal_controls(candidates=bool(bounded_candidates))
+                modal_context = f"{context}\n{controls}" if context else controls
+                frame = modal_frame(
+                    title=title, context=modal_context, label="", hint=hint or "",
+                    value="".join(value), candidates=bounded_candidates,
+                    selected=candidate_selection, height=height, width=width,
+                    prompt=prompt,
+                )
+                try:
+                    start = max(0, height - len(frame.rows))
+                    # Overlay prompts keep explanatory material above the active
+                    # input. This preserves the long-standing bottom-line
+                    # viewport/cursor contract while forms can still lead with
+                    # their active field after clearing the screen.
+                    order = [*range(1, len(frame.rows)), 0] if frame.rows else []
+                    for offset, frame_index in enumerate(order):
+                        line = frame.rows[frame_index]
+                        y = start + offset
+                        stdscr.move(y, 0)
+                        stdscr.clrtoeol()
+                        if line and width > 1:
+                            role = (
+                                frame.row_roles[frame_index]
+                                if frame_index < len(frame.row_roles) else "inactive"
+                            )
+                            attribute = _modal_row_attribute(curses_module, role)
+                            try:
+                                stdscr.addnstr(y, 0, line, len(line), attribute)
+                            except TypeError:
+                                stdscr.addnstr(y, 0, line, len(line))
+                    if frame.cursor is not None:
+                        cursor_y, cursor_x = frame.cursor
+                        physical_y = order.index(cursor_y) if cursor_y in order else 0
+                        stdscr.move(start + physical_y, cursor_x)
+                    stdscr.refresh()
+                except curses_module.error:
+                    pass
+            redraw = False
         key = _read_modal_key(stdscr, curses_module)
         if key == -1:
             continue
+        redraw = True
         if key in {10, 13, getattr(curses_module, "KEY_ENTER", -999)}:
             if candidate_selection is not None and bounded_candidates:
                 return bounded_candidates[candidate_selection].value
@@ -2658,6 +2820,7 @@ def _start_form(
     field = 1 if _retained_values is not None else 0
     selected: int | None = None
     form_notice = ""
+    redraw = True
 
     def set_form_notice(message: str) -> None:
         nonlocal form_notice
@@ -2746,24 +2909,27 @@ def _start_form(
                 continue
 
         candidates = _start_field_candidates(snapshot, values, field)
-        height, width = stdscr.getmaxyx()
-        frame = modal_frame(
-            title="Start task",
-            context=(
-                f"Field {field + 1}/5  Controls: Tab next  "
-                "Shift-Tab previous  Enter accept/submit  Esc cancel  "
-                "Up/Down candidates"
-                + (f"\nNotice: {form_notice} (beside {_START_FIELDS[field]})"
-                   if form_notice else "")
-            ),
-            label=_START_FIELDS[field], hint="",
-            value=values[field], candidates=candidates, selected=selected,
-            height=height, width=width,
-        )
-        _draw_modal_frame(stdscr, curses_module, frame)
+        if redraw:
+            height, width = stdscr.getmaxyx()
+            frame = modal_frame(
+                title="Start task",
+                context=(
+                    f"Field {field + 1}/5  Controls: Tab next  "
+                    "Shift-Tab previous  Enter accept/submit  Esc cancel  "
+                    "Up/Down candidates"
+                    + (f"\nNotice: {form_notice} (beside {_START_FIELDS[field]})"
+                       if form_notice else "")
+                ),
+                label=_START_FIELDS[field], hint="",
+                value=values[field], candidates=candidates, selected=selected,
+                height=height, width=width,
+            )
+            _draw_modal_frame(stdscr, curses_module, frame)
+            redraw = False
         key = _read_modal_key(stdscr, curses_module)
         if key == -1:
             continue
+        redraw = True
         if key == getattr(curses_module, "KEY_RESIZE", -998):
             if field == 1:
                 refresh_default_preview(accepted_repository)
@@ -3560,6 +3726,7 @@ def _open_room_form(
     field = 0
     selected: int | None = 0 if project_candidates else None
     form_notice = ""
+    redraw = True
 
     def candidates_for(index: int) -> tuple[ModalCandidate, ...]:
         if index == 0:
@@ -3570,32 +3737,35 @@ def _open_room_form(
 
     while field < len(fields):
         candidates = candidates_for(field)
-        height, width = stdscr.getmaxyx()
-        completed = "  ".join(
-            f"{fields[index]}: {values[index]}"
-            for index in range(field) if values[index]
-        )
-        context_lines = [
-            f"Field {field + 1}/4  Controls: Tab next  Shift-Tab previous  "
-            "Enter accept/submit  Esc cancel  Up/Down candidates",
-        ]
-        if completed:
-            context_lines.append(completed)
-        if form_notice:
-            context_lines.append(f"Error beside {fields[field]}: {form_notice}")
-        context_lines.append(
-            "Rooms work directly in one initialized project's canonical checkout."
-        )
-        frame = modal_frame(
-            title="Open Room", context="\n".join(context_lines),
-            label=fields[field], hint="", value=values[field],
-            candidates=candidates, selected=selected,
-            height=height, width=width,
-        )
-        _draw_modal_frame(stdscr, curses_module, frame)
+        if redraw:
+            height, width = stdscr.getmaxyx()
+            completed = "  ".join(
+                f"{fields[index]}: {values[index]}"
+                for index in range(field) if values[index]
+            )
+            context_lines = [
+                f"Field {field + 1}/4  Controls: Tab next  Shift-Tab previous  "
+                "Enter accept/submit  Esc cancel  Up/Down candidates",
+            ]
+            if completed:
+                context_lines.append(completed)
+            if form_notice:
+                context_lines.append(f"Error beside {fields[field]}: {form_notice}")
+            context_lines.append(
+                "Rooms work directly in one initialized project's canonical checkout."
+            )
+            frame = modal_frame(
+                title="Open Room", context="\n".join(context_lines),
+                label=fields[field], hint="", value=values[field],
+                candidates=candidates, selected=selected,
+                height=height, width=width,
+            )
+            _draw_modal_frame(stdscr, curses_module, frame)
+            redraw = False
         key = _read_modal_key(stdscr, curses_module)
         if key == -1:
             continue
+        redraw = True
         if key == getattr(curses_module, "KEY_RESIZE", -998):
             continue
         form_notice = ""
@@ -4048,6 +4218,8 @@ def _curses_loop(
     store: TaskStore,
     journals: CreationJournalStore,
     jj: JjAdapter,
+    *,
+    refresher=None,
 ) -> int:
     stdscr.timeout(_INPUT_POLL_MS)
     model.coloured = init_colours(curses_module)
@@ -4059,66 +4231,84 @@ def _curses_loop(
             pass
     if model.initiatives is None:
         _enter_tree(model, env)
-    next_refresh = time.monotonic() + _AUTO_REFRESH_SECONDS
-    while True:
-        _reap_deferred_start_workers()
-        _paint(stdscr, curses_module, model)
-        key = stdscr.getch()
-        if key != -1:
-            if key == getattr(curses_module, "KEY_RESIZE", -998):
-                height, width = stdscr.getmaxyx()
-                model.resize(height, width)
-                continue
-            if key == getattr(curses_module, "KEY_UP", -997):
-                if model.initiatives is not None:
-                    model.initiatives.move_selection(-1)
-                continue
-            if key == getattr(curses_module, "KEY_DOWN", -996):
-                if model.initiatives is not None:
-                    model.initiatives.move_selection(1)
-                continue
-            if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
-                value = "ENTER"
-            elif key == getattr(curses_module, "KEY_RIGHT", -994):
-                value = "RIGHT"
-            elif key == getattr(curses_module, "KEY_LEFT", -993):
-                value = "LEFT"
-            else:
-                try:
-                    value = chr(key)
-                except ValueError:
+    loader = lambda: _load_refresh_snapshot(
+        config, store, journals, jj, env,
+        include_archived=model.include_archived,
+    )
+    refresh_runner = BackgroundRefresh(loader) if refresher is None else refresher
+    try:
+        refresh_runner.start()
+        while True:
+            _reap_deferred_start_workers()
+            if model.dirty:
+                _paint(stdscr, curses_module, model)
+                # Test doubles for the painter do not know the model contract;
+                # the loop still owns the transition to a clean frame.
+                model.dirty = False
+            key = stdscr.getch()
+
+            # Taking the lock never waits for a pass. Only the curses thread
+            # mutates the model or the screen.
+            ready = refresh_runner.poll()
+            if ready is not None:
+                if isinstance(ready, Exception):
+                    model.automatic_refresh_error = (
+                        f"automatic reconciliation failed: {_safe_error(ready)}"
+                    )
+                else:
+                    try:
+                        model.replace_rows(ready.rows)
+                        _surface_skipped(model, store)
+                        _refresh_initiatives(
+                            model, env,
+                            views=ready.initiative_views,
+                            rooms=ready.room_rows,
+                            initiatives_error=ready.initiatives_error,
+                            rooms_error=ready.rooms_error,
+                        )
+                        model.automatic_refresh_error = None
+                    except Exception as exc:  # noqa: BLE001 - keep input alive
+                        model.automatic_refresh_error = (
+                            f"automatic reconciliation failed: {_safe_error(exc)}"
+                        )
+
+            if key != -1:
+                model.dirty = True
+                if key == getattr(curses_module, "KEY_RESIZE", -998):
+                    height, width = stdscr.getmaxyx()
+                    model.resize(height, width)
                     continue
-            intent = model.dispatch_key(value)
-            try:
-                if not _execute_intent(
-                    intent, stdscr=stdscr, curses_module=curses_module,
-                    model=model, config=config, env=env, store=store,
-                    journals=journals, jj=jj,
-                ):
-                    return 0
-            except (PruneError, ValueError, OSError) as exc:
-                model.message = _safe_error(exc)
-            continue
-        if time.monotonic() >= next_refresh:
-            # One refresh per elapsed boundary: no catch-up loop and no
-            # background worker. A slow adapter cannot create an unbounded
-            # queue of pending reconciliations.
-            try:
-                model.replace_rows(_load_rows(
-                    config, store, journals, jj,
-                    include_archived=model.include_archived,
-                ))
-                _surface_skipped(model, store)
-                model.automatic_refresh_error = None
-                _enter_tree(model, env)
-            except (ValueError, OSError) as exc:
-                model.automatic_refresh_error = (
-                    f"automatic reconciliation failed: {_safe_error(exc)}"
-                )
-            finally:
-                # Schedule from completion, not the pre-load boundary. A slow
-                # pass must not trigger an immediate continuous refresh loop.
-                next_refresh = time.monotonic() + _AUTO_REFRESH_SECONDS
+                if key == getattr(curses_module, "KEY_UP", -997):
+                    if model.initiatives is not None:
+                        model.initiatives.move_selection(-1)
+                    continue
+                if key == getattr(curses_module, "KEY_DOWN", -996):
+                    if model.initiatives is not None:
+                        model.initiatives.move_selection(1)
+                    continue
+                if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
+                    value = "ENTER"
+                elif key == getattr(curses_module, "KEY_RIGHT", -994):
+                    value = "RIGHT"
+                elif key == getattr(curses_module, "KEY_LEFT", -993):
+                    value = "LEFT"
+                else:
+                    try:
+                        value = chr(key)
+                    except ValueError:
+                        continue
+                intent = model.dispatch_key(value)
+                try:
+                    if not _execute_intent(
+                        intent, stdscr=stdscr, curses_module=curses_module,
+                        model=model, config=config, env=env, store=store,
+                        journals=journals, jj=jj,
+                    ):
+                        return 0
+                except (PruneError, ValueError, OSError) as exc:
+                    model.message = _safe_error(exc)
+    finally:
+        refresh_runner.stop()
 
 
 def _degrade(stderr: TextIO) -> int:
@@ -4193,8 +4383,9 @@ def run_tui(
 
 
 __all__ = [
-    "DetailProjection", "IntentKind", "ModalCandidate", "ModalFrame",
-    "StartCandidateSnapshot", "TuiIntent", "TuiModel", "TuiRow",
+    "BackgroundRefresh", "DetailProjection", "IntentKind", "ModalCandidate",
+    "ModalFrame", "RefreshSnapshot", "StartCandidateSnapshot", "TuiIntent",
+    "TuiModel", "TuiRow",
     "filter_rows", "freeze_start_candidates", "modal_frame", "render",
     "run_tui", "sort_rows",
 ]

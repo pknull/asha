@@ -207,8 +207,8 @@ class PureModelTests(unittest.TestCase):
 
         model.help_visible = True
         help_output = "\n".join(render(model))
-        self.assertIn("synchronous", help_output)
-        self.assertIn("Modal prompts pause automatic reconciliation", help_output)
+        self.assertIn("periodic reconciliation runs off the input loop", help_output)
+        self.assertIn("Modal prompts pause snapshot application", help_output)
 
     def test_detail_and_open_intent_project_the_latest_of_multiple_runs(self) -> None:
         selected = row("latest-run", "working")

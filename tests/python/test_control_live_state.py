@@ -210,7 +210,35 @@ class AutomaticRefreshTests(unittest.TestCase):
         KEY_DOWN = -12
         KEY_ENTER = -13
 
-    def test_loop_reconciles_on_bounded_monotonic_multi_second_cadence(self) -> None:
+    class Refresher:
+        def __init__(self, outcomes=()) -> None:
+            self.outcomes = list(outcomes)
+            self.started = False
+            self.stopped = False
+            self.poll_count = 0
+
+        def start(self) -> None:
+            self.started = True
+
+        def poll(self):
+            self.poll_count += 1
+            return self.outcomes.pop(0) if self.outcomes else None
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    @staticmethod
+    def snapshot(*rows: TuiRow) -> tui_module.RefreshSnapshot:
+        return tui_module.RefreshSnapshot(
+            rows=tuple(rows), initiative_views=(), room_rows=(),
+        )
+
+    @staticmethod
+    def prepare(model: TuiModel) -> None:
+        # Direct loop tests start from the already-loaded state run_tui supplies.
+        model._ensure_screen()
+
+    def test_loop_applies_completed_passes_from_an_injected_refresher(self) -> None:
         initial = task_record(slug="initial")
         result = {
             "contract": "asha.control-reconciliation.v1",
@@ -221,6 +249,7 @@ class AutomaticRefreshTests(unittest.TestCase):
             "runs": [],
         }
         model = TuiModel([TuiRow.from_records(initial, result)])
+        self.prepare(model)
         refreshed = []
         for state, source, detail in (
             ("working", "event", "prompt submitted"),
@@ -236,67 +265,53 @@ class AutomaticRefreshTests(unittest.TestCase):
                     OBSERVED, "fresh", detail,
                 ),
             ))
+        runner = self.Refresher(self.snapshot(item) for item in refreshed)
         screen = self.Screen()
 
-        with mock.patch.object(tui_module, "_paint"), \
-                mock.patch.object(
-                    tui_module, "_load_rows",
-                    side_effect=[[item] for item in refreshed],
-                ) as load, \
-                mock.patch.object(
-                    tui_module.time, "monotonic",
-                    side_effect=[
-                        0.0,
-                        5.1, 5.2,
-                        10.2, 10.3,
-                        15.3, 15.4,
-                        20.4, 20.5,
-                        20.6,
-                    ],
-                ):
+        with mock.patch.object(tui_module, "_paint"):
             status = tui_module._curses_loop(
                 screen, self.Curses(), model, SimpleNamespace(), {},
-                SimpleNamespace(skipped=[]),
-                mock.Mock(), mock.Mock(),
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
             )
 
         self.assertEqual(status, 0)
         self.assertEqual(screen.timeout_ms, 200)
         self.assertGreaterEqual(tui_module._AUTO_REFRESH_SECONDS, 3.0)
-        self.assertEqual(load.call_count, 4)
+        self.assertTrue(runner.started)
+        self.assertTrue(runner.stopped)
         self.assertEqual(model.rows[0].display_state, "idle")
         self.assertEqual(model.rows[0].observation.source, "event")
 
-    def test_slow_refresh_schedules_the_next_pass_from_completion(self) -> None:
-        task = task_record(slug="slow-refresh")
-        reconciliation = {
-            "contract": "asha.control-reconciliation.v1",
-            "task_id": task["task_id"],
-            "state": "working",
-            "blocker": None,
-            "evidence": [],
-            "runs": [],
-        }
-        row = TuiRow.from_records(task, reconciliation)
-        model = TuiModel([row])
-        screen = self.Screen()
-        screen.keys = [-1, ord("q")]
+    def test_background_runner_waits_again_only_after_each_pass_completes(self) -> None:
+        events = []
 
-        # The refresh begins at 5.1s and finishes at 25s. The next 25.1s poll
-        # must not refresh again; its deadline is 30s from completion.
-        with mock.patch.object(tui_module, "_paint"), \
-                mock.patch.object(tui_module, "_load_rows", return_value=[row]) as load, \
-                mock.patch.object(
-                    tui_module.time, "monotonic",
-                    side_effect=[0.0, 5.1, 25.0, 25.1],
-                ):
-            status = tui_module._curses_loop(
-                screen, self.Curses(), model, SimpleNamespace(), {},
-                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
-            )
+        class StopEvent:
+            def __init__(self) -> None:
+                self.results = iter((False, False, True))
 
-        self.assertEqual(status, 0)
-        load.assert_called_once()
+            def wait(self, interval) -> bool:
+                events.append(("wait", interval))
+                return next(self.results)
+
+            def set(self) -> None:
+                pass
+
+        def load():
+            events.append(("load", None))
+            return self.snapshot()
+
+        runner = tui_module.BackgroundRefresh(load, interval=7.0)
+        runner._stop_event = StopEvent()
+        runner._run()
+
+        self.assertEqual(events, [
+            ("wait", 7.0), ("load", None),
+            ("wait", 7.0), ("load", None),
+            ("wait", 7.0),
+        ])
+        self.assertIsInstance(runner.poll(), tui_module.RefreshSnapshot)
+        self.assertIsNone(runner.poll(), "taking the slot applies a pass at most once")
 
     def test_automatic_refresh_failure_is_visible_and_does_not_end_loop(self) -> None:
         task = task_record(slug="refresh-failure")
@@ -309,19 +324,16 @@ class AutomaticRefreshTests(unittest.TestCase):
             "runs": [],
         }
         model = TuiModel([TuiRow.from_records(task, reconciliation)])
+        self.prepare(model)
         screen = self.Screen()
         screen.keys = [-1, ord("q")]
+        runner = self.Refresher([ValueError("adapter failed")])
 
-        with mock.patch.object(tui_module, "_paint"), \
-                mock.patch.object(
-                    tui_module, "_load_rows", side_effect=ValueError("adapter failed"),
-                ), mock.patch.object(
-                    tui_module.time, "monotonic",
-                    side_effect=[0.0, 5.1, 5.2, 5.3],
-                ):
+        with mock.patch.object(tui_module, "_paint"):
             status = tui_module._curses_loop(
                 screen, self.Curses(), model, SimpleNamespace(), {},
                 SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
             )
 
         self.assertEqual(status, 0)
@@ -335,7 +347,7 @@ class AutomaticRefreshTests(unittest.TestCase):
             "\n".join(render(model)),
         )
 
-    def test_success_clears_only_the_previous_automatic_refresh_failure(self) -> None:
+    def test_later_success_clears_only_the_previous_automatic_failure(self) -> None:
         task = task_record(slug="refresh-recovery")
         reconciliation = {
             "contract": "asha.control-reconciliation.v1",
@@ -348,27 +360,25 @@ class AutomaticRefreshTests(unittest.TestCase):
         row = TuiRow.from_records(task, reconciliation)
         model = TuiModel([row])
         model.message = "operator selected refresh-recovery"
+        self.prepare(model)
         screen = self.Screen()
         screen.keys = [-1, -1, ord("q")]
+        runner = self.Refresher([
+            ValueError("adapter failed"), self.snapshot(row),
+        ])
 
-        with mock.patch.object(tui_module, "_paint"), \
-                mock.patch.object(
-                    tui_module, "_load_rows",
-                    side_effect=[ValueError("adapter failed"), [row]],
-                ), mock.patch.object(
-                    tui_module.time, "monotonic",
-                    side_effect=[0.0, 5.1, 5.2, 10.3, 10.4],
-                ):
+        with mock.patch.object(tui_module, "_paint"):
             status = tui_module._curses_loop(
                 screen, self.Curses(), model, SimpleNamespace(), {},
                 SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
             )
 
         self.assertEqual(status, 0)
         self.assertEqual(model.message, "operator selected refresh-recovery")
         self.assertIsNone(model.automatic_refresh_error)
 
-    def test_queued_navigation_and_quit_dispatch_before_due_slow_refresh(self) -> None:
+    def test_keys_dispatch_while_a_refresh_pass_is_pending(self) -> None:
         first = task_record(slug="first")
         second = task_record(slug="second")
         result = {
@@ -383,27 +393,55 @@ class AutomaticRefreshTests(unittest.TestCase):
             TuiRow.from_records(first, result),
             TuiRow.from_records(second, dict(result, task_id=second["task_id"])),
         ])
+        self.prepare(model)
         screen = self.Screen()
         screen.keys = [self.Curses.KEY_DOWN, ord("q")]
+        runner = self.Refresher()
 
-        with mock.patch.object(tui_module, "_paint"), \
-                mock.patch.object(
-                    tui_module, "_load_rows",
-                    side_effect=AssertionError("queued input must win"),
-                ) as load, mock.patch.object(
-                    tui_module.time, "monotonic", side_effect=[0.0, 5.1, 5.2],
-                ):
+        with mock.patch.object(tui_module, "_paint"), mock.patch.object(
+            tui_module, "_load_rows",
+            side_effect=AssertionError("the input loop must not run a pending pass"),
+        ) as load:
             status = tui_module._curses_loop(
                 screen, self.Curses(), model, SimpleNamespace(), {},
                 SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
             )
 
         self.assertEqual(status, 0)
-        # Tree rows: the unbound-tasks root, then the two tasks; one KEY_DOWN
-        # lands on the first task.
         self.assertEqual(model.initiatives.selection, 1)
         self.assertEqual(model.initiatives.selected_row.kind, "task")
         load.assert_not_called()
+
+    def test_a_ready_snapshot_is_applied_once_on_the_main_loop(self) -> None:
+        initial = task_record(slug="before")
+        updated = task_record(slug="after")
+        result = {
+            "contract": "asha.control-reconciliation.v1",
+            "task_id": initial["task_id"], "state": "starting",
+            "blocker": None, "evidence": [], "runs": [],
+        }
+        updated_result = dict(result, task_id=updated["task_id"])
+        model = TuiModel([TuiRow.from_records(initial, result)])
+        self.prepare(model)
+        screen = self.Screen()
+        screen.keys = [-1, -1, ord("q")]
+        runner = self.Refresher([
+            self.snapshot(TuiRow.from_records(updated, updated_result)),
+        ])
+
+        with mock.patch.object(tui_module, "_paint"), mock.patch.object(
+            tui_module, "_refresh_initiatives", wraps=tui_module._refresh_initiatives,
+        ) as apply_views:
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(model.rows[0].task["slug"], "after")
+        apply_views.assert_called_once()
 
     def test_default_height_reserves_visible_space_for_automatic_refresh_error(self) -> None:
         rows = []
