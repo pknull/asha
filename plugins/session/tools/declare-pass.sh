@@ -18,9 +18,10 @@ command -v jq >/dev/null 2>&1 || {
   exit 1
 }
 command -v flock >/dev/null 2>&1 || {
-  echo "ERROR: flock is required to declare a verification pass safely" >&2
+  echo "ERROR: flock(1) is unavailable; declare-pass.sh is Linux-only until lib/portable.sh gains a BSD fallback" >&2
   exit 1
 }
+LOCK_WAIT_SECONDS=5
 
 OLD_VALUE="$1"
 if [[ "$OLD_VALUE" == *$'\n'* || "$OLD_VALUE" == *$'\r'* ]]; then
@@ -45,7 +46,10 @@ MARKER="$MARKER_DIR/pass-declaration.json"
 umask 077
 mkdir -p "$MARKER_DIR" || exit 1
 exec {LOCK_FD}<"$MARKER_DIR" || exit 1
-flock -x "$LOCK_FD" || exit 1
+flock -w "$LOCK_WAIT_SECONDS" -x "$LOCK_FD" || {
+  echo "ERROR: could not acquire the marker lock on $MARKER_DIR within ${LOCK_WAIT_SECONDS}s" >&2
+  exit 1
+}
 TMP="$(mktemp "$MARKER_DIR/.pass-declaration.XXXXXX")" || exit 1
 trap 'rm -f "$TMP"' EXIT
 if [[ $HAS_NEW -eq 1 ]]; then

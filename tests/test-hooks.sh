@@ -229,6 +229,16 @@ VERIFY_NONE="$(run_hook verify-pass-complete.sh \
 [[ "$VERIFY_NONE" == '{}' ]] \
   && ok "verification handler with no marker is a fail-open no-op" \
   || fail "verification handler with no marker is a fail-open no-op"
+NO_MARKERS="$WORK/no-markers"
+mkdir -p "$NO_MARKERS/.asha"
+printf '{"initialized":true,"memory_version":2,"project_id":"no-markers"}\n' > "$NO_MARKERS/.asha/config.json"
+VERIFY_NODIR_ERR="$WORK/verify-nodir.err"
+VERIFY_NODIR="$(printf '%s' '{"session_id":"verify-nodir","cwd":"'"$NO_MARKERS"'","stop_hook_active":false}' \
+  | HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$NO_MARKERS" CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/session" \
+    ASHA_HARNESS=claude "$HANDLERS/verify-pass-complete.sh" 2>"$VERIFY_NODIR_ERR")"
+[[ "$VERIFY_NODIR" == '{}' && ! -s "$VERIFY_NODIR_ERR" ]] \
+  && ok "verification handler without Work/markers is a silent no-op" \
+  || fail "verification handler without Work/markers is a silent no-op"
 
 BINARY_TOKEN="binary-old-$RANDOM-should-disappear"
 printf '%s\0binary-tail\n' "$BINARY_TOKEN" > "$PROJECT/src/pass-proof.bin"
