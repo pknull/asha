@@ -180,6 +180,19 @@ class ControlTuiFocusTests(unittest.TestCase):
 
         self.assertEqual(polled.writes, immediate.writes)
 
+    def test_prompt_repaints_underlay_on_entry_and_resize_only(self):
+        model = TuiModel([])
+        screen = FakeScreen([FakeCurses.KEY_RESIZE, -1, 27])
+
+        with mock.patch.object(tui, "_paint", wraps=tui._paint) as paint:
+            result = tui._prompt_line(
+                screen, FakeCurses(), model, "Reason: ",
+            )
+
+        self.assertIsNone(result)
+        self.assertEqual(paint.call_count, 2)
+        self.assertTrue(model.dirty, "closing an overlay must repaint the tree")
+
     def test_start_and_room_form_timeouts_do_not_redraw_the_modal(self):
         with mock.patch.object(
             tui, "freeze_start_candidates", return_value=_stub_snapshot(),
@@ -249,6 +262,27 @@ class ControlTuiFocusTests(unittest.TestCase):
         paint.assert_called_once()
         runner.start.assert_called_once_with()
         runner.stop.assert_called_once_with()
+
+    def test_unhandled_key_and_noop_intent_do_not_repaint_the_tree(self):
+        model = TuiModel([])
+        model._ensure_screen()
+        screen = FakeScreen([0x110000, ord("z"), ord("q")])
+        runner = mock.Mock()
+        runner.poll.side_effect = [None, None, None]
+        noop = tui.TuiIntent(tui.IntentKind.NONE)
+        quit_intent = tui.TuiIntent(tui.IntentKind.QUIT)
+
+        with mock.patch.object(tui, "_paint") as paint, mock.patch.object(
+            model, "dispatch_key", side_effect=[noop, quit_intent],
+        ):
+            status = tui._curses_loop(
+                screen, FakeCurses(), model, self.config, self.env,
+                mock.Mock(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
+            )
+
+        self.assertEqual(status, 0)
+        paint.assert_called_once()
 
     def test_cursor_visibility_is_nested_safe(self):
         curses_module = FakeCurses(cursor=0)

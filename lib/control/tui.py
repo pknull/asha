@@ -108,6 +108,7 @@ _BASIC_TIER_COLOUR = {WAITING: 3, MACHINE: 6, GOOD: 2, BAD: 1, INERT: 7}
 
 _INPUT_POLL_MS = 200
 _AUTO_REFRESH_SECONDS = 5.0
+_BACKGROUND_REFRESH_STOP_SECONDS = 1.0
 _START_OUTPUT_BYTES = 64 * 1024
 _START_DRAIN_SECONDS = 0.25
 _START_CLEANUP_SECONDS = 0.5
@@ -276,6 +277,8 @@ class RefreshSnapshot:
     room_rows: tuple[dict[str, Any], ...]
     initiatives_error: str | None = None
     rooms_error: str | None = None
+    generation: int = 0
+    skipped: tuple[dict[str, str], ...] = ()
 
 
 class BackgroundRefresh:
@@ -330,8 +333,16 @@ class BackgroundRefresh:
             self._lock.release()
 
     def stop(self) -> None:
-        """Prevent another pass; an in-flight daemon is allowed to finish."""
+        """Prevent another pass and briefly drain one already in flight."""
         self._stop_event.set()
+        with self._lock:
+            thread = self._thread
+        if thread is not None and thread is not threading.current_thread():
+            # Give an in-flight adapter a brief chance to release its registry
+            # lock and child process. If it outlives this bounded shutdown,
+            # daemon status deliberately preserves responsive TUI exit; task
+            # records remain atomic and process-owned locks release on exit.
+            thread.join(timeout=_BACKGROUND_REFRESH_STOP_SECONDS)
 
 
 def _row_sort_key(row: TuiRow) -> tuple[Any, ...]:
@@ -397,6 +408,7 @@ class TuiModel:
         self.scroll_offset = 0
         self.diffs: dict[str, DiffSummary] = {}
         self.dirty = True
+        self._refresh_generation = 0
         self._message: str | None = None
         self._automatic_refresh_error: str | None = None
         self.help_visible = False
@@ -431,6 +443,20 @@ class TuiModel:
         if value != self._automatic_refresh_error:
             self._automatic_refresh_error = value
             self.dirty = True
+
+    @property
+    def refresh_generation(self) -> int:
+        """Generation of the latest synchronous main-thread state load."""
+        return self._refresh_generation
+
+    def begin_synchronous_load(self) -> int:
+        """Fence automatic passes that started before an operator load."""
+        self._refresh_generation += 1
+        return self._refresh_generation
+
+    def automatic_refresh_scope(self) -> tuple[int, bool]:
+        """Capture one immutable worker request without mutating the model."""
+        return self._refresh_generation, self.include_archived
 
     @property
     def filtered_rows(self) -> tuple[TuiRow, ...]:
@@ -1242,6 +1268,8 @@ def _refresh_initiatives(
 ) -> None:
     from .orchestration.tui_model import InitiativesScreen
 
+    if views is None or rooms is None:
+        model.begin_synchronous_load()
     if views is None:
         try:
             loaded_views = _load_initiative_views(env, tmux=tmux)
@@ -1379,23 +1407,30 @@ def _load_rows(
     return rows
 
 
-def _surface_skipped(model: TuiModel, store: TaskStore) -> None:
-    if not store.skipped:
+def _surface_skipped(
+    model: TuiModel, skipped: Iterable[Mapping[str, str]],
+) -> None:
+    skipped_entries = tuple(skipped)
+    if not skipped_entries:
         return
-    detail = f"{len(store.skipped)} registry entries skipped"
+    detail = f"{len(skipped_entries)} registry entries skipped"
     model.message = f"{model.message}; {detail}" if model.message else detail
 
 
 def _load_refresh_snapshot(
     config: ControlConfig,
-    store: TaskStore,
-    journals: CreationJournalStore,
-    jj: JjAdapter,
     env: Mapping[str, str],
     *,
     include_archived: bool = False,
+    generation: int = 0,
 ) -> RefreshSnapshot:
     """Load every automatic branch without mutating the curses model."""
+    # TaskStore.skipped is mutable per list() call. Automatic reconciliation
+    # therefore owns an adapter set rather than sharing the curses thread's
+    # adapters, and the skipped records travel in this same handoff.
+    store = TaskStore(config)
+    journals = CreationJournalStore(config)
+    jj = JjAdapter()
     rows = tuple(_load_rows(
         config, store, journals, jj, include_archived=include_archived,
     ))
@@ -1415,6 +1450,8 @@ def _load_refresh_snapshot(
         rows=rows,
         initiative_views=views,
         room_rows=rooms,
+        generation=generation,
+        skipped=tuple(copy.deepcopy(store.skipped)),
         initiatives_error=initiatives_error,
         rooms_error=rooms_error,
     )
@@ -2148,11 +2185,18 @@ def _visible_cursor(curses_module):
 
 
 def _cursor_editor(function):
-    """Give every synchronous editor the same exception-safe cursor contract."""
+    """Give every synchronous editor the same cursor and repaint contract."""
     @wraps(function)
     def wrapped(stdscr, curses_module, *args, **kwargs):
-        with _visible_cursor(curses_module):
-            return function(stdscr, curses_module, *args, **kwargs)
+        try:
+            with _visible_cursor(curses_module):
+                return function(stdscr, curses_module, *args, **kwargs)
+        finally:
+            # Editors draw outside the tree painter. Their final frame must be
+            # cleared even when the returned status message did not change.
+            model = args[0] if args else kwargs.get("model")
+            if isinstance(model, TuiModel):
+                model.dirty = True
     return wrapped
 
 
@@ -2174,8 +2218,16 @@ def _prompt_line(
     bounded_candidates = _bounded_modal_candidates(candidates)
     candidate_selection = selected
     redraw = True
+    repaint_underlay = True
     while True:
         if redraw:
+            if repaint_underlay:
+                # Prompts are overlays. Restore the tree once on entry and
+                # after resize, including when a preceding full-screen modal
+                # erased it, but never on an idle input timeout.
+                model.dirty = True
+                _paint(stdscr, curses_module, model)
+                repaint_underlay = False
             height, width = stdscr.getmaxyx()
             if height:
                 controls = _modal_controls(candidates=bool(bounded_candidates))
@@ -2230,6 +2282,7 @@ def _prompt_line(
         if key == 27:
             return None
         if key == getattr(curses_module, "KEY_RESIZE", -998):
+            repaint_underlay = True
             continue
         if key in {
             getattr(curses_module, "KEY_UP", -996),
@@ -3096,11 +3149,12 @@ def _replace_loaded_rows(
     model: TuiModel, config: ControlConfig, store: TaskStore,
     journals: CreationJournalStore, jj: JjAdapter,
 ) -> None:
+    model.begin_synchronous_load()
     model.replace_rows(_load_rows(
         config, store, journals, jj,
         include_archived=model.include_archived,
     ))
-    _surface_skipped(model, store)
+    _surface_skipped(model, store.skipped)
 
 
 def _retry_task(
@@ -3270,6 +3324,7 @@ def _fresh_active_row(
     *, model: TuiModel, config: ControlConfig, store: TaskStore,
     journals: CreationJournalStore, jj: JjAdapter, task_id: str,
 ) -> TuiRow:
+    model.begin_synchronous_load()
     current = store.read(task_id)
     row = _read_row(config, store, journals, current, jj)
     model.replace_row(row)
@@ -3523,6 +3578,7 @@ def _context_actions(
             stdscr, curses_module, config, selected,
             selected.observation.run_id, env,
         )
+        model.begin_synchronous_load()
         model.replace_row(_read_row(config, store, journals, current, jj))
         return refusal or "popup closed; task resources were left untouched"
     if answer in {"I", "t", "f"}:
@@ -3931,9 +3987,15 @@ def _execute_initiative_intent(
     if screen is None:
         return model.initiatives_error or "initiatives unavailable"
     if intent.kind is IntentKind.INIT_EXPAND:
-        return None if screen.expand() else "nothing to expand"
+        changed = screen.expand()
+        if changed:
+            model.dirty = True
+        return None if changed else "nothing to expand"
     if intent.kind is IntentKind.INIT_COLLAPSE:
-        return None if screen.collapse() else "nothing to collapse"
+        changed = screen.collapse()
+        if changed:
+            model.dirty = True
+        return None if changed else "nothing to collapse"
     if intent.kind is IntentKind.INIT_NEW:
         return _launch_coordinator_session(stdscr, curses_module, model, config, env)
     row = screen.selected_row
@@ -3947,6 +4009,7 @@ def _execute_initiative_intent(
             IntentKind.INIT_VERIFICATION: "verification", IntentKind.INIT_STORAGE: "storage",
         }[intent.kind]
         screen.pane = "summary" if screen.pane == pane else pane
+        model.dirty = True
         if screen.pane == "storage":
             view = screen.view_for(row.initiative_id)
             if view is not None and view.get("storage") is None:
@@ -4078,14 +4141,11 @@ def _execute_intent(
         return False
     if intent.kind is IntentKind.HELP:
         model.help_visible = not model.help_visible
+        model.dirty = True
         return True
     if intent.kind is IntentKind.TOGGLE_SCOPE:
         model.include_archived = not model.include_archived
-        model.replace_rows(_load_rows(
-            config, store, journals, jj,
-            include_archived=model.include_archived,
-        ))
-        _surface_skipped(model, store)
+        _replace_loaded_rows(model, config, store, journals, jj)
         _enter_tree(model, env)
         return True
     if intent.kind is IntentKind.FILTER:
@@ -4097,15 +4157,15 @@ def _execute_intent(
             initial=screen.filter_string, maximum=200,
         )
         if value is not None:
+            before = (screen.filter_string, screen.selection, screen.scroll_offset)
             screen.set_filter(value)
+            after = (screen.filter_string, screen.selection, screen.scroll_offset)
+            if after != before:
+                model.dirty = True
         return True
     if intent.kind is IntentKind.START:
         model.message = _start_form(stdscr, curses_module, model, env, config)
-        model.replace_rows(_load_rows(
-            config, store, journals, jj,
-            include_archived=model.include_archived,
-        ))
-        _surface_skipped(model, store)
+        _replace_loaded_rows(model, config, store, journals, jj)
         _enter_tree(model, env)
         return True
     if intent.kind is IntentKind.ATTENTION:
@@ -4114,6 +4174,7 @@ def _execute_intent(
             return True
         screen.attention_only = not screen.attention_only
         screen.selection = 0 if screen.rows() else None
+        model.dirty = True
         model.message = (
             "showing only rows waiting on a human (! shows everything)"
             if screen.attention_only else "showing everything"
@@ -4152,6 +4213,7 @@ def _execute_intent(
         refusal = _open_popup(
             stdscr, curses_module, config, row, intent.run_id, env,
         )
+        model.begin_synchronous_load()
         refreshed = _read_row(config, store, journals, row.task, jj)
         model.replace_row(refreshed)
         if refreshed.task["lifecycle"] == "archived":
@@ -4164,6 +4226,7 @@ def _execute_intent(
         )
         return True
     if intent.kind is IntentKind.RECONCILE:
+        model.begin_synchronous_load()
         refreshed = _read_row(config, store, journals, row.task, jj)
         model.replace_row(refreshed)
         if refreshed.task["lifecycle"] == "archived":
@@ -4199,12 +4262,8 @@ def _execute_intent(
             ),
             journals=journals, jj=jj, presentation=presentation,
         )
-        model.replace_rows(_load_rows(
-            config, store, journals, jj,
-            include_archived=model.include_archived,
-        ))
+        _replace_loaded_rows(model, config, store, journals, jj)
         model.message = "task archived; workspace and change preserved"
-        _surface_skipped(model, store)
         return True
     return True
 
@@ -4231,10 +4290,12 @@ def _curses_loop(
             pass
     if model.initiatives is None:
         _enter_tree(model, env)
-    loader = lambda: _load_refresh_snapshot(
-        config, store, journals, jj, env,
-        include_archived=model.include_archived,
-    )
+    def loader() -> RefreshSnapshot:
+        generation, include_archived = model.automatic_refresh_scope()
+        return _load_refresh_snapshot(
+            config, env, include_archived=include_archived,
+            generation=generation,
+        )
     refresh_runner = BackgroundRefresh(loader) if refresher is None else refresher
     try:
         refresh_runner.start()
@@ -4255,10 +4316,10 @@ def _curses_loop(
                     model.automatic_refresh_error = (
                         f"automatic reconciliation failed: {_safe_error(ready)}"
                     )
-                else:
+                elif ready.generation == model.refresh_generation:
                     try:
                         model.replace_rows(ready.rows)
-                        _surface_skipped(model, store)
+                        _surface_skipped(model, ready.skipped)
                         _refresh_initiatives(
                             model, env,
                             views=ready.initiative_views,
@@ -4273,18 +4334,35 @@ def _curses_loop(
                         )
 
             if key != -1:
-                model.dirty = True
                 if key == getattr(curses_module, "KEY_RESIZE", -998):
                     height, width = stdscr.getmaxyx()
                     model.resize(height, width)
                     continue
                 if key == getattr(curses_module, "KEY_UP", -997):
                     if model.initiatives is not None:
+                        before = (
+                            model.initiatives.selection,
+                            model.initiatives.scroll_offset,
+                        )
                         model.initiatives.move_selection(-1)
+                        if (
+                            model.initiatives.selection,
+                            model.initiatives.scroll_offset,
+                        ) != before:
+                            model.dirty = True
                     continue
                 if key == getattr(curses_module, "KEY_DOWN", -996):
                     if model.initiatives is not None:
+                        before = (
+                            model.initiatives.selection,
+                            model.initiatives.scroll_offset,
+                        )
                         model.initiatives.move_selection(1)
+                        if (
+                            model.initiatives.selection,
+                            model.initiatives.scroll_offset,
+                        ) != before:
+                            model.dirty = True
                     continue
                 if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
                     value = "ENTER"
@@ -4348,7 +4426,7 @@ def run_tui(
     journals = CreationJournalStore(config)
     jj = JjAdapter()
     model = TuiModel(_load_rows(config, store, journals, jj))
-    _surface_skipped(model, store)
+    _surface_skipped(model, store.skipped)
     del initial_mode  # single view: the tree is the only mode (flag kept for compat)
     _enter_tree(model, values)
 
