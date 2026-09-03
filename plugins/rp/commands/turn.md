@@ -75,6 +75,12 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
       the previous draft failed validation. Use the suggested_fix entries
       to address each violation in your rewrite.
 
+      WALKTHROUGH CONTRACT: Return exactly one complete dramatic beat for this
+      turn. Never stop mid-dialogue: finish the immediate exchange or action
+      that gives the beat its consequence, then stop before beginning a second
+      beat. End the visible draft with exactly one anchor line:
+      Scene: <scene> | Location: <location> | Present: <comma-separated names>
+
       Respect the protocol (Day Plan, character agents for profiled NPCs,
       GM_DIRECTIVE on spawns, register-stack persistence, no softening,
       no time skips, no fade-to-black).
@@ -85,6 +91,9 @@ LOOP while ATTEMPT_NUMBER <= MAX_ATTEMPTS:
       reach the session file.
 
   Receive DRAFT, GM_SPAWN_LOG, SOURCE_LOG and SCENE_STATE_DELTA from roleplay-gm output.
+  Confirm DRAFT contains one complete beat, does not end mid-dialogue, and ends
+  with the one-line Scene/Location/Present anchor. A missing or duplicated
+  anchor is a draft defect and must be corrected before review.
 
   # 3b. Spawn the continuity reviewer (live_roleplay mode) to check the draft
   Spawn continuity-reviewer via Task:
@@ -176,7 +185,9 @@ The `Work/markers/rp-active` marker MUST persist through all subagent spawns and
 
 ## Output to Keeper
 
-On clean pass (most turns): just the GM-drafted prose, as if straight from the orchestrator.
+On clean pass (most turns): the GM-drafted prose for one complete beat followed
+by its single `Scene: ... | Location: ... | Present: ...` anchor line, as if
+straight from the orchestrator.
 
 On surrender: the draft + the violations report + the three options above.
 

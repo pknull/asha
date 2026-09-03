@@ -9,7 +9,9 @@
 #   - allow  -> exit 0  (no match, or a rule's override_env is set to 1)
 #   - deny   -> exit 2 + stderr reason   (hard block; honored by Claude AND Codex)
 #   - ask    -> Claude (or unknown harness): JSON permissionDecision="ask" + reason, exit 0
-#               Codex (no permission dialog): degrade to deny (exit 2) with the override hint
+#               Codex: degrade to deny (exit 2) with the override hint. FINDING
+#               from Codex hooks docs (2026-09-02): PreToolUse ask is "parsed but not supported yet. Codex marks the hook run as failed, reports the error, and continues the tool call".
+#               "PermissionRequest accepts only allow|deny."
 #
 # FAIL-OPEN: any internal error (missing/malformed rules, missing jq, parse failure)
 # results in exit 0 (allow). A guardrail that fails *closed* would brick every

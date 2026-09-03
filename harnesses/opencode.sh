@@ -221,12 +221,14 @@ opencode_install_plugin() {
   local prompt="$handlers/user-prompt-submit.sh"
   local post="$handlers/post-tool-use.sh"
   local end="$handlers/session-end.sh"
+  local verify="$handlers/verify-pass-complete.sh"
   [[ -x "$adapter" ]] || { echo "WARN: OpenCode policy adapter missing: $adapter" >&2; return 0; }
+  [[ -x "$verify" ]] || { echo "WARN: OpenCode verification handler missing: $verify" >&2; return 0; }
 
   local content prepared
-  content="$(python3 - "$adapter" "$start" "$prompt" "$post" "$end" <<'PYEOF'
+  content="$(python3 - "$adapter" "$start" "$prompt" "$post" "$end" "$verify" <<'PYEOF'
 import json, sys
-adapter, start, prompt, post, end = map(json.dumps, sys.argv[1:])
+adapter, start, prompt, post, end, verify = map(json.dumps, sys.argv[1:])
 print('import { spawnSync } from "node:child_process"')
 print('')
 print('export const AshaPlugin = async ({ directory }) => {')
@@ -277,7 +279,7 @@ print('    },')
 print('    "tool.execute.after": async (input) => {')
 print('      const sid = input.sessionID || ""; remember(sid)')
 print('      const payload = { hook_event_name: "PostToolUse", session_id: sid, cwd: directory, tool_name: input.tool || "", tool_input: input.args || {} }')
-print(f'      run({post}, "", payload, sid)')
+print(f'      append(sid, run({post}, "", payload, sid).stdout)')
 print('    },')
 print('    "experimental.chat.system.transform": async (input, output) => {')
 print('      const sid = input.sessionID || latestSessionID || ""; remember(sid); ensureStarted(sid)')
@@ -290,6 +292,10 @@ print('        const info = event.properties?.info || event.properties || {}')
 print('        const sid = info.id || info.sessionID || ""; remember(sid)')
 print('        if (info.parentID || info.parentId) childSessions.add(sid)')
 print('        ensureStarted(sid)')
+print('      } else if (event && event.type === "session.idle") {')
+print('        const info = event.properties?.info || event.properties || {}')
+print('        const sid = info.id || info.sessionID || latestSessionID || ""; remember(sid)')
+print(f'        append(sid, run({verify}, "", {{ session_id: sid, cwd: directory }}, sid).stdout)')
 print('      }')
 print('    },')
 print('    dispose: async () => {')

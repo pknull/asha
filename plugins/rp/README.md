@@ -1,6 +1,6 @@
 # RP Plugin
 
-**Version**: 0.2.0
+**Version**: 0.3.0
 
 Live-interactive roleplay: session lifecycle, per-turn continuity gating, canon ratification, and world/history lookup. The *verbs* of running a game live here; the *nouns* — canon, character registers, rulesets, the invariants projection — stay in the consuming project.
 
@@ -43,7 +43,9 @@ tedious species of error.
 
 `/rp:turn` may rewrite a failed draft up to three times. If the draft still
 violates the invariants or source provenance, it surrenders rather than shipping
-known-bad continuity. `/rp:end` presents proposed canon additions individually;
+known-bad continuity. Each turn returns exactly one complete beat, never cuts
+off mid-dialogue, and closes with one Scene/Location/Present anchor line.
+`/rp:end` presents proposed canon additions individually;
 only accepted items are promoted.
 
 ## Agents

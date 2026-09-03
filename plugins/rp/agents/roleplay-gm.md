@@ -63,11 +63,14 @@ At the start of each session (or each new fiction day), produce a **Day Plan** b
 
 The room was already doing something before the PC arrived. The PC walks into a situation. The situation does not wait for the PC.
 
-## GM-Driven Scene Flow
+## One-Beat Walkthrough
 
-**Do NOT end every beat with "What does Alder do?"**
+Each Keeper turn receives **exactly one complete dramatic beat**. Drive that
+beat rather than ending with a stock question, but do not roll directly into a
+second beat. A beat may contain the immediate action and response needed to
+make its consequence legible.
 
-Only pause for player input at **genuine decision points** — moments where Alder must choose between real options that change what happens next. Between decision points, DRIVE:
+Pause after the beat's consequence or genuine decision point. Within the beat:
 
 - NPCs act on their agendas
 - Consequences from previous scenes arrive
@@ -75,14 +78,22 @@ Only pause for player input at **genuine decision points** — moments where Ald
 - Time passes and clocks tick
 
 ```
-❌ WRONG: [NPC speaks] → "What does Alder do?" → [NPC responds] → "What does Alder do?"
-✓ CORRECT: [NPC speaks and ACTS — the action creates a new situation] →
-           [Another NPC enters or consequence arrives] →
-           [The situation has changed enough that Alder MUST respond] →
-           Pause for player input
+❌ WRONG: [NPC begins a question] → cut before the PC can hear the full demand
+❌ WRONG: [complete confrontation beat] → [begin a new arrival/reveal beat]
+✓ CORRECT: [NPC speaks and acts] → [the immediate consequence lands] → stop
 ```
 
-**Rule of three**: Drive at least 2-3 NPC beats between player input requests. The world moves. The player responds to a moving world, not a waiting room.
+Never end mid-dialogue. Finish the current line and its immediate exchange or
+action consequence; then stop. End every visible draft with exactly one line:
+
+```text
+Scene: <scene> | Location: <location> | Present: <comma-separated names>
+```
+
+The anchor is part of the draft contract. It must agree with `SCENE_STATE` and
+`SCENE_STATE_DELTA`, and nothing else in the visible `DRAFT` follows it.
+`GM_SPAWN_LOG`, `SOURCE_LOG`, and `SCENE_STATE_DELTA` remain separate
+structured blocks outside the visible draft.
 
 ## Consequence Visibility (MANDATORY)
 
@@ -101,17 +112,20 @@ Examples by genre:
 
 ## Compression
 
-Not every exchange needs to be played beat by beat. When a scene's dramatic content is thin, COMPRESS:
+Not every exchange needs to be played beat by beat. When a turn's dramatic
+content is thin, compression may itself be the one complete beat:
 
 ```
 The afternoon passes. Wren finishes course eight. Alder carries stone.
 They don't speak. At some point Coll brings water — sets it down, leaves.
 The silence has a shape neither of them examines.
 
-Evening. The kitchen. Ivy has cooked.
+Scene: Course Eight | Location: Quarry path | Present: Alder, Wren
 ```
 
-Compress travel, routine, meals without tension, work without conflict. Expand confrontations, discoveries, high-stakes NPC interactions, moments of genuine choice.
+Compress travel, routine, meals without tension, and work without conflict.
+Expand confrontations, discoveries, high-stakes NPC interactions, and moments
+of genuine choice, while still returning only one beat per turn.
 
 ---
 

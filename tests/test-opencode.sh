@@ -51,6 +51,8 @@ assert "plugin bridges tool policy" 'grep -q "tool.execute.before" "$OC1/plugins
 assert "plugin surfaces status-0 policy warnings at the native seam" 'grep -q "result.status === 0.*process.stderr.write" "$OC1/plugins/asha.js"'
 assert "plugin injects shell identity" 'grep -q "shell.env" "$OC1/plugins/asha.js"'
 assert "plugin routes prompt recovery directly" 'grep -q "user-prompt-submit.sh" "$OC1/plugins/asha.js"'
+assert "plugin queues style output after tool execution" 'grep -q "tool.execute.after" "$OC1/plugins/asha.js" && grep -q "append(sid, run" "$OC1/plugins/asha.js"'
+assert "plugin checks declared passes at idle" 'grep -q "session.idle" "$OC1/plugins/asha.js" && grep -q "verify-pass-complete.sh" "$OC1/plugins/asha.js"'
 assert "plugin avoids root lifecycle side effects for known child sessions" 'grep -q "childSessions" "$OC1/plugins/asha.js"'
 assert "plugin seals recovery on dispose without semantic save" 'grep -q "session-end.sh" "$OC1/plugins/asha.js" && ! grep -Eq "detached-save|save-session|setsid" "$OC1/plugins/asha.js"'
 if command -v node >/dev/null 2>&1 && node --check "$OC1/plugins/asha.js" >/dev/null 2>&1; then

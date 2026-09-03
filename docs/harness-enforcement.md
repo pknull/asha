@@ -15,6 +15,24 @@ contract is portability of behavior, not identical primitives.
 | Semantic Memory publication | Explicit `/session:save` | Explicit session save skill | Explicit session save skill | Explicit session save command |
 | Workspace context | SessionStart delivery | SessionStart delivery | SessionStart delivery | Plugin SessionStart delivery |
 
+## Fail-open completion and style nudges
+
+Both nudges come from handlers under `plugins/session`; harness adapters only
+select the verified delivery seam. They never publish Memory or block a tool.
+
+| Nudge | Claude Code | OpenAI Codex | GitHub Copilot CLI | OpenCode |
+|---|---|---|---|---|
+| Declared verification pass | `Stop` runs `verify-pass-complete.sh`; remaining fixed-string hits return one `{"decision":"block","reason":...}` retry and `stop_hook_active` suppresses the loop | Same Stop JSON, subject to Codex's per-command hash-bound hook trust | No Stop claim: next `userPromptSubmitted` runs the handler and returns top-level `additionalContext` | `session.idle` appends handler stdout to pending context for the next system transform |
+| Project style audit | `PostToolUse` for Edit/Write/MultiEdit/apply_patch returns `hookSpecificOutput.additionalContext` | Same response shape, with the known incomplete `unified_exec` interception caveat | `postToolUse` queues output because copilot-cli#2980 drops its additional context; the next `userPromptSubmitted` returns it | `tool.execute.after` appends handler stdout to pending context for the next system transform |
+
+The style handler resolves the payload cwd to an initialized project, runs
+only an executable `<root>/.asha/style-audit`, passes the edited path as its
+first argument and the hook payload on stdin, and caps execution at ten
+seconds. Missing, non-executable, silent, failing, or timed-out auditors are
+no-ops. The declared-pass handler excludes `.git`, `.jj`, and `Work` from its
+fixed-string search, names remaining files, clears the marker only after an
+empty proof, and fails open on internal search errors.
+
 ## Control status event claims
 
 Control writes one bounded current snapshot per managed run. These are status
@@ -66,6 +84,12 @@ engine. Upstream parallel-hook and timeout behavior means it remains a
 guardrail, not containment. OpenCode runs the same shared policy through
 `tool.execute.before`; unsupported interactive `ask` decisions become denials.
 
+**Recorded Codex ask finding (documentation checked 2026-09-02; no behavior
+change):** PreToolUse `ask` is "parsed but not supported yet. Codex marks the hook run as failed, reports the error, and continues the tool call";
+"PermissionRequest accepts only allow|deny." Asha therefore retains its
+existing conservative Codex policy mapping from `ask` to an exit-2 denial
+instead of emitting an inert ask response.
+
 Secret scanning remains a separate pre-tool guard. Memory publication is not a
 policy side effect and no save gate runs during ordinary tool use.
 
@@ -114,6 +138,8 @@ The installer emits:
 
 - `asha-guardrails.json` for translated policy and secret guards
 - `asha-recovery.json` for start, prompt, post-tool, and session-end recovery
+- the declared-pass next-prompt check in `asha-recovery.json`; style findings
+  queued by post-tool recovery are drained through the same prompt seam
 - the remaining feature-specific hook files required by installed plugins
 
 Legacy lifecycle and nudge hook files are removed during reconciliation.
@@ -121,8 +147,10 @@ Legacy lifecycle and nudge hook files are removed during reconciliation.
 ### OpenCode
 
 `harnesses/opencode.sh` generates `plugins/asha.js`. It calls the shared recovery
-handlers directly for start, prompt, post-tool, and dispose. Dispose invokes
-only the session-end seal path. Commands and agents remain native Markdown under
+handlers directly for start, prompt, post-tool, and dispose, appends style-audit
+stdout after tools, and runs the declared-pass handler on `session.idle`.
+Pending output enters the next system-context transform. Dispose invokes only
+the session-end seal path. Commands and agents remain native Markdown under
 plural `commands/` and `agents/` directories.
 
 ## RP and workspace routing

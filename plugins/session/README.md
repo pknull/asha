@@ -1,6 +1,6 @@
 # Session
 
-**Version**: 2.2.1
+**Version**: 2.3.0
 
 Compact explicit memory publication, bounded crash recovery, reviewed learning
 lifecycle, policy guardrails, guarded loops, and workspace management.
@@ -91,6 +91,8 @@ migration review is owned by `/session:consolidate`.
 | `SessionStart` | Coherently inject the project's published pair, operation rules, active learnings, workspace context, and any verify-first recovery hint; then expire stale private state |
 | `UserPromptSubmit` | Update prompt recovery; directly deliver RP routing when active |
 | `PostToolUse` | Update bounded paths/action/blocker recovery |
+| `PostToolUse` style audit | On file edits, run executable project-local `.asha/style-audit` for at most 10 seconds and deliver non-empty output as a fail-open nudge |
+| `Stop` verification pass | Recheck `Work/markers/pass-declaration.json`; block one Claude/Codex stop retry while the old value remains, or clear the marker after an empty proof |
 | `SessionEnd` | Seal timestamp and prune only |
 | `PreToolUse` | Independent secret and policy guardrails |
 
@@ -134,6 +136,13 @@ for the repository; workspace state answers what coordinates the repositories.
   checks required by `AGENTS.md`.
 
 ## Version history
+
+### 2.3.0
+
+Added the harness-neutral declared revision-pass check and project-local style
+audit nudges. Claude/Codex use native Stop/PostToolUse response shapes, Copilot
+delivers through its next-prompt context seam, and OpenCode queues handler
+output through its generated bridge. Both handlers fail open.
 
 ### 2.2.0
 
