@@ -263,6 +263,28 @@ class ControlTuiFocusTests(unittest.TestCase):
         runner.start.assert_called_once_with()
         runner.stop.assert_called_once_with()
 
+    def test_resize_with_unchanged_dimensions_still_repaints(self):
+        model = TuiModel([])
+        model._ensure_screen()
+        screen = FakeScreen(
+            [FakeCurses.KEY_RESIZE, ord("q")],
+            height=model.height, width=model.width,
+        )
+        runner = mock.Mock()
+        runner.poll.side_effect = [None, None]
+
+        with mock.patch.object(tui, "_paint") as paint:
+            status = tui._curses_loop(
+                screen, FakeCurses(), model, self.config, self.env,
+                mock.Mock(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
+            )
+
+        self.assertEqual(status, 0)
+        # A coalesced or spurious SIGWINCH reports the size curses already
+        # holds; the terminal still needs the frame redrawn.
+        self.assertEqual(paint.call_count, 2)
+
     def test_unhandled_key_and_noop_intent_do_not_repaint_the_tree(self):
         model = TuiModel([])
         model._ensure_screen()

@@ -395,21 +395,28 @@ manual attach command after its immediate reconciliation. A successful
 non-detached `asha task start` whose advisory popup fails still prints that
 diagnostic and returns 0; the newly created task remains live.
 
-While open and outside a modal prompt, the TUI schedules reconciliation of all
-displayed tasks at a five-second monotonic cadence. An already-read key is
-dispatched before a due refresh. The refresh itself runs synchronously in the
-TUI loop: each external adapter call has a deadline, but the length of the
-whole pass scales with the displayed task and run count, so a key arriving
-after a pass begins waits for that finite pass to finish. The TUI creates no
-daemon, thread, or runtime supervisor for automatic reconciliation, never
-queues missed refreshes, and reports adapter failures in the status line. The
-task-start modal's bounded, signal-owned child is the deliberate exception.
-Filter input, task actions, the task-start form, and confirmations pause automatic
-reconciliation until the modal closes. It does not start the separately managed
-Control supervisor; the operator starts it or installs its user service explicitly. A later
-successful automatic pass clears only its stale
-automatic-refresh diagnostic; operator action and skipped-registry messages
-remain. `r` remains the explicit selected-task refresh.
+While open, the TUI reconciles all displayed tasks at a five-second monotonic
+cadence on one daemon thread named `asha-control-refresh`. Each pass loads a
+frozen snapshot of the displayed rows, initiative views, room rows, and
+skipped registry entries without touching the curses model, then places it in
+a single slot under a lock; a newer completed pass replaces an unapplied older
+one, so missed refreshes never queue, and the next pass is due five seconds
+after the previous one finishes. Each external adapter call still has a
+deadline. The curses loop polls that slot without blocking after every input
+poll and applies a ready snapshot before dispatching an already-read key,
+preserving the selected task by identity, so no key waits for a pass in
+progress. An operator action that loads state synchronously on the curses
+thread fences earlier passes: a snapshot whose generation predates that load
+is discarded rather than overwriting the newer result. Filter input, task
+actions, the task-start form, and confirmations pause application, not
+loading; the latest snapshot is applied once the modal closes. Adapter
+failures are reported in the status line. The thread does not start the
+separately managed Control supervisor; the operator starts it or installs its
+user service explicitly. Exit stops the thread and joins it for at most one
+second before daemon status lets the process leave. A later successful
+automatic pass clears only its stale automatic-refresh diagnostic; operator
+action and skipped-registry messages remain. `r` remains the explicit
+selected-task refresh.
 For an archived row, `r` refreshes only the durable lifecycle projection and
 does not probe removed live resources.
 
