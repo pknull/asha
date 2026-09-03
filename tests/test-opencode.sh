@@ -55,12 +55,14 @@ assert "plugin queues style output after tool execution" 'grep -q "tool.execute.
 assert "plugin checks declared passes at idle" 'grep -q "session.idle" "$OC1/plugins/asha.js" && grep -q "verify-pass-complete.sh" "$OC1/plugins/asha.js"'
 assert "plugin explicitly suppresses verification for known child idles" 'grep -q "if (childSessions.has(sid)) return" "$OC1/plugins/asha.js"'
 assert "plugin seals recovery on dispose without semantic save" 'grep -q "session-end.sh" "$OC1/plugins/asha.js" && ! grep -Eq "detached-save|save-session|setsid" "$OC1/plugins/asha.js"'
-if command -v node >/dev/null 2>&1 && node --check "$OC1/plugins/asha.js" >/dev/null 2>&1; then
-  ok "generated plugin parses as JavaScript"
+# The plugin is an ES module in a .js file; feed it on stdin with an explicit
+# module type because node < 22.7 has no syntax detection for --check.
+if command -v node >/dev/null 2>&1 && node --input-type=module --check <"$OC1/plugins/asha.js" >/dev/null 2>&1; then
+  ok "generated plugin parses as an ES module"
 elif command -v node >/dev/null 2>&1; then
-  fail "generated plugin parses as JavaScript"
+  fail "generated plugin parses as an ES module"
 else
-  echo "  - node absent; JavaScript parse check skipped"
+  echo "  - node absent; ES module parse check skipped"
 fi
 if command -v node >/dev/null 2>&1; then
   BRIDGE_PLUGIN="$WORK/asha-plugin.mjs"
