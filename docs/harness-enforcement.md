@@ -33,8 +33,11 @@ payload. Missing, non-executable, or silent auditors are no-ops. Exit and
 timeout status never block; any stdout captured before failure or timeout is
 still delivered as a nudge. The declared-pass handler excludes `.git`, `.jj`,
 and `Work` from its fixed-string search, including binary/NUL-containing
-files, names remaining files, and clears only the same locked marker identity
-after an empty proof. Internal search or lock errors fail open.
+files, names remaining files, and after an empty proof clears the marker only
+when its `old` value, re-read under the lock, still equals the value that was
+proved. Internal search or lock errors fail open. The marker lock uses
+`flock(1)`, which `lib/portable.sh` does not yet cover: without it the
+declare tool refuses with a Linux-only error and the handler is a `{}` no-op.
 
 ## Control status event claims
 

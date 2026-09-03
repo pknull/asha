@@ -95,11 +95,18 @@ const calls = globalThis.__ashaSpawnCalls
 if (calls.length !== 1 || !calls[0].command.endsWith("verify-pass-complete.sh")) {
   throw new Error("root idle did not invoke only verification")
 }
+
+await hooks.event({ event: { type: "session.idle", properties: { info: { id: "child-1" } } } })
+await hooks.dispose()
+const end = globalThis.__ashaSpawnCalls[1]
+if (!end || !end.command.endsWith("session-end.sh") || JSON.parse(end.input).session_id !== "parent-1") {
+  throw new Error("child idle displaced the root session id")
+}
 NODE
   then
-    ok "generated plugin ignores child idle and verifies at root idle"
+    ok "generated plugin ignores child idle, verifies at root idle, and keeps the root session id"
   else
-    fail "generated plugin ignores child idle and verifies at root idle ($(tail -1 "$WORK/bridge.err"))"
+    fail "generated plugin ignores child idle, verifies at root idle, and keeps the root session id ($(tail -1 "$WORK/bridge.err"))"
   fi
 else
   echo "  - node absent; child-idle behavior check skipped"
