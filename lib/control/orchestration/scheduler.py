@@ -520,6 +520,7 @@ except controller-generated `result_id` and `payload_digest`: `publication_id`,
 `files_changed`, `verification_attestations`, `concerns`, `follow_up`, and
 `published_at`. Paths are canonical repository-relative paths inside the task
 workspace. Reuse a publication ID only to replay the identical document.
+supersedes_result_id MUST be null for the first result of this attempt, including a repair or salvage attempt that follows an earlier attempt; set it only to the result_id this same attempt already had accepted when publishing a correction.
 
 `verification_attestations` is an array of at most {MAX_ATTESTATIONS} elements.
 Each element is a closed object: all six keys are required, no key may be

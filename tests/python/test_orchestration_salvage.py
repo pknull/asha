@@ -339,6 +339,18 @@ class OrchestrationRecoveryActionTests(
             "from": "needs-input", "to": "ready",
             "salvage_request_id": request_id,
         })
+        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        assignment = (
+            self.config.initiatives_dir / self.initiative_id / "assignments"
+            / f"{attempt['attempt_id']}.md"
+        ).read_text()
+        self.assertIn(
+            "supersedes_result_id MUST be null for the first result of this "
+            "attempt, including a repair or salvage attempt that follows an "
+            "earlier attempt; set it only to the result_id this same attempt "
+            "already had accepted when publishing a correction.",
+            assignment,
+        )
 
     def test_unapproved_salvage_does_not_release_needs_input(self) -> None:
         failure = self.seal("failure")

@@ -17,6 +17,7 @@ from lib.control.jj import WorkspaceIdentity
 from lib.control.cli import main as control_main
 from lib.control.reconcile import Evidence
 from lib.control.orchestration.actions import build_action_document, submit_action
+from lib.control.orchestration.model import validate_result
 from lib.control.orchestration.results import (
     ResultError,
     ResultRefused,
@@ -134,6 +135,17 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
             self.store, body, self.managed, jj=self.jj, **kwargs,
         )
 
+    def retained_result(self, *, attempt_id: str | None = None) -> dict:
+        result = self.body()
+        result.update({
+            "result_id": str(uuid.uuid4()),
+            "payload_digest": "a" * 64,
+            "attempt_id": attempt_id or str(uuid.uuid4()),
+        })
+        result = validate_result(result)
+        self.store.save_result(self.initiative_id, result)
+        return result
+
     def test_publication_restarts_from_every_durable_phase_and_replays_once(self) -> None:
         current = None
         for phase in ("reserved", "validating", "persisting", "completed"):
@@ -210,6 +222,82 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
             and receipt["result_id"] in event["subject_ids"]
             for event in self.store.list_events_snapshot(self.initiative_id)
         ))
+        event = next(
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "result-published"
+            and receipt["result_id"] in event["subject_ids"]
+        )
+        self.assertIsNone(event["payload"]["lineage_diagnostic"])
+
+    def test_first_result_accepts_earlier_attempt_reference_as_lineage_context(self) -> None:
+        earlier = self.retained_result()
+
+        receipt = self.publish(self.body(supersedes=earlier["result_id"]))
+
+        self.assertEqual(receipt["phase"], "completed")
+        event = next(
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "result-published"
+            and receipt["result_id"] in event["subject_ids"]
+        )
+        self.assertEqual(
+            event["payload"]["lineage_diagnostic"],
+            f"supersedes_result_id {earlier['result_id']} names earlier attempt "
+            f"{earlier['attempt_id']} on node {earlier['node_id']}; lineage context, "
+            "not a correction",
+        )
+
+    def test_first_result_still_refuses_same_attempt_reference(self) -> None:
+        retained = self.retained_result(attempt_id=self.attempt["attempt_id"])
+
+        receipt = self.publish(self.body(supersedes=retained["result_id"]))
+
+        self.assertEqual(receipt["phase"], "refused")
+        self.assertIn(
+            "the first accepted result must not supersede another result",
+            receipt["refusal"],
+        )
+
+    def test_first_result_refuses_unknown_supersedes_reference(self) -> None:
+        receipt = self.publish(self.body(supersedes=str(uuid.uuid4())))
+
+        self.assertEqual(receipt["phase"], "refused")
+        self.assertIn(
+            "supersedes_result_id names no result in this initiative",
+            receipt["refusal"],
+        )
+
+    def test_recorded_repair_publication_shape_accepts_as_lineage_context(self) -> None:
+        earlier = self.retained_result()
+        body = self.body(supersedes=earlier["result_id"])
+        body.update({
+            "claim_status": "completed",
+            "files_changed": [
+                "lib/control/orchestration/results.py",
+                "lib/control/orchestration/ingestion.py",
+                "lib/control/orchestration/scheduler.py",
+            ],
+            "verification_attestations": [{
+                "argv": ["python3", "-m", "unittest", f"tests.python.module_{index}"],
+                "cwd": ".",
+                "exit_code": 0,
+                "finished_at": now_text(),
+                "output_digest": f"{index:x}" * 64,
+                "summary": f"unittest module {index} passed",
+            } for index in range(1, 6)],
+        })
+
+        receipt = self.publish(body)
+        replay = self.publish(copy.deepcopy(body))
+
+        self.assertEqual(receipt["phase"], "completed")
+        self.assertEqual(replay, receipt)
+        self.assertEqual(
+            self.store.read_result(self.initiative_id, receipt["result_id"])[
+                "verification_attestations"
+            ],
+            body["verification_attestations"],
+        )
 
     def test_worker_is_not_acknowledged_until_attempt_and_event_are_durable(self) -> None:
         body = self.body()

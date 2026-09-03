@@ -1405,6 +1405,24 @@ raise SystemExit(0)
         self.assertIn("verification_attestations[0]", refused["refusal"])
         self.assertIn("argv", refused["refusal"])
         self.assertEqual(self.store.list_results_snapshot(self.initiative_id), [])
+        events = [
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "result-refused"
+            and self.ingestion["ingestion_id"] in event["subject_ids"]
+        ]
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["actor_kind"], "controller")
+        self.assertEqual(events[0]["actor_id"], "result-ingester")
+        self.assertEqual(events[0]["subject_ids"], [
+            self.attempt["node_id"], self.attempt["attempt_id"],
+            self.ingestion["ingestion_id"],
+        ])
+        self.assertEqual(events[0]["payload"], {
+            "refusal": refused["refusal"],
+            "ingestion_id": self.ingestion["ingestion_id"],
+            "publication_id": body["publication_id"],
+            "task_id": self.task["task_id"],
+        })
 
     def test_snapshot_materialization_environment_failure_is_not_a_refusal(self) -> None:
         with mock.patch(

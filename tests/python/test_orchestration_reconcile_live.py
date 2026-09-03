@@ -175,6 +175,47 @@ class OrchestrationLiveReconciliationTests(ExecutionFixture, unittest.TestCase):
             self.store.read_node(self.initiative_id, "implementation-a")["state"],
             "ready",
         )
+        missing = next(
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "result-missing"
+            and attempts[0]["attempt_id"] in event["subject_ids"]
+        )
+        self.assertIsNone(missing["payload"]["refused_ingestion_id"])
+        self.assertIsNone(missing["payload"]["refusal"])
+
+    def test_result_missing_event_links_the_refused_ingestion(self) -> None:
+        task = self.dispatch_one()
+        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        ingestion = self.store.list_result_ingestions_snapshot(self.initiative_id)[0]
+        refusal = "authoritative result publication refused: lineage mismatch"
+        refused = copy.deepcopy(ingestion)
+        refused.update({
+            "state": "refused",
+            "publication_id": str(uuid.uuid4()),
+            "refusal": refusal,
+            "updated_at": now_text(),
+        })
+        self.store.save_result_ingestion(
+            self.initiative_id, refused, expected_digest=record_digest(ingestion),
+        )
+        self.store.config = replace(self.store.config, result_grace_seconds=1)
+        first = datetime.now(timezone.utc)
+        self.reconcile(task, "exited", now=lambda: first)
+
+        self.reconcile(
+            task, "exited", now=lambda: first + timedelta(seconds=2),
+        )
+
+        event = next(
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "result-missing"
+            and attempt["attempt_id"] in event["subject_ids"]
+        )
+        self.assertEqual(event["payload"], {
+            "grace_seconds": 1,
+            "refused_ingestion_id": ingestion["ingestion_id"],
+            "refusal": refusal,
+        })
 
     def test_nonzero_or_signal_maps_to_abnormal_exit_and_retry(self) -> None:
         task = self.dispatch_one()
