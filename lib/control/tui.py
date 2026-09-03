@@ -1407,14 +1407,30 @@ def _load_rows(
     return rows
 
 
+_SKIPPED_DETAIL_SUFFIX = " registry entries skipped"
+
+
+def _is_skipped_detail(part: str) -> bool:
+    return (
+        part.endswith(_SKIPPED_DETAIL_SUFFIX)
+        and part[:-len(_SKIPPED_DETAIL_SUFFIX)].isdigit()
+    )
+
+
 def _surface_skipped(
     model: TuiModel, skipped: Iterable[Mapping[str, str]],
 ) -> None:
     skipped_entries = tuple(skipped)
     if not skipped_entries:
         return
-    detail = f"{len(skipped_entries)} registry entries skipped"
-    model.message = f"{model.message}; {detail}" if model.message else detail
+    detail = f"{len(skipped_entries)}{_SKIPPED_DETAIL_SUFFIX}"
+    # A persistently unreadable registry file reports on every automatic
+    # pass; replace the previous count rather than appending another.
+    retained = [
+        part for part in (model.message or "").split("; ")
+        if part and not _is_skipped_detail(part)
+    ]
+    model.message = "; ".join((*retained, detail))
 
 
 def _load_refresh_snapshot(
@@ -4337,6 +4353,9 @@ def _curses_loop(
                 if key == getattr(curses_module, "KEY_RESIZE", -998):
                     height, width = stdscr.getmaxyx()
                     model.resize(height, width)
+                    # resize() dirties only on a dimension change; a coalesced
+                    # or spurious SIGWINCH still owes the terminal a repaint.
+                    model.dirty = True
                     continue
                 if key == getattr(curses_module, "KEY_UP", -997):
                     if model.initiatives is not None:

@@ -538,7 +538,14 @@ class AutomaticRefreshTests(unittest.TestCase):
             self.snapshot(TuiRow.from_records(updated, updated_result)),
         ])
 
-        with mock.patch.object(tui_module, "_paint"), mock.patch.object(
+        painted_slugs = []
+
+        def record_paint(_stdscr, _curses_module, painted: TuiModel) -> None:
+            painted_slugs.append(painted.rows[0].task["slug"])
+
+        with mock.patch.object(
+            tui_module, "_paint", side_effect=record_paint,
+        ) as paint, mock.patch.object(
             tui_module, "_refresh_initiatives", wraps=tui_module._refresh_initiatives,
         ) as apply_views:
             status = tui_module._curses_loop(
@@ -550,6 +557,10 @@ class AutomaticRefreshTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(model.rows[0].task["slug"], "after")
         apply_views.assert_called_once()
+        # The dirty gate must repaint once more after the snapshot lands, and
+        # that repaint must show the applied rows rather than a stale frame.
+        self.assertEqual(paint.call_count, 2)
+        self.assertEqual(painted_slugs, ["before", "after"])
 
     def test_snapshot_surfaces_its_own_skipped_entries(self) -> None:
         task = task_record(slug="snapshot-skipped")
@@ -579,6 +590,47 @@ class AutomaticRefreshTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertEqual(model.message, "1 registry entries skipped")
+
+    def test_repeated_skipped_entries_replace_the_count_and_keep_operator_text(self) -> None:
+        task = task_record(slug="persistently-skipped")
+        result = {
+            "contract": "asha.control-reconciliation.v1",
+            "task_id": task["task_id"], "state": "starting",
+            "blocker": None, "evidence": [], "runs": [],
+        }
+        row = TuiRow.from_records(task, result)
+        model = TuiModel([row])
+        self.prepare(model)
+        model.message = "task archived; workspace and change preserved"
+        screen = self.Screen()
+        screen.keys = [-1, -1, -1, ord("q")]
+        bad = {"name": "bad.json", "reason": "invalid JSON"}
+        runner = self.Refresher([
+            tui_module.RefreshSnapshot(
+                rows=(row,), initiative_views=(), room_rows=(), skipped=(bad,),
+            ),
+            tui_module.RefreshSnapshot(
+                rows=(row,), initiative_views=(), room_rows=(), skipped=(bad,),
+            ),
+            tui_module.RefreshSnapshot(
+                rows=(row,), initiative_views=(), room_rows=(),
+                skipped=(bad, dict(bad, name="worse.json")),
+            ),
+        ])
+
+        with mock.patch.object(tui_module, "_paint"):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            model.message,
+            "task archived; workspace and change preserved; "
+            "2 registry entries skipped",
+        )
 
     def test_snapshot_started_before_synchronous_load_is_discarded(self) -> None:
         initial = task_record(slug="before-action")
