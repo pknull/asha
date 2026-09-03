@@ -313,6 +313,114 @@ class AutomaticRefreshTests(unittest.TestCase):
         self.assertIsInstance(runner.poll(), tui_module.RefreshSnapshot)
         self.assertIsNone(runner.poll(), "taking the slot applies a pass at most once")
 
+    def test_background_snapshot_owns_adapters_and_carries_skipped_entries(self) -> None:
+        private_store = SimpleNamespace(
+            skipped=[{"name": "bad.json", "reason": "invalid JSON"}],
+        )
+        private_journals = mock.sentinel.private_journals
+        private_jj = mock.sentinel.private_jj
+        with mock.patch.object(
+            tui_module, "TaskStore", return_value=private_store,
+        ) as task_store, mock.patch.object(
+            tui_module, "CreationJournalStore", return_value=private_journals,
+        ) as journal_store, mock.patch.object(
+            tui_module, "JjAdapter", return_value=private_jj,
+        ) as jj_adapter, mock.patch.object(
+            tui_module, "_load_rows", return_value=[],
+        ) as load_rows, mock.patch.object(
+            tui_module, "_load_initiative_views", return_value=[],
+        ), mock.patch.object(tui_module, "_load_room_rows", return_value=[]):
+            snapshot = tui_module._load_refresh_snapshot(
+                mock.sentinel.config, {}, include_archived=True, generation=7,
+            )
+
+        task_store.assert_called_once_with(mock.sentinel.config)
+        journal_store.assert_called_once_with(mock.sentinel.config)
+        jj_adapter.assert_called_once_with()
+        load_rows.assert_called_once_with(
+            mock.sentinel.config, private_store, private_journals, private_jj,
+            include_archived=True,
+        )
+        self.assertEqual(snapshot.generation, 7)
+        self.assertEqual(
+            snapshot.skipped,
+            ({"name": "bad.json", "reason": "invalid JSON"},),
+        )
+
+    def test_background_snapshot_isolates_initiative_and_room_failures(self) -> None:
+        private_store = SimpleNamespace(skipped=[])
+        patches = (
+            mock.patch.object(tui_module, "TaskStore", return_value=private_store),
+            mock.patch.object(tui_module, "CreationJournalStore"),
+            mock.patch.object(tui_module, "JjAdapter"),
+            mock.patch.object(tui_module, "_load_rows", return_value=[]),
+        )
+        with patches[0], patches[1], patches[2], patches[3], mock.patch.object(
+            tui_module, "_load_initiative_views",
+            side_effect=ValueError("initiative adapter failed"),
+        ), mock.patch.object(
+            tui_module, "_load_room_rows", return_value=[{"room_id": "room"}],
+        ):
+            initiative_failure = tui_module._load_refresh_snapshot(
+                mock.sentinel.config, {},
+            )
+        with mock.patch.object(
+            tui_module, "TaskStore", return_value=private_store,
+        ), mock.patch.object(
+            tui_module, "CreationJournalStore",
+        ), mock.patch.object(tui_module, "JjAdapter"), mock.patch.object(
+            tui_module, "_load_rows", return_value=[],
+        ), mock.patch.object(
+            tui_module, "_load_initiative_views",
+            return_value=[{"initiative": "kept"}],
+        ), mock.patch.object(
+            tui_module, "_load_room_rows",
+            side_effect=ValueError("room adapter failed"),
+        ):
+            room_failure = tui_module._load_refresh_snapshot(
+                mock.sentinel.config, {},
+            )
+
+        self.assertEqual(initiative_failure.initiative_views, ())
+        self.assertEqual(
+            initiative_failure.initiatives_error, "initiative adapter failed",
+        )
+        self.assertEqual(initiative_failure.room_rows, ({"room_id": "room"},))
+        self.assertIsNone(initiative_failure.rooms_error)
+        self.assertEqual(
+            room_failure.initiative_views, ({"initiative": "kept"},),
+        )
+        self.assertIsNone(room_failure.initiatives_error)
+        self.assertEqual(room_failure.room_rows, ())
+        self.assertEqual(room_failure.rooms_error, "room adapter failed")
+
+    def test_background_runner_start_is_idempotent(self) -> None:
+        runner = tui_module.BackgroundRefresh(self.snapshot)
+        thread = mock.Mock()
+
+        with mock.patch.object(
+            tui_module.threading, "Thread", return_value=thread,
+        ) as thread_factory:
+            runner.start()
+            runner.start()
+
+        thread_factory.assert_called_once_with(
+            target=runner._run, name="asha-control-refresh", daemon=True,
+        )
+        thread.start.assert_called_once_with()
+
+    def test_background_runner_stop_uses_a_bounded_join(self) -> None:
+        runner = tui_module.BackgroundRefresh(self.snapshot)
+        thread = mock.Mock()
+        runner._thread = thread
+
+        runner.stop()
+
+        self.assertTrue(runner._stop_event.is_set())
+        thread.join.assert_called_once_with(
+            timeout=tui_module._BACKGROUND_REFRESH_STOP_SECONDS,
+        )
+
     def test_automatic_refresh_failure_is_visible_and_does_not_end_loop(self) -> None:
         task = task_record(slug="refresh-failure")
         reconciliation = {
@@ -442,6 +550,76 @@ class AutomaticRefreshTests(unittest.TestCase):
         self.assertEqual(status, 0)
         self.assertEqual(model.rows[0].task["slug"], "after")
         apply_views.assert_called_once()
+
+    def test_snapshot_surfaces_its_own_skipped_entries(self) -> None:
+        task = task_record(slug="snapshot-skipped")
+        result = {
+            "contract": "asha.control-reconciliation.v1",
+            "task_id": task["task_id"], "state": "starting",
+            "blocker": None, "evidence": [], "runs": [],
+        }
+        row = TuiRow.from_records(task, result)
+        model = TuiModel([row])
+        self.prepare(model)
+        screen = self.Screen()
+        screen.keys = [-1, ord("q")]
+        snapshot = self.snapshot(row)
+        snapshot = tui_module.RefreshSnapshot(
+            rows=snapshot.rows, initiative_views=(), room_rows=(),
+            skipped=({"name": "bad.json", "reason": "invalid JSON"},),
+        )
+        runner = self.Refresher([snapshot])
+        shared_store = SimpleNamespace(skipped=[{}] * 9)
+
+        with mock.patch.object(tui_module, "_paint"):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                shared_store, mock.Mock(), mock.Mock(), refresher=runner,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(model.message, "1 registry entries skipped")
+
+    def test_snapshot_started_before_synchronous_load_is_discarded(self) -> None:
+        initial = task_record(slug="before-action")
+        synchronous = task_record(slug="operator-result")
+        stale = task_record(slug="stale-pass")
+        result = {
+            "contract": "asha.control-reconciliation.v1",
+            "task_id": initial["task_id"], "state": "starting",
+            "blocker": None, "evidence": [], "runs": [],
+        }
+        initial_row = TuiRow.from_records(initial, result)
+        synchronous_row = TuiRow.from_records(
+            synchronous, dict(result, task_id=synchronous["task_id"]),
+        )
+        stale_row = TuiRow.from_records(
+            stale, dict(result, task_id=stale["task_id"]),
+        )
+        model = TuiModel([initial_row])
+        self.prepare(model)
+        screen = self.Screen()
+        screen.keys = [ord("A"), -1, ord("q")]
+        runner = self.Refresher([
+            None,
+            tui_module.RefreshSnapshot(
+                rows=(stale_row,), initiative_views=(), room_rows=(),
+                generation=0,
+            ),
+        ])
+        shared_store = SimpleNamespace(skipped=[])
+
+        with mock.patch.object(tui_module, "_paint"), mock.patch.object(
+            tui_module, "_load_rows", return_value=[synchronous_row],
+        ), mock.patch.object(tui_module, "_enter_tree"):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                shared_store, mock.Mock(), mock.Mock(), refresher=runner,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(model.refresh_generation, 1)
+        self.assertEqual(model.rows[0].task["slug"], "operator-result")
 
     def test_default_height_reserves_visible_space_for_automatic_refresh_error(self) -> None:
         rows = []
