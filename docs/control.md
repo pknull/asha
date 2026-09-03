@@ -436,7 +436,6 @@ Use `asha task list --json` directly for scripts and other non-interactive
 callers. A curses failure after initialization also exits 2 and names the same
 fallback.
 
-
 ### Colour, tiers, and the pipeline rail
 
 `lib/control/tui_style.py` owns the whole visual vocabulary and imports no
@@ -854,6 +853,66 @@ summary once after all rows; single-task show, manual refresh, and popup-close
 paths publish it once. One sampled reconciliation time is shared by evidence
 aging and summary aging for the pass. A late hook write rechecks the durable
 run state before it may survive.
+
+### Pane title and exit detection
+
+Exit classification currently reads the pane title alongside `pane_dead` and
+`pane_dead_status`. The title is controller-set (`asha:<harness>:<role>`,
+composed at launch) but it is a mutable terminal attribute: a worker whose
+output contains bytes the terminal reads as an OSC title-set escape (a
+directory listing has done it) overwrites its own title with paths and
+control characters. The restricted-value check then rejects the title, and
+because the title is one field in the tmux format read, that one bad field
+fails the whole read and voids both tmux and process evidence. Reconciliation
+returns `unknown` instead of `exited`, and a completed, published result is
+never ingested (see `docs/orchestration.md`, "Readiness, live tracking, and
+breakers"). `pane_dead` and `pane_dead_status` remain correct throughout.
+
+Recovery is a raw tmux write, so it is the operator's act, not a Control
+verb:
+
+```text
+tmux -L default select-pane -t <pane-id> -T asha:<harness>:<role>
+```
+
+The next supervisor tick reads the exit and ingests. Restoring titles by hand
+does not stop the next worker from doing the same thing mid-run; the durable
+fix is to classify exit from `pane_dead`/`pane_dead_status` before validating
+the title and never let title validation void process evidence
+([#90](https://github.com/pknull/asha/issues/90)).
+
+### Socket reaping
+
+Short-lived helpers that create a dedicated tmux server on their own `-L`
+socket (the confirm, finish, tail, doctor probe, and isolated test harnesses)
+reap that socket on every exit path through `lib/control/socket_reaper.py`.
+Before this, every such invocation left one socket file behind; 1,584
+accumulated in `/tmp/tmux-1000` between mid-August and 2 September 2026.
+
+The reaper is fail-closed:
+
+- It handles only Asha-owned names (`is_asha_socket_name`: `asha-` followed
+  by up to 123 name characters). `default` and every other name are refused.
+- It kills the server, then proves the server is dead before unlinking. A
+  refused or indeterminate connect counts as live, since absence from the
+  socket table is not proof of death when a server lives in another mount
+  namespace. A live socket is never unlinked.
+- When `kill-server` cannot reconnect, it resolves the socket's holders
+  through procfs (`unix_socket_owners`) and signals only same-user processes
+  that hold that exact socket, re-verifying the owner at signal time. No
+  owner visible, or procfs unavailable, is a fail-closed no-op.
+- A failed close stays armed and retryable; the `atexit` hook is not
+  unregistered on failure.
+
+`TmuxSocketReaper(...).arm()` registers teardown for the lifetime of the
+process and `close()` runs it; `reap_isolated_tmux_socket` is the one-shot
+form. `lib/control/doctor.py` arms it on every exit path of its probe. A
+harness that asserts its `-L` argv against an injected runner and starts no
+server (`test_control_worker_record.py`) is deliberately left unarmed: its
+bare `asha-control-test` name is shared by other fixtures.
+
+No sweep utility exists. A sweep keyed on the `asha-` prefix alone would be
+unsafe, because namespace isolation can make a live server look unreachable.
 
 ## State locations: one asha root
 
