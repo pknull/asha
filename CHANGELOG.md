@@ -27,6 +27,98 @@ the active instruction surface loses no release detail.
 - Added `write-revision-pass`, default one-agent-per-section fan-out for
   multi-section reviews, and the RP one-complete-beat walkthrough contract with
   a final Scene/Location/Present anchor.
+- Both nudges are one handler pair under `plugins/session`
+  (`verify-pass-complete.sh`, `style-audit.sh`); the Claude hooks registry,
+  the Codex config, Copilot's `asha-recovery.json`, and the generated OpenCode
+  plugin only select the delivery seam. `asha doctor` now fails when a source
+  seam or an installed Claude, Codex, Copilot, or OpenCode seam is missing.
+  Session plugin 2.3.0.
+- Review fixes on that landing: the declared-pass search is binary-safe
+  (NUL-containing files are searched, not skipped); the marker is cleared
+  under a `flock` on `Work/markers` and only when it is still the marker that
+  was proved; OpenCode ignores `session.idle` from known child sessions and
+  reads `apply_patch` paths from its native `patchText`; `/rp:start` replaces
+  the rule of three with the one-complete-beat rule and the closing
+  `Scene | Location | Present` anchor.
+- Follow-ups from the independent review: marker clearing compares the
+  re-read `old` value, not the inode (ext4 reuses freed inode numbers, so a
+  marker re-declared during the search could inherit the proved marker's
+  identity); a missing `Work/markers` directory is a silent `{}` no-op instead
+  of a stderr message; `declare-pass.sh` waits at most five seconds for the
+  marker lock and refuses with a clear error; OpenCode records a session as
+  latest only after the child-idle check; and `flock(1)` is recorded as
+  Linux-only until `lib/portable.sh` gains a BSD fallback — without it the
+  declare tool refuses and the handler is a `{}` no-op.
+
+#### Control docs: goal limit, unknown-state stalls, pane titles, socket reaping
+
+- `docs/orchestration.md` now states that the node goal is the only plan text
+  a worker reads; goals render at most 3000 characters (`MAX_GOAL_BYTES`
+  accepts 4096 bytes) and are marked `[truncated by Orchestration Core 2a]`
+  beyond that, so keep goals under 3000 and check the delivered brief. It also
+  records that `unknown` is not terminal — it neither ingests nor fails, and a
+  staged candidate is grace-exempt, so an attempt can park in awaiting-exit —
+  and how attention's stalled-coordinator signal, doctor's coordinator-cursor
+  live-watch comparison, and the reaped-wait `armed_watch` lease fit together
+  (arm waits at 300 s or less).
+- `docs/control.md` gained "Pane title and exit detection" — how a worker's
+  own output corrupts the controller-set title, why one bad field voids both
+  tmux and process evidence, the `tmux select-pane -T` recovery, and the fix
+  direction (#90) — and "Socket reaping": the fail-closed reaper's name rule,
+  proof-of-death before unlink, procfs same-user exact-owner signalling,
+  retryable close, where it is armed, and why no prefix-keyed sweep exists.
+
+#### Fail-closed tmux socket reaper
+
+- Every short-lived Asha tmux helper and test harness that creates a
+  dedicated server on its own `-L` socket now reaps that socket on every exit
+  path, including error and signal paths (`lib/control/socket_reaper.py`).
+  The reaper kills the server, proves it is dead before unlinking, refuses
+  non-asha socket names (including `default`), refuses to unlink a live
+  socket, and stays armed and retryable after a failed close instead of
+  unregistering its atexit hook. Wired into `lib/control/doctor.py` on every
+  exit path and into the isolated-socket test harnesses, including the
+  `asha-room-*` fixtures. Motivation: 1,584 leaked sockets found in
+  `/tmp/tmux-1000` on 2026-09-02.
+- Review fix (TOCTOU): ownership was checked through `/proc` and then reduced
+  to a bare PID that was signalled later without re-verification, leaving a
+  PID-reuse window. The owner is now re-verified as the same user and exact
+  socket holder at signal time.
+
+#### Observability: delivery preflight, projects index, stalled coordinators
+
+- The pre-enable preflight reports untracked remote bookmarks with the
+  `jj bookmark track NAME --remote=origin` remediation (detect only).
+- `asha initiative projects` enumerates every repository that `create --repo`
+  accepts, or states per path why it is excluded; each entry carries an
+  additive `relative_path` that can be passed exactly to `--match` when
+  nested projects share a directory name.
+- `attention` surfaces a node parked in `ready` with no attempt and no
+  coordinator activity past a threshold, distinguishing a dead watch from a
+  healthy one. Ported from 0241a226 onto the moved master with three hunks
+  hand-merged against the operator-surface landing below.
+- Review fixes: the scheduler surfaces delivery-preflight stderr on a
+  successful dispatch; the advisory bookmark probe runs outside the `JjError`
+  refusal boundary; the projects index honours `relative_path`; the
+  coordinator's `_begin_wait` re-arm no longer lets two waits overlap; doctor
+  reports cursor lag for expired waiting records and reads a bounded event
+  tail instead of the full journal per initiative; `docs/control.md` now
+  describes the three-level default project search instead of the stale
+  depth-1 one.
+
+#### Operator-surface fixes in `asha initiative`
+
+- Seven defects found driving the plane from the operator chair on
+  2026-09-02: `attention` prints the full 64-hex approve digest (with a test
+  that every resolution string the CLI prints as runnable actually parses),
+  and `attention --json` carries untruncated detail/resolution with elision
+  only in the human renderer; `finalize` names the non-terminal nodes and
+  offers `--cancel-pending`, and on needs-input names `resume` as the
+  prerequisite; `show` and `snapshot` expose bundle ids; `snapshot` renders a
+  human summary without `--json`; `coordinator release` works from outside
+  the anchor pane for a terminal initiative, reaping its pane through the
+  Control tmux seam; and doctor's coordinator-cursor check compares live watch
+  state, not the stale durable cursor.
 
 #### Keeper-approved third-party skills
 
