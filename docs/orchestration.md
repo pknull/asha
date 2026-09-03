@@ -438,6 +438,16 @@ upstream-result summaries; acceptance criteria; verification guidance;
 role and workflow; nested-workflow policy; prohibited actions; and this exact
 result-publication command:
 
+The node goal is the only plan text a worker reads. Plan `objective`,
+salvage plan text, and coordinator prose are not rendered into the brief, so
+any instruction the worker must obey — the exact verification argv, the
+attestation form, prohibitions — belongs in the node goal itself, with the
+non-negotiables first. The brief renders at most **3000 characters** of the
+goal and marks the cut with `[truncated by Orchestration Core 2a]`; the model
+accepts goals up to `MAX_GOAL_BYTES` (4096 bytes), so a goal that validates
+can still lose its tail on delivery. Keep goals under 3000 characters, and
+verify the delivered brief carries no truncation marker before dispatch.
+
 ```text
 asha task report --file .asha/result.json
 ```
@@ -691,6 +701,30 @@ no non-jj identity mismatches, orchestration treats that observation as
 `working` for that poll. The downgrade does not alter Control's verdict. Once
 the process exits, or any harder mismatch appears, the ordinary stale/conflict
 path applies.
+
+`unknown` is not terminal. It neither ingests a staged result nor fails the
+attempt, and a staged candidate is exempt from `result-missing` grace, so an
+attempt can sit in `awaiting-exit` indefinitely. The known cause is a
+corrupted pane title (see `docs/control.md`, "Pane title and exit
+detection"): restore the title Control set and the next tick classifies the
+exit and ingests. `asha task ingest <task-id>` is available as a fallback but
+has the same `exited`/`failed` requirement, so it does not bypass the restore.
+
+Three related signals are rendered for the operator:
+
+* `attention` lists a node parked in `ready` with no attempt and no
+  coordinator activity past a bounded threshold, and distinguishes that from
+  a coordinator whose wait is armed. It is the only surface that reports a
+  coordinator that stopped watching; `list` still says `running`.
+* `doctor`'s `coordinator-cursor` probe compares the coordinator's live
+  watch state, not only its durable cursor. A cursor behind the journal
+  tail with an armed wait is reported as healthy; a stopped watch behind the
+  tail needs attention.
+* A coordinator wait killed out from under its process leaves an
+  `armed_watch` lease on the coordinator record until that lease's deadline,
+  and every re-arm is refused meanwhile; only a new generation resets it.
+  Arm waits with short timeouts (300 s or less) so a reaped process leaves a
+  short lease, and poll `show` as the stand-in watcher.
 Nonzero or signal exit becomes `abnormal-exit`. Missing tasks, task digest
 mismatch, and stale live identity make the attempt and node `stale` and pause
 the initiative with `reconciliation-conflict`. Seal classification prefers
