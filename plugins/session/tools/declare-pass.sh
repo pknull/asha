@@ -17,6 +17,10 @@ command -v jq >/dev/null 2>&1 || {
   echo "ERROR: jq is required to declare a verification pass" >&2
   exit 1
 }
+command -v flock >/dev/null 2>&1 || {
+  echo "ERROR: flock is required to declare a verification pass safely" >&2
+  exit 1
+}
 
 OLD_VALUE="$1"
 if [[ "$OLD_VALUE" == *$'\n'* || "$OLD_VALUE" == *$'\r'* ]]; then
@@ -40,6 +44,8 @@ MARKER_DIR="$PROJECT_DIR/Work/markers"
 MARKER="$MARKER_DIR/pass-declaration.json"
 umask 077
 mkdir -p "$MARKER_DIR" || exit 1
+exec {LOCK_FD}<"$MARKER_DIR" || exit 1
+flock -x "$LOCK_FD" || exit 1
 TMP="$(mktemp "$MARKER_DIR/.pass-declaration.XXXXXX")" || exit 1
 trap 'rm -f "$TMP"' EXIT
 if [[ $HAS_NEW -eq 1 ]]; then
@@ -57,4 +63,6 @@ else
 fi
 mv "$TMP" "$MARKER" || { rm -f "$TMP"; exit 1; }
 trap - EXIT
+flock -u "$LOCK_FD" || true
+exec {LOCK_FD}>&-
 printf 'Declared verification pass: %s\n' "$MARKER"

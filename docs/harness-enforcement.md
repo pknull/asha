@@ -22,16 +22,19 @@ select the verified delivery seam. They never publish Memory or block a tool.
 
 | Nudge | Claude Code | OpenAI Codex | GitHub Copilot CLI | OpenCode |
 |---|---|---|---|---|
-| Declared verification pass | `Stop` runs `verify-pass-complete.sh`; remaining fixed-string hits return one `{"decision":"block","reason":...}` retry and `stop_hook_active` suppresses the loop | Same Stop JSON, subject to Codex's per-command hash-bound hook trust | No Stop claim: next `userPromptSubmitted` runs the handler and returns top-level `additionalContext` | `session.idle` appends handler stdout to pending context for the next system transform |
+| Declared verification pass | `Stop` runs `verify-pass-complete.sh`; remaining fixed-string hits return one `{"decision":"block","reason":...}` retry and `stop_hook_active` suppresses the loop | Same Stop JSON, subject to Codex's per-command hash-bound hook trust | No Stop claim: next `userPromptSubmitted` runs the handler and returns top-level `additionalContext` | Root `session.idle` appends handler stdout to pending context for the next system transform; known child-session idles are ignored |
 | Project style audit | `PostToolUse` for Edit/Write/MultiEdit/apply_patch returns `hookSpecificOutput.additionalContext` | Same response shape, with the known incomplete `unified_exec` interception caveat | `postToolUse` queues output because copilot-cli#2980 drops its additional context; the next `userPromptSubmitted` returns it | `tool.execute.after` appends handler stdout to pending context for the next system transform |
 
 The style handler resolves the payload cwd to an initialized project, runs
 only an executable `<root>/.asha/style-audit`, passes the edited path as its
 first argument and the hook payload on stdin, and caps execution at ten
-seconds. Missing, non-executable, silent, failing, or timed-out auditors are
-no-ops. The declared-pass handler excludes `.git`, `.jj`, and `Work` from its
-fixed-string search, names remaining files, clears the marker only after an
-empty proof, and fails open on internal search errors.
+seconds. OpenCode `apply_patch` paths are read from its native `patchText`
+payload. Missing, non-executable, or silent auditors are no-ops. Exit and
+timeout status never block; any stdout captured before failure or timeout is
+still delivered as a nudge. The declared-pass handler excludes `.git`, `.jj`,
+and `Work` from its fixed-string search, including binary/NUL-containing
+files, names remaining files, and clears only the same locked marker identity
+after an empty proof. Internal search or lock errors fail open.
 
 ## Control status event claims
 
