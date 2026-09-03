@@ -91,6 +91,23 @@ grep -q "persona loads via 'asha copilot' wrapper only" <<<"$out" \
 grep -q 'compact identity merge valid' <<<"$out" \
   && ok "doctor validates the hot identity budget" \
   || fail "doctor validates the hot identity budget"
+grep -q 'verification-pass and style-audit source seams are complete' <<<"$out" \
+  && ok "doctor validates completion/style source seams" \
+  || fail "doctor validates completion/style source seams"
+grep -q 'Memory v2 recovery hooks match installer-expected content' <<<"$out" \
+  && jq -e '.hooks.userPromptSubmitted[1].bash
+      | endswith("verify-pass-complete.sh")' \
+    "$SANDBOX/.copilot/hooks/asha-recovery.json" >/dev/null 2>&1 \
+  && ok "doctor validates Copilot next-prompt verification rendering" \
+  || fail "doctor validates Copilot next-prompt verification rendering"
+
+out="$(run --target codex 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] \
+    && grep -q 'Codex verification Stop and style PostToolUse seams are installed' <<<"$out"; then
+  ok "doctor validates Codex completion/style rendering"
+else
+  fail "doctor validates Codex completion/style rendering (rc=$rc)"
+fi
 
 # Already-current recovery must not short-circuit cleanup of retired exact
 # artifacts. Doctor --fix uses the same ownership-aware reconciliation.
@@ -333,7 +350,8 @@ if [[ $rc -ne 0 ]] && grep -q "asha hook paths missing" <<<"$out"; then
 else
   fail "untagged asha hook with missing path FAILS --target claude (rc=$rc)"
 fi
-# now point it at a real file: should pass and be counted
+# Now point it at a real file: path extraction passes and is counted, while the
+# newly required completion/style seam correctly remains missing.
 jq -n --arg repo "$REPO_ROOT" '{
   hooks: {
     PostToolUse: [
@@ -343,10 +361,12 @@ jq -n --arg repo "$REPO_ROOT" '{
   }
 }' > "$SANDBOX/.claude/settings.json"
 out="$(run --target claude 2>&1)"; rc=$?
-if [[ $rc -eq 0 ]] && grep -q "1 asha hook entry registered" <<<"$out"; then
-  ok "untagged asha hook with existing path plus argv passes and is counted"
+if [[ $rc -ne 0 ]] && grep -q "1 asha hook entry registered" <<<"$out" \
+    && grep -q "Claude verification Stop or style PostToolUse seam is missing" <<<"$out" \
+    && ! grep -q "asha hook paths missing" <<<"$out"; then
+  ok "untagged existing hook path passes extraction while required seams stay enforced"
 else
-  fail "untagged asha hook with existing path plus argv passes and is counted (rc=$rc)"
+  fail "untagged existing hook path extraction or required-seam enforcement failed (rc=$rc)"
 fi
 
 # ---------------------------------------------------------------------------

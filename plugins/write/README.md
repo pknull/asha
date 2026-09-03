@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.9.0
+**Version**: 1.10.0
 
 Fiction-state initialization, drafting workflows, editorial review, style
 measurement, continuity verification, and book export.
@@ -11,6 +11,7 @@ measurement, continuity verification, and book export.
 |---|---|
 | Start structured state for a novel | `/write:init-novel` |
 | Review a finished scene or section | `/write:review-section` |
+| Run an authority-first multi-act revision | `write-revision-pass` skill |
 | Measure an exemplar or draft | `style-analyzer` skill |
 | Check grammar and mechanical style | `languagetool` skill |
 | Export a manuscript | `book-export` skill |
@@ -158,6 +159,11 @@ project.
 | `languagetool` | Query the local LanguageTool service for grammar and style findings | `Run LanguageTool on this chapter.` |
 | `novel-state` | Create and explain the standard story-state layout | `Set up novel state in this repository.` |
 | `style-analyzer` | Measure sentence, dialogue, vocabulary, repetition, and configured prose patterns | `Analyze these exemplars and generate voice metrics.` |
+| `write-revision-pass` | Revise act-by-act with read-only reviews, decision capture, style audit, and an empty old-value proof | `Run a revision pass replacing the old rule throughout the manuscript.` |
+
+Directory and multi-file `/write:review-section` targets fan out one review
+agent per section by default, then synthesize the returned section reports.
+Harnesses without a subagent surface execute the same charges sequentially.
 
 Skills activate from matching task language. Name one explicitly when several
 could plausibly apply.

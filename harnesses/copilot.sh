@@ -239,22 +239,29 @@ copilot_install_recovery_hooks() {
   local prompt_h="$PLUGINS_DIR/session/hooks/handlers/user-prompt-submit.sh"
   local post_h="$PLUGINS_DIR/session/hooks/handlers/post-tool-use.sh"
   local end_h="$PLUGINS_DIR/session/hooks/handlers/session-end.sh"
-  if [[ ! -x "$start_h" || ! -x "$prompt_h" || ! -x "$post_h" || ! -x "$end_h" ]]; then
+  local verify_h="$PLUGINS_DIR/session/hooks/handlers/verify-pass-complete.sh"
+  if [[ ! -x "$start_h" || ! -x "$prompt_h" || ! -x "$post_h" \
+      || ! -x "$end_h" || ! -x "$verify_h" ]]; then
     log "[copilot] recovery handlers missing/not executable; skipping recovery hooks"
     return 0
   fi
-  local abs_start abs_prompt abs_post abs_end content
+  local abs_start abs_prompt abs_post abs_end abs_verify content
   abs_start="$(resolve_path "$start_h")"
   abs_prompt="$(resolve_path "$prompt_h")"
   abs_post="$(resolve_path "$post_h")"
   abs_end="$(resolve_path "$end_h")"
+  abs_verify="$(resolve_path "$verify_h")"
 
-  content="$(jq -nc --arg s "$abs_start" --arg p "$abs_prompt" --arg t "$abs_post" --arg e "$abs_end" '{
+  content="$(jq -nc --arg s "$abs_start" --arg p "$abs_prompt" --arg t "$abs_post" \
+    --arg e "$abs_end" --arg v "$abs_verify" '{
     version: 1,
     hooks: {
       sessionStart:        [{type:"command", bash:$s, timeoutSec:15}],
-      userPromptSubmitted: [{type:"command", bash:$p, timeoutSec:10}],
-      postToolUse:         [{type:"command", bash:$t, timeoutSec:10}],
+      userPromptSubmitted: [
+        {type:"command", bash:$p, timeoutSec:10},
+        {type:"command", bash:$v, timeoutSec:15}
+      ],
+      postToolUse:         [{type:"command", bash:$t, timeoutSec:15}],
       sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}]
     }
   }')" || { log "[copilot] failed to build recovery json; skipping"; return 0; }

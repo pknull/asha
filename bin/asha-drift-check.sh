@@ -527,6 +527,27 @@ for f in install.sh uninstall.sh namespaces.json INSTALLER.md harnesses/claude.s
 done
 [[ $gone -eq 0 ]] && pass "installer scripts present"
 
+declare_pass_tool="$ASHA/plugins/session/tools/declare-pass.sh"
+verify_pass_handler="$ASHA/plugins/session/hooks/handlers/verify-pass-complete.sh"
+style_audit_handler="$ASHA/plugins/session/hooks/handlers/style-audit.sh"
+verify_pass_fragment="$ASHA/plugins/session/hooks/nudges/fragments/verify-pass-complete.md"
+style_audit_fragment="$ASHA/plugins/session/hooks/nudges/fragments/style-audit.md"
+hooks_registry="$ASHA/plugins/session/hooks/hooks.json"
+if [[ -x "$declare_pass_tool" && -x "$verify_pass_handler" \
+    && -x "$style_audit_handler" && -f "$verify_pass_fragment" \
+    && -f "$style_audit_fragment" ]] \
+    && jq -e '
+      .hooks.Stop[]
+      | select(._asha_harnesses == ["claude", "codex"])
+      | any(.hooks[]?; (.command // "") | endswith("verify-pass-complete.sh"))
+    ' "$hooks_registry" >/dev/null 2>&1 \
+    && grep -Fq 'style-audit.sh' \
+      "$ASHA/plugins/session/hooks/handlers/post-tool-use.sh"; then
+  pass "verification-pass and style-audit source seams are complete"
+else
+  nope "verification-pass or style-audit source seam is missing/incomplete"
+fi
+
 if python3 - "$ASHA/harnesses/capabilities.json" "$ASHA/harnesses/capabilities.schema.json" <<'PY' >/dev/null 2>&1
 import json, re, sys
 caps, schema = (json.load(open(p, encoding="utf-8")) for p in sys.argv[1:])
@@ -619,6 +640,15 @@ print(words[0] if words else "")
     done < <(jq -r --arg prefix "$ASHA/plugins/" '.hooks // {} | .[] | .[]? | .hooks[]?
           | select(((.command // "") | startswith($prefix)) or ((.source // "") | test("^(asha|marketplace):"))) | .command // empty' "$CLAUDE/settings.json")
     [[ $missing -eq 0 ]] && pass "all asha hook paths exist (claude)"
+    if jq -e --arg verify "$verify_pass_handler" '
+        any(.hooks.Stop[]?.hooks[]?; (.command // "") == $verify)
+        and any(.hooks.PostToolUse[]?.hooks[]?;
+          (.command // "") | endswith("post-tool-use.sh"))
+      ' "$CLAUDE/settings.json" >/dev/null 2>&1; then
+      pass "Claude verification Stop and style PostToolUse seams are installed"
+    else
+      nope "Claude verification Stop or style PostToolUse seam is missing"
+    fi
   fi
 fi
 
@@ -689,6 +719,13 @@ for ev, blocks in (c.get('hooks') or {}).items():
                 print(executable(h['command']))
 " 2>/dev/null)
       [[ $missing -eq 0 ]] && pass "all hook command paths exist (codex: $enumerated command(s) enumerated)"
+      if grep -Fq "env ASHA_HARNESS=codex $verify_pass_handler" "$CODEX/config.toml" \
+          && grep -Fq "env ASHA_HARNESS=codex $ASHA/plugins/session/hooks/handlers/post-tool-use.sh" \
+            "$CODEX/config.toml"; then
+        pass "Codex verification Stop and style PostToolUse seams are installed"
+      else
+        nope "Codex verification Stop or style PostToolUse seam is missing"
+      fi
 
       # Feature gate: codex runs hooks only with [features] hooks = true AND
       # per-entry persisted trust (hash-bound). A registered fence without the
@@ -808,19 +845,25 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
     prompt_handler="$ASHA/plugins/session/hooks/handlers/user-prompt-submit.sh"
     post_handler="$ASHA/plugins/session/hooks/handlers/post-tool-use.sh"
     end_handler="$ASHA/plugins/session/hooks/handlers/session-end.sh"
-    if [[ ! -x "$start_handler" || ! -x "$prompt_handler" || ! -x "$post_handler" || ! -x "$end_handler" ]]; then
+    verify_handler="$ASHA/plugins/session/hooks/handlers/verify-pass-complete.sh"
+    if [[ ! -x "$start_handler" || ! -x "$prompt_handler" || ! -x "$post_handler" \
+        || ! -x "$end_handler" || ! -x "$verify_handler" ]]; then
       nope "Memory v2 recovery handler missing or not executable"
     elif [[ ! -f "$recovery" ]]; then
       nope "recovery hooks file missing: $recovery (run ./install.sh --target copilot)"
     elif ! jq empty "$recovery" 2>/dev/null; then
       nope "recovery hooks file is invalid JSON: $recovery"
     else
-      expected="$(jq -nc --arg s "$start_handler" --arg p "$prompt_handler" --arg t "$post_handler" --arg e "$end_handler" '{
+      expected="$(jq -nc --arg s "$start_handler" --arg p "$prompt_handler" \
+        --arg t "$post_handler" --arg e "$end_handler" --arg v "$verify_handler" '{
         version: 1,
         hooks: {
           sessionStart:        [{type:"command", bash:$s, timeoutSec:15}],
-          userPromptSubmitted: [{type:"command", bash:$p, timeoutSec:10}],
-          postToolUse:         [{type:"command", bash:$t, timeoutSec:10}],
+          userPromptSubmitted: [
+            {type:"command", bash:$p, timeoutSec:10},
+            {type:"command", bash:$v, timeoutSec:15}
+          ],
+          postToolUse:         [{type:"command", bash:$t, timeoutSec:15}],
           sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}]
         }
       }')"
@@ -898,9 +941,12 @@ if [[ "$TARGET" == "opencode" || "$TARGET" == "all" ]]; then
     if [[ ! -f "$plugin" ]]; then
       nope "OpenCode integration plugin missing: $plugin"
     elif grep -q 'tool.execute.before' "$plugin" \
+      && grep -q 'tool.execute.after' "$plugin" \
+      && grep -q 'session.idle' "$plugin" \
+      && grep -q 'verify-pass-complete.sh' "$plugin" \
       && grep -q 'shell.env' "$plugin" \
       && grep -q 'dispose' "$plugin"; then
-      pass "OpenCode integration plugin carries guardrail, session-env, and clean-exit hooks"
+      pass "OpenCode integration plugin carries guardrail, style, idle verification, session-env, and clean-exit hooks"
     else
       nope "OpenCode integration plugin is stale or incomplete: $plugin"
     fi

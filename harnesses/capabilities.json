@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-08-18",
+  "reviewed": "2026-09-02",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "harnesses": {
     "claude": {
@@ -31,6 +31,28 @@
           "surface": "settings.json",
           "verifier": "doctor:hook-paths",
           "limitations": []
+        },
+        "subagents": {
+          "support": "native",
+          "surface": "Task with agents/<namespace>/<agent>.md definitions",
+          "verifier": "tests:test-install + test-workflow-contracts",
+          "limitations": []
+        },
+        "verify-pass-complete": {
+          "support": "native",
+          "surface": "Stop -> verify-pass-complete.sh -> one JSON block decision; stop_hook_active skips the retry",
+          "verifier": "doctor:hook-paths + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "Advisory completion nudge only; the handler fails open"
+          ]
+        },
+        "style-audit": {
+          "support": "native",
+          "surface": "PostToolUse(Edit|Write|MultiEdit|apply_patch) -> post-tool-use.sh -> hookSpecificOutput.additionalContext",
+          "verifier": "doctor:hook-paths + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "Runs only an executable project-local .asha/style-audit and never blocks"
+          ]
         },
         "control-status": {
           "support": "partial",
@@ -93,6 +115,32 @@
             "Some unified_exec shell calls are not intercepted",
             "Non-shell non-MCP tools are not universally intercepted",
             "Hooks are not a complete enforcement boundary"
+          ]
+        },
+        "subagents": {
+          "support": "native",
+          "surface": "Codex subagent tools with agents/<namespace>-<agent>.toml definitions",
+          "verifier": "doctor:content + tests:test-install",
+          "limitations": [
+            "Rendered custom-agent instructions map Claude-only tool vocabulary"
+          ]
+        },
+        "verify-pass-complete": {
+          "support": "partial",
+          "surface": "Stop -> verify-pass-complete.sh -> one JSON block decision; stop_hook_active skips the retry",
+          "verifier": "doctor:toml-hooks + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "Each rendered Stop command requires Codex's hash-bound interactive hook trust",
+            "The advisory handler fails open"
+          ]
+        },
+        "style-audit": {
+          "support": "partial",
+          "surface": "PostToolUse(Edit|Write|MultiEdit|apply_patch) -> post-tool-use.sh -> hookSpecificOutput.additionalContext",
+          "verifier": "doctor:toml-hooks + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "PostToolUse interception remains incomplete for some unified_exec paths",
+            "Runs only an executable project-local .asha/style-audit and never blocks"
           ]
         },
         "control-status": {
@@ -171,6 +219,30 @@
             "Parallel tool calls can bypass PreToolUse"
           ]
         },
+        "subagents": {
+          "support": "native",
+          "surface": "native subagent invocation with agents/<namespace>-<agent>.agent.md definitions",
+          "verifier": "doctor:content + tests:test-install",
+          "limitations": []
+        },
+        "verify-pass-complete": {
+          "support": "partial",
+          "surface": "next userPromptSubmitted -> verify-pass-complete.sh -> top-level additionalContext",
+          "verifier": "doctor:guardrails + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "Copilot exposes no Stop seam here, so verification runs at the next prompt",
+            "The advisory handler fails open"
+          ]
+        },
+        "style-audit": {
+          "support": "partial",
+          "surface": "postToolUse queues style-audit output; next userPromptSubmitted returns top-level additionalContext",
+          "verifier": "doctor:guardrails + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "copilot-cli#2980 drops postToolUse additionalContext, requiring next-prompt delivery",
+            "Runs only an executable project-local .asha/style-audit and never blocks"
+          ]
+        },
         "control-status": {
           "support": "partial",
           "surface": "process liveness only",
@@ -238,6 +310,30 @@
           "verifier": "doctor:opencode-plugin",
           "limitations": [
             "dispose seals recovery state only; it never publishes semantic memory"
+          ]
+        },
+        "subagents": {
+          "support": "native",
+          "surface": "Task/subtask invocation with agents/<namespace>-<agent>.md mode: subagent definitions",
+          "verifier": "doctor:artifacts + tests:test-opencode/test-install",
+          "limitations": []
+        },
+        "verify-pass-complete": {
+          "support": "partial",
+          "surface": "session.idle -> verify-pass-complete.sh stdout -> pending system context",
+          "verifier": "doctor:opencode-plugin + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "Delivery occurs at the next system-context transform after idle",
+            "The advisory handler fails open"
+          ]
+        },
+        "style-audit": {
+          "support": "partial",
+          "surface": "tool.execute.after -> post-tool-use.sh stdout -> pending system context",
+          "verifier": "doctor:opencode-plugin + tests:test-hooks/test-install/test-doctor",
+          "limitations": [
+            "Delivery occurs at the next system-context transform",
+            "Runs only an executable project-local .asha/style-audit and never blocks"
           ]
         },
         "control-status": {

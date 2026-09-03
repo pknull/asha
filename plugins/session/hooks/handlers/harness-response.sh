@@ -26,6 +26,101 @@ hook_noop() {
     echo "{}"
 }
 
+nudge_fragment() {
+    local name="$1"
+    local fragment="${BASH_SOURCE[0]%/*}/../nudges/fragments/$name.md"
+    [[ -f "$fragment" ]] || return 0
+    cat "$fragment" 2>/dev/null || true
+}
+
+# Copilot CLI currently discards postToolUse additionalContext
+# (github/copilot-cli#2980). Keep this queue specific to style-audit rather
+# than reviving the retired general nudge engine: post-tool-use.sh writes one
+# private, session-scoped file per finding and user-prompt-submit.sh drains it
+# through Copilot's verified userPromptSubmitted response seam.
+copilot_queue_style_audit_nudge() {
+    local project_dir="$1" session_id="${2:-unknown}" context="$3"
+    local safe dir file
+    safe="${session_id//[^[:alnum:]_.-]/_}"
+    safe="${safe:0:80}"
+    [[ -n "$safe" ]] || safe=unknown
+    safe="session-$safe"
+    dir="$project_dir/Work/markers/style-audit/$safe"
+    umask 077
+    mkdir -p "$dir" 2>/dev/null || return 0
+    file="$(mktemp "$dir/finding.XXXXXX" 2>/dev/null || true)"
+    [[ -n "$file" ]] || return 0
+    printf '%s\n' "$context" > "$file" 2>/dev/null || rm -f "$file" 2>/dev/null || true
+    return 0
+}
+
+copilot_drain_style_audit_nudges() {
+    local project_dir="$1" session_id="${2:-unknown}"
+    local safe dir file combined=""
+    safe="${session_id//[^[:alnum:]_.-]/_}"
+    safe="${safe:0:80}"
+    [[ -n "$safe" ]] || safe=unknown
+    safe="session-$safe"
+    dir="$project_dir/Work/markers/style-audit/$safe"
+    [[ -d "$dir" ]] || return 0
+    for file in "$dir"/*; do
+        [[ -f "$file" && ! -L "$file" ]] || continue
+        local item
+        item="$(cat "$file" 2>/dev/null || true)"
+        [[ -z "$item" ]] || combined="${combined:+$combined$'\n\n'}$item"
+        rm -f "$file" 2>/dev/null || true
+    done
+    rmdir "$dir" "$project_dir/Work/markers/style-audit" 2>/dev/null || true
+    [[ -z "$combined" ]] || printf '%s\n' "$combined"
+    return 0
+}
+
+posttooluse_nudge() {
+    local context="$1" project_dir="${2:-}" session_id="${3:-unknown}"
+    case "$(asha_harness)" in
+        claude|codex)
+            # Both native hook schemas accept PostToolUse additionalContext.
+            jq -n --arg ctx "$context" '{
+              hookSpecificOutput: {
+                hookEventName: "PostToolUse",
+                additionalContext: $ctx
+              }
+            }' 2>/dev/null || hook_noop
+            ;;
+        copilot)
+            [[ -z "$project_dir" ]] \
+                || copilot_queue_style_audit_nudge "$project_dir" "$session_id" "$context"
+            hook_noop
+            ;;
+        opencode)
+            # The generated bridge appends this stdout to its pending system
+            # context and injects it at the next transform.
+            printf '%s\n' "$context"
+            ;;
+        *) hook_noop ;;
+    esac
+}
+
+verify_pass_nudge() {
+    local context="$1"
+    case "$(asha_harness)" in
+        claude|codex)
+            # Codex Stop must receive JSON only; plain text is not a valid
+            # response and can obscure the fail-open retry contract.
+            jq -nc --arg reason "$context" '{decision:"block", reason:$reason}' \
+                2>/dev/null || hook_noop
+            ;;
+        copilot)
+            jq -n --arg ctx "$context" '{additionalContext:$ctx}' \
+                2>/dev/null || hook_noop
+            ;;
+        opencode)
+            printf '%s\n' "$context"
+            ;;
+        *) hook_noop ;;
+    esac
+}
+
 user_prompt_submit_noop() {
     hook_noop
 }
@@ -51,9 +146,11 @@ pretooluse_ask() {
     local reason="$1"
     case "$(asha_harness)" in
         codex|opencode)
-            # These harnesses have no verified hook-mediated ask response.
-            # Preserve safety by
-            # degrading ask -> deny with the same message on stderr.
+            # FINDING (Codex hooks docs, 2026-09-02): PreToolUse ask is "parsed but not supported yet. Codex marks the hook run as failed, reports the error, and continues the tool call".
+            # "PermissionRequest accepts only allow|deny." Do not emit
+            # the inert ask shape. Preserve the existing conservative contract
+            # by degrading ask -> deny with the same message on stderr.
+            # OpenCode likewise has no verified hook-mediated ask response.
             printf '%s\n' "$reason" >&2
             return 2
             ;;

@@ -248,14 +248,19 @@ fi
   && ok "Codex native rules file exists" \
   || fail "Codex native rules file exists"
 if grep -Fq "control-event.sh PermissionRequest" "$SANDBOX/.codex/config.toml" \
-    && grep -Fq "control-event.sh Stop" "$SANDBOX/.codex/config.toml"; then
-  ok "Codex install renders live-proven PermissionRequest and Stop"
+    && grep -Fq "control-event.sh Stop" "$SANDBOX/.codex/config.toml" \
+    && grep -Fq "verify-pass-complete.sh" "$SANDBOX/.codex/config.toml"; then
+  ok "Codex install renders PermissionRequest and both Stop handlers"
 else
-  fail "Codex install renders live-proven PermissionRequest and Stop"
+  fail "Codex install renders PermissionRequest and both Stop handlers"
 fi
-[[ -f "$SANDBOX/.config/opencode/plugins/asha.js" ]] \
-  && ok "OpenCode native integration plugin exists" \
-  || fail "OpenCode native integration plugin exists"
+if [[ -f "$SANDBOX/.config/opencode/plugins/asha.js" ]] \
+    && grep -q 'session.idle' "$SANDBOX/.config/opencode/plugins/asha.js" \
+    && grep -q 'verify-pass-complete.sh' "$SANDBOX/.config/opencode/plugins/asha.js"; then
+  ok "OpenCode integration plugin renders idle verification"
+else
+  fail "OpenCode integration plugin renders idle verification"
+fi
 [[ -f "$SANDBOX/.config/opencode/commands/session-save.md" ]] \
   && ok "OpenCode rendered commands are non-empty" \
   || fail "OpenCode rendered commands are non-empty"
@@ -304,6 +309,38 @@ for skill_path in \
     && ok "cold identity reference skill installed: $skill_path" \
     || fail "cold identity reference skill installed: $skill_path"
 done
+for revision_skill in \
+  "$SANDBOX/.claude/skills/write-revision-pass/SKILL.md" \
+  "$SANDBOX/.codex/skills/write-revision-pass/SKILL.md" \
+  "$SANDBOX/.copilot/skills/write-revision-pass/SKILL.md" \
+  "$SANDBOX/.config/opencode/skills/write-revision-pass/SKILL.md"; do
+  if [[ -f "$revision_skill" || -L "$revision_skill" ]] \
+      && grep -q 'exactly one read-only review agent to each act' "$revision_skill" \
+      && grep -q 'DECISIONS.md' "$revision_skill" \
+      && grep -q 'Record the exact command and its empty output' "$revision_skill"; then
+    ok "revision-pass skill carries the complete contract: $revision_skill"
+  else
+    fail "revision-pass skill carries the complete contract: $revision_skill"
+  fi
+done
+for review_surface in \
+  "$SANDBOX/.claude/commands/write/review-section.md" \
+  "$SANDBOX/.codex/skills/write-review-section/SKILL.md" \
+  "$SANDBOX/.copilot/skills/write-review-section/SKILL.md" \
+  "$SANDBOX/.config/opencode/commands/write-review-section.md"; do
+  grep -q 'one agent per section' "$review_surface" \
+    && ok "multi-section review fan-out is rendered: $review_surface" \
+    || fail "multi-section review fan-out is rendered: $review_surface"
+done
+for turn_surface in \
+  "$SANDBOX/.claude/commands/rp/turn.md" \
+  "$SANDBOX/.codex/skills/rp-turn/SKILL.md" \
+  "$SANDBOX/.copilot/skills/rp-turn/SKILL.md" \
+  "$SANDBOX/.config/opencode/commands/rp-turn.md"; do
+  grep -q 'Scene: <scene> | Location: <location> | Present:' "$turn_surface" \
+    && ok "RP walkthrough anchor contract is rendered: $turn_surface" \
+    || fail "RP walkthrough anchor contract is rendered: $turn_surface"
+done
 for imported_path in \
   "$SANDBOX/.claude/skills/imported-demo" \
   "$SANDBOX/.codex/skills/imported-demo" \
@@ -334,7 +371,9 @@ done
 if jq -e '
     (.hooks.sessionStart[0].bash | endswith("session-start.sh")) and
     (.hooks.userPromptSubmitted[0].bash | endswith("user-prompt-submit.sh")) and
+    (.hooks.userPromptSubmitted[1].bash | endswith("verify-pass-complete.sh")) and
     (.hooks.postToolUse[0].bash | endswith("post-tool-use.sh")) and
+    (.hooks.postToolUse[0].timeoutSec == 15) and
     (.hooks.sessionEnd[0].bash | endswith("session-end.sh"))
   ' "$SANDBOX/.copilot/hooks/asha-recovery.json" >/dev/null 2>&1; then
   ok "Copilot installs Memory v2 recovery callbacks"

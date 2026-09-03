@@ -39,6 +39,15 @@ if [[ -x "$PRICED_HANDLER" ]]; then
   [[ -z "$PRICED_CONTEXT" ]] || RP_CONTEXT="${RP_CONTEXT:+$RP_CONTEXT$'\n\n'}$PRICED_CONTEXT"
 fi
 
+# Copilot drops postToolUse additionalContext. Drain the direct style-audit
+# queue here so the next verified userPromptSubmitted response carries it.
+if [[ "$HARNESS" == "copilot" ]]; then
+  STYLE_CONTEXT="$(copilot_drain_style_audit_nudges \
+    "$PROJECT_DIR" "${SESSION_ID:-unknown}" 2>/dev/null || true)"
+  [[ -z "$STYLE_CONTEXT" ]] \
+    || RP_CONTEXT="${RP_CONTEXT:+$RP_CONTEXT$'\n\n'}$STYLE_CONTEXT"
+fi
+
 if [[ -z "$RP_CONTEXT" ]]; then
   echo '{}'
 elif [[ "$HARNESS" == "copilot" ]]; then

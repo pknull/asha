@@ -182,6 +182,128 @@ WS_OFF="$(run_hook session-start.sh '{"session_id":"ws-off","cwd":"'"$PROJECT"'"
   || fail "legacy nudge-ws-context-off marker remains honored"
 rm -f "$PROJECT/Work/markers/nudge-ws-context-off" "$PROJECT/.asha/workspace.json"
 
+echo "--- verification-pass and style-audit hooks ---"
+
+PASS_TOKEN="old-value-$RANDOM-should-disappear"
+mkdir -p "$PROJECT/src"
+printf '%s\n' "$PASS_TOKEN" > "$PROJECT/src/pass-proof.txt"
+if (cd "$PROJECT" && HOME="$HOME_DIR" CLAUDE_PROJECT_DIR="$PROJECT" \
+    "$REPO_ROOT/plugins/session/tools/declare-pass.sh" "$PASS_TOKEN" replacement \
+    >/dev/null); then
+  ok "declare-pass writes a project-local marker"
+else
+  fail "declare-pass writes a project-local marker"
+fi
+jq -e --arg old "$PASS_TOKEN" \
+  '.schema_version == 1 and .old == $old and .new == "replacement"' \
+  "$PROJECT/Work/markers/pass-declaration.json" >/dev/null 2>&1 \
+  && ok "declare-pass records old and optional new values" \
+  || fail "declare-pass records old and optional new values"
+
+VERIFY_HIT="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-1","cwd":"'"$PROJECT"'","stop_hook_active":false}')"
+printf '%s' "$VERIFY_HIT" | jq -e --arg old "$PASS_TOKEN" \
+  '.decision == "block" and (.reason | contains($old) and contains("src/pass-proof.txt"))' \
+  >/dev/null 2>&1 \
+  && ok "verification Stop blocks once and names remaining files" \
+  || fail "verification Stop blocks once and names remaining files"
+VERIFY_LOOP="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-1","cwd":"'"$PROJECT"'","stop_hook_active":true}')"
+[[ "$VERIFY_LOOP" == '{}' && -f "$PROJECT/Work/markers/pass-declaration.json" ]] \
+  && ok "verification Stop honors the loop guard without clearing an unproved marker" \
+  || fail "verification Stop honors the loop guard without clearing an unproved marker"
+CODEX_VERIFY="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-codex","cwd":"'"$PROJECT"'","stop_hook_active":false}' codex)"
+printf '%s' "$CODEX_VERIFY" | jq -e '.decision == "block" and (.reason | length > 0)' \
+  >/dev/null 2>&1 \
+  && ok "Codex Stop verification emits JSON without a plain-text prefix" \
+  || fail "Codex Stop verification emits JSON without a plain-text prefix"
+printf 'replacement\n' > "$PROJECT/src/pass-proof.txt"
+VERIFY_EMPTY="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-2","cwd":"'"$PROJECT"'","stop_hook_active":false}')"
+[[ "$VERIFY_EMPTY" == '{}' && ! -e "$PROJECT/Work/markers/pass-declaration.json" ]] \
+  && ok "empty verification proof clears the marker without a done nudge" \
+  || fail "empty verification proof clears the marker without a done nudge"
+VERIFY_NONE="$(run_hook verify-pass-complete.sh \
+  '{"session_id":"verify-none","cwd":"'"$PROJECT"'","stop_hook_active":false}')"
+[[ "$VERIFY_NONE" == '{}' ]] \
+  && ok "verification handler with no marker is a fail-open no-op" \
+  || fail "verification handler with no marker is a fail-open no-op"
+
+cat > "$PROJECT/.asha/style-audit" <<'EOF'
+#!/usr/bin/env bash
+ROOT="$(cd -P "$(dirname "$0")/.." && pwd)"
+printf '%s' "$1" > "$ROOT/Work/style-audit-arg"
+cat > "$ROOT/Work/style-audit-payload"
+case "$(cat "$ROOT/.asha/style-audit-mode" 2>/dev/null || true)" in
+  report) printf 'avoid flat cadence\n' ;;
+  slow) sleep 12; printf 'too late\n' ;;
+  *) : ;;
+esac
+EOF
+chmod +x "$PROJECT/.asha/style-audit"
+printf 'report\n' > "$PROJECT/.asha/style-audit-mode"
+STYLE_PAYLOAD='{"session_id":"style-1","cwd":"'"$PROJECT"'","tool_name":"Edit","tool_input":{"file_path":"src/main.py"}}'
+STYLE_OUT="$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")"
+printf '%s' "$STYLE_OUT" | jq -e \
+  '.hookSpecificOutput.hookEventName == "PostToolUse"
+   and (.hookSpecificOutput.additionalContext | contains("STYLE AUDIT FINDING") and contains("avoid flat cadence"))' \
+  >/dev/null 2>&1 \
+  && ok "executable style audit emits Claude PostToolUse additionalContext" \
+  || fail "executable style audit emits Claude PostToolUse additionalContext"
+[[ "$(cat "$PROJECT/Work/style-audit-arg")" == "src/main.py" ]] \
+  && jq -e '.tool_name == "Edit"' "$PROJECT/Work/style-audit-payload" >/dev/null 2>&1 \
+  && ok "style audit receives the edited path and full payload" \
+  || fail "style audit receives the edited path and full payload"
+
+printf 'empty\n' > "$PROJECT/.asha/style-audit-mode"
+[[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
+  && ok "empty style-audit output is a no-op" \
+  || fail "empty style-audit output is a no-op"
+chmod -x "$PROJECT/.asha/style-audit"
+[[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
+  && ok "non-executable style audit is a no-op" \
+  || fail "non-executable style audit is a no-op"
+mv "$PROJECT/.asha/style-audit" "$PROJECT/.asha/style-audit.absent"
+[[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
+  && ok "absent style audit is a no-op" \
+  || fail "absent style audit is a no-op"
+mv "$PROJECT/.asha/style-audit.absent" "$PROJECT/.asha/style-audit"
+chmod +x "$PROJECT/.asha/style-audit"
+printf 'slow\n' > "$PROJECT/.asha/style-audit-mode"
+[[ "$(run_hook post-tool-use.sh "$STYLE_PAYLOAD")" == '{}' ]] \
+  && ok "timed-out style audit fails open without a nudge" \
+  || fail "timed-out style audit fails open without a nudge"
+
+printf 'report\n' > "$PROJECT/.asha/style-audit-mode"
+COPILOT_STYLE_PAYLOAD='{"sessionId":"style-copilot","cwd":"'"$PROJECT"'","toolName":"edit","toolArgs":"{\"path\":\"src/copilot.py\"}"}'
+COPILOT_POST="$(run_hook post-tool-use.sh "$COPILOT_STYLE_PAYLOAD" copilot)"
+COPILOT_STYLE="$(run_hook user-prompt-submit.sh \
+  '{"sessionId":"style-copilot","cwd":"'"$PROJECT"'","prompt":"continue"}' copilot)"
+[[ "$COPILOT_POST" == '{}' ]] \
+  && printf '%s' "$COPILOT_STYLE" | jq -e \
+    '.additionalContext | contains("STYLE AUDIT FINDING") and contains("src/copilot.py")' \
+    >/dev/null 2>&1 \
+  && ok "Copilot delivers style findings at the next prompt" \
+  || fail "Copilot delivers style findings at the next prompt"
+printf 'unrelated marker\n' > "$PROJECT/Work/markers/keep.md"
+COPILOT_HOSTILE_PAYLOAD='{"sessionId":"..","cwd":"'"$PROJECT"'","toolName":"edit","toolArgs":{"path":"src/hostile.py"}}'
+COPILOT_HOSTILE_POST="$(run_hook post-tool-use.sh "$COPILOT_HOSTILE_PAYLOAD" copilot)"
+COPILOT_HOSTILE_STYLE="$(run_hook user-prompt-submit.sh \
+  '{"sessionId":"..","cwd":"'"$PROJECT"'","prompt":"continue"}' copilot)"
+[[ "$COPILOT_HOSTILE_POST" == '{}' && -f "$PROJECT/Work/markers/keep.md" ]] \
+  && printf '%s' "$COPILOT_HOSTILE_STYLE" | jq -e \
+    '.additionalContext | contains("src/hostile.py")' >/dev/null 2>&1 \
+  && ok "Copilot style queue confines hostile session identifiers" \
+  || fail "Copilot style queue confines hostile session identifiers"
+rm -f "$PROJECT/Work/markers/keep.md"
+OPENCODE_STYLE="$(run_hook post-tool-use.sh \
+  '{"session_id":"style-opencode","cwd":"'"$PROJECT"'","tool_name":"apply_patch","tool_input":{"patch":"*** Update File: src/open.py\n@@"}}' opencode)"
+[[ "$OPENCODE_STYLE" == *"STYLE AUDIT FINDING"* \
+   && "$OPENCODE_STYLE" == *"src/open.py"* ]] \
+  && ok "OpenCode receives style findings as pending-context text" \
+  || fail "OpenCode receives style findings as pending-context text"
+
 BEFORE="$(sha256sum "$PROJECT/Memory/activeContext.md" "$PROJECT/Memory/decisions.md")"
 LAST_ACTION_BEFORE="$(jq -r '.last_action' "$PROJECT/Work/session-state/claude-p1.json")"
 run_hook session-end.sh '{"session_id":"p1","cwd":"'"$PROJECT"'","reason":"logout"}' >/dev/null
@@ -370,6 +492,12 @@ jq -e '.hooks.PreToolUse[] | select((._asha_harnesses // []) | index("codex"))
   | any(.hooks[]?; (.command // "") | test("policy-guard\\.sh$"))' "$HOOKS" >/dev/null 2>&1 \
   && ok "Codex apply_patch alias reaches published-Memory policy" \
   || fail "Codex apply_patch alias reaches published-Memory policy"
+jq -e '.hooks.Stop[]
+  | select(._asha_harnesses == ["claude", "codex"])
+  | any(.hooks[]?; (.command // "") | endswith("verify-pass-complete.sh"))' \
+  "$HOOKS" >/dev/null 2>&1 \
+  && ok "declared verification pass is registered only on Claude/Codex Stop" \
+  || fail "declared verification pass is registered only on Claude/Codex Stop"
 
 CONTROL_REACHABLE=1
 while read -r native control_event; do
@@ -464,6 +592,7 @@ CODEX_RENDER="$(_codex_emit_hooks_for_plugin \
    && "$CODEX_RENDER" == *"control-event.sh PostToolUse"* \
    && "$CODEX_RENDER" == *"control-event.sh PermissionRequest"* \
    && "$CODEX_RENDER" == *"control-event.sh Stop"* \
+   && "$CODEX_RENDER" == *"verify-pass-complete.sh"* \
    && "$CODEX_RENDER" != *"control-event.sh SessionEnd"* \
    && "$CODEX_RENDER" == *"[[hooks.PermissionRequest]]"* \
    && "$CODEX_RENDER" == *"[[hooks.Stop]]"* \

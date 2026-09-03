@@ -108,6 +108,10 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh Stop"
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/verify-pass-complete.sh"
           }
         ]
       }

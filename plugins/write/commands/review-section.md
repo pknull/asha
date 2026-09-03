@@ -1,7 +1,7 @@
 ---
 name: write-review-section
-description: "Run periodic review suite on completed section (reads project config)"
-argument-hint: "<section-path> [--full]"
+description: "Review one section or fan out a directory/multi-file target one agent per section"
+argument-hint: "<section-path|directory|file-list> [--full]"
 allowed-tools: ["Task", "Read", "Grep", "Glob"]
 ---
 
@@ -95,11 +95,24 @@ Full review (adds project-configured specialist reviews):
 The skill:
 
 1. Resolves the target from the section path
-2. Walks its ancestor chain for the nearest `Work/review-config.md` or
+2. Expands a directory or explicit multi-file target into manuscript sections
+   in stable manuscript order
+3. Walks its ancestor chain for the nearest `Work/review-config.md` or
    `work/review-config.md`
-3. Falls back to default if not found
-4. Runs configured agents in parallel where possible
-5. Synthesizes combined report
+4. Falls back to default if not found
+5. For a directory or multi-file target, fans out **one agent per section by
+   default**; each section agent applies the configured review modes to only its
+   assigned section and must not edit it. Use the current harness's declared
+   subagent surface, or run the same section charges sequentially when none
+   exists.
+6. For a single file, runs the configured review charge directly
+7. Synthesizes section findings into one combined report after every section
+   result returns
+
+Do not give one agent an entire directory by default. Do not split one section
+across multiple first-wave agents unless the caller explicitly requests that
+more expensive topology. `--full` may add configured specialist passes after
+the one-agent-per-section wave; it does not collapse the section fan-out.
 
 ## Section Identification
 
@@ -141,6 +154,11 @@ Generates combined report at configured `report_path` containing:
 │              Unified Report + Actions                    │
 └─────────────────────────────────────────────────────────┘
 ```
+
+For directory and multi-file inputs, the diagram above is instantiated once
+per section: one section agent owns the configured modes for that file, all
+section agents are independent, and the command synthesizes only after the
+fan-out completes.
 
 ## Creating a Project Config
 

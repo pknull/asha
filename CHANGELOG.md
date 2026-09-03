@@ -12,6 +12,22 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Harness-neutral revision and walkthrough corrections
+
+- Added a declared revision-pass tool and fail-open completion handler. Claude
+  and Codex use the native Stop JSON retry seam, Copilot checks at the next
+  submitted prompt, and OpenCode queues the idle result into pending context.
+- Added executable project-local `.asha/style-audit` delivery after file edits,
+  bounded to ten seconds and rendered through each harness's verified context
+  seam. Copilot deliberately delays delivery to the next prompt because its
+  post-tool additional context is dropped.
+- Recorded the 2026-09-02 Codex documentation finding that PreToolUse `ask` is
+  parsed but unsupported and PermissionRequest accepts only allow/deny; the
+  existing conservative ask-to-deny policy is unchanged.
+- Added `write-revision-pass`, default one-agent-per-section fan-out for
+  multi-section reviews, and the RP one-complete-beat walkthrough contract with
+  a final Scene/Location/Present anchor.
+
 #### Keeper-approved third-party skills
 
 - Added the bundled `find-skills` workflow. Its Skills.sh search transport uses
