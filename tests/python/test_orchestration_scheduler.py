@@ -156,6 +156,29 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         self.assertIn(f"1-{MAX_PATH_BYTES} UTF-8 bytes", rendered)
         self.assertIn(f"1-{MAX_SUMMARY_BYTES} UTF-8 bytes", rendered)
 
+    def test_repair_assignment_explains_attempt_local_supersession(self) -> None:
+        initiative = self.initiative()
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        attempt = self.attempt(state="allocated")
+
+        rendered = assignment_bytes(
+            initiative, self.plan, node, attempt,
+            attempt["base"]["scope_origin"]["jj_commit_id"],
+            accepted_findings=[{
+                "severity": "high", "location": "results.py",
+                "summary": "Repair the accepted result lineage defect.",
+            }],
+        ).decode()
+
+        self.assertIn("## Accepted review findings to fix", rendered)
+        self.assertIn(
+            "supersedes_result_id MUST be null for the first result of this "
+            "attempt, including a repair or salvage attempt that follows an "
+            "earlier attempt; set it only to the result_id this same attempt "
+            "already had accepted when publishing a correction.",
+            rendered,
+        )
+
     def test_parallel_total_deadline_pause_and_storage_limits_block(self) -> None:
         with mock.patch(
             "lib.control.orchestration.scheduler.storage_report",

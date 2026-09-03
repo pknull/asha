@@ -997,6 +997,13 @@ def reconcile_live(
                     attempt = _transition_attempt(
                         store, initiative_id, attempt, "running", current_time,
                     )
+                refused_ingestion = next((
+                    record for record in _survey_result_ingestions(
+                        store, initiative_id,
+                    )[0]
+                    if record["attempt_id"] == attempt["attempt_id"]
+                    and record["state"] == "refused"
+                ), None)
                 attempt = _transition_attempt(
                     store, initiative_id, attempt, "result-missing", current_time,
                 )
@@ -1005,7 +1012,17 @@ def reconcile_live(
                 append_event(
                     store, initiative_id, "result-missing",
                     [attempt["node_id"], attempt["attempt_id"], attempt["task_id"]],
-                    {"grace_seconds": store.config.result_grace_seconds},
+                    {
+                        "grace_seconds": store.config.result_grace_seconds,
+                        "refused_ingestion_id": (
+                            None if refused_ingestion is None else
+                            refused_ingestion["ingestion_id"]
+                        ),
+                        "refusal": (
+                            None if refused_ingestion is None else
+                            refused_ingestion["refusal"]
+                        ),
+                    },
                     actor_kind="controller", actor_id="live-reconciler",
                 )
             elif state == "failed":

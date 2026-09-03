@@ -345,7 +345,18 @@ def _validate_workspace_paths(result: Mapping[str, Any], task: Mapping[str, Any]
         _path_inside_workspace(workspace, attestation["cwd"], "attestation cwd")
 
 
+def _lineage_context_diagnostic(
+    supersedes_result_id: str, superseded: Mapping[str, Any],
+) -> str:
+    return (
+        f"supersedes_result_id {supersedes_result_id} names earlier attempt "
+        f"{superseded['attempt_id']} on node {superseded['node_id']}; "
+        "lineage context, not a correction"
+    )
+
+
 def _semantic_result(
+    store: InitiativeStore,
     publication: Mapping[str, Any],
     body: Mapping[str, Any],
     attempt: Mapping[str, Any],
@@ -355,7 +366,7 @@ def _semantic_result(
     initiative: Mapping[str, Any],
     *,
     jj: JjAdapter,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str | None]:
     expected_keys = _CLIENT_KEYS | ({"review"} if node["type"] == "review" else set())
     if set(body) != expected_keys:
         raise ResultRefused(
@@ -405,9 +416,27 @@ def _semantic_result(
     if attempt["seal_id"] is not None:
         raise ResultRefused("sealed attempts cannot publish or correct results")
     current_result_id = attempt["result_id"]
-    if result["supersedes_result_id"] != current_result_id:
-        if current_result_id is None:
+    supersedes_result_id = result["supersedes_result_id"]
+    lineage_diagnostic = None
+    if current_result_id is None and supersedes_result_id is not None:
+        try:
+            superseded = store.read_result(
+                publication["initiative_id"], supersedes_result_id,
+            )
+        except StoreError as exc:
+            if "not found" in str(exc):
+                raise ResultRefused(
+                    "supersedes_result_id names no result in this initiative"
+                ) from exc
+            raise ResultRefused(
+                f"supersedes_result_id result cannot be read: {exc}"
+            ) from exc
+        if superseded["attempt_id"] == attempt["attempt_id"]:
             raise ResultRefused("the first accepted result must not supersede another result")
+        lineage_diagnostic = _lineage_context_diagnostic(
+            supersedes_result_id, superseded,
+        )
+    elif supersedes_result_id != current_result_id:
         raise ResultRefused(
             "supersedes_result_id must name the current accepted result for this attempt"
         )
@@ -436,7 +465,7 @@ def _semantic_result(
             raise ResultRefused(f"claimed commit ownership inspection failed: {exc}") from exc
         if identity.commit_id != claimed_commit:
             raise ResultRefused("result claimed commit differs from the task workspace")
-    return result
+    return result, lineage_diagnostic
 
 
 def _mark_publication_indeterminate(
@@ -492,6 +521,7 @@ def _finish_acceptance(
     store: InitiativeStore,
     publication: dict[str, Any],
     result: dict[str, Any],
+    lineage_diagnostic: str | None,
 ) -> None:
     attempt = store.read_attempt(publication["initiative_id"], publication["attempt_id"])
     if attempt["seal_id"] is not None:
@@ -535,6 +565,7 @@ def _finish_acceptance(
                     None if provenance is None else provenance["method"]
                 ),
                 "producer_run_id": result["run_id"],
+                "lineage_diagnostic": lineage_diagnostic,
             },
             actor_kind=actor_kind, actor_id=actor_id,
         )
@@ -587,6 +618,7 @@ def _advance_publication(
             return publication
         return _mark_publication_indeterminate(store, publication, attempt, reason)
     expected_result: dict[str, Any] | None = None
+    lineage_diagnostic: str | None = None
     if publication["state"] in {"reserved", "indeterminate"}:
         if publication["state"] == "indeterminate":
             # An indeterminate journal is recoverable only when the preallocated
@@ -602,8 +634,8 @@ def _advance_publication(
                 publication = _transition_publication(store, publication, "reserved")
             else:
                 try:
-                    expected_result = _semantic_result(
-                        publication, publication["body"], attempt, node, task, link,
+                    expected_result, lineage_diagnostic = _semantic_result(
+                        store, publication, publication["body"], attempt, node, task, link,
                         initiative,
                         jj=jj or JjAdapter(),
                     )
@@ -622,8 +654,8 @@ def _advance_publication(
             hook("validating", publication)
     if publication["state"] == "validating":
         try:
-            expected_result = _semantic_result(
-                publication, publication["body"], attempt, node, task, link,
+            expected_result, lineage_diagnostic = _semantic_result(
+                store, publication, publication["body"], attempt, node, task, link,
                 initiative,
                 jj=jj or JjAdapter(),
             )
@@ -638,8 +670,8 @@ def _advance_publication(
     if publication["state"] == "persisting":
         if expected_result is None:
             try:
-                expected_result = _semantic_result(
-                    publication, publication["body"], attempt, node, task, link,
+                expected_result, lineage_diagnostic = _semantic_result(
+                    store, publication, publication["body"], attempt, node, task, link,
                     initiative,
                     jj=jj or JjAdapter(),
                 )
@@ -697,15 +729,29 @@ def _advance_publication(
                         if field in publication:
                             candidate[field] = copy.deepcopy(publication[field])
                     expected_result = validate_result(candidate)
+                    supersedes_result_id = expected_result["supersedes_result_id"]
+                    if supersedes_result_id is not None:
+                        try:
+                            superseded = store.read_result(
+                                initiative_id, supersedes_result_id,
+                            )
+                        except StoreError as exc:
+                            raise ResultRefused(
+                                "completed publication supersedes a missing result"
+                            ) from exc
+                        if superseded["attempt_id"] != attempt["attempt_id"]:
+                            lineage_diagnostic = _lineage_context_diagnostic(
+                                supersedes_result_id, superseded,
+                            )
                 else:
-                    expected_result = _semantic_result(
-                        publication, publication["body"], attempt, node, task, link,
+                    expected_result, lineage_diagnostic = _semantic_result(
+                        store, publication, publication["body"], attempt, node, task, link,
                         initiative,
                         jj=jj or JjAdapter(),
                     )
             if result != expected_result:
                 raise ResultRefused("completed publication result binding changed")
-            _finish_acceptance(store, publication, result)
+            _finish_acceptance(store, publication, result, lineage_diagnostic)
         except (ModelError, ResultRefused, StoreError) as exc:
             # completed is a terminal journal fact and is never rewritten.
             _pause_publication_conflict(

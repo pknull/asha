@@ -535,6 +535,15 @@ class OrchestrationModelTests(unittest.TestCase):
             "plan approval binds content, not lifecycle status",
         )
 
+    def test_result_refused_event_type_validates(self) -> None:
+        event = next(
+            record for validator, record in self.contract_records()
+            if validator is model.validate_event
+        )
+        event["type"] = "result-refused"
+
+        self.assertEqual(model.validate_event(event)["type"], "result-refused")
+
     def test_result_with_documented_attestation_schema_validates(self) -> None:
         result = next(
             record for validator, record in self.contract_records()

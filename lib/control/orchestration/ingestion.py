@@ -607,17 +607,42 @@ def _transition_ingestion(
 def _refuse(
     store: InitiativeStore, record: Mapping[str, Any], reason: str,
 ) -> dict[str, Any]:
+    raw_refusal = reason.encode("utf-8")
+    refusal = (
+        reason if len(raw_refusal) <= MAX_REFUSAL_BYTES else
+        raw_refusal[:MAX_REFUSAL_BYTES].decode("utf-8", errors="ignore")
+    )
     if record["state"] == "completed":
         raise IngestionRefused(reason)
     if record["state"] == "refused":
-        if record["refusal"] == reason[:2048]:
-            return dict(record)
-        raise IngestionRefused(
-            f"result ingestion is already refused: {record['refusal']}"
+        if record["refusal"] != refusal:
+            raise IngestionRefused(
+                f"result ingestion is already refused: {record['refusal']}"
+            )
+        refused = dict(record)
+    else:
+        refused = _transition_ingestion(
+            store, record, state="refused", refusal=refusal,
         )
-    return _transition_ingestion(
-        store, record, state="refused", refusal=reason[:2048],
-    )
+    from .actions import append_event
+
+    if not any(
+        event["type"] == "result-refused"
+        and event["payload"].get("ingestion_id") == refused["ingestion_id"]
+        for event in store.list_events_snapshot(refused["initiative_id"])
+    ):
+        append_event(
+            store, refused["initiative_id"], "result-refused",
+            [refused["node_id"], refused["attempt_id"], refused["ingestion_id"]],
+            {
+                "refusal": refused["refusal"],
+                "ingestion_id": refused["ingestion_id"],
+                "publication_id": refused["publication_id"],
+                "task_id": refused["task_id"],
+            },
+            actor_kind="controller", actor_id="result-ingester",
+        )
+    return refused
 
 
 def _save_verification_evidence(

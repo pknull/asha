@@ -1859,7 +1859,7 @@ EVENT_TYPES = frozenset({
     "coordinator-generation-fenced", "node-ready", "action-received",
     "action-refused", "action-indeterminate", "attempt-started",
     "task-status-observed", "result-published", "result-missing",
-    "result-ingestion-deferred", "seal-preparing",
+    "result-refused", "result-ingestion-deferred", "seal-preparing",
     "seal-published", "seal-drift-detected", "review-submitted", "review-accepted",
     "verification-started", "verification-finished", "node-state-changed",
     "directive-accepted", "directive-delivered", "limit-reached",
