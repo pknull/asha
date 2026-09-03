@@ -111,9 +111,16 @@ class RailTests(unittest.TestCase):
 
 
 class RollUpTests(unittest.TestCase):
-    def test_a_child_demand_reaches_the_collapsed_parent(self) -> None:
-        rolled = view("a", "running", [{"type": "work", "state": "needs-input"}])
-        self.assertEqual(display_state(rolled), (WAITING, "needs you"))
+    def test_only_operator_demand_reaches_the_collapsed_parent(self) -> None:
+        review_waiting = view(
+            "a", "running", [{"type": "review", "state": "needs-input"}],
+        )
+        self.assertEqual(display_state(review_waiting), (MACHINE, "running"))
+        self.assertEqual(rail_tiers(review_waiting)[3], WAITING)
+
+        self.assertEqual(display_state(view("b", "needs-input")), (WAITING, "needs you"))
+        requested = view("c", "running", approvals=[{"state": "requested"}])
+        self.assertEqual(display_state(requested), (WAITING, "needs you"))
 
     def test_a_failing_child_is_not_rolled_up_because_retries_are_automatic(self) -> None:
         failing = view("a", "running", [{"type": "work", "state": "failed"}])
@@ -132,16 +139,20 @@ class RollUpTests(unittest.TestCase):
         model = TuiModel(height=40, width=140)
         model.initiatives = InitiativesScreen(views, height=40, width=140)
         counts = summary_counts(model.initiatives.rows())
-        self.assertEqual(counts["waiting"], 3, "the rolled-up row counts as a demand")
+        self.assertEqual(counts["waiting"], 2, "child demand stays in the rail")
         self.assertEqual(counts["initiatives"], len(views))
         self.assertEqual(
             sum(counts[key] for key in ("waiting", "running", "failed", "paused", "settled")),
             counts["initiatives"], "every initiative lands in exactly one bucket",
         )
-        lines = render(model)
-        rows = [line for line in lines if getattr(line, "spans", ()) and str(line)[:1] in {" ", ">"}]
-        amber = [line for line in rows if any(tier == WAITING for _s, _e, tier in line.spans)]
-        self.assertEqual(len(amber), counts["waiting"], "the title must be auditable by eye")
+        displayed_amber = [
+            row for row in model.initiatives.rows()
+            if row.kind == "initiative" and row.display[0] == WAITING
+        ]
+        self.assertEqual(
+            len(displayed_amber), counts["waiting"],
+            "rail-only child demand must not inflate the title count",
+        )
 
 
 class LineTests(unittest.TestCase):

@@ -313,20 +313,20 @@ class LineBuilder:
 def display_state(view: Mapping[str, Any]) -> tuple[str, str]:
     """The tier and label a row actually shows.
 
-    Rolled up from the children in exactly one direction: an initiative whose
-    node demands the operator shows that demand, because a request for a human
-    that is only visible after expanding a row is a request nobody sees. A
-    failing child is NOT rolled up — retries are allocated automatically, so
-    the initiative is still the machine's move; the rail already shows the ✗.
+    Only initiative-level demand and explicit approval requests roll up. Node
+    demand stays visible in the rail without mislabelling the whole initiative
+    as the operator's move.
     """
     initiative = view.get("initiative") or {}
     state = initiative.get("state")
     if state == "approved":
         return WAITING, "activate"
-    tier = tier_for(state)
-    if tier != WAITING and WAITING in rail_tiers(view):
+    if state == "needs-input" or any(
+        approval.get("state") == "requested"
+        for approval in (view.get("approvals", ()) or ())
+    ):
         return WAITING, "needs you"
-    return tier, short_label(state)
+    return tier_for(state), short_label(state)
 
 
 def summary_counts(rows: Sequence[Any]) -> dict[str, int]:
