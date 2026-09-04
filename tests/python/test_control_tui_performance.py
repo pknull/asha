@@ -263,6 +263,52 @@ class BoundedProbeTests(unittest.TestCase):
         )
         jj.inspect_workspace.assert_not_called()
 
+    def test_cached_terminal_task_detects_respawned_live_process(self) -> None:
+        task = _terminal_task("cached-terminal-live-process")
+        task["tmux"]["session"] = "cached-terminal-live-process"
+        task["runs"][0]["pane_id"] = "%42"
+        calls = []
+
+        def inventory(*, dead, status):
+            def run(argv, **_kwargs):
+                calls.append(argv)
+                output = self._inventory_line(
+                    task, 42, dead=dead, status=status,
+                ) + "\n"
+                return subprocess.CompletedProcess(
+                    argv, 0, output.encode(), b"",
+                )
+
+            return TmuxAdapter(runner=run).inventory()
+
+        store = self.Store([task])
+        cache = tui.RefreshCache()
+        with mock.patch.object(
+            tui.LiveAdapters, "event",
+            return_value=Evidence("event", "missing", "no event snapshot"),
+        ), mock.patch(
+            "lib.control.reconcile.harness_api.verify_process", return_value=True,
+        ), mock.patch.object(
+            tui.view, "expire_terminal_snapshots",
+        ), mock.patch.object(tui.view, "publish_server_summary"):
+            rows = tui._load_rows(
+                mock.sentinel.config, store, mock.Mock(), mock.Mock(),
+                cache=cache, tmux=inventory(dead="1", status="0"),
+            )
+            cache.stabilize_rows(rows)
+            rows = tui._load_rows(
+                mock.sentinel.config, store, mock.Mock(), mock.Mock(),
+                cache=cache, tmux=inventory(dead="0", status=""),
+            )
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(store.lock_count, 2)
+        self.assertEqual(rows[0].display_state, "stale")
+        self.assertEqual(
+            rows[0].reconciliation["blocker"],
+            "process: live process contradicts stored terminal state",
+        )
+
     def test_archived_cache_miss_does_not_lock_and_reread_records(self) -> None:
         tasks = [_terminal_task(f"archived-{index:03d}") for index in range(200)]
         for task in tasks:
