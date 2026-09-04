@@ -461,21 +461,27 @@ class ControlCliTests(unittest.TestCase):
         return rc, stdout.getvalue(), stderr.getvalue()
 
     def test_list_json_is_versioned_stdout_only_and_deterministic(self) -> None:
-        rc, stdout, stderr = self.invoke(["task", "list", "--json"])
+        with mock.patch(
+            "lib.control.reconcile.LiveAdapters.tmux",
+            return_value=Evidence(
+                "tmux", "missing", "recorded tmux session is absent",
+            ),
+        ), mock.patch(
+            "lib.control.reconcile.LiveAdapters.process",
+            return_value=Evidence(
+                "process", "match", "recorded process identity is live",
+            ),
+        ):
+            rc, stdout, stderr = self.invoke(["task", "list", "--json"])
         self.assertEqual(rc, 0)
         self.assertEqual(stderr, "")
         data = json.loads(stdout)
         self.assertEqual(data["contract"], "asha.control-task-list.v1")
         self.assertEqual(data["tasks"][0]["task_id"], self.record["task_id"])
-        # This never-launched fixture has no tmux session, no live process, and
-        # no jj workspace.  Reconciliation follows the documented precedence
-        # tmux -> process -> jj: with tmux isolated to an empty socket dir the
-        # recorded session resolves as `missing`, and a missing tmux session
-        # with a non-missing process is the first and reported blocker, before
-        # jj is consulted (see the isolated tmux socket in setUp). Verified
-        # empirically against the host tmux runtime; a sandbox that makes tmux
-        # unavailable or denies its socket degrades that probe to `unavailable`
-        # and would otherwise mislead this assertion toward the jj blocker.
+        # Reconciliation follows tmux -> process -> jj precedence: the missing
+        # tmux session with a matching process is the first reported blocker.
+        # Explicit evidence keeps this contract assertion independent of host
+        # or sandbox tmux socket behavior.
         self.assertEqual(data["tasks"][0]["status"], "stale")
         self.assertEqual(
             data["tasks"][0]["blocker"], "tmux: recorded tmux session is absent",

@@ -207,7 +207,8 @@ state through the same typed controller functions the CLI uses (`snapshot`,
 `submit_action`); it duplicates no lifecycle logic. Orchestration is imported
 lazily; a malformed orchestration configuration degrades the initiative branch
 to an inline note and leaves the task branch fully usable. The five-second
-automatic refresh reloads the whole tree with lock-free snapshot readers.
+automatic refresh samples changed tree facts with lock-free snapshot readers;
+an unchanged sample does not rebuild or repaint the tree.
 `Tab` no longer switches modes — there is one view.
 
 | Key | Action |
@@ -395,28 +396,45 @@ manual attach command after its immediate reconciliation. A successful
 non-detached `asha task start` whose advisory popup fails still prints that
 diagnostic and returns 0; the newly created task remains live.
 
-While open, the TUI reconciles all displayed tasks at a five-second monotonic
-cadence on one daemon thread named `asha-control-refresh`. Each pass loads a
-frozen snapshot of the displayed rows, initiative views, room rows, and
-skipped registry entries without touching the curses model, then places it in
-a single slot under a lock; a newer completed pass replaces an unapplied older
-one, so missed refreshes never queue, and the next pass is due five seconds
-after the previous one finishes. Each external adapter call still has a
-deadline. The curses loop polls that slot without blocking after every input
-poll and applies a ready snapshot before dispatching an already-read key,
-preserving the selected task by identity, so no key waits for a pass in
-progress. An operator action that loads state synchronously on the curses
-thread fences earlier passes: a snapshot whose generation predates that load
-is discarded rather than overwriting the newer result. Filter input, task
-actions, the task-start form, and confirmations pause application, not
-loading; the latest snapshot is applied once the modal closes. Adapter
-failures are reported in the status line. The thread does not start the
-separately managed Control supervisor; the operator starts it or installs its
-user service explicitly. Exit stops the thread and joins it for at most one
-second before daemon status lets the process leave. A later successful
-automatic pass clears only its stale automatic-refresh diagnostic; operator
-action and skipped-registry messages remain. `r` remains the explicit
-selected-task refresh.
+While open, the TUI samples displayed state at a five-second monotonic cadence
+on one daemon thread named `asha-control-refresh`. One `list-panes -a`
+inventory per recorded tmux socket supplies session existence, immutable IDs,
+ownership options, and pane facts to tasks on that server; the default-socket
+inventory also serves the initiative and Room branches. Live tasks may still
+require their own bounded screen-tail, process, event, or jj evidence. An
+already-terminal task skips per-task tmux and jj subprocesses while still
+consulting the bulk inventory's in-memory pane fact for a contradictory live
+process. Terminal rows are cached by their task-record digest;
+the worker also fingerprints the complete row and branch payloads, reuses
+unchanged objects, sorts off the curses thread, and hands over only the changed
+displayed task rows plus removal/order facts.
+
+Each pass places its frozen result in one slot under a lock. The single worker
+runs at most one pass at a time, never builds a timer queue, and a newer
+completed pass replaces an unapplied older one. The next normal pass is due
+five seconds after the preceding work finishes. Deltas are measured from the
+last snapshot the curses thread actually applied, so replacing an unapplied
+result cannot lose its task-row, initiative, or Room changes. Each external
+adapter call still has a deadline. The curses loop polls without blocking
+after every input poll. Applying an unchanged snapshot is a no-op; a changed
+snapshot preserves stable visible-row objects and patches only changed task
+rows when tree shape and filters permit, so key handling never waits for
+refresh work or a whole-tree rebuild. Selection remains bound by identity.
+An operator action that loads state synchronously on the curses thread fences
+earlier passes: a snapshot whose generation predates that load is discarded
+rather than overwriting the newer result. Snapshot application happens only in
+the main curses loop after its input poll. A filter prompt, form, confirmation,
+or other popup that enters its own modal key loop does not poll the snapshot
+slot; background loading continues, and the latest result is applied after the
+modal returns. Ordinary main-loop key handling does not deliberately pause
+application, although a synchronous action naturally delays the next poll for
+the duration of that action. Adapter failures are reported in the status line.
+The thread does not start the separately managed Control
+supervisor; the operator starts it or installs its user service explicitly.
+Exit stops the thread and joins it for at most one second before daemon status
+lets the process leave. A later successful automatic pass clears only its
+stale automatic-refresh diagnostic; operator action and skipped-registry
+messages remain. `r` remains the explicit selected-task refresh.
 For an archived row, `r` refreshes only the durable lifecycle projection and
 does not probe removed live resources.
 

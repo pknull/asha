@@ -18,9 +18,11 @@ from .text import terminal_text_is_complete
 
 
 MAX_OUTPUT_BYTES = 64 * 1024
+INVENTORY_MAX_OUTPUT_BYTES = 4 * 1024 * 1024
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)
 _PANE_ID = re.compile(r"%[0-9]+", re.ASCII)
 _SESSION_ID = re.compile(r"\$[0-9]+", re.ASCII)
+_WINDOW_ID = re.compile(r"@[0-9]+", re.ASCII)
 _ROOM_UUID = re.compile(
     r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
     re.ASCII,
@@ -48,6 +50,19 @@ _PANE_FORMAT = (
     "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}\t"
     "#{pane_dead_signal}\t#{session_name}\t#{window_name}\t#{pane_title}"
 )
+_INVENTORY_SESSION_OPTIONS = (
+    "@asha_managed", "@asha_task_id", "@asha_room_session_id",
+)
+_INVENTORY_PANE_OPTIONS = (
+    "@asha_run_id", "@asha_room_id", "@asha_room_project_id",
+)
+_INVENTORY_FORMAT = "\t".join((
+    "#{pid}", "#{session_name}", "#{session_id}", "#{window_name}",
+    "#{window_id}", "#{pane_id}", "#{pane_pid}", "#{pane_dead}",
+    "#{pane_dead_status}", "#{pane_dead_signal}", "#{pane_active}",
+    *tuple(f"#{{{option}}}" for option in _INVENTORY_SESSION_OPTIONS),
+    *tuple(f"#{{{option}}}" for option in _INVENTORY_PANE_OPTIONS),
+))
 _ROOM_REFUSAL = (
     'display-message -p ASHA_ROOM_OWNERSHIP_REFUSED ; run-shell "exit 66"'
 )
@@ -67,6 +82,160 @@ class PaneFacts:
     session: str
     window: str
     title: str
+
+
+class TmuxInventory:
+    """One immutable tmux-server sample reused by every refresh consumer.
+
+    The inventory owns identity, ownership-option, and pane facts from one
+    ``list-panes -a`` subprocess.  Screen-tail reads for a live harness and
+    operator writes remain explicit calls on the source adapter; routine
+    existence and ownership checks never spawn a subprocess per record.
+    """
+
+    def __init__(
+        self,
+        source: "TmuxAdapter",
+        *,
+        server_pid: int | None,
+        sessions: dict[str, dict[str, Any]],
+        session_ids: dict[str, str],
+        panes: dict[str, dict[str, Any]],
+        windows: dict[tuple[str, str], str],
+    ) -> None:
+        self._source = source
+        self._server_pid = server_pid
+        self._server_pid_checked = server_pid is not None
+        self._server_pid_error: str | None = None
+        self._sessions = sessions
+        self._session_ids = session_ids
+        self._panes = panes
+        self._windows = windows
+        self.executable = source.executable
+        self.socket = source.socket
+        self.config_file = source.config_file
+
+    def _session(self, target: str) -> dict[str, Any]:
+        selected = _validate_session_target(target)
+        name = self._session_ids.get(selected, selected)
+        session = self._sessions.get(name)
+        if session is None:
+            raise TmuxError(f"can't find session: {selected}")
+        return session
+
+    def server_pid(self) -> int:
+        if self._server_pid_error is not None:
+            raise TmuxError(self._server_pid_error)
+        if not self._server_pid_checked:
+            # An empty list-panes result cannot distinguish an absent server
+            # from a pane-free test double. This remains at most one extra
+            # server-wide probe, never one probe per record.
+            self._server_pid_checked = True
+            try:
+                self._server_pid = self._source.server_pid()
+            except TmuxError as exc:
+                self._server_pid_error = str(exc)
+                raise
+        if self._server_pid is None:
+            raise TmuxError("tmux inventory has no server identity")
+        return self._server_pid
+
+    def list_sessions(self) -> list[str]:
+        return sorted(self._sessions)
+
+    def session_names(self) -> list[str]:
+        return self.list_sessions()
+
+    def has_session(self, name: str) -> bool:
+        selected = _validate_session_target(name)
+        return (
+            selected in self._sessions
+            or selected in self._session_ids
+        )
+
+    def session_option(
+        self, name: str, option: str, *, deadline_seconds: float = 60,
+    ) -> str | None:
+        del deadline_seconds
+        key = _validate_user_option_key(option)
+        if key not in _INVENTORY_SESSION_OPTIONS:
+            raise TmuxError(
+                f"session option is not present in the bulk inventory: {key}"
+            )
+        return self._session(name)["options"].get(key)
+
+    def pane_option(
+        self, pane_id: str, option: str, *, deadline_seconds: float = 60,
+    ) -> str | None:
+        del deadline_seconds
+        pane = _validate_pane_id(pane_id)
+        key = _validate_user_option_key(option)
+        if key not in _INVENTORY_PANE_OPTIONS:
+            raise TmuxError(
+                f"pane option is not present in the bulk inventory: {key}"
+            )
+        record = self._panes.get(pane)
+        if record is None:
+            raise TmuxError(f"can't find pane: {pane}")
+        return record["options"].get(key)
+
+    def pane_facts(
+        self, pane_id: str, *, deadline_seconds: float = 60,
+    ) -> PaneFacts:
+        del deadline_seconds
+        pane = _validate_pane_id(pane_id)
+        record = self._panes.get(pane)
+        if record is None:
+            raise TmuxError(f"can't find pane: {pane}")
+        return record["facts"]
+
+    def window_pane_facts(
+        self, session: str, window: str, *, deadline_seconds: float = 60,
+    ) -> PaneFacts:
+        del deadline_seconds
+        name = self._session(session)["name"]
+        window_name = _validate_window_name(window)
+        pane = self._windows.get((name, window_name))
+        if pane is None:
+            raise TmuxError(f"can't find pane for window: {name}:{window_name}")
+        return self._panes[pane]["facts"]
+
+    def session_id(
+        self, pane_id: str, *, deadline_seconds: float = 60,
+    ) -> str:
+        del deadline_seconds
+        pane = _validate_pane_id(pane_id)
+        record = self._panes.get(pane)
+        if record is None:
+            raise TmuxError(f"can't find pane: {pane}")
+        return record["session_id"]
+
+    def pane_tail(self, pane_id: str, *, lines: int = 12) -> list[str]:
+        return self._source.pane_tail(pane_id, lines=lines)
+
+    def set_server_summary(
+        self, value: str, *, deadline_seconds: float = 60,
+    ) -> None:
+        self._source.set_server_summary(value, deadline_seconds=deadline_seconds)
+
+    def set_pane_option(
+        self, pane_id: str, option: str, value: str, *,
+        deadline_seconds: float = 60,
+    ) -> None:
+        self._source.set_pane_option(
+            pane_id, option, value, deadline_seconds=deadline_seconds,
+        )
+
+    def set_session_option(
+        self, name: str, option: str, value: str, *,
+        deadline_seconds: float = 60,
+    ) -> None:
+        self._source.set_session_option(
+            name, option, value, deadline_seconds=deadline_seconds,
+        )
+
+    def room_attach_argv(self, **kwargs) -> list[str]:
+        return self._source.room_attach_argv(**kwargs)
 
 
 def _has_unicode_control(value: str) -> bool:
@@ -108,6 +277,12 @@ def _validate_pane_id(value: Any) -> str:
 def _validate_session_id(value: Any) -> str:
     if not isinstance(value, str) or _SESSION_ID.fullmatch(value) is None:
         raise TmuxError("tmux session id is invalid")
+    return value
+
+
+def _validate_window_id(value: Any) -> str:
+    if not isinstance(value, str) or _WINDOW_ID.fullmatch(value) is None:
+        raise TmuxError("tmux window id is invalid")
     return value
 
 
@@ -333,6 +508,130 @@ class TmuxAdapter:
                 names.append(line)
         return names
 
+    def inventory(self) -> TmuxInventory:
+        """Capture every session/pane fact needed by Control in one process."""
+        returncode, stdout, stderr = self._capture_bytes(
+            self.executable,
+            ["list-panes", "-a", "-F", _INVENTORY_FORMAT],
+            limit=INVENTORY_MAX_OUTPUT_BYTES,
+            deadline_seconds=15,
+        )
+        if returncode != 0:
+            diagnostic = stderr.decode("utf-8", errors="replace").casefold()
+            if any(marker in diagnostic for marker in (
+                "no server running", "no sessions", "error connecting",
+                "failed to connect to server",
+            )):
+                return TmuxInventory(
+                    self, server_pid=None, sessions={}, session_ids={},
+                    panes={}, windows={},
+                )
+            self._raise_failure(returncode, stderr)
+        try:
+            output = stdout.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise TmuxError("tmux inventory output was not UTF-8") from exc
+        expected_fields = 11 + len(_INVENTORY_SESSION_OPTIONS) + len(
+            _INVENTORY_PANE_OPTIONS
+        )
+        sessions: dict[str, dict[str, Any]] = {}
+        session_ids: dict[str, str] = {}
+        panes: dict[str, dict[str, Any]] = {}
+        active_windows: dict[tuple[str, str], str] = {}
+        fallback_windows: dict[tuple[str, str], str] = {}
+        window_names: dict[tuple[str, str], tuple[str, str]] = {}
+        server_pid: int | None = None
+        for line in output.splitlines():
+            fields = line.split("\t")
+            if len(fields) != expected_fields:
+                raise TmuxError("tmux returned malformed inventory facts")
+            (
+                raw_server_pid, session_name, raw_session_id, window_name,
+                raw_window_id, pane_id, raw_pane_pid, raw_dead, raw_status, raw_signal,
+                raw_active, *option_values,
+            ) = fields
+            # This server may also contain ordinary operator sessions. Their
+            # names are outside Control's accepted target grammar, so they are
+            # irrelevant inventory rows rather than corruption of the bulk
+            # sample. This deliberately matches list_sessions()'s tolerance.
+            if (_NAME.fullmatch(session_name) is None or
+                    _NAME.fullmatch(window_name) is None):
+                continue
+            try:
+                current_server_pid = int(raw_server_pid)
+            except ValueError as exc:
+                raise TmuxError("tmux returned invalid inventory server pid") from exc
+            if current_server_pid <= 0:
+                raise TmuxError("tmux returned invalid inventory server pid")
+            if server_pid is not None and server_pid != current_server_pid:
+                raise TmuxError("tmux inventory crossed server identities")
+            server_pid = current_server_pid
+            name = _validate_session_name(session_name)
+            identity = _validate_session_id(raw_session_id)
+            window = _validate_window_name(window_name)
+            window_identity = _validate_window_id(raw_window_id)
+            pane = _validate_pane_id(pane_id)
+            if raw_active not in {"0", "1"}:
+                raise TmuxError("tmux returned invalid inventory active-pane state")
+            facts = self._parse_pane_fields(
+                pane, raw_pane_pid, raw_dead, raw_status, raw_signal,
+                name, window, "",
+            )
+            session_option_values = option_values[:len(_INVENTORY_SESSION_OPTIONS)]
+            pane_option_values = option_values[len(_INVENTORY_SESSION_OPTIONS):]
+            for value in option_values:
+                _validate_restricted_value(value)
+            session_options = {
+                key: value for key, value in zip(
+                    _INVENTORY_SESSION_OPTIONS, session_option_values,
+                ) if value != ""
+            }
+            pane_options = {
+                key: value for key, value in zip(
+                    _INVENTORY_PANE_OPTIONS, pane_option_values,
+                ) if value != ""
+            }
+            existing = sessions.get(name)
+            if existing is None:
+                sessions[name] = {
+                    "name": name, "session_id": identity,
+                    "options": session_options,
+                }
+            elif (
+                existing["session_id"] != identity
+                or existing["options"] != session_options
+            ):
+                raise TmuxError("tmux returned inconsistent session inventory")
+            if identity in session_ids and session_ids[identity] != name:
+                raise TmuxError("tmux returned duplicate session identity")
+            session_ids[identity] = name
+            if pane in panes:
+                raise TmuxError("tmux returned duplicate pane identity")
+            panes[pane] = {
+                "facts": facts, "options": pane_options,
+                "session_id": identity,
+            }
+            # Window names are not unique inside a tmux session. Track the
+            # active pane against tmux's immutable identities, then retain one
+            # deterministic name-based candidate for the legacy recovery API.
+            window_key = (identity, window_identity)
+            label = (name, window)
+            prior_label = window_names.setdefault(window_key, label)
+            if prior_label != label:
+                raise TmuxError("tmux returned inconsistent window inventory")
+            fallback_windows.setdefault(window_key, pane)
+            if raw_active == "1":
+                if window_key in active_windows:
+                    raise TmuxError("tmux returned multiple active panes for one window")
+                active_windows[window_key] = pane
+        windows: dict[tuple[str, str], str] = {}
+        for key, pane in fallback_windows.items():
+            windows.setdefault(window_names[key], active_windows.get(key, pane))
+        return TmuxInventory(
+            self, server_pid=server_pid, sessions=sessions,
+            session_ids=session_ids, panes=panes, windows=windows,
+        )
+
     def has_session(self, name: str) -> bool:
         session = _validate_session_target(name)
         returncode, _stdout, stderr = self._run_status(
@@ -530,24 +829,41 @@ class TmuxAdapter:
         returned_pane, raw_pid, raw_dead, raw_status, raw_signal, session, window, title = fields
         if expected_pane is not None and _validate_pane_id(returned_pane) != expected_pane:
             raise TmuxError("tmux returned a different pane identity")
-        _validate_pane_id(returned_pane)
-        _validate_session_name(session)
-        _validate_window_name(window)
-        _validate_restricted_value(title)
-        pane_pid = self._parse_optional_integer(raw_pid, positive=True)
+        return self._parse_pane_fields(
+            returned_pane, raw_pid, raw_dead, raw_status, raw_signal,
+            session, window, title,
+        )
+
+    @classmethod
+    def _parse_pane_fields(
+        cls,
+        pane_id: str,
+        raw_pid: str,
+        raw_dead: str,
+        raw_status: str,
+        raw_signal: str,
+        session: str,
+        window: str,
+        title: str,
+    ) -> PaneFacts:
+        pane = _validate_pane_id(pane_id)
+        name = _validate_session_name(session)
+        window_name = _validate_window_name(window)
+        safe_title = _validate_restricted_value(title)
+        pane_pid = cls._parse_optional_integer(raw_pid, positive=True)
         if raw_dead not in {"0", "1"}:
             raise TmuxError("tmux returned invalid pane dead state")
-        dead_status = self._parse_optional_integer(raw_status, positive=False)
-        dead_signal = self._parse_optional_integer(raw_signal, positive=False)
+        dead_status = cls._parse_optional_integer(raw_status, positive=False)
+        dead_signal = cls._parse_optional_integer(raw_signal, positive=False)
         return PaneFacts(
-            pane_id=returned_pane,
+            pane_id=pane,
             pane_pid=pane_pid,
             dead=raw_dead == "1",
             dead_status=dead_status,
             dead_signal=dead_signal,
-            session=session,
-            window=window,
-            title=title,
+            session=name,
+            window=window_name,
+            title=safe_title,
         )
 
     @staticmethod
