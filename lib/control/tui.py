@@ -43,7 +43,7 @@ from .reconcile import (
     Evidence, LiveAdapters, StateObservation, reconcile_task_with_observation,
 )
 from .store import StoreError, TaskStore, task_digest
-from .tmux import TmuxAdapter, TmuxError
+from .tmux import TmuxAdapter, TmuxError, TmuxInventory
 from .transaction import CreationJournalStore, JournalError
 from .text import (
     prompt_character_allowed as _shared_prompt_character_allowed,
@@ -351,7 +351,9 @@ class RefreshCache:
                 self.clear()
                 self._generation = generation
 
-    def terminal_row(self, task: dict[str, Any]) -> TuiRow | None:
+    def terminal_row(
+        self, task: dict[str, Any], *, inventory: TmuxInventory | None = None,
+    ) -> TuiRow | None:
         with self._lock:
             task_id = task["task_id"]
             digest = task_digest(task)
@@ -369,6 +371,17 @@ class RefreshCache:
                 for run in reconciled_runs
             ):
                 return None
+            # The durable record does not change when tmux respawns its pane.
+            # Consult this pass's in-memory inventory before pinning the row so
+            # a newly live process is reconciled without adding a subprocess.
+            if inventory is not None:
+                for run in task.get("runs") or []:
+                    try:
+                        facts = inventory.pane_facts(run["pane_id"])
+                    except TmuxError:
+                        continue
+                    if not facts.dead:
+                        return None
             return row
 
     def stabilize_rows(
@@ -1799,7 +1812,10 @@ def _load_rows(
         else:
             adapter = _adapter_for_task(listed)
         if _task_is_terminal(listed):
-            cached = None if cache is None else cache.terminal_row(listed)
+            cached = None if cache is None else cache.terminal_row(
+                listed,
+                inventory=adapter if isinstance(adapter, TmuxInventory) else None,
+            )
             if cached is not None:
                 rows.append(cached)
                 continue
