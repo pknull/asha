@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib
 import json
 import os
@@ -15,7 +16,7 @@ import threading
 import time
 import unicodedata
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace as dataclass_replace
 from datetime import datetime, timezone
 from enum import Enum
 from functools import wraps
@@ -38,8 +39,10 @@ from .prerequisites import (
 from .prune import (
     PruneError, PruneRecordStore, assemble_prune_context, prune_one_task,
 )
-from .reconcile import LiveAdapters, StateObservation
-from .store import StoreError, TaskStore
+from .reconcile import (
+    Evidence, LiveAdapters, StateObservation, reconcile_task_with_observation,
+)
+from .store import StoreError, TaskStore, task_digest
 from .tmux import TmuxAdapter, TmuxError
 from .transaction import CreationJournalStore, JournalError
 from .text import (
@@ -117,6 +120,10 @@ _DEGRADE_MESSAGE = (
     "asha control: terminal TUI unavailable; use `asha task list --json` "
     "as the non-interactive fallback."
 )
+
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class IntentKind(Enum):
@@ -279,6 +286,185 @@ class RefreshSnapshot:
     rooms_error: str | None = None
     generation: int = 0
     skipped: tuple[dict[str, str], ...] = ()
+    changed_rows: tuple[TuiRow, ...] | None = None
+    removed_task_ids: tuple[str, ...] = ()
+    row_order_changed: bool = True
+    initiative_views_changed: bool = True
+    room_rows_changed: bool = True
+    delta_base: int | None = None
+
+
+def _payload_digest(value: Any) -> str:
+    raw = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _row_digest(row: TuiRow) -> str:
+    return _payload_digest({
+        "task": row.task,
+        "reconciliation": row.reconciliation,
+        "observation": {
+            "state": row.observation.state,
+            "run_id": row.observation.run_id,
+            "source": row.observation.source,
+            "observed_at": row.observation.observed_at,
+            "freshness": row.observation.freshness,
+            "detail": row.observation.detail,
+        },
+    })
+
+
+class RefreshCache:
+    """Stable loaded objects with deltas based on the last applied snapshot."""
+
+    def __init__(self) -> None:
+        self._rows: dict[str, TuiRow] = {}
+        self._record_digests: dict[str, str] = {}
+        self._row_digests: dict[str, str] = {}
+        self._branches: dict[str, tuple[str, tuple[Any, ...]]] = {}
+        self._applied_row_digests: dict[str, str] = {}
+        self._applied_row_order: tuple[str, ...] = ()
+        self._applied_branch_digests: dict[str, str] = {}
+        self._applied_epoch = 0
+        self._generation: int | None = None
+        self._lock = threading.RLock()
+
+    def clear(self) -> None:
+        """Fence cached deltas after the UI rejects an obsolete generation."""
+        with self._lock:
+            self._rows.clear()
+            self._record_digests.clear()
+            self._row_digests.clear()
+            self._branches.clear()
+            self._applied_row_digests.clear()
+            self._applied_row_order = ()
+            self._applied_branch_digests.clear()
+            self._applied_epoch = 0
+            self._generation = None
+
+    def begin_generation(self, generation: int) -> None:
+        """Make a rejected generation unable to suppress the next full delta."""
+        with self._lock:
+            if self._generation != generation:
+                self.clear()
+                self._generation = generation
+
+    def terminal_row(self, task: dict[str, Any]) -> TuiRow | None:
+        with self._lock:
+            task_id = task["task_id"]
+            digest = task_digest(task)
+            if self._record_digests.get(task_id) != digest:
+                return None
+            row = self._rows.get(task_id)
+            if row is None:
+                return None
+            # A stored-terminal record can reconcile stale when its process is
+            # unexpectedly live. Recheck that contradiction until it clears;
+            # only a terminal reconciliation is safe to pin by record digest.
+            reconciled_runs = row.reconciliation.get("runs") or []
+            if reconciled_runs and not all(
+                run.get("state") in {"exited", "failed"}
+                for run in reconciled_runs
+            ):
+                return None
+            return row
+
+    def stabilize_rows(
+        self, rows: Iterable[TuiRow],
+    ) -> tuple[tuple[TuiRow, ...], tuple[TuiRow, ...], tuple[str, ...], bool]:
+        with self._lock:
+            ordered = tuple(sorted(rows, key=_row_sort_key))
+            stable: list[TuiRow] = []
+            changed: list[TuiRow] = []
+            row_digests: dict[str, str] = {}
+            record_digests: dict[str, str] = {}
+            for row in ordered:
+                task_id = row.task["task_id"]
+                digest = _row_digest(row)
+                prior = self._rows.get(task_id)
+                if prior is not None and self._row_digests.get(task_id) == digest:
+                    selected = prior
+                else:
+                    selected = row
+                if self._applied_row_digests.get(task_id) != digest:
+                    changed.append(selected)
+                stable.append(selected)
+                row_digests[task_id] = digest
+                record_digests[task_id] = task_digest(selected.task)
+            order = tuple(row.task["task_id"] for row in stable)
+            removed = tuple(sorted(set(self._applied_row_digests) - set(order)))
+            order_changed = order != self._applied_row_order
+            self._rows = {row.task["task_id"]: row for row in stable}
+            self._row_digests = row_digests
+            self._record_digests = record_digests
+            return tuple(stable), tuple(changed), removed, order_changed
+
+    def stabilize_branch(
+        self, name: str, values: Iterable[Any], error: str | None,
+    ) -> tuple[tuple[Any, ...], bool]:
+        with self._lock:
+            payload = tuple(values)
+            digest = _payload_digest({"values": payload, "error": error})
+            prior = self._branches.get(name)
+            if prior is not None and prior[0] == digest:
+                payload = prior[1]
+            else:
+                self._branches[name] = (digest, payload)
+            return payload, self._applied_branch_digests.get(name) != digest
+
+    def mark_applied(self, snapshot: RefreshSnapshot) -> None:
+        """Advance the delta baseline only after the curses model accepts it."""
+        with self._lock:
+            if (
+                self._generation is not None
+                and snapshot.generation != self._generation
+            ):
+                return
+            self._generation = snapshot.generation
+            self._applied_row_digests = {
+                row.task["task_id"]: _row_digest(row) for row in snapshot.rows
+            }
+            self._applied_row_order = tuple(
+                row.task["task_id"] for row in snapshot.rows
+            )
+            self._applied_branch_digests = {
+                "initiatives": _payload_digest({
+                    "values": snapshot.initiative_views,
+                    "error": snapshot.initiatives_error,
+                }),
+                "rooms": _payload_digest({
+                    "values": snapshot.room_rows,
+                    "error": snapshot.rooms_error,
+                }),
+            }
+            self._applied_epoch += 1
+
+    def delta_base(self) -> int:
+        """Identify the applied baseline used by the next worker delta."""
+        with self._lock:
+            return self._applied_epoch
+
+    def prepare_to_apply(self, snapshot: RefreshSnapshot) -> RefreshSnapshot:
+        """Force a safe full handoff if its baseline changed while loading."""
+        with self._lock:
+            if (
+                snapshot.delta_base is None
+                or snapshot.delta_base == self._applied_epoch
+            ):
+                return snapshot
+            current_ids = {row.task["task_id"] for row in snapshot.rows}
+            return dataclass_replace(
+                snapshot,
+                changed_rows=snapshot.rows,
+                removed_task_ids=tuple(sorted(
+                    set(self._applied_row_digests) - current_ids
+                )),
+                row_order_changed=True,
+                initiative_views_changed=True,
+                room_rows_changed=True,
+            )
 
 
 class BackgroundRefresh:
@@ -575,7 +761,7 @@ class TuiModel:
         if not self._clock_pinned:
             # AGE is relative to now; a clock frozen at TUI start showed 0s
             # forever for any task started afterwards.
-            self.now = datetime.now(timezone.utc)
+            self.now = _utc_now()
         self.rows = sort_rows(rows)
         self.dirty = True
         visible = self.filtered_rows
@@ -589,6 +775,55 @@ class TuiModel:
             # The tree renders from its own task snapshot; every row update
             # must reach it or the screen shows stale worker states.
             self.initiatives.replace_views(self.initiatives.views, task_rows=self.rows)
+
+    def apply_precomputed_rows(
+        self,
+        rows: tuple[TuiRow, ...],
+        *,
+        changed_rows: tuple[TuiRow, ...] | None,
+        removed_task_ids: tuple[str, ...],
+        row_order_changed: bool,
+    ) -> bool:
+        """Install a worker-sorted row snapshot without rebuilding stable rows."""
+        age_changed = False
+        if not self._clock_pinned:
+            displayed = (
+                self.initiatives.rows() if self.initiatives is not None
+                else self.rows
+            )
+            before = tuple(
+                _age(getattr(row, "observed_at", None), self.now)
+                for row in displayed if getattr(row, "observed_at", None)
+            )
+            self.now = _utc_now()
+            after = tuple(
+                _age(getattr(row, "observed_at", None), self.now)
+                for row in displayed if getattr(row, "observed_at", None)
+            )
+            age_changed = before != after
+        if (
+            changed_rows is not None
+            and not changed_rows
+            and not removed_task_ids
+            and not row_order_changed
+        ):
+            if age_changed:
+                self.dirty = True
+            return False
+        selected_task = (
+            None if self.selected_row is None
+            else self.selected_row.task["task_id"]
+        )
+        self.rows = rows
+        visible = self.filtered_rows
+        self.selection = next(
+            (index for index, row in enumerate(visible)
+             if row.task["task_id"] == selected_task),
+            0 if visible else None,
+        )
+        self._clamp_selection()
+        self.dirty = True
+        return True
 
     def replace_row(self, row: TuiRow) -> None:
         task_id = row.task["task_id"]
@@ -1200,11 +1435,13 @@ def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[st
     from .orchestration.coordinator import anchor_liveness
     from .orchestration.model import COORDINATOR_LIVE_STATES
     from .orchestration.store import InitiativeStore
+    from .orchestration.tui_model import parked_ready_nodes
 
     config = load_orchestration_config(env)
     store = InitiativeStore(config)
     views: list[dict[str, Any]] = []
     adapter = tmux or TmuxAdapter()
+    observed = datetime.now(timezone.utc)
     for initiative in store.list_initiatives():
         if initiative.get("state") == "archived":
             continue
@@ -1216,7 +1453,7 @@ def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[st
             state, _detail = anchor_liveness(coordinator["anchor"], adapter)
             coordinator_live = None if state == "unknown" else state == "live"
         plans = store.list_plans_snapshot(initiative_id)
-        views.append({
+        loaded = {
             "initiative": initiative,
             "plan": plans[-1] if plans else None,
             "nodes": current["nodes"],
@@ -1230,7 +1467,11 @@ def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[st
             "verifications": store.list_verifications_snapshot(initiative_id),
             "approvals": store.list_approvals_snapshot(initiative_id),
             "storage": None,
-        })
+        }
+        loaded["_parked_ready_nodes"] = list(
+            parked_ready_nodes(loaded, now=observed)
+        )
+        views.append(loaded)
     return views
 
 
@@ -1265,6 +1506,13 @@ def _refresh_initiatives(
     rooms: Iterable[dict[str, Any]] | None = None,
     initiatives_error: str | None = None,
     rooms_error: str | None = None,
+    incremental: bool = False,
+    task_rows_changed: bool = True,
+    initiative_views_changed: bool = True,
+    room_rows_changed: bool = True,
+    changed_task_rows: Iterable[TuiRow] | None = None,
+    removed_task_ids: Iterable[str] = (),
+    task_row_order_changed: bool = True,
 ) -> None:
     from .orchestration.tui_model import InitiativesScreen
 
@@ -1294,6 +1542,18 @@ def _refresh_initiatives(
             room_rows=loaded_rooms, orchestration_error=initiatives_error,
             rooms_error=rooms_error,
         )
+    elif incremental:
+        model.initiatives.resize(model.height, model.width)
+        model.initiatives.apply_refresh(
+            views=loaded_views if initiative_views_changed else None,
+            task_rows=model.rows if task_rows_changed else None,
+            room_rows=loaded_rooms if room_rows_changed else None,
+            changed_task_rows=changed_task_rows,
+            removed_task_ids=removed_task_ids,
+            task_row_order_changed=task_row_order_changed,
+        )
+        model.initiatives.orchestration_error = initiatives_error
+        model.initiatives.rooms_error = rooms_error
     else:
         model.initiatives.resize(model.height, model.width)
         model.initiatives.replace_views(
@@ -1375,21 +1635,186 @@ def _read_row(
     return TuiRow.from_records(task, reconciliation, observation)
 
 
+_DURABLE_RUN_STATES = frozenset({"stale", "exited", "failed"})
+
+
+def _task_is_terminal(task: Mapping[str, Any]) -> bool:
+    lifecycle = task.get("lifecycle")
+    if lifecycle in {"ended", "archived"}:
+        return True
+    runs = task.get("runs") or []
+    return bool(
+        lifecycle == "failed" and runs
+        and all(run.get("state") in _DURABLE_RUN_STATES for run in runs)
+    )
+
+
+def _terminal_row(task: dict[str, Any]) -> TuiRow:
+    """Project terminal durable facts without consulting a live adapter."""
+    if task["lifecycle"] == "archived":
+        return lifecycle_row(task)
+    runs = task["runs"]
+    projected_runs = [{
+        "contract": "asha.control-run-reconciliation.v1",
+        "run_id": run["run_id"],
+        "state": run["state"],
+        "blocker": None,
+        "evidence": [],
+    } for run in runs]
+    primary = max(
+        runs,
+        key=lambda run: {
+            "stale": 3, "failed": 2, "exited": 1,
+        }.get(run["state"], 0),
+        default=None,
+    )
+    if primary is not None and primary["state"] == "stale":
+        state = "stale"
+        blocker = primary["evidence"]
+        observation = StateObservation(
+            state, primary["run_id"], "stored", primary["evidence_at"],
+            "durable", primary["evidence"],
+        )
+    elif task["lifecycle"] == "failed":
+        state = "failed"
+        blocker = (
+            "task lifecycle failed; preserved resources require explicit recovery"
+        )
+        observation = StateObservation(
+            state,
+            None if primary is None else primary["run_id"],
+            "unknown", None, "unknown", blocker,
+        )
+    elif primary is None:
+        state = "ended"
+        blocker = None
+        observation = StateObservation(
+            state, None, "stored", task["updated_at"], "durable",
+            "stored terminal task lifecycle",
+        )
+    else:
+        state = primary["state"]
+        blocker = None
+        observation = StateObservation(
+            state, primary["run_id"], "stored", primary["evidence_at"],
+            "durable", primary["evidence"],
+        )
+    reconciliation = {
+        "contract": "asha.control-reconciliation.v1",
+        "task_id": task["task_id"],
+        "state": state,
+        "blocker": blocker,
+        "evidence": [],
+        "runs": projected_runs,
+    }
+    return TuiRow.from_records(task, reconciliation, observation)
+
+
+class _TerminalRefreshAdapters:
+    """Reconcile durable runs without per-task tmux or jj subprocesses."""
+
+    def __init__(self, live: LiveAdapters) -> None:
+        self._live = live
+
+    @staticmethod
+    def tmux(_task: dict[str, Any], _run: dict[str, Any]) -> Evidence:
+        return Evidence(
+            "tmux", "unavailable",
+            "terminal refresh omits redundant tmux ownership evidence",
+        )
+
+    def process(self, task: dict[str, Any], run: dict[str, Any]) -> Evidence:
+        # A TmuxInventory answers pane_facts in memory. This preserves the
+        # stored-terminal/live-process contradiction guard without spawning.
+        return self._live.process(task, run)
+
+    @staticmethod
+    def jj(_task: dict[str, Any]) -> Evidence:
+        return Evidence(
+            "jj", "unavailable",
+            "terminal refresh omits immutable workspace inspection",
+        )
+
+    def event(self, task: dict[str, Any], run: dict[str, Any]) -> Evidence:
+        return self._live.event(task, run)
+
+
+def _read_terminal_row(
+    config: ControlConfig, store: TaskStore, listed: dict[str, Any],
+    *, adapter: Any, sampled_at: datetime,
+) -> tuple[dict[str, Any], TuiRow | None]:
+    """Recheck under lock and retain contradiction-sensitive reconciliation."""
+    with store.transaction_lock(listed["task_id"]):
+        current = store.read(listed["task_id"])
+        if current["lifecycle"] == "archived":
+            return current, lifecycle_row(current)
+        if not _task_is_terminal(current):
+            return current, None
+        clock: Callable[[], datetime] = lambda: sampled_at
+        live = LiveAdapters(config=config, tmux=adapter, now=clock)
+        reconciliation, observation = reconcile_task_with_observation(
+            current, _TerminalRefreshAdapters(live),
+        )
+        # Retain the shared durable terminal-edge maintenance without tmux
+        # presentation writes. The adapter above is an in-memory inventory,
+        # so this path continues to avoid per-task tmux and jj subprocesses.
+        current = view._persist_and_expire_terminal(
+            store, current, reconciliation, observation, None,
+            publish_summary=False, presentation_now=None,
+        )
+        return current, TuiRow.from_records(
+            current, reconciliation, observation,
+        )
+
+
 def _load_rows(
     config: ControlConfig, store: TaskStore,
     journals: CreationJournalStore, jj: JjAdapter,
     *, include_archived: bool = False,
+    cache: RefreshCache | None = None,
+    tmux: Any | None = None,
+    tmux_for_task: Callable[[Mapping[str, Any]], Any] | None = None,
 ) -> list[TuiRow]:
     observed = datetime.now(timezone.utc)
     clock: Callable[[], datetime] = lambda: observed
     rows: list[TuiRow] = []
-    summary_adapter: TmuxAdapter | None = None
+    summary_adapter: Any | None = tmux
     for listed in store.list():
         if listed["lifecycle"] == "archived":
-            if include_archived:
-                rows.append(lifecycle_row(listed))
+            if not include_archived:
+                continue
+            cached = None if cache is None else cache.terminal_row(listed)
+            rows.append(cached or lifecycle_row(listed))
             continue
-        adapter = _adapter_for_task(listed)
+        if tmux_for_task is not None:
+            adapter = tmux_for_task(listed)
+        elif tmux is not None:
+            socket = listed["tmux"]["socket"]
+            actual_socket = getattr(tmux, "socket", None)
+            if socket != "default" and actual_socket != socket:
+                raise ValueError(
+                    "task tmux socket does not match the supplied bulk inventory"
+                )
+            adapter = tmux
+        else:
+            adapter = _adapter_for_task(listed)
+        if _task_is_terminal(listed):
+            cached = None if cache is None else cache.terminal_row(listed)
+            if cached is not None:
+                rows.append(cached)
+                continue
+            current, terminal = _read_terminal_row(
+                config, store, listed, adapter=adapter, sampled_at=observed,
+            )
+            if terminal is not None:
+                if current["lifecycle"] != "archived" or include_archived:
+                    rows.append(terminal)
+                continue
+            listed = current
+            if tmux_for_task is not None:
+                adapter = tmux_for_task(listed)
+            elif tmux is None:
+                adapter = _adapter_for_task(listed)
         row = _read_row(
             config, store, journals, listed, jj, adapter=adapter,
             sampled_at=observed, publish_summary=False,
@@ -1439,6 +1864,8 @@ def _load_refresh_snapshot(
     *,
     include_archived: bool = False,
     generation: int = 0,
+    cache: RefreshCache | None = None,
+    tmux: Any | None = None,
 ) -> RefreshSnapshot:
     """Load every automatic branch without mutating the curses model."""
     # TaskStore.skipped is mutable per list() call. Automatic reconciliation
@@ -1447,21 +1874,68 @@ def _load_refresh_snapshot(
     store = TaskStore(config)
     journals = CreationJournalStore(config)
     jj = JjAdapter()
-    rows = tuple(_load_rows(
-        config, store, journals, jj, include_archived=include_archived,
-    ))
+    if cache is None:
+        rows = tuple(_load_rows(
+            config, store, journals, jj, include_archived=include_archived,
+        ))
+        inventory = None
+        changed_rows: tuple[TuiRow, ...] | None = None
+        removed_task_ids: tuple[str, ...] = ()
+        row_order_changed = True
+        delta_base = None
+    else:
+        cache.begin_generation(generation)
+        delta_base = cache.delta_base()
+        source = TmuxAdapter() if tmux is None else tmux
+        try:
+            inventory = (
+                source.inventory() if hasattr(source, "inventory") else source
+            )
+        except Exception:  # noqa: BLE001 - degrade bulk sampling to live adapters
+            inventory = source
+        inventories: dict[str, Any] = {"default": inventory}
+
+        def inventory_for_task(task: Mapping[str, Any]) -> Any:
+            socket = task["tmux"]["socket"]
+            selected = inventories.get(socket)
+            if selected is None:
+                selected_source = TmuxAdapter(socket=socket)
+                try:
+                    selected = selected_source.inventory()
+                except Exception:  # noqa: BLE001 - isolate one tmux server failure
+                    selected = selected_source
+                inventories[socket] = selected
+            return selected
+
+        loaded_rows = _load_rows(
+            config, store, journals, jj, include_archived=include_archived,
+            cache=cache, tmux=inventory, tmux_for_task=inventory_for_task,
+        )
+        (
+            rows, changed_rows, removed_task_ids, row_order_changed,
+        ) = cache.stabilize_rows(loaded_rows)
     try:
-        views = tuple(_load_initiative_views(env))
+        views = tuple(_load_initiative_views(env, tmux=inventory))
         initiatives_error = None
     except Exception as exc:  # noqa: BLE001 - degrade this branch only
         views = ()
         initiatives_error = _safe_error(exc)
     try:
-        rooms = tuple(_load_room_rows(env))
+        rooms = tuple(_load_room_rows(env, tmux=inventory))
         rooms_error = None
     except Exception as exc:  # noqa: BLE001 - degrade this branch only
         rooms = ()
         rooms_error = _safe_error(exc)
+    if cache is None:
+        initiative_views_changed = True
+        room_rows_changed = True
+    else:
+        views, initiative_views_changed = cache.stabilize_branch(
+            "initiatives", views, initiatives_error,
+        )
+        rooms, room_rows_changed = cache.stabilize_branch(
+            "rooms", rooms, rooms_error,
+        )
     return RefreshSnapshot(
         rows=rows,
         initiative_views=views,
@@ -1470,7 +1944,56 @@ def _load_refresh_snapshot(
         skipped=tuple(copy.deepcopy(store.skipped)),
         initiatives_error=initiatives_error,
         rooms_error=rooms_error,
+        changed_rows=changed_rows,
+        removed_task_ids=removed_task_ids,
+        row_order_changed=row_order_changed,
+        initiative_views_changed=initiative_views_changed,
+        room_rows_changed=room_rows_changed,
+        delta_base=delta_base,
     )
+
+
+def _apply_refresh_snapshot(
+    model: TuiModel, env: Mapping[str, str], snapshot: RefreshSnapshot,
+) -> bool:
+    """Apply only changed, worker-sorted branches on the curses thread."""
+    rows_changed = model.apply_precomputed_rows(
+        snapshot.rows,
+        changed_rows=snapshot.changed_rows,
+        removed_task_ids=snapshot.removed_task_ids,
+        row_order_changed=snapshot.row_order_changed,
+    )
+    _surface_skipped(model, snapshot.skipped)
+    tree_changed = (
+        rows_changed
+        or snapshot.initiative_views_changed
+        or snapshot.room_rows_changed
+    )
+    if model.initiatives is None:
+        _refresh_initiatives(
+            model, env,
+            views=snapshot.initiative_views,
+            rooms=snapshot.room_rows,
+            initiatives_error=snapshot.initiatives_error,
+            rooms_error=snapshot.rooms_error,
+        )
+        return True
+    if tree_changed:
+        _refresh_initiatives(
+            model, env,
+            views=snapshot.initiative_views,
+            rooms=snapshot.room_rows,
+            initiatives_error=snapshot.initiatives_error,
+            rooms_error=snapshot.rooms_error,
+            incremental=True,
+            task_rows_changed=rows_changed,
+            initiative_views_changed=snapshot.initiative_views_changed,
+            room_rows_changed=snapshot.room_rows_changed,
+            changed_task_rows=snapshot.changed_rows,
+            removed_task_ids=snapshot.removed_task_ids,
+            task_row_order_changed=snapshot.row_order_changed,
+        )
+    return tree_changed
 
 
 def init_colours(curses_module) -> bool:
@@ -4306,11 +4829,12 @@ def _curses_loop(
             pass
     if model.initiatives is None:
         _enter_tree(model, env)
+    refresh_cache = RefreshCache()
     def loader() -> RefreshSnapshot:
         generation, include_archived = model.automatic_refresh_scope()
         return _load_refresh_snapshot(
             config, env, include_archived=include_archived,
-            generation=generation,
+            generation=generation, cache=refresh_cache,
         )
     refresh_runner = BackgroundRefresh(loader) if refresher is None else refresher
     try:
@@ -4334,15 +4858,9 @@ def _curses_loop(
                     )
                 elif ready.generation == model.refresh_generation:
                     try:
-                        model.replace_rows(ready.rows)
-                        _surface_skipped(model, ready.skipped)
-                        _refresh_initiatives(
-                            model, env,
-                            views=ready.initiative_views,
-                            rooms=ready.room_rows,
-                            initiatives_error=ready.initiatives_error,
-                            rooms_error=ready.rooms_error,
-                        )
+                        ready = refresh_cache.prepare_to_apply(ready)
+                        _apply_refresh_snapshot(model, env, ready)
+                        refresh_cache.mark_applied(ready)
                         model.automatic_refresh_error = None
                     except Exception as exc:  # noqa: BLE001 - keep input alive
                         model.automatic_refresh_error = (

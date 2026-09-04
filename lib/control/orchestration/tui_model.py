@@ -281,6 +281,9 @@ def parked_ready_nodes(
     become human-actionable. Recent coordinator-authored journal activity also
     refreshes the grace period without trusting worker prose.
     """
+    precomputed = view.get("_parked_ready_nodes")
+    if now is None and isinstance(precomputed, (list, tuple)):
+        return tuple(str(node_id) for node_id in precomputed)
     coordinator = view.get("coordinator")
     if not isinstance(coordinator, dict) or view.get("coordinator_live") is False:
         return ()
@@ -460,6 +463,9 @@ class InitiativesScreen:
         self.help_visible = False
         self.message: str | None = None
         self.pane: str = "summary"
+        self._data_revision = 0
+        self._rows_cache: tuple[InitiativeRow, ...] | None = None
+        self._rows_cache_key: tuple[Any, ...] | None = None
         self._clamp_selection()
 
     # -- rows -------------------------------------------------------------
@@ -473,7 +479,20 @@ class InitiativesScreen:
             ),
         )
 
+    def _current_rows_key(self) -> tuple[Any, ...]:
+        return (
+            self._data_revision, frozenset(self.expanded),
+            self.filter_string, self.attention_only,
+        )
+
     def rows(self) -> list[InitiativeRow]:
+        key = self._current_rows_key()
+        if self._rows_cache is None or self._rows_cache_key != key:
+            self._rows_cache = tuple(self._build_rows())
+            self._rows_cache_key = key
+        return list(self._rows_cache)
+
+    def _build_rows(self) -> list[InitiativeRow]:
         needle = self.filter_string.casefold()
         bound, by_attempt = _link_maps(self.views)
         task_index = {
@@ -754,6 +773,103 @@ class InitiativesScreen:
             self.task_rows = tuple(task_rows)
         if room_rows is not None:
             self.room_rows = copy.deepcopy(list(room_rows))
+        self._data_revision += 1
+        rows = self.rows()
+        self.selection = next(
+            (index for index, row in enumerate(rows) if row.key == selected),
+            0 if rows else None,
+        )
+        self._clamp_selection()
+
+    def apply_refresh(
+        self,
+        *,
+        views: Iterable[dict[str, Any]] | None = None,
+        task_rows: Iterable[Any] | None = None,
+        room_rows: Iterable[dict[str, Any]] | None = None,
+        changed_task_rows: Iterable[Any] | None = None,
+        removed_task_ids: Iterable[str] = (),
+        task_row_order_changed: bool = True,
+    ) -> None:
+        """Apply only worker-precomputed branches that actually changed."""
+        selected = None if self.selected_row is None else self.selected_row.key
+        prior_key = self._current_rows_key()
+        changed_by_id = {
+            getattr(row, "task", {}).get("task_id"): row
+            for row in (() if changed_task_rows is None else changed_task_rows)
+        }
+        can_patch_tasks = bool(
+            task_rows is not None
+            and views is None
+            and room_rows is None
+            and changed_task_rows is not None
+            and not tuple(removed_task_ids)
+            and not task_row_order_changed
+            and not self.filter_string
+            and not self.attention_only
+            and self._rows_cache is not None
+            and self._rows_cache_key == prior_key
+        )
+        if views is not None:
+            self.views = [copy.deepcopy(view) for view in views]
+        if task_rows is not None:
+            # TuiRow is a frozen, detached worker handoff. Reusing this tuple
+            # preserves object identity for every unchanged visible task.
+            self.task_rows = tuple(task_rows)
+        if room_rows is not None:
+            self.room_rows = copy.deepcopy(list(room_rows))
+        self._data_revision += 1
+        if can_patch_tasks:
+            patched: list[InitiativeRow] = []
+            for visible in self._rows_cache or ():
+                task_row = changed_by_id.get(visible.task_id)
+                if task_row is None:
+                    patched.append(visible)
+                    continue
+                state = getattr(task_row, "display_state", "?")
+                attention = _task_attention(task_row)
+                if visible.kind in {"node", "attempt"} and state == "idle":
+                    view = self.view_for(visible.initiative_id)
+                    attempt = None
+                    if view is not None and visible.kind == "attempt":
+                        attempt = next(
+                            (item for item in view.get("attempts", [])
+                             if item["attempt_id"] == visible.id),
+                            None,
+                        )
+                    elif view is not None:
+                        attempt = _latest_attempt(view, visible.id)
+                    if attempt is not None and attempt.get("state") in {
+                        "reported", "awaiting-exit",
+                    }:
+                        attention = "awaiting exit (X closes)"
+                if visible.kind == "node" and visible.attention == "coordinator parked":
+                    attention = visible.attention
+                elif visible.kind == "node" and visible.state == "needs-input":
+                    attention = "needs input"
+                observed = getattr(
+                    getattr(task_row, "observation", None), "observed_at", None,
+                )
+                task = getattr(task_row, "task", {})
+                patched.append(replace(
+                    visible,
+                    label=(
+                        getattr(task_row, "summary", {}).get(
+                            "slug", task.get("task_id", "?"),
+                        )
+                        if visible.kind == "task" else visible.label
+                    ),
+                    state=state if visible.kind == "task" else visible.state,
+                    type=(
+                        (task.get("runs") or [{}])[0].get("harness", "task")
+                        if visible.kind == "task" else visible.type
+                    ),
+                    attention=attention,
+                    worker=state,
+                    observed_at=observed,
+                ))
+            self._rows_cache = tuple(patched)
+            self._rows_cache_key = self._current_rows_key()
         rows = self.rows()
         self.selection = next(
             (index for index, row in enumerate(rows) if row.key == selected),
