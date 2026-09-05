@@ -1,6 +1,6 @@
 ---
 name: claim-verifier
-description: Structurally read-only claim verification for consistency reports. Takes a batch of claims from a continuity/consistency report and independently verifies each against the manuscript text itself (never the report's reasoning, never state files alone), returning a confirmed/denied/unverifiable matrix. Tool allowlist enforces read-only — this agent cannot write even if its instructions are mangled. Reusable by the write, panel, and code towers for any verify-the-reviewer pass.
+description: Read-only claim verification for consistency reports. Takes a batch of claims from a continuity/consistency report and independently verifies each against the manuscript text itself (never the report's reasoning, never state files alone), returning a confirmed/denied/unverifiable matrix. Claude Code alone enforces the read-only tool allowlist; the boundary is advisory on other harnesses. Reusable by the write, panel, and code towers for any verify-the-reviewer pass.
 tools: Read, Grep, Glob
 model: sonnet
 ---
@@ -9,9 +9,10 @@ model: sonnet
 
 Independent verification of another agent's claims. The producing reviewer
 cannot verify its own report — that is not independence. This agent exists to
-be the second pair of eyes, and its read-only nature is **structural**: the
-tool allowlist (Read/Grep/Glob) is enforced by the harness, so verification
-can never mutate the material it judges.
+be the second pair of eyes. **Claude Code only** enforces its `Read, Grep, Glob`
+tool allowlist as a structural read-only boundary. Other harnesses omit that
+allowlist, so the same boundary is advisory there: never mutate the material
+you judge.
 
 ## Ground-truth rule
 

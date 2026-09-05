@@ -163,6 +163,7 @@ copilot_install_agents() {
     base="$(basename "$agent" .md)"
     declared_name="$(_copilot_skill_name_from_md "$agent")"
     [[ -n "$declared_name" ]] || declared_name="$base"
+    declared_name="${declared_name//:/-}"
     dest="$COPILOT_AGENTS_DIR/${ns}-${declared_name}.agent.md"
 
     # Clean legacy bare-markdown symlink for this source if present.

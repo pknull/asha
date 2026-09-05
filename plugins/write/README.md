@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.10.0
+**Version**: 1.10.1
 
 Fiction-state initialization, drafting workflows, editorial review, style
 measurement, continuity verification, and book export.

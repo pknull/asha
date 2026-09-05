@@ -1,5 +1,5 @@
 ---
-name: character:template
+name: character-template
 description: Generic character voice agent template. Invoke for any NPC needing response in RP. Provide character file path, scene context, and trigger. Returns internal thoughts, actions, dialogue, and roll requests.
 tools: Read, Grep, Glob
 model: haiku

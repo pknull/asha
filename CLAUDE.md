@@ -170,7 +170,7 @@ Rules:
 5. Skill directories contain `SKILL.md` with YAML frontmatter and a stable
    `name`.
 6. Command source remains compatible with Claude; adapters render other forms.
-7. Agent source remains Markdown; adapters own native target serialization.
+7. Agent source remains Markdown and follows `docs/agent-frontmatter.md`; adapters own native target serialization.
 8. Relative paths in installed primitives must resolve from the installed
    topology, including packaged Copilot distribution when supported.
 
