@@ -541,6 +541,12 @@ default tmux server, carry `@asha_coordinator_session=1`, and are never
 Control tasks: prune and task listing ignore them; they end when the harness
 session exits.
 
+A coordinator submits `request-decision` through `asha initiative action`.
+Its payload `subject_id` must match the event subject-token grammar
+`[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`. Control refuses a mismatch before request
+execution and before emitting the `approval-requested` event, so invalid event
+subjects cannot leave the action indeterminate.
+
 ## Triggers
 
 `asha trigger add NAME --schedule CALENDAR --root DIR --intent TEXT

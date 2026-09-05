@@ -22,7 +22,7 @@ from ..reconcile import LiveAdapters
 from ..store import StoreError, TaskStore
 from .actions import (
     ActionError, ActionRefused, approve_salvage, build_action_document,
-    reconcile_actions, submit_action,
+    reconcile_actions, REQUEST_DECISION_SUBJECT_GRAMMAR, submit_action,
 )
 from ..tmux import TmuxAdapter, TmuxError
 from .config import OrchestrationConfigError, load_config
@@ -79,7 +79,7 @@ def _json(value: Any) -> None:
 
 
 def _usage(stream=sys.stdout) -> None:
-    print("""asha initiative: bounded Orchestration Core records
+    print(f"""asha initiative: bounded Orchestration Core records
 
 Usage:
   asha initiative baseline --repo PATH [--revision REVSET] [--json]
@@ -122,7 +122,10 @@ Usage:
   asha initiative wait <id> --after SEQUENCE [--timeout SECONDS] --json
                                (default: coordinator_wait_seconds; maximum: 3600 seconds)
   asha initiative checkpoint <id> --file CHECKPOINT.json [--json] (coordinator actor)
-  asha initiative dispatch|pause|stop <id> ... --as-coordinator  (coordinator actor)""", file=stream)
+  asha initiative dispatch|pause|stop <id> ... --as-coordinator  (coordinator actor)
+
+Coordinator request-decision action payload subject_id grammar:
+  {REQUEST_DECISION_SUBJECT_GRAMMAR}""", file=stream)
 
 
 def _payload(value: Any, json_output: bool) -> None:
