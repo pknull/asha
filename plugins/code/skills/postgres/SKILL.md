@@ -1,5 +1,5 @@
 ---
-name: postgres
+name: code-postgres
 description: "PostgreSQL review and design guidance: query optimization, EXPLAIN analysis, schema design, RLS policies, migration safety, database security. Use when writing or reviewing Postgres queries, schemas, RLS, or migrations."
 ---
 

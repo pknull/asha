@@ -77,6 +77,9 @@ claude_install_skills() {
         "$CLAUDE_HOME/skills/$dest_name" "skill-dir"
       continue
     fi
+    if ! dest_name="$(plugin_skill_destination_name "$source" "$ns")"; then
+      continue
+    fi
     mklink "$source" "$CLAUDE_HOME/skills/$dest_name" "skill-dir"
   done < <(skill_dirs_from_source "$src_dir" "$kind")
 }

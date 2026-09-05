@@ -1,5 +1,5 @@
 ---
-name: skill-creator
+name: session-skill-creator
 description: "Create or update a SKILL.md: write frontmatter, structure body with progressive disclosure, bundle resources, and validate against skill-creator quality criteria."
 license: Complete terms in LICENSE.txt
 ---

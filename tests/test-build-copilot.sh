@@ -41,6 +41,10 @@ done
 for p in asha-code asha-security; do
   [[ -f "$OUT/plugins/$p/plugin.json" ]] && ok "emits plugins/$p/plugin.json" || fail "emits plugins/$p/plugin.json"
 done
+[[ -f "$OUT/plugins/asha-code/skills/code-postgres/SKILL.md" \
+   && ! -e "$OUT/plugins/asha-code/skills/postgres" ]] \
+  && ok "plugin skill destination uses the shared namespace-directory name" \
+  || fail "plugin skill destination uses the shared namespace-directory name"
 retired_code_templates="$(find "$OUT/plugins/asha-code/templates" -type f \
   \( -name copilot.md -o -name cursor.md -o -name devin.md \) -print 2>/dev/null | wc -l | tr -d '[:space:]' || true)"
 assert_eq "retired code prompt templates are absent from dist" "0" "$retired_code_templates"

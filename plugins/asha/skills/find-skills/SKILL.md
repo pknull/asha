@@ -1,5 +1,5 @@
 ---
-name: find-skills
+name: asha-find-skills
 description: "Discover third-party Agent Skills through Skills.sh, inspect pinned upstream bytes and safety evidence, and import only Keeper-approved portable candidates into Asha's canonical user skill store. Use when a capability gap may already have a reusable skill."
 license: MIT
 ---

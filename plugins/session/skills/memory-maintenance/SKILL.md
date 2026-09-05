@@ -1,5 +1,5 @@
 ---
-name: memory-maintenance
+name: session-memory-maintenance
 description: "Validate or deliberately maintain Asha Memory v2 publication and recovery files. Use for activeContext.md, decisions.md, project_id, recovery snapshots, learning lifecycle, and reviewed legacy migration."
 ---
 

@@ -82,9 +82,6 @@ copilot_install_skills() {
     local skill_name; skill_name="$(basename "$skill")"
     [[ -f "$skill/SKILL.md" ]] || { log "skip skill (no SKILL.md): $skill"; continue; }
 
-    # Prefer the SKILL.md's name field; fall back to <ns>-<dir-name>.
-    local declared_name
-    declared_name="$(_copilot_skill_name_from_md "$skill/SKILL.md")"
     local dest_name
     if [[ "$kind" == imported ]]; then
       dest_name="${ns}-${skill_name}"
@@ -92,8 +89,9 @@ copilot_install_skills() {
       mklink_imported_skill "${skill%/}" "$ASHA_IMPORTED_SKILL_ADAPTER" \
         "$COPILOT_SKILLS_DIR/${dest_name}" "copilot-skill"
       continue
-    else
-      dest_name="${declared_name:-${ns}-${skill_name}}"
+    fi
+    if ! dest_name="$(plugin_skill_destination_name "${skill%/}" "$ns")"; then
+      continue
     fi
 
     mklink "${skill%/}" "$COPILOT_SKILLS_DIR/${dest_name}" "copilot-skill"
