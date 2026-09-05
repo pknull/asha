@@ -38,6 +38,7 @@ from .model import (
 )
 from .storage import storage_report
 from .store import InitiativeStore
+from .verification import DENIED_COMMAND_PROGRAMS
 
 
 READINESS_CONTRACT = "asha.orchestration-readiness.v1"
@@ -428,6 +429,33 @@ into this workspace or run any command that writes into it. Publish a
         "hard-scope violation and fails the seal) and run:\n\n"
         "```text\nasha task report --file .asha/result.json\n```"
     )
+    denied_programs = ", ".join(
+        f"`{program}`" for program in sorted(DENIED_COMMAND_PROGRAMS)
+    )
+    ingestion_contract = f"""## Controller-enforced result-ingestion rules
+
+- Each verification attestation must declare the bare command being tested and
+  run it from the repository root (`cwd` is `.`): `argv[0]` must be a bare
+  repository-relative executable, or an interpreter plus a script or module
+  from the repository. A wrapper or launcher must never be
+  `argv[0]`. The programs denied outright by the controller are:
+  {denied_programs}. The controller also denies `git push|commit|tag`, `jj git
+  push`, `pip* install`, `python* -m pip install`, `python* -m uv pip install`,
+  `python* -m twine`, `python* -m poetry publish`, `npm publish|install|i`,
+  `cargo publish`, `gem push`, `poetry publish`, `uv pip install`, and recursive
+  `rm` forms. Declare the direct executable instead of `env`, a shell,
+  `timeout`, `nice`, `nohup`, `setsid`, `xargs`, `sudo`, or another denied
+  program.
+- The result `summary` and every `verification_attestations[index].summary`
+  must each be one line containing no Unicode control, format, or surrogate
+  character.
+- Review-result contract: a review node must include `review`; every other node
+  must omit it. A review result must use `claim_status: completed`, must have
+  `files_changed: []`, and must contain `verdict` (`pass|findings`), `findings`
+  objects with exactly `severity`, `location`, and `summary`, and the exact
+  `target` from the independent review contract. A `pass` has no findings; a
+  `findings` verdict has at least one finding.
+"""
     text = f"""# Asha Orchestration Assignment
 
 ## Identity
@@ -513,6 +541,7 @@ publish authoritative result and seal records.
 
 {exit_contract}
 
+{ingestion_contract}
 The client document is `asha.orchestration-result.v1` with every result field
 except controller-generated `result_id` and `payload_digest`: `publication_id`,
 `supersedes_result_id`, the initiative/node/attempt/task/run identities above,

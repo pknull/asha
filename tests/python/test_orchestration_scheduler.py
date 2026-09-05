@@ -31,6 +31,7 @@ from lib.control.orchestration.scheduler import (
     readiness,
 )
 from lib.control.orchestration.store import ObservationOnlyPlanError
+from lib.control.orchestration.verification import DENIED_COMMAND_PROGRAMS
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
 
 
@@ -155,6 +156,52 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         self.assertIn(f"1-{MAX_ARG_BYTES} UTF-8 bytes", rendered)
         self.assertIn(f"1-{MAX_PATH_BYTES} UTF-8 bytes", rendered)
         self.assertIn(f"1-{MAX_SUMMARY_BYTES} UTF-8 bytes", rendered)
+
+    def test_assignment_states_controller_ingestion_rules_for_work_and_review(self) -> None:
+        initiative = self.initiative()
+        work = self.store.read_node(self.initiative_id, "implementation-a")
+        review = self.store.read_node(self.initiative_id, "review-a")
+        work_attempt = self.attempt(state="allocated")
+        review_attempt = copy.deepcopy(work_attempt)
+        review_attempt["node_id"] = review["node_id"]
+        seal = {
+            "seal_id": str(uuid.uuid4()),
+            "outcome": "success",
+            "read_only": False,
+            "scope_origin": work_attempt["base"]["scope_origin"],
+            "jj_commit_id": "d" * 40,
+            "tree_digest": "e" * 64,
+            "diff_digest": "f" * 64,
+            "base_seal_ids": [],
+        }
+
+        rendered = (
+            assignment_bytes(
+                initiative, self.plan, work, work_attempt,
+                work_attempt["base"]["scope_origin"]["jj_commit_id"],
+            ).decode(),
+            assignment_bytes(
+                initiative, self.plan, review, review_attempt,
+                seal["jj_commit_id"], [seal],
+            ).decode(),
+        )
+
+        for assignment in rendered:
+            with self.subTest(node="review" if "Independent review" in assignment else "work"):
+                self.assertEqual(
+                    assignment.count("## Controller-enforced result-ingestion rules"), 1,
+                )
+                section = assignment.split(
+                    "## Controller-enforced result-ingestion rules", 1,
+                )[1].split("The client document is", 1)[0]
+                self.assertIn("run it from the repository root", section)
+                self.assertIn("repository-relative executable", section)
+                self.assertIn("interpreter plus a script", section)
+                self.assertIn("no Unicode control, format, or surrogate", section)
+                self.assertIn("Review-result contract", section)
+                self.assertIn("A `pass` has no findings", section)
+                for program in DENIED_COMMAND_PROGRAMS:
+                    self.assertIn(f"`{program}`", section)
 
     def test_repair_assignment_explains_attempt_local_supersession(self) -> None:
         initiative = self.initiative()

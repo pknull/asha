@@ -33,6 +33,7 @@ from .model import (
     NODE_TERMINAL_STATES,
     NULL_ACTIVE_PLAN_ACTION_CLASSES,
     OPERATOR_SURFACE_ACTOR_IDS,
+    _TOKEN,
     canonical_uuid,
     new_uuid,
     record_digest,
@@ -82,6 +83,7 @@ _STOP_RELEASABLE_NODE_STATES = frozenset({"dispatching", "running"})
 _NODE_RELEASE_WALK = ("evaluating", "ready")
 # Bound on the review identities carried in one release event's subject list.
 _MAX_RELEASE_SUBJECT_REVIEWS = 32
+REQUEST_DECISION_SUBJECT_GRAMMAR = r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"
 
 
 class ActionError(ValueError):
@@ -301,7 +303,12 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         if field in payload:
             _bounded_request_text(payload[field], f"{kind} {field}")
     if kind == "request-decision":
-        _bounded_request_text(payload["subject_id"], "request-decision subject_id", maximum=128)
+        subject_id = payload["subject_id"]
+        if not isinstance(subject_id, str) or _TOKEN.fullmatch(subject_id) is None:
+            raise ActionRefused(
+                "request-decision subject_id must match "
+                f"{REQUEST_DECISION_SUBJECT_GRAMMAR}"
+            )
     if kind == "propose-outcome":
         if payload["outcome"] not in {"partial", "failed"}:
             raise ActionRefused("propose-outcome outcome must be partial or failed")
@@ -2412,7 +2419,8 @@ def reconcile_actions(
 
 __all__ = [
     "ACTION_RECONCILIATION_CONTRACT", "ActionError", "ActionRefused",
-    "SUPPORTED_ACTION_KINDS", "action_outcome", "append_event",
+    "REQUEST_DECISION_SUBJECT_GRAMMAR", "SUPPORTED_ACTION_KINDS",
+    "action_outcome", "append_event",
     "approve_salvage", "build_action_document", "consume_salvage_approval",
     "payload_digest", "reconcile_actions", "salvage_dispatch_binding",
     "set_action_state", "submit_action",

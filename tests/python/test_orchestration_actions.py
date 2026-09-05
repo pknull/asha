@@ -5,11 +5,13 @@ import json
 import os
 import unittest
 import uuid
+from io import StringIO
 from unittest import mock
 
 from lib.control.orchestration.actions import (
     ActionError,
     ActionRefused,
+    REQUEST_DECISION_SUBJECT_GRAMMAR,
     _parse_document,
     _repair_node,
     build_action_document,
@@ -17,6 +19,7 @@ from lib.control.orchestration.actions import (
     reconcile_actions,
     submit_action,
 )
+from lib.control.orchestration.cli import _usage
 from lib.control.orchestration.coordinator import claim
 from lib.control.orchestration.scheduler import (
     SchedulerError,
@@ -289,6 +292,56 @@ class OrchestrationActionTests(CoordinatorEnvelope, ExecutionFixture, unittest.T
         result = submit_action(self.store, self.initiative_id, document)
         self.assertEqual(result["state"], "refused")
         self.assertIn("expected state revision", result["outcome"])
+
+    def test_request_decision_refuses_invalid_event_subject_before_execution(self) -> None:
+        document = self.coordinator_document(
+            "request-decision",
+            {"subject_id": "invalid subject", "question": "Which path?"},
+        )
+        before = len(self.store.list_events_snapshot(self.initiative_id))
+
+        action = submit_action(self.store, self.initiative_id, document)
+
+        self.assertEqual(action["state"], "refused")
+        self.assertNotEqual(action["state"], "indeterminate")
+        self.assertIn(
+            REQUEST_DECISION_SUBJECT_GRAMMAR,
+            json.loads(action["outcome"])["reason"],
+        )
+        events = self.store.list_events_snapshot(self.initiative_id)[before:]
+        self.assertFalse(any(event["type"] == "approval-requested" for event in events))
+        self.assertEqual(self.initiative()["state"], "running")
+
+    def test_request_decision_subject_boundaries_state_grammar(self) -> None:
+        for subject_id in ("", "a" * 129):
+            with self.subTest(length=len(subject_id)):
+                document = self.coordinator_document(
+                    "request-decision",
+                    {"subject_id": subject_id, "question": "Which path?"},
+                )
+                before = len(self.store.list_events_snapshot(self.initiative_id))
+
+                action = submit_action(self.store, self.initiative_id, document)
+
+                self.assertEqual(action["state"], "refused")
+                self.assertNotEqual(action["state"], "indeterminate")
+                self.assertIn(
+                    REQUEST_DECISION_SUBJECT_GRAMMAR,
+                    json.loads(action["outcome"])["reason"],
+                )
+                events = self.store.list_events_snapshot(self.initiative_id)[before:]
+                self.assertFalse(any(
+                    event["type"] == "approval-requested" for event in events
+                ))
+                self.assertEqual(self.initiative()["state"], "running")
+
+    def test_coordinator_help_states_request_decision_subject_grammar(self) -> None:
+        output = StringIO()
+
+        _usage(output)
+
+        self.assertIn("request-decision", output.getvalue())
+        self.assertIn(REQUEST_DECISION_SUBJECT_GRAMMAR, output.getvalue())
 
     def test_indeterminate_dispatch_reconciles_absent_creation_to_refusal(self) -> None:
         document = build_action_document(

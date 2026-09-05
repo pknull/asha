@@ -7,7 +7,7 @@ import threading
 import time
 import unittest
 import uuid
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import replace
 from io import StringIO
 from pathlib import Path
@@ -662,6 +662,103 @@ class OrchestrationResultPublicationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(status, 0)
         inspected = json.loads(output.getvalue())
         self.assertEqual([item["result_id"] for item in inspected["results"]], [receipt["result_id"]])
+
+    def test_task_report_refuses_multiline_summaries_before_submission(self) -> None:
+        attestation = {
+            "argv": [
+                "/bin/python3", "-m", "unittest",
+                "tests.python.test_orchestration_results",
+            ],
+            "cwd": ".",
+            "exit_code": 0,
+            "finished_at": now_text(),
+            "output_digest": "0" * 64,
+            "summary": "passed",
+        }
+        cases = (
+            ("summary", "first line\nsecond line"),
+            ("verification_attestations[0].summary", "passed\nwith output"),
+        )
+        for field, value in cases:
+            with self.subTest(field=field):
+                body = self.body()
+                body["verification_attestations"] = [copy.deepcopy(attestation)]
+                if field == "summary":
+                    body["summary"] = value
+                else:
+                    body["verification_attestations"][0]["summary"] = value
+                path = self.root / f"{field.replace('.', '-')}.json"
+                path.write_text(json.dumps(body))
+                error = StringIO()
+                with mock.patch(
+                    "lib.control.orchestration.cli.publish_result",
+                ) as publish, redirect_stderr(error):
+                    status = control_main(
+                        ["task", "report", "--file", str(path), "--json"],
+                        env=self.managed,
+                    )
+                self.assertEqual(status, 2)
+                self.assertIn(field, error.getvalue())
+                self.assertIn(
+                    "one line with no Unicode control, format, or surrogate",
+                    error.getvalue(),
+                )
+                publish.assert_not_called()
+
+    def test_task_report_refuses_denied_argv_program_before_submission(self) -> None:
+        body = self.body()
+        body["verification_attestations"] = [{
+            "argv": [
+                "env", "/bin/python3", "-m", "unittest",
+                "tests.python.test_orchestration_results",
+            ],
+            "cwd": ".",
+            "exit_code": 0,
+            "finished_at": now_text(),
+            "output_digest": "0" * 64,
+            "summary": "passed",
+        }]
+        path = self.root / "denied-wrapper.json"
+        path.write_text(json.dumps(body))
+        error = StringIO()
+        with mock.patch(
+            "lib.control.orchestration.cli.publish_result",
+        ) as publish, redirect_stderr(error):
+            status = control_main(
+                ["task", "report", "--file", str(path), "--json"],
+                env=self.managed,
+            )
+        self.assertEqual(status, 2)
+        self.assertIn("verification_attestations[0].argv", error.getvalue())
+        self.assertIn("direct-command rule", error.getvalue())
+        self.assertIn("denied program env", error.getvalue())
+        publish.assert_not_called()
+
+    def test_task_report_refuses_empty_attestation_argv_before_submission(self) -> None:
+        body = self.body()
+        body["verification_attestations"] = [{
+            "argv": [],
+            "cwd": ".",
+            "exit_code": 0,
+            "finished_at": now_text(),
+            "output_digest": "0" * 64,
+            "summary": "passed",
+        }]
+        path = self.root / "empty-argv.json"
+        path.write_text(json.dumps(body))
+        error = StringIO()
+        with mock.patch(
+            "lib.control.orchestration.cli.publish_result",
+        ) as publish, redirect_stderr(error):
+            status = control_main(
+                ["task", "report", "--file", str(path), "--json"],
+                env=self.managed,
+            )
+        self.assertEqual(status, 2)
+        self.assertIn("verification_attestations[0].argv", error.getvalue())
+        self.assertIn("direct-command rule", error.getvalue())
+        self.assertIn("empty argv", error.getvalue())
+        publish.assert_not_called()
 
 
 if __name__ == "__main__":

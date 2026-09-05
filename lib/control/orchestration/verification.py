@@ -62,6 +62,11 @@ _STATUS_TAIL_BYTES = 64 * 1024
 _PROCESS_STATUS_PREFIX = b"\nASHA_VERIFICATION_PROCESS_V1:"
 _FAILURE_OUTPUT_TAIL_BYTES = 2048
 _EMPTY_CAPTURED_OUTPUT = b"\n--- stderr ---\n"
+DENIED_COMMAND_PROGRAMS = frozenset({
+    "gh", "curl", "wget", "ssh", "scp", "rsync", "docker", "sudo",
+    "env", "sh", "bash", "dash", "zsh", "ksh", "fish", "busybox",
+    "timeout", "nice", "nohup", "setsid", "xargs", "twine",
+})
 
 
 class VerificationError(ValueError):
@@ -323,11 +328,7 @@ def command_denial(argv: list[str]) -> str | None:
         return "invalid executable token"
     program = Path(argv[0]).name.lower()
     lowered = [item.lower() for item in argv[1:]]
-    if program in {
-        "gh", "curl", "wget", "ssh", "scp", "rsync", "docker", "sudo",
-        "env", "sh", "bash", "dash", "zsh", "ksh", "fish", "busybox",
-        "timeout", "nice", "nohup", "setsid", "xargs", "twine",
-    }:
+    if program in DENIED_COMMAND_PROGRAMS:
         return program
     if program == "git" and any(item in {"push", "commit", "tag"} for item in lowered):
         return "git external-write subcommand"
@@ -2162,7 +2163,8 @@ def run_cross_composed_verification(
 __all__ = [
     "COMPOSED_COMMAND_KIND", "COMPOSED_VERIFICATION_KIND",
     "CROSS_COMPOSED_COMMAND_KIND", "CROSS_COMPOSED_VERIFICATION_KIND",
-    "MAX_VERIFICATION_OUTPUT_BYTES", "GatePreflightError", "VerificationError",
+    "DENIED_COMMAND_PROGRAMS", "MAX_VERIFICATION_OUTPUT_BYTES",
+    "GatePreflightError", "VerificationError",
     "candidate_bundle_digest", "command_denial", "composed_roster",
     "composed_verdict_evidence", "composed_verification_verdict",
     "covering_cross_composed_verdict", "cross_composed_verdict_evidence",

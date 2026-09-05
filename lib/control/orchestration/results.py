@@ -8,6 +8,7 @@ import json
 import os
 import stat
 import time
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -113,6 +114,72 @@ def parse_client_body(raw: bytes) -> dict[str, Any]:
     return value
 
 
+def _require_single_line_summary(value: Any, field: str) -> None:
+    if not isinstance(value, str):
+        return
+    if any(
+        unicodedata.category(character) in {"Cc", "Cf", "Cs", "Zl", "Zp"}
+        for character in value
+    ):
+        raise ResultRefused(
+            f"{field} must be one line with no Unicode control, format, "
+            "or surrogate character"
+        )
+
+
+def validate_client_body(body: Mapping[str, Any]) -> dict[str, Any]:
+    """Refuse a worker result that controller ingestion cannot accept."""
+    expected_keys = _CLIENT_KEYS | (
+        {"review"} if isinstance(body, Mapping) and "review" in body else set()
+    )
+    if not isinstance(body, Mapping) or set(body) != expected_keys:
+        raise ResultRefused(
+            "result body must use the closed worker schema "
+            "(without result_id/payload_digest)"
+        )
+
+    _require_single_line_summary(body.get("summary"), "summary")
+    attestations = body.get("verification_attestations")
+    if isinstance(attestations, list):
+        for index, attestation in enumerate(attestations):
+            if isinstance(attestation, Mapping):
+                _require_single_line_summary(
+                    attestation.get("summary"),
+                    f"verification_attestations[{index}].summary",
+                )
+
+    candidate = copy.deepcopy(dict(body))
+    placeholders = (
+        "00000000-0000-4000-8000-000000000000",
+        "ffffffff-ffff-4fff-bfff-ffffffffffff",
+    )
+    candidate["result_id"] = next(
+        value for value in placeholders
+        if value != candidate.get("supersedes_result_id")
+    )
+    candidate["payload_digest"] = "0" * 64
+    try:
+        validated = validate_result(candidate)
+    except ModelError as exc:
+        raise ResultRefused(str(exc)) from exc
+
+    from .verification import command_denial
+
+    for index, attestation in enumerate(validated["verification_attestations"]):
+        argv = list(attestation["argv"])
+        denial = command_denial(argv)
+        if denial is not None:
+            denial_detail = (
+                f"denied program {Path(argv[0]).name.lower()}: {denial}"
+                if argv else denial
+            )
+            raise ResultRefused(
+                f"verification_attestations[{index}].argv violates the "
+                f"direct-command rule: {denial_detail}"
+            )
+    return copy.deepcopy(dict(body))
+
+
 def read_client_file(path: Path) -> dict[str, Any]:
     """Read one bounded regular non-symlink result file."""
     candidate = Path(path)
@@ -138,7 +205,7 @@ def read_client_file(path: Path) -> dict[str, Any]:
         os.close(descriptor)
     if len(raw) > MAX_RESULT_BODY_BYTES:
         raise ResultError(f"result body exceeds {MAX_RESULT_BODY_BYTES} bytes")
-    return parse_client_body(raw)
+    return validate_client_body(parse_client_body(raw))
 
 
 def _managed_identity(env: Mapping[str, str]) -> tuple[str, str]:
@@ -1030,5 +1097,5 @@ __all__ = [
     "MAX_RESULT_BODY_BYTES", "RESULT_RECEIPT_CONTRACT", "TASK_RESULTS_CONTRACT",
     "ResultError", "ResultRefused", "canonical_body_bytes", "locate_task_binding",
     "parse_client_body", "publish_bound_result", "publish_result", "read_client_file",
-    "reconcile_publications", "results_for_task",
+    "reconcile_publications", "results_for_task", "validate_client_body",
 ]
