@@ -5,9 +5,11 @@
 # `asha doctor` is the front door for this script (lib/doctor.sh).
 #
 # Usage:
-#   asha-drift-check.sh [--target {claude,codex,copilot,opencode,all}] [--fix]
+#   asha-drift-check.sh [--target {claude,codex,copilot,opencode,all}] [--with-canary] [--fix]
 #
 # Default target is 'all'. Per-target flags scope the checks.
+# Optional plugins are checked only when --with-canary is present, matching the
+# installer's default/opt-in selection.
 # --fix self-heals stale codex/copilot command-skills (regenerates SKILL.md
 #   from its source command MD); without --fix the script only audits.
 
@@ -23,10 +25,12 @@ while [ -h "$__src" ]; do
 done
 ASHA="$(dirname "$(cd -P "$(dirname "$__src")" >/dev/null 2>&1 && pwd)")"
 unset __src __dir
-# shellcheck source=../harnesses/registry.sh
-source "$ASHA/harnesses/registry.sh"
-# shellcheck source=../harnesses/generated-artifacts.sh
-source "$ASHA/harnesses/generated-artifacts.sh"
+# Source the install engine so source enumeration uses its canonical optional
+# plugin selection helper rather than maintaining a second policy here.
+# shellcheck disable=SC2034 # consumed while sourcing lib/install.sh
+MARKET_ROOT="$ASHA"
+# shellcheck source=../lib/install.sh
+source "$ASHA/lib/install.sh"
 CLAUDE="$(asha_harness_home claude)"
 CODEX="$(asha_harness_home codex)"
 COPILOT="$(asha_harness_home copilot)"
@@ -34,10 +38,12 @@ OPENCODE="$(asha_harness_home opencode)"
 HOME_LABEL="~"
 TARGET="all"
 FIX=0          # --fix: self-heal stale codex command-skills (audit-only otherwise)
+WITH_CANARY=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --target) shift; TARGET="${1:-}" ;;
     --target=*) TARGET="${1#--target=}" ;;
+    --with-canary) WITH_CANARY=1 ;;
     --fix) FIX=1 ;;
     -h|--help)
       sed -n '2,/^[^#]/{/^#/!d; s/^# \{0,1\}//; p}' "$0"
@@ -55,6 +61,11 @@ nope() { echo "FAIL  $1"; fail=$((fail+1)); }
 warn() { echo "WARN  $1"; }          # non-failing observation
 info_line() { echo "INFO  $1"; }     # context, never a problem
 section() { echo ""; echo "── $1 ──"; }
+
+drift_include_plugin_dir() {
+  [[ $WITH_CANARY -eq 1 ]] && return 0
+  ONLY="" _include_plugin_dir "$1"
+}
 
 version_in_range() {
   local version="$1" min="$2" max="$3"
@@ -219,6 +230,7 @@ check_opencode_current_source() {
   for cmd in "$ASHA"/plugins/*/commands/*.md; do
     [[ -f "$cmd" ]] || continue
     plugin_dir="$(basename "$(dirname "$(dirname "$cmd")")")"
+    drift_include_plugin_dir "$plugin_dir" || continue
     ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
     declared="$(_opencode_field "$cmd" name)"
     declared="${declared:-${ns}-$(basename "$cmd" .md)}"
@@ -243,6 +255,7 @@ check_opencode_current_source() {
   for agent in "$ASHA"/plugins/*/agents/*.md; do
     [[ -f "$agent" ]] || continue
     plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
+    drift_include_plugin_dir "$plugin_dir" || continue
     ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
     src_dir="$(dirname "$agent")"
     declared="$(_opencode_field "$agent" name)"
@@ -323,6 +336,7 @@ check_generated_agents() { # agents_dir label ext fix_fn
   for agent in "$ASHA"/plugins/*/agents/*.md; do
     [[ -f "$agent" ]] || continue
     plugin_dir="$(basename "$(dirname "$(dirname "$agent")")")"
+    drift_include_plugin_dir "$plugin_dir" || continue
     ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
     base="$(basename "$agent" .md)"
     name="$(awk '/^---$/{if (++c==2) exit} c==1 && /^name:/ {print $2; exit}' "$agent")"
@@ -368,9 +382,11 @@ check_generated_agents() { # agents_dir label ext fix_fn
 # an accepted skip.
 check_command_skills() { # skills_dir label fix_fn
   local skills_dir="$1" label="$2" fix_fn="$3"
-  local missing_cmd_skills=0 cmd name skill_md target expected
+  local missing_cmd_skills=0 cmd plugin_dir name skill_md target expected
   for cmd in "$ASHA"/plugins/*/commands/*.md; do
     [[ -f "$cmd" ]] || continue
+    plugin_dir="$(basename "$(dirname "$(dirname "$cmd")")")"
+    drift_include_plugin_dir "$plugin_dir" || continue
 
     name=$(awk '/^---$/{if (++c==2) exit} c==1 && /^name:/ {print $2; exit}' "$cmd")
     [[ -z "$name" ]] && {
@@ -488,6 +504,7 @@ check_skill_links() { # home_dir label
     [[ -f "$src/SKILL.md" ]] || continue
     src="${src%/}"
     plugin_dir="$(basename "$(dirname "$(dirname "$src")")")"
+    drift_include_plugin_dir "$plugin_dir" || continue
     if [[ "$label" == copilot ]] && _copilot_is_skip_plugin "$plugin_dir"; then
       continue
     fi

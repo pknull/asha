@@ -51,7 +51,7 @@ CLI is required only for the optional `--pr` and `--issue` source modes.
 
 ```bash
 # Primitives (skills/agents/commands/hooks)
-./install.sh   --target {claude,codex,copilot,opencode,both,all} [--only ns1,ns2] [--dry-run] [--force] [--verbose]
+./install.sh   --target {claude,codex,copilot,opencode,both,all} [--only ns1,ns2] [--with-canary] [--dry-run] [--force] [--verbose]
 ./uninstall.sh --target {claude,codex,copilot,opencode,both,all}                   [--dry-run] [--verbose]
 
 # Dispatcher + per-harness shims (the `asha` shell command)
@@ -71,7 +71,9 @@ your dotfiles repo.
 
 `install.sh` is idempotent. Re-running skips already-correct state and
 refuses mismatched symlinks unless `--force`. `uninstall.sh` is also
-idempotent.
+idempotent. Plugins listed in `namespaces.json` under `_optional` are excluded
+from default installs; `--with-canary` includes them, while `--only test`
+selects the test plugin directly.
 
 Launching with `asha <harness>` checks whether that target is installed and
 fresh. Interactive first use offers to configure it; non-interactive first use
@@ -293,9 +295,12 @@ the `asha-reference` skill and remain private task context.
 path for cron/systemd users. Exits 0 if clean, 1 on drift, 2 on usage error.
 
 ```bash
-asha doctor [claude|codex|copilot|opencode|all] [--fix]     # default: all
-asha-drift-check.sh --target {claude,codex,copilot,opencode,all} # same engine
+asha doctor [claude|codex|copilot|opencode|all] [--with-canary] [--fix] # default: all
+asha-drift-check.sh --target {claude,codex,copilot,opencode,all} [--with-canary] # same engine
 ```
+
+Default audits exclude plugins listed in `namespaces.json` under `_optional`,
+matching a default install. Pass `--with-canary` to audit an opt-in install.
 
 (`asha claude doctor` still reaches Claude Code's own native doctor —
 launch forwarding is unchanged.)
@@ -321,14 +326,22 @@ suffix before editing:
 ## Test plugin
 
 `plugins/test/` ships one of every primitive emitting a unique sentinel
-string. Smoke test:
+string. It is opt-in and is not present in a default install. Smoke test it by
+installing only the canary, or add `--with-canary` to a normal install:
 
 ```bash
 ./install.sh --only test --target both
+./install.sh --with-canary --target both
 # restart Claude Code / Codex CLI
 /test:ping            # Claude — expect TEST-PING-CMD-OK
 test-ping             # Codex prompt — same expectation
 ```
+
+The Stop hook appends its timestamp to `$ASHA_CANARY_MARKER` when set. Without
+that override it uses `$XDG_RUNTIME_DIR/asha-canary-hook-fired` when the
+runtime directory exists and is owned by the caller, otherwise a unique
+`${TMPDIR:-/tmp}/asha-canary-hook.XXXXXX` file. Marker write failures are
+fail-open: the hook still emits `{}` and exits zero.
 
 ## Known limitations
 

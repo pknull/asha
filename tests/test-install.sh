@@ -402,7 +402,7 @@ jq -nc --arg s "$REPO_ROOT/plugins/session/hooks/handlers/session-start.sh" \
     sessionEnd:[{type:"command",bash:$e,timeoutSec:30}]
   }
 }' > "$SANDBOX/.copilot/hooks/asha-lifecycle.json"
-if noop_reconcile="$(run_install --target copilot 2>&1)" \
+if run_install --target copilot >/dev/null 2>&1 \
    && [[ ! -e "$SANDBOX/.copilot/hooks/asha-nudges.json" \
       && ! -e "$SANDBOX/.copilot/hooks/asha-lifecycle.json" \
       && "$RECOVERY_BEFORE" == "$(sha256sum "$SANDBOX/.copilot/hooks/asha-recovery.json")" ]]; then
@@ -548,6 +548,87 @@ else
     ok "no duplicate asha hook groups"
   else
     fail "no duplicate asha hook groups"
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Test 5b: disabling an optional plugin retires only installer-owned artifacts
+# ---------------------------------------------------------------------------
+echo "--- test 5b: default reinstall retires the opt-in canary ---"
+reset_sandbox
+seed_native_configs
+if ! run_install --target all --with-canary >/dev/null 2>&1; then
+  fail "with-canary retirement fixture installs"
+else
+  canary_artifacts=(
+    "$SANDBOX/.claude/skills/test-ping"
+    "$SANDBOX/.claude/agents/test/echo.md"
+    "$SANDBOX/.claude/commands/test/ping.md"
+    "$SANDBOX/.codex/skills/test-ping"
+    "$SANDBOX/.codex/agents/test-test-echo.toml"
+    "$SANDBOX/.copilot/skills/test-ping"
+    "$SANDBOX/.copilot/agents/test-test-echo.agent.md"
+    "$SANDBOX/.config/opencode/skills/test-ping"
+    "$SANDBOX/.config/opencode/commands/test-ping.md"
+    "$SANDBOX/.config/opencode/agents/test-test-echo.md"
+  )
+  canary_missing=0
+  for canary_path in "${canary_artifacts[@]}"; do
+    [[ -e "$canary_path" || -L "$canary_path" ]] || canary_missing=$((canary_missing + 1))
+  done
+  canary_hooks="$(jq -r '[.hooks // {} | .[] | .[]? | .hooks[]?
+    | select((.source // "") == "asha:test")] | length' \
+    "$SANDBOX/.claude/settings.json")"
+  [[ $canary_missing -eq 0 && $canary_hooks -gt 0 ]] \
+    && ok "with-canary install exposes every canary primitive" \
+    || fail "with-canary install exposes every canary primitive ($canary_missing missing; hooks=$canary_hooks)"
+
+  # A foreign symlink under a scanned primitive root is not installer-owned:
+  # its target is outside the repository plugins tree and must survive.
+  mkdir -p "$SANDBOX/user-skill"
+  ln -s "$SANDBOX/user-skill" "$SANDBOX/.claude/skills/user-canary-reference"
+
+  if run_install --target all --dry-run >/dev/null 2>&1; then
+    dry_run_missing=0
+    for canary_path in "${canary_artifacts[@]}"; do
+      [[ -e "$canary_path" || -L "$canary_path" ]] || dry_run_missing=$((dry_run_missing + 1))
+    done
+    dry_run_hooks="$(jq -r '[.hooks // {} | .[] | .[]? | .hooks[]?
+      | select((.source // "") == "asha:test")] | length' \
+      "$SANDBOX/.claude/settings.json")"
+    [[ $dry_run_missing -eq 0 && $dry_run_hooks -eq "$canary_hooks" ]] \
+      && ok "dry-run reports retirement without changing canary artifacts" \
+      || fail "dry-run leaves canary artifacts unchanged ($dry_run_missing missing; hooks=$dry_run_hooks)"
+  else
+    fail "dry-run retirement fixture exits 0"
+  fi
+
+  if run_install --target all >/dev/null 2>&1; then
+    canary_left=0
+    for canary_path in "${canary_artifacts[@]}"; do
+      [[ -e "$canary_path" || -L "$canary_path" ]] && canary_left=$((canary_left + 1))
+    done
+    canary_hooks="$(jq -r '[.hooks // {} | .[] | .[]? | .hooks[]?
+      | select((.source // "") == "asha:test")] | length' \
+      "$SANDBOX/.claude/settings.json")"
+    manifest_canary=0
+    for manifest in "$SANDBOX"/.asha/install-manifests/*.json; do
+      [[ -f "$manifest" ]] || continue
+      count="$(jq -r '[.artifacts[]? | select(.source | contains("/plugins/test/"))] | length' "$manifest")"
+      manifest_canary=$((manifest_canary + count))
+    done
+    if [[ $canary_left -eq 0 && $canary_hooks -eq 0 && $manifest_canary -eq 0 \
+       && -L "$SANDBOX/.claude/skills/user-canary-reference" ]]; then
+      ok "default reinstall retires canary links, generated artifacts, hooks, and ownership records"
+      ok "default reinstall preserves foreign symlinks"
+    else
+      fail "default reinstall fully retires owned canary artifacts (left=$canary_left; hooks=$canary_hooks; manifest=$manifest_canary)"
+      [[ -L "$SANDBOX/.claude/skills/user-canary-reference" ]] \
+        && ok "default reinstall preserves foreign symlinks" \
+        || fail "default reinstall preserves foreign symlinks"
+    fi
+  else
+    fail "default canary-retirement reinstall exits 0"
   fi
 fi
 

@@ -2,7 +2,7 @@
 # lib/doctor.sh — `asha doctor` verb: thin adapter over bin/asha-drift-check.sh
 # (the diagnostic engine; kept at its path for cron/systemd users).
 #
-# Usage:  asha doctor [claude|codex|copilot|opencode|all] [--fix]
+# Usage:  asha doctor [claude|codex|copilot|opencode|all] [--with-canary] [--fix]
 # Exit:   0 clean, 1 one-or-more failures, 2 usage error.
 #
 # Note: `asha claude doctor` still reaches Claude Code's OWN doctor (launch
@@ -30,7 +30,7 @@ MARKET_ROOT="${MARKET_ROOT:-$(dirname "$__ASHA_LIB_DIR")}"
 source "$MARKET_ROOT/harnesses/registry.sh"
 
 asha_doctor_main() {
-  local target="all" fix=0
+  local target="all" fix=0 with_canary=0
   while [[ $# -gt 0 ]]; do
     case "$1" in
       claude|codex|copilot|opencode|all) target="$1" ;;
@@ -40,16 +40,18 @@ asha_doctor_main() {
       --target) [[ -n "${2:-}" ]] || { echo "ERROR: --target requires a value" >&2; return 2; }
                 target="$2"; shift ;;
       --target=*) target="${1#--target=}" ;;
+      --with-canary) with_canary=1 ;;
       --fix) fix=1 ;;
       -h|--help)
         cat <<'EOF'
 asha doctor — audit the asha install for drift.
 
 Usage:
-  asha doctor [claude|codex|copilot|opencode|all] [--fix]
+  asha doctor [claude|codex|copilot|opencode|all] [--with-canary] [--fix]
 
-Targets default to 'all'. --fix self-heals stale command-skills and drifted
-guardrails. Exit: 0 clean, 1 failures, 2 usage error.
+Targets default to 'all'. --with-canary audits optional plugins; --fix
+self-heals stale command-skills and drifted guardrails. Exit: 0 clean,
+1 failures, 2 usage error.
 (Claude Code's native doctor remains at: asha claude doctor)
 EOF
         return 0 ;;
@@ -61,6 +63,7 @@ EOF
     || { echo "ERROR: invalid target '$target'" >&2; return 2; }
 
   local -a args=(--target "$target")
+  [[ $with_canary -eq 1 ]] && args+=(--with-canary)
   [[ $fix -eq 1 ]] && args+=(--fix)
   # Child process, not sourced: drift-check is a standalone set -uo script
   # that exits directly. rc captured with `|| rc=$?` because this runs under
