@@ -1,5 +1,5 @@
 ---
-name: book-export
+name: write-book-export
 description: Export fiction manuscripts to professional book formats (PDF, ePub) with research-informed styling profiles. Includes profiles for manuscript drafts, beta readers, and publication-ready output.
 license: MIT
 ---

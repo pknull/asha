@@ -1,12 +1,8 @@
 ---
-name: todoist
+name: admin-todoist
 description: Direct Todoist REST API access for task create/find/update/complete. Bypasses MCP server fragility. Use when user mentions Todoist, asks to create/check/complete a todo, or needs full read+write Todoist coverage.
-triggers:
-  - Todoist task creation
-  - add a todo / remind me to / track this
-  - Querying tasks by date or content
-  - Completing or updating tasks
-  - Any Todoist read/write need (the MCP daemon and task-manager agent are retired; this skill is the sole path)
+metadata:
+  triggers: "Todoist task creation | add a todo / remind me to / track this | Querying tasks by date or content | Completing or updating tasks | Any Todoist read/write need (the MCP daemon and task-manager agent are retired; this skill is the sole path)"
 ---
 
 # Todoist via REST API

@@ -45,8 +45,11 @@ MARKET_ROOT="${MARKET_ROOT:-$(dirname "$__ASHA_LIB_DIR")}"
 
 # shellcheck source=lib/portable.sh
 source "$MARKET_ROOT/lib/portable.sh"
+# shellcheck source=lib/imported-skills.sh
+source "$MARKET_ROOT/lib/imported-skills.sh"
 ABS_MARKET_ROOT="$(resolve_path "$MARKET_ROOT")"
 PLUGINS_DIR="$MARKET_ROOT/plugins"
+NAMESPACES_FILE="$MARKET_ROOT/namespaces.json"
 
 # ---------------------------------------------------------------------------
 # Shared helpers (engine convention — mirrors lib/uninstall.sh)
@@ -195,8 +198,11 @@ _build_copy_skills() { # ns dest_root
     [[ -d "$skill" ]] || continue
     local skill_name; skill_name="$(basename "$skill")"
     [[ -f "$skill/SKILL.md" ]] || { info "WARN: [$ns] skill without SKILL.md skipped: $skill_name"; continue; }
-    local declared; declared="$(_copilot_skill_name_from_md "$skill/SKILL.md")"
-    local dest_name="${declared:-${ns}-${skill_name}}"
+    local namespace dest_name
+    namespace="$(jq -r --arg k "$ns" '.[$k] // $k' "$NAMESPACES_FILE")"
+    if ! dest_name="$(plugin_skill_destination_name "${skill%/}" "$namespace")"; then
+      continue
+    fi
     if [[ $DRY_RUN -eq 1 ]]; then
       say "  COPY  skills/$dest_name/ (from plugins/$ns/skills/$skill_name)"
     else

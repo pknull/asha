@@ -1,7 +1,8 @@
 ---
-name: style-analyzer
+name: write-style-analyzer
 description: Quantified prose analysis for voice.md generation. Extracts sentence metrics, dialogue profiles, vocabulary patterns, and forbidden word detection from exemplar texts.
-model: sonnet
+metadata:
+  model: sonnet
 ---
 
 # Style Analyzer

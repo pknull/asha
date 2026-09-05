@@ -1,5 +1,5 @@
 ---
-name: orchestrate-initiative
+name: session-orchestrate-initiative
 description: "Run a bounded initiative as its coordinator from Asha's own tmux pane: resolve the intent to one repository, create the initiative, claim the coordinator generation, propose the plan, wait on events in the background, and report evidence back to the Keeper. Use when the Keeper asks Asha to take on a coding task that should run as isolated Control workers with sealed evidence rather than in this session's working tree."
 ---
 

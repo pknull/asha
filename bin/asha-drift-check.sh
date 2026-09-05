@@ -499,7 +499,7 @@ check_skill_links() { # home_dir label
     # shellcheck source=../harnesses/copilot-common.sh
     source "$ASHA/harnesses/copilot-common.sh"
   fi
-  local missing=0 src plugin_dir ns skill dest
+  local missing=0 src plugin_dir ns dest_name dest
   for src in "$ASHA"/plugins/*/skills/*/; do
     [[ -f "$src/SKILL.md" ]] || continue
     src="${src%/}"
@@ -510,9 +510,11 @@ check_skill_links() { # home_dir label
     fi
     [[ -n "${installed[$(readlink -f "$src")]:-}" ]] && continue
     ns="$(jq -r --arg k "$plugin_dir" '.[$k] // $k' "$ASHA/namespaces.json")"
-    skill="$(basename "$src")"
     if [[ $FIX -eq 1 && "$label" == claude ]]; then
-      dest="$skills_dir/${ns}-${skill}"
+      if ! dest_name="$(plugin_skill_destination_name "$src" "$ns")"; then
+        continue
+      fi
+      dest="$skills_dir/$dest_name"
       if [[ ! -e "$dest" && ! -L "$dest" ]]; then
         ln -s "$src" "$dest"
         echo "FIXED  linked missing skill: $dest -> $src"

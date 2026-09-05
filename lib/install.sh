@@ -62,8 +62,46 @@ ensure_dir() {
   fi
 }
 
-# Create one symlink. Idempotent (skip if already correct). Refuses on
-# mismatched existing target unless --force.
+# Return success when the target harness's ownership manifest records a
+# generated artifact below DEST. The exact-record lookup remains centralized
+# in asha_artifact_manifest_hash_for; this function only discovers the
+# descendant path to ask it about.
+_asha_managed_artifact_under() {
+  local dest="$1" kind="$2" harness manifest artifact
+  case "$kind" in
+    skill-dir|agent|command) harness=claude ;;
+    codex-*) harness=codex ;;
+    copilot-*) harness=copilot ;;
+    opencode-*) harness=opencode ;;
+    *) return 1 ;;
+  esac
+  manifest="$(asha_artifact_manifest_path "$harness")"
+  [[ -f "$manifest" ]] || return 1
+  artifact="$(python3 - "$manifest" "$dest" <<'PY'
+import json
+import os
+import sys
+
+try:
+    data = json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError, ValueError):
+    raise SystemExit(1) from None
+prefix = os.path.abspath(sys.argv[2]).rstrip(os.sep) + os.sep
+for item in data.get("artifacts", []):
+    candidate = os.path.abspath(item.get("destination", ""))
+    if candidate.startswith(prefix):
+        print(candidate)
+        break
+PY
+)" || return 1
+  [[ -n "$artifact" ]] || return 1
+  asha_artifact_manifest_hash_for "$harness" "$artifact" >/dev/null
+}
+
+# Create one symlink. Idempotent (skip if already correct). Foreign real files
+# and directories are never deleted, including under --force. A real directory
+# may be replaced under --force only when the target harness manifest proves it
+# contains an Asha-generated artifact.
 # Args: SOURCE DEST KIND
 mklink() {
   local src="$1" dest="$2" kind="$3"
@@ -85,10 +123,13 @@ mklink() {
     [[ ${DRY_RUN:-0} -eq 1 ]] || rm "$dest"
   elif [[ -e "$dest" ]]; then
     if [[ ${FORCE:-0} -eq 0 ]]; then
-      die "refusing to overwrite non-link at destination: $dest (use --force)" 2
+      die "refusing to overwrite non-link at destination: $dest" 2
     fi
-    log "removing non-link at dest: $dest"
-    [[ ${DRY_RUN:-0} -eq 1 ]] || rm -rf "$dest"
+    if ! _asha_managed_artifact_under "$dest" "$kind"; then
+      die "refusing to delete non-link not recorded as Asha-generated: $dest" 2
+    fi
+    log "replacing manifest-recorded generated directory: $dest"
+    [[ ${DRY_RUN:-0} -eq 1 ]] || rm -rf -- "$dest"
   fi
 
   if [[ ${DRY_RUN:-0} -eq 1 ]]; then
