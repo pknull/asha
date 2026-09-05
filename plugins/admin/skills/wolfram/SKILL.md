@@ -1,14 +1,8 @@
 ---
-name: wolfram
+name: admin-wolfram
 description: Wolfram|Alpha computational answers via the LLM API. Use for math solving, unit/currency conversion, scientific & factual lookups, step-by-step results. Bypasses MCP — direct REST.
-triggers:
-  - solve / compute / evaluate a math expression
-  - convert X to Y (units, currency)
-  - factual/scientific lookup (physical constants, chemistry, astronomy, geography)
-  - what is the derivative/integral of ...
-  - plot ...
-  - how far is ...
-  - When a Wolfram|Alpha MCP would otherwise be reached for
+metadata:
+  triggers: "solve / compute / evaluate a math expression | convert X to Y (units, currency) | factual/scientific lookup (physical constants, chemistry, astronomy, geography) | what is the derivative/integral of ... | plot ... | how far is ... | When a Wolfram|Alpha MCP would otherwise be reached for"
 ---
 
 # Wolfram|Alpha via LLM API (REST)

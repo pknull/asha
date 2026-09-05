@@ -1,10 +1,8 @@
 ---
 name: test-ping
 description: Canary skill for verifying the symlink-mount installer resolves skills on Claude Code. Safe to invoke at any time; emits a unique sentinel string for confirmation. Triggers on phrases like "test ping", "ping test", or "verify marketplace".
-triggers:
-  - verify install
-  - marketplace test
-  - ping test
+metadata:
+  triggers: "verify install | marketplace test | ping test"
 ---
 
 # test-ping
