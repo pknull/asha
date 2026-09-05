@@ -1,5 +1,5 @@
 ---
-name: languagetool
+name: write-languagetool
 description: Grammar and style checking using local LanguageTool server (localhost:8081). Detects grammar errors, style issues, and provides suggestions for improving text quality.
 license: MIT
 ---

@@ -18,6 +18,53 @@ NC='\033[0m'
 PASSED=0
 FAILED=0
 
+namespace_for_plugin() {
+    python3 - "$REPO_ROOT/namespaces.json" "$1" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    namespaces = json.load(handle)
+print(namespaces.get(sys.argv[2], sys.argv[2]))
+PY
+}
+
+skill_name_matches_destination() {
+    python3 - "$1" "$2" <<'PY'
+import pathlib
+import sys
+import yaml
+
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+end = text.find("\n---\n", 4)
+data = yaml.safe_load(text[4:end]) or {}
+expected = f"{sys.argv[2]}-{path.parent.name}"
+actual = data.get("name") if isinstance(data, dict) else None
+if actual != expected:
+    print(f"declares name {actual!r}; expected {expected!r}")
+    raise SystemExit(1)
+PY
+}
+
+skill_frontmatter_keys_allowed() {
+    python3 - "$1" <<'PY'
+import pathlib
+import sys
+import yaml
+
+allowed = {"name", "description", "license", "allowed-tools", "metadata", "compatibility"}
+path = pathlib.Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+end = text.find("\n---\n", 4)
+data = yaml.safe_load(text[4:end]) or {}
+extra = sorted(str(key) for key in set(data) - allowed) if isinstance(data, dict) else []
+if extra:
+    print("has non-Agent-Skills frontmatter key(s): " + ", ".join(extra))
+    raise SystemExit(1)
+PY
+}
+
 echo "=== Plugin Structure Validator ==="
 echo "Repository: $REPO_ROOT"
 echo ""
@@ -239,10 +286,76 @@ else
     FAILED=$((FAILED + 1))
 fi
 
-# Test 2d: Review discovery must follow the target path, not a legacy book root.
+# Test 2d: A plugin skill's declared name is its portable destination name.
+echo -n "Test 2d: Skill names equal <namespace>-<directory>... "
+SKILL_NAME_ERRORS=()
+while IFS= read -r skill_file; do
+    [[ -f "$skill_file" ]] || continue
+    plugin_name=$(basename "$(dirname "$(dirname "$(dirname "$skill_file")")")")
+    namespace="$(namespace_for_plugin "$plugin_name")"
+    if ! error="$(skill_name_matches_destination "$skill_file" "$namespace")"; then
+        SKILL_NAME_ERRORS+=("$skill_file ($error)")
+    fi
+done < <(find "$REPO_ROOT/plugins" -path '*/skills/*/SKILL.md' -type f | sort)
+if [[ ${#SKILL_NAME_ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    for m in "${SKILL_NAME_ERRORS[@]}"; do echo "  $m"; done
+    FAILED=$((FAILED + 1))
+fi
+
+# Test 2e: Agent Skills permits only these six top-level frontmatter keys.
+echo -n "Test 2e: Skill frontmatter uses only Agent Skills keys... "
+SKILL_KEY_ERRORS=()
+while IFS= read -r skill_file; do
+    [[ -f "$skill_file" ]] || continue
+    if ! error="$(skill_frontmatter_keys_allowed "$skill_file")"; then
+        SKILL_KEY_ERRORS+=("$skill_file ($error)")
+    fi
+done < <(find "$REPO_ROOT/plugins" -path '*/skills/*/SKILL.md' -type f | sort)
+if [[ ${#SKILL_KEY_ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    for m in "${SKILL_KEY_ERRORS[@]}"; do echo "  $m"; done
+    FAILED=$((FAILED + 1))
+fi
+
+# Test 2f: Prove both validators reject one deliberately broken fixture.
+echo -n "Test 2f: Skill name and key validators fail closed... "
+BROKEN_FIXTURE_ROOT="$(mktemp -d)"
+mkdir -p "$BROKEN_FIXTURE_ROOT/broken/skills/example"
+cat > "$BROKEN_FIXTURE_ROOT/broken/skills/example/SKILL.md" <<'EOF'
+---
+name: wrong-name
+description: Deliberately broken validator fixture.
+triggers: [invalid-top-level-key]
+---
+# Broken fixture
+EOF
+BROKEN_FIXTURE="$BROKEN_FIXTURE_ROOT/broken/skills/example/SKILL.md"
+name_failed=0
+keys_failed=0
+skill_name_matches_destination "$BROKEN_FIXTURE" broken >/dev/null 2>&1 || name_failed=1
+skill_frontmatter_keys_allowed "$BROKEN_FIXTURE" >/dev/null 2>&1 || keys_failed=1
+rm -rf "$BROKEN_FIXTURE_ROOT"
+if [[ $name_failed -eq 1 && $keys_failed -eq 1 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    [[ $name_failed -eq 1 ]] || echo "  broken name fixture was accepted"
+    [[ $keys_failed -eq 1 ]] || echo "  broken key fixture was accepted"
+    FAILED=$((FAILED + 1))
+fi
+
+# Test 2g: Review discovery must follow the target path, not a legacy book root.
 # This is an instruction-driven primitive, so textual regression checks are the
 # executable contract shared by Claude, Codex, and Copilot renderings.
-echo -n "Test 2d: Review paths are project-root relative... "
+echo -n "Test 2g: Review paths are project-root relative... "
 REVIEW_COMMAND="$REPO_ROOT/plugins/write/commands/review-section.md"
 PROSE_AGENT="$REPO_ROOT/plugins/write/agents/prose-analysis.md"
 REVIEW_PATH_ERRORS=()

@@ -1,5 +1,5 @@
 ---
-name: operate-control
+name: session-operate-control
 description: "Run the Asha Control plane from the operator's chair: launch one fenced coordinator per piece of work, read the tree, sign approvals and activations on the Keeper's explicit word, answer needs-input, and prepare — never perform — integration. Use when the Keeper asks this wrapped session to start, steer, or monitor initiatives conversationally instead of through the asha control monitor."
 ---
 

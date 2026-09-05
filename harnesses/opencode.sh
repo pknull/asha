@@ -70,21 +70,21 @@ opencode_check_version() {
 }
 
 opencode_install_skills() {
-  local src_dir="$1" ns="$2" kind="${3:-plugin}" skill declared dest_name
+  local src_dir="$1" ns="$2" kind="${3:-plugin}" skill dest_name
   [[ -d "$src_dir" ]] || return 0
   validate_skill_source "$src_dir" "$kind"
   while IFS= read -r skill; do
     [[ -n "$skill" ]] || continue
     [[ -f "$skill/SKILL.md" ]] || continue
-    declared="$(_opencode_field "$skill/SKILL.md" name)"
     if [[ "$kind" == imported ]]; then
       dest_name="${ns}-$(basename "$skill")"
       prepare_imported_skill_adapter "${skill%/}" "$dest_name"
       mklink_imported_skill "${skill%/}" "$ASHA_IMPORTED_SKILL_ADAPTER" \
         "$OPENCODE_SKILLS_DIR/$dest_name" "opencode-skill"
       continue
-    else
-      dest_name="${declared:-${ns}-$(basename "$skill")}"
+    fi
+    if ! dest_name="$(plugin_skill_destination_name "${skill%/}" "$ns")"; then
+      continue
     fi
     if ! _opencode_valid_name "$dest_name"; then
       echo "WARN: invalid OpenCode skill name '$dest_name' in $skill/SKILL.md; skipping" >&2

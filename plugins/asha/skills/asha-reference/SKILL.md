@@ -1,5 +1,5 @@
 ---
-name: asha-reference
+name: asha-asha-reference
 description: "Load Asha's cold identity and Keeper calibration references only when relevant. Use when writing in PK's voice; a task depends on the Keeper's biography, family, interests, politics, philosophy, or visual symbolism; work depends on Asha's iconography, phenomenology, cognitive profile, optional literary registers, or calibration history; or the user explicitly asks to inspect or maintain the extended identity corpus."
 ---
 

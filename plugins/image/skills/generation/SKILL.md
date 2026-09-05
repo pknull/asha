@@ -1,5 +1,5 @@
 ---
-name: generation
+name: image-generation
 description: "Stable Diffusion prompt engineering and ComfyUI workflow design: prompt structure and weighting, negative prompts, sampler/scheduler selection, workflow JSON construction, iteration on generated outputs. Use when crafting or refining image-generation prompts, building ComfyUI workflows, or the user mentions Stable Diffusion, ComfyUI, LoRA, or image prompts."
 ---
 

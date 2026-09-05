@@ -6,6 +6,47 @@
 # The functions intentionally reuse the install engine's die/log/say/ensure_dir/
 # mklink helpers and the harnesses' existing source enumeration machinery.
 
+# Print the one valid destination name for a repository plugin skill.
+# Repository skill identity is deliberately fail-closed: the declared name
+# must be exactly <namespace>-<source-directory>. Imported skills do not use
+# this helper because their portable imported-<name> adapter is derived below.
+plugin_skill_destination_name() {
+  local skill_dir="${1%/}" namespace="$2" skill_md expected declared
+  skill_md="$skill_dir/SKILL.md"
+  expected="${namespace}-$(basename "$skill_dir")"
+  declared="$(python3 - "$skill_md" <<'PY'
+import re
+import sys
+
+try:
+    text = open(sys.argv[1], encoding="utf-8").read()
+except OSError:
+    raise SystemExit(0) from None
+if not text.startswith("---\n"):
+    raise SystemExit(0)
+end = text.find("\n---\n", 4)
+if end < 0:
+    raise SystemExit(0)
+match = re.search(r"^name\s*:\s*(.+?)\s*$", text[4:end], re.MULTILINE)
+if not match:
+    raise SystemExit(0)
+value = match.group(1)
+if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+    value = value[1:-1]
+print(value)
+PY
+)"
+  if [[ -z "$declared" ]]; then
+    echo "WARN: plugin skill missing declared name '$expected': $skill_md; skipping" >&2
+    return 1
+  fi
+  if [[ "$declared" != "$expected" ]]; then
+    echo "WARN: plugin skill name '$declared' must equal '$expected': $skill_md; skipping" >&2
+    return 1
+  fi
+  printf '%s\n' "$declared"
+}
+
 # The user-owned import plane is deliberately outside the repository. Skills
 # from it use one stable namespace on every harness and remain opt-in under a
 # scoped install (`--only imported` or an unscoped install).

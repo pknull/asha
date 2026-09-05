@@ -348,7 +348,7 @@ fi
 
 # ---------------------------------------------------------------------------
 echo "--- test 2e: a source skill missing from the install is named; install restores it ---"
-skill_link="$SANDBOX/.codex/skills/orchestrate-initiative"
+skill_link="$SANDBOX/.codex/skills/session-orchestrate-initiative"
 if [[ -L "$skill_link" ]]; then
   unlink "$skill_link"
   out="$(run --target codex 2>&1 || true)"

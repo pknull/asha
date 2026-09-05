@@ -1,11 +1,8 @@
 ---
-name: proton-mail
+name: admin-proton-mail
 description: Manage Proton Mail through the locally running Proton Mail Bridge using safe IMAP/SMTP reads, search, triage, drafts, sending, moves, and move-to-Trash deletion. Use when the user asks to inspect or change Proton Mail. Requires Bridge credentials exported by the Asha secrets wrapper.
-triggers:
-  - Search, list, read, or triage Proton Mail
-  - Save a Proton Mail draft or send mail
-  - Move or delete a Proton Mail message
-  - Check local Proton Mail Bridge connectivity
+metadata:
+  triggers: "Search, list, read, or triage Proton Mail | Save a Proton Mail draft or send mail | Move or delete a Proton Mail message | Check local Proton Mail Bridge connectivity"
 ---
 
 # Proton Mail through Bridge
