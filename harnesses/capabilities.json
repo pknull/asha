@@ -1,8 +1,29 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-09-02",
+  "reviewed": "2026-09-05",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
+  "agent_frontmatter": {
+    "tool_vocabulary": [
+      "Task",
+      "Read",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "Grep",
+      "Glob",
+      "Bash",
+      "WebFetch",
+      "WebSearch",
+      "AskUserQuestion"
+    ],
+    "tool_allowlist_enforced": {
+      "claude": true,
+      "codex": false,
+      "copilot": false,
+      "opencode": false
+    }
+  },
   "harnesses": {
     "claude": {
       "executable": "claude",
