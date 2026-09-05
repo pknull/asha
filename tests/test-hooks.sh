@@ -575,7 +575,7 @@ jq -e '.hooks.Stop[]
   || fail "declared verification pass is registered only on Claude/Codex Stop"
 
 CONTROL_REACHABLE=1
-while read -r native control_event; do
+while read -r native _control_event; do
   jq -e --arg native "$native" '.hooks[$native][]
     | any(.hooks[]?; (.command // "")
       | endswith("control-event.sh " + $native))' "$HOOKS" >/dev/null 2>&1 \
@@ -681,6 +681,81 @@ if jq -e '.hooks | has("PermissionRequest") | not' "$TEST_HOOKS" >/dev/null 2>&1
   ok "temporary Codex PermissionRequest probe is retired"
 else
   fail "temporary Codex PermissionRequest probe is retired"
+fi
+
+echo "--- Installer canary hook ---"
+CANARY_HOOK="$REPO_ROOT/plugins/test/hooks/stop.sh"
+LEGACY_CANARY_MARKER="/tmp/asha-marketplace-test-hook-fired"
+legacy_canary_state() {
+  if [[ -e "$LEGACY_CANARY_MARKER" || -L "$LEGACY_CANARY_MARKER" ]]; then
+    printf 'present '
+    cksum "$LEGACY_CANARY_MARKER" 2>/dev/null || ls -ld "$LEGACY_CANARY_MARKER"
+  else
+    printf 'absent\n'
+  fi
+}
+LEGACY_CANARY_BEFORE="$(legacy_canary_state)"
+
+CANARY_STDOUT="$WORK/canary-writable.stdout"
+CANARY_MARKER="$WORK/canary-marker"
+CANARY_RC=0
+CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/test" ASHA_CANARY_MARKER="$CANARY_MARKER" \
+  "$CANARY_HOOK" >"$CANARY_STDOUT" 2>"$WORK/canary-writable.stderr" || CANARY_RC=$?
+[[ $CANARY_RC -eq 0 && "$(wc -c < "$CANARY_STDOUT")" -eq 3 \
+   && "$(cat "$CANARY_STDOUT")" == '{}' && -s "$CANARY_MARKER" ]] \
+  && ok "canary Stop hook writes an explicit marker and returns exactly {}" \
+  || fail "canary Stop hook writes an explicit marker and returns exactly {}"
+
+CANARY_STDOUT="$WORK/canary-unwritable.stdout"
+CANARY_RC=0
+CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/test" \
+  ASHA_CANARY_MARKER="$WORK/missing/dir/marker" \
+  "$CANARY_HOOK" >"$CANARY_STDOUT" 2>"$WORK/canary-unwritable.stderr" || CANARY_RC=$?
+[[ $CANARY_RC -eq 0 && "$(wc -c < "$CANARY_STDOUT")" -eq 3 \
+   && "$(cat "$CANARY_STDOUT")" == '{}' ]] \
+  && ok "canary Stop hook fails open when its marker is unwritable" \
+  || fail "canary Stop hook fails open when its marker is unwritable"
+
+mkdir -p "$WORK/xdg"
+CANARY_STDOUT="$WORK/canary-xdg.stdout"
+CANARY_RC=0
+env -u ASHA_CANARY_MARKER CLAUDE_PLUGIN_ROOT="$REPO_ROOT/plugins/test" \
+  XDG_RUNTIME_DIR="$WORK/xdg" "$CANARY_HOOK" \
+  >"$CANARY_STDOUT" 2>"$WORK/canary-xdg.stderr" || CANARY_RC=$?
+[[ $CANARY_RC -eq 0 && "$(wc -c < "$CANARY_STDOUT")" -eq 3 \
+   && "$(cat "$CANARY_STDOUT")" == '{}' \
+   && -s "$WORK/xdg/asha-canary-hook-fired" ]] \
+  && ok "canary Stop hook uses the caller-owned XDG runtime directory" \
+  || fail "canary Stop hook uses the caller-owned XDG runtime directory"
+
+LEGACY_CANARY_AFTER="$(legacy_canary_state)"
+[[ "$LEGACY_CANARY_AFTER" == "$LEGACY_CANARY_BEFORE" \
+   && -z "$(grep -F "$LEGACY_CANARY_MARKER" "$CANARY_HOOK")" ]] \
+  && ok "canary Stop hook neither names nor changes the legacy shared marker" \
+  || fail "canary Stop hook neither names nor changes the legacy shared marker"
+
+# shellcheck source=../lib/install.sh
+source "$REPO_ROOT/lib/install.sh"
+DEFAULT_SELECTED="$(ONLY="" WITH_CANARY=0 selected_plugins)"
+DEFAULT_ALL="$(ONLY="" WITH_CANARY=0 all_plugin_dirs)"
+CANARY_SELECTED="$(ONLY="" WITH_CANARY=1 selected_plugins)"
+CANARY_ALL="$(ONLY="" WITH_CANARY=1 all_plugin_dirs)"
+ONLY_SELECTED="$(ONLY=test WITH_CANARY=0 selected_plugins)"
+ONLY_ALL="$(ONLY=test WITH_CANARY=0 all_plugin_dirs)"
+if ! grep -Fxq test <<<"$DEFAULT_SELECTED" && ! grep -Fxq test <<<"$DEFAULT_ALL"; then
+  ok "default plugin enumeration excludes the canary"
+else
+  fail "default plugin enumeration excludes the canary"
+fi
+if grep -Fxq test <<<"$CANARY_SELECTED" && grep -Fxq test <<<"$CANARY_ALL"; then
+  ok "WITH_CANARY=1 includes the canary in plugin enumeration"
+else
+  fail "WITH_CANARY=1 includes the canary in plugin enumeration"
+fi
+if grep -Fxq test <<<"$ONLY_SELECTED" && grep -Fxq test <<<"$ONLY_ALL"; then
+  ok "ONLY=test includes the canary in scoped and global enumeration"
+else
+  fail "ONLY=test includes the canary in scoped and global enumeration"
 fi
 
 echo "test-hooks: $PASS passed, $FAIL failed"

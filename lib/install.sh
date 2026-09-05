@@ -124,24 +124,70 @@ selected_plugins() {
   fi
 }
 
+# Optional plugins are excluded from the complete/default set unless the
+# caller explicitly enables canaries or names that plugin with --only.  The
+# latter matters to global hook reconciliation, which otherwise ignores ONLY.
+_include_plugin_dir() {
+  local plugin_dir="$1" item
+  [[ "${WITH_CANARY:-0}" == 1 ]] && return 0
+  if ! jq -e --arg plugin "$plugin_dir" \
+      '((._optional // []) | index($plugin)) != null' \
+      "$NAMESPACES_FILE" >/dev/null 2>&1; then
+    return 0
+  fi
+  if [[ -n "${ONLY:-}" ]]; then
+    local -a requested
+    IFS=',' read -ra requested <<<"$ONLY"
+    for item in "${requested[@]}"; do
+      [[ "$item" == "$plugin_dir" ]] && return 0
+    done
+  fi
+  return 1
+}
+
 # Enumerate ALL plugin dir basenames, ignoring the --only/$ONLY filter. Portable
 # (GNU `find -printf` is unavailable on BSD/macOS): glob immediate subdirectories
 # and emit their basenames. Used by register_hooks, which must reconcile the
 # COMPLETE asha hook set every run regardless of --only scoping (a scoped install
-# must never de-register another plugin's hooks).
+# must never de-register another plugin's hooks). Optional plugins are the one
+# exception: they enter the complete set only when explicitly enabled.
 all_plugin_dirs() {
   local d
   for d in "$PLUGINS_DIR"/*/; do
     [[ -d "$d" ]] || continue
-    basename "$d"
+    d="${d%/}"
+    _include_plugin_dir "${d##*/}" || continue
+    printf '%s\n' "${d##*/}"
   done | sort
 }
 
+# True when TARGET points into a repository plugin that is optional and not
+# selected for this run.  Symlink ownership is established by that target
+# location; ordinary files at the same destination remain user-managed.
+_disabled_optional_plugin_target() {
+  local target="$1" abs_market_root="$2" root relative plugin_dir
+  [[ -n "$target" ]] || return 1
+  for root in "$MARKET_ROOT" "$abs_market_root"; do
+    [[ -n "$root" ]] || continue
+    case "$target" in
+      "$root"/plugins/*)
+        relative="${target#"$root"/plugins/}"
+        plugin_dir="${relative%%/*}"
+        _include_plugin_dir "$plugin_dir" || return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
 # Remove broken Asha-owned links and imported mounts no longer recorded in the
-# canonical store's lockfile. Full installs reconcile removed or renamed
-# primitives while preserving foreign links and canonical imported content.
+# canonical store's lockfile. Full installs also retire links into optional
+# plugins that are disabled for this run. Foreign links and canonical imported
+# content are preserved.
 prune_retired_asha_symlinks() {
-  local home="$1" root link raw n=0 imported_root abs_imported_root imported_name lock
+  local home="$1" root link raw target n=0 imported_root abs_imported_root imported_name lock
+  local abs_market_root
+  abs_market_root="$(resolve_path "$MARKET_ROOT" 2>/dev/null || true)"
   imported_root="$(asha_imported_skills_root)"
   abs_imported_root="$(resolve_path "$imported_root" 2>/dev/null || true)"
   lock="$imported_root/imported.lock.json"
@@ -155,7 +201,13 @@ prune_retired_asha_symlinks() {
     [[ -d "$root" ]] || continue
     while IFS= read -r -d '' link; do
       raw="$(readlink "$link" 2>/dev/null || true)"
-      if [[ -e "$link" ]]; then
+      target="$(resolve_path "$link" 2>/dev/null || true)"
+      local disabled_optional=0
+      if _disabled_optional_plugin_target "$raw" "$abs_market_root" \
+          || _disabled_optional_plugin_target "$target" "$abs_market_root"; then
+        disabled_optional=1
+      fi
+      if [[ -e "$link" && $disabled_optional -eq 0 ]]; then
         if ! imported_name="$(
           imported_skill_name_from_target "$raw" "$imported_root" "$abs_imported_root"
         )"; then
@@ -170,6 +222,9 @@ prune_retired_asha_symlinks() {
       case "$raw" in
         "$MARKET_ROOT"/plugins/*|"${ABS_MARKET_ROOT:-$MARKET_ROOT}"/plugins/*|"$imported_root"/*) owned=1 ;;
       esac
+      if [[ $owned -eq 0 && -n "$abs_market_root" ]]; then
+        case "$target" in "$abs_market_root"/plugins/*) owned=1 ;; esac
+      fi
       if [[ $owned -eq 0 && -n "$abs_imported_root" ]]; then
         case "$raw" in "$abs_imported_root"/*) owned=1 ;; esac
       fi
@@ -192,8 +247,8 @@ usage() {
 install.sh / `asha install` — symlink-mount installer (multi-harness).
 
 Usage:
-  ./install.sh [--target T] [--bin B] [--default D] [--only ns,...] [--dry-run] [--force] [--verbose]
-  asha install <claude|codex|copilot|opencode|both|all> [--bin B] [--default D] [--only ...] [--dry-run] [--force]
+  ./install.sh [--target T] [--bin B] [--default D] [--only ns,...] [--with-canary] [--dry-run] [--force] [--verbose]
+  asha install <claude|codex|copilot|opencode|both|all> [--bin B] [--default D] [--only ...] [--with-canary] [--dry-run] [--force]
 
 Targets (--target or positional after `asha install`):
   claude | codex | copilot | opencode | both (claude+codex) | all (all four)
@@ -204,6 +259,7 @@ Bin:
 
 Other:
   --only ns1,ns2   limit to named plugin dirs
+  --with-canary    include opt-in installer canary plugins
   --dry-run        print the action plan only; no writes
   --force          replace mismatched symlinks
   --verbose        echo each action
@@ -217,6 +273,7 @@ parse_args() {
       --dry-run) DRY_RUN=1 ;;
       --force)   FORCE=1 ;;
       --verbose|-v) VERBOSE=1 ;;
+      --with-canary) WITH_CANARY=1 ;;
       --only)    shift; ONLY="${1:-}" ;;
       --only=*)  ONLY="${1#--only=}" ;;
       --target)  shift; TARGET="${1:-}" ;;
@@ -450,8 +507,8 @@ _detect_legacy_learnings() {
 #   console-log-check.sh, lint-file.sh, doc-file-blocker.sh, console-log-audit.sh)
 #   match neither test and are preserved byte-for-byte.
 #
-# The desired asha set is rebuilt from scratch each run: for every selected
-# plugin EXCEPT the test plugin (its canary stop.sh must never reach prod),
+# The desired asha set is rebuilt from scratch each run: for every plugin in
+# all_plugin_dirs (which excludes opt-in plugins unless explicitly enabled),
 # read plugins/<p>/hooks/hooks.json, substitute ${CLAUDE_PLUGIN_ROOT} with the
 # plugin's absolute path, and tag each hook "source":"asha:<ns>". Re-running on
 # an already-clean file is therefore a no-op (drop-then-readd is identity).
@@ -463,15 +520,6 @@ _detect_legacy_learnings() {
 #     ~/.claude/settings.json) so a reviewer can point it elsewhere.
 #   - Honors DRY_RUN / VERBOSE if already set; defaults them when sourced bare.
 #
-# Plugins excluded from prod hook registration.
-_REGISTER_HOOKS_SKIP=(test)
-
-_register_hooks_is_skip() {
-  local p="$1" sp
-  for sp in "${_REGISTER_HOOKS_SKIP[@]}"; do [[ "$p" == "$sp" ]] && return 0; done
-  return 1
-}
-
 register_hooks() {
   # Defaults so the function is safe to call standalone (bare source).
   : "${DRY_RUN:=0}"; : "${VERBOSE:=0}"
@@ -484,13 +532,12 @@ register_hooks() {
   [[ -f "$settings" ]] || { log "register_hooks: $settings absent; skipping"; return 0; }
 
   # Build the DESIRED asha hook set: a single {event: [group,...]} object that
-  # concatenates every selected, non-test plugin's tagged groups.
+  # concatenates every enabled plugin's tagged groups.
   local desired='{}'
   local plugin_dir ns plugin_root abs_root hooks_json
   while read -r plugin_dir; do
     [[ -n "$plugin_dir" ]] || continue
     [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || continue
-    _register_hooks_is_skip "$plugin_dir" && continue
 
     plugin_root="$PLUGINS_DIR/$plugin_dir"
     if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
@@ -661,7 +708,7 @@ CONFIG_EOF
 
 asha_install_main() {
   # Reset runtime state on each call (globals, visible to helpers).
-  DRY_RUN=0; FORCE=0; VERBOSE=0; ONLY=""
+  DRY_RUN=0; FORCE=0; VERBOSE=0; ONLY=""; WITH_CANARY=0
   TARGET="claude"; BIN=""; BIN_DEFAULT="claude"; DEFAULT_SET=0
 
   parse_args "$@"
@@ -676,6 +723,7 @@ asha_install_main() {
   [[ $DRY_RUN -eq 1 ]] && say "   (dry-run: no filesystem or settings changes)"
   [[ $FORCE   -eq 1 ]] && say "   (force: will replace mismatched symlinks)"
   [[ -n "$ONLY"     ]] && say "   (only: $ONLY)"
+  [[ $WITH_CANARY -eq 1 ]] && say "   (with canary plugins)"
 
   local -a targets=()
   while IFS= read -r t; do targets+=("$t"); done < <(asha_expand_target "$TARGET")

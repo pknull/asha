@@ -13,7 +13,6 @@ REPO_ROOT="$(dirname "$SCRIPT_DIR")"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
 NC='\033[0m'
 
 PASSED=0
@@ -152,6 +151,47 @@ if [[ ${#MISSING_DOCS[@]} -eq 0 ]]; then
 else
     echo -e "${RED}FAIL${NC}"
     for m in "${MISSING_DOCS[@]}"; do echo "  $m"; done
+    FAILED=$((FAILED + 1))
+fi
+
+# Test 4: Optional plugin metadata names real plugins and keeps the installer
+# canary out of the default set.
+echo -n "Test 4: Optional plugins are valid and the canary is opt-in... "
+OPTIONAL_ERRORS=()
+if ! jq -e '
+    ._optional as $optional
+    | (($optional | type) == "array")
+      and all($optional[]; type == "string" and length > 0)
+      and (($optional | length) == ($optional | unique | length))
+  ' "$REPO_ROOT/namespaces.json" >/dev/null 2>&1; then
+    OPTIONAL_ERRORS+=("namespaces.json _optional must be an array of unique, non-empty plugin names")
+else
+    while IFS= read -r optional_plugin; do
+        [[ -n "$optional_plugin" ]] || continue
+        [[ -d "$REPO_ROOT/plugins/$optional_plugin" ]] \
+            || OPTIONAL_ERRORS+=("optional plugin '$optional_plugin' has no plugins/$optional_plugin directory")
+        jq -e --arg plugin "$optional_plugin" \
+            'has($plugin) and ((.[$plugin] | type) == "string")' \
+            "$REPO_ROOT/namespaces.json" >/dev/null 2>&1 \
+            || OPTIONAL_ERRORS+=("optional plugin '$optional_plugin' has no top-level namespace entry")
+    done < <(jq -r '._optional[]' "$REPO_ROOT/namespaces.json")
+fi
+jq -e '._optional | index("test") != null' "$REPO_ROOT/namespaces.json" >/dev/null 2>&1 \
+    || OPTIONAL_ERRORS+=("test is not listed in namespaces.json _optional")
+
+# shellcheck source=../lib/install.sh
+source "$REPO_ROOT/lib/install.sh"
+DEFAULT_PLUGINS="$(ONLY="" WITH_CANARY=0 all_plugin_dirs)"
+if grep -Fxq test <<<"$DEFAULT_PLUGINS"; then
+    OPTIONAL_ERRORS+=("test appears in the installer's default plugin set")
+fi
+
+if [[ ${#OPTIONAL_ERRORS[@]} -eq 0 ]]; then
+    echo -e "${GREEN}PASS${NC}"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    for m in "${OPTIONAL_ERRORS[@]}"; do echo "  $m"; done
     FAILED=$((FAILED + 1))
 fi
 

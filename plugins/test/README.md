@@ -11,13 +11,16 @@ is not an application testing framework.
 | Claude command | `commands/ping.md` (`/test:ping`) | `TEST-PING-CMD-OK …` |
 | Skill | `skills/ping/SKILL.md` | `TEST-PING-OK …` |
 | Agent | `agents/echo.md` | `TEST-ECHO-OK …` |
-| Claude Stop hook | `hooks/stop.sh` | creates `/tmp/asha-marketplace-test-hook-fired` |
+| Claude Stop hook | `hooks/stop.sh` | appends a timestamp to the canary marker |
 
 The sentinel text retains the historical `marketplace` label for test
 compatibility. Installation itself now uses direct symlink mounts and generated
 harness artifacts; there is no plugin-marketplace registration flow.
 
 ## Install and verify
+
+The canary is excluded from default installs. Use `--only test` to install
+just this plugin, or `--with-canary` to include it with the normal plugin set.
 
 ### Claude Code
 
@@ -36,8 +39,18 @@ Spawn the test-echo agent.
 End the session and inspect the hook marker:
 
 ```bash
-test -f /tmp/asha-marketplace-test-hook-fired && echo TEST-HOOK-OK
+./install.sh --only test --target claude
+export ASHA_CANARY_MARKER="$(mktemp)"
+# launch/restart Claude Code from this environment, end a session, then:
+marker="$ASHA_CANARY_MARKER"
+test -s "$marker" && echo TEST-HOOK-OK
 ```
+
+`ASHA_CANARY_MARKER` is the recommended explicit marker path. Without it, the
+hook uses `$XDG_RUNTIME_DIR/asha-canary-hook-fired` when that directory exists
+and is owned by the caller. Otherwise it creates a unique
+`${TMPDIR:-/tmp}/asha-canary-hook.XXXXXX` marker. Marker failures are
+fail-open: the hook still prints `{}` and exits successfully.
 
 ### Codex or Copilot
 
@@ -66,7 +79,7 @@ asha doctor
 
 ```bash
 ./uninstall.sh --target claude    # removes the complete Asha install for that target
-rm -f /tmp/asha-marketplace-test-hook-fired
+rm -f "$marker"                  # removes the explicit marker from the example
 ```
 
 Substitute the installed target as needed.

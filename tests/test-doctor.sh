@@ -76,6 +76,53 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+echo "--- test 0a: optional plugin drift follows --with-canary ---"
+out="$(run --target copilot 2>&1)"; rc=$?
+if [[ $rc -eq 0 && "$out" != *"/plugins/test/"* ]]; then
+  ok "default drift excludes optional canary sources"
+else
+  fail "default drift excludes optional canary sources (rc=$rc)"
+fi
+out="$(run --target copilot --fix 2>&1)"; rc=$?
+if [[ $rc -eq 0 && ! -e "$SANDBOX/.copilot/skills/test-ping" \
+   && ! -e "$SANDBOX/.copilot/agents/test-test-echo.agent.md" ]]; then
+  ok "default --fix does not recreate canary artifacts"
+else
+  fail "default --fix does not recreate canary artifacts (rc=$rc)"
+fi
+out="$(run --target copilot --with-canary 2>&1)"; rc=$?
+if [[ $rc -ne 0 && "$out" == *"/plugins/test/"* ]]; then
+  ok "--with-canary drift requires optional canary sources"
+else
+  fail "--with-canary drift requires optional canary sources (rc=$rc)"
+fi
+if env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+     bash "$REPO_ROOT/install.sh" --target copilot --with-canary >/dev/null 2>&1; then
+  out="$(run --target copilot --with-canary 2>&1)"; rc=$?
+  if [[ $rc -eq 0 && -L "$SANDBOX/.copilot/skills/test-ping" \
+     && -f "$SANDBOX/.copilot/agents/test-test-echo.agent.md" ]]; then
+    ok "--with-canary drift passes after an opt-in install"
+  else
+    fail "--with-canary drift passes after an opt-in install (rc=$rc)"
+  fi
+  out="$(env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+    bash "$REPO_ROOT/bin/asha" doctor copilot --with-canary 2>&1)"; rc=$?
+  [[ $rc -eq 0 ]] \
+    && ok "asha doctor forwards --with-canary" \
+    || fail "asha doctor forwards --with-canary (rc=$rc)"
+else
+  fail "with-canary doctor fixture installs"
+fi
+if env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+     bash "$REPO_ROOT/install.sh" --target copilot >/dev/null 2>&1 \
+   && [[ ! -e "$SANDBOX/.copilot/skills/test-ping" \
+      && ! -e "$SANDBOX/.copilot/agents/test-test-echo.agent.md" ]]; then
+  ok "default reinstall restores the default doctor fixture"
+else
+  fail "default reinstall restores the default doctor fixture"
+fi
+
+# ---------------------------------------------------------------------------
 echo "--- test 1: healthy install passes --target copilot ---"
 if out="$(run --target copilot 2>&1)"; then
   ok "doctor exits 0 on healthy copilot install"
