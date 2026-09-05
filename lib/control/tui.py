@@ -492,12 +492,15 @@ class BackgroundRefresh:
         load: Callable[[], RefreshSnapshot],
         *,
         interval: float = _AUTO_REFRESH_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._load = load
         self._interval = float(interval)
+        self._clock = clock
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
-        self._ready: RefreshSnapshot | Exception | None = None
+        self._ready: tuple[RefreshSnapshot | Exception, float] | None = None
+        self._last_polled_completed_at: float | None = None
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
@@ -521,19 +524,28 @@ class BackgroundRefresh:
                 ready: RefreshSnapshot | Exception = self._load()
             except Exception as exc:  # noqa: BLE001 - handed to the UI thread
                 ready = exc
+            completed_at = self._clock()
             with self._lock:
-                self._ready = ready
+                self._ready = (ready, completed_at)
 
     def poll(self) -> RefreshSnapshot | Exception | None:
         """Take the latest completed pass without waiting for the worker."""
         if not self._lock.acquire(blocking=False):
             return None
         try:
-            ready = self._ready
+            completion = self._ready
             self._ready = None
+            if completion is None:
+                return None
+            ready, self._last_polled_completed_at = completion
             return ready
         finally:
             self._lock.release()
+
+    @property
+    def last_polled_completed_at(self) -> float | None:
+        """Completion time paired with the payload returned by the last poll."""
+        return self._last_polled_completed_at
 
     def stop(self) -> None:
         """Prevent another pass and briefly drain one already in flight."""
@@ -1544,7 +1556,8 @@ def _render_tree(model: TuiModel) -> list[str]:
     message_lines = _wrap_status(model.message, model.width) if model.message else []
     available = max(0, model.height - 1)
     status_limit = min(_STATUS_MAX_LINES, available)
-    all_status_lines = warning_lines + error_lines + refresh_lines + message_lines
+    # Liveness facts must not disappear behind a verbose adapter exception.
+    all_status_lines = warning_lines + refresh_lines + error_lines + message_lines
     status_lines = all_status_lines[:status_limit]
     if len(all_status_lines) > status_limit and status_lines:
         status_lines[-1] = _clip(status_lines[-1][:-1] + "…", model.width)
@@ -4970,7 +4983,9 @@ def _curses_loop(
             config, env, include_archived=include_archived,
             generation=generation, cache=refresh_cache,
         )
-    refresh_runner = BackgroundRefresh(loader) if refresher is None else refresher
+    refresh_runner = (
+        BackgroundRefresh(loader, clock=clock) if refresher is None else refresher
+    )
     try:
         refresh_runner.start()
         model.begin_automatic_refresh(clock())
@@ -4990,7 +5005,12 @@ def _curses_loop(
             if ready is not None:
                 # Completion is a liveness fact even when the payload is an
                 # exception or belongs to an obsolete synchronous generation.
-                model.note_automatic_refresh_pass(clock())
+                completed_at = getattr(
+                    refresh_runner, "last_polled_completed_at", None,
+                )
+                model.note_automatic_refresh_pass(
+                    clock() if completed_at is None else completed_at,
+                )
                 if isinstance(ready, Exception):
                     model.automatic_refresh_error = (
                         f"automatic reconciliation failed: {_safe_error(ready)}"

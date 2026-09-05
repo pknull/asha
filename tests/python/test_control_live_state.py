@@ -469,6 +469,48 @@ class AutomaticRefreshTests(unittest.TestCase):
         self.assertIsInstance(runner.poll(), tui_module.RefreshSnapshot)
         self.assertIsNone(runner.poll(), "taking the slot applies a pass at most once")
 
+    def test_background_completion_age_uses_worker_time_not_late_poll_time(self) -> None:
+        worker_clock = self.Clock(10.0)
+        ui_clock = self.Clock(0.0)
+
+        class OnePass:
+            def __init__(self) -> None:
+                self.waits = 0
+
+            def wait(self, _interval) -> bool:
+                self.waits += 1
+                return self.waits > 1
+
+            def set(self) -> None:
+                pass
+
+        runner = tui_module.BackgroundRefresh(
+            self.snapshot, interval=7.0, clock=worker_clock,
+        )
+        runner._stop_event = OnePass()
+        runner._run()
+
+        # Model a modal or synchronous action holding the curses loop long
+        # after this pass completed while the following pass is wedged.
+        screen = self.ClockScreen(
+            ui_clock, [(40.0, -1), (40.0, ord("q"))],
+        )
+        model = TuiModel([])
+        self.prepare(model)
+
+        with mock.patch.object(runner, "start"), mock.patch.object(
+            runner, "stop",
+        ), mock.patch.object(tui_module, "_paint"):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner, clock=ui_clock,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(model.last_automatic_refresh_completed_at, 10.0)
+        self.assertIn("last completed 30s ago", model.automatic_refresh_status)
+
     def test_background_snapshot_owns_adapters_and_carries_skipped_entries(self) -> None:
         private_store = SimpleNamespace(
             skipped=[{"name": "bad.json", "reason": "invalid JSON"}],
@@ -863,6 +905,21 @@ class AutomaticRefreshTests(unittest.TestCase):
             output[-1].startswith("Enter attach  o room  ! need  a approve"), output[-1],
         )
         self.assertEqual(model.message, operator_message)
+
+    def test_refresh_age_remains_visible_with_a_long_refresh_error(self) -> None:
+        model = TuiModel([], height=24, width=40)
+        model._ensure_screen()
+        model.begin_automatic_refresh(0.0)
+        model.note_automatic_refresh_pass(10.0)
+        model.update_automatic_refresh_clock(17.0)
+        model.automatic_refresh_error = (
+            "automatic reconciliation failed: " + "adapter failed " * 100
+        )
+
+        output = render(model)
+        visible_text = " ".join(line.strip() for line in output)
+
+        self.assertIn("last completed 7s ago", visible_text, output)
 
     def test_batch_row_load_publishes_server_summary_once(self) -> None:
         tasks = [task_record(slug="one"), task_record(slug="two")]
