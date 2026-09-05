@@ -111,6 +111,10 @@ _BASIC_TIER_COLOUR = {WAITING: 3, MACHINE: 6, GOOD: 2, BAD: 1, INERT: 7}
 
 _INPUT_POLL_MS = 200
 _AUTO_REFRESH_SECONDS = 5.0
+_AUTO_REFRESH_WARNING_INTERVALS = 3
+_AUTO_REFRESH_WARNING_SECONDS = (
+    _AUTO_REFRESH_WARNING_INTERVALS * _AUTO_REFRESH_SECONDS
+)
 _BACKGROUND_REFRESH_STOP_SECONDS = 1.0
 _START_OUTPUT_BYTES = 64 * 1024
 _START_DRAIN_SECONDS = 0.25
@@ -610,6 +614,12 @@ class TuiModel:
         self._refresh_generation = 0
         self._message: str | None = None
         self._automatic_refresh_error: str | None = None
+        self._automatic_refresh_status: str | None = None
+        self._automatic_refresh_warning: str | None = None
+        self._automatic_refresh_started_at: float | None = None
+        self._last_automatic_refresh_completed_at: float | None = None
+        self._automatic_refresh_interval = _AUTO_REFRESH_SECONDS
+        self._automatic_refresh_warning_seconds = _AUTO_REFRESH_WARNING_SECONDS
         self.help_visible = False
         # Set once by the curses loop; the renderer stays terminal-independent
         # and the painter falls back to bold-only when this is False.
@@ -641,6 +651,91 @@ class TuiModel:
     def automatic_refresh_error(self, value: str | None) -> None:
         if value != self._automatic_refresh_error:
             self._automatic_refresh_error = value
+            self.dirty = True
+
+    @property
+    def automatic_refresh_status(self) -> str | None:
+        return self._automatic_refresh_status
+
+    @property
+    def automatic_refresh_warning(self) -> str | None:
+        return self._automatic_refresh_warning
+
+    @property
+    def last_automatic_refresh_completed_at(self) -> float | None:
+        return self._last_automatic_refresh_completed_at
+
+    def begin_automatic_refresh(
+        self,
+        now: float,
+        *,
+        interval: float = _AUTO_REFRESH_SECONDS,
+        warning_seconds: float = _AUTO_REFRESH_WARNING_SECONDS,
+    ) -> None:
+        """Start a monotonic liveness window before the first pass is due."""
+        self._automatic_refresh_started_at = float(now)
+        self._last_automatic_refresh_completed_at = None
+        self._automatic_refresh_interval = float(interval)
+        self._automatic_refresh_warning_seconds = float(warning_seconds)
+        self.update_automatic_refresh_clock(now)
+
+    def note_automatic_refresh_pass(self, now: float) -> None:
+        """Record a poll result, including errors and stale generations."""
+        if self._automatic_refresh_started_at is None:
+            self.begin_automatic_refresh(now)
+        self._last_automatic_refresh_completed_at = float(now)
+        self.update_automatic_refresh_clock(now)
+
+    def update_automatic_refresh_clock(self, now: float) -> None:
+        """Refresh the rendered age and overdue warning from a monotonic clock."""
+        if self._automatic_refresh_started_at is None:
+            return
+        current = float(now)
+        completed = self._last_automatic_refresh_completed_at
+        if completed is None:
+            first_due = (
+                self._automatic_refresh_started_at
+                + self._automatic_refresh_interval
+            )
+            until_due = max(0.0, first_due - current)
+            if current < first_due:
+                status = (
+                    "automatic refresh: last completed never; first pass due in "
+                    f"{_refresh_duration(until_due)}"
+                )
+            else:
+                status = (
+                    "automatic refresh: last completed never; first pass overdue by "
+                    f"{_refresh_duration(current - first_due)}"
+                )
+            overdue_age = current - first_due
+            warning_age = current - first_due
+        else:
+            completed_age = max(0.0, current - completed)
+            status = (
+                "automatic refresh: last completed "
+                f"{_refresh_duration(completed_age)} ago"
+            )
+            overdue_age = current - (completed + self._automatic_refresh_interval)
+            warning_age = completed_age
+        warning = None
+        if overdue_age >= self._automatic_refresh_warning_seconds:
+            if completed is None:
+                warning = (
+                    "automatic refresh stalled: no completed pass for "
+                    f"{_refresh_duration(warning_age)}"
+                )
+            else:
+                warning = (
+                    "automatic refresh stalled: last completed "
+                    f"{_refresh_duration(warning_age)} ago"
+                )
+        if (
+            status != self._automatic_refresh_status
+            or warning != self._automatic_refresh_warning
+        ):
+            self._automatic_refresh_status = status
+            self._automatic_refresh_warning = warning
             self.dirty = True
 
     @property
@@ -1002,6 +1097,17 @@ def _age(value: str | None, now: datetime) -> str:
     except (TypeError, ValueError):
         return "?"
     seconds = max(0, int((now - observed).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m"
+    if seconds < 86400:
+        return f"{seconds // 3600}h"
+    return f"{seconds // 86400}d"
+
+
+def _refresh_duration(value: float) -> str:
+    seconds = max(0, int(value))
     if seconds < 60:
         return f"{seconds}s"
     if seconds < 3600:
@@ -1423,11 +1529,22 @@ def _render_tree(model: TuiModel) -> list[str]:
             lines.append("")
             lines.append(f"[{screen.pane}]")
             lines.extend(pane)
-    error_lines = _wrap_status(model.automatic_refresh_error, model.width) if model.automatic_refresh_error else []
+    warning_lines = (
+        _wrap_status(model.automatic_refresh_warning, model.width)
+        if model.automatic_refresh_warning else []
+    )
+    error_lines = (
+        _wrap_status(model.automatic_refresh_error, model.width)
+        if model.automatic_refresh_error else []
+    )
+    refresh_lines = (
+        _wrap_status(model.automatic_refresh_status, model.width)
+        if model.automatic_refresh_status else []
+    )
     message_lines = _wrap_status(model.message, model.width) if model.message else []
     available = max(0, model.height - 1)
     status_limit = min(_STATUS_MAX_LINES, available)
-    all_status_lines = error_lines + message_lines
+    all_status_lines = warning_lines + error_lines + refresh_lines + message_lines
     status_lines = all_status_lines[:status_limit]
     if len(all_status_lines) > status_limit and status_lines:
         status_lines[-1] = _clip(status_lines[-1][:-1] + "…", model.width)
@@ -4834,6 +4951,7 @@ def _curses_loop(
     jj: JjAdapter,
     *,
     refresher=None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> int:
     stdscr.timeout(_INPUT_POLL_MS)
     model.coloured = init_colours(curses_module)
@@ -4855,7 +4973,9 @@ def _curses_loop(
     refresh_runner = BackgroundRefresh(loader) if refresher is None else refresher
     try:
         refresh_runner.start()
+        model.begin_automatic_refresh(clock())
         while True:
+            model.update_automatic_refresh_clock(clock())
             _reap_deferred_start_workers()
             if model.dirty:
                 _paint(stdscr, curses_module, model)
@@ -4868,6 +4988,9 @@ def _curses_loop(
             # mutates the model or the screen.
             ready = refresh_runner.poll()
             if ready is not None:
+                # Completion is a liveness fact even when the payload is an
+                # exception or belongs to an obsolete synchronous generation.
+                model.note_automatic_refresh_pass(clock())
                 if isinstance(ready, Exception):
                     model.automatic_refresh_error = (
                         f"automatic reconciliation failed: {_safe_error(ready)}"

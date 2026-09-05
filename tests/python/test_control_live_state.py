@@ -193,6 +193,26 @@ class AtomicObservationTests(unittest.TestCase):
 
 
 class AutomaticRefreshTests(unittest.TestCase):
+    class Clock:
+        def __init__(self, value: float = 0.0) -> None:
+            self.value = value
+
+        def __call__(self) -> float:
+            return self.value
+
+    class ClockScreen:
+        def __init__(self, clock, steps) -> None:
+            self.clock = clock
+            self.steps = list(steps)
+            self.timeout_ms = None
+
+        def timeout(self, value) -> None:
+            self.timeout_ms = value
+
+        def getch(self):
+            self.clock.value, key = self.steps.pop(0)
+            return key
+
     class Screen:
         def __init__(self) -> None:
             self.keys = [-1, -1, -1, -1, ord("q")]
@@ -282,6 +302,142 @@ class AutomaticRefreshTests(unittest.TestCase):
         self.assertTrue(runner.stopped)
         self.assertEqual(model.rows[0].display_state, "idle")
         self.assertEqual(model.rows[0].observation.source, "event")
+
+    def test_refresh_warning_threshold_is_at_least_three_intervals(self) -> None:
+        self.assertGreaterEqual(
+            tui_module._AUTO_REFRESH_WARNING_SECONDS,
+            3 * tui_module._AUTO_REFRESH_SECONDS,
+        )
+
+    def test_never_returning_worker_warns_after_threshold(self) -> None:
+        clock = self.Clock()
+        warning_at = (
+            tui_module._AUTO_REFRESH_SECONDS
+            + tui_module._AUTO_REFRESH_WARNING_SECONDS
+        )
+        screen = self.ClockScreen(clock, [
+            (warning_at, -1),
+            (warning_at, ord("q")),
+        ])
+        model = TuiModel([])
+        self.prepare(model)
+        painted = []
+
+        with mock.patch.object(
+            tui_module, "_paint",
+            side_effect=lambda _screen, _curses, value: painted.append(
+                "\n".join(render(value))
+            ),
+        ):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=self.Refresher(), clock=clock,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(
+            model.automatic_refresh_warning,
+            f"automatic refresh stalled: no completed pass for "
+            f"{int(tui_module._AUTO_REFRESH_WARNING_SECONDS)}s",
+        )
+        self.assertTrue(any(
+            "automatic refresh stalled" in frame for frame in painted
+        ))
+
+    def test_refresh_warning_never_appears_before_the_first_pass_is_due(self) -> None:
+        clock = self.Clock()
+        before_due = tui_module._AUTO_REFRESH_SECONDS - 0.001
+        screen = self.ClockScreen(clock, [
+            (before_due, -1),
+            (before_due, ord("q")),
+        ])
+        model = TuiModel([])
+        self.prepare(model)
+
+        with mock.patch.object(tui_module, "_paint"):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=self.Refresher(), clock=clock,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertIsNone(model.automatic_refresh_warning)
+        self.assertIn("last completed never", model.automatic_refresh_status)
+
+    def test_completed_pass_clears_a_refresh_warning(self) -> None:
+        clock = self.Clock()
+        warning_at = (
+            tui_module._AUTO_REFRESH_SECONDS
+            + tui_module._AUTO_REFRESH_WARNING_SECONDS
+        )
+        model = TuiModel([])
+        self.prepare(model)
+        runner = self.Refresher([None, self.snapshot()])
+        screen = self.ClockScreen(clock, [
+            (warning_at, -1),
+            (warning_at + 1, -1),
+            (warning_at + 1, ord("q")),
+        ])
+
+        with mock.patch.object(tui_module, "_paint"):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner, clock=clock,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertIsNone(model.automatic_refresh_warning)
+        self.assertEqual(
+            model.last_automatic_refresh_completed_at, warning_at + 1,
+        )
+        self.assertIn("last completed 0s ago", model.automatic_refresh_status)
+
+    def test_refresh_age_is_rendered_for_task_and_initiative_screens(self) -> None:
+        from lib.control.orchestration.tui_model import InitiativesScreen
+
+        task_model = TuiModel([], height=24, width=100)
+        task_model._ensure_screen()
+        initiative_model = TuiModel([], height=24, width=100)
+        initiative_model.mode = "initiatives"
+        initiative_model.initiatives = InitiativesScreen(
+            [], height=24, width=100,
+        )
+        for model in (task_model, initiative_model):
+            model.begin_automatic_refresh(0.0)
+            model.note_automatic_refresh_pass(10.0)
+            model.update_automatic_refresh_clock(17.0)
+            self.assertIn("last completed 7s ago", "\n".join(render(model)))
+
+    def test_rejected_snapshot_still_counts_as_a_completed_pass(self) -> None:
+        clock = self.Clock()
+        completed_at = 7.0
+        model = TuiModel([])
+        self.prepare(model)
+        model.begin_synchronous_load()
+        runner = self.Refresher([
+            tui_module.RefreshSnapshot(
+                rows=(), initiative_views=(), room_rows=(), generation=0,
+            ),
+        ])
+        screen = self.ClockScreen(clock, [
+            (completed_at, -1),
+            (completed_at, ord("q")),
+        ])
+
+        with mock.patch.object(tui_module, "_paint"):
+            status = tui_module._curses_loop(
+                screen, self.Curses(), model, SimpleNamespace(), {},
+                SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
+                refresher=runner, clock=clock,
+            )
+
+        self.assertEqual(status, 0)
+        self.assertEqual(model.refresh_generation, 1)
+        self.assertEqual(model.last_automatic_refresh_completed_at, completed_at)
+        self.assertIn("last completed 0s ago", model.automatic_refresh_status)
 
     def test_background_runner_waits_again_only_after_each_pass_completes(self) -> None:
         events = []
@@ -436,12 +592,13 @@ class AutomaticRefreshTests(unittest.TestCase):
         screen = self.Screen()
         screen.keys = [-1, ord("q")]
         runner = self.Refresher([ValueError("adapter failed")])
+        clock = self.Clock(11.0)
 
         with mock.patch.object(tui_module, "_paint"):
             status = tui_module._curses_loop(
                 screen, self.Curses(), model, SimpleNamespace(), {},
                 SimpleNamespace(skipped=[]), mock.Mock(), mock.Mock(),
-                refresher=runner,
+                refresher=runner, clock=clock,
             )
 
         self.assertEqual(status, 0)
@@ -450,6 +607,7 @@ class AutomaticRefreshTests(unittest.TestCase):
             model.automatic_refresh_error,
             "automatic reconciliation failed: adapter failed",
         )
+        self.assertEqual(model.last_automatic_refresh_completed_at, 11.0)
         self.assertIn(
             "automatic reconciliation failed: adapter failed",
             "\n".join(render(model)),
