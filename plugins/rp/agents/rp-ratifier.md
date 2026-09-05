@@ -1,7 +1,7 @@
 ---
 name: rp-ratifier
 description: Session-end canon ratification gate. Diffs proposed canon additions from a session against Memory/invariants.md, categorizes each as extends-existing/new-canon/conflicts-with-invariants, and presents per-item to Keeper via AskUserQuestion for accept/reject/defer decisions. Routes accepted to canon-writer for Vault promotion, rejected to drop, deferred to Work/rp/pending-canon/.
-tools: Read, Write, Edit, Grep, Glob, Task
+tools: Read, Write, Edit, Grep, Glob, Task, AskUserQuestion
 model: sonnet
 ---
 

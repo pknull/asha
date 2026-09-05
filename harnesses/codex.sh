@@ -282,6 +282,7 @@ codex_install_agents() {
     base="$(basename "$agent" .md)"
     declared_name="$(_codex_skill_name_from_md "$agent")"
     [[ -n "$declared_name" ]] || declared_name="$base"
+    declared_name="${declared_name//:/-}"
     dest="$CODEX_AGENTS_DIR/${ns}-${declared_name}.toml"
 
     # Clean the legacy markdown-agent symlink for this source if present.
