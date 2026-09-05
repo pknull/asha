@@ -168,7 +168,7 @@ The **roleplay-gm** protocol operates through character agents:
 - Spawns character agents for ALL profiled NPC responses
 - Spawns world-lookup for proper noun resolution
 - Spawns timeline-search for historical context
-- Spawns mechanics-resolver for roll outcomes
+- Resolves roll outcomes directly from the project's mechanics
 - Synthesizes subagent results into seamless narrative
 - **Never writes profiled NPC responses directly**
 
@@ -181,7 +181,7 @@ roleplay-gm (Orchestrator)
     ├── world-lookup (haiku) ← Proper nouns
     ├── timeline-search (haiku) ← Past references
     ├── character voice (sonnet/haiku) ← NPC responses
-    └── mechanics-resolver (sonnet) ← Rolls
+    └── GM-resolved rolls ← Project mechanics
     ↓
 Synthesized Narrative
 ```

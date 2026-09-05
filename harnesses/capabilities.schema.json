@@ -2,13 +2,14 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://pknull.dev/asha/harness-capabilities.schema.json",
   "type": "object",
-  "required": ["schema_version", "reviewed", "principle", "harnesses"],
+  "required": ["schema_version", "reviewed", "principle", "agent_frontmatter", "harnesses"],
   "additionalProperties": false,
   "properties": {
     "$schema": {"type": "string"},
     "schema_version": {"const": 3},
     "reviewed": {"type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"},
     "principle": {"type": "string", "minLength": 1},
+    "agent_frontmatter": {"$ref": "#/$defs/agent_frontmatter"},
     "harnesses": {
       "type": "object",
       "minProperties": 1,
@@ -16,6 +17,30 @@
     }
   },
   "$defs": {
+    "agent_frontmatter": {
+      "type": "object",
+      "required": ["tool_vocabulary", "tool_allowlist_enforced"],
+      "additionalProperties": false,
+      "properties": {
+        "tool_vocabulary": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "pattern": "^[A-Za-z][A-Za-z0-9]*$"}
+        },
+        "tool_allowlist_enforced": {
+          "type": "object",
+          "required": ["claude", "codex", "copilot", "opencode"],
+          "additionalProperties": false,
+          "properties": {
+            "claude": {"type": "boolean"},
+            "codex": {"type": "boolean"},
+            "copilot": {"type": "boolean"},
+            "opencode": {"type": "boolean"}
+          }
+        }
+      }
+    },
     "harness": {
       "type": "object",
       "required": ["executable", "home_env", "capabilities"],

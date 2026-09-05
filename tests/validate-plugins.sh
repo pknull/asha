@@ -110,10 +110,140 @@ else
     FAILED=$((FAILED + 1))
 fi
 
-# Test 2c: Review discovery must follow the target path, not a legacy book root.
+# Test 2c: Every agent follows docs/agent-frontmatter.md. The tool vocabulary
+# and per-harness enforcement facts come from the capability registry rather
+# than a second list embedded in this validator.
+echo -n "Test 2c: Agent files match the documented frontmatter schema... "
+if AGENT_RESULT="$(python3 - "$REPO_ROOT" 2>&1 <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+import yaml
+
+root = Path(sys.argv[1])
+capabilities_path = root / "harnesses" / "capabilities.json"
+try:
+    capabilities = json.loads(capabilities_path.read_text(encoding="utf-8"))
+    contract = capabilities["agent_frontmatter"]
+    vocabulary_values = contract["tool_vocabulary"]
+    enforcement = contract["tool_allowlist_enforced"]
+except (OSError, ValueError, KeyError, TypeError) as exc:
+    print(f"harnesses/capabilities.json: invalid agent_frontmatter contract: {exc}")
+    raise SystemExit(1)
+
+errors = []
+if (
+    not isinstance(vocabulary_values, list)
+    or not vocabulary_values
+    or any(not isinstance(item, str) or not item for item in vocabulary_values)
+    or len(vocabulary_values) != len(set(vocabulary_values))
+):
+    errors.append("harnesses/capabilities.json: tool_vocabulary must be a non-empty list of unique strings")
+vocabulary = set(vocabulary_values) if isinstance(vocabulary_values, list) else set()
+
+harness_names = set(capabilities.get("harnesses", {}))
+if (
+    not isinstance(enforcement, dict)
+    or set(enforcement) != harness_names
+    or any(type(value) is not bool for value in enforcement.values())
+):
+    errors.append("harnesses/capabilities.json: tool_allowlist_enforced must contain one boolean per harness")
+
+allowed_keys = {
+    "name",
+    "description",
+    "tools",
+    "model",
+    "memory",
+    "trigger",
+    "dispatch_priority",
+    "ownership",
+}
+name_pattern = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
+agent_files = sorted(root.glob("plugins/*/agents/*.md"))
+if not agent_files:
+    errors.append("plugins/*/agents/*.md: no agent files found")
+
+for path in agent_files:
+    display = path.relative_to(root)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        errors.append(f"{display}: cannot read: {exc}")
+        continue
+    if not text.startswith("---\n"):
+        errors.append(f"{display}: missing opening frontmatter delimiter")
+        continue
+    end = text.find("\n---\n", 4)
+    if end == -1:
+        errors.append(f"{display}: missing closing frontmatter delimiter")
+        continue
+    try:
+        data = yaml.safe_load(text[4:end])
+    except yaml.YAMLError as exc:
+        errors.append(f"{display}: invalid YAML frontmatter: {exc}")
+        continue
+    if not isinstance(data, dict):
+        errors.append(f"{display}: frontmatter must be a mapping")
+        continue
+
+    unknown = sorted(set(data) - allowed_keys)
+    if unknown:
+        errors.append(f"{display}: unsupported frontmatter key(s): {', '.join(unknown)}")
+
+    name = data.get("name")
+    if not isinstance(name, str) or not name_pattern.fullmatch(name):
+        errors.append(f"{display}: name must match ^[a-z0-9]+(-[a-z0-9]+)*$")
+    description = data.get("description")
+    if not isinstance(description, str) or not description.strip():
+        errors.append(f"{display}: description must be a non-empty string")
+
+    if "tools" not in data:
+        errors.append(f"{display}: tools is required (use [] for no tools)")
+    else:
+        raw_tools = data["tools"]
+        if isinstance(raw_tools, str):
+            tools = [item.strip() for item in raw_tools.split(",")]
+            if not raw_tools.strip() or any(not item for item in tools):
+                errors.append(f"{display}: tools must be [] or a non-empty comma-separated list")
+                tools = []
+        elif isinstance(raw_tools, list):
+            tools = raw_tools
+            if any(not isinstance(item, str) or not item for item in tools):
+                errors.append(f"{display}: tools list entries must be non-empty strings")
+                tools = []
+        else:
+            errors.append(f"{display}: tools must be [] or a list")
+            tools = []
+        if len(tools) != len(set(tools)):
+            errors.append(f"{display}: tools contains duplicate entries")
+        unknown_tools = sorted(set(tools) - vocabulary)
+        if unknown_tools:
+            errors.append(f"{display}: unknown tool(s): {', '.join(unknown_tools)}")
+
+    if "model" in data and data["model"] not in {"haiku", "sonnet", "opus"}:
+        errors.append(f"{display}: model must be one of haiku, sonnet, opus")
+
+if errors:
+    print("\n".join(errors))
+    raise SystemExit(1)
+print(len(agent_files))
+PY
+)"; then
+    echo -e "${GREEN}PASS${NC} ($AGENT_RESULT agents)"
+    PASSED=$((PASSED + 1))
+else
+    echo -e "${RED}FAIL${NC}"
+    printf '  %s\n' "$AGENT_RESULT"
+    FAILED=$((FAILED + 1))
+fi
+
+# Test 2d: Review discovery must follow the target path, not a legacy book root.
 # This is an instruction-driven primitive, so textual regression checks are the
 # executable contract shared by Claude, Codex, and Copilot renderings.
-echo -n "Test 2c: Review paths are project-root relative... "
+echo -n "Test 2d: Review paths are project-root relative... "
 REVIEW_COMMAND="$REPO_ROOT/plugins/write/commands/review-section.md"
 PROSE_AGENT="$REPO_ROOT/plugins/write/agents/prose-analysis.md"
 REVIEW_PATH_ERRORS=()

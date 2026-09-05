@@ -44,7 +44,7 @@ Scope is controlled via mode flags. Default (no flags) runs all enabled checks.
 **Do NOT deploy when:**
 
 - Simple grammar checking (use languagetool skill instead)
-- Code review requests (use code-reviewer agent)
+- Code review requests (use reviewer agent)
 - Initial brainstorming or drafting phases
 - Non-fiction/technical writing (different standards)
 

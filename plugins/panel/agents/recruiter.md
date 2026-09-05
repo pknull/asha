@@ -141,12 +141,12 @@ Recommendation: CREATE audio-processing-specialist (critical gap), enhance nlp-e
 Problem: "One-time COBOL legacy analysis"
 Tasks: 1) Parse COBOL 2) Dependency mapping 3) Migration risk assessment
 Coverage:
-- code-reviewer (3/10) → Task 1 (not COBOL specialist)
+- reviewer (3/10) → Task 1 (not COBOL specialist)
 - architect (4/10) → Tasks 2-3 (general analysis, not COBOL)
 Gap Analysis:
 - COBOL specialist: Recurrence=NO (one-off), Complexity=YES, Differentiation=YES → ROI=2/3 BORDERLINE
 Decision: WORKAROUND - One-off task doesn't justify agent creation
-Recommendation: Use code-reviewer + architect + manual COBOL expertise (human consultant)
+Recommendation: Use reviewer + architect + manual COBOL expertise (human consultant)
 ```
 
 ## Mode Awareness

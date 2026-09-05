@@ -99,6 +99,17 @@ else
 fi
 echo ""
 
+# Test Suite 5b: Cross-Harness Agent Rendering
+echo -e "${BLUE}--- Test Suite 5b: Cross-Harness Agent Rendering ---${NC}"
+if "$SCRIPT_DIR/test-agent-render.sh"; then
+    echo -e "${GREEN}✓ Cross-harness agent rendering tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Cross-harness agent rendering tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Test Suite 6: Doctor / Drift-Check Tests (issue #3)
 echo -e "${BLUE}--- Test Suite 6: Doctor / Drift-Check Tests ---${NC}"
 if "$SCRIPT_DIR/test-doctor.sh"; then

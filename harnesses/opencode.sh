@@ -162,10 +162,9 @@ if text.startswith("---\n"):
         if m:
             description = m.group(1).strip().strip("\"'")
 
-# OpenCode agent identifiers are hyphen-only, whilst some Claude-native source
-# agents use a colon family (for example character:template). Render exact
-# references to sibling agents through the same namespace/name mapping so the
-# generated orchestrator invokes an agent that actually exists.
+# Canonical agent names are colon-free. Keep legacy colon sanitization and
+# render exact references to sibling agents through the same namespace/name
+# mapping so an older source still invokes the generated agent that exists.
 for sibling in pathlib.Path(src_dir).glob("*.md"):
     sibling_text = sibling.read_text(encoding="utf-8")
     match = re.search(r"^name\s*:\s*(.+)$", sibling_text, re.M)
