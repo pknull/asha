@@ -142,7 +142,7 @@ class RollUpTests(unittest.TestCase):
         self.assertEqual(counts["waiting"], 2, "child demand stays in the rail")
         self.assertEqual(counts["initiatives"], len(views))
         self.assertEqual(
-            sum(counts[key] for key in ("waiting", "running", "failed", "paused", "settled")),
+            sum(counts[key] for key in ("waiting", "running", "failed", "paused", "planning", "settled", "idle")),
             counts["initiatives"], "every initiative lands in exactly one bucket",
         )
         displayed_amber = [
@@ -359,6 +359,64 @@ class DegradationTests(unittest.TestCase):
         self.assertEqual(tui._glyph_mode({"LC_ALL": "zh_CN.UTF-8"}), "ascii")
         self.assertEqual(tui._glyph_mode({"ASHA_CONTROL_GLYPHS": "ascii"}), "ascii")
         self.assertEqual(tui._glyph_mode({"ASHA_CONTROL_GLYPHS": "unicode", "LANG": "ko_KR"}), "unicode")
+
+    def test_live_work_counts_and_complete_primary_footer_at_operator_sizes(self):
+        views = [
+            view("draft", "draft"), view("planning", "planning"), view("activated", "running"),
+            view("blocked", "running", [{"type": "work", "state": "needs-input"}]),
+            view("working", "running", [{"type": "work", "state": "running"}]),
+            view("launching", "running", attempts=[{"node_id": "n0", "state": "dispatching"}]),
+            view("paused", "paused", [{"type": "work", "state": "running"}]),
+            view("approval", "awaiting-plan-approval"), view("activate", "approved"),
+            view("failed", "failed", [{"type": "work", "state": "running"}]),
+            view("needs-input", "needs-input", [{"type": "work", "state": "running"}]),
+            view("settled", "integrated"),
+        ]
+        for width, height in ((122, 38), (160, 40)):
+            with self.subTest(width=width):
+                model = TuiModel(height=height, width=width)
+                model.initiatives = InitiativesScreen(views, height=height, width=width)
+                lines = render(model)
+                title = str(lines[0])
+                import re
+
+                terms = {label: int(number) for number, label in re.findall(
+                    r"(\d+) (need you|running|failed|paused|planning|idle|settled)", title,
+                )}
+                self.assertEqual(terms, {"need you": 3, "running": 2, "failed": 1,
+                                         "paused": 1, "planning": 2, "idle": 2, "settled": 1})
+                self.assertIn(f"{sum(terms.values())} initiatives", title)
+                expected_buckets = {
+                    "draft": "planning", "planning": "planning", "activated": "idle",
+                    "blocked": "idle", "working": "running", "launching": "running",
+                    "paused": "paused", "approval": "waiting", "activate": "waiting",
+                    "failed": "failed", "needs-input": "waiting", "settled": "settled",
+                }
+                for row in model.initiatives.rows():
+                    if row.kind != "initiative":
+                        continue
+                    counts = summary_counts([row])
+                    bucket = expected_buckets[row.label]
+                    self.assertEqual(counts[bucket], 1, row.label)
+                    self.assertEqual(sum(v for k, v in counts.items() if k != "initiatives"), 1)
+                self.assertTrue(any(
+                    tier == INERT and "2 planning" in lines[0][start:stop]
+                    for start, stop, tier in lines[0].spans
+                ))
+                summary = str(tui._tree_summary(model.initiatives.rows(), "unicode"))
+                for term, count in terms.items():
+                    self.assertIn(f"{count} {term}", summary)
+                footer = next(str(line) for line in lines if "[NAVIGATION]" in line)
+                for shortcut in ("Enter attach", "o room", "! need", "a approve", "X close",
+                                 "p pause", "s stop", "n new", "? help", "q quit"):
+                    self.assertIn(shortcut, footer)
+                self.assertTrue(footer.endswith("q quit"), footer)
+                self.assertNotIn("…", footer)
+                model.help_visible = True
+                help_text = "\n".join(render(model))
+                for shortcut in ("N start", "r reconcile", "d diff", "e events", "c candidate",
+                                 "v review", "t retained", "x context", "A archived", "/ filter"):
+                    self.assertIn(shortcut, help_text)
 
     def test_the_title_sheds_by_width_keeping_the_demand_last(self) -> None:
         views = [view("a", "awaiting-plan-approval"), view("b", "running",

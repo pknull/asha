@@ -6,6 +6,43 @@ import argparse
 import pypandoc
 import sys
 import json
+from pathlib import Path
+
+# Preserve access for callers that already loaded the parser; plain-text mode
+# never imports it or changes sys.path. Clean mode verifies its location first.
+inline_review = sys.modules.get('inline_review')
+
+
+def _load_inline_review():
+    """Find the shared parser in source/symlinked or copied packaged skills."""
+    import importlib.util
+
+    global inline_review
+    skills = Path(__file__).resolve().parents[2]
+    searched = [skills / name / 'scripts' / 'inline_review.py'
+                for name in ('inline-review', 'write-inline-review')]
+    for path in searched:
+        if path.is_file():
+            cached = sys.modules.get('inline_review')
+            if cached is not None and Path(cached.__file__).resolve() == path.resolve():
+                inline_review = cached
+            else:
+                spec = importlib.util.spec_from_file_location('inline_review', path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules['inline_review'] = module
+                try:
+                    spec.loader.exec_module(module)
+                except BaseException:
+                    if cached is None:
+                        sys.modules.pop('inline_review', None)
+                    else:
+                        sys.modules['inline_review'] = cached
+                    raise
+                inline_review = module
+            return inline_review
+    print('Error: shared inline_review parser not found; searched: '
+          + ', '.join(map(str, searched)), file=sys.stderr)
+    sys.exit(2)
 
 def log_font_paths(fonts):
     """Log the paths of the font files."""
@@ -75,7 +112,20 @@ def get_font_info_from_styles(styles_path=None):
     except (FileNotFoundError, json.JSONDecodeError) as e:
         return None
     
-def convert_markdown_to_formats(input_md, base_name, latex_styles_path, epub_css_path, font_dir, font_info=None):
+def convert_markdown_to_formats(input_md, base_name, latex_styles_path, epub_css_path, font_dir, font_info=None, manuscript=False):
+    """Opt-in clean export uses a temporary projection, never edits the source."""
+    if not manuscript:
+        return _convert_markdown_to_formats(input_md, base_name, latex_styles_path, epub_css_path, font_dir, font_info)
+    review = _load_inline_review()
+    projection = review.project(review.read_source(input_md), str(input_md))
+    with tempfile.TemporaryDirectory(prefix='asha-clean-export-') as directory:
+        clean = Path(directory) / 'manuscript.md'
+        clean.write_bytes(projection.text.encode('utf-8'))
+        return _convert_markdown_to_formats(str(clean), base_name, latex_styles_path, epub_css_path,
+                                            font_dir, font_info, resource_path=str(Path(input_md).resolve().parent))
+
+
+def _convert_markdown_to_formats(input_md, base_name, latex_styles_path, epub_css_path, font_dir, font_info=None, resource_path=None):
     """Convert Markdown to PDF and EPUB using pypandoc."""
     # Get the font name from font_info if available
     pdf_font = None
@@ -113,6 +163,8 @@ def convert_markdown_to_formats(input_md, base_name, latex_styles_path, epub_css
                 factor = line_spacing.replace("x", "")
                 pdf_args.extend(['-V', f'linespread={factor}'])
     
+    if resource_path is not None:
+        pdf_args.extend(['--resource-path', resource_path + os.pathsep + '.'])
     pypandoc.convert_file(
         input_md,
         'pdf',
@@ -154,6 +206,8 @@ def convert_markdown_to_formats(input_md, base_name, latex_styles_path, epub_css
         if os.path.isfile(font_file):
             epub_args.append(f'--epub-embed-font={font_file}')
     
+    if resource_path is not None:
+        epub_args.extend(['--resource-path', resource_path + os.pathsep + '.'])
     pypandoc.convert_file(
         input_md,
         'epub',
@@ -165,7 +219,10 @@ def main():
     parser = argparse.ArgumentParser(description="Create PDF and EPUB from Markdown using static style files")
     parser.add_argument("input_md", help="Input Markdown file to be converted")
     parser.add_argument("output_base", nargs="?", help="Base name for output files (default: input file name without extension)")
+    parser.add_argument('--manuscript', '--clean', action='store_true',
+                        help='Export a projection without frontmatter or HTML notes')
     args = parser.parse_args()
+    review_errors = (_load_inline_review().ReviewError,) if args.manuscript else ()
 
     if not os.path.isfile(args.input_md):
         parser.error(f"Input file '{args.input_md}' not found.")
@@ -224,7 +281,13 @@ def main():
         parser.error(f"EPUB CSS file '{epub_css_path}' not found.")
 
     try:
-        convert_markdown_to_formats(args.input_md, base_name, latex_styles_path, epub_css_path, font_dir, font_info)
+        convert_markdown_to_formats(args.input_md, base_name, latex_styles_path, epub_css_path, font_dir, font_info, manuscript=args.manuscript)
+    except review_errors as exc:
+        print(exc, file=sys.stderr)
+        sys.exit(1)
+    except (OSError, UnicodeError) as exc:
+        print(f'{args.input_md}:1: {exc}', file=sys.stderr)
+        sys.exit(2)
     finally:
         pass
 

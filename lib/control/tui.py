@@ -73,7 +73,7 @@ _STATE_ORDER = {
 _FIXED_SCREEN_LINES = 15
 _STATUS_MAX_LINES = 6
 _TREE_FOOTER = (
-    # Most-used keys first: narrow terminals clip the tail, `?` shows everything.
+    # Most-used keys first; drop the secondary group when it cannot fit.
     "Enter attach  o room  ! need  a approve  X close  p pause  s stop  n new  ? help  q quit  |  "
     "N task  r reconcile  d diff  e events  c seals  v verify  t storage  x actions  A scope  / filter"
 )
@@ -84,7 +84,8 @@ def _tree_footer(width: int) -> str:
     marker = "[NAVIGATION]"
     stable_prefix = "Enter attach  o room  ! need  a approve"
     if width >= len(stable_prefix) + len(marker) + 2:
-        return _TREE_FOOTER.replace(stable_prefix, f"{stable_prefix}  {marker}", 1)
+        full = _TREE_FOOTER.replace(stable_prefix, f"{stable_prefix}  {marker}", 1)
+        return full if len(full) <= width else full.split("  |  ", 1)[0]
     return f"{marker} Enter ! approve ? help"
 
 
@@ -1344,13 +1345,14 @@ def _tree_title(model, screen) -> Line:
             pieces.append((0, "   ", f"{counts['waiting']} need you", WAITING))
         for order, (label, key, tier) in enumerate((
             ("running", "running", MACHINE), ("failed", "failed", BAD),
-            ("paused", "paused", INERT), ("idle", "idle", INERT),
+            ("paused", "paused", INERT), ("planning", "planning", INERT),
+            ("idle", "idle", INERT),
             ("settled", "settled", INERT),
         )):
             if counts[key]:
                 pieces.append((3 + order, " · " if pieces else "   ", f"{counts[key]} {label}", tier))
         # Shown last and shed first: it is the total the other terms sum to.
-        pieces.append((7, "   ", f"{counts['initiatives']} initiatives", INERT))
+        pieces.append((9, "   ", f"{counts['initiatives']} initiatives", INERT))
     if screen is not None and screen.attention_only:
         pieces.append((1, "  ", "[waiting on you]", WAITING))
     if screen is not None and screen.filter_string:
@@ -1358,7 +1360,7 @@ def _tree_title(model, screen) -> Line:
     if model.include_archived:
         pieces.append((2, "  ", "Scope: all", WAITING))
     else:
-        pieces.append((8, "  ", "Scope: active", INERT))
+        pieces.append((10, "  ", "Scope: active", INERT))
 
     budget = max(0, model.width) - len("ASHA CONTROL")
     keep: set[int] = set()
@@ -1385,7 +1387,9 @@ def _tree_summary(views, glyphs: str) -> Line:
     builder = LineBuilder().add("ASHA CONTROL", 0, None).add("   ")
     builder.add(f"{counts['initiatives']} initiatives", 0, INERT)
     for label, key, tier in (("need you", "waiting", WAITING), ("running", "running", MACHINE),
-                             ("failed", "failed", BAD), ("paused", "paused", INERT)):
+                             ("failed", "failed", BAD), ("paused", "paused", INERT),
+                             ("planning", "planning", INERT), ("idle", "idle", INERT),
+                             ("settled", "settled", INERT)):
         if counts[key]:
             builder.add(" · ", 0, None).add(f"{counts[key]} {label}", 0, tier)
     return builder.build()

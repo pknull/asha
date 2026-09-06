@@ -336,10 +336,12 @@ def summary_counts(rows: Sequence[Any]) -> dict[str, int]:
     the rows are what a filter narrows. Counting views while displaying rows
     made the title advertise a demand that was filtered off screen. Bucketed by
     the tier each row displays, so the amber count equals the number of amber
-    rows; every counted row lands in exactly one bucket, so they sum.
+    rows; running requires live work, planning includes draft and planning,
+    and MACHINE-tier rows without live work count as idle. Every counted row
+    lands in exactly one bucket, so they sum.
     """
     counts = {"initiatives": 0, "waiting": 0, "running": 0, "failed": 0,
-              "paused": 0, "settled": 0, "idle": 0}
+              "paused": 0, "planning": 0, "settled": 0, "idle": 0}
     for row in rows:
         if getattr(row, "kind", None) != "initiative":
             continue
@@ -352,8 +354,10 @@ def summary_counts(rows: Sequence[Any]) -> dict[str, int]:
             counts["paused"] += 1
         elif tier == BAD:
             counts["failed"] += 1
-        elif tier == MACHINE:
+        elif getattr(row, "live_work", False):
             counts["running"] += 1
+        elif getattr(row, "state", None) in {"draft", "planning"}:
+            counts["planning"] += 1
         elif getattr(row, "state", None) in TERMINAL_STATES:
             counts["settled"] += 1
         else:

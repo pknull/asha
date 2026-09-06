@@ -57,3 +57,16 @@ judgment calls instead of silently inventing an answer.
 Report the authority files read, act-review verdicts, entries added to
 `DECISIONS.md`, style-audit outcome, verification commands with exit status,
 the exact empty old-value grep proof, and the resulting commit identity.
+
+## Inline manuscript threads
+
+For requested source annotations, follow `write-inline-review`
+(`asha-inline-review/v1`; `skills/inline-review/SKILL.md` in the write plugin).
+Read existing replies and archived dismissals before raising a concern again;
+preserve prose and speakers, and leave closure to the author. Existing read-only
+review roles stay read-only: propose annotations for the authorized writer.
+Local replies do not amend canon or global voice rules. Project voice and
+review-config authority override the writing module's generic structural bans;
+separate taste observations from source-backed conflicts. Use opt-in clean
+scanner/export projections; detector scores are not authorship proof and do not
+authorize detector-evasion loops.

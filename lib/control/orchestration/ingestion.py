@@ -69,6 +69,7 @@ RESULT_INGESTION_RECEIPT_CONTRACT = (
     "asha.orchestration-result-ingestion-receipt.v1"
 )
 MAX_CANDIDATE_BYTES = MAX_RESULT_BODY_BYTES + 16 * 1024
+DEFAULT_ATTESTATION_TIMEOUT_SECONDS = 600
 _INGESTION_NAMESPACE = uuid.UUID("89b98b7c-90e6-4a25-8b6f-dd0062989a40")
 _VERIFICATION_ATTESTATION_FIELDS = frozenset({
     "argv", "cwd", "exit_code", "finished_at", "output_digest", "summary",
@@ -738,6 +739,22 @@ def verify_controller_snapshot(
     environment: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Rerun every declared attestation in an exact retained materialization."""
+    try:
+        initiative = store.peek(ingestion["initiative_id"])
+        active_plan = initiative.get("active_plan")
+        if not active_plan or active_plan["digest"] != ingestion["active_plan_digest"]:
+            raise IngestionRefused("controller verification active plan digest mismatch")
+        plan = store.read_plan(ingestion["initiative_id"], active_plan["revision"])
+    except StoreError as exc:
+        raise IngestionUnavailable(f"controller verification plan unavailable: {exc}") from exc
+    if plan["digest"] != ingestion["active_plan_digest"]:
+        raise IngestionRefused("controller verification retained plan digest mismatch")
+    timeouts: dict[tuple[tuple[str, ...], str], int] = {}
+    for gate in plan["declared_gates"]:
+        if gate["kind"] == "verification":
+            for command in gate.get("commands", []):
+                key = (tuple(command["argv"]), command["cwd"])
+                timeouts[key] = max(timeouts.get(key, 0), command["timeout_seconds"])
     adapter = jj or JjAdapter()
     source = Path(task["repository"]["root"])
     name = f"ingest-{ingestion['ingestion_id'][:8]}"
@@ -780,6 +797,10 @@ def verify_controller_snapshot(
     bubblewrap = _bubblewrap_program()
     command_environment = os.environ if environment is None else environment
     for attestation in attestations:
+        timeout_seconds = timeouts.get(
+            (tuple(attestation["argv"]), attestation["cwd"]),
+            DEFAULT_ATTESTATION_TIMEOUT_SECONDS,
+        )
         denial = command_denial(list(attestation["argv"]))
         if denial is not None:
             raise IngestionRefused(
@@ -796,9 +817,9 @@ def verify_controller_snapshot(
                 _contained_argv(
                     bubblewrap, command_environment, list(attestation["argv"]),
                     writable_root=path,
-                    output_path=output_path, timeout_seconds=600,
+                    output_path=output_path, timeout_seconds=timeout_seconds,
                 ),
-                cwd=cwd, deadline_seconds=605,
+                cwd=cwd, deadline_seconds=timeout_seconds + 5,
             )
             output = store.read_output(ingestion["initiative_id"], output_path_id)
             if (
@@ -829,6 +850,7 @@ def verify_controller_snapshot(
             # The same containment wall applies to every later attestation.
             break
         child_status = status.get("returncode")
+        refusal = None
         if (
             returncode != 0 or status.get("timed_out") is not False
             or status.get("invocation_error") is not None
@@ -847,9 +869,11 @@ def verify_controller_snapshot(
                 ))
                 # More reruns cannot add reproduction evidence in this environment.
                 break
-            raise IngestionRefused(_controller_rerun_refusal(
+            refusal = _controller_rerun_refusal(
                 failure_kind, output,
-            ))
+                detail=(f"timed out after {timeout_seconds} seconds"
+                        if status["timed_out"] else None),
+            )
         try:
             after_identity = adapter.inspect_workspace(
                 path, materialization["workspace_name"], require_empty=False,
@@ -879,6 +903,8 @@ def verify_controller_snapshot(
             "argv": attestation["argv"],
             "cwd": attestation["cwd"],
             "exit_code": child_status,
+            "timeout_seconds": timeout_seconds,
+            "timed_out": status["timed_out"],
             "worker_output_digest": attestation["output_digest"],
             "output_path": str(output_path),
             "output_digest": hashlib.sha256(output).hexdigest(),
@@ -897,6 +923,8 @@ def verify_controller_snapshot(
         })
         store.save_evidence(ingestion["initiative_id"], evidence)
         evidence_ids.append(output_path_id)
+        if refusal is not None:
+            raise IngestionRefused(refusal)
     return evidence_ids
 
 

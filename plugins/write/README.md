@@ -1,6 +1,6 @@
 # Write Plugin
 
-**Version**: 1.10.1
+**Version**: 1.11.0
 
 Fiction-state initialization, drafting workflows, editorial review, style
 measurement, continuity verification, and book export.
@@ -11,6 +11,7 @@ measurement, continuity verification, and book export.
 |---|---|
 | Start structured state for a novel | `/write:init-novel` |
 | Review a finished scene or section | `/write:review-section` |
+| Keep local review threads inside Markdown without rewriting prose | `write-inline-review` skill |
 | Run an authority-first multi-act revision | `write-revision-pass` skill |
 | Measure an exemplar or draft | `style-analyzer` skill |
 | Check grammar and mechanical style | `languagetool` skill |
@@ -37,6 +38,9 @@ Use write-init-novel in this repository.
 Use write-review-section on Work/novel/story/chapter-03.md with --full.
 Run prose-analysis in voice and continuity modes, but do not rewrite anything.
 Use book-export to create a beta-reader PDF.
+Use write-inline-review to annotate the selected lines without changing prose.
+Show the existing C1 thread and append this supplied author reply.
+Project this synthetic manuscript for a clean scan or export with --manuscript.
 ```
 
 ## First-time novel setup
