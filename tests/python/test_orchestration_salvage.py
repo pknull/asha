@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 import unittest
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -36,7 +37,9 @@ from lib.control.orchestration.model import (
 from lib.control.orchestration.reconcile import _failure_target
 from lib.control.orchestration.seals import prepare_and_publish_seal
 from lib.control.orchestration.scheduler import _exact_base
-from lib.control.orchestration.scheduler import readiness
+from lib.control.orchestration.scheduler import (
+    SchedulerError, dispatch, readiness, salvage_assignment_context, validate_goal_capacity,
+)
 from lib.control.orchestration.store import InitiativeStore, ObservationOnlyPlanError
 from lib.control.store import StoreError
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
@@ -52,6 +55,14 @@ class SimulatedDeath(BaseException):
 class OrchestrationRecoveryActionTests(
     CoordinatorEnvelope, ExecutionFixture, unittest.TestCase
 ):
+    def customize_plan(self, plan):
+        (self.repo / "checks" / "é space").mkdir(parents=True)
+        plan["declared_gates"][1]["commands"] = [
+            {"argv": ["python3", "-c", "print('雪')", 'quoted"\\é'],
+             "cwd": "checks/é space", "timeout_seconds": 899},
+            {"argv": ["python3", "-c", "print('second')"], "cwd": ".", "timeout_seconds": 17},
+        ]
+
     def seal(self, outcome: str, *, node_id: str = "implementation-a") -> dict:
         node = self.store.read_node(self.initiative_id, node_id)
         result_id = str(uuid.uuid4()) if outcome in {"success", "paused"} else None
@@ -116,12 +127,15 @@ class OrchestrationRecoveryActionTests(
         self.store.save_seal(self.initiative_id, seal)
         return seal
 
-    def request(self, seal: dict, *, node_id: str = "implementation-a"):
+    def request(
+        self, seal: dict, *, node_id: str = "implementation-a",
+        plan: str = "Recover the bounded useful work without inheriting its base.",
+    ):
         action = build_action_document(
             self.initiative(), "request-salvage", {
                 "node_id": node_id,
                 "failure_seal_id": seal["seal_id"],
-                "plan": "Recover the bounded useful work without inheriting its base.",
+                "plan": plan,
             },
         )
         stored = submit_action(self.store, self.initiative_id, action)
@@ -298,7 +312,7 @@ class OrchestrationRecoveryActionTests(
             )
 
     def test_approved_salvage_releases_needs_input_and_consumes_once(self) -> None:
-        _, request_id, _ = self.approved_salvage()
+        failure, request_id, approval = self.approved_salvage()
         self.needs_input()
         calls = []
         dispatch = build_action_document(
@@ -344,6 +358,13 @@ class OrchestrationRecoveryActionTests(
             self.config.initiatives_dir / self.initiative_id / "assignments"
             / f"{attempt['attempt_id']}.md"
         ).read_text()
+        self.assertIn(approval["rationale"], assignment)
+        self.assertIn(approval["binding_digest"], assignment)
+        self.assertIn(failure["seal_id"], assignment)
+        for gate in self.plan["declared_gates"]:
+            if gate["kind"] == "verification":
+                self.assertIn(json.dumps(gate["commands"], ensure_ascii=False, sort_keys=True), assignment)
+        self.assertNotIn("## Accepted review findings to fix", assignment)
         self.assertIn(
             "supersedes_result_id MUST be null for the first result of this "
             "attempt, including a repair or salvage attempt that follows an "
@@ -351,6 +372,164 @@ class OrchestrationRecoveryActionTests(
             "already had accepted when publishing a correction.",
             assignment,
         )
+
+    def salvage_required_bytes(self, approval, failure):
+        with mock.patch("lib.control.orchestration.scheduler.MAX_ASSIGNMENT_BYTES", 1):
+            with self.assertRaises(SchedulerError) as refused:
+                validate_goal_capacity(
+                    self.config, self.initiative(), self.plan,
+                    nodes=[self.store.read_node(self.initiative_id, "implementation-a")],
+                    salvage_recovery=salvage_assignment_context(approval, failure),
+                )
+        return int(re.search(r"is (\d+) bytes", str(refused.exception))[1])
+
+    def test_unicode_recovery_capacity_at_request_approval_and_dispatch(self):
+        failure = self.seal("failure")
+        rationale = 'Restore exact "é雪" paths and backslash \\ bytes; ' * 20
+        _, request_id = self.request(failure, plan=rationale)
+        requested = self.store.read_approval(self.initiative_id, request_id)
+        required = self.salvage_required_bytes(requested, failure)
+        with mock.patch("lib.control.orchestration.scheduler.MAX_ASSIGNMENT_BYTES", required - 1):
+            with self.assertRaisesRegex(ActionRefused, f"implementation-a.*{required} bytes.*{required - 1}"):
+                approve_salvage(self.store, self.initiative_id, request_id)
+        self.assertEqual(self.store.read_approval(self.initiative_id, request_id), requested)
+        self.assertFalse(any(e["type"] == "approval-decided"
+                             for e in self.store.list_events_snapshot(self.initiative_id)))
+        # A different request has the same UUID framing, but one more UTF-8 byte.
+        before = self.store.list_approvals_snapshot(self.initiative_id)
+        with mock.patch("lib.control.orchestration.scheduler.MAX_ASSIGNMENT_BYTES", required):
+            too_big = submit_action(self.store, self.initiative_id, build_action_document(
+                self.initiative(), "request-salvage", {
+                    "node_id": "implementation-a", "failure_seal_id": failure["seal_id"],
+                    "plan": rationale + "x",
+                },
+            ))
+            self.assertEqual(too_big["state"], "refused", too_big["outcome"])
+            self.assertIn(f"{required + 1} bytes", action_outcome(too_big)["reason"])
+            self.assertEqual(self.store.list_approvals_snapshot(self.initiative_id), before)
+            # Same-size Unicode replacement has the exact same required bytes.
+            _, exact_id = self.request(failure, plan=rationale[:-2] + "é")
+            approved = approve_salvage(self.store, self.initiative_id, exact_id)
+            self.assertEqual(approved["state"], "approved")
+            self.needs_input()
+            calls = []
+            with mock.patch("lib.control.orchestration.scheduler.storage_report",
+                            return_value={"pause_recommended": False}), mock.patch(
+                "lib.control.orchestration.scheduler.capture_bytes", side_effect=self.control_start(calls),
+            ):
+                result = submit_action(self.store, self.initiative_id, build_action_document(
+                    self.initiative(), "dispatch-node", {
+                        "node_id": "implementation-a", "salvage_request_id": exact_id,
+                    },
+                ))
+            self.assertEqual(result["state"], "completed", result["outcome"])
+        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        raw = (self.config.initiatives_dir / self.initiative_id / "assignments"
+               / f"{attempt['attempt_id']}.md").read_bytes()
+        self.assertLessEqual(len(raw), required)
+        self.assertIn(approved["rationale"].encode(), raw)
+        self.assertIn(approved["binding_digest"].encode(), raw)
+        self.assertEqual(len(calls), 1)
+
+    def test_over_capacity_salvage_preserves_unbound_retry_and_approval(self):
+        failure, request_id, approval = self.approved_salvage()
+        reservation = self.retry_reservation()
+        node = self.needs_input()
+        required = self.salvage_required_bytes(approval, failure)
+        with mock.patch("lib.control.orchestration.scheduler.MAX_ASSIGNMENT_BYTES", required - 1), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+        ) as launch, mock.patch.object(self.store, "write_assignment") as write_assignment:
+            result = submit_action(self.store, self.initiative_id, build_action_document(
+                self.initiative(), "dispatch-node", {
+                    "node_id": "implementation-a", "salvage_request_id": request_id,
+                },
+            ))
+        self.assertEqual(result["state"], "refused", result["outcome"])
+        self.assertIn(f"{required} bytes", action_outcome(result)["reason"])
+        self.assertEqual(self.store.list_attempts_snapshot(self.initiative_id), [reservation])
+        self.assertEqual(self.store.read_node(self.initiative_id, node["node_id"]), node)
+        self.assertEqual(self.store.read_approval(self.initiative_id, request_id), approval)
+        self.assertEqual(self.salvage_release_events(request_id), [])
+        launch.assert_not_called()
+        write_assignment.assert_not_called()
+
+    def test_tampered_bound_salvage_refuses_before_assignment_or_consumption(self):
+        failure, request_id, approval = self.approved_salvage()
+        node = self.needs_input()
+        root = self.config.initiatives_dir / self.initiative_id
+        approval_path = root / "approvals" / f"{request_id}.json"
+        seal_path = root / "seals" / f"{failure['seal_id']}.json"
+        request = next(a for a in self.store.list_actions_snapshot(self.initiative_id)
+                       if a["action_class"] == "request-salvage")
+        action_path = root / "actions" / f"{request['action_id']}.json"
+        cases = []
+        for field, value in (("rationale", "Forged recovery"), ("active_plan_digest", "9" * 64),
+                             ("binding_digest", "8" * 64),
+                             ("expected_state_revision", approval["expected_state_revision"] + 1)):
+            cases.append((field, approval_path, {**approval, field: value}))
+        cases.extend([
+            ("foreign seal", seal_path, {**failure, "repository_id": str(uuid.uuid4())}),
+            ("changed scope", seal_path, {**failure, "scope_origin": {
+                **failure["scope_origin"], "tree_digest": "7" * 64,
+            }}),
+            ("uncompleted request", action_path, {**request, "state": "indeterminate"}),
+        ])
+        outcome = action_outcome(request)
+        outcome["salvage_binding"]["failure_seal_id"] = str(uuid.uuid4())
+        cases.append(("wrong seal", action_path, {**request, "outcome": json.dumps(outcome)}))
+        outcome["salvage_binding"].pop("failure_seal_id")
+        cases.append(("missing seal binding", action_path, {**request, "outcome": json.dumps(outcome)}))
+        cases.append(("forged request digest", action_path, {**request, "payload_digest": "6" * 64}))
+        for label, path, corrupted in cases:
+            with self.subTest(label=label):
+                original = path.read_bytes()
+                try:
+                    path.write_text(json.dumps(corrupted))
+                    with mock.patch("lib.control.orchestration.scheduler.capture_bytes") as launch:
+                        result = submit_action(self.store, self.initiative_id, build_action_document(
+                            self.initiative(), "dispatch-node", {
+                                "node_id": "implementation-a", "salvage_request_id": request_id,
+                            },
+                        ))
+                    self.assertEqual(result["state"], "refused", result["outcome"])
+                    self.assertEqual(self.store.list_attempts_snapshot(self.initiative_id), [])
+                    self.assertEqual(self.store.read_node(self.initiative_id, node["node_id"]), node)
+                    self.assertEqual(self.store.read_approval(self.initiative_id, request_id)["state"], "approved")
+                    launch.assert_not_called()
+                finally:
+                    path.write_bytes(original)
+        self.assertEqual(list((root / "assignments").glob("*.md")), [])
+
+    def test_indeterminate_salvage_replay_retains_verified_recovery(self):
+        failure, request_id, approval = self.approved_salvage()
+        document = build_action_document(self.initiative(), "dispatch-node", {
+            "node_id": "implementation-a", "salvage_request_id": request_id,
+        })
+        with mock.patch("lib.control.orchestration.scheduler.storage_report",
+                        return_value={"pause_recommended": False}), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=SchedulerError("uncertain launch"),
+        ):
+            action = submit_action(self.store, self.initiative_id, document)
+        self.assertEqual(action["state"], "indeterminate")
+        self.assertEqual(self.store.read_approval(self.initiative_id, request_id)["state"], "consumed")
+        attempts = self.store.list_attempts_snapshot(self.initiative_id)
+        required = self.salvage_required_bytes(approval, failure)
+        with mock.patch("lib.control.orchestration.scheduler.MAX_ASSIGNMENT_BYTES", required - 1), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes",
+        ) as launch:
+            with self.assertRaisesRegex(SchedulerError, f"{required} bytes"):
+                dispatch(self.store, self.config, self.initiative_id, "implementation-a", action=action)
+        launch.assert_not_called()
+        self.assertEqual(self.store.list_attempts_snapshot(self.initiative_id), attempts)
+        calls = []
+        with mock.patch("lib.control.orchestration.scheduler.capture_bytes", side_effect=self.control_start(calls)):
+            recovered = dispatch(self.store, self.config, self.initiative_id, "implementation-a", action=action)
+        self.assertEqual(recovered["action"]["state"], "completed")
+        raw = (self.config.initiatives_dir / self.initiative_id / "assignments"
+               / f"{attempts[0]['attempt_id']}.md").read_text()
+        self.assertIn(approval["rationale"], raw)
+        self.assertIn(approval["binding_digest"], raw)
+        self.assertEqual(len(calls), 1)
 
     def test_unapproved_salvage_does_not_release_needs_input(self) -> None:
         failure = self.seal("failure")

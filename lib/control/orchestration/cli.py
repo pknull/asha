@@ -617,7 +617,7 @@ def _propose_gate_recovery_plan(
     if any(node["state"] != "proposed" for node in nodes):
         raise ValueError("new plan nodes must be proposed")
     _verify_approved_baselines(nodes, plan, jj)
-    validate_goal_capacity(config, initiative, nodes)
+    validate_goal_capacity(config, initiative, plan)
     retained = {
         node["node_id"]: node
         for node in store.list_nodes_snapshot(initiative_id)
@@ -778,7 +778,7 @@ def propose_plan(
     if any(node["state"] != "proposed" for node in nodes):
         raise ValueError("new plan nodes must be proposed")
     _verify_approved_baselines(nodes, plan, jj)
-    validate_goal_capacity(config, initiative, nodes)
+    validate_goal_capacity(config, initiative, plan)
     retained = {
         node["node_id"]: node
         for node in store.list_nodes_snapshot(initiative["initiative_id"])

@@ -28,6 +28,14 @@ from tests.python.orchestration_execution_fixtures import ExecutionFixture
 
 
 class OrchestrationDispatchTests(ExecutionFixture, unittest.TestCase):
+    def customize_plan(self, plan):
+        (self.repo / "checks" / "é space").mkdir(parents=True)
+        plan["declared_gates"][1]["commands"] = [
+            {"argv": ["python3", "-c", "print('雪')", 'quoted"\\é'],
+             "cwd": "checks/é space", "timeout_seconds": 899},
+            {"argv": ["python3", "-c", "print('second')"], "cwd": ".", "timeout_seconds": 17},
+        ]
+
     def fake_capture(self, calls: list[list[str]], tasks: list[dict]):
         def run(argv, **_kwargs):
             calls.append(list(argv))
@@ -36,6 +44,57 @@ class OrchestrationDispatchTests(ExecutionFixture, unittest.TestCase):
             return 0, json.dumps(payload, sort_keys=True).encode(), b""
 
         return run
+
+    def test_ordinary_and_review_dispatch_deliver_exact_controller_specs(self):
+        from lib.control.orchestration.scheduler import refresh_readiness
+        from tests.python.orchestration_increment3_fixtures import advance_node, save_candidate
+
+        calls, tasks = [], []
+        with mock.patch("lib.control.orchestration.scheduler.storage_report",
+                        return_value={"pause_recommended": False}), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=self.fake_capture(calls, tasks),
+        ):
+            ordinary = submit_action(self.store, self.initiative_id, build_action_document(
+                self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+            ))
+        self.assertEqual(ordinary["state"], "completed", ordinary["outcome"])
+        # Settle only the fixture's fake worker, then exercise real review dispatch.
+        from lib.control.orchestration.model import record_digest
+        attempt = self.store.list_attempts_snapshot(self.initiative_id)[0]
+        cancelled = {**attempt, "state": "cancelled"}
+        self.store.save_attempt(self.initiative_id, cancelled, expected_digest=record_digest(attempt))
+        candidate = save_candidate(self)
+        advance_node(self, "implementation-a", ["evaluating", "succeeded"])
+        refresh_readiness(self.store, self.initiative_id)
+
+        def review_capture(argv, **kwargs):
+            payload = self.control_payload(argv)
+            payload["task"]["jj"]["base_commit_id"] = argv[argv.index("--base") + 1]
+            return 0, json.dumps(payload).encode(), b""
+
+        with mock.patch("lib.control.orchestration.scheduler.storage_report",
+                        return_value={"pause_recommended": False}), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=review_capture,
+        ):
+            review = submit_action(self.store, self.initiative_id, build_action_document(
+                self.initiative(), "dispatch-node", {"node_id": "review-a"},
+            ))
+        self.assertEqual(review["state"], "completed", review["outcome"])
+        assignments = self.config.initiatives_dir / self.initiative_id / "assignments"
+        rendered = [p.read_text() for p in assignments.glob("*.md")]
+        self.assertEqual(len(rendered), 2)
+        gate = self.plan["declared_gates"][1]
+        for raw in rendered:
+            section = raw.split("### Applicable retained-plan controller gates", 1)[1].split("## Role and workflow", 1)[0]
+            facts = [json.loads(line[2:]) for line in section.splitlines() if line.startswith('- {')]
+            self.assertEqual(len(facts), 1)
+            self.assertEqual(facts[0]["node_id"], gate["node_id"])
+            self.assertEqual(facts[0]["commands"], gate["commands"])
+            self.assertIn(self.plan["digest"], section)
+            self.assertIn("not a requirement for this", section)
+            self.assertNotIn("## Approved salvage recovery", raw)
+        review_text = next(raw for raw in rendered if "## Independent review contract" in raw)
+        self.assertIn(candidate["seal_id"], review_text)
 
     def fake_asha(self) -> tuple[Path, Path]:
         root = self.root / "fake-asha-root"
