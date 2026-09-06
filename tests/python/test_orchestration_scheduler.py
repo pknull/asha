@@ -47,6 +47,7 @@ from lib.control.orchestration.scheduler import (
 from lib.control.orchestration.store import ObservationOnlyPlanError
 from lib.control.orchestration.verification import DENIED_COMMAND_PROGRAMS
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
+from tests.python.orchestration_workspace_fixtures import WorkspaceFixture
 
 
 class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
@@ -156,7 +157,7 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         node = plan["nodes"][0]
         attempt = {"attempt_id": "00000000-0000-4000-8000-000000000000", "base": node["base"]}
         with self.assertRaises(SchedulerError) as capacity:
-            validate_goal_capacity(self.config, initiative, plan["nodes"])
+            validate_goal_capacity(self.config, initiative, plan)
         required_bytes = int(re.search(r"is (\d+) bytes", str(capacity.exception))[1])
         self.assertGreater(required_bytes, MAX_ASSIGNMENT_BYTES)
         with self.assertRaises(SchedulerError) as refused:
@@ -201,7 +202,7 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
             middle = (low + high + 1) // 2
             criteria(middle)
             try:
-                validate_goal_capacity(self.config, initiative, plan["nodes"])
+                validate_goal_capacity(self.config, initiative, plan)
             except SchedulerError:
                 high = middle - 1
             else:
@@ -209,7 +210,7 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         criteria(low)
         validate_initiative(initiative)
         validate_node(node)
-        validate_goal_capacity(self.config, initiative, plan["nodes"])
+        validate_goal_capacity(self.config, initiative, plan)
         return initiative, plan, node
 
     def render_case(self, initiative, plan, node, seals=None, findings=None):
@@ -264,7 +265,7 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
                     node["goal"] += "G"
                     validate_node(node)
                     with self.assertRaises(SchedulerError) as refused:
-                        validate_goal_capacity(self.config, initiative, plan["nodes"])
+                        validate_goal_capacity(self.config, initiative, plan)
                     for detail in (node["node_id"], str(MAX_ASSIGNMENT_BYTES + 1), str(MAX_ASSIGNMENT_BYTES)):
                         self.assertIn(detail, str(refused.exception))
 
@@ -276,11 +277,13 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         for layout in ("ordinary", "read-only", "repair"):
             with self.subTest(layout=layout):
                 initiative, plan, node = self.capacity_case()
+                # Auxiliary stress data is not a replacement plan graph.
+                node = copy.deepcopy(node)
                 node["hard_write_scope"] = ["p" * MAX_PATH_BYTES] + [f"p{i}" for i in range(MAX_PATH_ITEMS - 1)]
                 node["advisory_path_ownership"] = list(node["hard_write_scope"])
                 node["dependencies"] = [f"d{i:02}" + "x" * 61 for i in range(MAX_DEPENDENCIES)]
                 validate_node(node)
-                validate_goal_capacity(self.config, initiative, plan["nodes"])
+                validate_goal_capacity(self.config, initiative, plan)
                 raw = self.render_case(
                     initiative, plan, node, self.large_seals(read_only=layout == "read-only"),
                     findings if layout == "repair" else None,
@@ -294,11 +297,11 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         initiative, plan, node = self.capacity_case()
         ascii_goal = node["goal"]
         node["goal"] = "é" + ascii_goal[2:]
-        validate_goal_capacity(self.config, initiative, plan["nodes"])
+        validate_goal_capacity(self.config, initiative, plan)
         self.assert_required_text(self.render_case(initiative, plan, node), initiative, node)
         node["goal"] = "é" + ascii_goal[1:]
         with self.assertRaisesRegex(SchedulerError, rf"{node['node_id']}.*{MAX_ASSIGNMENT_BYTES + 1} bytes"):
-            validate_goal_capacity(self.config, initiative, plan["nodes"])
+            validate_goal_capacity(self.config, initiative, plan)
 
         # Approval reserves future framing. A retained dispatch uses its actual
         # framing: every required byte still fits even beyond that reservation.
@@ -345,6 +348,44 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         # Refusing a render does not mutate or invalidate the retained record.
         self.assertEqual(self.store.peek(self.initiative_id), retained)
         self.assertEqual(self.store.read_node(self.initiative_id, updated["node_id"]), updated)
+
+    def test_gate_commands_keep_unicode_escaping_order_and_byte_boundary(self):
+        initiative, plan, node = self.capacity_case()
+        gate = plan["declared_gates"][1]
+        gate["commands"] = [
+            {"argv": ["python3", "-c", "print('雪')", 'quoted"\\é'],
+             "cwd": "checks/é space", "timeout_seconds": 899},
+            {"argv": ["./tests/check"], "cwd": ".", "timeout_seconds": 17},
+        ]
+        # Measure only through the production renderer; no copied template math.
+        with self.assertRaises(SchedulerError) as refused:
+            validate_goal_capacity(self.config, initiative, plan)
+        required = int(re.search(r"is (\d+) bytes", str(refused.exception))[1])
+        excess = required - MAX_ASSIGNMENT_BYTES
+        initiative["acceptance_criteria"][-1] = initiative["acceptance_criteria"][-1][:-excess]
+        validate_goal_capacity(self.config, initiative, plan)
+        raw = self.render_case(initiative, plan, node).decode()
+        facts = next(json.loads(line[2:]) for line in raw.splitlines()
+                     if line.startswith('- {') and '"commands"' in line)
+        self.assertEqual(facts["commands"], gate["commands"])
+        self.assertEqual(facts["node_id"], gate["node_id"])
+        gate["commands"][0]["argv"][-1] += "x"
+        with self.assertRaisesRegex(SchedulerError, f"{MAX_ASSIGNMENT_BYTES + 1} bytes"):
+            validate_goal_capacity(self.config, initiative, plan)
+
+    def test_disconnected_gate_is_not_delivered_or_budgeted(self):
+        initiative, plan, node = self.capacity_case()
+        unrelated = copy.deepcopy(plan["nodes"][-1])
+        unrelated.update(node_id="unrelated-gate", type="verify", dependencies=[], base=None)
+        plan["nodes"].append(unrelated)
+        unrelated_gate = copy.deepcopy(plan["declared_gates"][1])
+        unrelated_gate.update(node_id=unrelated["node_id"], required=False)
+        unrelated_gate["commands"][0]["argv"].append("é" * 2000)
+        plan["declared_gates"].append(unrelated_gate)
+        validate_goal_capacity(self.config, initiative, plan)
+        raw = self.render_case(initiative, plan, node).decode()
+        self.assertNotIn("unrelated-gate", raw)
+        self.assertIn('"node_id": "verify-a"', raw)
 
     def test_fitting_assignment_still_proposes(self):
         initiative, plan = self.size_proposal(oversized=False)
@@ -622,6 +663,26 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(action["state"], "refused")
         self.assertEqual(self.initiative()["state"], "paused")
         capture.assert_not_called()
+
+
+class AssignmentWorkspaceGateTests(WorkspaceFixture, unittest.TestCase):
+    def test_aggregate_gate_reaches_both_members_and_reviews(self):
+        initiative = self.create_initiative()
+        plan = self.approve_and_run(initiative, self.two_member_plan(initiative))
+        for node in plan["nodes"]:
+            if node["type"] == "verify":
+                continue
+            base = next(n["base"] for n in plan["nodes"]
+                        if n["base"] is not None and n["repository_id"] == node["repository_id"])
+            seals = [{"seal_id": str(uuid.uuid4()), "read_only": False,
+                      "jj_commit_id": "a" * 40, "diff_digest": "b" * 64}]
+            raw = assignment_bytes(initiative, plan, node,
+                                   {"attempt_id": str(uuid.uuid4()), "base": base}, "c" * 40, seals).decode()
+            fact = next(json.loads(line[2:]) for line in raw.splitlines()
+                        if line.startswith('- {') and '"commands"' in line)
+            self.assertEqual(fact["repository_id"], node["repository_id"])
+            self.assertEqual(fact["gate_node_repository_id"], plan["nodes"][-1]["repository_id"])
+            self.assertEqual(fact["commands"], plan["declared_gates"][-1]["commands"])
 
 
 if __name__ == "__main__":

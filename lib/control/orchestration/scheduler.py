@@ -338,6 +338,58 @@ def _json_lines(values: list[Any], maximum: int | None = None) -> str:
     return _truncate(rendered, maximum) if maximum is not None else rendered
 
 
+def _assignment_gates(
+    initiative: dict[str, Any], plan: dict[str, Any], node: dict[str, Any],
+) -> list[dict[str, Any]]:
+    """Retain downstream controller specs, in plan order, for this member.
+
+    The verification runner executes a gate's commands on every terminal scope
+    member, even if the verify node itself names one repository. Walking
+    dependencies includes intervening work, composition and review nodes, not
+    just direct edges or names that happen to look like verification gates.
+    """
+    from .graph import _ancestors
+
+    by_id = {item["node_id"]: item for item in plan["nodes"]}
+    repository_id = _node_repository(initiative, node)["repository_id"]
+    applicable = []
+    for gate in plan.get("declared_gates", []):
+        if gate["kind"] != "verification":
+            continue
+        target = by_id[gate["node_id"]]
+        if node["node_id"] not in _ancestors(target["node_id"], by_id):
+            continue
+        applicable.append({
+            **gate, "repository_id": repository_id,
+            "gate_node_repository_id": target.get("repository_id"),
+        })
+    return applicable
+
+
+def salvage_assignment_context(
+    approval: dict[str, Any], seal: dict[str, Any],
+) -> dict[str, Any]:
+    """Format binding facts, not authority. Dispatch must validate them first.
+
+    Request/approval preflight also uses this exact shape before any write;
+    only salvage_dispatch_binding supplies these records to a worker render.
+    """
+    return {
+        "rationale": approval["rationale"],
+        "provenance": {
+            "request_id": approval["request_id"],
+            "binding_digest": approval["binding_digest"],
+            "active_plan_digest": approval["active_plan_digest"],
+            "plan_digest": hashlib.sha256(approval["rationale"].encode("utf-8")).hexdigest(),
+            "failure_seal_id": seal["seal_id"],
+            "failure_commit_id": seal["jj_commit_id"],
+            "failure_tree_digest": seal["tree_digest"],
+            "repository_id": seal["repository_id"],
+            "scope_origin": seal["scope_origin"],
+        },
+    }
+
+
 def assignment_bytes(
     initiative: dict[str, Any],
     plan: dict[str, Any],
@@ -346,19 +398,39 @@ def assignment_bytes(
     exact_base: str,
     resolved_seals: list[dict[str, Any]] | None = None,
     accepted_findings: list[dict[str, Any]] | None = None,
+    *,
+    salvage_recovery: dict[str, Any] | None = None,
 ) -> bytes:
     """Render required text intact, then spend remaining UTF-8 bytes on evidence.
 
     Auxiliary sections have per-section byte caps and share the
     remaining budget in document order (findings first). Even their headings
     are optional for repair findings, so future evidence cannot crowd out the
-    approved specification. The exact review target and composition ordering
-    are required, never truncated. Capacity validation reserves their maxima.
+    approved specification. Recovery text, binding provenance, applicable gate
+    specs, the exact review target and composition ordering are required, never
+    truncated. Capacity validation reserves the future framing maxima.
     """
     base = attempt["base"]
     nested = plan["nested_workflow_policy"]
     seal_facts = resolved_seals or []
     read_only_facts = [item for item in seal_facts if item["read_only"]]
+    recovery_section = ""
+    if salvage_recovery is not None:
+        recovery_section = f"""
+## Approved salvage recovery
+
+The exact retained request and operator approval bind the recovery text below
+to this node, active plan and immutable failure seal. This is recovery guidance,
+not review findings or additional authority. The failure seal remains read-only;
+the approved scope, base policy and prohibited actions still apply.
+
+Binding provenance:
+{json.dumps(salvage_recovery['provenance'], ensure_ascii=False, sort_keys=True)}
+
+Approved rationale and restoration instructions (verbatim):
+
+{salvage_recovery['rationale']}
+"""
     findings_section = ""
     if accepted_findings:
         findings_section = f"""
@@ -482,7 +554,7 @@ into this workspace or run any command that writes into it. Publish a
 ## Node goal
 
 {node['goal']}
-""", (findings_section, 4300), f"""
+{recovery_section}""", (findings_section, 4300), f"""
 ## Repository and immutable base
 
 - Repository root: {_node_repository(initiative, node)['root']}
@@ -523,9 +595,19 @@ Node acceptance:
 
 ## Verification commands
 
-No node-level command argv exists in the approved Core node record. Run the
-repository checks required by the acceptance criteria and report their exact
-argv and exit status.
+### Applicable retained-plan controller gates
+
+Active plan digest: {plan['digest']}
+
+These are controller verification specifications, not a requirement for this
+worker to attest every command shown. Run and attest the subset required by
+the node goal and acceptance criteria; preserve the exact argv, cwd and timeout
+when a shown command is required. Review remains read-only. The controller runs
+gate commands for each terminal scope member; repository_id below is this
+assignment's member, distinct from the verify node's gate_node_repository_id.
+No applicable retained specification is represented by `- None`.
+
+{_json_lines(_assignment_gates(initiative, plan, node))}
 
 ## Role and workflow
 
@@ -590,7 +672,8 @@ Element field constraints:
         raise SchedulerError(
             f"node {node['node_id']} required assignment is {required_bytes} bytes, "
             f"exceeding MAX_ASSIGNMENT_BYTES ({MAX_ASSIGNMENT_BYTES}); "
-            "shorten the objective, criteria, goal or acceptance, or split the work"
+            "shorten the objective, criteria, goal, acceptance or recovery text, "
+            "or split the work and its applicable verification specifications"
         )
     remaining = MAX_ASSIGNMENT_BYTES - required_bytes
     rendered = []
@@ -751,9 +834,12 @@ def _goal(initiative: dict[str, Any], node: dict[str, Any], path: Path) -> str:
 def validate_goal_capacity(
     config: OrchestrationConfig,
     initiative: dict[str, Any],
-    nodes: list[dict[str, Any]],
+    plan: dict[str, Any],
+    *,
+    nodes: list[dict[str, Any]] | None = None,
+    salvage_recovery: dict[str, Any] | None = None,
 ) -> None:
-    """Refuse oversized assignment paths or task text before plan approval."""
+    """Probe exact required specs plus maximum future framing before writes."""
     attempt_id = "00000000-0000-4000-8000-000000000000"
     path = (
         config.initiatives_dir / initiative["initiative_id"] / "assignments"
@@ -762,12 +848,12 @@ def validate_goal_capacity(
     # Probe the real renderer with the maximum future REQUIRED framing:
     # 64-byte object IDs, 64 UUID seal inputs / review base IDs, longest base
     # policy and nested workflow, and the longer false single-writer spelling.
-    # The supplied API has nodes, not the plan policy. Reserving these bounded
-    # differences avoids approval depending on evidence not yet produced.
+    # Retain the actual plan graph and command specs; reserve only bounded
+    # future framing so approval cannot depend on evidence not yet produced.
     # All other future sections (including the whole repair section) consume
     # only leftover bytes in assignment_bytes, including a zero-byte budget.
     probe_plan = {
-        "nodes": nodes, "digest": "0" * 64, "acceptance_conditions": [],
+        **plan, "digest": "0" * 64,
         "nested_workflow_policy": {
             "workflow": max(WORKFLOWS, key=lambda value: len(value.encode("utf-8"))),
             "single_writer": False,
@@ -778,7 +864,7 @@ def validate_goal_capacity(
         "jj_commit_id": "0" * 64, "diff_digest": "0" * 64,
         "base_seal_ids": [str(uuid.UUID(int=i + 1)) for i in range(MAX_SEAL_INPUTS)],
     } for index in range(MAX_SEAL_INPUTS)]
-    for node in nodes:
+    for node in plan["nodes"] if nodes is None else nodes:
         _goal(initiative, node, path)
         if node["type"] in {"verify", "decision"}:
             continue  # Controller gates never receive worker assignments.
@@ -788,6 +874,7 @@ def validate_goal_capacity(
             initiative, probe_plan, node,
             {"attempt_id": attempt_id, "base": base}, "0" * 64,
             seals if node["type"] in {"review", "compose"} else [],
+            salvage_recovery=salvage_recovery,
         )
 
 
@@ -1018,18 +1105,26 @@ def dispatch(
         attempts = store.list_attempts_snapshot(initiative_id)
         salvage_approval: dict[str, Any] | None = None
         salvage_base: dict[str, Any] | None = None
+        salvage_recovery: dict[str, Any] | None = None
         if action["state"] == "validated":
             action_payload = json.loads(action["outcome"]).get("payload", {})
             salvage_request_id = action_payload.get("salvage_request_id")
             if salvage_request_id is not None:
                 try:
-                    salvage_approval, salvage_base, _ = salvage_dispatch_binding(
+                    salvage_approval, salvage_base, salvage_seal = salvage_dispatch_binding(
                         store, initiative, node, salvage_request_id,
                         dispatch_expected_revision=action["expected_state_revision"],
                         dispatch_action_id=action["action_id"],
                     )
                 except (ActionRefused, StoreError, ValueError) as exc:
                     raise SchedulerError(str(exc)) from exc
+                salvage_recovery = salvage_assignment_context(salvage_approval, salvage_seal)
+            # Before retry cancellation, node promotion, allocation or approval
+            # consumption, probe all required text using the actual bound plan
+            # and rationale, retaining the reviewed maximum future framing.
+            validate_goal_capacity(
+                config, initiative, plan, nodes=[node], salvage_recovery=salvage_recovery,
+            )
             node_attempts = [item for item in attempts if item["node_id"] == node_id]
             allocated = [item for item in node_attempts if item["state"] == "allocated"]
             if len(allocated) > 1:
@@ -1183,17 +1278,10 @@ def dispatch(
             attempt = store.read_attempt(initiative_id, outcome["attempt_id"])
             if attempt["task_id"] != outcome.get("control_task_id"):
                 raise SchedulerError("indeterminate action task reservation changed")
-            if attempt["state"] == "allocated" and attempt["action_id"] != action["action_id"]:
-                bound_attempt = copy.deepcopy(attempt)
-                bound_attempt.update({"action_id": action["action_id"], "updated_at": _now()})
-                store.save_attempt(
-                    initiative_id, bound_attempt, expected_digest=record_digest(attempt),
-                )
-                attempt = bound_attempt
             salvage_request_id = outcome.get("salvage_request_id")
             if salvage_request_id is not None:
                 try:
-                    salvage_approval, salvage_base, _ = salvage_dispatch_binding(
+                    salvage_approval, salvage_base, salvage_seal = salvage_dispatch_binding(
                         store, initiative, node, salvage_request_id,
                         allow_consumed=True,
                         dispatch_expected_revision=action["expected_state_revision"],
@@ -1203,8 +1291,19 @@ def dispatch(
                     raise SchedulerError(str(exc)) from exc
                 if attempt["base"] != salvage_base:
                     raise SchedulerError("retained salvage attempt base binding changed")
-                if salvage_approval["state"] == "approved":
-                    consume_salvage_approval(store, initiative_id, salvage_approval)
+                salvage_recovery = salvage_assignment_context(salvage_approval, salvage_seal)
+            validate_goal_capacity(
+                config, initiative, plan, nodes=[node], salvage_recovery=salvage_recovery,
+            )
+            if attempt["state"] == "allocated" and attempt["action_id"] != action["action_id"]:
+                bound_attempt = copy.deepcopy(attempt)
+                bound_attempt.update({"action_id": action["action_id"], "updated_at": _now()})
+                store.save_attempt(
+                    initiative_id, bound_attempt, expected_digest=record_digest(attempt),
+                )
+                attempt = bound_attempt
+            if salvage_approval is not None and salvage_approval["state"] == "approved":
+                consume_salvage_approval(store, initiative_id, salvage_approval)
         else:
             raise SchedulerError("dispatch requires a validated or indeterminate action")
 
@@ -1253,6 +1352,7 @@ def dispatch(
             assignment = assignment_bytes(
                 initiative, plan, node, attempt, exact_base, resolved_seals,
                 accepted_findings=accepted_findings,
+                salvage_recovery=salvage_recovery,
             )
             asha = _asha_executable()
             goal = _goal(initiative, node, assignment_path)
@@ -1448,4 +1548,5 @@ __all__ = [
     "READINESS_CONTRACT", "SchedulerError", "assignment_bytes",
     "consecutive_failures", "dispatch", "mark_launch_failed",
     "pause_for_breaker", "readiness", "refresh_readiness", "validate_goal_capacity",
+    "salvage_assignment_context",
 ]

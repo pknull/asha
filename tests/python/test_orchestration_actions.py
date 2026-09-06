@@ -984,6 +984,49 @@ class OrchestrationActionTests(CoordinatorEnvelope, ExecutionFixture, unittest.T
         capture.assert_not_called()
 
 
+class RetainedGateCapacityTests(ExecutionFixture, unittest.TestCase):
+    start_running = False
+
+    def customize_plan(self, plan):
+        plan["declared_gates"][1]["commands"][0]["argv"] = [
+            "python3", "-c", "pass", *[str(i) + '"\\é' * 900 for i in range(6)],
+        ]
+
+    def setUp(self):
+        # Model-valid retained plans from the old renderer may exceed today's
+        # required-text cap. Permit fixture construction, not the action tested.
+        with mock.patch("lib.control.orchestration.scheduler.MAX_ASSIGNMENT_BYTES", 100000):
+            super().setUp()
+
+    def test_activation_counts_actual_gate_bytes_before_runtime_handshake(self):
+        before = self.initiative()
+        with mock.patch("lib.control.orchestration.actions.run_orchestration_doctor") as doctor:
+            action = submit_action(self.store, self.initiative_id, build_action_document(
+                before, "activate-initiative", {},
+            ))
+        self.assertEqual(action["state"], "refused", action["outcome"])
+        self.assertRegex(action["outcome"], r"implementation-a.*bytes.*32768")
+        self.assertEqual(self.initiative()["state"], "approved")
+        self.assertEqual(self.store.list_attempts_snapshot(self.initiative_id), [])
+        doctor.assert_not_called()
+
+    def test_dispatch_counts_actual_gate_bytes_before_any_attempt_or_task(self):
+        self.set_running(self.initiative())
+        node = self.store.read_node(self.initiative_id, "implementation-a")
+        with mock.patch("lib.control.orchestration.scheduler.capture_bytes") as launch, mock.patch.object(
+            self.store, "write_assignment",
+        ) as write_assignment:
+            action = submit_action(self.store, self.initiative_id, build_action_document(
+                self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+            ))
+        self.assertEqual(action["state"], "refused", action["outcome"])
+        self.assertRegex(action["outcome"], r"implementation-a.*bytes.*32768")
+        self.assertEqual(self.store.list_attempts_snapshot(self.initiative_id), [])
+        self.assertEqual(self.store.read_node(self.initiative_id, node["node_id"]), node)
+        launch.assert_not_called()
+        write_assignment.assert_not_called()
+
+
 class OrchestrationActivationTests(ExecutionFixture, unittest.TestCase):
     start_running = False
 

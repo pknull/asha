@@ -23,7 +23,7 @@ from lib.control.jj import (
 )
 from lib.control.orchestration.cli import (
     _approve, _compose_verify_command, _create, _plan, _reject,
-    _repository_scope, _snapshot, main, reconcile_one_initiative,
+    _repository_scope, _snapshot, main, propose_plan, reconcile_one_initiative,
 )
 from lib.control.orchestration.config import load_config
 from lib.control.orchestration.model import record_digest
@@ -716,6 +716,39 @@ class OrchestrationCliTests(unittest.TestCase):
             )
         self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "draft")
         self.assertEqual(self.store.list_plans_snapshot(initiative["initiative_id"]), [])
+
+    def test_proposal_and_recovery_count_escaped_retained_gate_commands(self):
+        for recovery in (False, True):
+            with self.subTest(recovery=recovery):
+                initiative = self.create("gate-capacity-recovery" if recovery else "gate-capacity")
+                path = self.write_plan(initiative, f"gate-{recovery}.json")
+                raw = json.loads(path.read_text())
+                if recovery:
+                    executable = self.repo / "fixture-check"
+                    executable.write_text("#!/bin/sh\nexit 0\n")
+                    executable.chmod(0o700)
+                    raw["declared_gates"][1]["commands"][0]["argv"] = ["./fixture-check"]
+                    path.write_text(json.dumps(raw))
+                    retained, _ = _plan([initiative["initiative_id"], "--file", str(path)],
+                                        self.store, self.config, jj=self.jj)
+                    approved, _ = _approve([initiative["initiative_id"], "--digest", retained["digest"]], self.store)
+                    prior = approved["initiative"]
+                    running = {**prior, "state": "running", "state_revision": prior["state_revision"] + 1}
+                    self.store.save_initiative(running, expected_digest=record_digest(prior))
+                    initiative = self.store.peek(initiative["initiative_id"])
+                    executable.chmod(0o600)  # Real external preflight failure, no provider run.
+                    raw["revision"] = 2
+                raw["declared_gates"][1]["commands"][0]["argv"] = [
+                    "python3", "-c", "pass", *[str(i) + '"\\é' * 900 for i in range(6)],
+                ]
+                before_plans = self.store.list_plans_snapshot(initiative["initiative_id"])
+                before_nodes = self.store.list_nodes_snapshot(initiative["initiative_id"])
+                with self.assertRaisesRegex(SchedulerError, r"implementation-a.*bytes.*32768"):
+                    propose_plan(self.store, initiative, raw, config=self.config, jj=self.jj,
+                                 actor_kind="coordinator" if recovery else "operator")
+                self.assertEqual(self.store.peek(initiative["initiative_id"]), initiative)
+                self.assertEqual(self.store.list_plans_snapshot(initiative["initiative_id"]), before_plans)
+                self.assertEqual(self.store.list_nodes_snapshot(initiative["initiative_id"]), before_nodes)
 
     def test_plan_refuses_invisible_approved_baseline_with_named_remediation(self) -> None:
         initiative = self.create("invisible-baseline")

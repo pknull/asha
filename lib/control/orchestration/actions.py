@@ -469,7 +469,7 @@ def _activate(
     except VerificationError as exc:
         raise ActionRefused(str(exc)) from exc
     try:
-        validate_goal_capacity(store.config, initiative, plan["nodes"])
+        validate_goal_capacity(store.config, initiative, plan)
     except SchedulerError as exc:
         raise ActionRefused(str(exc)) from exc
     doctor = run_orchestration_doctor(store.config, audit_records=False)
@@ -1178,6 +1178,7 @@ def _request_salvage(
         raise ActionError("salvage action has multiple retained approval requests")
     if retained:
         approval = retained[0]
+        _validate_salvage_capacity(store, store.peek(initiative_id), node, approval, seal)
         if not any(
             event["type"] == "approval-requested"
             and approval["request_id"] in event["subject_ids"]
@@ -1219,6 +1220,7 @@ def _request_salvage(
         "created_at": at,
         "updated_at": at,
     })
+    _validate_salvage_capacity(store, store.peek(initiative_id), node, approval, seal)
     store.save_approval(initiative_id, approval)
     append_event(
         store, initiative_id, "approval-requested",
@@ -1231,6 +1233,81 @@ def _request_salvage(
         "request_id": approval["request_id"],
         "salvage_binding": binding,
     }
+
+
+def _salvage_request_records(
+    store: InitiativeStore,
+    initiative: Mapping[str, Any],
+    approval: Mapping[str, Any],
+    node: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Check the same immutable request binding at signing and dispatch."""
+    request_id = approval["request_id"]
+    if (
+        initiative["active_plan"] is None
+        or approval["active_plan_digest"] != initiative["active_plan"]["digest"]
+    ):
+        raise ActionRefused("salvage approval active plan is stale")
+    request_actions = [
+        item for item in store.list_actions_snapshot(initiative["initiative_id"])
+        if item["action_class"] == "request-salvage"
+        and action_outcome(item).get("request_id") == request_id
+    ]
+    if len(request_actions) != 1 or request_actions[0]["state"] != "completed":
+        raise ActionRefused("salvage approval has no exact completed request action")
+    if (
+        approval["expected_state_revision"]
+        != request_actions[0]["expected_state_revision"]
+        or approval["active_plan_digest"]
+        != request_actions[0]["active_plan_digest"]
+    ):
+        raise ActionRefused("salvage approval revision binding changed")
+    binding = action_outcome(request_actions[0]).get("salvage_binding")
+    if not isinstance(binding, dict):
+        raise ActionRefused("salvage request binding is missing")
+    if (
+        not isinstance(binding.get("node_id"), str)
+        or not isinstance(binding.get("failure_seal_id"), str)
+    ):
+        raise ActionRefused("salvage request node or failure seal binding is missing")
+    if node is None:
+        node = store.read_node(initiative["initiative_id"], binding["node_id"])
+    if binding.get("node_id") != node["node_id"]:
+        raise ActionRefused("salvage approval cannot be substituted onto another node")
+    seal = store.read_seal(initiative["initiative_id"], binding["failure_seal_id"])
+    if seal["outcome"] != "failure":
+        raise ActionRefused("salvage requires an immutable failure seal")
+    if seal["repository_id"] != node["repository_id"]:
+        raise ActionRefused("salvage node repository differs from the failure seal")
+    if payload_digest({
+        "node_id": node["node_id"], "failure_seal_id": seal["seal_id"],
+        "plan": approval["rationale"],
+    }) != request_actions[0]["payload_digest"]:
+        raise ActionRefused("salvage request payload binding changed")
+    expected = _salvage_binding(
+        request_actions[0], node, seal, approval["rationale"],
+    )
+    digest = hashlib.sha256(_canonical(expected)).hexdigest()
+    if binding != expected or approval["binding_digest"] != digest:
+        raise ActionRefused("salvage approval binding changed")
+    return node, seal
+
+
+def _validate_salvage_capacity(
+    store: InitiativeStore, initiative: dict[str, Any], node: dict[str, Any],
+    approval: dict[str, Any], seal: dict[str, Any],
+) -> None:
+    from .scheduler import (
+        SchedulerError, salvage_assignment_context, validate_goal_capacity,
+    )
+
+    try:
+        validate_goal_capacity(
+            store.config, initiative, _active_plan(store, initiative), nodes=[node],
+            salvage_recovery=salvage_assignment_context(approval, seal),
+        )
+    except SchedulerError as exc:
+        raise ActionRefused(str(exc)) from exc
 
 
 def approve_salvage(
@@ -1251,6 +1328,10 @@ def approve_salvage(
         approval = store.read_approval(initiative_id, request_id)
         if approval["action_class"] != "salvage":
             raise ActionRefused("approval request is not a salvage request")
+        if approval["state"] in {"requested", "approved"}:
+            initiative = store.peek(initiative_id)
+            node, seal = _salvage_request_records(store, initiative, approval)
+            _validate_salvage_capacity(store, initiative, node, approval, seal)
         if approval["state"] == "approved":
             if not any(
                 event["type"] == "approval-decided"
@@ -1321,32 +1402,7 @@ def salvage_dispatch_binding(
         approval["expires_at"][:-1] + "+00:00"
     ):
         raise ActionRefused("salvage approval expired before dispatch")
-    request_actions = [
-        item for item in store.list_actions_snapshot(initiative["initiative_id"])
-        if item["action_class"] == "request-salvage"
-        and action_outcome(item).get("request_id") == request_id
-    ]
-    if len(request_actions) != 1 or request_actions[0]["state"] != "completed":
-        raise ActionRefused("salvage approval has no exact completed request action")
-    if (
-        approval["expected_state_revision"]
-        != request_actions[0]["expected_state_revision"]
-        or approval["active_plan_digest"]
-        != request_actions[0]["active_plan_digest"]
-    ):
-        raise ActionRefused("salvage approval revision binding changed")
-    binding = action_outcome(request_actions[0]).get("salvage_binding")
-    if not isinstance(binding, dict):
-        raise ActionRefused("salvage request binding is missing")
-    if binding.get("node_id") != node["node_id"]:
-        raise ActionRefused("salvage approval cannot be substituted onto another node")
-    seal = store.read_seal(initiative["initiative_id"], binding["failure_seal_id"])
-    expected = _salvage_binding(
-        request_actions[0], node, seal, approval["rationale"],
-    )
-    digest = hashlib.sha256(_canonical(expected)).hexdigest()
-    if binding != expected or approval["binding_digest"] != digest:
-        raise ActionRefused("salvage approval binding changed")
+    _node, seal = _salvage_request_records(store, initiative, approval, node)
     base = {
         "policy": "scope-baseline",
         "scope_origin": copy.deepcopy(seal["scope_origin"]),
