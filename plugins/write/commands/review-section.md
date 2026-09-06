@@ -191,3 +191,16 @@ Style-level reports have nothing to verify — skip the pass.
 - `--full` adds any installed agents listed in `full_review_adds`; unresolved names are reported and skipped
 - Reports accumulate in configured path for trend analysis
 - Run after every 2-3 sections during active drafting
+
+## Inline manuscript threads
+
+For requested source annotations, follow `write-inline-review`
+(`asha-inline-review/v1`; `skills/inline-review/SKILL.md` in the write plugin).
+Read existing replies and archived dismissals before raising a concern again;
+preserve prose and speakers, and leave closure to the author. Existing read-only
+review roles stay read-only: propose annotations for the authorized writer.
+Local replies do not amend canon or global voice rules. Project voice and
+review-config authority override the writing module's generic structural bans;
+separate taste observations from source-backed conflicts. Use opt-in clean
+scanner/export projections; detector scores are not authorship proof and do not
+authorize detector-evasion loops.

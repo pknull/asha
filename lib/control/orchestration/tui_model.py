@@ -146,6 +146,7 @@ class InitiativeRow:
     observed_at: str | None = None
     rail: tuple[str, ...] = ()
     display: tuple[str, str] | None = None
+    live_work: bool = False
 
     @property
     def key(self) -> tuple[str, str, str]:
@@ -507,6 +508,11 @@ class InitiativesScreen:
                 initiative.get("slug", initiative_id[:8]), initiative.get("state", "?"),
                 "initiative", _coordinator_text(view), _nodes_text(view), _attention(view),
                 rail=tuple(rail_tiers(view)), display=display_state(view),
+                live_work=any(
+                    item.get("state") in {"running", "dispatching"}
+                    for records in (view.get("nodes", []), view.get("attempts", []))
+                    for item in records
+                ),
             )
             children: list[InitiativeRow] = []
             parked = set(parked_ready_nodes(view))

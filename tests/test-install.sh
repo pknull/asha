@@ -344,6 +344,20 @@ for revision_skill in \
     fail "revision-pass skill carries the complete contract: $revision_skill"
   fi
 done
+for inline_skill in \
+  "$SANDBOX/.claude/skills/write-inline-review/SKILL.md" \
+  "$SANDBOX/.codex/skills/write-inline-review/SKILL.md" \
+  "$SANDBOX/.copilot/skills/write-inline-review/SKILL.md" \
+  "$SANDBOX/.config/opencode/skills/write-inline-review/SKILL.md"; do
+  if [[ -f "$inline_skill" ]] \
+      && grep -q 'name: write-inline-review' "$inline_skill" \
+      && grep -q 'asha-inline-review/v1' "$inline_skill" \
+      && [[ -f "$(dirname "$inline_skill")/scripts/inline_review.py" ]]; then
+    ok "inline-review skill and shared parser resolve: $inline_skill"
+  else
+    fail "inline-review skill and shared parser resolve: $inline_skill"
+  fi
+done
 for review_surface in \
   "$SANDBOX/.claude/commands/write/review-section.md" \
   "$SANDBOX/.codex/skills/write-review-section/SKILL.md" \

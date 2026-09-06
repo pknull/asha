@@ -438,15 +438,12 @@ upstream-result summaries; acceptance criteria; verification guidance;
 role and workflow; nested-workflow policy; prohibited actions; and this exact
 result-publication command:
 
-The node goal is the only plan text a worker reads. Plan `objective`,
-salvage plan text, and coordinator prose are not rendered into the brief, so
-any instruction the worker must obey — the exact verification argv, the
-attestation form, prohibitions — belongs in the node goal itself, with the
-non-negotiables first. The brief renders at most **3000 characters** of the
-goal and marks the cut with `[truncated by Orchestration Core 2a]`; the model
-accepts goals up to `MAX_GOAL_BYTES` (4096 bytes), so a goal that validates
-can still lose its tail on delivery. Keep goals under 3000 characters, and
-verify the delivered brief carries no truncation marker before dispatch.
+Assignments render the initiative objective and acceptance criteria and node
+goal and acceptance in full; before approval, plan validation renders a probe
+assignment per assignment-bearing node (including review), reserving bounded
+future framing and budgeting auxiliary evidence from the remaining UTF-8 bytes.
+It rejects oversized assignments with node and byte counts rather than
+truncating accepted text.
 
 ```text
 asha task report --file .asha/result.json
@@ -458,11 +455,15 @@ sealed diff; a result file written to a tracked path is a hard-scope
 violation and fails the seal. The command is available only inside a
 Control-managed worker environment.
 The assignment also carries exact seal inputs and read-only failure-seal
-evidence when dispatching approved salvage work. It explicitly tells workers
+evidence when dispatching approved salvage work. Salvage plan text and
+coordinator prose are never rendered into the brief. It explicitly tells workers
 not to run `jj status`: a workspace-write sandbox can change the working tree
 but cannot write the colocated source repository's Git object store. After a
 normal exit, the controller snapshots the retained tree and independently
 reruns declared result attestations against that exact commit.
+Reruns use the retained, digest-bound verification-gate timeout for an exact
+argv and cwd match (the largest repeated match), or 600 seconds otherwise;
+timeouts remain command failures.
 
 An `invocation/environment` rerun failure is evidence of a reproduction gap,
 not a veto: ingestion records a commit/tree-bound

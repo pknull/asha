@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import unittest
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest import mock
@@ -83,6 +83,13 @@ class SnapshotJj:
 
 
 class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
+    def customize_plan(self, plan_value: dict) -> None:
+        gate = next(g for g in plan_value["declared_gates"] if g["kind"] == "verification")
+        gate["commands"][0]["timeout_seconds"] = 1500
+        shorter = copy.deepcopy(gate["commands"][0])
+        shorter["timeout_seconds"] = 30
+        gate["commands"].append(shorter)
+
     def setUp(self) -> None:
         super().setUp()
         self.staging_token = "a5" * 32
@@ -304,6 +311,136 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
                     jj=self._exact_snapshot_jj(commit_id, tree_digest),
                 )
         return str(refused.exception)
+
+    def timeout_attestation(self, **changes):
+        command = next(g for g in self.plan["declared_gates"] if g["kind"] == "verification")["commands"][0]
+        attestation = {
+            "argv": command["argv"], "cwd": command["cwd"], "exit_code": 0,
+            "finished_at": now_text(), "output_digest": hashlib.sha256(b"passed").hexdigest(),
+            "summary": "worker passed",
+        }
+        attestation.update(changes)
+        return attestation
+
+    @contextmanager
+    def snapshot_rerun(self, *, timed_out=False):
+        captured = {}
+
+        def contained(_bubblewrap, _environment, argv, **kwargs):
+            captured.update(kwargs)
+            captured["argv"] = argv
+            return ["contained-verification"]
+
+        def execute(_argv, **kwargs):
+            captured.update(kwargs)
+            output = b"passed"
+            self.store.finalize_reserved_output(
+                self.initiative_id, captured["output_path"].stem, output,
+            )
+            return 0, {
+                "returncode": 0, "invocation_error": None, "timed_out": timed_out,
+                "output_truncated": False, "output_original_bytes": len(output),
+                "output_digest": hashlib.sha256(output).hexdigest(),
+            }
+
+        def verifier(store, ingestion, task, body, commit, tree, **_kwargs):
+            return verify_controller_snapshot(
+                store, ingestion, task, body, commit, tree,
+                jj=self._exact_snapshot_jj(commit, tree),
+            )
+
+        with mock.patch(
+            "lib.control.orchestration.ingestion.prepare_materialization",
+            return_value={"workspace_name": "controller", "workspace_path": str(self.workspace)},
+        ), mock.patch(
+            "lib.control.orchestration.ingestion.tracked_workspace_status",
+            return_value=(True, [], False),
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._bubblewrap_program",
+            return_value=Path("/usr/bin/bwrap"),
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._contained_argv", side_effect=contained,
+        ), mock.patch(
+            "lib.control.orchestration.ingestion._capture_truncated", side_effect=execute,
+        ):
+            yield verifier, captured
+
+    def test_timeout_matches_exact_argv_and_cwd_with_default_for_unmatched(self):
+        matching = self.timeout_attestation()
+        for changes, timeout in (
+            ({}, 1500),
+            ({"argv": [*matching["argv"], "different"]}, 600),
+            ({"cwd": "lib"}, 600),
+            ({"argv": ["python3", "-m", "unittest"], "cwd": "lib"}, 600),
+        ):
+            with self.subTest(changes=changes), self.snapshot_rerun() as (verify, captured):
+                body = self.body(verification_attestations=[self.timeout_attestation(**changes)])
+                ids = verify(self.store, self.ingestion, self.task, body, "9" * 40, "8" * 64)
+                self.assertEqual(captured["timeout_seconds"], timeout)
+                self.assertEqual(captured["deadline_seconds"], timeout + 5)
+                self.assertEqual(captured["cwd"], self.workspace / body["verification_attestations"][0]["cwd"])
+                evidence = json.loads(self.store.read_evidence(self.initiative_id, ids[0])["summary"])
+                self.assertEqual(evidence["kind"], "snapshot-verification-command")
+                self.assertEqual(evidence["timeout_seconds"], timeout)
+                self.assertIs(evidence["timed_out"], False)
+
+    def test_approved_1500_second_timeout_reaches_ingestion(self):
+        self.stage(self.body(verification_attestations=[self.timeout_attestation()]))
+        with self.snapshot_rerun() as (verify, captured):
+            receipt = ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation=self._terminal_observed(self.task), verifier=verify,
+            )
+        self.assertEqual(receipt["phase"], "completed")
+        self.assertEqual(captured["timeout_seconds"], 1500)
+        self.assertEqual(captured["deadline_seconds"], 1505)
+        self.assertEqual(len(self.store.list_results_snapshot(self.initiative_id)), 1)
+
+    def test_timed_out_rerun_refuses_with_timeout_and_no_result(self):
+        self.stage(self.body(verification_attestations=[self.timeout_attestation()]))
+        with self.snapshot_rerun(timed_out=True) as (verify, _captured):
+            receipt = ingest_result(
+                self.store, self.initiative_id, self.ingestion["ingestion_id"],
+                control_store=TaskStore(self.config.control), jj=self.jj,
+                terminal_reconciliation=self._terminal_observed(self.task), verifier=verify,
+            )
+        self.assertEqual(receipt["phase"], "refused")
+        retained = self.store.read_result_ingestion(self.initiative_id, self.ingestion["ingestion_id"])
+        self.assertIn("1500 seconds", retained["refusal"])
+        self.assertIn("command failure", retained["refusal"])
+        self.assertEqual(self.store.list_results_snapshot(self.initiative_id), [])
+        commands = [
+            json.loads(item["summary"])
+            for item in self.store.list_evidence_snapshot(self.initiative_id)
+            if item["kind"] == "verification-command"
+        ]
+        timed_out = [item for item in commands if item.get("timed_out") is True]
+        self.assertEqual(len(timed_out), 1)
+        self.assertEqual(timed_out[0]["timeout_seconds"], 1500)
+
+    def test_snapshot_timeout_requires_all_three_plan_digests_to_match(self):
+        for source in ("initiative", "plan", "ingestion"):
+            with self.subTest(source=source):
+                initiative, plan, ingestion = self.initiative(), copy.deepcopy(self.plan), copy.deepcopy(self.ingestion)
+                if source == "initiative":
+                    initiative["active_plan"]["digest"] = "0" * 64
+                elif source == "plan":
+                    plan["digest"] = "0" * 64
+                else:
+                    ingestion["active_plan_digest"] = "0" * 64
+                with mock.patch.object(self.store, "peek", return_value=initiative), mock.patch.object(
+                    self.store, "read_plan", return_value=plan,
+                ), mock.patch("lib.control.orchestration.ingestion.prepare_materialization") as prepare:
+                    with self.assertRaisesRegex(IngestionRefused, "plan digest mismatch"):
+                        verify_controller_snapshot(self.store, ingestion, self.task, self.body(), "9" * 40, "8" * 64)
+                    prepare.assert_not_called()
+
+    def test_snapshot_plan_read_error_is_unavailable(self):
+        with mock.patch.object(self.store, "read_plan", side_effect=StoreError("unreadable")) as read:
+            with self.assertRaisesRegex(IngestionUnavailable, "unreadable"):
+                verify_controller_snapshot(self.store, self.ingestion, self.task, self.body(), "9" * 40, "8" * 64)
+        read.assert_called_once_with(self.initiative_id, self.initiative()["active_plan"]["revision"])
 
     def test_failing_controller_rerun_refusal_contains_output_tail(self) -> None:
         refusal = self._controller_verification_refusal(

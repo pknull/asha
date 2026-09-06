@@ -30,8 +30,10 @@ from .model import (
     MAX_ARG_BYTES,
     MAX_ATTESTATIONS,
     MAX_PATH_BYTES,
+    MAX_SEAL_INPUTS,
     MAX_SUMMARY_BYTES,
     MUTATING_NODE_TYPES,
+    WORKFLOWS,
     record_digest,
     validate_attempt,
     validate_node,
@@ -318,6 +320,8 @@ def _truncate(value: str, maximum: int) -> str:
         return value
     suffix = "\n[truncated by Orchestration Core 2a]"
     room = maximum - len(suffix.encode("utf-8"))
+    if room < 0:
+        return ""
     prefix = raw[:max(0, room)]
     while True:
         try:
@@ -326,12 +330,12 @@ def _truncate(value: str, maximum: int) -> str:
             prefix = prefix[:-1]
 
 
-def _json_lines(values: list[Any], maximum: int) -> str:
+def _json_lines(values: list[Any], maximum: int | None = None) -> str:
     rendered = "\n".join(
         f"- {json.dumps(value, ensure_ascii=False, sort_keys=True)}"
         for value in values
     ) or "- None"
-    return _truncate(rendered, maximum)
+    return _truncate(rendered, maximum) if maximum is not None else rendered
 
 
 def assignment_bytes(
@@ -343,7 +347,14 @@ def assignment_bytes(
     resolved_seals: list[dict[str, Any]] | None = None,
     accepted_findings: list[dict[str, Any]] | None = None,
 ) -> bytes:
-    """Render the bounded deterministic 2b worker assignment contract."""
+    """Render required text intact, then spend remaining UTF-8 bytes on evidence.
+
+    Auxiliary sections have per-section byte caps and share the
+    remaining budget in document order (findings first). Even their headings
+    are optional for repair findings, so future evidence cannot crowd out the
+    approved specification. The exact review target and composition ordering
+    are required, never truncated. Capacity validation reserves their maxima.
+    """
     base = attempt["base"]
     nested = plan["nested_workflow_policy"]
     seal_facts = resolved_seals or []
@@ -357,7 +368,7 @@ This attempt repairs the exact upstream candidate seal. The findings below are
 the accepted review verdict on that seal; fixing them IS the goal of this
 attempt. Do not regress the sealed work.
 
-{_json_lines(accepted_findings, 4000)}
+{_json_lines(accepted_findings)}
 """
     composition = ""
     if node["type"] == "compose":
@@ -456,7 +467,7 @@ into this workspace or run any command that writes into it. Publish a
   `target` from the independent review contract. A `pass` has no findings; a
   `findings` verdict has at least one finding.
 """
-    text = f"""# Asha Orchestration Assignment
+    parts: list[str | tuple[str, int]] = [f"""# Asha Orchestration Assignment
 
 ## Identity
 
@@ -466,12 +477,12 @@ into this workspace or run any command that writes into it. Publish a
 
 ## Objective
 
-{_truncate(initiative['objective'], 4096)}
+{initiative['objective']}
 
 ## Node goal
 
-{_truncate(node['goal'], 3000)}
-{findings_section}
+{node['goal']}
+""", (findings_section, 4300), f"""
 ## Repository and immutable base
 
 - Repository root: {_node_repository(initiative, node)['root']}
@@ -480,34 +491,35 @@ into this workspace or run any command that writes into it. Publish a
 - Exact base commit: {exact_base}
 - Scope-origin tree digest: {base['scope_origin']['tree_digest']}
 - Upstream seal inputs:
-{_json_lines(seal_facts or base['seal_inputs'], 3000)}
+""", (_json_lines(seal_facts or base['seal_inputs']), 3000), """
 - Read-only failure seal inputs:
-{_json_lines(read_only_facts, 3000)}
+""", (_json_lines(read_only_facts), 3000), """
 
 ## Scope
 
 Hard write scope:
-{_json_lines(node['hard_write_scope'], 2500)}
+""", (_json_lines(node['hard_write_scope']), 2500), """
 
 Advisory path ownership:
-{_json_lines(node['advisory_path_ownership'], 2500)}
+""", (_json_lines(node['advisory_path_ownership']), 2500), """
 
 ## Dependencies
 
 Declared node dependencies:
-{_json_lines(node['dependencies'], 1500)}
+""", (_json_lines(node['dependencies']), 1500), f"""
 
 Upstream result summaries and their payload digests are embedded in the exact
-immutable seal inputs above.
+immutable seal inputs above. Auxiliary evidence and lists may be shortened or
+omitted to fit; the retained plan and seal records remain authoritative.
 {composition}{review_contract}
 
 ## Acceptance criteria
 
 Initiative criteria:
-{_json_lines(initiative['acceptance_criteria'], 4000)}
+{_json_lines(initiative['acceptance_criteria'])}
 
 Node acceptance:
-{_truncate(node['acceptance'] or 'None declared.', 2048)}
+{node['acceptance'] or 'None declared.'}
 
 ## Verification commands
 
@@ -570,13 +582,27 @@ Element field constraints:
 - `output_digest`: exactly 64 lowercase hexadecimal characters.
 - `summary`: text containing 1-{MAX_SUMMARY_BYTES} UTF-8 bytes and no Unicode control,
   format, or surrogate character.
-"""
-    raw = text.encode("utf-8")
-    if len(raw) > MAX_ASSIGNMENT_BYTES:
+"""]
+    required_bytes = sum(
+        len(part.encode("utf-8")) for part in parts if isinstance(part, str)
+    )
+    if required_bytes > MAX_ASSIGNMENT_BYTES:
         raise SchedulerError(
-            f"generated assignment exceeds {MAX_ASSIGNMENT_BYTES} bytes"
+            f"node {node['node_id']} required assignment is {required_bytes} bytes, "
+            f"exceeding MAX_ASSIGNMENT_BYTES ({MAX_ASSIGNMENT_BYTES}); "
+            "shorten the objective, criteria, goal or acceptance, or split the work"
         )
-    return raw
+    remaining = MAX_ASSIGNMENT_BYTES - required_bytes
+    rendered = []
+    for part in parts:
+        if isinstance(part, str):
+            rendered.append(part)
+        else:
+            value, maximum = part
+            value = _truncate(value, min(maximum, remaining))
+            rendered.append(value)
+            remaining -= len(value.encode("utf-8"))
+    return "".join(rendered).encode("utf-8")
 
 
 def _exact_base(
@@ -727,14 +753,42 @@ def validate_goal_capacity(
     initiative: dict[str, Any],
     nodes: list[dict[str, Any]],
 ) -> None:
-    """Refuse plans whose immutable assignment path cannot fit Control's goal."""
+    """Refuse oversized assignment paths or task text before plan approval."""
     attempt_id = "00000000-0000-4000-8000-000000000000"
     path = (
         config.initiatives_dir / initiative["initiative_id"] / "assignments"
         / f"{attempt_id}.md"
     )
+    # Probe the real renderer with the maximum future REQUIRED framing:
+    # 64-byte object IDs, 64 UUID seal inputs / review base IDs, longest base
+    # policy and nested workflow, and the longer false single-writer spelling.
+    # The supplied API has nodes, not the plan policy. Reserving these bounded
+    # differences avoids approval depending on evidence not yet produced.
+    # All other future sections (including the whole repair section) consume
+    # only leftover bytes in assignment_bytes, including a zero-byte budget.
+    probe_plan = {
+        "nodes": nodes, "digest": "0" * 64, "acceptance_conditions": [],
+        "nested_workflow_policy": {
+            "workflow": max(WORKFLOWS, key=lambda value: len(value.encode("utf-8"))),
+            "single_writer": False,
+        },
+    }
+    seals = [{
+        "seal_id": str(uuid.UUID(int=index + 1)), "read_only": False,
+        "jj_commit_id": "0" * 64, "diff_digest": "0" * 64,
+        "base_seal_ids": [str(uuid.UUID(int=i + 1)) for i in range(MAX_SEAL_INPUTS)],
+    } for index in range(MAX_SEAL_INPUTS)]
     for node in nodes:
         _goal(initiative, node, path)
+        if node["type"] in {"verify", "decision"}:
+            continue  # Controller gates never receive worker assignments.
+        base = _attempt_base(probe_plan, node)
+        base["policy"] = "approved-baseline"  # Longest dispatch policy.
+        assignment_bytes(
+            initiative, probe_plan, node,
+            {"attempt_id": attempt_id, "base": base}, "0" * 64,
+            seals if node["type"] in {"review", "compose"} else [],
+        )
 
 
 def _control_creation_evidence(

@@ -12,6 +12,22 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Inline manuscript review (write 1.11.0)
+
+- Added `write-inline-review` and the versioned `asha-inline-review/v1` grammar,
+  a shared strict parser/CLI, prose-preserving thread edits, explicit archival
+  with retired IDs, and clean projection with source-line mapping.
+- Added opt-in `--manuscript` / `--clean` to LanguageTool, style-analyzer and
+  book-export, retaining default behavior and one symlink-safe shared parser.
+  All three consumers discover the parser lazily with layout-aware lookup for
+  source and packaged skill layouts.
+- Added opt-in `project --no-headings` and fence-aware projection: comments and
+  marker examples inside parser-recognized fences survive byte-for-byte,
+  including fence info strings; only comments outside fenced code are removed.
+- Added compact editorial-contract pointers, synthetic source-view examples,
+  migration guidance, offline consumer tests and static harness exposure checks.
+  No live Claude, Codex or Copilot behavioral smoke was run.
+
 #### Harness-neutral revision and walkthrough corrections
 
 - Added a declared revision-pass tool and fail-open completion handler. Claude

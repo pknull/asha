@@ -24,6 +24,42 @@ from pathlib import Path
 from statistics import mean, median, stdev
 from typing import NamedTuple
 
+# Preserve access for callers that already loaded the parser; plain-text mode
+# never imports it or changes sys.path. Clean mode verifies its location first.
+inline_review = sys.modules.get('inline_review')
+
+
+def _load_inline_review():
+    """Find the shared parser in source/symlinked or copied packaged skills."""
+    import importlib.util
+
+    global inline_review
+    skills = Path(__file__).resolve().parents[2]
+    searched = [skills / name / 'scripts' / 'inline_review.py'
+                for name in ('inline-review', 'write-inline-review')]
+    for path in searched:
+        if path.is_file():
+            cached = sys.modules.get('inline_review')
+            if cached is not None and Path(cached.__file__).resolve() == path.resolve():
+                inline_review = cached
+            else:
+                spec = importlib.util.spec_from_file_location('inline_review', path)
+                module = importlib.util.module_from_spec(spec)
+                sys.modules['inline_review'] = module
+                try:
+                    spec.loader.exec_module(module)
+                except BaseException:
+                    if cached is None:
+                        sys.modules.pop('inline_review', None)
+                    else:
+                        sys.modules['inline_review'] = cached
+                    raise
+                inline_review = module
+            return inline_review
+    print('Error: shared inline_review parser not found; searched: '
+          + ', '.join(map(str, searched)), file=sys.stderr)
+    sys.exit(2)
+
 
 # === AI Signal Words (known flat prose indicators) ===
 AI_SIGNAL_WORDS = {
@@ -1031,6 +1067,14 @@ def parse_voice_suppressions(voice_path: str) -> set[str]:
     return set()
 
 
+def read_input_file(path, manuscript=False):
+    """Preserve legacy decoding by default; clean mode is strict UTF-8."""
+    if manuscript:
+        review = _load_inline_review()
+        return review.project(review.read_source(path), str(path)).text
+    return Path(path).read_text(encoding="utf-8", errors="replace")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Analyze prose style for voice.md generation"
@@ -1054,7 +1098,10 @@ def main():
         action="store_true",
         help="List all available cliche category IDs and exit",
     )
+    parser.add_argument('--manuscript', '--clean', action='store_true',
+                        help='Project manuscripts without frontmatter or HTML notes')
     args = parser.parse_args()
+    review_errors = (_load_inline_review().ReviewError,) if args.manuscript else ()
 
     # List categories mode
     if args.list_categories:
@@ -1078,16 +1125,32 @@ def main():
         if voice_suppress:
             suppress = (suppress or set()) | voice_suppress
 
-    # Collect text
+    # Collect text; maps are per source file, before directory concatenation.
+    source_maps = {}
+
+    def read_input(file):
+        try:
+            if args.manuscript:
+                projection = inline_review.project(inline_review.read_source(file), str(file))
+                source_maps[str(file)] = projection.line_map
+                return projection.text
+            return read_input_file(file)
+        except review_errors as exc:
+            print(exc, file=sys.stderr)
+            sys.exit(1)
+        except (OSError, UnicodeError) as exc:
+            print(f'{file}:1: {exc}', file=sys.stderr)
+            sys.exit(2)
+
     if path.is_file():
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = read_input(path)
         source = path.name
     elif path.is_dir():
         texts = []
         for f in path.glob("**/*.txt"):
-            texts.append(f.read_text(encoding="utf-8", errors="replace"))
+            texts.append(read_input(f))
         for f in path.glob("**/*.md"):
-            texts.append(f.read_text(encoding="utf-8", errors="replace"))
+            texts.append(read_input(f))
         text = "\n\n".join(texts)
         source = str(path)
     else:
@@ -1112,6 +1175,8 @@ def main():
             "forbidden_patterns": metrics.forbidden_patterns,
             "repetition_metrics": metrics.repetition_metrics,
         }
+        if args.manuscript:
+            output['source_line_maps'] = source_maps
         print(json.dumps(output, indent=2, default=str))
     else:
         print(format_markdown_report(metrics, source))
