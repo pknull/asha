@@ -150,7 +150,7 @@ class OrchestrationDoctorTests(unittest.TestCase):
             self.assertEqual(payload["contract"], "asha.orchestration-doctor.v1")
             self.assertEqual([probe["name"] for probe in payload["probes"]], [
                 "orchestration-config", "initiatives-root", "control-contracts",
-                "create-by-id", "control-doctor", "coordinator-seam",
+                "chair-context-contracts", "create-by-id", "control-doctor", "coordinator-seam",
                 "approval-provenance", "coordinator-cursor",
             ])
 
@@ -418,3 +418,14 @@ class OrchestrationDoctorTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ChairContextDiagnosticsTests(unittest.TestCase):
+    def test_contract_diagnostics_distinguish_schema_from_live_proof(self):
+        from lib.control.orchestration.doctor import _context_contracts_probe
+        from lib.control.orchestration import model
+        probe = _context_contracts_probe()
+        self.assertEqual(probe.outcome, "match")
+        self.assertIn("not execution consent or live actor proof", probe.detail)
+        with mock.patch.object(model, "MAX_MESSAGE_BODY_BYTES", 9999):
+            self.assertEqual(_context_contracts_probe().outcome, "mismatch")

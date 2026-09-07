@@ -397,7 +397,8 @@ class RoomStore:
             raise RoomError("room session identity is invalid")
         if (tmux["pane_id"] is None) != (tmux["session_id"] is None):
             raise RoomError("room tmux immutable identities are incomplete")
-        if record["lifecycle"] not in {"creating", "open", "ended"}:
+        if (not isinstance(record["lifecycle"], str)
+                or record["lifecycle"] not in {"creating", "open", "ended"}):
             raise RoomError("room lifecycle is invalid")
         created = _timestamp(record["created_at"], "created_at")
         updated = _timestamp(record["updated_at"], "updated_at")
@@ -519,6 +520,25 @@ class RoomStore:
         if record["room_id"] != path.stem:
             raise RoomError("room filename and record identity differ")
         return record
+
+    def bounded_snapshots(self, budget) -> list[dict[str, Any]]:
+        """Bounded names and existing no-follow snapshot reader; never reconcile."""
+        records = []
+        try:
+            with self._open_directory(create=False) as fd:
+                if fd is not None:
+                    for name in budget.names(fd):
+                        if name.startswith("."):
+                            continue
+                        try:
+                            if not name.endswith(".json"):
+                                raise RoomError("unexpected room entry")
+                            records.append(self.read(canonical_uuid(name[:-5])))
+                        except (OSError, ValueError, StoreError):
+                            budget.unavailable += 1
+        except (OSError, ValueError, StoreError):
+            budget.unavailable += 1
+        return records
 
     def list(self) -> list[dict[str, Any]]:
         try:

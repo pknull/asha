@@ -813,7 +813,8 @@ class SupervisorServiceTests(unittest.TestCase):
         Path(self.env["XDG_RUNTIME_DIR"]).mkdir(mode=0o700)
         Path(self.env["XDG_RUNTIME_DIR"]).chmod(0o700)
         self.asha_root = Path("/opt/asha")
-        self.config = SimpleNamespace()
+        from lib.control.orchestration.config import load_config
+        self.config = load_config(self.env)
         self.calls: list[list[str]] = []
 
     def which(self, command: str) -> str | None:
@@ -979,20 +980,15 @@ class SupervisorServiceTests(unittest.TestCase):
             "lib.control.orchestration.supervisor_daemon._lock_held",
             return_value=True,
         ):
-            with self.assertRaisesRegex(ValueError, "still stopping"):
-                install_supervisor_service(
-                    self.config, self.env, asha_root=self.asha_root,
-                    runner=self.runner, which=self.which,
-                )
-
-        # Bus-first ordering: daemon-reload proves the bus before the manual
-        # supervisor is touched, so exactly that one call is expected; the
-        # refusal restores the filesystem as found and never reaches enable.
+            value, code = install_supervisor_service(
+                self.config, self.env, asha_root=self.asha_root,
+                runner=self.runner, which=self.which,
+            )
+            self.assertEqual(code, 2)
+            self.assertEqual(value["status"], "unavailable")
+        # Unknown ownership now refuses before any unit or service mutation.
         self.assertFalse(path.exists())
-        self.assertEqual(
-            [call[1:] for call in self.calls],
-            [["--user", "daemon-reload"]],
-        )
+        self.assertEqual(self.calls, [])
 
     def test_uninstall_removes_only_owned_unit_and_is_idempotent(self) -> None:
         path = supervisor_service_path(self.env)
@@ -1168,3 +1164,106 @@ class SupervisorBoundaryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReadOnlyObservationTests(ExecutionFixture, unittest.TestCase):
+    start_running = False
+
+    def retained(self):
+        from lib.control.orchestration import supervisor_daemon as daemon
+        daemon._write_status(self.config, {
+            "pid": os.getpid(), "process_identity": process_identity(os.getpid()),
+            "started_at": now_text(), "last_tick_at": None, "last_tick_summary": None,
+        })
+
+    def test_readonly_open_observes_the_same_owned_lock(self):
+        import errno
+        from lib.control.orchestration import supervisor_daemon as daemon
+        self.retained()
+        real_open = os.open
+        attempted = []
+
+        def readonly(path, flags, *args, **kwargs):
+            if path == "supervisor.lock":
+                attempted.append(flags)
+                if flags & (os.O_RDWR | os.O_WRONLY | os.O_CREAT):
+                    raise OSError(errno.EROFS, "Read-only file system")
+            return real_open(path, flags, *args, **kwargs)
+
+        with daemon._exclusive_lock(self.config) as held:
+            self.assertTrue(held)
+            with mock.patch.object(daemon.os, "open", side_effect=readonly):
+                value, code = daemon.supervisor_status(self.config)
+        self.assertEqual(code, 0)
+        self.assertEqual(value["status"], "running")
+        self.assertTrue(value["lock_held"])
+        self.assertTrue(attempted)
+        self.assertTrue(all(flags & os.O_ACCMODE == os.O_RDONLY for flags in attempted))
+
+    def test_faults_are_unavailable_and_never_launch_signal_or_install(self):
+        import errno
+        from lib.control.harness import HarnessError
+        from lib.control.orchestration import supervisor_daemon as daemon
+        self.retained()
+        faults = [OSError(errno.EROFS, "readonly"), PermissionError("denied"),
+                  OSError(errno.EOPNOTSUPP, "unsupported flock"),
+                  OSError(errno.EBADF, "platform requires writable fd")]
+        for fault in faults:
+            with self.subTest(fault=fault), mock.patch.object(daemon, "_lock_held", side_effect=fault), \
+                    mock.patch.object(daemon.subprocess, "Popen") as spawn, \
+                    mock.patch.object(daemon.os, "kill") as kill, \
+                    mock.patch.object(daemon, "_write_service") as install:
+                value, code = daemon.supervisor_status(self.config)
+                self.assertEqual((value["status"], value["running"], code), ("unavailable", None, 2))
+                self.assertEqual(daemon.start_supervisor(self.config, self.env)[1], 2)
+                self.assertEqual(daemon.stop_supervisor(self.config)[1], 2)
+                self.assertEqual(daemon.install_supervisor_service(self.config, self.env)[1], 2)
+                spawn.assert_not_called(); kill.assert_not_called(); install.assert_not_called()
+        with mock.patch.object(daemon, "verify_process", side_effect=HarnessError("proc denied")):
+            self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+
+    def test_missing_status_or_invisible_pid_with_held_lock_is_not_stopped(self):
+        from lib.control.orchestration import supervisor_daemon as daemon
+        with daemon._exclusive_lock(self.config):
+            self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+            self.retained()
+            with mock.patch.object(daemon, "verify_process", return_value=False):
+                self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+        self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+        with mock.patch.object(daemon, "verify_process", return_value=False):
+            self.assertEqual(daemon.supervisor_status(self.config)[1], 1)
+
+    def test_live_process_without_lock_never_authorizes_duplicate_start(self):
+        from lib.control.orchestration import supervisor_daemon as daemon
+        self.retained()
+        with mock.patch.object(daemon.subprocess, "Popen") as spawn:
+            value, code = daemon.start_supervisor(self.config, self.env)
+        self.assertEqual((value["status"], code), ("unavailable", 2))
+        spawn.assert_not_called()
+
+    def test_symlink_foreign_owner_and_inode_replacement_refuse(self):
+        from lib.control.orchestration import supervisor_daemon as daemon
+        self.retained()
+        lock = daemon.supervisor_lock_path(self.config)
+        foreign = self.root / "foreign-lock"
+        foreign.write_text(""); foreign.chmod(0o600)
+        lock.symlink_to(foreign)
+        self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+        lock.unlink()
+        with daemon._exclusive_lock(self.config):
+            real_fstat = os.fstat
+            def foreign_owner(fd):
+                metadata = real_fstat(fd)
+                if metadata.st_ino == lock.stat().st_ino:
+                    fields = list(metadata); fields[4] = os.geteuid() + 1
+                    return os.stat_result(fields)
+                return metadata
+            with mock.patch.object(daemon.os, "fstat", side_effect=foreign_owner):
+                self.assertEqual(daemon.supervisor_status(self.config)[1], 2)
+            real_stat = os.stat
+            def replaced(path, *args, **kwargs):
+                if path == "supervisor.lock":
+                    return foreign.stat()
+                return real_stat(path, *args, **kwargs)
+            with mock.patch.object(daemon.os, "stat", side_effect=replaced):
+                self.assertEqual(daemon.supervisor_status(self.config)[1], 2)

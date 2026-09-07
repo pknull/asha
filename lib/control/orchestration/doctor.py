@@ -65,6 +65,32 @@ def _contracts_probe() -> Probe:
     return Probe("control-contracts", "match", "all frozen Control v1 identifiers have live producers")
 
 
+def _context_contracts_probe() -> Probe:
+    """Check additive read/context seams without touching stores or actors."""
+    try:
+        from . import messages, observation, model
+        from .store import InitiativeStore
+        expected = (
+            model.MESSAGE_CONTRACT == "asha.orchestration-message.v1",
+            model.MESSAGE_RECEIPT_CONTRACT == "asha.orchestration-message-receipt.v1",
+            messages.PENDING_CONTRACT == "asha.orchestration-message-pending.v1",
+            observation.INVENTORY_CONTRACT == "asha.orchestration-current-activity.v1",
+            model.MAX_MESSAGE_BODY_BYTES == 8192,
+            (observation.MAX_ROWS, observation.MAX_SCANNED,
+             observation.MAX_JSON_BYTES, observation.DEADLINE_SECONDS) == (50, 256, 65536, 2),
+            all(callable(getattr(messages, verb, None)) for verb in ("send", "pending", "receive", "ack")),
+            all(callable(getattr(InitiativeStore, verb, None)) for verb in (
+                "message_snapshot", "save_message", "save_message_receipt", "bounded_snapshots")),
+            {"message-persisted", "message-observed", "message-acknowledged"} <= model.EVENT_TYPES,
+        )
+        if not all(expected):
+            return Probe("chair-context-contracts", "mismatch", "bounded observation or durable addressed message contract differs")
+        return Probe("chair-context-contracts", "match",
+                     "bounded read-only inventory and persisted/observed/explicit-ack contracts present; not execution consent or live actor proof")
+    except (ImportError, AttributeError, ValueError) as exc:
+        return Probe("chair-context-contracts", "unavailable", f"context seams unavailable: {exc}")
+
+
 def _root_probe(path: Path) -> Probe:
     try:
         metadata = path.lstat()
@@ -338,6 +364,7 @@ def run_orchestration_doctor(
         Probe("orchestration-config", "match", "orchestration configuration parsed and passed static safety validation"),
         _root_probe(config.initiatives_dir),
         _contracts_probe(),
+        _context_contracts_probe(),
     ]
     try:
         marker = "11111111-1111-4111-8111-111111111111"

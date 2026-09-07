@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+(
+cd /
 PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_orchestration_config \
   tests.python.test_orchestration_model \
@@ -26,6 +28,8 @@ PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_orchestration_coordinator_records \
   tests.python.test_orchestration_coordinator_claim \
   tests.python.test_orchestration_coordinator_loop \
+  tests.python.test_orchestration_coordinator_messages \
+  tests.python.test_orchestration_observation \
   tests.python.test_orchestration_coordinator_active \
   tests.python.test_orchestration_revision_rule \
   tests.python.test_orchestration_workspace_scope \
@@ -34,6 +38,7 @@ PYTHONPATH="$ROOT" python3 -m unittest \
   tests.python.test_orchestration_coordinator_sessions \
   tests.python.test_orchestration_authority \
   tests.python.test_orchestration_real_execution
+)
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

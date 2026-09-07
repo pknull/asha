@@ -1862,6 +1862,7 @@ EVENT_TYPES = frozenset({
     "result-refused", "result-ingestion-deferred", "seal-preparing",
     "seal-published", "seal-drift-detected", "review-submitted", "review-accepted",
     "verification-started", "verification-finished", "node-state-changed",
+    "message-persisted", "message-observed", "message-acknowledged",
     "directive-accepted", "directive-delivered", "limit-reached",
     "storage-threshold-reached", "coordinator-checkpointed", "coordinator-restarted",
     "reconciliation-conflict", "seal-integration-recorded",
@@ -1886,6 +1887,21 @@ def validate_event(value: Any) -> dict[str, Any]:
     )
     _digest(record["payload_digest"], "event payload_digest")
     _bounded_payload(record["payload"], "event payload")
+    if record["type"] in {"message-persisted", "message-observed", "message-acknowledged"}:
+        payload = _object(record["payload"], "message event payload", frozenset({
+            "message_id", "content_digest", "coordinator_id", "generation",
+        }))
+        canonical_uuid(payload["message_id"])
+        canonical_uuid(payload["coordinator_id"])
+        _digest(payload["content_digest"], "message event content digest")
+        _integer(payload["generation"], "message event generation", minimum=1)
+        if record["subject_ids"] != [payload["message_id"]]:
+            raise ModelError("message event subject must be its message UUID")
+        if record["type"] == "message-persisted":
+            if record["actor_kind"] != "operator" or re.fullmatch(r"chair:[0-9a-f]{64}", record["actor_id"]) is None:
+                raise ModelError("message persistence event must name its observed chair")
+        elif record["actor_kind"] != "coordinator" or record["actor_id"] != "coordinator:" + payload["coordinator_id"]:
+            raise ModelError("message receipt event must name its addressed coordinator")
     payload_digest = hashlib.sha256(_canonical_bytes(record["payload"])).hexdigest()
     if record["payload_digest"] != payload_digest:
         raise ModelError(
@@ -2182,6 +2198,24 @@ MAX_PROCESS_IDENTITY_BYTES = 200
 MAX_SESSION_NAME_BYTES = 200
 
 
+def validate_message_anchor(value: Any) -> dict[str, Any]:
+    anchor = _object(value, "coordinator anchor", _COORDINATOR_ANCHOR_KEYS)
+    _optional_text(anchor["tmux_socket"], "coordinator anchor tmux_socket", maximum=MAX_PATH_BYTES)
+    _text(anchor["session"], "coordinator anchor session", maximum=MAX_SESSION_NAME_BYTES)
+    _text(anchor["pane_id"], "coordinator anchor pane_id", maximum=24, pattern=_PANE_ID)
+    _integer(anchor["pane_pid"], "coordinator anchor pane_pid", minimum=1, maximum=MAX_PID)
+    _text(
+        anchor["process_start_identity"], "coordinator anchor process_start_identity",
+        maximum=MAX_PROCESS_IDENTITY_BYTES,
+    )
+    _integer(anchor["server_pid"], "coordinator anchor server_pid", minimum=1, maximum=MAX_PID)
+    _text(
+        anchor["server_start_identity"], "coordinator anchor server_start_identity",
+        maximum=MAX_PROCESS_IDENTITY_BYTES,
+    )
+    return copy.deepcopy(anchor)
+
+
 def validate_coordinator(value: Any) -> dict[str, Any]:
     """Validate one retained coordinator-generation record.
 
@@ -2202,20 +2236,7 @@ def validate_coordinator(value: Any) -> dict[str, Any]:
     if record["state"] == "absent" or record["state"] not in COORDINATOR_TRANSITIONS:
         raise ModelError("coordinator state is invalid")
     _token(record["harness"], "coordinator harness")
-    anchor = _object(record["anchor"], "coordinator anchor", _COORDINATOR_ANCHOR_KEYS)
-    _optional_text(anchor["tmux_socket"], "coordinator anchor tmux_socket", maximum=MAX_PATH_BYTES)
-    _text(anchor["session"], "coordinator anchor session", maximum=MAX_SESSION_NAME_BYTES)
-    _text(anchor["pane_id"], "coordinator anchor pane_id", maximum=24, pattern=_PANE_ID)
-    _integer(anchor["pane_pid"], "coordinator anchor pane_pid", minimum=1, maximum=MAX_PID)
-    _text(
-        anchor["process_start_identity"], "coordinator anchor process_start_identity",
-        maximum=MAX_PROCESS_IDENTITY_BYTES,
-    )
-    _integer(anchor["server_pid"], "coordinator anchor server_pid", minimum=1, maximum=MAX_PID)
-    _text(
-        anchor["server_start_identity"], "coordinator anchor server_start_identity",
-        maximum=MAX_PROCESS_IDENTITY_BYTES,
-    )
+    validate_message_anchor(record["anchor"])
     if record["protocol_version"] != COORDINATOR_PROTOCOL_VERSION:
         raise ModelError(f"coordinator protocol_version must be {COORDINATOR_PROTOCOL_VERSION}")
     claimed = _timestamp(record["claimed_at"], "coordinator claimed_at")
@@ -2291,6 +2312,91 @@ def checkpoint_digest(value: Mapping[str, Any]) -> str:
     return _checkpoint_content_digest(value)
 
 
+MESSAGE_CONTRACT = "asha.orchestration-message.v1"
+MESSAGE_RECEIPT_CONTRACT = "asha.orchestration-message-receipt.v1"
+MAX_MESSAGE_BODY_BYTES = 8192
+
+
+def message_content_digest(body: Any) -> str:
+    if not isinstance(body, str):
+        raise ModelError("message body must be text")
+    try:
+        raw = body.encode("utf-8")
+    except UnicodeError as exc:
+        raise ModelError("message body must be valid UTF-8") from exc
+    if not 1 <= len(raw) <= MAX_MESSAGE_BODY_BYTES:
+        raise ModelError("message body must be 1-8192 UTF-8 bytes")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def message_sender_identity(anchor: Mapping[str, Any]) -> str:
+    validate_message_anchor(dict(anchor))
+    facts = {key: anchor[key] for key in (
+        "server_pid", "server_start_identity", "pane_id", "pane_pid",
+        "process_start_identity",
+    )}
+    return hashlib.sha256(_canonical_bytes(facts)).hexdigest()
+
+
+def chair_sender_identity(anchor: Mapping[str, Any], process: Any) -> str:
+    seat = _object(process, "chair process", frozenset({"pid", "process_start_identity"}))
+    _integer(seat["pid"], "chair process pid", minimum=1, maximum=MAX_PID)
+    _text(seat["process_start_identity"], "chair process identity", maximum=MAX_PROCESS_IDENTITY_BYTES)
+    return hashlib.sha256(_canonical_bytes({
+        "anchor_identity": message_sender_identity(anchor), "process": seat,
+    })).hexdigest()
+
+
+def validate_message_address(value: Any) -> dict[str, Any]:
+    address = _object(value, "message recipient", frozenset({
+        "coordinator_id", "generation", "anchor",
+    }))
+    canonical_uuid(address["coordinator_id"])
+    _integer(address["generation"], "recipient generation", minimum=1)
+    validate_message_anchor(address["anchor"])
+    return copy.deepcopy(address)
+
+
+def validate_message(value: Any) -> dict[str, Any]:
+    record = _object(value, "message", frozenset({
+        "contract", "initiative_id", "message_id", "sender", "recipient",
+        "body", "content_digest", "persisted_at",
+    }))
+    if record["contract"] != MESSAGE_CONTRACT:
+        raise ModelError("message contract is invalid")
+    canonical_uuid(record["initiative_id"])
+    canonical_uuid(record["message_id"])
+    sender = _object(record["sender"], "message sender", frozenset({
+        "role", "identity", "anchor", "process",
+    }))
+    if sender["role"] != "operator-chair":
+        raise ModelError("only operator-chair message senders are supported")
+    if sender["identity"] != chair_sender_identity(sender["anchor"], sender["process"]):
+        raise ModelError("message sender identity differs from its anchor")
+    validate_message_address(record["recipient"])
+    if record["content_digest"] != message_content_digest(record["body"]):
+        raise ModelError("message content digest mismatch")
+    _timestamp(record["persisted_at"], "message persisted_at")
+    return copy.deepcopy(record)
+
+
+def validate_message_receipt(value: Any) -> dict[str, Any]:
+    record = _object(value, "message receipt", frozenset({
+        "contract", "initiative_id", "message_id", "content_digest",
+        "recipient", "state", "recorded_at",
+    }))
+    if record["contract"] != MESSAGE_RECEIPT_CONTRACT:
+        raise ModelError("message receipt contract is invalid")
+    canonical_uuid(record["initiative_id"])
+    canonical_uuid(record["message_id"])
+    _digest(record["content_digest"], "message receipt content digest")
+    validate_message_address(record["recipient"])
+    if record["state"] not in {"observed", "acknowledged"}:
+        raise ModelError("message receipt state is invalid")
+    _timestamp(record["recorded_at"], "message receipt recorded_at")
+    return copy.deepcopy(record)
+
+
 _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     INITIATIVE_CONTRACT: validate_initiative,
     INITIATIVE_CONTRACT_V2: validate_initiative,
@@ -2309,6 +2415,8 @@ _VALIDATORS: dict[str, Callable[[Any], dict[str, Any]]] = {
     VERIFICATION_CONTRACT: validate_verification,
     APPROVAL_CONTRACT: validate_approval,
     ACTION_CONTRACT: validate_action,
+    MESSAGE_CONTRACT: validate_message,
+    MESSAGE_RECEIPT_CONTRACT: validate_message_receipt,
     EVENT_CONTRACT: validate_event,
     LINK_CONTRACT: validate_link,
     EVIDENCE_CONTRACT: validate_evidence,

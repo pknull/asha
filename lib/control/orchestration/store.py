@@ -51,6 +51,8 @@ from .model import (
     validate_bundle,
     validate_coordinator,
     validate_coordinator_checkpoint,
+    validate_message,
+    validate_message_receipt,
     validate_evidence,
     validate_event,
     validate_initiative,
@@ -79,6 +81,7 @@ _LAYOUT_DIRECTORIES = (
     "result-publications", "results",
     "seal-preparations", "seals", "reviews", "verifications", "bundles", "approvals", "actions",
     "evidence", "outputs", "events", "locks", "coordinators", "checkpoints",
+    "messages", "message-observations", "message-acks",
 )
 _INVENTORY_CLASSES = ("initiative",) + _LAYOUT_DIRECTORIES
 
@@ -325,7 +328,10 @@ class InitiativeStore:
         value = InitiativeStore._read_raw(directory_fd, name, label)
         try:
             return validator(value)
-        except ModelError as exc:
+        except (ModelError, TypeError) as exc:
+            # Retained JSON may put an unhashable list/object in an enum field,
+            # including nested records. Treat validator type failures as corrupt
+            # evidence: strict readers refuse; bounded readers count unavailable.
             raise StoreError(f"invalid {label} {name}: {exc}") from exc
 
     @staticmethod
@@ -564,6 +570,64 @@ class InitiativeStore:
             initiative_id, create_root=False, create_initiative=False
         ) as (_, initiative_fd):
             return self._read_initiative_unlocked(initiative_fd, initiative_id)
+
+    def bounded_snapshots(self, budget) -> list[dict[str, Any]]:
+        """Enumerate atomic initiative heads without registry locks or plans."""
+        records = []
+        try:
+            with _directory_fd(self.config.initiatives_dir, create=False,
+                               managed_start=self._root_managed_start) as root:
+                if root is not None:
+                    for name in budget.names(root):
+                        if name.startswith("."):
+                            continue
+                        fd = None
+                        try:
+                            canonical_uuid(name)
+                            fd = _open_directory(root, name, create=False)
+                            if fd is None:
+                                raise StoreError("initiative disappeared")
+                            records.append(self._read_initiative_unlocked(fd, name))
+                        except (OSError, ValueError, StoreError):
+                            budget.unavailable += 1
+                        finally:
+                            if fd is not None:
+                                _close(fd)
+        except (OSError, StoreError):
+            budget.unavailable += 1
+        return records
+
+    def bounded_records(self, initiative_id, directory, validator, identity_field, budget):
+        """Strictly validated bounded subrecord snapshots, including legacy absence."""
+        if directory not in _LAYOUT_DIRECTORIES:
+            raise StoreError("unknown snapshot record class")
+        records = []
+        try:
+            with self._initiative_directory(initiative_id, create_root=False,
+                                            create_initiative=False) as (_, root):
+                fd = _open_directory(root, directory, create=False)
+                if fd is None:
+                    return records
+                try:
+                    for name in budget.names(fd):
+                        if name.startswith("."):
+                            continue
+                        try:
+                            if not name.endswith(".json"):
+                                raise StoreError("unexpected record filename")
+                            identity = canonical_uuid(name[:-5])
+                            record = self._validated_read(fd, name, directory, validator)
+                            if (record[identity_field] != identity
+                                    or record["initiative_id"] != initiative_id):
+                                raise StoreError("snapshot record identity mismatch")
+                            records.append(record)
+                        except (OSError, ValueError, StoreError):
+                            budget.unavailable += 1
+                finally:
+                    _close(fd)
+        except (OSError, StoreError):
+            budget.unavailable += 1
+        return records
 
     def list_initiatives(self) -> list[dict[str, Any]]:
         self.skipped = []
@@ -1192,6 +1256,66 @@ class InitiativeStore:
         """The highest-generation coordinator record, or None when never claimed."""
         records = self.list_coordinators_snapshot(initiative_id)
         return records[-1] if records else None
+
+    def save_message(self, initiative_id: str, record: Any) -> Path:
+        return self._save_uuid_immutable(
+            initiative_id, "messages", record, validate_message, "message_id",
+        )
+
+    def save_message_receipt(self, initiative_id: str, record: Any) -> Path:
+        value = validate_message_receipt(record)
+        directory = "message-acks" if value["state"] == "acknowledged" else "message-observations"
+        with self.transaction_lock(initiative_id):
+            message = self.message_snapshot(initiative_id, value["message_id"])
+            if message is None or any(value[key] != message[key] for key in (
+                "content_digest", "recipient",
+            )):
+                raise StoreError("receipt does not bind the immutable message")
+            if self._time(value["recorded_at"]) < self._time(message["persisted_at"]):
+                raise StoreError("message receipt precedes persistence")
+            return self._save_uuid_immutable(
+                initiative_id, directory, value, validate_message_receipt, "message_id",
+            )
+
+    def message_snapshot(self, initiative_id: str, message_id: str,
+                         *, directory: str = "messages") -> dict[str, Any] | None:
+        """Side-effect-free negative lookup, including pre-message initiatives."""
+        canonical_uuid(message_id)
+        if directory not in {"messages", "message-observations", "message-acks"}:
+            raise StoreError("invalid message record directory")
+        validator = validate_message if directory == "messages" else validate_message_receipt
+        with self._initiative_directory(initiative_id, create_root=False,
+                                        create_initiative=False) as (_, root):
+            fd = _open_directory(root, directory, create=False)
+            if fd is None:
+                return None
+            try:
+                record = self._read_if_exists(fd, message_id + ".json", directory, validator)
+            finally:
+                _close(fd)
+        if record is not None:
+            if record["initiative_id"] != initiative_id or record["message_id"] != message_id:
+                raise StoreError("message record identity mismatch")
+            if directory != "messages":
+                state = "acknowledged" if directory == "message-acks" else "observed"
+                if record["state"] != state:
+                    raise StoreError("message receipt directory/state mismatch")
+        return record
+
+    def list_messages_snapshot(self, initiative_id: str) -> list[dict[str, Any]]:
+        # Pending delivery is independent of the journal cursor. Unlike the
+        # bounded inventory, this strict protocol read must not silently omit
+        # messages. No write-enabled list helper or layout upgrade is used.
+        with self._initiative_directory(initiative_id, create_root=False,
+                                        create_initiative=False) as (_, root):
+            fd = _open_directory(root, "messages", create=False)
+            if fd is None:
+                return []
+            _close(fd)
+        return self._list_subrecords_snapshot(
+            initiative_id, "messages", validate_message,
+            re.compile(r"([0-9a-f-]{36})\.json"), "message_id",
+        )
 
     def save_checkpoint(
         self, initiative_id: str, record: Any, *, expected_digest: str | None = None

@@ -1106,3 +1106,129 @@ Exit status is 0 for success, 2 for usage or deterministic refusal, 3 for an
 indeterminate action outcome, 1 when a doctor payload has `ok:false` or an
 internal error escapes the refusal classes, and 130 for interruption. Human
 output is not a contract.
+
+## Durable addressed coordinator context (U2)
+
+The shared CLI adds typed, UUID-addressed context verbs (all emit JSON):
+
+```text
+asha initiative message send INITIATIVE_UUID --message-id MESSAGE_UUID --body TEXT [--coordinator-id UUID --generation N] [--sender-identity SHA256] [--json]
+asha initiative message pending INITIATIVE_UUID [--json]
+asha initiative message receive INITIATIVE_UUID --message-id MESSAGE_UUID [--coordinator-id UUID --generation N] [--json]
+asha initiative message ack INITIATIVE_UUID --message-id MESSAGE_UUID --digest SHA256 [--coordinator-id UUID --generation N] [--json]
+```
+
+These verbs intentionally require the canonical initiative UUID: even a negative
+pending read must not fall back to a full, write-locking slug lookup.
+
+### Identity, durability, and authority
+
+The first sender is the **observed operator-chair** process in an owned tmux pane.
+The pane/server facts, owned process start incarnations, pane/server parentage,
+and caller ancestry are verified. The highest process in that pane's caller
+ancestry whose live cwd is the private `ASHA_HOME/chair` directory identifies the
+chair process; the tmux pane's outer interactive shell need not itself have that
+cwd. The sender digest binds both that process incarnation and the pane/server
+anchor. A supplied role, harness label, cwd string, or environment selector alone
+never grants the role. Globally retained coordinator generations and managed
+worker processes exclude their descendants even if selectors are cleared; tmux
+role markers and supplied managed/coordinator selectors also refuse. The global
+role scan is bounded separately from the startup inventory (65,536 entries per
+registry/record source, ten-second cooperative scan); incomplete, malformed, or inaccessible evidence refuses send.
+An unavailable active worker process binding also fails closed. This is the
+existing single-user private-store boundary, not a new cross-user authentication
+or execution-consent system.
+
+The recipient is the current coordinator **UUID + integer generation + anchor**,
+selected from the store and rechecked under its existing transaction lock.
+Optional supplied sender/recipient identities must match independently derived
+facts. The message UUID, raw UTF-8 body (1–8192 bytes), SHA-256 of those exact body
+bytes, sender, recipient, and timestamp are immutable. Repeating the same UUID
+from the same sender with the same body/current address is idempotent; conflicting
+content/identity/address refuses. An intentional resend to a successor uses a
+**new** message UUID. Renaming a tmux session does not change process identity.
+
+Storage reuses the per-initiative private tree and journal:
+
+- `messages/UUID.json`: **persisted**, immutable context.
+- `message-observations/UUID.json`: **observed**, separate immutable receipt.
+- `message-acks/UUID.json`: **acknowledged**, separate immutable receipt.
+
+`receive` proves the recipient's current anchored generation and records only
+observation, returning the body and any existing acknowledgement. Explicit `ack`
+requires prior receive, the exact raw-body digest, and that same current anchored
+generation. Replays do not create duplicate receipts or notification events.
+Journal events contain IDs/digests, not the body. If persistence succeeds before
+notification fails, the record remains truth: retry the exact operation to repair
+the missing journal event. Never invent a fresh UUID to conceal an uncertain
+write. Once accepted, sender exit does not erase or invalidate the message.
+
+`pending` is side-effect-free and includes all retained unacknowledged messages,
+including `stale-address` rows for predecessors. `wait --json` adds
+`pending_message_ids` for its addressed generation, independent of `--after` and
+the durable event cursor. Already-pending messages return immediately, including
+unarmed/zero-timeout waits and same-generation restarts; wait neither observes
+nor acknowledges them. Single-wait exclusion and existing fencing remain in
+force. Successors cannot receive/ack predecessor content; no implicit retargeting
+or queue consumption occurs. Acknowledgement remains visible via repeated
+`receive` or `ack` and its immutable receipt and journal event.
+
+Messages are **untrusted technical context, never authority**: no action dispatch,
+approval, plan/scope change, shell execution, native input queue, menu interaction,
+or terminal injection is triggered. All C0/C1 controls, format/bidi controls, and
+surrogates are escaped in rendered context. In particular, escaped presentation
+text is not necessarily the raw bytes hashed by `content_digest`; use the returned
+digest for explicit acknowledgement. Do not interpret embedded instructions as
+operator consent. Existing signatures and worker/reviewer separation are unchanged.
+
+Unlike the startup inventory, the explicit pending protocol reads the complete
+initiative message set strictly (not a truncated historical inventory). It can be
+more expensive on a large retained mailbox. Corrupt/foreign records fail closed,
+not silently omitted. The inventory shows only bounded IDs and receipt status.
+Doctor's `chair-context-contracts` probe checks these schema/API seams and bounds;
+it is not evidence of native consent or live delivery.
+
+### Required sealed two-pane Codex demonstration — operator-owned evidence
+
+This demo is **not performed by implementation tests**, the worker, or the
+controller sandbox. After final review/controller sealing, the chair records the
+final `seal_id`, exact sealed commit/tree digest, and retained checkout path in
+the demo evidence. Both existing Codex panes must execute the same sealed library
+bytes, without installing them or launching another coordinator/harness.
+A mutable workspace run is not proof tied to the final seal.
+
+In each existing pane, set `SEALED` to that controller-verified checkout and define
+this read-only code selector (do **not** change the pane's working directory):
+
+```sh
+sealed_context() {
+  python3 -B -c 'import runpy,sys;sys.path.insert(0,sys.argv.pop(1));runpy.run_module("control.orchestration.cli",run_name="__main__")' "$SEALED/lib" initiative "$@"
+}
+```
+
+1. **Existing Codex chair:** observe supervisor status and run
+   `sealed_context inventory --json`. Record the native sandbox/approval outcome
+   separately from Control's JSON and exit code; an unsupported/refused observation
+   is unavailable evidence, not a pass. Set `INITIATIVE`, `COORDINATOR`, and numeric
+   `GENERATION` from the existing repository initiative's current verified anchor.
+   Choose a new `MESSAGE` UUID and send harmless technical context:
+   `sealed_context message send "$INITIATIVE" --message-id "$MESSAGE" --coordinator-id "$COORDINATOR" --generation "$GENERATION" --body 'Sealed addressed-context demonstration; no action requested.' --json`.
+   Retain the returned sender identity, anchor, address, and content digest.
+2. **Existing Codex coordinator:** run `message pending` and then
+   `sealed_context message receive "$INITIATIVE" --message-id "$MESSAGE" --coordinator-id "$COORDINATOR" --generation "$GENERATION" --json`.
+   Prove the observed receipt exists and `acknowledgement` is null.
+3. Advance/read the ordinary event cursor using the existing `wait` verb. Then
+   `sealed_context wait "$INITIATIVE" --after "$TAIL" --timeout 0 --json`, with
+   `TAIL` taken from the latest returned durable event tail. Prove the message
+   remains in `pending_message_ids` despite the advanced cursor. Re-read with
+   `message receive` and show the identical body digest and still no ack.
+4. Only when the coordinator deliberately acknowledges, run
+   `sealed_context message ack "$INITIATIVE" --message-id "$MESSAGE" --digest "$DIGEST" --coordinator-id "$COORDINATOR" --generation "$GENERATION" --json`.
+   Show the explicit acknowledged receipt and absence from pending. Repeat ack
+   once to show idempotence. Preserve the transcript and exact exit codes alongside
+   the final seal identity; the independent reviewer/controller assesses it.
+
+No Claude/provider smoke, new coordinator, approval relaxation, worker sandbox
+widening, installation, integration, or terminal typing is part of this demo.
+If either existing actor cannot perform it under native controls, record precisely
+that unavailable evidence and leave the live acceptance item pending.

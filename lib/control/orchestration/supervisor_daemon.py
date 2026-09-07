@@ -307,6 +307,9 @@ def install_supervisor_service(
             "installed": False, "dry_run": True, "unit_path": str(path),
             "unit_body": body, "commands": commands, "message": message,
         }, 0
+    observed, observed_code = supervisor_status(config)
+    if observed_code == 2:
+        return {**observed, "installed": False}, 2
     systemctl = _resolve_command("systemctl", env, which)
     if systemctl is None:
         raise ValueError("systemctl is unavailable; cannot install supervisor service")
@@ -334,7 +337,7 @@ def install_supervisor_service(
             f"{stderr.decode('utf-8', errors='replace').strip() or f'exit {returncode}'}"
         )
     stopped, _stop_code = stop_supervisor(config)
-    if stopped.get("running") or _lock_held(config):
+    if _stop_code == 2 or stopped.get("running") or _lock_held(config):
         _restore_unit()
         raise ValueError("supervisor is still stopping; retry service installation")
     returncode, _stdout, stderr = _capture_service_command(
@@ -452,13 +455,15 @@ def _exclusive_lock(config: OrchestrationConfig) -> Iterator[bool]:
 
 
 def _lock_held(config: OrchestrationConfig) -> bool:
+    if not getattr(os, "O_NOFOLLOW", 0):
+        raise StoreError("safe no-follow lock observation is unsupported on this platform")
     root, managed_start = _control_root(config)
     with _directory_fd(root, create=False, managed_start=managed_start) as directory_fd:
         if directory_fd is None:
             return False
         try:
             fd = os.open(
-                "supervisor.lock", os.O_RDWR | getattr(os, "O_NONBLOCK", 0)
+                "supervisor.lock", os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
                 | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0),
                 dir_fd=directory_fd,
             )
@@ -469,9 +474,17 @@ def _lock_held(config: OrchestrationConfig) -> bool:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
-                return True
-            fcntl.flock(fd, fcntl.LOCK_UN)
-            return False
+                held = True
+            else:
+                held = False
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            # Do not report on an unlinked/replaced inode. Never follow a link
+            # in either the initial open or the post-probe name check.
+            before = os.fstat(fd)
+            after = os.stat("supervisor.lock", dir_fd=directory_fd, follow_symlinks=False)
+            if (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino):
+                raise StoreError("supervisor lock changed during observation")
+            return held
         finally:
             _close_quietly(fd)
 
@@ -698,25 +711,36 @@ def run_supervisor(
 
 
 def supervisor_status(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
-    retained = _read_status(config)
-    held = _lock_held(config)
-    if retained is None:
-        return {
-            "running": False, "lock_held": held, "pid": None, "live": False,
-            "last_tick_at": None, "last_tick_summary": None,
-            "message": "not running",
-        }, 1
+    retained = None
+    held = None
     try:
-        live = verify_process(retained["pid"], retained["process_identity"])
-    except HarnessError:
-        live = False
-    healthy = held and live
+        retained = _read_status(config)
+        held = _lock_held(config)
+        live = None if retained is None else verify_process(
+            retained["pid"], retained["process_identity"],
+        )
+        # A held lock without a verifiable owner can be startup, a hidden PID
+        # namespace, or stale evidence. None authorizes a duplicate or signal.
+        if held and not live:
+            raise StoreError("held supervisor lock has no observable matching process")
+        if live and not held:
+            raise StoreError("live supervisor process has no matching held lock")
+    except (OSError, StoreError, HarnessError, ValueError) as exc:
+        return {
+            "status": "unavailable", "running": None, "lock_held": held,
+            "pid": None if retained is None else retained["pid"], "live": None,
+            "last_tick_at": None, "last_tick_summary": None,
+            "message": "supervisor observation unavailable: " + _exception_message(exc),
+        }, 2
+    healthy = bool(held and live)
     return {
-        "running": healthy, "lock_held": held, "pid": retained["pid"],
-        "live": live, "started_at": retained["started_at"],
-        "last_tick_at": retained["last_tick_at"],
-        "last_tick_summary": retained["last_tick_summary"],
-        "message": "running" if healthy else "not running (stale status)",
+        "status": "running" if healthy else "stopped",
+        "running": healthy, "lock_held": held,
+        "pid": None if retained is None else retained["pid"], "live": bool(live),
+        "started_at": None if retained is None else retained["started_at"],
+        "last_tick_at": None if retained is None else retained["last_tick_at"],
+        "last_tick_summary": None if retained is None else retained["last_tick_summary"],
+        "message": "running" if healthy else "not running (stale status)" if retained else "not running",
     }, 0 if healthy else 1
 
 
@@ -736,6 +760,8 @@ def start_supervisor(
     config: OrchestrationConfig, env: Mapping[str, str],
 ) -> tuple[dict[str, Any], int]:
     current, code = supervisor_status(config)
+    if code == 2:
+        return current, code
     if code == 0:
         current["message"] = "already running"
         return current, 0
@@ -751,6 +777,8 @@ def start_supervisor(
         if code == 0:
             current["message"] = "started"
             return current, 0
+        if code == 2:
+            return current, code
         returncode = child.poll()
         if returncode is not None:
             if current["lock_held"]:
@@ -766,13 +794,17 @@ def start_supervisor(
 
 
 def stop_supervisor(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
+    current, code = supervisor_status(config)
+    if code == 2:
+        return {**current, "signalled": False}, 2
     retained = _read_status(config)
     if retained is None:
         return {"running": False, "signalled": False, "message": "not running"}, 1
     try:
         live = verify_process(retained["pid"], retained["process_identity"])
-    except HarnessError:
-        live = False
+    except HarnessError as exc:
+        return {"status": "unavailable", "running": None, "signalled": False,
+                "message": _exception_message(exc)}, 2
     if not live:
         return {
             "running": False, "pid": retained["pid"], "signalled": False,
@@ -785,8 +817,9 @@ def stop_supervisor(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
         }, 1
     try:
         live = verify_process(retained["pid"], retained["process_identity"])
-    except HarnessError:
-        live = False
+    except HarnessError as exc:
+        return {"status": "unavailable", "running": None, "signalled": False,
+                "message": _exception_message(exc)}, 2
     if not live:
         return {
             "running": False, "pid": retained["pid"], "signalled": False,
@@ -801,11 +834,11 @@ def stop_supervisor(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
                     "running": False, "pid": retained["pid"], "signalled": True,
                     "message": "stopped",
                 }, 0
-        except HarnessError:
+        except HarnessError as exc:
             return {
-                "running": False, "pid": retained["pid"], "signalled": True,
-                "message": "stopped",
-            }, 0
+                "status": "unavailable", "running": None, "pid": retained["pid"],
+                "signalled": True, "message": _exception_message(exc),
+            }, 2
     return {
         "running": True, "pid": retained["pid"], "signalled": True,
         "message": "termination requested; current tick is still finishing",
@@ -870,7 +903,7 @@ def supervisor_main(
     except (
         HarnessError, OrchestrationConfigError, StoreError, OSError, ValueError,
     ) as exc:
-        payload = {"running": False, "message": _exception_message(exc)}
+        payload = {"status": "unavailable", "running": None, "message": _exception_message(exc)}
         if json_output:
             _emit(payload, True)
         else:

@@ -40,7 +40,7 @@ from .model import (
     APPROVAL_CONTRACT, EVENT_CONTRACT, FORBIDDEN_ACTION_CLASSES,
     INITIATIVE_CONTRACT, INITIATIVE_CONTRACT_V2, MAX_CRITERION_BYTES, MUTATING_NODE_TYPES,
     NODE_NONTERMINAL_STATES,
-    ModelError, new_uuid, record_digest,
+    ModelError, canonical_uuid, new_uuid, record_digest,
     validate_approval, validate_event, validate_initiative, validate_node,
     validate_plan_record, validate_slug,
 )
@@ -103,6 +103,11 @@ Usage:
   asha initiative record-integration <id> --bundle BUNDLE_ID [--composed-verification] [--json]
   asha initiative record-integration <id> --seal SEAL_ID --abandoned --reason TEXT [--json]
   asha initiative record-integration <id> --fallback ATTESTATION.json [--json]
+  asha initiative inventory [--rows N] [--json]
+  asha initiative message send UUID --message-id UUID --body TEXT [--coordinator-id UUID --generation N] [--json]
+  asha initiative message pending UUID [--json]
+  asha initiative message receive UUID --message-id UUID [--coordinator-id UUID --generation N] [--json]
+  asha initiative message ack UUID --message-id UUID --digest SHA256 [--coordinator-id UUID --generation N] [--json]
   asha initiative list [--all] [--json]
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
   asha initiative doctor [--json]
@@ -2110,6 +2115,38 @@ def _approve_salvage_command(
     }, bool(options["json"])
 
 
+def _message_command(args, store, env, tmux):
+    from . import messages
+    if len(args) < 2 or args[0] not in {"send", "pending", "receive", "ack"}:
+        raise ValueError("message requires send|pending|receive|ack and an initiative UUID")
+    verb, initiative_id = args[:2]
+    # No legacy slug resolver: even negative pending reads must not allocate
+    # registry locks or fall through to a full historical listing.
+    canonical_uuid(initiative_id)
+    store.peek(initiative_id)
+    options = _parse_options(args[2:], flags={"json"})
+    allowed = {"json"} if verb == "pending" else {"json", "message_id", "coordinator_id", "generation"}
+    if verb == "send":
+        allowed |= {"body", "sender_identity"}
+    if verb == "ack":
+        allowed |= {"digest"}
+    _only(options, allowed, "message " + verb)
+    if verb == "pending":
+        return messages.pending(store, initiative_id)
+    _required(options, "message_id")
+    kwargs = {"env": env, "tmux": tmux,
+              "coordinator_id": options.get("coordinator_id"),
+              "generation": None if "generation" not in options else _positive(options["generation"], "generation")}
+    if verb == "send":
+        _required(options, "body")
+        return messages.send(store, initiative_id, message_id=options["message_id"],
+                             body=options["body"], sender_identity=options.get("sender_identity"), **kwargs)
+    if verb == "ack":
+        _required(options, "digest")
+        kwargs["digest"] = options["digest"]
+    return getattr(messages, verb)(store, initiative_id, options["message_id"], **kwargs)
+
+
 def _initiative_command(
     args: list[str], env: Mapping[str, str], *,
     jj: JjAdapter | None = None, tmux: TmuxAdapter | None = None,
@@ -2140,6 +2177,18 @@ def _initiative_command(
         return 0
     config = load_config(env)
     store = InitiativeStore(config)
+    if command == "inventory":
+        from .observation import current_activity, encode_activity
+        options = _parse_options(tail, flags={"json"})
+        _only(options, {"json", "rows"}, "inventory")
+        result = current_activity(config, tmux=tmux,
+                                  rows=_positive(options.get("rows", "50"), "rows"))
+        print(encode_activity(result).decode("utf-8"), end="")
+        return 0
+    if command == "message":
+        from .messages import terminal_safe
+        _json(terminal_safe(_message_command(tail, store, env, tmux)))
+        return 0
     if command == "create":
         result = _create(tail, config, store, jj or JjAdapter())
         json_output = result.pop("json")
