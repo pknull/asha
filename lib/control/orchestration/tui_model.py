@@ -8,6 +8,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable
 from ..tui_style import display_state, rail_tiers
+from .model import unanswered_operator_question
 
 
 PARKED_COORDINATOR_ATTENTION_SECONDS = 300
@@ -171,7 +172,9 @@ def _attention(view: dict[str, Any]) -> str:
     if any(item.get("state") == "requested" for item in view.get("approvals", [])):
         return "salvage approval"
     if state == "paused":
-        return "paused"
+        # Parked work is status, not demand: the STATE column and the held
+        # rail already say paused, and nothing here waits on the operator.
+        return "-"
     if parked_ready_nodes(view):
         return "coordinator parked"
     failed = sum(1 for node in view.get("nodes", []) if node.get("state") == "failed")
@@ -220,6 +223,33 @@ def _task_attention(task_row: Any) -> str:
     if blocker:
         return str(blocker)
     return "-"
+
+
+def _parked(view: dict[str, Any]) -> bool:
+    """A paused initiative parks its durable node demand until it resumes."""
+    return view["initiative"].get("state") == "paused"
+
+
+def _node_attention(
+    initiative_state: str | None,
+    node_state: str | None,
+    coordinator_parked: bool,
+    worker_attention: str,
+) -> str:
+    """WAITING ON text for one node row, identical on full and patched refreshes.
+
+    Durable node demand (a pending decision, a parked coordinator) is parked
+    with its initiative. A live worker observation (a prompt on screen, an exit
+    the operator must close, a process blocker) is never parked: that ask is
+    happening now regardless of the initiative's schedule.
+    """
+    if initiative_state == "paused":
+        return worker_attention
+    if coordinator_parked:
+        return "coordinator parked"
+    if node_state == "needs-input":
+        return "needs input"
+    return worker_attention
 
 
 def _link_maps(views: list[dict[str, Any]]) -> tuple[dict[str, tuple[str, str]], dict[str, str]]:
@@ -354,13 +384,35 @@ def attention_items(
             "slug": initiative.get("slug", ""),
         }
         state = initiative.get("state")
-        parked = set(parked_ready_nodes(view))
+        # A paused initiative parks its durable node demand (pending decisions,
+        # a parked coordinator); the live worker observations below stay listed.
+        parked_initiative = _parked(view)
+        parked = set() if parked_initiative else set(parked_ready_nodes(view))
         if state == "awaiting-plan-approval":
             plan = view.get("plan") or {}
             items.append({
                 **identity, "kind": "plan-approval",
                 "detail": f"plan revision {plan.get('revision', '?')} awaits approval",
                 "resolution": f"asha initiative approve {initiative['initiative_id']} --digest {plan.get('digest', '?')}",
+            })
+        if state == "needs-input":
+            # The head itself waits on the operator, with or without any node
+            # or approval demand beneath it: the tree shows `needs you`, so the
+            # verb lists it too. The question is quoted when its event is in
+            # the loaded tail; the durable head state is the demand either way.
+            question = unanswered_operator_question(
+                view.get("events", []) or [],
+                actions=view.get("actions", []) or [],
+                initiative=initiative,
+            )
+            asked = None if question is None else question.get("payload", {}).get("question")
+            items.append({
+                **identity, "kind": "operator-decision",
+                "detail": (
+                    f"operator decision: {asked}" if asked
+                    else "initiative waits on the operator"
+                ),
+                "resolution": f"answer, then asha initiative resume {initiative['initiative_id']}",
             })
         for approval in view.get("approvals", []) or []:
             if approval.get("state") == "requested":
@@ -385,7 +437,7 @@ def attention_items(
                         "or launch a replacement coordinator"
                     ),
                 })
-            if node.get("state") == "needs-input":
+            if node.get("state") == "needs-input" and not parked_initiative:
                 items.append({
                     **identity, "kind": "needs-input", "node_id": node["node_id"],
                     "detail": f"node {node['node_id']} needs a decision",
@@ -516,7 +568,13 @@ class InitiativesScreen:
             )
             children: list[InitiativeRow] = []
             parked = set(parked_ready_nodes(view))
-            if ("initiative", initiative_id) in self.expanded:
+            # Under `!` a head's expansion is not a filter: every node row is
+            # built and the ones waiting on a human are listed with their
+            # head, so a live prompt or an exit to close beneath a collapsed
+            # head stays discoverable. Attempt rows still follow their node's
+            # expansion (the node row already carries its latest attempt's
+            # ask), and the normal tree keeps the collapse exactly as before.
+            if self.attention_only or ("initiative", initiative_id) in self.expanded:
                 for node in sorted(view.get("nodes", []), key=lambda item: item["node_id"]):
                     attempt = _latest_attempt(view, node["node_id"])
                     worker, worker_attention, task_id, observed = _attempt_worker(attempt, by_attempt, task_index)
@@ -524,10 +582,9 @@ class InitiativesScreen:
                         "node", 1, node["node_id"], initiative_id,
                         node.get("goal", node["node_id"]), node.get("state", "?"),
                         node.get("type", "?"),
-                        attention=(
-                            "coordinator parked" if node["node_id"] in parked
-                            else worker_attention if node.get("state") != "needs-input"
-                            else "needs input"
+                        attention=_node_attention(
+                            initiative.get("state"), node.get("state"),
+                            node["node_id"] in parked, worker_attention,
                         ),
                         worker=worker, task_id=task_id, observed_at=observed,
                     )
@@ -579,7 +636,13 @@ class InitiativesScreen:
     def _narrow(
         self, candidates: list[InitiativeRow], head: InitiativeRow, needle: str,
     ) -> list[InitiativeRow]:
-        """Apply the text filter and the waiting-on-me filter; keep a matching head."""
+        """Apply the text filter and the waiting-on-me filter; keep a matching head.
+
+        With `attention_only` the candidates hold every node row whether or
+        not the head is expanded, so a head whose only demand sits on a node
+        row is kept for that row; a head with nothing waiting beneath it (a
+        parked idle initiative, an armed coordinator) still leaves.
+        """
         result = candidates
         if needle:
             matching = [
@@ -834,25 +897,33 @@ class InitiativesScreen:
                     continue
                 state = getattr(task_row, "display_state", "?")
                 attention = _task_attention(task_row)
-                if visible.kind in {"node", "attempt"} and state == "idle":
-                    view = self.view_for(visible.initiative_id)
+                view = (
+                    self.view_for(visible.initiative_id)
+                    if visible.kind in {"node", "attempt"} else None
+                )
+                if view is not None and state == "idle":
                     attempt = None
-                    if view is not None and visible.kind == "attempt":
+                    if visible.kind == "attempt":
                         attempt = next(
                             (item for item in view.get("attempts", [])
                              if item["attempt_id"] == visible.id),
                             None,
                         )
-                    elif view is not None:
+                    else:
                         attempt = _latest_attempt(view, visible.id)
                     if attempt is not None and attempt.get("state") in {
                         "reported", "awaiting-exit",
                     }:
                         attention = "awaiting exit (X closes)"
-                if visible.kind == "node" and visible.attention == "coordinator parked":
-                    attention = visible.attention
-                elif visible.kind == "node" and visible.state == "needs-input":
-                    attention = "needs input"
+                if visible.kind == "node":
+                    # The views did not change on this patch, so the node's
+                    # own state and the parked-coordinator verdict computed
+                    # at build time still hold; only the worker fact moved.
+                    attention = _node_attention(
+                        None if view is None else view["initiative"].get("state"),
+                        visible.state, visible.attention == "coordinator parked",
+                        attention,
+                    )
                 observed = getattr(
                     getattr(task_row, "observation", None), "observed_at", None,
                 )

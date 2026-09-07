@@ -37,6 +37,7 @@ from .model import (
     canonical_uuid,
     new_uuid,
     record_digest,
+    unanswered_operator_question,
     validate_action,
     validate_approval,
     validate_attempt,
@@ -505,12 +506,118 @@ def _activate(
     return {"status": store.peek(initiative_id)["state"], "already_running": False}
 
 
-def _pause(store: InitiativeStore, initiative_id: str) -> dict[str, Any]:
+# Initiative states that may be parked.  The coordinator may park only
+# `running` work; see `_pause` for the operator-only edge.
+_PAUSABLE_INITIATIVE_STATES = frozenset({"running", "needs-input"})
+_RESUMABLE_INITIATIVE_STATES = frozenset({"paused", "needs-input"})
+# The local actions whose effect is one initiative head write followed by the
+# `initiative-state-changed` edge that explains it.  Both retain an origin
+# proof before the head write and bind the edge to the action, so a controller
+# that dies between the two writes is recovered from that proof; see
+# `_parking_origin` and `_reconcile_parking_action`.
+_PARKING_ACTION_CLASSES = frozenset({"pause", "resume"})
+# Head writers that park `running` work with no `initiative-state-changed`
+# edge, named by the actor identity each stamps on every event it journals:
+# `scheduler.pause_for_breaker` journals as `scheduler` on every breaker route
+# (`limit-reached`, `storage-threshold-reached`, `reconciliation-conflict`, or
+# whatever event type a caller names) and `seals.reconcile_seal_drift` journals
+# as `seal-reconciler`.  Each writes its own event beside the head write, and
+# writes it again when the initiative is already paused, so once one of them
+# has journaled after an interrupted running-origin pause's proof a single head
+# write cannot be told apart from theirs.  The writer's identity is what its
+# route cannot change; an event name is chosen by the caller and is not proof.
+_UNJOURNALED_RUNNING_PARK_WRITERS = frozenset({
+    ("controller", "scheduler"), ("controller", "seal-reconciler"),
+})
+
+
+def _pause_refusal(state: str, actor_kind: str) -> str | None:
+    """Why `actor_kind` may not park an initiative in `state`, or None."""
+    if state not in _PAUSABLE_INITIATIVE_STATES:
+        return "only a running or needs-input initiative may pause"
+    if state == "needs-input" and actor_kind != "operator":
+        return "only the operator may park a needs-input initiative"
+    return None
+
+
+def _head_origin(kind: str, head: Mapping[str, Any]) -> dict[str, Any]:
+    """The exact initiative head a pause or resume write replaces."""
+    return {
+        f"{kind}_from": head["state"],
+        f"{kind}_from_revision": head["state_revision"],
+        f"{kind}_from_sequence": head["last_event_sequence"],
+    }
+
+
+def _parking_origin(
+    store: InitiativeStore, initiative_id: str, kind: str,
+) -> dict[str, Any]:
+    """Durable origin proof for a pause or resume, retained before any effect.
+
+    The head write that parks or resumes an initiative names no action, and
+    the `initiative-state-changed` edge that explains it is a second write.
+    A controller that dies between them leaves a head the journal does not
+    explain.  So the dispatching outcome retains the exact head the action
+    observed (state, revision, and journal tail) and, for a parked question,
+    the question event the park leaves unanswered.  `_pause` will not write
+    without it; `_resume` refreshes it after its own reconciliation, together
+    with its target, immediately before writing.
+    """
+    head = store.peek(initiative_id)
+    origin = _head_origin(kind, head)
+    if kind == "pause" and head["state"] == "needs-input":
+        question = _open_operator_question(store, initiative_id, head)
+        origin["parked_question_event_id"] = (
+            None if question is None else question["event_id"]
+        )
+    return origin
+
+
+def _refresh_running_readiness(store: InitiativeStore, initiative_id: str) -> None:
+    """Re-derive node readiness after an initiative returns to `running`."""
+    from .scheduler import refresh_readiness
+
+    refresh_readiness(store, initiative_id)
+    try:
+        from .readiness import ReadinessError, bind_readiness
+
+        bind_readiness(store, initiative_id)
+    except ReadinessError:
+        pass
+
+
+def _pause(store: InitiativeStore, action: Mapping[str, Any]) -> dict[str, Any]:
+    """Park a running or needs-input initiative without touching its pending work.
+
+    Pause is scheduling and operator-attention parking, never a resolution:
+    every node, attempt, decision, approval, seal, and task identity stays as
+    it is, no process is stopped, and no prompt is answered.  The
+    `needs-input -> paused` edge is operator-only.  `submit_action` has already
+    fenced a coordinator envelope by the time this runs, so the stored
+    `actor_kind` is the verified identity, and this conditional is the boundary
+    that owns the edge: widening the state check alone would let a live
+    coordinator park the operator's own question.
+
+    The dispatching outcome already retains the head this write replaces
+    (`_parking_origin`), so the head write and the park edge after it are
+    both bound to that proof and the edge names the action.  A controller
+    that dies between the two is recovered from the proof by
+    `_reconcile_parking_action`, never from the parked head alone.
+    """
+    initiative_id = action["initiative_id"]
     initiative = store.peek(initiative_id)
     if initiative["state"] == "paused":
         return {"status": "paused", "already_paused": True}
-    if initiative["state"] != "running":
-        raise ActionRefused("only a running initiative may pause")
+    reason = _pause_refusal(initiative["state"], action["actor_kind"])
+    if reason is not None:
+        raise ActionRefused(reason)
+    retained = action_outcome(action)
+    if any(
+        retained.get(key) != value
+        for key, value in _head_origin("pause", initiative).items()
+    ):
+        raise ActionError("pause origin proof does not name the current initiative head")
+    paused_from = initiative["state"]
     changed = copy.deepcopy(initiative)
     changed.update({
         "state": "paused",
@@ -519,51 +626,122 @@ def _pause(store: InitiativeStore, initiative_id: str) -> dict[str, Any]:
     })
     store.save_initiative(changed, expected_digest=record_digest(initiative))
     append_event(
-        store, initiative_id, "initiative-state-changed", [initiative_id],
-        {"from": "running", "to": "paused"},
+        store, initiative_id, "initiative-state-changed",
+        [initiative_id, action["action_id"]],
+        {"from": paused_from, "to": "paused"},
         actor_kind="controller", actor_id="action-broker",
     )
-    return {"status": "paused", "already_paused": False}
+    return {"status": "paused", "already_paused": False, "paused_from": paused_from}
 
 
-def _resume(
-    store: InitiativeStore, initiative_id: str, action_id: str,
-) -> dict[str, Any]:
+def _open_operator_question(
+    store: InitiativeStore, initiative_id: str, head: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    """The operator question still open, read from every durable record.
+
+    One reader for the park proof, the restoration, and the attention verb:
+    the journal, the retained actions, and the head the actions observed are
+    all handed to `unanswered_operator_question` so a park, the resume that
+    follows it, and the operator surface can never disagree about whether a
+    question was answered.
+    """
+    return unanswered_operator_question(
+        store.list_events_snapshot(initiative_id),
+        actions=store.list_actions_snapshot(initiative_id),
+        initiative=head,
+    )
+
+
+def _parked_operator_question(
+    store: InitiativeStore, initiative_id: str,
+) -> dict[str, Any] | None:
+    """The operator question the current park left unanswered, or None.
+
+    Derived from the durable records alone: the newest
+    `initiative-state-changed` edge into `paused` must have left
+    `needs-input`, and the newest `approval-requested` operator-decision must
+    still be open under `unanswered_operator_question`: no `needs-input ->
+    running` answer after it, no later edge proving the initiative ran again,
+    and no retained answer whose own `running` head write is proven by the
+    head-write accounting its origin proof anchors.  A needs-input head that
+    came from a paused seal has no question record and does not qualify; its
+    node decision re-exposes from the node's own state after resume.
+    """
+    events = store.list_events_snapshot(initiative_id)
+    parks = [
+        event for event in events
+        if event["type"] == "initiative-state-changed"
+        and event["payload"].get("to") == "paused"
+    ]
+    if not parks or parks[-1]["payload"].get("from") != "needs-input":
+        return None
+    return _open_operator_question(store, initiative_id, store.peek(initiative_id))
+
+
+def _resume(store: InitiativeStore, action: Mapping[str, Any]) -> dict[str, Any]:
+    """Resume parked or waiting work through live reconciliation.
+
+    `paused` returns to `running`, or back to `needs-input` when the park began
+    there with an operator question nothing has answered since: the question
+    was parked, not resolved, and it becomes the operator's attention again
+    exactly as before the pause.  `needs-input` returns to `running`; that edge
+    is the operator's answer, as documented for `request-decision`.
+
+    Reconciliation runs first and may move the journal, so the target, the
+    restored question, and the exact head this write replaces are retained in
+    the action only after it, immediately before the head write; the edge
+    names the action.  A controller that dies after that proof is recovered
+    from it by `_reconcile_parking_action`, which completes a restoration as
+    its own `paused -> needs-input` and never as the `running` a later answer
+    leaves behind.
+    """
     from .reconcile import reconcile_live
-    from .scheduler import refresh_readiness
 
+    initiative_id = action["initiative_id"]
     initiative = store.peek(initiative_id)
     if initiative["state"] == "running":
         return {"status": "running", "already_running": True}
-    if initiative["state"] not in {"paused", "needs-input"}:
+    if initiative["state"] not in _RESUMABLE_INITIATIVE_STATES:
         raise ActionRefused("only a paused or needs-input initiative may resume")
     resumed_from = initiative["state"]
-    reconcile_actions(store, initiative_id, exclude_action_id=action_id)
+    reconcile_actions(store, initiative_id, exclude_action_id=action["action_id"])
     live = reconcile_live(store, initiative_id)
     if live["conflicts"]:
         raise ActionRefused("resume requires a clean live reconciliation")
     initiative = store.peek(initiative_id)
     if initiative["state"] != resumed_from:
         raise ActionRefused("live reconciliation changed the initiative state")
+    question = (
+        _parked_operator_question(store, initiative_id)
+        if resumed_from == "paused" else None
+    )
+    target = "running" if question is None else "needs-input"
+    edge: dict[str, Any] = {"from": resumed_from, "to": target}
+    if question is not None:
+        edge["restored_question_event_id"] = question["event_id"]
+    set_action_state(
+        store, action, "dispatching",
+        {
+            **action_outcome(action),
+            **_head_origin("resume", initiative),
+            "resume_to": target,
+            "restored_question_event_id": edge.get("restored_question_event_id"),
+        },
+    )
     changed = copy.deepcopy(initiative)
     changed.update({
-        "state": "running",
+        "state": target,
         "state_revision": initiative["state_revision"] + 1,
         "updated_at": _now(),
     })
     store.save_initiative(changed, expected_digest=record_digest(initiative))
     append_event(
-        store, initiative_id, "initiative-state-changed", [initiative_id],
-        {"from": resumed_from, "to": "running"},
+        store, initiative_id, "initiative-state-changed",
+        [initiative_id, action["action_id"]], edge,
         actor_kind="controller", actor_id="action-broker",
     )
-    refresh_readiness(store, initiative_id)
-    try:
-        from .readiness import ReadinessError, bind_readiness
-
-        bind_readiness(store, initiative_id)
-    except ReadinessError:
-        pass
+    if target == "running":
+        _refresh_running_readiness(store, initiative_id)
     return {"status": store.peek(initiative_id)["state"], "already_running": False}
 
 
@@ -1666,9 +1844,9 @@ def _execute_local(
     if kind == "activate-initiative":
         return _activate(store, action)
     if kind == "pause":
-        return _pause(store, action["initiative_id"])
+        return _pause(store, action)
     if kind == "resume":
-        return _resume(store, action["initiative_id"], action["action_id"])
+        return _resume(store, action)
     if kind == "stop-attempt":
         return _stop_attempt(store, action["initiative_id"], payload["attempt_id"])
     if kind == "cancel-node":
@@ -1895,6 +2073,12 @@ def submit_action(
                 "controller_pid": os.getpid(),
                 "controller_start_ticks": _process_start_ticks(os.getpid()),
             })
+        if action["action_class"] in _PARKING_ACTION_CLASSES:
+            # The exact head a pause or resume replaces, retained before the
+            # head write it cannot otherwise be tied to; see `_parking_origin`.
+            dispatching_outcome.update(
+                _parking_origin(store, initiative_id, action["action_class"]),
+            )
         if action["action_class"] == "finalize":
             dispatching_outcome["finalize_from"] = initiative["state"]
         if action["action_class"] == "archive":
@@ -2011,6 +2195,232 @@ def _attempt_to_running(
         )
         return changed
     return attempt
+
+
+def _refuse_recovered(
+    store: InitiativeStore,
+    action: dict[str, Any],
+    reason: str,
+    *,
+    status: str = "not-started",
+) -> dict[str, Any]:
+    """Refuse an interrupted action reconciliation proved had no effect."""
+    action = set_action_state(
+        store, action, "refused",
+        {**action_outcome(action), "status": status, "reason": reason},
+    )
+    append_event(
+        store, action["initiative_id"], "action-refused", [action["action_id"]],
+        {"action_class": action["action_class"], "reason": reason},
+        actor_kind="controller", actor_id="action-reconciler",
+    )
+    return action
+
+
+def _observed_origin_after(
+    store: InitiativeStore,
+    initiative_id: str,
+    action_id: str,
+    origin: str,
+    sequence: int,
+) -> bool:
+    """Whether another pause or resume saw `origin` after `sequence`.
+
+    Every parking action retains the head it observed under the initiative
+    lock.  One journaled after this action's proof that still saw the origin
+    proves this action's head write never happened: had it, the later action
+    would have observed the target instead.
+    """
+    for other in store.list_actions_snapshot(initiative_id):
+        if (
+            other["action_id"] == action_id
+            or other["action_class"] not in _PARKING_ACTION_CLASSES
+        ):
+            continue
+        retained = action_outcome(other)
+        kind = other["action_class"]
+        observed = retained.get(f"{kind}_from_sequence")
+        if (
+            retained.get(f"{kind}_from") == origin
+            and isinstance(observed, int) and not isinstance(observed, bool)
+            and observed > sequence
+        ):
+            return True
+    return False
+
+
+def _durable_outcome(outcome: Mapping[str, Any]) -> dict[str, Any]:
+    """The retained effect proof without the interruption verdict laid over it.
+
+    `reconcile_actions` and the in-line failure path in `submit_action` mark a
+    dispatching action indeterminate by writing `status` and `reason` over its
+    retained outcome.  Those two keys describe the interruption, not the
+    effect.  A completion states its own status and has no reason, so the
+    outcome it completes from is the proof alone: exactly the keys an
+    uninterrupted completion of the same action would carry.
+    """
+    return {
+        key: value for key, value in outcome.items() if key not in {"status", "reason"}
+    }
+
+
+def _parking_proof(action: dict[str, Any]) -> dict[str, Any] | None:
+    """The retained origin proof of a pause or resume, or None if it has none."""
+    kind = action["action_class"]
+    outcome = action_outcome(action)
+    origin = outcome.get(f"{kind}_from")
+    revision = outcome.get(f"{kind}_from_revision")
+    sequence = outcome.get(f"{kind}_from_sequence")
+    if not isinstance(origin, str) or any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (revision, sequence)
+    ):
+        return None
+    return {
+        "outcome": outcome, "origin": origin,
+        "head_writes_before": revision - sequence, "sequence": sequence,
+    }
+
+
+def _settle_parking_effect(
+    store: InitiativeStore,
+    action: dict[str, Any],
+    proof: Mapping[str, Any],
+    target: str,
+    edge: Mapping[str, Any],
+) -> str | dict[str, Any]:
+    """Name the durable proof of one parking head write, or settle without it.
+
+    Returns `retained-edge` when the action's own edge is journaled and
+    `durable-state` after journaling the missing edge for a head write only
+    this action can own.  Otherwise returns the action as reconciliation
+    leaves it: refused when the proof shows the write never happened, and
+    unchanged when nothing durable proves who wrote the head.
+    """
+    initiative_id = action["initiative_id"]
+    origin, sequence = proof["origin"], proof["sequence"]
+    events = store.list_events_snapshot(initiative_id)
+    edges = [event for event in events if event["type"] == "initiative-state-changed"]
+    if any(action["action_id"] in event["subject_ids"] for event in edges):
+        return "retained-edge"
+    head = store.peek(initiative_id)
+    head_writes = (
+        head["state_revision"] - head["last_event_sequence"] - proof["head_writes_before"]
+    )
+    never_wrote = f"{action['action_class']} was interrupted before its durable state change"
+    if head_writes == 0:
+        return _refuse_recovered(store, action, never_wrote)
+    if head_writes != 1:
+        return action
+    if (
+        head["state"] != target
+        or any(
+            event["sequence"] > sequence and event["payload"].get("from") == origin
+            for event in edges
+        )
+        or _observed_origin_after(
+            store, initiative_id, action["action_id"], origin, sequence,
+        )
+    ):
+        return _refuse_recovered(store, action, never_wrote)
+    if origin == "running" and any(
+        event["sequence"] > sequence
+        and (event["actor_kind"], event["actor_id"]) in _UNJOURNALED_RUNNING_PARK_WRITERS
+        for event in events
+    ):
+        return action
+    append_event(
+        store, initiative_id, "initiative-state-changed",
+        [initiative_id, action["action_id"]], dict(edge),
+        actor_kind="controller", actor_id="action-reconciler",
+    )
+    return "durable-state"
+
+
+def _reconcile_parking_action(
+    store: InitiativeStore, initiative_id: str, action: dict[str, Any],
+) -> dict[str, Any]:
+    """Settle an interrupted pause or resume from its own durable proof.
+
+    The action's dispatching outcome names the head it observed
+    (`_parking_origin`; a resume refreshes it after reconciliation together
+    with its target and restored question, immediately before writing).  Three
+    durable facts decide the action and nothing else does: the
+    `initiative-state-changed` edge bound to it, the number of head writes
+    since its proof, and the head's state.  `state_revision` advances on every
+    head write and on every event while `last_event_sequence` advances only on
+    events, so the growth of their difference counts the head writes.
+
+    With its edge retained, the effect is complete.  With no head write since
+    the proof, the action never had an effect and is refused.  With exactly
+    one head write the action is the writer only when the head is its target
+    and no other writer can own that write: a foreign edge out of the origin,
+    a later pause or resume that still observed the origin, or a writer that
+    parks running work without an edge (`_UNJOURNALED_RUNNING_PARK_WRITERS`,
+    known by the identity it journals under, never by the event name its
+    caller chose) each contradict it.  More than one head write, or such a
+    writer's ambiguous journal, leaves the action indeterminate rather than
+    completed by a head nobody proved it wrote; an interruption before the
+    action's own write is never completed from a foreign one.  A later
+    operator answer therefore never completes an older restoration: its head
+    write and edge are its own, and the restoration completes as the
+    `paused -> needs-input` it made.  An action journaled before this proof
+    existed carries nothing to bind it to the head and is left as it is.
+    A completion carries the retained proof and its own result; the
+    transient `status`/`reason` an interruption wrote over the proof are not
+    part of the completed record (`_durable_outcome`).
+    """
+    kind = action["action_class"]
+    proof = _parking_proof(action)
+    if proof is None:
+        return action
+    outcome, origin = _durable_outcome(proof["outcome"]), proof["origin"]
+    if kind == "pause":
+        if origin == "paused":
+            return set_action_state(
+                store, action, "completed",
+                {**outcome, "status": "paused", "already_paused": True},
+            )
+        reason = _pause_refusal(origin, action["actor_kind"])
+        if reason is not None:
+            return _refuse_recovered(store, action, reason, status="refused")
+        target = "paused"
+        edge: dict[str, Any] = {"from": origin, "to": target}
+        completion: dict[str, Any] = {
+            "status": target, "already_paused": False, "paused_from": origin,
+        }
+    else:
+        if origin == "running":
+            return set_action_state(
+                store, action, "completed",
+                {**outcome, "status": "running", "already_running": True},
+            )
+        if origin not in _RESUMABLE_INITIATIVE_STATES:
+            return _refuse_recovered(
+                store, action, "only a paused or needs-input initiative may resume",
+                status="refused",
+            )
+        target = outcome.get("resume_to")
+        if not isinstance(target, str):
+            return _refuse_recovered(
+                store, action, "resume was interrupted before its durable state change",
+            )
+        edge = {"from": origin, "to": target}
+        restored = outcome.get("restored_question_event_id")
+        if restored is not None:
+            edge["restored_question_event_id"] = restored
+        completion = {"status": target, "already_running": False}
+    settled = _settle_parking_effect(store, action, proof, target, edge)
+    if not isinstance(settled, str):
+        return settled
+    if (
+        kind == "resume" and target == "running"
+        and store.peek(initiative_id)["state"] == "running"
+    ):
+        _refresh_running_readiness(store, initiative_id)
+    return set_action_state(
+        store, action, "completed", {**outcome, **completion, "reconciled": settled},
+    )
 
 
 def reconcile_actions(
@@ -2426,13 +2836,12 @@ def reconcile_actions(
                     continue
                 results.append(action)
                 continue
+            if kind in _PARKING_ACTION_CLASSES:
+                results.append(_reconcile_parking_action(store, initiative_id, action))
+                continue
             # Local effects are reconciled by their durable target state.
             initiative = store.peek(initiative_id)
-            completed = (
-                (kind == "activate-initiative" and initiative["state"] == "running")
-                or (kind == "pause" and initiative["state"] == "paused")
-                or (kind == "resume" and initiative["state"] == "running")
-            )
+            completed = kind == "activate-initiative" and initiative["state"] == "running"
             if kind == "cancel-node":
                 completed = store.read_node(
                     initiative_id, outcome["payload"]["node_id"]

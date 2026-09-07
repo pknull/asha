@@ -173,7 +173,7 @@ kind:
 |---|---|
 | `Up`/`Down`, `Right`/`Left` | Move; expand or collapse (`Left` on a child returns to its parent). |
 | `Enter` | Room row: attach it. Initiative row: attach its coordinator. Node/attempt/task row: open the worker popup. |
-| `!` | Show only rows waiting on a human (plan approvals, needs-input, workers at prompts, published-awaiting-exit). |
+| `!` | Show only rows waiting on a human (plan approvals, needs-input, requested approvals, workers at prompts, published-awaiting-exit). A head's expansion is not a filter here: a node row waiting on you is listed with its head whether or not the head is expanded in the normal tree (attempt rows still follow their node's expansion; the node row already carries its latest attempt's ask). A paused initiative is status, not demand: its head and its parked node decisions leave this filter until it resumes, while a worker still at a prompt, an attempt awaiting exit, or a requested approval beneath it stays, collapsed or not. |
 | `n` | New intent: Control starts a coordinator session at the projects root with your intent as its first message. |
 | `o` | Open the Room form: enter an exact initialized project path or choose an indexed project, then set its name, installed harness, and opening prompt. Launch stays detached. |
 | `N` | Open the ad-hoc task-start form. |
@@ -183,7 +183,7 @@ kind:
 | `r` | Initiative row: reconcile it. Task row: reconcile the task. |
 | `d` | jj diff summary of the selected row's linked workspace. |
 | `e`, `c`, `v`, `t` | Initiative panes: events, candidate seals, review + verification evidence, retained storage. |
-| `p` / `s` | After `yes`: pause/resume the initiative / stop the selected attempt's task. |
+| `p` / `s` | After exact `yes`: `p` parks a running or needs-input initiative, or resumes a paused one (back to `needs-input` when the park left an operator question unanswered, otherwise `running`; the result line names the state); `s` stops the selected attempt's task. Anything else records nothing. |
 | `A` | Toggle the `active` / `all` lifecycle scope for tasks. |
 | `/` | Filter rows. `?` help. `q` exits the TUI only. |
 
@@ -208,7 +208,88 @@ launches only after all required fields are valid.
 
 `asha initiative attention [--json]` is the CLI twin of `!`: one list of
 everything waiting on a human across initiatives and tasks, each item naming
-its resolution. The tree and the verb share one assembler and cannot disagree.
+its resolution. A needs-input head is listed as `operator-decision`, quoting
+the coordinator's question when its event is in the loaded tail, with or
+without any node decision or approval beneath it. The tree and the verb share
+one assembler and cannot disagree.
+
+### Parking waiting work
+
+`pause` is scheduling and operator-attention parking, never a resolution. A
+running or needs-input initiative moves to `paused` with one
+`initiative-state-changed` event naming the actual source state; every node,
+attempt, decision, approval, seal, and linked task stays byte-for-byte as it
+was, no worker process is stopped, and no prompt is answered. Pausing parked
+work is idempotent and journals no second edge. The `needs-input -> paused`
+edge is operator-only: a live coordinator generation may still pause running
+work, it cannot park the operator's own question, and a fenced generation is
+refused before the executor as before.
+
+While parked, the initiative is status, not demand. Its head leaves the
+`need you` count, the `!` filter, and `asha initiative attention`, and so do
+its durable node demands: a node in `needs-input` and a coordinator parked on
+a ready node. Live observations are never parked. A worker still at a prompt,
+an attempt awaiting exit (`X` closes it), a process blocker, or a requested
+salvage approval stays visible beneath the paused head, and a prompt an ended
+task once showed is history, not a live ask. Under `!` those live asks are
+listed with their paused head even while it is collapsed; the head still
+counts as `paused`, never as `need you`, and an idle parked head stays out.
+The five-second full refresh and the task-only incremental patch apply the
+same rule, so the header count, the filter, the verb, and the tree cannot
+drift apart.
+
+`resume` runs the same live reconciliation as before, refuses on a live
+identity conflict, and returns the initiative to `running`, with one
+exception read from the durable records: when the park began in `needs-input`
+because of a coordinator `request-decision` that nothing has answered since,
+`resume` returns the initiative to `needs-input` and journals
+`paused -> needs-input` naming the restored question event. The question was
+parked, not answered, so it is the operator's attention again in the head, the
+`need you` count, `!`, and `asha initiative attention`; the next `resume`
+answers it exactly as before parking.
+
+An answered question is not restored when the records prove the answer ran.
+The answer is the `needs-input -> running` edge, and because only an answer
+takes a waiting initiative back to `running`, any later edge that leaves or
+enters `running` proves the wait ended even when a controller died inside the
+answer before its own edge landed. One writer leaves no such edge at all: the
+paused-seal outcome writer returns a `running` head to `needs-input` without
+journaling one. For that case the answering `resume` is read as well as the
+journal. It retains the exact head it observed immediately before its own
+write, `state_revision` counts every head write while `last_event_sequence`
+counts only events, and the growth of their difference between that
+observation and the next observed head counts the head writes in between. A
+`needs-input` head can only be moved by a pause, a resume, or a node
+continuation, and each pause and resume retains its own observation, so a
+window that holds no journaled `initiative-state-changed` edge, no other
+unsettled pause or resume, and at least one head write leaves the answer as
+the only writer of the head it was about to write. That interrupted answer
+stays indeterminate rather than being completed or invented, and no edge is
+journaled in its name; only the question it discharged is not restored.
+
+The proof is the head write, never the retained intent, which is written
+before any effect. When that evidence is absent or ambiguous the question is
+restored and the operator answers it again: an answer with no head write
+after its proof, a competing pause or resume that could own the write, a
+journaled edge in the window, an action bound to a superseded plan or another
+initiative, and an event tail that no longer reaches the head all leave the
+question open. Restoring an answered question costs one repeated answer;
+discharging an unanswered one loses the operator's turn, so the ambiguous case
+takes the first. A needs-input head that came from a paused seal returns to
+`running`, its node decision re-exposed from the node's own record.
+Unresolved node decisions, approvals, and worker prompts reappear from their
+own records because nothing cleared them.
+
+A pause or resume the controller dies inside is settled by `reconcile` from
+the action's own durable proof: the head it observed, the head writes since,
+and the edge bound to it. With its edge retained the effect is complete; with
+no head write since its proof it is refused as never started; with exactly
+one head write it completes only when nothing else can own that write. The
+breaker and seal-drift writers park running work with no edge and are known
+by the identity they journal under, on every route they take, so an interrupted
+running-origin pause followed by one of them stays indeterminate instead of
+being completed from a foreign write. A completed recovery records the proof
+and the result, not the interruption's transient status or reason.
 
 The default `active` scope does not load or reconcile archived tasks. `A`
 switches to `all`; archived records use their durable lifecycle projection and
@@ -238,7 +319,7 @@ an unchanged sample does not rebuild or repaint the tree.
 | `d` | Read-only jj diff summary of the selected node's linked task workspace. |
 | `e`, `c`, `v`, `t` | Toggle a pane: recent events, candidate seals, review + verification evidence, retained storage (sampled on demand). |
 | `a` | Perform the operator act this row is waiting for: decide a pending plan approval (type `approve` or `reject` exactly), activate an approved initiative, or archive a terminal one. Every form is recorded as operator actor `tui`. |
-| `p` | After `yes`, pause a running initiative or resume a paused / needs-input one. |
+| `p` | After `yes`, park a running or needs-input initiative, or resume a paused one. The confirmation names the action that will be recorded; anything but exact `yes` is a no-op. |
 | `s` | After `yes`, ask Control to stop the selected attempt's task gracefully. |
 | `/` | Filter initiative rows without mutating state. |
 | `?` | Help for this mode. `q` exits the TUI only. |

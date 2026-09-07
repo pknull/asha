@@ -1607,6 +1607,11 @@ def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[st
             "attempts": current["attempts"],
             "links": current["links"],
             "events": store.list_events_snapshot(initiative_id)[-50:],
+            # The same retained actions the CLI snapshot already carries: the
+            # operator-decision verb reads an interrupted answer's own origin
+            # proof beside the journal, so the tree, the `!` filter, and
+            # `asha initiative attention` classify a question identically.
+            "actions": current["actions"],
             "coordinator": coordinator,
             "coordinator_live": coordinator_live,
             "seals": store.list_seals_snapshot(initiative_id),
@@ -4791,10 +4796,25 @@ def _execute_initiative_intent(
     if intent.kind is IntentKind.INIT_PAUSE:
         from .orchestration.actions import action_outcome, build_action_document, submit_action
 
-        target = "resume" if initiative["state"] in {"paused", "needs-input"} else "pause"
+        # `p` parks waiting work as readily as running work: only a paused
+        # initiative resumes. A needs-input initiative is parked, never
+        # accidentally resumed, and the confirmation names the action that
+        # will actually be recorded. Resume restores a parked, unanswered
+        # operator question as needs-input; the result line shows the state.
+        target = "resume" if initiative["state"] == "paused" else "pause"
+        effect = (
+            "Parks scheduling and attention; decisions, approvals, seals and "
+            "workers stay exactly as they are."
+            if target == "pause" else
+            "Reconciles live state first; unresolved demands reappear, and a "
+            "parked unanswered operator question returns to needs-input."
+        )
         answer = _prompt_line(
             stdscr, curses_module, model, "Confirm [yes/N]: ", title=f"{target.capitalize()} initiative",
-            context=f"Initiative: {initiative['slug']} ({initiative['initiative_id']})\nState: {initiative['state']}",
+            context=(
+                f"Initiative: {initiative['slug']} ({initiative['initiative_id']})\n"
+                f"State: {initiative['state']}\n{effect}"
+            ),
             maximum=4,
         )
         if answer != "yes":

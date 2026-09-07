@@ -688,6 +688,9 @@ class OrchestrationModelTests(unittest.TestCase):
                 ("awaiting-plan-approval", "approved"), ("approved", "running"),
                 ("running", "needs-input"), ("running", "paused"),
                 ("needs-input", "running"), ("paused", "running"),
+                # U5: waiting work may be parked without being answered, and
+                # resume restores a parked unanswered operator question.
+                ("needs-input", "paused"), ("paused", "needs-input"),
                 ("running", "ready-for-integration"), ("running", "partial"),
                 ("running", "failed"), ("draft", "failed"),
                 ("draft", "partial"), ("planning", "failed"),
@@ -1206,6 +1209,410 @@ class OrchestrationModelTests(unittest.TestCase):
                 future["contract"] = record["contract"].replace(".v1", ".v2")
                 with self.assertRaises(model.ModelError):
                     validator(future)
+
+
+class UnansweredOperatorQuestionTests(unittest.TestCase):
+    """The journal alone decides whether an operator question is still open."""
+
+    @staticmethod
+    def question(sequence: int, text: str) -> dict:
+        return {
+            "sequence": sequence, "event_id": f"{sequence:08d}-1111-4111-8111-111111111111",
+            "type": "approval-requested",
+            "payload": {"kind": "operator-decision", "subject_id": "implementation-a", "question": text},
+        }
+
+    @staticmethod
+    def edge(sequence: int, source: str, target: str) -> dict:
+        return {
+            "sequence": sequence, "event_id": f"{sequence:08d}-2222-4222-8222-222222222222",
+            "type": "initiative-state-changed", "payload": {"from": source, "to": target},
+        }
+
+    def test_only_the_needs_input_to_running_edge_answers_a_question(self) -> None:
+        from lib.control.orchestration.model import unanswered_operator_question
+
+        asked = self.question(3, "Which base?")
+        self.assertIsNone(unanswered_operator_question([]))
+        self.assertEqual(unanswered_operator_question([asked]), asked)
+        # Parking answers nothing, and neither does the restoration after a park.
+        self.assertEqual(
+            unanswered_operator_question([asked, self.edge(4, "needs-input", "paused")]), asked,
+        )
+        self.assertEqual(
+            unanswered_operator_question([
+                asked, self.edge(4, "needs-input", "paused"), self.edge(5, "paused", "needs-input"),
+            ]),
+            asked,
+        )
+        self.assertIsNone(
+            unanswered_operator_question([asked, self.edge(4, "needs-input", "running")]),
+        )
+        # A later question opens a new wait after an earlier one was answered.
+        later = self.question(7, "Retry at all?")
+        history = [
+            asked, self.edge(4, "needs-input", "running"), self.edge(5, "running", "paused"),
+            self.edge(6, "paused", "running"), later, self.edge(8, "needs-input", "paused"),
+        ]
+        self.assertEqual(unanswered_operator_question(history), later)
+        self.assertEqual(unanswered_operator_question(list(reversed(history))), later,
+                         "sequence order decides, not list order")
+        # Other approval requests (salvage, outcome proposals) are not operator questions.
+        salvage = dict(asked, payload={"kind": "salvage", "request_id": "x"})
+        self.assertIsNone(unanswered_operator_question([salvage]))
+        # The returned record is a copy: callers cannot alter the journal through it.
+        found = unanswered_operator_question([asked])
+        found["payload"]["question"] = "changed"
+        self.assertEqual(asked["payload"]["question"], "Which base?")
+
+    def test_later_running_evidence_discharges_a_question_whose_answer_edge_was_lost(self) -> None:
+        """Only an answer takes a waiting initiative back to running.
+
+        A controller that dies inside the operator's answer after its
+        `running` head write leaves no `needs-input -> running` edge.  The
+        pause or resume that follows journals an edge out of or into
+        `running`, and that edge proves the wait ended: a later park must not
+        restore the answered question (the operator-confirmed U5 case).  The
+        question's own `running -> needs-input` edge opens the wait and proves
+        nothing ran.
+        """
+        from lib.control.orchestration.model import unanswered_operator_question
+
+        asked = self.question(3, "Which base?")
+        opened = self.edge(4, "running", "needs-input")
+        self.assertEqual(unanswered_operator_question([asked, opened]), asked)
+        self.assertEqual(
+            unanswered_operator_question([
+                asked, opened, self.edge(5, "needs-input", "paused"),
+                self.edge(6, "paused", "needs-input"),
+            ]),
+            asked,
+        )
+        # The lost answer, then the operator parks the running work.
+        self.assertIsNone(
+            unanswered_operator_question([asked, opened, self.edge(5, "running", "paused")]),
+        )
+        # The reproduction's journal: park, resume, a paused-seal head with no
+        # event, then the park that must not restore the answered question.
+        self.assertIsNone(
+            unanswered_operator_question([
+                asked, opened, self.edge(5, "running", "paused"),
+                self.edge(6, "paused", "running"), self.edge(7, "needs-input", "paused"),
+            ]),
+        )
+        # A resume that ran on past a parked question left it running as well.
+        self.assertIsNone(
+            unanswered_operator_question([
+                asked, opened, self.edge(5, "needs-input", "paused"),
+                self.edge(6, "paused", "running"),
+            ]),
+        )
+        # Running work finalized after the lost answer is not waiting either.
+        self.assertIsNone(
+            unanswered_operator_question([asked, opened, self.edge(5, "running", "failed")]),
+        )
+        # A later question opens its own wait; its opening edge is not
+        # evidence against it and the next park keeps it.
+        later = self.question(8, "Retry at all?")
+        history = [
+            asked, opened, self.edge(5, "running", "paused"), self.edge(6, "paused", "running"),
+            later, self.edge(9, "running", "needs-input"), self.edge(10, "needs-input", "paused"),
+        ]
+        self.assertEqual(unanswered_operator_question(history), later)
+        self.assertEqual(unanswered_operator_question(list(reversed(history))), later,
+                         "sequence order decides, not list order")
+        self.assertIsNone(
+            unanswered_operator_question(history + [self.edge(11, "paused", "running")]),
+        )
+
+
+class EdgeLessAnsweredQuestionTests(unittest.TestCase):
+    """An answer whose edge was lost with no later edge at all (U5 finding 1).
+
+    The paused-seal outcome writer returns a `running` head to `needs-input`
+    without journaling an `initiative-state-changed` event, so an answer the
+    controller died inside can be followed by no edge that leaves or enters
+    `running`.  The journal alone cannot see that answer.  The retained
+    `resume` action can: it names the exact head it observed immediately
+    before its own write, and the head-write count that observation anchors
+    grows only when a head write happened.  These cases fix what that
+    evidence may and may not conclude; the durable end-to-end proof lives in
+    `test_orchestration_actions.py`.
+    """
+
+    INITIATIVE = "11111111-2222-4333-8444-555555555555"
+    PLAN = "a" * 64
+    OTHER_PLAN = "b" * 64
+
+    question = staticmethod(UnansweredOperatorQuestionTests.question)
+    edge = staticmethod(UnansweredOperatorQuestionTests.edge)
+
+    def setUp(self) -> None:
+        self.asked = self.question(3, "Which base?")
+        self.opened = self.edge(4, "running", "needs-input")
+        self.journal = [self.asked, self.opened]
+
+    def head(self, **overrides) -> dict:
+        """The initiative head after the answer's and the seal's head writes."""
+        record = {
+            "initiative_id": self.INITIATIVE,
+            "state": "needs-input",
+            "state_revision": 11,
+            "last_event_sequence": 4,
+            "active_plan": {"revision": 1, "digest": self.PLAN},
+        }
+        record.update(overrides)
+        return record
+
+    def answer(self, *, state: str = "indeterminate", **outcome) -> dict:
+        """The operator's answering resume, interrupted after its head write."""
+        retained = {
+            "resume_from": "needs-input",
+            "resume_from_revision": 9,
+            "resume_from_sequence": 4,
+            "resume_to": "running",
+            "restored_question_event_id": None,
+            "status": "indeterminate",
+        }
+        retained.update(outcome)
+        return {
+            "action_id": "99999999-2222-4333-8444-555555555555",
+            "initiative_id": self.INITIATIVE,
+            "action_class": "resume",
+            "active_plan_digest": self.PLAN,
+            "state": state,
+            "outcome": json.dumps(retained),
+        }
+
+    def classify(self, *, actions=None, initiative=None, events=None):
+        return model.unanswered_operator_question(
+            self.journal if events is None else events,
+            actions=[self.answer()] if actions is None else actions,
+            initiative=self.head() if initiative is None else initiative,
+        )
+
+    def test_a_proven_head_write_discharges_the_question_the_answer_named(self) -> None:
+        self.assertEqual(
+            model.unanswered_operator_question(self.journal), self.asked,
+            "the journal alone still cannot see the lost answer",
+        )
+        self.assertIsNone(self.classify())
+
+    def test_an_answer_interrupted_before_its_head_write_proves_nothing(self) -> None:
+        """The mandatory negative: intent is retained before the effect."""
+        self.assertEqual(
+            self.classify(initiative=self.head(state_revision=9)), self.asked,
+        )
+        # One head write short of the answer's own is still not its own.
+        self.assertEqual(
+            self.classify(
+                actions=[self.answer(resume_from_revision=10)],
+                initiative=self.head(state_revision=10),
+            ),
+            self.asked,
+        )
+
+    def test_a_competing_parking_action_leaves_the_write_unattributed(self) -> None:
+        """Another unsettled parking proof inside the window could own it."""
+        rival = {
+            "action_id": "88888888-2222-4333-8444-555555555555",
+            "initiative_id": self.INITIATIVE, "action_class": "pause",
+            "active_plan_digest": self.PLAN, "state": "indeterminate",
+            "outcome": json.dumps({
+                "pause_from": "needs-input", "pause_from_revision": 9,
+                "pause_from_sequence": 4, "status": "indeterminate",
+            }),
+        }
+        self.assertEqual(self.classify(actions=[self.answer(), rival]), self.asked)
+        # A settled rival carries its own edge and is not competing evidence.
+        self.assertIsNone(
+            self.classify(actions=[self.answer(), dict(rival, state="completed")]),
+        )
+        # Two interrupted answers are equally unattributable.
+        twin = dict(self.answer(), action_id="77777777-2222-4333-8444-555555555555")
+        self.assertEqual(self.classify(actions=[self.answer(), twin]), self.asked)
+
+    def test_a_later_parking_observation_bounds_the_window_it_closes(self) -> None:
+        """The next observed head ends the window, and its own write is outside it."""
+        journal = self.journal + [
+            {
+                "sequence": 5, "event_id": "00000005-3333-4333-8333-333333333333",
+                "type": "action-received",
+                "payload": {"action_class": "pause", "payload_digest": "c" * 64},
+            },
+        ]
+        park = {
+            "action_id": "88888888-2222-4333-8444-555555555555",
+            "initiative_id": self.INITIATIVE, "action_class": "pause",
+            "active_plan_digest": self.PLAN, "state": "completed",
+            "outcome": json.dumps({
+                "pause_from": "needs-input", "pause_from_revision": 12,
+                "pause_from_sequence": 5, "status": "paused",
+            }),
+        }
+        # The park observed `needs-input` again at two head writes later: the
+        # answer's write and the paused seal's are both inside the window.
+        self.assertIsNone(self.classify(
+            events=journal, actions=[self.answer(), park],
+            initiative=self.head(state_revision=14, last_event_sequence=5),
+        ))
+        # The same park after an answer that never wrote closes a window with
+        # no head write in it, whatever the head does afterwards.
+        never = json.dumps({
+            "pause_from": "needs-input", "pause_from_revision": 10,
+            "pause_from_sequence": 5, "status": "paused",
+        })
+        self.assertEqual(
+            self.classify(
+                events=journal, actions=[self.answer(), dict(park, outcome=never)],
+                initiative=self.head(state_revision=14, last_event_sequence=5),
+            ),
+            self.asked,
+        )
+
+    def test_an_unsettled_parking_action_with_no_proof_cannot_be_placed(self) -> None:
+        """Nothing binds it to the journal, so no window can exclude its write."""
+        historical = {
+            "action_id": "44444444-2222-4333-8444-555555555555",
+            "initiative_id": self.INITIATIVE, "action_class": "pause",
+            "active_plan_digest": self.PLAN, "state": "indeterminate",
+            "outcome": json.dumps({"status": "indeterminate"}),
+        }
+        self.assertEqual(self.classify(actions=[self.answer(), historical]), self.asked)
+        # The same record settled carries no unaccounted write.
+        self.assertIsNone(
+            self.classify(actions=[self.answer(), dict(historical, state="completed")]),
+        )
+
+    def test_a_journaled_edge_in_the_window_leaves_the_journal_to_speak(self) -> None:
+        journal = self.journal + [self.edge(5, "needs-input", "paused")]
+        self.assertEqual(
+            self.classify(
+                events=journal, initiative=self.head(last_event_sequence=5),
+            ),
+            self.asked,
+            "a park edge answers nothing and the action evidence is not consulted",
+        )
+        self.assertIsNone(model.unanswered_operator_question(
+            journal + [self.edge(6, "paused", "running")],
+            actions=[self.answer()],
+            initiative=self.head(state="running", last_event_sequence=6),
+        ))
+
+    def test_a_newer_question_is_never_discharged_by_an_older_answer(self) -> None:
+        journal = [
+            self.asked, self.opened, self.edge(5, "needs-input", "running"),
+            self.question(6, "Retry at all?"), self.edge(7, "running", "needs-input"),
+        ]
+        newer = model.unanswered_operator_question(journal)
+        self.assertEqual(newer["sequence"], 6)
+        self.assertEqual(
+            model.unanswered_operator_question(
+                journal, actions=[self.answer()],
+                initiative=self.head(state_revision=14, last_event_sequence=7),
+            ),
+            newer,
+            "the answer observed a head older than the question it would discharge",
+        )
+
+    def test_an_action_outside_its_binding_is_not_evidence(self) -> None:
+        for label, action in (
+            ("wrong plan", self.answer()),
+            ("unbound plan", self.answer()),
+            ("another initiative", self.answer()),
+            ("already refused", self.answer(state="refused")),
+            ("already completed", self.answer(state="completed")),
+            ("not yet dispatched", self.answer(state="validated")),
+            ("a restoration, not an answer", self.answer(resume_to="needs-input")),
+            ("resumed from paused", self.answer(resume_from="paused")),
+        ):
+            record = copy.deepcopy(action)
+            if label == "wrong plan":
+                record["active_plan_digest"] = self.OTHER_PLAN
+            if label == "unbound plan":
+                record["active_plan_digest"] = None
+            if label == "another initiative":
+                record["initiative_id"] = "66666666-2222-4333-8444-555555555555"
+            with self.subTest(action=label):
+                self.assertEqual(self.classify(actions=[record]), self.asked)
+
+    def test_a_malformed_record_is_not_evidence_and_never_raises(self) -> None:
+        for label, action in (
+            ("no outcome", dict(self.answer(), outcome=None)),
+            ("outcome is not JSON", dict(self.answer(), outcome="{not json")),
+            ("outcome is an array", dict(self.answer(), outcome="[]")),
+            ("revision is text", self.answer(resume_from_revision="9")),
+            ("sequence is a bool", self.answer(resume_from_sequence=True)),
+            ("origin is a number", self.answer(resume_from=7)),
+            ("target is an object", self.answer(resume_to={})),
+            ("not a mapping at all", "resume"),
+            ("empty record", {}),
+        ):
+            with self.subTest(action=label):
+                self.assertEqual(self.classify(actions=[action]), self.asked)
+
+    def test_a_stale_or_truncated_tail_cannot_prove_an_answer(self) -> None:
+        self.assertEqual(
+            self.classify(initiative=self.head(last_event_sequence=9)), self.asked,
+            "the head moved past the retained tail",
+        )
+        self.assertEqual(self.classify(events=[]), None)
+        self.assertEqual(
+            self.classify(events=[self.asked], initiative=self.head(last_event_sequence=3)),
+            self.asked,
+            "the question's own opening edge is not in the retained tail",
+        )
+
+    def test_a_malformed_head_is_not_evidence_and_never_raises(self) -> None:
+        self.assertEqual(
+            model.unanswered_operator_question(
+                self.journal, actions=[self.answer()], initiative=None,
+            ),
+            self.asked,
+            "without the head there is no head-write count to read",
+        )
+        for label, initiative in (
+            ("head is not a mapping", "needs-input"),
+            ("revision is text", self.head(state_revision="11")),
+            ("sequence is a bool", self.head(last_event_sequence=True)),
+            ("no active plan", self.head(active_plan=None)),
+            ("plan digest is not text", self.head(active_plan={"digest": 11})),
+        ):
+            with self.subTest(initiative=label):
+                self.assertEqual(self.classify(initiative=initiative), self.asked)
+
+    def test_classification_survives_records_no_validator_ever_saw(self) -> None:
+        """The classifier reads records as data: nothing in them can raise."""
+        self.assertIsNone(model.unanswered_operator_question(
+            [{"sequence": 1, "type": "approval-requested", "payload": None}, "junk", 3],
+            actions=[None, 7, {"action_class": "resume"}],
+            initiative=self.head(),
+        ))
+        self.assertEqual(
+            model.unanswered_operator_question(
+                self.journal, actions=None, initiative=self.head(),
+            ),
+            self.asked,
+        )
+        self.assertEqual(
+            model.unanswered_operator_question(
+                self.journal + [{"sequence": None, "type": "initiative-state-changed",
+                                 "payload": {"from": "needs-input", "to": "running"}}],
+                actions=[self.answer()], initiative=self.head(state_revision=9),
+            ),
+            self.asked,
+            "a record with no real sequence is not an edge that discharges anything",
+        )
+
+    def test_repeated_classification_is_idempotent_and_reads_nothing_back(self) -> None:
+        actions = [self.answer()]
+        head = self.head()
+        before = (copy.deepcopy(self.journal), copy.deepcopy(actions), copy.deepcopy(head))
+        for _ in range(3):
+            self.assertIsNone(model.unanswered_operator_question(
+                self.journal, actions=actions, initiative=head,
+            ))
+        self.assertEqual((self.journal, actions, head), before)
 
 
 if __name__ == "__main__":

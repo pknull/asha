@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import re
 import unittest
+from types import SimpleNamespace
 
 from lib.control import tui
 from lib.control.tui import TuiModel, render
@@ -430,6 +432,106 @@ class DegradationTests(unittest.TestCase):
         self.assertIn("Scope: active", titles[140])
         self.assertNotIn("Scope: active", titles[40])
         self.assertIn("1 need you", titles[40], "the demand is the last thing to go")
+
+
+class ParkedWorkTitleTests(unittest.TestCase):
+    """Parking is a status bucket. It never counts as `need you`, and the count
+    equals the amber rows on screen under every filter and expansion, at the
+    operator's 122x28 terminal."""
+
+    WORKER = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    ATTEMPT = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+
+    def views(self) -> list:
+        return [
+            view("parked-idle", "paused", [{"type": "work", "state": "needs-input"}]),
+            view("parked-asked", "paused", approvals=[{"state": "requested"}]),
+            view(
+                "parked-live", "paused", [{"type": "work", "state": "running"}],
+                attempts=[{"attempt_id": self.ATTEMPT, "node_id": "n0", "ordinal": 1, "state": "running"}],
+                links=[{"attempt_id": self.ATTEMPT, "control_task_id": self.WORKER}],
+            ),
+            view("waiting", "needs-input"),
+            view("busy", "running", [{"type": "work", "state": "running"}]),
+        ]
+
+    def worker(self) -> SimpleNamespace:
+        return SimpleNamespace(
+            task={"task_id": self.WORKER, "runs": [{"harness": "claude"}]},
+            display_state="needs-input",
+            reconciliation={
+                "evidence": [{"state": "needs-input", "detail": "prompt"}],
+                "blocker": None, "runs": [],
+            },
+            summary={"slug": "review-worker"}, observation=None,
+        )
+
+    def model(self, *, attention_only: bool, expanded: bool) -> TuiModel:
+        model = TuiModel(height=28, width=122)
+        views = self.views()
+        screen = InitiativesScreen(
+            views, height=28, width=122, task_rows=(self.worker(),),
+            attention_only=attention_only,
+        )
+        if expanded:
+            for item in views:
+                screen.expanded.add(("initiative", item["initiative"]["initiative_id"]))
+        model.initiatives = screen
+        return model
+
+    @staticmethod
+    def terms(title: str) -> dict:
+        return {label: int(number) for number, label in re.findall(
+            r"(\d+) (need you|running|failed|paused|planning|idle|settled|initiatives)", title,
+        )}
+
+    def test_parked_work_leaves_the_need_you_count_and_the_filter_together(self) -> None:
+        for attention_only, expanded, expected in (
+            # parked-asked is amber (a requested approval), so it counts as
+            # need-you, never as paused; parked-idle and parked-live are paused.
+            (False, True, {"need you": 2, "paused": 2, "running": 1, "initiatives": 5}),
+            (False, False, {"need you": 2, "paused": 2, "running": 1, "initiatives": 5}),
+            # Under `!` the live prompt keeps parked-live on screen whether or
+            # not its head is expanded, and the head still counts as paused.
+            (True, True, {"need you": 2, "paused": 1, "initiatives": 3}),
+            (True, False, {"need you": 2, "paused": 1, "initiatives": 3}),
+        ):
+            with self.subTest(attention_only=attention_only, expanded=expanded):
+                model = self.model(attention_only=attention_only, expanded=expanded)
+                lines = render(model)
+                title = str(lines[0])
+                self.assertLessEqual(len(title), 122)
+                self.assertEqual(self.terms(title), expected, title)
+                self.assertEqual("[waiting on you]" in title, attention_only)
+                rows = model.initiatives.rows()
+                counts = summary_counts(rows)
+                amber = [row for row in rows if row.kind == "initiative" and row.display[0] == WAITING]
+                self.assertEqual(len(amber), counts["waiting"], "need you equals the amber rows shown")
+                self.assertEqual(
+                    sum(counts[key] for key in ("waiting", "running", "failed", "paused", "planning", "settled", "idle")),
+                    counts["initiatives"],
+                )
+                shown = [row.label for row in rows if row.kind == "initiative"]
+                self.assertEqual(len(shown), expected["initiatives"])
+                self.assertEqual("parked-idle" in shown, not attention_only, "a parked decision is hidden demand")
+                self.assertEqual("parked-asked" in shown, True, "a requested approval is real demand")
+                self.assertEqual("waiting" in shown, True)
+                self.assertIn(
+                    "parked-live", shown,
+                    "the head stays under ! for its live child, collapsed or expanded",
+                )
+                prompt_rows = [
+                    row for row in rows if row.kind == "node" and row.attention.startswith("at prompt")
+                ]
+                self.assertEqual(
+                    len(prompt_rows), 1 if expanded or attention_only else 0,
+                    "under ! the prompt row is listed regardless of expansion; the normal tree keeps the collapse",
+                )
+                text = "\n".join(str(line) for line in lines)
+                self.assertEqual("at prompt" in text, expanded or attention_only, "the live prompt is drawn whenever its row is")
+                self.assertEqual(
+                    str(tui._tree_summary(rows, "unicode")).count("need you"), 1 if expected["need you"] else 0,
+                )
 
 
 class ReviewFindingTests(unittest.TestCase):

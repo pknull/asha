@@ -12,7 +12,8 @@ from types import SimpleNamespace
 from unittest import mock
 
 from lib.control import tui
-from lib.control.reconcile import Evidence
+from lib.control.orchestration.tui_model import InitiativesScreen, attention_items
+from lib.control.reconcile import Evidence, StateObservation
 from lib.control.tmux import TmuxAdapter, TmuxError
 from tests.python.test_control_config_model import task_record
 
@@ -746,6 +747,215 @@ class IncrementalSnapshotTests(unittest.TestCase):
         with mock.patch.object(tui, "_utc_now", return_value=five_seconds_later):
             tui._apply_refresh_snapshot(model, {}, unchanged)
         self.assertFalse(model.dirty)
+
+
+
+class ParkedWorkIncrementalPatchTests(unittest.TestCase):
+    """The task-only cache patch and a full rebuild agree about parked demand.
+
+    A paused initiative parks its node decision. A worker beneath it that
+    reaches a real prompt must still surface through the incremental patch, and
+    when the prompt is answered the patch must not restore the parked decision
+    as a stale `needs input`. Resume changes the initiative branch, so the tree
+    rebuilds and the decision is re-exposed from its own record.
+    """
+
+    INITIATIVE = "11111111-1111-4111-8111-111111111111"
+    TASK = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    ATTEMPT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    def setUp(self) -> None:
+        self.task = task_record(task_id=self.TASK, slug="parked-worker")
+        self.run_id = self.task["runs"][0]["run_id"]
+
+    def view(self, state: str) -> dict:
+        view = IncrementalSnapshotTests._initiative(state)
+        view["nodes"] = [{
+            "node_id": "implementation-a", "state": "needs-input", "type": "work",
+            "goal": "Implement A",
+        }]
+        view["attempts"] = [{
+            "attempt_id": self.ATTEMPT, "node_id": "implementation-a",
+            "ordinal": 1, "state": "running",
+        }]
+        view["links"] = [{"attempt_id": self.ATTEMPT, "control_task_id": self.TASK}]
+        return view
+
+    def worker(self, state: str, detail: str, observed_at: str) -> tui.TuiRow:
+        reconciliation = {
+            "contract": "asha.control-reconciliation.v1", "task_id": self.TASK,
+            "state": state, "blocker": None,
+            "evidence": [{"state": state, "detail": detail}],
+            "runs": [{
+                "contract": "asha.control-run-reconciliation.v1",
+                "run_id": self.run_id, "state": "active", "blocker": None, "evidence": [],
+            }],
+        }
+        observation = StateObservation(state, self.run_id, "events", observed_at, "fresh", detail)
+        return tui.TuiRow.from_records(copy.deepcopy(self.task), reconciliation, observation)
+
+    def snapshot(self, cache: tui.RefreshCache, worker: tui.TuiRow, state: str) -> tui.RefreshSnapshot:
+        rows, changed, removed, order_changed = cache.stabilize_rows([worker])
+        views, views_changed = cache.stabilize_branch("initiatives", (self.view(state),), None)
+        rooms, rooms_changed = cache.stabilize_branch("rooms", (), None)
+        return _snapshot(
+            rows, changed_rows=changed, removed=removed, order_changed=order_changed,
+            initiatives=views, rooms=rooms, initiatives_changed=views_changed,
+            rooms_changed=rooms_changed,
+        )
+
+    @staticmethod
+    def facts(screen: InitiativesScreen) -> list:
+        return [(row.key, row.state, row.attention, row.worker) for row in screen.rows()]
+
+    @staticmethod
+    def row(model: tui.TuiModel, kind: str):
+        return next(row for row in model.initiatives.rows() if row.kind == kind)
+
+    @staticmethod
+    def full_rebuild(model: tui.TuiModel) -> InitiativesScreen:
+        screen = model.initiatives
+        return InitiativesScreen(
+            screen.views, height=screen.height, width=screen.width,
+            expanded=set(screen.expanded), task_rows=model.rows,
+        )
+
+    def test_a_live_prompt_reaches_a_parked_node_and_a_stale_one_never_returns(self) -> None:
+        cache = tui.RefreshCache()
+        cache.begin_generation(0)
+        model = tui.TuiModel(())
+        model._ensure_screen()
+        first = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:05Z"), "paused")
+        tui._apply_refresh_snapshot(model, {}, first)
+        cache.mark_applied(first)
+        model.initiatives.expanded.add(("initiative", self.INITIATIVE))
+        self.assertEqual(
+            (self.row(model, "initiative").attention, self.row(model, "node").attention), ("-", "-"),
+        )
+        self.assertEqual(self.row(model, "node").state, "needs-input")
+        head_before = self.row(model, "initiative")
+
+        # The worker reaches a prompt: only the task row changed.
+        prompt = self.snapshot(
+            cache, self.worker("needs-input", "pane shows the input prompt", "2026-08-14T18:00:06Z"), "paused",
+        )
+        self.assertFalse(prompt.initiative_views_changed)
+        self.assertFalse(prompt.row_order_changed)
+        self.assertEqual([row.task["task_id"] for row in prompt.changed_rows], [self.TASK])
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, prompt))
+        cache.mark_applied(prompt)
+        self.assertIs(self.row(model, "initiative"), head_before, "the patch reused the untouched head row")
+        node = self.row(model, "node")
+        self.assertEqual((node.attention, node.worker), ("at prompt: pane shows the input prompt", "needs-input"))
+        self.assertTrue(node.needs_human)
+        self.assertEqual(self.facts(model.initiatives), self.facts(self.full_rebuild(model)))
+        self.assertEqual(
+            [item["kind"] for item in attention_items(model.initiatives.views, model.rows)], ["worker"],
+        )
+
+        # The prompt is answered: the parked decision must not come back as a stale needs-input.
+        answered = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:07Z"), "paused")
+        self.assertFalse(answered.initiative_views_changed)
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, answered))
+        cache.mark_applied(answered)
+        self.assertIs(self.row(model, "initiative"), head_before)
+        node = self.row(model, "node")
+        self.assertEqual((node.attention, node.worker, node.needs_human), ("-", "idle", False))
+        self.assertEqual(self.facts(model.initiatives), self.facts(self.full_rebuild(model)))
+        self.assertEqual(attention_items(model.initiatives.views, model.rows), [])
+
+        # Resume is an initiative change: the branch rebuilds and the decision is re-exposed.
+        resumed = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:07Z"), "running")
+        self.assertTrue(resumed.initiative_views_changed)
+        self.assertEqual(resumed.changed_rows, ())
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, resumed))
+        cache.mark_applied(resumed)
+        node = self.row(model, "node")
+        self.assertEqual((node.attention, node.worker, node.needs_human), ("needs input", "idle", True))
+        self.assertEqual(self.facts(model.initiatives), self.facts(self.full_rebuild(model)))
+        self.assertEqual(
+            [item["kind"] for item in attention_items(model.initiatives.views, model.rows)], ["needs-input"],
+        )
+
+    def test_a_live_prompt_beneath_a_collapsed_parked_head_is_listed_under_the_filter(self) -> None:
+        """Collapse is not parking: `!` lists the prompt row, full and patched refreshes agree."""
+        cache = tui.RefreshCache()
+        cache.begin_generation(0)
+        model = tui.TuiModel(())
+        model._ensure_screen()
+        first = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:05Z"), "paused")
+        tui._apply_refresh_snapshot(model, {}, first)
+        cache.mark_applied(first)
+        screen = model.initiatives
+        self.assertNotIn(("initiative", self.INITIATIVE), screen.expanded)
+        self.assertEqual([row.kind for row in screen.rows()], ["initiative"])
+        head_before = self.row(model, "initiative")
+
+        def filtered_rebuild() -> InitiativesScreen:
+            return InitiativesScreen(
+                screen.views, height=screen.height, width=screen.width,
+                expanded=set(screen.expanded), task_rows=model.rows, attention_only=True,
+            )
+
+        # The worker reaches a prompt through the task-only patch while the
+        # head stays collapsed: the normal tree is unchanged and quiet.
+        prompt = self.snapshot(
+            cache, self.worker("needs-input", "pane shows the input prompt", "2026-08-14T18:00:06Z"), "paused",
+        )
+        self.assertFalse(prompt.initiative_views_changed)
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, prompt))
+        cache.mark_applied(prompt)
+        self.assertIs(self.row(model, "initiative"), head_before)
+        self.assertEqual([row.kind for row in screen.rows()], ["initiative"])
+        self.assertEqual(self.facts(screen), self.facts(self.full_rebuild(model)))
+        self.assertEqual(
+            [item["kind"] for item in attention_items(screen.views, model.rows)], ["worker"],
+        )
+
+        # `!` reveals the prompt row with its still-collapsed head, exactly as
+        # a full rebuild under the filter would.
+        screen.attention_only = True
+        self.assertNotIn(("initiative", self.INITIATIVE), screen.expanded)
+        self.assertEqual(
+            [(row.kind, row.depth, row.attention) for row in screen.rows()],
+            [("initiative", 0, "-"), ("node", 1, "at prompt: pane shows the input prompt")],
+        )
+        self.assertEqual(self.facts(screen), self.facts(filtered_rebuild()))
+        self.assertEqual(tui.summary_counts(screen.rows()), tui.summary_counts(filtered_rebuild().rows()))
+        self.assertEqual(tui.summary_counts(screen.rows())["paused"], 1)
+        self.assertEqual(tui.summary_counts(screen.rows())["waiting"], 0)
+
+        # Answered while filtered: the parked head has nothing live beneath it
+        # and leaves; the refresh under `!` is a rebuild and agrees with one.
+        answered = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:07Z"), "paused")
+        self.assertFalse(answered.initiative_views_changed)
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, answered))
+        cache.mark_applied(answered)
+        self.assertEqual(screen.rows(), [])
+        self.assertEqual(self.facts(screen), self.facts(filtered_rebuild()))
+        self.assertEqual(attention_items(screen.views, model.rows), [])
+
+        # Back in the normal tree the head is still collapsed and readable.
+        screen.attention_only = False
+        self.assertEqual([(row.kind, row.attention) for row in screen.rows()], [("initiative", "-")])
+        self.assertEqual(self.facts(screen), self.facts(self.full_rebuild(model)))
+
+        # Resumed and collapsed, the re-exposed decision is listed under `!`
+        # with its head; the normal tree still shows only the head.
+        resumed = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:07Z"), "running")
+        self.assertTrue(resumed.initiative_views_changed)
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, resumed))
+        cache.mark_applied(resumed)
+        self.assertEqual([(row.kind, row.attention) for row in screen.rows()], [("initiative", "-")])
+        screen.attention_only = True
+        self.assertEqual(
+            [(row.kind, row.depth, row.attention) for row in screen.rows()],
+            [("initiative", 0, "-"), ("node", 1, "needs input")],
+        )
+        self.assertEqual(self.facts(screen), self.facts(filtered_rebuild()))
+        self.assertEqual(
+            [item["kind"] for item in attention_items(screen.views, model.rows)], ["needs-input"],
+        )
 
 
 if __name__ == "__main__":
