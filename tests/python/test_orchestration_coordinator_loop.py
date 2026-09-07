@@ -31,6 +31,36 @@ class CoordinatorWaitTests(ExecutionFixture, unittest.TestCase):
     def tail(self) -> int:
         return self.initiative()["last_event_sequence"]
 
+    def test_pending_arrival_without_a_journal_event_wakes_an_armed_wait(self):
+        from lib.control.orchestration.model import (
+            MESSAGE_CONTRACT, chair_sender_identity, message_content_digest, new_uuid,
+        )
+        from lib.control.orchestration.messages import pending
+        record = claim(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux)
+        anchor = record["anchor"]
+        seat = {"pid": anchor["pane_pid"], "process_start_identity": anchor["process_start_identity"]}
+        message = {
+            "contract": MESSAGE_CONTRACT, "initiative_id": self.initiative_id,
+            "message_id": new_uuid(), "body": "persisted before notification",
+            "content_digest": message_content_digest("persisted before notification"),
+            "persisted_at": coordinator_module._now(),
+            "sender": {"role": "operator-chair", "anchor": anchor, "process": seat,
+                       "identity": chair_sender_identity(anchor, seat)},
+            "recipient": {key: record[key] for key in ("coordinator_id", "generation", "anchor")},
+        }
+        cursor = self.tail()
+        def arrive(_seconds):
+            self.assertEqual(self.store.current_coordinator(self.initiative_id)["state"], "waiting")
+            self.store.save_message(self.initiative_id, message)
+        with mock.patch.object(coordinator_module.time, "sleep", side_effect=arrive):
+            value = wait(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux,
+                         after=cursor, timeout=5)
+        self.assertFalse(value["timed_out"])
+        self.assertEqual(value["events"], [])
+        self.assertEqual(value["pending_message_ids"], [message["message_id"]])
+        self.assertEqual(pending(self.store, self.initiative_id)["messages"][0]["status"], "persisted")
+        self.assertEqual(self.store.current_coordinator(self.initiative_id)["event_cursor"], record["event_cursor"])
+
     def test_wait_requires_a_live_anchored_coordinator(self) -> None:
         with self.assertRaisesRegex(CoordinatorError, "no live coordinator generation"):
             wait(self.store, self.initiative(), env=self.pane_env, tmux=self.tmux, after=0, timeout=0)

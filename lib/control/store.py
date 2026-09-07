@@ -762,6 +762,19 @@ class TaskStore:
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise StoreError(f"invalid JSON in task record {name}: {exc}") from exc
         try:
+            # Reject non-text enum values before the model's hash-based
+            # membership checks. Only normalize malformed input here, not
+            # unrelated TypeErrors raised by the validator itself.
+            if isinstance(value, dict):
+                enums = [("task lifecycle", value.get("lifecycle"))]
+                if isinstance(value.get("source"), dict):
+                    enums.append(("source kind", value["source"].get("kind")))
+                if isinstance(value.get("runs"), list):
+                    enums.extend(("run state", run.get("state"))
+                                 for run in value["runs"] if isinstance(run, dict))
+                for label, enum in enums:
+                    if not isinstance(enum, str):
+                        raise ModelError(f"{label} must be a string")
             task = validate_task(value)
         except ModelError as exc:
             raise StoreError(f"invalid task record {name}: {exc}") from exc
@@ -815,6 +828,34 @@ class TaskStore:
                 raise StoreError(f"task not found: {task_id}")
             return task
 
+    def bounded_snapshots(self, budget) -> list[dict[str, Any]]:
+        """No registry lock, materialization, historical run reads, or writes."""
+        records = []
+        try:
+            with _directory_fd(self.config.tasks_dir, create=False,
+                               managed_start=self._tasks_managed_start) as fd:
+                if fd is not None:
+                    for name in budget.names(fd):
+                        if name.startswith("."):
+                            continue
+                        try:
+                            if re.fullmatch(r"(?:task|source|repository)-[0-9a-f]{64}\.lock", name):
+                                # TransactionCoordinator retains these inodes
+                                # after release. Inspect without taking a lock,
+                                # reading contents, repairing modes or pruning.
+                                lock_fd = _open_existing_file(fd, name, "transaction lock")
+                                _close_quietly(lock_fd)
+                                continue
+                            if not name.endswith(".json"):
+                                raise StoreError("unexpected task entry")
+                            task_id = canonical_uuid(name[:-5])
+                            records.append(self._read_unlocked(fd, task_id))
+                        except (OSError, ValueError, StoreError):
+                            budget.unavailable += 1
+        except (OSError, StoreError):
+            budget.unavailable += 1
+        return records
+
     def list(self) -> list[dict[str, Any]]:
         self.skipped = []
         with _directory_fd(
@@ -862,3 +903,41 @@ class TaskStore:
         if len(matches) != 1:
             raise StoreError(f"task slug is ambiguous: {selector}")
         return matches[0]
+
+
+class SnapshotBudget:
+    """Cooperative, read-only enumeration budget shared across one source.
+
+    Counts *all* directory entries, including invalid/hidden entries. Reaching
+    the cap is conservatively incomplete: there is no extra uncounted read to
+    guess whether this happened to be the last entry. Blocking filesystem
+    syscalls are not preemptible by this budget.
+    """
+
+    def __init__(self, *, deadline: float, limit: int = 256):
+        self.deadline = deadline
+        self.limit = limit
+        self.scanned = 0
+        self.truncated = False
+        self.unavailable = 0
+
+    def ready(self) -> bool:
+        import time
+        if time.monotonic() >= self.deadline or self.scanned >= self.limit:
+            self.truncated = True
+            return False
+        return True
+
+    def names(self, directory_fd: int) -> Iterator[str]:
+        with os.scandir(directory_fd) as entries:
+            while self.ready():
+                entry = next(entries, None)
+                if entry is None:
+                    return
+                self.scanned += 1
+                yield entry.name
+
+    def summary(self) -> dict[str, Any]:
+        return {"scanned": self.scanned, "truncated": self.truncated,
+                "unavailable_records": self.unavailable,
+                "complete": not (self.truncated or self.unavailable)}

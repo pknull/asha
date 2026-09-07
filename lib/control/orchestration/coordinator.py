@@ -127,8 +127,8 @@ def anchor_liveness(anchor: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, 
     """
     try:
         anchor_server_alive = verify_process(anchor["server_pid"], anchor["server_start_identity"])
-    except HarnessError:
-        anchor_server_alive = False
+    except HarnessError as exc:
+        return "unknown", str(exc)
     if not anchor_server_alive:
         return "gone", "anchor tmux server is gone"
     try:
@@ -147,7 +147,7 @@ def anchor_liveness(anchor: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, 
         if not verify_process(anchor["pane_pid"], anchor["process_start_identity"]):
             return "gone", "anchor process identity changed"
     except HarnessError as exc:
-        return "gone", str(exc)
+        return "unknown", str(exc)
     return "live", "anchor live"
 
 
@@ -519,6 +519,7 @@ def wait(
     timeout: float,
 ) -> dict[str, Any]:
     """Segmented lock-free poll for events after a cursor; advances the durable cursor."""
+    from .messages import pending_ids
     initiative_id = initiative["initiative_id"]
     current = require_live_coordinator(store, initiative_id)
     require_anchored_caller(current, env, tmux)
@@ -545,8 +546,9 @@ def wait(
             if ended is not None
             else store.list_events_snapshot(initiative_id, after=after)
         )
+        pending = pending_ids(store, initiative_id, current)
         armed_watch: dict[str, Any] | None = None
-        if not events and ended is None and budget > 0:
+        if not events and not pending and ended is None and budget > 0:
             watch_deadline = (
                 datetime.now(timezone.utc) + timedelta(seconds=budget)
             ).isoformat(timespec="microseconds").replace("+00:00", "Z")
@@ -554,7 +556,7 @@ def wait(
                 store, initiative_id, current, after, watch_deadline,
             )
         try:
-            while not events and ended is None:
+            while not events and not pending and ended is None:
                 now = time.monotonic()
                 remaining = min(deadline, segment_deadline) - now
                 if remaining <= 0:
@@ -581,6 +583,7 @@ def wait(
                     continue
                 time.sleep(min(_WAIT_TICK_SECONDS, remaining))
                 events = store.list_events_snapshot(initiative_id, after=after)
+                pending = pending_ids(store, initiative_id, current)
         finally:
             newest = None if not events else events[-1]["sequence"]
             if armed_watch is not None:
@@ -589,6 +592,15 @@ def wait(
                 )
             elif newest is not None:
                 _advance_cursor(store, initiative_id, current, newest)
+        if pending:
+            try:
+                latest = require_live_coordinator(store, initiative_id)
+                require_anchored_caller(latest, env, tmux)
+                if (latest["coordinator_id"], latest["generation"]) != (current["coordinator_id"], current["generation"]):
+                    raise CoordinatorError("generation changed before pending delivery")
+            except CoordinatorError:
+                pending = []
+                ended = "stale-generation"
         head = store.peek(initiative_id)
         payload = {
             "contract": WAIT_CONTRACT,
@@ -599,7 +611,8 @@ def wait(
             "events": events,
             "last_event_sequence": head["last_event_sequence"],
             "state_revision": head["state_revision"],
-            "timed_out": not events and ended is None,
+            "pending_message_ids": pending,
+            "timed_out": not events and not pending and ended is None,
         }
         if ended is not None:
             payload["ended"] = ended

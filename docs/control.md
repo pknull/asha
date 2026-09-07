@@ -1344,3 +1344,56 @@ or evidence mismatch remains preserved for manual inspection, and ordinary
 `recover` plus all other failed tasks remain terminal. Doctor and the TUI show
 the adoption command only for the exact durable candidate; ambiguous retained
 residue is labelled manual inspection only.
+
+### Read-only chair observation (U1a foundation)
+
+`asha initiative inventory --json` is the bounded startup-consumer API, **not**
+`list --all`, `attention`, or the full TUI assembler. It reads atomic snapshots
+without acquiring write-enabled registry/transaction locks, migrating layouts,
+reconciling, or creating files. It reports retained non-ended Rooms with observed
+ownership status, actually live owned task runs (not historical task lifecycle
+labels), nonterminal initiative heads, pending approvals/needs-input heads, and
+unacknowledged addressed message IDs. It never renders criteria, plans, message
+bodies, or whole event history. No launcher or UI startup wiring is included.
+
+Defaults and hard upper bounds:
+
+- 50 output rows overall (`--rows N` may narrow this).
+- 256 scanned directory entries per source, including hidden/invalid entries.
+  Nested approvals/messages/coordinators share their source budget across all
+  sampled initiatives. Each sampled message permits two direct receipt lookups.
+- 64 KiB total serialized UTF-8 JSON, including escaping and the final newline.
+- Two-second **cooperative** deadline. One bounded tmux inventory subprocess uses
+  the remaining deadline and a 64 KiB capture cap; subsequent ownership checks
+  reuse that sample, with any fallback probe sharing the same deadline.
+
+Every source reports scanned entries, unavailable records, truncation, and an
+`observed_count` explicitly labelled **lower-bound**, never an exact total.
+Registry iteration is filesystem order, not a historical sort or pagination
+promise. Output-row/byte limits can hide sampled matches. Incomplete initiative
+coverage also makes nested-source coverage incomplete. Snapshots from different
+sources are not a transactionally consistent global view. Inaccessible tmux
+counts as unavailable, not “zero running tasks.”
+
+Supervisor status separately reports `status: running|stopped|unavailable` with
+exit codes `0|1|2`; unavailable has `running: null`, not false. The owned regular
+lock is opened descriptor-relative, no-follow, **O_RDONLY**, and probed with
+nonblocking flock. Its inode is rechecked after the probe. Linux local-filesystem
+flock supports this without a writable file descriptor. A filesystem/platform
+that rejects it (including writable-descriptor requirements), inaccessible
+process evidence, a held lock without a verifiable PID, or a live recorded PID
+without a matching held lock is unavailable.
+Start, stop, and service install refuse uncertainty; they do not launch duplicates
+or signal a PID on that basis. A status probe does not create a missing lock.
+
+These are POSIX/Linux observation seams, not a portable process-namespace oracle.
+A hidden PID namespace cannot prove a held lock's owner has exited. Filesystem
+syscalls and kernel stalls cannot be preempted by a Python monotonic-clock check;
+the deadline limits cooperative work and external probes, not worst-case kernel
+latency. Platform flock behavior is not inferred from Linux tests.
+
+**Execution consent remains separate.** Native Codex approval/sandbox settings
+may still refuse a command before Control runs, even when it is read-only. This
+slice changes no execution rules, approvals, hooks, wrappers, or worker sandbox.
+A Control authorization check is not native execution consent, and native hooks
+are not complete enforcement of every execution seam. U1b and U3–U8 remain backlog.
