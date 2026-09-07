@@ -180,6 +180,195 @@ class OrchestrationOperatorSurfaceTests(ExecutionFixture, unittest.TestCase):
         self.assertTrue(plan["resolution"].endswith("d" * 64))
         self.assertIn(directive_id, directive["detail"])
 
+    def test_attention_verb_parks_idle_demand_but_keeps_live_asks_under_a_paused_head(self) -> None:
+        """`asha initiative attention` runs the real assembler over parked heads."""
+        def head(index: str, slug: str, state: str, **extra) -> dict:
+            return {
+                "initiative": {
+                    "initiative_id": f"{index * 8}-1111-4111-8111-111111111111",
+                    "slug": slug, "state": state,
+                },
+                "plan": None, "nodes": [], "attempts": [], "links": [], "actions": [],
+                "approvals": [], "events": [], "coordinator": None, "coordinator_live": None,
+                **extra,
+            }
+
+        worker_task = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        attempt = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        idle_coordinator = {
+            "harness": "claude", "generation": 1, "state": "active",
+            "updated_at": "2000-01-01T00:00:00Z", "anchor": {"pane_id": "%7"},
+        }
+        idle_nodes = [
+            {"node_id": "decision-a", "state": "needs-input", "type": "work"},
+            {"node_id": "ready-a", "state": "ready", "type": "work"},
+        ]
+        question = {
+            "sequence": 3, "event_id": "77777777-7777-4777-8777-777777777777",
+            "type": "approval-requested", "actor_kind": "coordinator",
+            "recorded_at": "2026-09-07T10:00:00Z",
+            "payload": {
+                "kind": "operator-decision", "subject_id": "implementation-a",
+                "question": "Which base should the retry use?",
+            },
+        }
+        views = [
+            head("1", "parked-idle", "paused", nodes=idle_nodes,
+                 coordinator=idle_coordinator, coordinator_live=True),
+            head("2", "parked-asked", "paused", approvals=[{
+                "state": "requested", "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            }]),
+            head("3", "parked-live", "paused",
+                 nodes=[{"node_id": "review-a", "state": "running", "type": "review"}],
+                 attempts=[{"attempt_id": attempt, "node_id": "review-a", "ordinal": 1, "state": "running"}],
+                 links=[{"attempt_id": attempt, "control_task_id": worker_task}]),
+            head("4", "resumed", "running", nodes=idle_nodes,
+                 coordinator=idle_coordinator, coordinator_live=True),
+            # An initiative-only question: no node or approval demand at all.
+            head("5", "asked-operator", "needs-input", events=[question]),
+            # The same question parked: status, not demand, until it resumes.
+            head("6", "parked-question", "paused", events=[question]),
+            # A needs-input head whose question event is not in the loaded tail.
+            head("7", "waiting-plain", "needs-input"),
+        ]
+        row = SimpleNamespace(
+            task={"task_id": worker_task},
+            display_state="needs-input",
+            reconciliation={
+                "evidence": [{"state": "needs-input", "detail": "pane shows the input prompt"}],
+                "blocker": None,
+            },
+            summary={"slug": "review-worker"},
+        )
+        with mock.patch(
+            "lib.control.tui._load_initiative_views", return_value=views,
+        ), mock.patch(
+            "lib.control.cli._load_rows_for_attention", return_value=(row,),
+        ):
+            status, stdout, stderr = self.invoke(["attention", "--json"])
+        self.assertEqual((status, stderr), (0, ""))
+        items = json.loads(stdout)["items"]
+        by_slug: dict = {}
+        for item in items:
+            by_slug.setdefault(item["slug"], []).append((item["kind"], item.get("node_id")))
+        # The decision and the parked coordinator are parked with their head.
+        self.assertNotIn("parked-idle", by_slug)
+        self.assertEqual(by_slug["parked-asked"], [("salvage-approval", None)])
+        self.assertEqual(by_slug["parked-live"], [("worker", "review-a")])
+        self.assertEqual(
+            sorted(by_slug["resumed"]),
+            [("coordinator-parked", "ready-a"), ("needs-input", "decision-a")],
+        )
+        live = next(item for item in items if item["slug"] == "parked-live")
+        self.assertEqual(live["detail"], "at prompt: pane shows the input prompt")
+        self.assertEqual(live["task_id"], worker_task)
+        # The operator's own question is demand with nothing beneath it;
+        # parked, it leaves the verb exactly as the head leaves the tree.
+        self.assertEqual(by_slug["asked-operator"], [("operator-decision", None)])
+        self.assertEqual(by_slug["waiting-plain"], [("operator-decision", None)])
+        self.assertNotIn("parked-question", by_slug)
+        asked = next(item for item in items if item["slug"] == "asked-operator")
+        self.assertEqual(asked["detail"], "operator decision: Which base should the retry use?")
+        self.assertEqual(
+            asked["resolution"],
+            "answer, then asha initiative resume 55555555-1111-4111-8111-111111111111",
+        )
+        plain = next(item for item in items if item["slug"] == "waiting-plain")
+        self.assertEqual(plain["detail"], "initiative waits on the operator")
+        self.assertEqual(
+            plain["resolution"],
+            "answer, then asha initiative resume 77777777-1111-4111-8111-111111111111",
+        )
+        # The human renderer prints the same items with their resolutions whole.
+        with mock.patch(
+            "lib.control.tui._load_initiative_views", return_value=views,
+        ), mock.patch(
+            "lib.control.cli._load_rows_for_attention", return_value=(row,),
+        ):
+            status, text, stderr = self.invoke(["attention"])
+        self.assertEqual((status, stderr), (0, ""))
+        self.assertIn("operator-decision", text)
+        self.assertIn("asked-operator", text)
+        self.assertIn("operator decision: Which base should the retry use?", text)
+        self.assertIn(
+            "-> answer, then asha initiative resume 55555555-1111-4111-8111-111111111111", text,
+        )
+        self.assertNotIn("parked-question", text)
+        self.assertNotIn("parked-idle", text)
+
+    def test_attention_verb_reads_an_edge_less_answer_the_journal_cannot_show(self) -> None:
+        """`asha initiative attention` uses the same classifier the tree and park use.
+
+        The paused-seal writer returns a `running` head to `needs-input` with
+        no `initiative-state-changed` event, so an answer interrupted after
+        its own head write leaves no edge for the journal to read.  The verb
+        must not quote the answered question back at the operator, and it
+        must still quote one whose answer never wrote.
+        """
+        initiative_id = "88888888-1111-4111-8111-111111111111"
+        plan_digest = "e" * 64
+        question = {
+            "sequence": 6, "event_id": "77777777-7777-4777-8777-777777777777",
+            "type": "approval-requested", "actor_kind": "coordinator",
+            "recorded_at": "2026-09-07T10:00:00Z",
+            "payload": {
+                "kind": "operator-decision", "subject_id": "implementation-a",
+                "question": "Which base should the retry use?",
+            },
+        }
+        opened = {
+            "sequence": 7, "event_id": "66666666-6666-4666-8666-666666666666",
+            "type": "initiative-state-changed", "actor_kind": "controller",
+            "recorded_at": "2026-09-07T10:00:01Z",
+            "payload": {"from": "running", "to": "needs-input"},
+        }
+
+        def view(*, state_revision: int) -> dict:
+            return {
+                "initiative": {
+                    "initiative_id": initiative_id, "slug": "edge-less-answer",
+                    "state": "needs-input", "state_revision": state_revision,
+                    "last_event_sequence": 7,
+                    "active_plan": {"revision": 1, "digest": plan_digest},
+                },
+                "plan": None, "nodes": [], "attempts": [], "links": [],
+                "approvals": [], "events": [question, opened],
+                "coordinator": None, "coordinator_live": None,
+                "actions": [{
+                    "action_id": "55555555-5555-4555-8555-555555555555",
+                    "initiative_id": initiative_id, "action_class": "resume",
+                    "active_plan_digest": plan_digest, "state": "indeterminate",
+                    "outcome": json.dumps({
+                        "resume_from": "needs-input", "resume_from_revision": 20,
+                        "resume_from_sequence": 7, "resume_to": "running",
+                        "restored_question_event_id": None, "status": "indeterminate",
+                    }),
+                }],
+            }
+
+        def details(views: list[dict]) -> list[str]:
+            with mock.patch(
+                "lib.control.tui._load_initiative_views", return_value=views,
+            ), mock.patch(
+                "lib.control.cli._load_rows_for_attention", return_value=(),
+            ):
+                status, stdout, stderr = self.invoke(["attention", "--json"])
+            self.assertEqual((status, stderr), (0, ""))
+            return [item["detail"] for item in json.loads(stdout)["items"]]
+
+        # Two head writes after the answer's proof: its own, then the seal's.
+        self.assertEqual(details([view(state_revision=22)]), ["initiative waits on the operator"])
+        # The same records with no head write since the proof: unanswered.
+        self.assertEqual(
+            details([view(state_revision=20)]),
+            ["operator decision: Which base should the retry use?"],
+        )
+        # The assembler and the model agree record for record.
+        self.assertEqual(
+            [item["detail"] for item in attention_items([view(state_revision=22)])],
+            ["initiative waits on the operator"],
+        )
+
     def test_finalize_reports_pending_nodes_resume_prerequisite_and_cancellations(self) -> None:
         self.set_running(self.initiative())
         refused, _ = _operator_action(

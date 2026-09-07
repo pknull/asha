@@ -14,7 +14,7 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from ..config import is_canonical_absolute_path
 
@@ -513,6 +513,14 @@ _initiative_pairs = [
     ("awaiting-plan-approval", "planning"), ("awaiting-plan-approval", "approved"),
     ("approved", "running"), ("running", "needs-input"), ("running", "paused"),
     ("needs-input", "running"), ("paused", "running"),
+    # Waiting work may be parked: the operator pauses a needs-input initiative
+    # without answering it.  Resume returns parked work to running, or back to
+    # needs-input when the park began there with an operator question that is
+    # still open under `unanswered_operator_question` (no `needs-input ->
+    # running` answer since, no later edge proving the initiative ran again,
+    # and no retained answer whose own head write is proven); nothing else
+    # re-enters needs-input.
+    ("needs-input", "paused"), ("paused", "needs-input"),
     ("running", "ready-for-integration"), ("running", "partial"),
     ("running", "failed"), ("draft", "failed"), ("draft", "partial"),
     ("planning", "failed"), ("planning", "partial"),
@@ -537,6 +545,286 @@ _initiative_pairs += [
     for state in ("ready-for-integration", "integrated", "partial", "failed", "cancelled")
 ]
 INITIATIVE_TRANSITIONS = _edges(INITIATIVE_STATES, _initiative_pairs)
+
+
+# The head writers a `needs-input` initiative can have.  `_pause` and
+# `_resume` retain the exact head they observed before their own write
+# (`actions._parking_origin`), so each is a durable ordered observation any
+# reader can use; `_continue_node` writes `needs-input -> running` and
+# journals that edge, which answers the wait exactly as a resume does.  Every
+# other head writer in the package requires a different source state: the
+# breaker, the seal-drift reconciler, and the paused-seal outcome writer all
+# require `running`, activation requires `approved`, `request-decision`
+# requires `running`, finalize is refused while the initiative waits, and
+# archive and unarchive require terminal or archived heads.  A head write
+# that only rebinds the active plan (the plan-gate recovery path) changes the
+# plan digest an action is bound to, which is why that binding is checked.
+PARKING_ACTION_CLASSES = frozenset({"pause", "resume"})
+# The phases in which a parking action's own head write is unsettled: its
+# proof is retained, no edge names it, and reconciliation has not decided it.
+# A completed parking action carries its edge; a refused one is proven never
+# to have written.
+UNSETTLED_ACTION_STATES = frozenset({"dispatching", "indeterminate"})
+
+
+def retained_action_outcome(action: Any) -> dict[str, Any]:
+    """The retained outcome object of one action, or empty when it is not one.
+
+    Classification reads actions as evidence, never as instructions, so a
+    malformed record is simply not evidence: an outcome that is absent,
+    unparsable, or not an object carries no proof and raises nothing.
+    """
+    raw = action.get("outcome") if isinstance(action, Mapping) else None
+    if not isinstance(raw, str):
+        return {}
+    try:
+        value = json.loads(raw)
+    except (ValueError, RecursionError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def parking_head_observation(action: Any) -> dict[str, Any] | None:
+    """The initiative head one pause or resume observed, or None without proof.
+
+    The retained origin proof names the state, the revision, and the journal
+    tail the action saw under the initiative lock immediately before its own
+    head write.  `state_revision` advances on every head write and on every
+    event while `last_event_sequence` advances only on events, so
+    `revision - sequence` is the head-write count the observation is taken at
+    and the growth between two observations counts the head writes between
+    them, journaled or not.
+    """
+    if not isinstance(action, Mapping):
+        return None
+    kind = action.get("action_class")
+    if kind not in PARKING_ACTION_CLASSES:
+        return None
+    outcome = retained_action_outcome(action)
+    state = outcome.get(f"{kind}_from")
+    revision = outcome.get(f"{kind}_from_revision")
+    sequence = outcome.get(f"{kind}_from_sequence")
+    if not isinstance(state, str) or any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (revision, sequence)
+    ):
+        return None
+    return {
+        "kind": kind, "state": state, "sequence": sequence,
+        "head_writes": revision - sequence, "outcome": outcome,
+    }
+
+
+def _sequence_of(record: Any) -> int:
+    """A record's journal sequence, or 0 when it does not carry a real one.
+
+    Every validated event carries an integer sequence.  A record that does
+    not is not ordering evidence, so it sorts before the journal rather than
+    raising inside a classifier that must read whatever is on disk.
+    """
+    value = record.get("sequence") if isinstance(record, Mapping) else None
+    return 0 if isinstance(value, bool) or not isinstance(value, int) else value
+
+
+def _head_observation(initiative: Any) -> dict[str, Any] | None:
+    """The current initiative head as the same kind of ordered observation."""
+    if not isinstance(initiative, Mapping):
+        return None
+    state = initiative.get("state")
+    revision = initiative.get("state_revision")
+    sequence = initiative.get("last_event_sequence")
+    if not isinstance(state, str) or any(
+        isinstance(value, bool) or not isinstance(value, int)
+        for value in (revision, sequence)
+    ):
+        return None
+    return {
+        "kind": "head", "state": state, "sequence": sequence,
+        "head_writes": revision - sequence, "outcome": {},
+    }
+
+
+def _parking_observations(
+    actions: Iterable[Mapping[str, Any]],
+) -> list[tuple[dict[str, Any], Any]] | None:
+    """Every pause or resume observation of the head, or None if one is unplaceable.
+
+    An unsettled pause or resume retaining no usable origin proof cannot be
+    placed against the journal at all, so no window can exclude it and none
+    is read (`actions._reconcile_parking_action` leaves the same record alone
+    for the same reason).  Settled records without a proof are historical and
+    carry no unaccounted write.
+    """
+    observed: list[tuple[dict[str, Any], Any]] = []
+    for action in actions or ():
+        proof = parking_head_observation(action)
+        if proof is not None:
+            observed.append((proof, action))
+        elif (
+            isinstance(action, Mapping)
+            and action.get("action_class") in PARKING_ACTION_CLASSES
+            and action.get("state") in UNSETTLED_ACTION_STATES
+        ):
+            return None
+    return observed
+
+
+def _retained_answer(
+    question_sequence: int,
+    observed: list[tuple[dict[str, Any], Any]],
+    initiative: Mapping[str, Any],
+) -> tuple[dict[str, Any], Any] | None:
+    """The single interrupted `resume` that would answer this exact question.
+
+    The action must have observed the waiting head at or after the question
+    it would discharge, must still be unsettled, and must be bound to this
+    initiative and to the active plan its head carries.  Two such answers are
+    not one answer, and neither is a restoration, an answer to an older
+    question, or a record bound elsewhere.
+    """
+    active_plan = initiative.get("active_plan")
+    bound_digest = (
+        active_plan.get("digest") if isinstance(active_plan, Mapping) else None
+    )
+    if not isinstance(bound_digest, str):
+        return None
+    answers = [
+        (proof, action) for proof, action in observed
+        if proof["kind"] == "resume"
+        and proof["state"] == "needs-input"
+        and proof["outcome"].get("resume_to") == "running"
+        and proof["sequence"] >= question_sequence
+        and action.get("state") in UNSETTLED_ACTION_STATES
+        and action.get("active_plan_digest") == bound_digest
+        and action.get("initiative_id") == initiative.get("initiative_id")
+    ]
+    return answers[0] if len(answers) == 1 else None
+
+
+def _answer_effect_proven(
+    question_sequence: int,
+    ordered: list[Mapping[str, Any]],
+    actions: Iterable[Mapping[str, Any]],
+    initiative: Any,
+) -> bool:
+    """Whether a retained answer's own head write is proven to have landed.
+
+    An answering `resume` retains `resume_from`/`resume_to` before it writes,
+    so that pair is intent and never discharges anything by itself.  The
+    effect is the head write, and this is the one bounded reading of it: the
+    action observed a `needs-input` head at a known head-write count, no
+    `initiative-state-changed` edge is journaled between that observation and
+    the next durable observation of the head, and the head-write count grew
+    across that window.  From a `needs-input` head the only writers are a
+    pause, a resume, and a node continuation, so a window that holds no other
+    unsettled parking proof leaves the answer as the only writer that could
+    have moved the head, and a continuation would have moved it to `running`
+    for the same reason.  Everything else is refused: an answer interrupted
+    before its write leaves the count unchanged, a competing parking action
+    makes the write ambiguous, a journaled edge in the window means the
+    journal already speaks, a stale or truncated tail cannot show the edges
+    the window has to be free of, a head older than the observation itself
+    cannot be read as its result, and an action bound to a different active
+    plan, to another initiative, to an older question, or carrying a
+    malformed proof is not evidence at all.
+    """
+    head = _head_observation(initiative)
+    if head is None or not ordered or ordered[-1].get("sequence") != head["sequence"]:
+        return False
+    observed = _parking_observations(actions)
+    if observed is None:
+        return False
+    answer = _retained_answer(question_sequence, observed, initiative)
+    if answer is None:
+        return False
+    proof, record = answer
+    start = proof["sequence"]
+    if head["sequence"] < start:
+        return False
+    end, closer = min(
+        [
+            (other, other_record) for other, other_record in observed
+            if other_record.get("action_id") != record.get("action_id")
+            and other["sequence"] > start
+        ] + [(head, None)],
+        key=lambda item: (item[0]["sequence"], item[0]["head_writes"]),
+    )
+    if any(
+        event.get("type") == "initiative-state-changed"
+        and start < _sequence_of(event) <= end["sequence"]
+        for event in ordered
+    ):
+        return False
+    if any(
+        other_record is not closer
+        and other_record.get("action_id") != record.get("action_id")
+        and other_record.get("state") in UNSETTLED_ACTION_STATES
+        and other["sequence"] <= end["sequence"]
+        for other, other_record in observed
+    ):
+        return False
+    return end["head_writes"] - proof["head_writes"] >= 1
+
+
+def unanswered_operator_question(
+    events: Iterable[Mapping[str, Any]],
+    *,
+    actions: Iterable[Mapping[str, Any]] = (),
+    initiative: Mapping[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """The initiative-level operator question no answer has discharged, or None.
+
+    `request-decision` journals one `approval-requested` event of kind
+    `operator-decision` after moving the initiative to `needs-input`, then the
+    `running -> needs-input` edge that opens the wait.  The record that
+    answers the wait is the `needs-input -> running` edge the operator's
+    `resume` or a node continuation journals.  A `needs-input -> paused` edge
+    parks the wait and answers nothing, and `paused -> needs-input` restores
+    it.  Only an answer takes a waiting initiative back to `running`, so any
+    later edge that leaves or enters `running` proves the wait ended even when
+    the answer's own edge never landed: an answer the controller died inside
+    wrote its `running` head and nothing else, and the pause or resume that
+    followed journaled the edge that proves it.
+
+    An answer can also lose its edge with no later edge journaled at all: the
+    paused-seal outcome writer returns the `running` head to `needs-input`
+    without one.  So when the caller supplies the initiative head and its
+    retained actions, an answering `resume` that is proven to have written
+    that `running` head discharges the question as its lost edge would have
+    (`_answer_effect_proven`).  The proof is the head write, never the
+    retained intent: without those records, or when the retained evidence
+    cannot attribute the write, the question stays the operator's to answer
+    and a resume restores it, which is the safe direction and the reason an
+    answered question can still come back.  The verdict is read from durable
+    records alone: no marker file, no private state, and nothing inferred
+    from a timestamp, a target state, or a count of markers.
+    """
+    question: dict[str, Any] | None = None
+    wait_opened = False
+    ordered = sorted(events, key=_sequence_of)
+    for event in ordered:
+        payload = event.get("payload") if isinstance(event, Mapping) else None
+        if not isinstance(payload, Mapping):
+            continue
+        if (
+            event.get("type") == "approval-requested"
+            and payload.get("kind") == "operator-decision"
+        ):
+            question = copy.deepcopy(dict(event))
+            wait_opened = False
+        elif question is not None and event.get("type") == "initiative-state-changed":
+            source, target = payload.get("from"), payload.get("to")
+            if not wait_opened and source == "running" and target == "needs-input":
+                # The question's own edge: the wait begins, nothing ran.
+                wait_opened = True
+            elif "running" in (source, target):
+                question = None
+    if question is None or initiative is None:
+        return question
+    if _answer_effect_proven(_sequence_of(question), ordered, actions, initiative):
+        return None
+    return question
+
 
 _COORDINATOR_LIVE = frozenset({"starting", "active", "waiting", "needs-input", "stopping"})
 COORDINATOR_TERMINAL_STATES = frozenset({"fenced", "exited", "failed"})
@@ -2468,5 +2756,6 @@ __all__ = [name for name in globals() if name.isupper()] + [
     "validate_bundle", "validate_fallback_integration", "validate_coordinator",
     "validate_coordinator_checkpoint",
     "checkpoint_digest", "validate_record", "record_digest",
-    "plan_digest", "require_transition",
+    "plan_digest", "require_transition", "unanswered_operator_question",
+    "parking_head_observation", "retained_action_outcome",
 ]

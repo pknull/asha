@@ -18,6 +18,7 @@ from lib.control.orchestration.tui_model import InitiativesScreen
 from lib.control.store import TaskStore
 from lib.control.transaction import CreationJournalStore
 from lib.control.tui import IntentKind, TuiModel, render
+from lib.control.tui_style import INERT, WAITING
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
 from tests.python.test_orchestration_graph import valid_plan
 
@@ -85,7 +86,9 @@ class InitiativesScreenTests(unittest.TestCase):
         rows = screen.rows()
         self.assertEqual([row.label for row in rows], ["alpha-approval", "zeta-running", "mid-paused"])
         self.assertEqual(rows[0].attention, "plan approval")
-        self.assertEqual(rows[2].attention, "paused")
+        # Parked work is status, not demand: the STATE column already says paused.
+        self.assertEqual(rows[2].attention, "-")
+        self.assertFalse(rows[2].needs_human)
         self.assertEqual(rows[1].nodes, "1/3")
         self.assertEqual(rows[1].coordinator, "-")
 
@@ -504,6 +507,77 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
         self.assertTrue(all(action["actor_id"] == "tui" and action["state"] == "completed" for action in actions))
         self.assertEqual(self.store.peek(self.initiative_id)["state"], "running")
 
+    def test_p_parks_a_waiting_initiative_and_resumes_only_a_paused_one(self) -> None:
+        from lib.control.orchestration.actions import build_action_document, submit_action
+        from lib.control.orchestration.coordinator import claim
+        from tests.python.test_orchestration_coordinator_claim import FakeTmux
+
+        self.set_running(self.store.peek(self.initiative_id))
+        record = claim(
+            self.store, self.store.peek(self.initiative_id),
+            env={**self.env, "TMUX_PANE": "%7"}, tmux=FakeTmux(),
+        )
+        asked = submit_action(self.store, self.initiative_id, build_action_document(
+            self.store.peek(self.initiative_id), "request-decision",
+            {"subject_id": "implementation-a", "question": "Which base should the retry use?"},
+            actor_id=f"coordinator:{record['coordinator_id']}", coordinator=record,
+        ))
+        self.assertEqual(asked["state"], "completed", asked["outcome"])
+        self.assertEqual(self.store.peek(self.initiative_id)["state"], "needs-input")
+        question = next(
+            event for event in self.store.list_events_snapshot(self.initiative_id)
+            if event["type"] == "approval-requested"
+        )
+        # needs-input sorts first, so the waiting initiative is already selected.
+        keys = [
+            9, ord("p"), *map(ord, "no"), 10,   # anything but exact yes records nothing
+            ord("p"), *map(ord, "yes"), 10,    # parks the question instead of resuming it
+            ord("p"), *map(ord, "yes"), 10,    # only a paused initiative resumes
+            ord("p"), *map(ord, "yes"), 10,    # the restored question parks again, never resumes
+            ord("q"),
+        ]
+        screen, model = self.run_loop(keys)
+        text = screen.text()
+        self.assertIn("pause cancelled", text)
+        self.assertIn("Pause initiative", text)
+        self.assertIn("Resume initiative", text)
+        # The 80-column fake screen wraps the confirmation text mid-sentence.
+        self.assertIn("returns to needs-input", text)
+        # The result line names the state the resume actually recorded.
+        self.assertIn("resume: completed (needs-input)", text)
+        operator_actions = [
+            (action["action_class"], action["actor_id"], action["state"])
+            for action in sorted(
+                self.store.list_actions_snapshot(self.initiative_id),
+                key=lambda item: item["received_at"],
+            )
+            if action["actor_kind"] == "operator"
+        ]
+        self.assertEqual(
+            operator_actions, [
+                ("pause", "tui", "completed"), ("resume", "tui", "completed"),
+                ("pause", "tui", "completed"),
+            ],
+        )
+        self.assertEqual(self.store.peek(self.initiative_id)["state"], "paused")
+        self.assertEqual(
+            [
+                (event["payload"]["from"], event["payload"]["to"])
+                for event in self.store.list_events_snapshot(self.initiative_id)
+                if event["type"] == "initiative-state-changed"
+            ],
+            [
+                ("running", "needs-input"), ("needs-input", "paused"),
+                ("paused", "needs-input"), ("needs-input", "paused"),
+            ],
+        )
+        self.assertIn(
+            question,
+            self.store.list_events_snapshot(self.initiative_id),
+            "the question is restored from its record, never re-asked",
+        )
+        self.assertTrue(str(model.message).startswith("pause: completed"), model.message)
+
     def test_initiatives_mode_degrades_when_orchestration_cannot_load(self) -> None:
         with mock.patch("lib.control.tui._load_initiative_views", side_effect=ValueError("boom")):
             screen, model = self.run_loop([ord("q")])
@@ -647,15 +721,184 @@ class UnifiedTreeTests(unittest.TestCase):
         self.assertIn("zero attempts", items[0]["detail"])
         self.assertIn("300 seconds", items[0]["detail"])
         self.assertIn("coordinator attach", items[0]["resolution"])
+        # Under `!` the parked node is listed with its head even though the
+        # head is collapsed: expansion is not a filter on demand.
         filtered = self.screen([view], (), attention_only=True).rows()
-        self.assertEqual([row.label for row in filtered], ["parked"])
-        self.assertEqual(filtered[0].attention, "coordinator parked")
+        self.assertEqual([row.label for row in filtered], ["parked", "Implement A"])
+        self.assertEqual([row.attention for row in filtered], ["coordinator parked"] * 2)
 
         armed = copy.deepcopy(view)
         armed["coordinator"]["state"] = "waiting"
         armed["coordinator"]["updated_at"] = "2999-01-01T00:00:00Z"
         self.assertEqual(attention_items([armed]), [])
         self.assertEqual(self.screen([armed], (), attention_only=True).rows(), [])
+
+    def parked_view(self, state: str = "paused") -> dict:
+        """One initiative with every kind of child ask beneath a head in `state`."""
+        return _view(
+            "parked", state,
+            nodes=[
+                {"node_id": "decision-a", "state": "needs-input", "type": "work", "goal": "Decide A"},
+                {"node_id": "review-a", "state": "running", "type": "review", "goal": "Review A"},
+                {"node_id": "exit-a", "state": "evaluating", "type": "verify", "goal": "Verify A"},
+                {"node_id": "ended-a", "state": "needs-input", "type": "work", "goal": "Ended A"},
+            ],
+            attempts=[
+                {"attempt_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "node_id": "review-a", "ordinal": 1, "state": "running"},
+                {"attempt_id": "11111111-1111-4111-8111-111111111111", "node_id": "exit-a", "ordinal": 1, "state": "reported"},
+                {"attempt_id": "22222222-2222-4222-8222-222222222222", "node_id": "ended-a", "ordinal": 1, "state": "sealed-paused"},
+            ],
+            links=[
+                {"attempt_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "control_task_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"},
+                {"attempt_id": "11111111-1111-4111-8111-111111111111", "control_task_id": "33333333-3333-4333-8333-333333333333"},
+                {"attempt_id": "22222222-2222-4222-8222-222222222222", "control_task_id": "44444444-4444-4444-8444-444444444444"},
+            ],
+        )
+
+    @staticmethod
+    def parked_workers() -> tuple:
+        prompt = _FakeTaskRow(
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "review-worker", display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "pane shows the claude input prompt 'trust'"}],
+        )
+        exiting = _FakeTaskRow("33333333-3333-4333-8333-333333333333", "verify-worker", display_state="idle")
+        ended = _FakeTaskRow(
+            "44444444-4444-4444-8444-444444444444", "ended-worker", display_state="exited",
+            evidence=[{"state": "needs-input", "detail": "historical prompt before exit"}],
+        )
+        ended.task["lifecycle"] = "ended"
+        return prompt, exiting, ended
+
+    def test_parking_hides_idle_node_demand_but_never_a_live_ask(self) -> None:
+        from lib.control.orchestration.tui_model import attention_items
+
+        view = self.parked_view("paused")
+        initiative_id = view["initiative"]["initiative_id"]
+        workers = self.parked_workers()
+        screen = self.screen([view], workers)
+        screen.expanded.add(("initiative", initiative_id))
+        rows = {row.id: row for row in screen.rows()}
+        head = rows[initiative_id]
+        self.assertEqual((head.state, head.attention, head.needs_human), ("paused", "-", False))
+        self.assertEqual(head.display, (INERT, "paused"))
+        # Readable but parked: the pending decision is not the operator's move now.
+        self.assertEqual((rows["decision-a"].state, rows["decision-a"].attention), ("needs-input", "-"))
+        # A prompt on screen and an exit to close are happening now, whatever the head says.
+        self.assertTrue(rows["review-a"].attention.startswith("at prompt"))
+        self.assertEqual(rows["exit-a"].attention, "awaiting exit (X closes)")
+        # A prompt the ended worker once showed is history, not a live ask.
+        self.assertEqual((rows["ended-a"].worker, rows["ended-a"].attention), ("exited", "-"))
+
+        filtered = self.screen([view], workers, attention_only=True)
+        filtered.expanded.add(("initiative", initiative_id))
+        self.assertEqual([row.id for row in filtered.rows()], [initiative_id, "exit-a", "review-a"])
+        # Collapsed, the live prompt and the exit to close are still listed
+        # with their paused head: hidden-by-collapse is not parking.
+        collapsed = self.screen([view], workers, attention_only=True)
+        self.assertNotIn(("initiative", initiative_id), collapsed.expanded)
+        self.assertEqual([row.id for row in collapsed.rows()], [initiative_id, "exit-a", "review-a"])
+        self.assertEqual(
+            [(row.kind, row.depth, row.attention) for row in collapsed.rows()],
+            [(row.kind, row.depth, row.attention) for row in filtered.rows()],
+        )
+        self.assertEqual(
+            sorted((item["kind"], item.get("node_id")) for item in attention_items([view], workers)),
+            [("worker", "exit-a"), ("worker", "review-a")],
+        )
+        # The normal tree keeps the collapse: only the head, readable and quiet.
+        normal = self.screen([view], workers)
+        self.assertEqual([row.id for row in normal.rows()], [initiative_id])
+        self.assertEqual(normal.rows()[0].attention, "-")
+        # With nothing live beneath it (the ended worker's old prompt is
+        # history), the parked head leaves `!` collapsed and expanded alike.
+        idle_workers = (workers[2],)
+        self.assertEqual(self.screen([view], idle_workers, attention_only=True).rows(), [])
+        idle_expanded = self.screen([view], idle_workers, attention_only=True)
+        idle_expanded.expanded.add(("initiative", initiative_id))
+        self.assertEqual(idle_expanded.rows(), [])
+        self.assertEqual(attention_items([view], idle_workers), [])
+
+        # Resumed, the same records expose the parked decisions again.
+        resumed = self.parked_view("running")
+        screen = self.screen([resumed], workers)
+        screen.expanded.add(("initiative", initiative_id))
+        rows = {row.id: row for row in screen.rows()}
+        self.assertEqual(rows["decision-a"].attention, "needs input")
+        self.assertEqual(rows["ended-a"].attention, "needs input")
+        self.assertTrue(rows["review-a"].attention.startswith("at prompt"))
+        self.assertEqual(rows["exit-a"].attention, "awaiting exit (X closes)")
+        self.assertEqual(
+            sorted((item["kind"], item.get("node_id")) for item in attention_items([resumed], workers)),
+            [("needs-input", "decision-a"), ("needs-input", "ended-a"),
+             ("worker", "exit-a"), ("worker", "review-a")],
+        )
+        # A running head hides nothing by collapse under `!` either.
+        for expanded in (False, True):
+            running_filter = self.screen([resumed], workers, attention_only=True)
+            if expanded:
+                running_filter.expanded.add(("initiative", initiative_id))
+            self.assertEqual(
+                [row.id for row in running_filter.rows()],
+                [initiative_id, "decision-a", "ended-a", "exit-a", "review-a"],
+            )
+
+    def test_parked_approval_and_unrelated_rows_stay_while_a_parked_coordinator_does_not(self) -> None:
+        from lib.control.orchestration.tui_model import attention_items
+
+        asked = _view(
+            "asked", "paused",
+            approvals=[{"state": "requested", "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}],
+        )
+        coordinator = {
+            "harness": "claude", "generation": 1, "state": "active",
+            "updated_at": "2000-01-01T00:00:00Z", "anchor": {"pane_id": "%7"},
+        }
+        idle = _view(
+            "idle", "paused", coordinator=coordinator, coordinator_live=True,
+            nodes=[{"node_id": "implementation-a", "state": "ready", "type": "work", "goal": "Implement A"}],
+        )
+        idle["attempts"], idle["links"], idle["events"] = [], [], []
+        stuck = _FakeTaskRow(
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "stuck-task", display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "prompt"}],
+        )
+        room = {
+            "room_id": "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee", "name": "aas-discussion",
+            "state": "open", "harness": "claude", "project_name": "AAS",
+            "shared_working_tree": False, "updated_at": "2026-08-24T10:00:00Z",
+        }
+        expanded = {("initiative", view["initiative"]["initiative_id"]) for view in (asked, idle)}
+
+        normal = self.screen([asked, idle], (stuck,), room_rows=[room])
+        normal.expanded |= expanded
+        rows = {row.label: row for row in normal.rows()}
+        self.assertEqual((rows["asked"].attention, rows["asked"].display), ("salvage approval", (WAITING, "needs you")))
+        self.assertTrue(rows["asked"].needs_human)
+        self.assertEqual((rows["idle"].attention, rows["idle"].display), ("-", (INERT, "paused")))
+        self.assertEqual(rows["Implement A"].attention, "-", "a parked coordinator is not a demand while parked")
+        self.assertIn("aas-discussion", rows)
+        self.assertIn("stuck-task", rows)
+
+        filtered = self.screen([asked, idle], (stuck,), room_rows=[room], attention_only=True)
+        filtered.expanded |= expanded
+        self.assertEqual(
+            [(row.kind, row.label) for row in filtered.rows()],
+            [("initiative", "asked"), ("tasks-root", "Unbound tasks"), ("task", "stuck-task")],
+        )
+        self.assertEqual(
+            [(item["kind"], item["slug"]) for item in attention_items([asked, idle], (stuck,))],
+            [("salvage-approval", "asked"), ("task", None)],
+        )
+
+        # The same idle coordinator under running work is parked demand again.
+        running = copy.deepcopy(idle)
+        running["initiative"]["state"] = "running"
+        self.assertEqual([item["kind"] for item in attention_items([running])], ["coordinator-parked"])
+        resumed = self.screen([running], ())
+        resumed.expanded |= expanded
+        self.assertEqual(
+            [row.attention for row in resumed.rows()], ["coordinator parked", "coordinator parked"],
+        )
 
     def test_close_worker_sends_the_quit_command_only_after_an_exact_yes(self) -> None:
         worker = _FakeTaskRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "review-worker", display_state="idle")
