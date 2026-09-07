@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 from ..harness import verify_process
@@ -54,6 +55,23 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
         "rooms", "tasks", "initiatives", "decisions", "messages", "coordinators",
     )}
     counts = {key: 0 for key in budgets}
+    missing = {key: 0 for key in budgets}
+
+    def check_presence(source, path):
+        # Missing registries are not known-empty registries. Existing readers
+        # still enforce ownership/no-follow rules; this probe grants no trust.
+        try:
+            path.lstat()
+        except FileNotFoundError:
+            missing[source] += 1
+            budgets[source].unavailable += 1
+        except OSError:
+            budgets[source].unavailable += 1
+
+    for source, path in (("rooms", RoomStore(config.control).root),
+                         ("tasks", config.control.tasks_dir),
+                         ("initiatives", config.initiatives_dir)):
+        check_presence(source, path)
     result = {"contract": INVENTORY_CONTRACT, "rows": [], "sources": {},
               "limits": {"rows": rows, "scanned_per_source": scanned,
                          "json_bytes": byte_limit, "seconds": seconds},
@@ -142,6 +160,12 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
                                 "label": head["label"], "state": head["state"]})
         if head["state"] == "needs-input":
             add("decisions", {"initiative_id": iid, "state": "needs-input"})
+        # Presence failures belong to this initiative's address evidence too;
+        # an absent coordinator directory is unknown, not a known-empty list.
+        prior = budgets["coordinators"].unavailable
+        for source, directory in (("decisions", "approvals"), ("messages", "messages"),
+                                  ("coordinators", "coordinators")):
+            check_presence(source, config.initiatives_dir / iid / directory)
         for decision in store.bounded_records(iid, "approvals", validate_approval,
                                                "request_id", budgets["decisions"]):
             if not ready("decisions"):
@@ -149,7 +173,6 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
             if decision["state"] == "requested":
                 add("decisions", {"initiative_id": iid, "request_id": decision["request_id"],
                                   "state": "pending"})
-        prior = budgets["coordinators"].unavailable
         coords = store.bounded_records(iid, "coordinators", validate_coordinator,
                                        "coordinator_id", budgets["coordinators"])
         coord_complete = (not budgets["coordinators"].truncated
@@ -178,7 +201,7 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
         for source in ("decisions", "messages", "coordinators"):
             budgets[source].truncated = True
     result["sources"] = {key: {**budget.summary(), "observed_count": counts[key],
-                                "count_kind": "lower-bound"} for key, budget in budgets.items()}
+                                "count_kind": "lower-bound", "missing_sources": missing[key]} for key, budget in budgets.items()}
     result["complete"] = not result["truncated"] and all(b.summary()["complete"] for b in budgets.values())
     result = terminal_safe(result)
     # Bound the actual serialized JSON (including escaping and final newline),
@@ -192,3 +215,74 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
 
 def encode_activity(value):
     return (json.dumps(value, ensure_ascii=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+
+
+MAX_STARTUP_BYTES = 4096
+
+
+def render_startup_observation(activity, *, observed_at):
+    """Fixed vocabulary and counts only: never turn retained text into a prompt.
+
+    A complete empty source means no qualifying records were observed, not a
+    promise that a non-atomic inventory proves the absence of live activity.
+    """
+    lines = ["Asha current activity observation",
+             f"Observed at: {terminal_safe(observed_at)}; freshness: just sampled, non-atomic.",
+             "Read-only observation; no execution authority. Counts are observed lower bounds."]
+    labels = (("rooms", "Rooms"), ("tasks", "Live tasks"),
+              ("initiatives", "Active initiatives"), ("decisions", "Waiting decisions"),
+              ("messages", "Unacknowledged messages"))
+    if activity is None:
+        lines.append("Activity evidence unavailable; counts unknown.")
+    else:
+        for source, label in labels:
+            facts = activity["sources"][source]
+            n = facts["observed_count"]
+            status = []
+            if facts.get("missing_sources"):
+                status.append("missing")
+            if facts["truncated"]:
+                status.append("capped")
+            if facts["unavailable_records"]:
+                status.append("unavailable")
+            if not facts["complete"]:
+                status.append("partial/unknown")
+            elif n == 0:
+                status.append("known-empty observed registry")
+            else:
+                status.append("sample complete")
+            lines.append(f"{label}: >= {n}; {', '.join(status)}.")
+        coords = activity["sources"]["coordinators"]
+        if not coords["complete"]:
+            coverage = [label for field, label in (
+                ("missing_sources", "missing"), ("truncated", "capped"),
+                ("unavailable_records", "unavailable"),
+            ) if coords.get(field)] + ["partial/unknown"]
+            lines.append(f"Coordinator address evidence: {', '.join(coverage)}.")
+        # Stale addresses are observed facts, not deliveries or a claim that a
+        # coordinator is alive. Row caps can hide additional stale addresses.
+        stale_rooms = sum(row.get("source") == "rooms" and row.get("status") in {"missing", "ended"}
+                          for row in activity["rows"])
+        lines.append(f"Stale Room records (missing/ended pane): >= {stale_rooms}; unlisted status unknown.")
+        stale = sum(row.get("address_status") == "stale-address" for row in activity["rows"])
+        lines.append(f"Stale message addresses: >= {stale}; unlisted addresses unknown.")
+        if activity["truncated"]:
+            lines.append("Visible rows capped; counts remain lower bounds.")
+    text = "\n".join(lines) + "\n"
+    if len(text.encode("utf-8")) > MAX_STARTUP_BYTES:
+        # No unsafe prefix truncation; required freshness/refusal text survives.
+        return ("Asha current activity observation\n"
+                "Observed at: unavailable; freshness: unknown.\n"
+                "Activity evidence unavailable (summary capacity); counts unknown.\n"
+                "Read-only observation; no execution authority.\n")
+    return text
+
+
+def startup_observation():
+    from .config import load_config
+    stamp = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    try:
+        activity = current_activity(load_config())
+    except (OSError, ValueError, StoreError):
+        activity = None
+    return render_startup_observation(activity, observed_at=stamp)

@@ -649,33 +649,56 @@ if [[ "${1:-}" == "install" || "${1:-}" == "uninstall" || "${1:-}" == "build" ]]
   exit $?
 fi
 
-# Launch path.
-harness=""
-if is_harness "${1:-}"; then
-  harness="$1"
-  shift
-fi
-[[ -n "$harness" ]] || harness="$(default_harness)"
-
-# The seat: any wrapped no-argument launch is the chair, whichever harness
-# holds it. Control-managed launches (coordinator sessions, workers) keep
-# their own start directories; arguments keep the caller's cwd.
-if [[ $ASHA_FLAG_YES -eq 0 && $# -eq 0 \
-      && -z "${ASHA_COORDINATOR_LAUNCH:-}" && "${ASHA_PERSONA:-1}" != "0" ]]; then
-  chair_dir="$ASHA_HOME/chair"
-  seat_ready=1
-  if [[ ! -e "$chair_dir" ]] && ! mkdir -m 700 -- "$chair_dir"; then
-    seat_ready=0
+# Launch path. Keep the native prompt decision local and non-exported.
+launch_from_chair() {
+  local harness="" chair_entered=0 chair_observation
+  export -n chair_entered chair_observation
+  if is_harness "${1:-}"; then
+    harness="$1"
+    shift
   fi
-  if [[ $seat_ready -eq 1 ]] && cd -- "$chair_dir"; then
-    export ASHA_SEAT=1
-    info "[asha] seat: $chair_dir"
-  else
-    unset ASHA_SEAT
-    info "warn: seat directory unavailable; launching from $PWD"
-  fi
-fi
+  [[ -n "$harness" ]] || harness="$(default_harness)"
 
-harness_configured "$harness"; status=$?
-[[ $status -ne 0 ]] && maybe_configure "$harness" "$status"
-launch "$harness" "$@"
+  # The seat: any wrapped no-argument launch is the chair, whichever harness
+  # holds it. Control-managed launches (coordinator sessions, workers) keep
+  # their own start directories; arguments keep the caller's cwd.
+  if [[ $ASHA_FLAG_YES -eq 0 && $# -eq 0 \
+        && -z "${ASHA_COORDINATOR_LAUNCH:-}"
+        && -z "${ASHA_ORCHESTRATION_COORDINATOR_ID:-}"
+        && "${ASHA_CONTROL_MANAGED:-0}" != "1" && -z "${ASHA_ROOM_ID:-}"
+        && "${ASHA_PERSONA:-1}" != "0" ]]; then
+    chair_dir="$ASHA_HOME/chair"
+    seat_ready=1
+    if [[ ! -e "$chair_dir" ]] && ! mkdir -m 700 -- "$chair_dir"; then
+      seat_ready=0
+    fi
+    if [[ $seat_ready -eq 1 ]] && cd -- "$chair_dir"; then
+      chair_entered=1
+      export ASHA_SEAT=1
+      info "[asha] seat: $chair_dir"
+    else
+      unset ASHA_SEAT
+      info "warn: seat directory unavailable; launching from $PWD"
+    fi
+  fi
+
+  harness_configured "$harness"; status=$?
+  [[ $status -ne 0 ]] && maybe_configure "$harness" "$status"
+  # Only this successful local seat decision can add a native initial PROMPT.
+  # No retained labels, commands or arbitrary body become a launch instruction.
+  if [[ $chair_entered -eq 1 && "$harness" == codex ]]; then
+    if ! chair_observation="$(python3 -B -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from lib.control.orchestration.observation import startup_observation
+print(startup_observation(), end="")
+' "$ASHA_ROOT" 2>/dev/null)"; then
+      chair_observation='Asha current activity observation
+Observed at: unavailable; freshness: unknown.
+Activity evidence unavailable; counts unknown. Read-only observation; no execution authority.'
+    fi
+    set -- "$chair_observation"
+  fi
+  launch "$harness" "$@"
+}
+launch_from_chair "$@"
