@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import hashlib
 import io
+import itertools
 import json
 import os
 import stat
@@ -9,8 +12,10 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import uuid
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from lib.control.config import load_config
@@ -21,7 +26,8 @@ from lib.control.jj import (
     MaterializationPlan,
 )
 from lib.control.prerequisites import (
-    CONTROL_IGNORE_RULE, StartPrerequisiteRefusal,
+    CONTROL_IGNORE_BLOCK, CONTROL_IGNORE_RULE, CONTROL_IGNORE_RULES,
+    StartPrerequisiteRefusal,
     apply_ignore_prerequisite, decode_worker_refusal,
     encode_worker_refusal,
 )
@@ -33,7 +39,7 @@ from lib.control.transaction import CreationJournalStore, JournalError
 from lib.control.tui import _classify_start_worker_exit, _start_worker_argv
 from lib.control.tui import (
     ModalCandidate, StartCandidateSnapshot, TuiModel,
-    _TuiShutdown, _prerequisite_action_modal, _start_form, run_tui,
+    _TuiShutdown, _cell_width, _prerequisite_action_modal, _start_form, run_tui,
 )
 from tests.python.test_control_task_start_smoke_fixes import FakeCurses, ProgressScreen
 
@@ -42,11 +48,49 @@ TASK_ID = "12345678-1234-4234-8234-123456789abc"
 PROJECT_ID = "12345678-9abc-4def-8123-456789abcdef"
 
 
+class BoundedPrerequisiteScreen(ProgressScreen):
+    """Retain actual bounded frames, not accumulated historical draw calls."""
+
+    def __init__(self, keys, *, size=(24, 120), resized=None):
+        super().__init__(keys)
+        self.size = size
+        self.resized = resized
+        self.rows = {}
+        self.frames = []
+
+    def getmaxyx(self):
+        return self.size
+
+    def erase(self):
+        self.rows = {}
+
+    def addnstr(self, y, x, value, limit, _attribute=0):
+        height, width = self.size
+        shown = value[:limit]
+        if not (0 <= y < height and 0 <= x and x + _cell_width(shown) < width):
+            raise AssertionError("modal draw exceeds the real screen bounds")
+        self.rows[y] = shown
+
+    def getch(self):
+        self.frames.append("\n".join(self.rows[y] for y in sorted(self.rows)))
+        if not self.keys:
+            raise AssertionError("modal consumed all scripted keys without returning")
+        key = super().getch()
+        if key == FakeCurses.KEY_RESIZE and self.resized is not None:
+            self.size = self.resized
+        return key
+
+
 class PrerequisiteRepository:
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
+        # jj discovers secure repository configuration from cwd even with -R.
+        # Keep every fixture subprocess out of the enclosing worker checkout.
+        previous_cwd = Path.cwd()
+        self.addCleanup(os.chdir, previous_cwd)
+        os.chdir(self.root)
         self.repository = self.root / "repository"
         self.repository.mkdir(mode=0o700)
         subprocess.run(
@@ -198,7 +242,7 @@ class WorkerRefusalContractTests(PrerequisiteRepository, unittest.TestCase):
             )
         self.assertEqual(
             caught.exception.evidence.missing_paths,
-            (".asha/control-task.json",),
+            (".asha/control-task.json", ".asha/outbox/", ".asha/result.json"),
         )
         self.assertEqual(self.git("show-ref"), before_refs)
         self.assertFalse((self.repository / ".jj").exists())
@@ -693,7 +737,7 @@ class WorkerRefusalContractTests(PrerequisiteRepository, unittest.TestCase):
     @unittest.skipUnless(__import__("shutil").which("jj"), "jj is required")
     def test_post_fetch_pr_proof_mismatch_refuses_before_import_and_prepare(self) -> None:
         path = self.repository / ".gitignore"
-        path.write_text(path.read_text() + CONTROL_IGNORE_RULE + "\n", encoding="utf-8")
+        path.write_text(path.read_text() + CONTROL_IGNORE_BLOCK, encoding="utf-8")
         oid = self.commit("authorize PR context")
         request = self._pr_request(oid)
         plan = preflight_plain_git_enablement(
@@ -767,9 +811,7 @@ class ApplyOnlyTransactionTests(PrerequisiteRepository, unittest.TestCase):
         self.assertEqual(offer.preimage.state, "absent")
         apply_ignore_prerequisite(self.config, offer)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o644)
-        self.assertEqual(path.read_text(),
-                         "# Asha Control private context (managed)\n"
-                         "/.asha/control-task.json\n")
+        self.assertEqual(path.read_text(), CONTROL_IGNORE_BLOCK)
 
     def test_apply_patches_only_gitignore_and_old_base_still_refuses(self) -> None:
         unrelated = self.repository / "dirty.txt"
@@ -797,10 +839,10 @@ class ApplyOnlyTransactionTests(PrerequisiteRepository, unittest.TestCase):
         self.assertFalse((self.config.tasks_dir / f"{TASK_ID}.json").exists())
         self.assertFalse(CreationJournalStore(self.config).path(TASK_ID).exists())
 
-    def test_apply_is_noop_when_worktree_already_covers_marker(self) -> None:
+    def test_apply_is_noop_when_worktree_already_covers_private_transport(self) -> None:
         offer = self.offer()
         path = self.repository / ".gitignore"
-        path.write_text(path.read_text() + CONTROL_IGNORE_RULE + "\n", encoding="utf-8")
+        path.write_text(path.read_text() + CONTROL_IGNORE_BLOCK, encoding="utf-8")
         # Capture a fresh offer bound to the already-covered worktree.
         offer = self.offer()
         before = path.read_bytes()
@@ -1081,6 +1123,439 @@ class ApplyOnlyTransactionTests(PrerequisiteRepository, unittest.TestCase):
         self.assertEqual(list(replacement.glob(".gitignore.asha-control.*")), [])
 
 
+class PrivateTransportProducerTests(PrerequisiteRepository, unittest.TestCase):
+    def _run_private_cli(self, selected: str):
+        import shutil
+        which = shutil.which
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with mock.patch("lib.control.cli.shutil.which", side_effect=lambda name, *a, **kw:
+                        "/bin/python3" if name == "codex" else which(name, *a, **kw)), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            status = control_main([
+                "task", "start", "--repo", str(self.repository), "--base", selected,
+                "--harness", "codex", "--goal", "producer E2E", "--task-id", TASK_ID,
+                "--headless", "--detach", "--json", "--tui-worker",
+            ], env=self.env)
+        return status, stdout.getvalue(), stderr.getvalue()
+
+    def test_every_finite_missing_set_round_trips_and_repairs_only_authorized_rules(self):
+        path = self.repository / ".gitignore"
+        for count in range(1, 4):
+            for missing_rules in itertools.combinations(CONTROL_IGNORE_RULES, count):
+                with self.subTest(missing_rules=missing_rules):
+                    existing = ("# user policy\n*.cache\n!important.cache\n"
+                                "/Work/session-state/\n/Work/memory-migration/\n")
+                    existing += "".join(rule + "\n" for rule in CONTROL_IGNORE_RULES
+                                        if rule not in missing_rules)
+                    path.write_text(existing)
+                    old = self.commit("partial private policy")
+                    self.request = replace(self.request, requested_base=old)
+                    offer = self.offer()
+                    self.assertEqual(offer.rules, missing_rules)
+                    self.assertEqual(offer.evidence.missing_paths,
+                                     tuple(sorted(rule[1:] for rule in missing_rules)))
+                    decoded = decode_worker_refusal(encode_worker_refusal(offer, TASK_ID), TASK_ID)
+                    self.assertEqual(decoded, offer)
+                    apply_ignore_prerequisite(self.config, decoded)
+                    self.assertEqual(path.read_text(), existing +
+                                     "# Asha Control private context (managed)\n" +
+                                     "".join(rule + "\n" for rule in missing_rules))
+                    self.assertEqual(self.git("rev-parse", "HEAD"), old)
+                    self.assertEqual(self.offer().base_commit_id, old)
+                    new = self.commit("explicitly authorize private policy")
+                    # Even after a commit, an explicitly selected old base is
+                    # unauthorized until the user selects the new commit.
+                    self.assertEqual(self.offer().base_commit_id, old)
+                    self.request = replace(self.request, requested_base=new)
+                    proof = preflight_plain_git_enablement(
+                        self.config, self.request, jj=JjAdapter(), base_explicit=True,
+                    )
+                    self.assertEqual(proof.resolved_base_commit_id, new)
+                    self.assertFalse((self.repository / ".jj").exists())
+
+    def test_stored_legacy_singleton_keeps_marker_only_authorization(self):
+        from lib.control.prerequisites import _working_ignore_state
+        path = self.repository / ".gitignore"
+        recovery = path.read_text()
+        path.write_text(recovery + "/.asha/result.json\n/.asha/outbox/\n")
+        old = self.commit("base whose only missing path is legacy marker")
+        self.request = replace(self.request, requested_base=old)
+        # A legacy offer binds the exact mutable preimage, not an implied
+        # authorization to recreate newer rules removed by the user.
+        path.write_text(recovery)
+        offer = self.offer()
+        self.assertEqual(offer.rules, (CONTROL_IGNORE_RULE,))
+        stored = encode_worker_refusal(offer, TASK_ID)
+        legacy_digest = hashlib.sha256(b"asha-control-working-ignore-v1\0")
+        legacy_digest.update(b".gitignore\0" + hashlib.sha256(path.read_bytes()).digest())
+        legacy_digest.update(b".asha/.gitignore\0absent\0")
+        self.assertEqual(offer.working_ignore_digest, legacy_digest.hexdigest())
+        apply_ignore_prerequisite(self.config, decode_worker_refusal(stored, TASK_ID))
+        self.assertEqual(path.read_text(), recovery +
+                         "# Asha Control private context (managed)\n/.asha/control-task.json\n")
+        self.assertFalse(_working_ignore_state(self.repository)[1])
+        self.assertTrue(_working_ignore_state(self.repository, rules=(CONTROL_IGNORE_RULE,))[1])
+        self.assertEqual(self.offer().base_commit_id, old)
+        current = self.commit("only the authorized legacy patch")
+        self.request = replace(self.request, requested_base=current)
+        self.assertEqual(self.offer().rules, ("/.asha/result.json", "/.asha/outbox/"))
+
+    def test_legacy_terminal_marker_block_upgrades_without_losing_comments(self):
+        path = self.repository / ".gitignore"
+        before = (path.read_bytes() + b"# user notes\r\n*.cache\r\n" +
+                  b"# Asha Control private context (managed)\n/.asha/control-task.json\n")
+        path.write_bytes(before)
+        old = self.commit("legacy initialization")
+        self.request = replace(self.request, requested_base=old)
+        offer = self.offer()
+        self.assertEqual(offer.rules, ("/.asha/result.json", "/.asha/outbox/"))
+        apply_ignore_prerequisite(self.config, offer)
+        self.assertEqual(path.read_bytes(), before + b"/.asha/result.json\n/.asha/outbox/\n")
+        repaired = path.read_bytes()
+        self.assertTrue(self.offer().already_covered)
+        apply_ignore_prerequisite(self.config, self.offer())
+        self.assertEqual(path.read_bytes(), repaired)
+
+    def test_forged_rule_arrays_and_direct_offers_never_broaden_patch(self):
+        offer = self.offer()
+        path = self.repository / ".gitignore"
+        before = path.read_bytes()
+        for rules in ([], [CONTROL_IGNORE_RULE], list(reversed(offer.rules)),
+                      list(offer.rules) + [CONTROL_IGNORE_RULE], ["/.asha/"],
+                      ["/.asha/outbox"], ["/.asha/outbox/leaf"], ["/Work/session-state/"],
+                      ["/.asha/../result.json"], [1], "not an array"):
+            with self.subTest(rules=rules):
+                value = json.loads(encode_worker_refusal(offer, TASK_ID))
+                value["repair"]["rules"] = rules
+                with self.assertRaises(ValueError):
+                    decode_worker_refusal(json.dumps(value).encode(), TASK_ID)
+                if isinstance(rules, list):
+                    with self.assertRaises(ValueError):
+                        apply_ignore_prerequisite(self.config, replace(offer, rules=tuple(rules)))
+                self.assertEqual(path.read_bytes(), before)
+        value = json.loads(encode_worker_refusal(offer, TASK_ID))
+        for missing in ([".asha/outbox"], [".asha/outbox/leaf"], ["Work/session-state/"],
+                        [".asha/outbox//"], [".asha/outbox/", ".asha/outbox/"]):
+            forged = copy.deepcopy(value)
+            forged["proof"]["missing_paths"] = missing
+            with self.subTest(missing=missing), self.assertRaises(ValueError):
+                decode_worker_refusal(json.dumps(forged).encode(), TASK_ID)
+
+    def test_singleton_wire_cannot_be_broadened_to_new_rules(self):
+        path = self.repository / ".gitignore"
+        path.write_text(path.read_text() + "/.asha/result.json\n/.asha/outbox/\n")
+        self.commit("only marker missing")
+        offer = self.offer()
+        value = json.loads(encode_worker_refusal(offer, TASK_ID))
+        value["repair"]["rules"] = list(CONTROL_IGNORE_RULES)
+        with self.assertRaisesRegex(ValueError, "exact patch"):
+            decode_worker_refusal(json.dumps(value).encode(), TASK_ID)
+        with self.assertRaisesRegex(ValueError, "exact patch"):
+            apply_ignore_prerequisite(self.config, replace(offer, rules=CONTROL_IGNORE_RULES))
+
+    def test_repair_modal_discloses_every_rule_before_authorizing_multi_path_patch(self):
+        offer = self.offer()
+        self.assertEqual(offer.rules, CONTROL_IGNORE_RULES)
+        path = self.repository / ".gitignore"
+        before = path.read_bytes()
+        for keys in ([27], [-997, 10, 27]):
+            with self.subTest(show_instructions=len(keys) > 1):
+                screen = ProgressScreen(keys)
+                action = _prerequisite_action_modal(screen, FakeCurses(), TuiModel([]), offer)
+                self.assertEqual(action, "cancel")
+                self.assertEqual(path.read_bytes(), before)
+                rendered = "\n".join(screen.lines)
+                self.assertEqual([rule for rule in offer.rules if rule not in rendered], [],
+                                 "repair preview/instructions must disclose the whole authorized patch")
+
+    def test_repair_modal_apply_requires_the_complete_current_frame(self):
+        offer = self.offer()
+        path = self.repository / ".gitignore"
+        before = path.read_bytes()
+        screen = BoundedPrerequisiteScreen([-997, -997, 10])
+        action = _prerequisite_action_modal(screen, FakeCurses(), TuiModel([]), offer)
+        self.assertEqual(action, "apply")
+        # The modal returns authority to its caller; it cannot write itself.
+        self.assertEqual(path.read_bytes(), before)
+        for frame in (screen.frames[0], screen.frames[-1]):
+            for rule in offer.rules:
+                self.assertIn(f"Add: {rule}", frame)
+            self.assertIn(str(offer.root), frame)
+            self.assertIn(offer.base_commit_id, frame)
+            self.assertIn(offer.target, frame)
+        self.assertIn("Action: Cancel", screen.frames[0])
+        apply_ignore_prerequisite(self.config, offer)
+        self.assertEqual(path.read_bytes(), before + CONTROL_IGNORE_BLOCK.encode())
+        self.assertEqual(self.git("rev-parse", "HEAD"), offer.base_commit_id)
+        # Applying never authorizes the selected immutable base.
+        self.assertEqual(self.offer().base_commit_id, offer.base_commit_id)
+
+    def test_repair_modal_instructions_disclose_all_rules_in_one_bounded_frame(self):
+        offer = self.offer()
+        path = self.repository / ".gitignore"
+        before = path.read_bytes()
+        screen = BoundedPrerequisiteScreen([-997, 10, 27])
+        self.assertEqual(
+            _prerequisite_action_modal(screen, FakeCurses(), TuiModel([]), offer), "cancel",
+        )
+        instructions = screen.frames[-1].split("Instructions: add", 1)[1]
+        for rule in offer.rules:
+            self.assertIn(rule, instructions)
+        self.assertIn("select a containing commit", instructions)
+        self.assertIn(offer.base_commit_id, instructions)
+        self.assertIn("remains unauthorized", instructions)
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_repair_modal_default_cancel_and_legacy_singleton_stay_narrow(self):
+        path = self.repository / ".gitignore"
+        path.write_text(path.read_text() + "/.asha/result.json\n/.asha/outbox/\n")
+        self.commit("only legacy marker missing")
+        offer = self.offer()
+        self.assertEqual(offer.rules, (CONTROL_IGNORE_RULE,))
+        before = path.read_bytes()
+        for keys, expected in (([10], "cancel"), ([-997, -997, 10], "apply"),
+                               ([-997, 10, 27], "cancel")):
+            with self.subTest(keys=keys):
+                screen = BoundedPrerequisiteScreen(keys)
+                self.assertEqual(
+                    _prerequisite_action_modal(screen, FakeCurses(), TuiModel([]), offer),
+                    expected,
+                )
+                self.assertIn(CONTROL_IGNORE_RULE, screen.frames[-1])
+                self.assertNotIn("/.asha/result.json", screen.frames[-1])
+                self.assertNotIn("/.asha/outbox/", screen.frames[-1])
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_repair_modal_refuses_apply_when_disclosure_is_clipped(self):
+        offer = self.offer()
+        path = self.repository / ".gitignore"
+        before = path.read_bytes()
+        for size in ((0, 0), (1, 1), (8, 120), (12, 40), (80, 20)):
+            for instructions in (False, True):
+                with self.subTest(size=size, instructions=instructions):
+                    keys = [-997, 10, -997, 10, 27] if instructions else [-997, -997, 10, 27]
+                    screen = BoundedPrerequisiteScreen(keys, size=size)
+                    self.assertEqual(
+                        _prerequisite_action_modal(screen, FakeCurses(), TuiModel([]), offer),
+                        "cancel",
+                    )
+                    self.assertEqual(path.read_bytes(), before)
+
+    def test_repair_modal_resize_rechecks_visibility_before_apply(self):
+        offer = self.offer()
+        for initial, resized, expected in (
+            ((8, 80), (24, 120), "apply"),
+            ((24, 120), (8, 80), "cancel"),
+        ):
+            with self.subTest(initial=initial):
+                screen = BoundedPrerequisiteScreen(
+                    [-997, -997, FakeCurses.KEY_RESIZE, 10, 27],
+                    size=initial, resized=resized,
+                )
+                self.assertEqual(
+                    _prerequisite_action_modal(screen, FakeCurses(), TuiModel([]), offer),
+                    expected,
+                )
+                if expected == "apply":
+                    for rule in offer.rules:
+                        self.assertIn(f"Add: {rule}", screen.frames[-1])
+                else:
+                    self.assertIn("Apply is unavailable", screen.frames[-1])
+
+    def test_each_nested_negation_refuses_before_any_root_write(self):
+        path = self.repository / ".gitignore"
+        before = path.read_bytes()
+        nested = self.repository / ".asha/.gitignore"
+        for negation in ("!control-task.json", "!result.json", "!outbox/"):
+            with self.subTest(negation=negation):
+                nested.write_text(negation + "\n")
+                nested.chmod(0o644)
+                offer = self.offer()
+                with self.assertRaisesRegex(ValueError, "nested"):
+                    apply_ignore_prerequisite(self.config, offer)
+                self.assertEqual(path.read_bytes(), before)
+                self.assertEqual(list(self.repository.glob(".gitignore.asha-control.*")), [])
+
+    def test_global_excludes_never_authorize_selected_or_working_policy(self):
+        global_ignore = self.root / "global-ignore"
+        global_ignore.write_text(CONTROL_IGNORE_BLOCK)
+        self.git("config", "core.excludesFile", str(global_ignore))
+        offer = self.offer()
+        self.assertFalse(offer.already_covered)
+        self.assertEqual(offer.rules, CONTROL_IGNORE_RULES)
+        apply_ignore_prerequisite(self.config, offer)
+        self.assertEqual(self.offer().base_commit_id, offer.base_commit_id)
+
+    def test_root_negations_are_preserved_then_overridden_only_for_private_paths(self):
+        path = self.repository / ".gitignore"
+        before = path.read_bytes() + CONTROL_IGNORE_BLOCK.encode() + b"# user overrides\n" + b"".join(
+            ("!" + rule + "\n").encode() for rule in CONTROL_IGNORE_RULES
+        )
+        path.write_bytes(before)
+        apply_ignore_prerequisite(self.config, self.offer())
+        self.assertEqual(path.read_bytes(), before + CONTROL_IGNORE_BLOCK.encode())
+        for rule in CONTROL_IGNORE_RULES:
+            checked = subprocess.run(["git", "-C", str(self.repository), "check-ignore",
+                                      "--no-index", "--quiet", "--", rule[1:]])
+            self.assertEqual(checked.returncode, 0, rule)
+        self.assertTrue(self.offer().already_covered)
+        repaired = path.read_bytes()
+        apply_ignore_prerequisite(self.config, self.offer())
+        self.assertEqual(path.read_bytes(), repaired)
+
+    def test_new_nested_negation_after_temporary_write_refuses_before_replacement(self):
+        import lib.control.prerequisites as prerequisites
+        path = self.repository / ".gitignore"
+        before = path.read_bytes()
+        offer = self.offer()
+        create = prerequisites._create_temporary_at
+
+        def race(*args):
+            result = create(*args)
+            nested = self.repository / ".asha/.gitignore"
+            nested.write_text("!result.json\n")
+            nested.chmod(0o644)
+            return result
+
+        with mock.patch("lib.control.prerequisites._create_temporary_at", side_effect=race):
+            with self.assertRaisesRegex(ValueError, "working ignore policy changed"):
+                apply_ignore_prerequisite(self.config, offer)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertEqual(list(self.repository.glob(".gitignore.asha-control.*")), [])
+
+    def test_tracked_private_transport_refuses_without_provider_launch(self):
+        for relative in (".asha/result.json", ".asha/outbox/candidate.json"):
+            with self.subTest(relative=relative):
+                path = self.repository / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n")
+                old = self.commit("tracked private transport")
+                with mock.patch("lib.control.cli.launch_task") as launch:
+                    status, stdout, stderr = self._run_private_cli(old)
+                    self.assertEqual(status, 2, stdout + stderr)
+                    self.assertIn("tracks a controller-private", stderr)
+                    launch.assert_not_called()
+                self.assertFalse((self.repository / ".jj").exists())
+                self.assertFalse(CreationJournalStore(self.config).path(TASK_ID).exists())
+                path.unlink()
+                self.commit("remove tracked transport fixture")
+
+    def _start_and_stage_fake_result(self, selected: str):
+        from lib.control.orchestration.cli import task_main
+        from lib.control.orchestration.ingestion import result_ingestion_id
+        from tests.python.orchestration_execution_fixtures import now_text
+        before = {p: ((self.repository / p).read_bytes(), (self.repository / p).stat().st_mode)
+                  for p in (".gitignore", ".asha/config.json", "Memory/activeContext.md", "Memory/decisions.md")}
+        receipts = []
+
+        def fake_launch(_config, prepared, **kwargs):
+            self.assertEqual(kwargs["harness"], "codex")
+            workspace = Path(prepared["jj"]["workspace_path"])
+            # The fake provider observes the real launch boundary. It neither
+            # makes the transport directory nor repairs any permission.
+            output = subprocess.check_output([
+                "/bin/python3", "-c",
+                "import os,json,stat; from pathlib import Path; "
+                "print(json.dumps({'umask':os.umask(2),'modes':{p:stat.S_IMODE(Path(p).stat().st_mode) "
+                "for p in ['.asha','.asha/outbox']}}))",
+            ], cwd=workspace, text=True)
+            self.assertEqual(json.loads(output), {
+                "umask": 0o002, "modes": {".asha": 0o700, ".asha/outbox": 0o700},
+            })
+            selected_bytes = {p: ((workspace / p).read_bytes(), (workspace / p).stat().st_mode)
+                              for p in before}
+            attempt, run = str(uuid.uuid4()), str(uuid.uuid4())
+            ingestion = result_ingestion_id(attempt)
+            outbox = workspace / ".asha/outbox" / f"{ingestion}.json"
+            body = {
+                "contract": "asha.orchestration-result.v1",
+                "publication_id": str(uuid.uuid4()), "supersedes_result_id": None,
+                "initiative_id": str(uuid.uuid4()), "node_id": "implementation-a",
+                "attempt_id": attempt, "task_id": TASK_ID, "run_id": run,
+                "claim_status": "completed", "summary": "initialized private transport",
+                "files_changed": [], "verification_attestations": [], "concerns": [],
+                "follow_up": [], "published_at": now_text(),
+            }
+            result_file = workspace / ".asha/result.json"
+            fd = os.open(result_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as stream:
+                json.dump(body, stream)
+            env = {**self.env, "ASHA_CONTROL_MANAGED": "1", "ASHA_CONTROL_TASK_ID": TASK_ID,
+                   "ASHA_CONTROL_RUN_ID": run, "ASHA_CONTROL_RESULT_INGESTION_ID": ingestion,
+                   "ASHA_CONTROL_RESULT_OUTBOX": str(outbox), "TMUX_PANE": "%71"}
+            tmux = mock.Mock()
+            tmux.pane_facts.return_value = SimpleNamespace(
+                dead=False, pane_pid=os.getpid(), session="fake-codex",
+            )
+            tmux.session_option.side_effect = lambda session, key: {
+                "@asha_managed": "1", "@asha_task_id": TASK_ID,
+            }[key]
+            tmux.pane_option.side_effect = lambda pane, key: {
+                "@asha_run_id": run, "@asha_result_ingestion": ingestion,
+                "@asha_result_outbox_digest": hashlib.sha256(str(outbox).encode()).hexdigest(),
+            }[key]
+            with mock.patch("lib.control.orchestration.ingestion.TmuxAdapter", return_value=tmux), \
+                    mock.patch("lib.control.orchestration.ingestion.caller_descends_from", return_value=True):
+                for _ in range(2):
+                    output = io.StringIO()
+                    with contextlib.redirect_stdout(output):
+                        self.assertEqual(task_main(["report", "--file", str(result_file), "--json"], env=env), 0)
+                    receipts.append(json.loads(output.getvalue()))
+            self.assertEqual(receipts[0], receipts[1])
+            self.assertEqual(receipts[0]["phase"], "staged")
+            self.assertEqual(json.loads(outbox.read_text())["body"], body)
+            self.assertEqual(stat.S_IMODE(outbox.stat().st_mode), 0o600)
+            self.assertEqual(selected_bytes, {p: ((workspace / p).read_bytes(), (workspace / p).stat().st_mode)
+                                              for p in before})
+            journal = CreationJournalStore(self.config).read(TASK_ID)
+            self.assertEqual(journal["phase"], "ready-for-launch")
+            self.assertEqual(journal["planned_context"][".asha/outbox"]["mode"], 0o700)
+            self.assertIn(".asha/outbox", journal["context_owned"])
+            return prepared
+
+        with mock.patch("lib.control.cli.launch_task", side_effect=fake_launch) as launch, \
+                mock.patch("lib.control.cli._emit_start_result", return_value=0):
+            status, stdout, stderr = self._run_private_cli(selected)
+            self.assertEqual(status, 0, stdout + stderr)
+            launch.assert_called_once()
+        self.assertEqual(before, {p: ((self.repository / p).read_bytes(), (self.repository / p).stat().st_mode)
+                                  for p in before})
+        self.assertEqual(len(receipts), 2)
+
+    def test_fresh_initialize_commit_prepare_and_private_staging(self):
+        from memory_v2 import initialize
+        # Start from an actually empty project, not the hand-authored legacy
+        # config/publications used by the prerequisite-refusal fixtures.
+        self.repository = self.root / "fresh-repository"
+        self.repository.mkdir(mode=0o700)
+        self.git("init", "-q", "-b", "master")
+        initialize(self.repository)
+        selected = self.commit("canonical initialization")
+        self._start_and_stage_fake_result(selected)
+
+    def test_legacy_init_offer_apply_old_base_refusal_then_new_base_staging(self):
+        path = self.repository / ".gitignore"
+        path.write_text(path.read_text() +
+                        "# Asha Control private context (managed)\n/.asha/control-task.json\n")
+        old = self.commit("legacy initialized base")
+        self.request = replace(self.request, requested_base=old)
+        offer = decode_worker_refusal(encode_worker_refusal(self.offer(), TASK_ID), TASK_ID)
+        before = path.read_bytes()
+        apply_ignore_prerequisite(self.config, offer)
+        self.assertEqual(path.read_bytes(), before + b"/.asha/result.json\n/.asha/outbox/\n")
+        with mock.patch("lib.control.cli.launch_task") as launch:
+            status, stdout, stderr = self._run_private_cli(old)
+            self.assertEqual(status, 2, stdout + stderr)
+            refused = decode_worker_refusal(stdout.encode(), TASK_ID)
+            self.assertEqual(refused.base_commit_id, old)
+            self.assertEqual(refused.rules, offer.rules)
+            launch.assert_not_called()
+        self.assertFalse((self.repository / ".jj").exists())
+        self.assertEqual(self.git("rev-parse", "HEAD"), old)
+        selected = self.commit("explicitly commit producer repair")
+        self._start_and_stage_fake_result(selected)
+
+
 class DefaultContextDoctorTests(PrerequisiteRepository, unittest.TestCase):
     def test_doctor_names_default_ref_oid_and_is_read_only(self) -> None:
         before_git = (self.repository / ".git").stat().st_mtime_ns
@@ -1094,7 +1569,7 @@ class DefaultContextDoctorTests(PrerequisiteRepository, unittest.TestCase):
         self.assertEqual((self.repository / ".git").stat().st_mtime_ns, before_git)
 
         path = self.repository / ".gitignore"
-        path.write_text(path.read_text() + CONTROL_IGNORE_RULE + "\n", encoding="utf-8")
+        path.write_text(path.read_text() + CONTROL_IGNORE_BLOCK, encoding="utf-8")
         os.chmod(path, 0o644)
         committed = self.commit("control readiness")
         with mock.patch("pathlib.Path.cwd", return_value=self.repository):

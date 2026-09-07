@@ -479,6 +479,18 @@ class OwnershipSidecarTests(unittest.TestCase):
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         self.assertLess(path.stat().st_size, 64 * len(self.facts))
 
+    def test_directory_privacy_must_precede_immutable_sidecar_publication(self) -> None:
+        facts = [[1, 2, 0o775, os.geteuid()], [1, 3, 0o664, os.geteuid()]]
+        binding = self.store.write(self.task_id, self.plan_digest, facts)
+        path = Path(binding["path"])
+        before = (path.read_bytes(), path.stat().st_ino)
+        normalized = [list(fact) for fact in facts]
+        normalized[0][2] = 0o700
+        with self.assertRaisesRegex(JournalError, "foreign or corrupt"):
+            self.store.write(self.task_id, self.plan_digest, normalized)
+        self.assertEqual((path.read_bytes(), path.stat().st_ino), before)
+        self.assertEqual(self.store.read(binding), facts)
+
     def test_sidecar_temp_interruption_corruption_replacement_and_symlink_fail_closed(self) -> None:
         with self.assertRaisesRegex(RuntimeError, "temp"):
             self.store.write(

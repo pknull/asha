@@ -3500,6 +3500,7 @@ def _prerequisite_action_modal(
         offer.requested_base if offer.default_base_resolution is None else
         ", ".join(offer.default_base_resolution.references)
     )
+    rules_note = "\n".join(f"Add: {rule}" for rule in offer.rules)
     while True:
         height, width = stdscr.getmaxyx()
         frame = modal_frame(
@@ -3507,7 +3508,7 @@ def _prerequisite_action_modal(
             context=(
                 f"Repository: {offer.root}\n"
                 f"Selected base: {references} @ {offer.base_commit_id}\n"
-                f"File: {offer.target}\nAdd: {offer.rules[0]}\n"
+                f"File: {offer.target}\n{rules_note}\n"
                 "Effect: patches only the source working tree. It does not "
                 "commit, move a ref, retry task creation, enable jj, import "
                 "Git, or authorize the old base."
@@ -3518,6 +3519,20 @@ def _prerequisite_action_modal(
             value=candidates[selected].value, candidates=candidates,
             selected=selected, height=height, width=width,
         )
+        # The shared editor may omit context to keep its input row visible.
+        # Never treat an off-screen patch as disclosed authorization. Requiring
+        # every candidate also proves all preceding context and guidance fit.
+        disclosure_visible = (
+            frame.visible_start == 0 and frame.visible_end == len(candidates)
+            and width - 1 >= max(_cell_width(f"Add: {rule}") for rule in offer.rules)
+        )
+        if not disclosure_visible:
+            frame = modal_frame(
+                title="Resize to view the complete patch; Apply is unavailable",
+                context="\n".join(frame.rows[1:]),
+                label="Action", hint="Esc returns to form without changes",
+                value="Resize or Esc", height=height, width=width,
+            )
         _draw_modal_frame(stdscr, curses_module, frame)
         key = _read_modal_key(stdscr, curses_module)
         if key == -1:
@@ -3536,12 +3551,15 @@ def _prerequisite_action_modal(
             continue
         if key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
             if selected == 0:
-                return "apply"
+                if disclosure_visible:
+                    return "apply"
+                continue
             if selected == 1:
                 instruction_note = (
-                    f"\nInstructions: add {offer.rules[0]} to {offer.target}; "
-                    "commit it on the branch or select a containing commit, then "
-                    f"retry. The old base {offer.base_commit_id} remains unauthorized."
+                    f"\nInstructions: add these exact rules to {offer.target}:\n"
+                    + "\n".join(offer.rules) + "\n"
+                    "Commit it on the branch or select a containing commit, then "
+                    f"retry.\nThe old base {offer.base_commit_id} remains unauthorized."
                 )
                 continue
             return "cancel"

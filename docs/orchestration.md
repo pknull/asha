@@ -449,11 +449,24 @@ truncating accepted text.
 asha task report --file .asha/result.json
 ```
 
-The result document lives in the workspace's private `.asha/` directory,
-which every Control-acceptable repository ignores, so it never enters the
+The result document lives at the ignored `.asha/result.json` path inside the
+workspace's private `.asha/` directory, so it never enters the
 sealed diff; a result file written to a tracked path is a hard-scope
 violation and fails the seal. The command is available only inside a
 Control-managed worker environment.
+Fresh Control preparation authenticates the selected tree and exact new jj
+registration/operation before normalizing a materialized `.asha` to `0700`.
+That happens before initial immutable ownership capture, not at result ingestion.
+The fixed `.asha/outbox` is then created at `0700` and journaled as context-owned
+before the provider launch seam is reached, including under umask `0002`.
+The selected commit must ignore `.asha/result.json` and the entire outbox
+directory; tracked transport contents or incompatible rules refuse preparation
+with zero provider calls. Tracked configuration and custom context files remain
+unchanged. Existing/reused/sealed directories are not chmodded and immutable
+ownership is not rewritten during recovery. Interrupted or unprovable creation
+is retained with inspection guidance rather than silently repaired or deleted.
+Staging still enforces its independent private-owner and no-follow checks;
+preparation does not grant an ingress exemption or publication authority.
 The assignment also carries exact seal inputs and read-only failure-seal
 evidence when dispatching approved salvage work. Salvage plan text and
 coordinator prose are never rendered into the brief. It explicitly tells workers

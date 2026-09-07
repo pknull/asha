@@ -94,6 +94,13 @@ DIRECTORY_MODES = {
 # one representative sentinel name.
 DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES = ("Work/session-state/",)
 
+# Opt-in for Control creation, not a permission policy for generic reuse.
+PRIVATE_RESULT_DIRECTORY_MODES = {".asha/outbox": 0o700}
+PRIVATE_RESULT_CONTEXT_PATHS = (".asha/result.json",)
+PRIVATE_RESULT_CONTEXT_DIRECTORIES = (
+    *DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES, ".asha/outbox/",
+)
+
 
 def build_context_plan(
     source: Path, destination: Path, marker: dict[str, Any], *, snapshot=None
@@ -257,11 +264,42 @@ def provision_context(
     after_file: Callable[[str], None] | None = None,
     after_entry: Callable[[str, dict[str, Any]], None] | None = None,
     snapshot=None,
+    private_result_transport: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Copy the exact bounded context set; never follow or replace a leaf."""
     source = Path(source)
     destination = Path(destination)
     plan = build_context_plan(source, destination, marker, snapshot=snapshot)
+    directory_modes = {
+        **DIRECTORY_MODES,
+        **(PRIVATE_RESULT_DIRECTORY_MODES if private_result_transport else {}),
+    }
+    result_facts: dict[str, dict[str, Any]] = {}
+
+    def result_fact(root_fd: int, relative: str) -> dict[str, Any]:
+        parent_fd, name = _open_parent(root_fd, relative)
+        try:
+            child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=parent_fd)
+            try:
+                metadata = os.fstat(child_fd)
+                visible = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+                if (metadata.st_uid != os.geteuid()
+                        or stat.S_IMODE(metadata.st_mode) != 0o700
+                        or not _same_inode(metadata, visible)):
+                    raise ContextError(
+                        f"private result directory must be owned mode 0700: {relative}; "
+                        "retained state was not privatized; inspect it and start a fresh task"
+                    )
+                return _entry_fact(metadata, "directory")
+            finally:
+                os.close(child_fd)
+        finally:
+            os.close(parent_fd)
+
+    def require_result_facts(root_fd: int) -> None:
+        for relative, expected in result_facts.items():
+            if result_fact(root_fd, relative) != expected:
+                raise ContextError(f"private result directory identity changed: {relative}")
     # A fresh workspace may already carry some of these paths as TRACKED
     # content of the base commit (a repository that commits `.asha/` or
     # `Memory/`). Those stay exactly as checked out: overwriting a tracked
@@ -272,13 +310,15 @@ def provision_context(
     initial_fd = _open_absolute_directory(destination)
     try:
         root_fact = _root_fact(initial_fd)
-        for relative in DIRECTORY_MODES:
+        for relative in directory_modes:
             kind = _entry_kind(initial_fd, relative)
             if kind is None:
                 continue
             if kind != "directory":
                 raise ContextError(f"private context destination collision: {relative}")
             existing_directories.add(relative)
+            if private_result_transport and relative in {".asha", ".asha/outbox"}:
+                result_facts[relative] = result_fact(initial_fd, relative)
         for relative in plan:
             kind = _entry_kind(initial_fd, relative)
             if kind is None:
@@ -291,11 +331,12 @@ def provision_context(
     if before_mutation is not None:
         before_mutation(plan)
     try:
-        for relative, mode in DIRECTORY_MODES.items():
+        for relative, mode in directory_modes.items():
             if relative in existing_directories:
                 continue
             root_fd = _reopen_destination(destination, root_fact)
             try:
+                require_result_facts(root_fd)
                 parent_fd, name = _open_parent(root_fd, relative)
                 try:
                     os.mkdir(name, mode, dir_fd=parent_fd)
@@ -309,6 +350,8 @@ def provision_context(
                         os.fsync(child_fd)
                         os.fsync(parent_fd)
                         fact = _entry_fact(metadata, "directory")
+                        if private_result_transport and relative in {".asha", ".asha/outbox"}:
+                            result_facts[relative] = fact
                     finally:
                         os.close(child_fd)
                 finally:
@@ -322,6 +365,7 @@ def provision_context(
                 continue
             root_fd = _reopen_destination(destination, root_fact)
             try:
+                require_result_facts(root_fd)
                 parent_fd, name = _open_parent(root_fd, relative)
                 try:
                     fact = _write_new_file(parent_fd, name, planned)
@@ -334,9 +378,10 @@ def provision_context(
                 after_entry(relative, fact)
             if after_file is not None:
                 after_file(relative)
-        for relative in reversed(tuple(DIRECTORY_MODES)):
+        for relative in reversed(tuple(directory_modes)):
             root_fd = _reopen_destination(destination, root_fact)
             try:
+                require_result_facts(root_fd)
                 dir_fd, name = _open_parent(root_fd, relative)
                 child_fd = os.open(name, _DIRECTORY_FLAGS, dir_fd=dir_fd)
                 try:

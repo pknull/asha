@@ -16,8 +16,35 @@ from typing import Any
 MARKER_CONTRACT = "asha.control-task-context.v1"
 MAX_MARKER_BYTES = 32 * 1024
 CONTROL_IGNORE_RULE = "/.asha/control-task.json"
+CONTROL_IGNORE_RULES = (
+    CONTROL_IGNORE_RULE, "/.asha/result.json", "/.asha/outbox/",
+)
 CONTROL_IGNORE_MARKER = "# Asha Control private context (managed)"
-CONTROL_IGNORE_BLOCK = f"{CONTROL_IGNORE_MARKER}\n{CONTROL_IGNORE_RULE}\n"
+LEGACY_CONTROL_IGNORE_BLOCK = f"{CONTROL_IGNORE_MARKER}\n{CONTROL_IGNORE_RULE}\n"
+CONTROL_IGNORE_BLOCK = CONTROL_IGNORE_MARKER + "\n" + "\n".join(CONTROL_IGNORE_RULES) + "\n"
+
+
+def managed_control_ignore_bytes(
+    existing: bytes, rules: tuple[str, ...] = CONTROL_IGNORE_RULES,
+) -> bytes:
+    """Append only the finite authorized rules, preserving all user bytes.
+
+    A terminal legacy block can be upgraded in place. Nonterminal blocks stay
+    untouched: reassertion at EOF respects Git's last-match negation semantics.
+    A singleton authorization must never acquire the newer transport rules.
+    """
+    if not rules or rules != tuple(rule for rule in CONTROL_IGNORE_RULES if rule in rules):
+        raise ValueError("unsupported Control private ignore rules")
+    block = (CONTROL_IGNORE_MARKER + "\n" + "\n".join(rules) + "\n").encode("utf-8")
+    if existing == block or existing.endswith(b"\n" + block):
+        return existing
+    legacy = LEGACY_CONTROL_IGNORE_BLOCK.encode("utf-8")
+    if set(rules) | {CONTROL_IGNORE_RULE} == set(CONTROL_IGNORE_RULES) and (
+        existing == legacy or existing.endswith(b"\n" + legacy)
+    ):
+        return existing[:-len(legacy)] + CONTROL_IGNORE_BLOCK.encode("utf-8")
+    separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
+    return existing + separator + block
 _CHANGE_ID = re.compile(r"[k-z]{32}", re.ASCII)
 _COMMIT_ID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", re.ASCII)
 _WORKSPACE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", re.ASCII)

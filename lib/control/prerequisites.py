@@ -27,12 +27,14 @@ from .jj import (
 from .prepare import PreparationPrerequisiteError
 from .store import TransactionCoordinator
 
+# .context loads the canonical session-tools import seam.
+from control_task_marker import (
+    CONTROL_IGNORE_BLOCK, CONTROL_IGNORE_MARKER, CONTROL_IGNORE_RULE,
+    CONTROL_IGNORE_RULES, managed_control_ignore_bytes,
+)
 
 WORKER_REFUSAL_CONTRACT = "asha.control-task-start-worker-refusal.v1"
 CONTROL_IGNORE_TARGET = ".gitignore"
-CONTROL_IGNORE_RULE = "/.asha/control-task.json"
-CONTROL_IGNORE_MARKER = "# Asha Control private context (managed)"
-CONTROL_IGNORE_BLOCK = f"{CONTROL_IGNORE_MARKER}\n{CONTROL_IGNORE_RULE}\n"
 _DIGEST = re.compile(r"[0-9a-f]{64}", re.ASCII)
 _OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", re.ASCII)
 _MAX_WIRE_BYTES = 64 * 1024
@@ -132,8 +134,9 @@ class StartPrerequisiteRefusal(ValueError):
         self.tui_worker = tui_worker
         super().__init__(
             "selected immutable base does not positively ignore "
-            ".asha/control-task.json; add /.asha/control-task.json to .gitignore, "
-            "commit the rule or select a commit that contains it, then retry "
+            f"{', '.join(offer.evidence.missing_paths)}; add "
+            f"{', '.join(offer.rules)} to .gitignore, "
+            "commit the rules or select a commit that contains them, then retry "
             f"(selected base {offer.base_commit_id}; repository and task state "
             "were unchanged)"
         )
@@ -209,9 +212,20 @@ def _read_ignore_preimage(root: Path) -> tuple[IgnorePreimage, bytes]:
 
 def _working_ignore_state(
     root: Path, *, root_override: bytes | object = _NO_IGNORE_OVERRIDE,
+    rules: tuple[str, ...] = CONTROL_IGNORE_RULES,
 ) -> tuple[str, bool]:
+    # This is a closed set, not a path parser. The legacy singleton keeps its
+    # original digest and marker-only coverage semantics.
+    managed_control_ignore_bytes(b"", rules)
     files: list[tuple[str, bytes]] = []
     digest = hashlib.sha256(b"asha-control-working-ignore-v1\0")
+    try:
+        context_metadata = (root / ".asha").lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISDIR(context_metadata.st_mode) or context_metadata.st_uid != os.geteuid():
+            raise ValueError(".asha must be an owned non-symlink directory")
     for relative in (".gitignore", ".asha/.gitignore"):
         if relative == ".gitignore" and root_override is not _NO_IGNORE_OVERRIDE:
             if not isinstance(root_override, bytes):
@@ -288,25 +302,41 @@ def _working_ignore_state(
             target = work / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(raw)
-        marker = work / ".asha/control-task.json"
-        marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_bytes(b"{}\n")
-        result = subprocess.run(
-            ["/usr/bin/git", f"--git-dir={metadata}", f"--work-tree={work}",
-             "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index",
-             "--quiet", "--", ".asha/control-task.json"],
-            cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE, check=False, env={
-                "PATH": "/usr/bin:/bin", "HOME": "/nonexistent",
-                "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
-                "GIT_CONFIG_SYSTEM": "/dev/null",
-                "GIT_CONFIG_GLOBAL": "/dev/null",
-                "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
-            },
-        )
-    if result.returncode not in {0, 1}:
-        raise ValueError("working-tree ignore proof failed")
-    return digest.hexdigest(), result.returncode == 0
+        covered = True
+        for rule in rules:
+            relative = rule[1:]
+            probe = work / relative
+            if relative.endswith("/"):
+                probe.mkdir(parents=True, exist_ok=True)
+            else:
+                probe.parent.mkdir(parents=True, exist_ok=True)
+                probe.write_bytes(b"{}\n")
+            result = subprocess.run(
+                ["/usr/bin/git", f"--git-dir={metadata}", f"--work-tree={work}",
+                 "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index",
+                 "--quiet", "--", relative],
+                cwd="/", stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE, check=False, env={
+                    "PATH": "/usr/bin:/bin", "HOME": "/nonexistent",
+                    "LC_ALL": "C", "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_CONFIG_SYSTEM": "/dev/null",
+                    "GIT_CONFIG_GLOBAL": "/dev/null",
+                    "GIT_ATTR_NOSYSTEM": "1", "GIT_TERMINAL_PROMPT": "0",
+                },
+            )
+            if result.returncode not in {0, 1}:
+                raise ValueError("working-tree ignore proof failed")
+            covered = covered and result.returncode == 0
+    return digest.hexdigest(), covered
+
+
+def _rules_for_missing_paths(paths: tuple[str, ...]) -> tuple[str, ...]:
+    if (
+        not paths or paths != tuple(sorted(set(paths)))
+        or not set(paths).issubset(rule[1:] for rule in CONTROL_IGNORE_RULES)
+    ):
+        raise ValueError("worker refusal is not a supported private transport omission; reoffer required")
+    return tuple(rule for rule in CONTROL_IGNORE_RULES if rule[1:] in paths)
 
 
 def capture_prerequisite_offer(
@@ -314,11 +344,13 @@ def capture_prerequisite_offer(
 ) -> StartPrerequisiteOffer:
     if not isinstance(error, PreparationPrerequisiteError):
         raise error
-    if error.evidence.missing_paths != (".asha/control-task.json",):
+    try:
+        rules = _rules_for_missing_paths(error.evidence.missing_paths)
+    except ValueError:
         raise error
     binding = error.source_binding
     preimage, _raw = _read_ignore_preimage(binding.root)
-    working_digest, covered = _working_ignore_state(binding.root)
+    working_digest, covered = _working_ignore_state(binding.root, rules=rules)
     return StartPrerequisiteOffer(
         root=binding.root, project_id=error.evidence.project_id,
         binding=binding, binding_digest=_binding_digest(binding),
@@ -332,7 +364,7 @@ def capture_prerequisite_offer(
         ),
         pr_remote_config_digest=error.pr_remote_config_digest,
         target=CONTROL_IGNORE_TARGET,
-        rules=(CONTROL_IGNORE_RULE,), preimage=preimage,
+        rules=rules, preimage=preimage,
         working_ignore_digest=working_digest, already_covered=covered,
     )
 
@@ -539,11 +571,10 @@ def decode_worker_refusal(raw: bytes, expected_task_id: str) -> StartPrerequisit
         _context_tuple(proof["private_directory_paths"], "private directory paths", directories=True),
         _context_tuple(proof["reused_paths"], "reused paths", directories=False, allow_empty=True),
         _context_tuple(proof["required_ignored_paths"], "required ignored paths"),
-        _context_tuple(proof["missing_paths"], "missing paths", directories=False),
+        _context_tuple(proof["missing_paths"], "missing paths"),
         proof["info_exclude_digest"], proof["digest"],
     )
-    if evidence.missing_paths != (".asha/control-task.json",):
-        raise ValueError("worker refusal is not the supported marker omission")
+    rules = _rules_for_missing_paths(evidence.missing_paths)
     if (evidence.base_commit_id != base["commit_id"] or evidence.project_id != project_id):
         raise ValueError("worker refusal proof differs from repository/base binding")
     if not set(evidence.missing_paths).issubset(evidence.required_ignored_paths):
@@ -565,7 +596,7 @@ def decode_worker_refusal(raw: bytes, expected_task_id: str) -> StartPrerequisit
         root_obj["repair"], {"target", "rules", "preimage", "working_ignore_digest", "already_covered"},
         "worker refusal repair",
     )
-    if repair["target"] != CONTROL_IGNORE_TARGET or repair["rules"] != [CONTROL_IGNORE_RULE]:
+    if repair["target"] != CONTROL_IGNORE_TARGET or repair["rules"] != list(rules):
         raise ValueError("worker refusal repair is not the supported exact patch")
     pre = _exact(repair["preimage"], {
         "state", "sha256", "size", "mode", "uid", "dev", "ino", "nlink", "mtime_ns", "ctime_ns",
@@ -590,16 +621,15 @@ def decode_worker_refusal(raw: bytes, expected_task_id: str) -> StartPrerequisit
         root, project_id, binding, binding_digest, requested, base["explicit"],
         base["existing_jj"], base["commit_id"], default, evidence,
         proof_origin, remote_config_digest,
-        CONTROL_IGNORE_TARGET, (CONTROL_IGNORE_RULE,), preimage,
+        CONTROL_IGNORE_TARGET, rules, preimage,
         repair["working_ignore_digest"], repair["already_covered"],
     )
 
 
-def _intended_ignore_bytes(existing: bytes) -> bytes:
-    if existing.endswith(CONTROL_IGNORE_BLOCK.encode("utf-8")):
-        return existing
-    separator = b"" if not existing or existing.endswith(b"\n") else b"\n"
-    return existing + separator + CONTROL_IGNORE_BLOCK.encode("utf-8")
+def _intended_ignore_bytes(
+    existing: bytes, rules: tuple[str, ...] = CONTROL_IGNORE_RULES,
+) -> bytes:
+    return managed_control_ignore_bytes(existing, rules)
 
 
 def _open_bound_root_directory(offer: StartPrerequisiteOffer) -> int:
@@ -737,34 +767,36 @@ def _revalidate_offer_repository(offer: StartPrerequisiteOffer) -> None:
 def apply_ignore_prerequisite(config: ControlConfig, offer: StartPrerequisiteOffer) -> str:
     if not isinstance(offer, StartPrerequisiteOffer):
         raise ValueError("Control prerequisite offer is invalid")
+    if offer.target != CONTROL_IGNORE_TARGET or offer.rules != _rules_for_missing_paths(offer.evidence.missing_paths):
+        raise ValueError("Control prerequisite is not the supported exact patch; reoffer required")
     root = offer.root
     with TransactionCoordinator(config).source_lock(root):
         _revalidate_offer_repository(offer)
         current_preimage, existing = _read_ignore_preimage(root)
         if current_preimage != offer.preimage:
             raise ValueError(".gitignore changed after prerequisite review")
-        working_digest, covered = _working_ignore_state(root)
+        working_digest, covered = _working_ignore_state(root, rules=offer.rules)
         if (working_digest, covered) != (
             offer.working_ignore_digest, offer.already_covered,
         ):
             raise ValueError("working ignore policy changed after prerequisite review")
         if covered:
             return (
-                "The working tree already ignores .asha/control-task.json. Commit "
+                f"The working tree already ignores {', '.join(offer.evidence.missing_paths)}. Commit "
                 "the covering rule or select a commit that contains it; the previous "
                 "base remains unauthorized. No task state was created."
             )
-        intended = _intended_ignore_bytes(existing)
+        intended = _intended_ignore_bytes(existing, offer.rules)
         if intended == existing:
             raise ValueError("managed ignore patch did not change ineffective policy")
         if len(intended) > MAX_TRACKED_BLOB_BYTES:
             raise ValueError("intended .gitignore exceeds the bounded repair size")
         _intended_digest, intended_covered = _working_ignore_state(
-            root, root_override=intended,
+            root, root_override=intended, rules=offer.rules,
         )
         if not intended_covered:
             raise ValueError(
-                "the root-only patch cannot effectively ignore the marker because "
+                "the root-only patch cannot effectively ignore the private paths because "
                 "a nested .asha/.gitignore policy overrides it"
             )
         directory_fd = _open_bound_root_directory(offer)
@@ -786,13 +818,13 @@ def apply_ignore_prerequisite(config: ControlConfig, offer: StartPrerequisiteOff
             second_preimage, _ = _read_ignore_preimage(root)
             if second_preimage != offer.preimage:
                 raise ValueError(".gitignore changed immediately before replacement")
-            second_working = _working_ignore_state(root)
+            second_working = _working_ignore_state(root, rules=offer.rules)
             if second_working != (
                 offer.working_ignore_digest, offer.already_covered,
             ):
                 raise ValueError("working ignore policy changed immediately before replacement")
             _second_digest, second_intended_covered = _working_ignore_state(
-                root, root_override=intended,
+                root, root_override=intended, rules=offer.rules,
             )
             if not second_intended_covered:
                 raise ValueError(
@@ -815,9 +847,9 @@ def apply_ignore_prerequisite(config: ControlConfig, offer: StartPrerequisiteOff
                     or final_preimage.mode != current_preimage.mode
                 ):
                     raise ValueError("final .gitignore differs from intended managed patch")
-                _digest, final_covered = _working_ignore_state(root)
+                _digest, final_covered = _working_ignore_state(root, rules=offer.rules)
                 if not final_covered:
-                    raise ValueError("patched .gitignore does not effectively ignore the marker")
+                    raise ValueError("patched .gitignore does not effectively ignore the private paths")
             except ControlTermination as exc:
                 # Preserve the exact shutdown object/signum so run_tui returns
                 # 128+signal, while attaching the possibly-visible warning for
@@ -842,7 +874,7 @@ def apply_ignore_prerequisite(config: ControlConfig, offer: StartPrerequisiteOff
                     pass
             os.close(directory_fd)
     return (
-        "Patched .gitignore; no task state was created. Commit this rule to the "
+        "Patched .gitignore; no task state was created. Commit these rules to the "
         "branch or select a commit that contains it, then retry. The previous "
         "base remains unauthorized."
     )

@@ -18,7 +18,8 @@ from typing import Any, Callable, Sequence
 
 from .config import ControlConfig, validate_workspace_root
 from .context import (
-    DIRECTORY_MODES, DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES, build_context_plan,
+    DIRECTORY_MODES, PRIVATE_RESULT_DIRECTORY_MODES,
+    PRIVATE_RESULT_CONTEXT_PATHS, PRIVATE_RESULT_CONTEXT_DIRECTORIES, build_context_plan,
     provision_context, read_published_snapshot,
 )
 from .jj import (
@@ -108,7 +109,9 @@ class PreparationPrerequisiteError(PreparationError):
         self.evidence = error.evidence
         super().__init__(
             f"{error}; add /.asha/control-task.json to .gitignore, commit the "
-            "rule or select a commit that contains it, then retry "
+            "rule together with coverage for every missing private path named above "
+            "(including /.asha/result.json and /.asha/outbox/), or select a commit "
+            "that contains the rules, then retry "
             f"(selected immutable base {resolved_base_commit_id}; pre-enable "
             "preflight refused; repository and task state were unchanged)"
         )
@@ -284,7 +287,7 @@ def preflight_plain_git_enablement(
         capacity_context_plan = build_context_plan(
             source, destination, marker, snapshot=snapshot,
         )
-        capacity_plan = _planned_manifest(capacity_context_plan)
+        capacity_plan = _planned_manifest(capacity_context_plan, private_result_transport=True)
         materialization = None
         context_compatibility = None
         source_object_available = True
@@ -305,8 +308,8 @@ def preflight_plain_git_enablement(
             proof = jj.prove_context_compatibility(
                 proof_root, proof_binding.git_binding.target, materialization,
                 project_id=snapshot.project_id,
-                planned_context_paths=tuple(capacity_context_plan),
-                private_directory_paths=DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES,
+                planned_context_paths=(*capacity_context_plan, *PRIVATE_RESULT_CONTEXT_PATHS),
+                private_directory_paths=PRIVATE_RESULT_CONTEXT_DIRECTORIES,
             )
             return materialization, proof
 
@@ -615,10 +618,13 @@ def _capture_tree(root: Path, expected_root: dict[str, Any] | None = None
     return result, root_fact
 
 
-def _planned_manifest(plan) -> dict[str, dict[str, Any]]:
+def _planned_manifest(plan, *, private_result_transport: bool = False) -> dict[str, dict[str, Any]]:
     result = {
         relative: {"type": "directory", "mode": mode, "uid": os.geteuid()}
-        for relative, mode in DIRECTORY_MODES.items()
+        for relative, mode in {
+            **DIRECTORY_MODES,
+            **(PRIVATE_RESULT_DIRECTORY_MODES if private_result_transport else {}),
+        }.items()
     }
     for relative, item in plan.items():
         result[relative] = {
@@ -2223,12 +2229,27 @@ def _adopt_preserved_task_workspace(
             context_plan = build_context_plan(
                 source, destination, marker, snapshot=snapshot,
             )
-            planned_context = _planned_manifest(context_plan)
+            planned_context = _planned_manifest(context_plan, private_result_transport=True)
             adapter.prove_context_compatibility(
                 source, repository.git_root, plan, project_id=snapshot.project_id,
-                planned_context_paths=tuple(context_plan),
-                private_directory_paths=DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES,
+                planned_context_paths=(*context_plan, *PRIVATE_RESULT_CONTEXT_PATHS),
+                private_directory_paths=PRIVATE_RESULT_CONTEXT_DIRECTORIES,
             )
+            if any(entry.path == ".asha" for entry in plan.entries):
+                # Recovery may reauthenticate a normalization completed before
+                # process death, but never chmod retained state or publish an
+                # ownership sidecar for an unusable nonprivate result parent.
+                asha_fd = _open_absolute_directory(destination / ".asha")
+                try:
+                    metadata = os.fstat(asha_fd)
+                    if (metadata.st_uid != os.geteuid()
+                            or stat.S_IMODE(metadata.st_mode) != 0o700):
+                        raise PreparationError(
+                            "retained .asha is not owned mode 0700; no privacy retrofit "
+                            "was attempted; inspect retained state and start a fresh task"
+                        )
+                finally:
+                    os.close(asha_fd)
             if resumed:
                 adoption = journal["adoption"]
                 if (
@@ -2359,6 +2380,34 @@ def _adopt_preserved_task_workspace(
             ) != operation_proof:
                 raise PreparationError("workspace operation ancestry changed after adoption intent")
 
+            def verify_launch_boundary(other_owned: dict[str, dict[str, Any]]) -> None:
+                # Neither a successful snapshot nor durable ready records
+                # authorize launch if the bound workspace changed afterward.
+                # Re-read the immutable sidecar; never rewrite ownership to
+                # accommodate a replacement at a fallible persistence step.
+                _verify_plan_materialization(
+                    destination, source, plan, expected_root=root_fact,
+                    expected_facts=ownership_store.read(sidecar),
+                    other_owned=other_owned,
+                )
+                if (
+                    adapter.inspect_workspace(destination, journal["workspace"]["name"])
+                    != workspace_identity
+                    or adapter.workspace_identities(source).get(journal["workspace"]["name"])
+                    != (workspace_identity.change_id, workspace_identity.commit_id)
+                    or adapter.workspace_add_operation_proof(
+                        source,
+                        pinned_operation_id=journal["jj"]["pinned_operation_id"],
+                        workspace_name=journal["workspace"]["name"],
+                        base_commit_id=journal["jj"]["base_commit_id"],
+                        description=journal["jj"]["description"],
+                        destination=destination,
+                    ) != operation_proof
+                ):
+                    raise PreparationError(
+                        "adopted workspace registration or operation changed before launch"
+                    )
+
             if adoption["state"] == "ready-for-launch":
                 current = tasks.read(task_id)
                 if current["lifecycle"] == "failed" and task_digest(current) == original_task_digest:
@@ -2385,6 +2434,13 @@ def _adopt_preserved_task_workspace(
                         expected_digest=journals.digest(journals.read(task_id)),
                         allow_recovery_adoption=True,
                     )
+                verify_launch_boundary({
+                    **private,
+                    **{
+                        path: {**planned_context[path], **ownership}
+                        for path, ownership in journal["context_owned"].items()
+                    },
+                })
                 return current
 
             if adoption["state"] in {"intent", "context-provisioning"}:
@@ -2429,7 +2485,7 @@ def _adopt_preserved_task_workspace(
 
                 provision_context(
                     source, destination, marker, snapshot=snapshot,
-                    after_entry=record_context,
+                    after_entry=record_context, private_result_transport=True,
                 )
             other_owned = {
                 **private,
@@ -2442,6 +2498,7 @@ def _adopt_preserved_task_workspace(
                 destination, source, plan, expected_root=root_fact,
                 expected_facts=stored_facts, other_owned=other_owned,
             )
+            post_snapshot_owned = dict(other_owned)
             if adoption["state"] != "context-provisioned":
                 final_identity = adapter.inspect_workspace(
                     destination, journal["workspace"]["name"],
@@ -2449,6 +2506,15 @@ def _adopt_preserved_task_workspace(
                 )
                 if final_identity != workspace_identity:
                     raise PreparationError("adopted workspace identity changed during context provisioning")
+                # As in fresh preparation, only these two jj-owned cache
+                # files may change during the snapshot. Pin them locally;
+                # all durable directory, selected and context facts stay exact.
+                root_fd = _open_absolute_directory(destination)
+                try:
+                    for relative in (".jj/working_copy/checkout", ".jj/working_copy/tree_state"):
+                        post_snapshot_owned[relative] = _selected_fact(root_fd, relative, [0])
+                finally:
+                    os.close(root_fd)
                 adoption["state"] = "context-provisioned"
                 journals.save(
                     journal, expected_phase="preserved",
@@ -2482,6 +2548,7 @@ def _adopt_preserved_task_workspace(
             )
             if failure_injector is not None:
                 failure_injector("adoption:ready-for-launch")
+            verify_launch_boundary(post_snapshot_owned)
             return changed
 
 
@@ -2559,8 +2626,8 @@ def prepare_task_workspace(
         context_compatibility = adapter.prove_context_compatibility(
             source, repository.git_root, materialization_plan,
             project_id=snapshot.project_id,
-            planned_context_paths=tuple(prospective_context_plan),
-            private_directory_paths=DYNAMIC_PRIVATE_CONTEXT_DIRECTORIES,
+            planned_context_paths=(*prospective_context_plan, *PRIVATE_RESULT_CONTEXT_PATHS),
+            private_directory_paths=PRIVATE_RESULT_CONTEXT_DIRECTORIES,
         )
     except (OSError, ValueError, JjError) as exc:
         raise PreparationError(f"{exc} (preflight refused; no task state was created)") from exc
@@ -2613,7 +2680,7 @@ def prepare_task_workspace(
         "removal": {"entries_removed": 0, "root_removed": False, "parents_removed": 0},
     }
     try:
-        capacity_plan = _planned_manifest(prospective_context_plan)
+        capacity_plan = _planned_manifest(prospective_context_plan, private_result_transport=True)
         _ensure_creation_journal_capacity(journal, capacity_plan)
         missing_ancestors = _count_missing_destination_ancestors(
             config, source, destination, repo_key, slug,
@@ -2650,6 +2717,85 @@ def prepare_task_workspace(
         facts, private, root_fact = _verify_plan_materialization(
             destination, source, materialization_plan,
         )
+
+        def require_fresh_add() -> None:
+            # Only this invocation's completed add may normalize a tracked
+            # .asha directory. Never retrofit a sidecar-bound/reused workspace.
+            retained = journals.read(task_id)
+            if (
+                retained != journal
+                or journal["phase"] != "workspace-add-intent"
+                or journal["materialization_ownership"] is not None
+                or journal["launch_attempted"]
+                or ownership_store.path(task_id).exists()
+                or ownership_store.path(task_id).is_symlink()
+            ):
+                raise PreparationError("fresh result transport creation ownership changed; preserved")
+            _validate_layout(config, source, destination, repo_key, slug)
+            for parent in journal["workspace"]["created_parents"]:
+                if _inode_fact(Path(parent["path"]).lstat()) != {
+                    key: parent[key] for key in ("dev", "ino", "mode", "uid")
+                }:
+                    raise PreparationError("fresh workspace parent identity changed; preserved")
+            if (
+                adapter.workspace_identities(source).get(workspace_name)
+                != (identity.change_id, identity.commit_id)
+                or adapter.inspect_workspace(destination, workspace_name) != identity
+                or adapter.workspace_add_operation_proof(
+                    source, pinned_operation_id=operation_id,
+                    workspace_name=workspace_name, base_commit_id=base_commit_id,
+                    description=request.label, destination=destination,
+                ) != operation_proof
+            ):
+                raise PreparationError("fresh workspace registration or operation changed; preserved")
+
+        require_fresh_add()
+        asha_index = next((index for index, entry in enumerate(materialization_plan.entries)
+                           if entry.path == ".asha"), None)
+        if asha_index is not None:
+            # Pin no-follow descriptors and verify the entire selected tree
+            # before changing this one newly authenticated directory's mode.
+            root_fd = _open_absolute_directory(destination)
+            try:
+                asha_fd = os.open(".asha", _DIRECTORY_FLAGS, dir_fd=root_fd)
+                try:
+                    if failure_injector is not None:
+                        failure_injector("private-result:authenticated")
+                    require_fresh_add()
+                    _verify_plan_materialization(
+                        destination, source, materialization_plan,
+                        expected_root=root_fact, expected_facts=facts, other_owned=private,
+                    )
+                    metadata = os.fstat(asha_fd)
+                    if (
+                        _inode_fact(os.fstat(root_fd)) != root_fact
+                        or [metadata.st_dev, metadata.st_ino,
+                            stat.S_IMODE(metadata.st_mode), metadata.st_uid] != facts[asha_index]
+                        or metadata.st_uid != os.geteuid()
+                        or not _same_inode(metadata, os.stat(
+                            ".asha", dir_fd=root_fd, follow_symlinks=False,
+                        ))
+                    ):
+                        raise PreparationError("fresh .asha directory identity changed; preserved")
+                    os.fchmod(asha_fd, 0o700)
+                    os.fsync(asha_fd)
+                    os.fsync(root_fd)
+                    if failure_injector is not None:
+                        failure_injector("private-result:normalized")
+                    # These are transient pre-publication facts, not a rewrite
+                    # of immutable ownership. Every other inode/mode stays exact.
+                    normalized_facts = copy.deepcopy(facts)
+                    normalized_facts[asha_index][2] = 0o700
+                    require_fresh_add()
+                    facts, private, root_fact = _verify_plan_materialization(
+                        destination, source, materialization_plan,
+                        expected_root=root_fact, expected_facts=normalized_facts,
+                        other_owned=private,
+                    )
+                finally:
+                    os.close(asha_fd)
+            finally:
+                os.close(root_fd)
         sidecar = ownership_store.write(
             task_id, materialization_plan.digest, facts,
             failure_injector=failure_injector if inject_sidecar else None,
@@ -2673,7 +2819,7 @@ def prepare_task_workspace(
         else:
             _save_phase(journals, journal, "workspace-added")
             _save_phase(journals, journal, "workspace-recorded")
-        return identity
+        return identity, operation_proof
 
     try:
         # Task identity serializes recovery; repository identity separately
@@ -2747,7 +2893,7 @@ def prepare_task_workspace(
                     except (OSError, JjError, PreparationError):
                         pass
                 raise
-            identity = persist_added_workspace_identity(inject_sidecar=True)
+            identity, operation_proof = persist_added_workspace_identity(inject_sidecar=True)
             marker = {
                 "contract": "asha.control-task-context.v1", "task_id": task_id,
                 "repository": task["repository"],
@@ -2757,7 +2903,7 @@ def prepare_task_workspace(
                 },
             }
             plan = build_context_plan(source, destination, marker, snapshot=snapshot)
-            journal["planned_context"] = _planned_manifest(plan)
+            journal["planned_context"] = _planned_manifest(plan, private_result_transport=True)
             phase("context-intent")
             phase("context-provisioning")
 
@@ -2778,6 +2924,7 @@ def prepare_task_workspace(
 
             provision_context(
                 source, destination, marker, snapshot=snapshot, after_entry=record_context,
+                private_result_transport=True,
                 after_file=(
                     (lambda relative: failure_injector(f"context-file:{relative}"))
                     if failure_injector is not None else None
@@ -2804,6 +2951,18 @@ def prepare_task_workspace(
             )
             if final_identity != identity:
                 raise PreparationError("task workspace jj identity changed during context provisioning")
+            # A successful jj snapshot may advance its checkout operation and
+            # tree-state cache (notably after a concurrent pinned add). Pin
+            # those two jj-owned files across the remaining journal writes;
+            # keep all directory, selected-tree and context ownership exact.
+            # This local post-snapshot check never rewrites durable ownership.
+            post_snapshot_owned = dict(other_owned)
+            root_fd = _open_absolute_directory(destination)
+            try:
+                for relative in (".jj/working_copy/checkout", ".jj/working_copy/tree_state"):
+                    post_snapshot_owned[relative] = _selected_fact(root_fd, relative, [0])
+            finally:
+                os.close(root_fd)
             phase("context-provisioned")
             phase("task-identity-intent")
             task["jj"]["change_id"] = identity.change_id
@@ -2813,6 +2972,26 @@ def prepare_task_workspace(
             journal["task"]["digest"] = task_digest(task)
             phase("task-identity-recorded")
             phase("ready-for-launch")
+            # Journal persistence and the final jj snapshot are fallible too.
+            # Recheck the bound filesystem before the caller can launch.
+            _verify_plan_materialization(
+                destination, source, materialization_plan,
+                expected_root=journal["workspace"]["root_fact"],
+                expected_facts=ownership_store.read(
+                    journal["materialization_ownership"]["sidecar"],
+                ), other_owned=post_snapshot_owned,
+            )
+            if (
+                adapter.inspect_workspace(destination, workspace_name) != identity
+                or adapter.workspace_identities(source).get(workspace_name)
+                != (identity.change_id, identity.commit_id)
+                or adapter.workspace_add_operation_proof(
+                    source, pinned_operation_id=operation_id,
+                    workspace_name=workspace_name, base_commit_id=base_commit_id,
+                    description=request.label, destination=destination,
+                ) != operation_proof
+            ):
+                raise PreparationError("task workspace registration or operation changed before launch")
             return task
     except BaseException as exc:
         # Cause first, then what Control did about it: the operator reads the

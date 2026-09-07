@@ -32,6 +32,12 @@ invalid v2 handoff, initialization fails before changing the config and routes
 that material to explicit `/session:consolidate`; it never deletes or silently
 republishes it. It adds narrow ignores for `/Work/session-state/`, the durable
 private `/Work/memory-migration/` review plan, and
-`/.asha/control-task.json`. The Control rule must be committed before an
-immutable task base gains that authority; changing only the working tree does
-not authorize an older selected commit.
+`/.asha/control-task.json`, `/.asha/result.json`, and `/.asha/outbox/`.
+These fixed Control transport paths do not ignore the rest of `.asha/`.
+Initialization upgrades legacy marker-only blocks idempotently and preserves
+user comments and rules, reasserting the managed suffix after later negations.
+The rules must be committed before an immutable task base gains that authority;
+changing only the working tree or global excludes does not authorize an older
+selected commit. A typed prerequisite offers only its listed missing Control
+rules: applying it changes `.gitignore`, never commits or starts a task. Commit
+the reviewed patch and explicitly select the new base before retrying.

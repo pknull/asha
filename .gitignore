@@ -53,3 +53,5 @@ Work/
 /Work/session-state/
 # Asha Control private context (managed)
 /.asha/control-task.json
+/.asha/result.json
+/.asha/outbox/

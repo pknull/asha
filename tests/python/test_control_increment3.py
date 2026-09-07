@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
@@ -54,6 +55,224 @@ from lib.control.transaction import (
     CreationJournalStore, JournalError, PHASES, PHASE_TRANSITIONS,
 )
 from tests.python.test_control_config_model import task_record
+from tests.python import test_control_increment2 as increment2
+
+
+class PrivateResultPrelaunchTests(unittest.TestCase):
+    """Real jj creation, fake Codex only, at the existing CLI launch seam."""
+
+    jj = increment2.RealJjPreparationTests.jj
+    request = increment2.RealJjPreparationTests.request
+    source_facts = increment2.RealJjPreparationTests.source_facts
+    tracked_result_request = increment2.RealJjPreparationTests.tracked_result_request
+    start_fake_codex = increment2.RealJjPreparationTests.start_fake_codex
+
+    def setUp(self):
+        previous = os.umask(0o002)
+        self.addCleanup(os.umask, previous)
+        increment2.RealJjPreparationTests.setUp(self)
+
+    def test_crash_windows_preserve_exact_residue_and_never_call_provider(self):
+        from lib.control.prepare import PreparationError, rollback_prelaunch
+        original = self.tracked_result_request()
+        for index, point in enumerate((
+            "private-result:authenticated", "private-result:normalized",
+            "sidecar:temp-written", "sidecar:renamed", "journal:workspace-added",
+            "journal:workspace-recorded", "journal:context-intent",
+            "context-owned:.asha/outbox", "context-owned:.asha/control-task.json",
+            "journal:context-provisioned", "journal:task-identity-recorded",
+            "journal:ready-for-launch",
+        )):
+            with self.subTest(point=point):
+                request = replace(original, task_id=str(uuid.uuid4()), slug=f"crash-{index}")
+                reached = []
+
+                def inject(phase):
+                    if phase == point:
+                        reached.append(phase)
+                        raise RuntimeError(f"crash at {phase}")
+
+                with self.assertRaisesRegex(PreparationError, "crash at"):
+                    self.start_fake_codex(request, failure_injector=inject)
+                self.assertEqual(reached, [point])
+                self.assertEqual(self.fake_provider_calls, [])
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                self.assertEqual(journal["phase"], "preserved")
+                self.assertFalse(journal["launch_attempted"])
+                workspace = Path(journal["workspace"]["path"])
+                before = increment2.RealJjPreparationTests.workspace_bytes(workspace)
+                for path in ("tracked.txt", "tool", ".asha/config.json", ".gitignore"):
+                    self.assertEqual((workspace / path).read_bytes(), (self.source / path).read_bytes())
+                sidecar = self.config.tasks_dir.parent / "transactions" / f"{request.task_id}.ownership"
+                sidecar_bytes = sidecar.read_bytes() if sidecar.exists() else None
+                with self.assertRaisesRegex(PreparationError, "manual inspection and cleanup required"):
+                    rollback_prelaunch(self.config, request.task_id)
+                self.assertEqual(before, increment2.RealJjPreparationTests.workspace_bytes(workspace))
+                self.assertEqual(sidecar_bytes, sidecar.read_bytes() if sidecar.exists() else None)
+
+    def test_normalization_and_context_persistence_io_failures_never_launch(self):
+        from lib.control.prepare import PreparationError
+        original = self.tracked_result_request()
+        for index, failure in enumerate(("chmod", "fsync", "sidecar", "context")):
+            with self.subTest(failure=failure):
+                request = replace(original, task_id=str(uuid.uuid4()), slug=f"io-{index}")
+                real_chmod, real_fsync = os.fchmod, os.fsync
+                real_save = CreationJournalStore.save
+                seen = []
+
+                def chmod(fd, mode):
+                    if failure == "chmod" and os.readlink(f"/proc/self/fd/{fd}").endswith(f"io-{index}/.asha"):
+                        seen.append(failure)
+                        raise OSError(errno.EIO, "injected private chmod failure")
+                    return real_chmod(fd, mode)
+
+                def fsync(fd):
+                    if failure == "fsync" and os.readlink(f"/proc/self/fd/{fd}").endswith(f"io-{index}/.asha"):
+                        seen.append(failure)
+                        raise OSError(errno.EIO, "injected private fsync failure")
+                    return real_fsync(fd)
+
+                def save(store, journal, **kwargs):
+                    if (failure == "context" and not seen
+                            and journal["phase"] == "context-provisioning"
+                            and ".asha/outbox" in journal["context_owned"]):
+                        seen.append(failure)
+                        raise OSError(errno.EIO, "injected context ownership persistence failure")
+                    return real_save(store, journal, **kwargs)
+
+                def inject(phase):
+                    if failure == "sidecar" and phase == "sidecar:temp-written":
+                        seen.append(failure)
+                        raise OSError(errno.EIO, "injected sidecar persistence failure")
+
+                with mock.patch("os.fchmod", side_effect=chmod), \
+                        mock.patch("os.fsync", side_effect=fsync), \
+                        mock.patch.object(CreationJournalStore, "save", new=save), \
+                        self.assertRaisesRegex(PreparationError, "injected"):
+                    self.start_fake_codex(request, failure_injector=inject)
+                self.assertEqual(seen, [failure])
+                self.assertEqual(self.fake_provider_calls, [])
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                self.assertEqual(journal["phase"], "preserved")
+                workspace = Path(journal["workspace"]["path"])
+                self.assertEqual((workspace / ".asha").stat().st_mode & 0o777,
+                                 0o775 if failure == "chmod" else 0o700)
+
+    def test_replacements_before_normalization_never_chmod_foreign_state(self):
+        from lib.control.prepare import PreparationError
+        original = self.tracked_result_request()
+        for index, collision in enumerate(("symlink", "inode", "registration", "operation", "uid", "device", "sidecar")):
+            with self.subTest(collision=collision):
+                request = replace(original, task_id=str(uuid.uuid4()), slug=f"race-{index}")
+                adapter = JjAdapter()
+                altered = []
+                patches = contextlib.ExitStack()
+                self.addCleanup(patches.close)
+
+                def inject(phase):
+                    if phase != "private-result:authenticated":
+                        return
+                    journal = CreationJournalStore(self.config).read(request.task_id)
+                    workspace = Path(journal["workspace"]["path"])
+                    asha = workspace / ".asha"
+                    if collision in {"symlink", "inode"}:
+                        old = workspace / "retained-asha"
+                        asha.rename(old)
+                        if collision == "symlink":
+                            asha.symlink_to(old, target_is_directory=True)
+                        else:
+                            asha.mkdir()
+                        altered.append(asha)
+                        altered.append(old)
+                    elif collision == "registration":
+                        patches.enter_context(mock.patch.object(adapter, "workspace_identities", return_value={}))
+                    elif collision == "operation":
+                        patches.enter_context(mock.patch.object(adapter, "workspace_add_operation_proof",
+                                                                side_effect=increment2.JjError("operation replaced")))
+                    elif collision in {"uid", "device"}:
+                        real_fstat = os.fstat
+                        inode = asha.stat().st_ino
+
+                        def fstat(fd):
+                            metadata = real_fstat(fd)
+                            if metadata.st_ino == inode:
+                                values = list(metadata)
+                                values[4 if collision == "uid" else 2] += 1
+                                return os.stat_result(values)
+                            return metadata
+
+                        patches.enter_context(mock.patch("os.fstat", side_effect=fstat))
+                        altered.append(asha)
+                    else:
+                        sidecar = self.config.tasks_dir.parent / "transactions" / f"{request.task_id}.ownership"
+                        sidecar.write_bytes(b"foreign sidecar")
+                        sidecar.chmod(0o600)
+                        altered.append(asha)
+
+                with self.assertRaises(PreparationError):
+                    self.start_fake_codex(request, adapter=adapter, failure_injector=inject)
+                patches.close()
+                self.assertEqual(self.fake_provider_calls, [])
+                for path in altered:
+                    if not path.is_symlink():
+                        self.assertEqual(path.stat().st_mode & 0o777, 0o775)
+
+    def test_ready_boundary_replacement_is_refused_before_provider(self):
+        from lib.control.prepare import PreparationError
+        request = self.tracked_result_request()
+
+        def inject(phase):
+            if phase == "journal:ready-for-launch":
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                path = Path(journal["workspace"]["path"]) / ".asha/outbox"
+                path.rename(path.with_name("retained-outbox"))
+                path.mkdir(mode=0o700)
+
+        with self.assertRaisesRegex(PreparationError, "preserved"):
+            self.start_fake_codex(request, failure_injector=inject)
+        self.assertEqual(self.fake_provider_calls, [])
+
+    def test_recovery_reauthenticates_normalized_creation_but_never_retrofits(self):
+        from lib.control.jj import ColocationIntentStore
+        from lib.control.prepare import PreparationError, adopt_preserved_task_workspace
+        original = self.tracked_result_request()
+        intents = ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+        for index, point in enumerate(("private-result:authenticated", "private-result:normalized", "sidecar:renamed")):
+            with self.subTest(point=point):
+                request = replace(original, task_id=str(uuid.uuid4()), slug=f"adopt-{index}")
+
+                def inject(phase):
+                    if phase == point:
+                        raise RuntimeError("creation interrupted")
+
+                with self.assertRaisesRegex(PreparationError, "creation interrupted"):
+                    self.start_fake_codex(request, failure_injector=inject)
+                self.assertEqual(self.fake_provider_calls, [])
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                workspace = Path(journal["workspace"]["path"])
+                before = increment2.RealJjPreparationTests.workspace_bytes(workspace)
+                sidecar = self.config.tasks_dir.parent / "transactions" / f"{request.task_id}.ownership"
+                original_sidecar = sidecar.read_bytes() if sidecar.exists() else None
+                if index == 0:
+                    with self.assertRaisesRegex(PreparationError, "no privacy retrofit"):
+                        adopt_preserved_task_workspace(self.config, request.task_id,
+                            harness="codex", role="implementer", goal=request.label)
+                    self.assertEqual(before, increment2.RealJjPreparationTests.workspace_bytes(workspace))
+                    self.assertFalse(sidecar.exists())
+                else:
+                    adopted = adopt_preserved_task_workspace(self.config, request.task_id,
+                        harness="codex", role="implementer", goal=request.label)
+                    self.assertEqual(adopted["lifecycle"], "creating")
+                    self.assertEqual((workspace / ".asha/outbox").stat().st_mode & 0o777, 0o700)
+                    metadata = (workspace / ".asha").lstat()
+                    self.assertEqual(metadata.st_mode & 0o777, 0o700)
+                    recovered = CreationJournalStore(self.config).read(request.task_id)
+                    self.assertEqual(recovered["phase"], "ready-for-launch")
+                    self.assertEqual(recovered["context_owned"][".asha/outbox"]["mode"], 0o700)
+                    if original_sidecar is not None:
+                        self.assertEqual(sidecar.read_bytes(), original_sidecar)
 
 
 class TmuxAdapterTests(unittest.TestCase):
