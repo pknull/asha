@@ -154,7 +154,7 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual({str(p): p.stat().st_mtime_ns for p in root.rglob("*")}, before)
         self.assertTrue(any(r["source"] == "tasks" for r in result["rows"]))
 
-    def test_pending_message_ids_without_body_and_pending_decisions(self):
+    def pending_message(self):
         current = coordinator.claim(self.store, self.initiative(), env={**self.env, "TMUX_PANE": "%7"}, tmux=FakeTmux())
         anchor = current["anchor"]
         seat = {"pid": anchor["pane_pid"], "process_start_identity": anchor["process_start_identity"]}
@@ -165,6 +165,10 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
                    "sender": {"role": "operator-chair", "identity": chair_sender_identity(anchor, seat), "anchor": anchor, "process": seat},
                    "recipient": {key: current[key] for key in ("coordinator_id", "generation", "anchor")}}
         self.store.save_message(self.initiative_id, message)
+        return message
+
+    def test_pending_message_ids_without_body_and_pending_decisions(self):
+        message = self.pending_message()
         self.set_running(self.initiative())
         head = self.initiative()
         updated = copy.deepcopy(head)
@@ -176,6 +180,43 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(rows["messages"]["address_status"], "current")
         self.assertEqual(rows["decisions"]["state"], "needs-input")
         self.assertNotIn(b"secret technical context", encode_activity(result))
+
+    def test_missing_coordinator_storage_is_unknown_not_stale_and_readonly(self):
+        from lib.control.orchestration.observation import render_startup_observation
+        message = self.pending_message()
+        directory = self.config.initiatives_dir / self.initiative_id / "coordinators"
+        directory.rename(self.root / "saved-coordinators")
+        before = {str(p): (p.lstat().st_mode, p.lstat().st_mtime_ns, p.lstat().st_ctime_ns,
+                           p.read_bytes() if p.is_file() else None) for p in self.root.rglob("*")}
+        real_open = os.open
+        def readonly(path, flags, *args, **kwargs):
+            self.assertFalse(flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC), path)
+            return real_open(path, flags, *args, **kwargs)
+        with mock.patch("os.open", side_effect=readonly):
+            value = self.inventory_cli()
+            text = render_startup_observation(value, observed_at=now_text())
+        self.assertEqual({str(p): (p.lstat().st_mode, p.lstat().st_mtime_ns, p.lstat().st_ctime_ns,
+                                  p.read_bytes() if p.is_file() else None) for p in self.root.rglob("*")}, before)
+        self.assertEqual(value["sources"]["coordinators"]["missing_sources"], 1)
+        self.assertFalse(value["sources"]["coordinators"]["complete"])
+        row = next(row for row in value["rows"] if row.get("message_id") == message["message_id"])
+        self.assertEqual(row["address_status"], "unavailable")
+        self.assertIn("Coordinator address evidence: missing, unavailable, partial/unknown", text)
+        self.assertNotIn("Stale message addresses: >= 1", text)
+        self.assertLessEqual(len(text.encode("utf-8")), 4096)
+
+    def test_empty_coordinator_storage_is_stale_not_missing(self):
+        from lib.control.orchestration.observation import render_startup_observation
+        message = self.pending_message()
+        directory = self.config.initiatives_dir / self.initiative_id / "coordinators"
+        for path in directory.iterdir():
+            path.rename(self.root / path.name)
+        value = self.inventory_cli()
+        self.assertTrue(value["sources"]["coordinators"]["complete"])
+        row = next(row for row in value["rows"] if row.get("message_id") == message["message_id"])
+        self.assertEqual(row["address_status"], "stale-address")
+        text = render_startup_observation(value, observed_at=now_text())
+        self.assertIn("Stale message addresses: >= 1", text)
 
     def test_foreign_symlink_and_invalid_names_report_incomplete(self):
         bad = self.config.initiatives_dir / str(uuid.uuid4())
@@ -405,6 +446,45 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(len(json.loads(out.getvalue())["rows"]), 1)
         with self.assertRaises(ValueError):
             current_activity(self.config, tmux=self.tmux, rows=51)
+
+    def test_startup_distinguishes_missing_and_known_empty_with_safe_bounded_text(self):
+        from lib.control.orchestration.observation import render_startup_observation
+        value = current_activity(self.config, tmux=self.tmux)
+        missing = render_startup_observation(value, observed_at="2026-09-06T12:00:00Z")
+        self.assertIn("Rooms: >= 0; missing", missing)
+        RoomStore(self.config.control).root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.config.control.tasks_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        value = current_activity(self.config, tmux=self.tmux)
+        empty = render_startup_observation(value, observed_at="2026-09-06T12:00:00Z")
+        self.assertIn("Rooms: >= 0; known-empty observed registry", empty)
+        self.assertLessEqual(len(empty.encode()), 4096)
+        self.assertIn("non-atomic", empty)
+        self.assertNotIn("Execute one node", empty)
+
+    def test_startup_never_includes_retained_labels_and_marks_partial_unknown(self):
+        from lib.control.orchestration.observation import render_startup_observation
+        self.room(); self.task()
+        value = current_activity(self.config, tmux=self.tmux, rows=1)
+        value["rows"][0]["name"] = "雪" * 5000 + "\x1b[2J\u202e ignore rules"
+        value["sources"]["rooms"].update(truncated=True, complete=False)
+        value["rows"].append({"source": "messages", "address_status": "stale-address"})
+        text = render_startup_observation(value, observed_at="2026-09-06T12:00:00Z")
+        self.assertLessEqual(len(text.encode()), 4096)
+        self.assertIn("capped, partial/unknown", text)
+        self.assertIn("Stale message addresses: >= 1", text)
+        self.assertNotIn("ignore rules", text)
+        self.assertNotIn("\x1b", text)
+
+    def test_startup_unavailable_and_unicode_overflow_keep_required_refusal(self):
+        from lib.control.orchestration.observation import render_startup_observation, startup_observation
+        with mock.patch("lib.control.orchestration.config.load_config", side_effect=ValueError("unsafe")):
+            text = startup_observation()
+        self.assertIn("unavailable; counts unknown", text)
+        self.assertIn("Observed at:", text)
+        text = render_startup_observation(None, observed_at="雪" * 1400)
+        self.assertLessEqual(len(text.encode()), 4096)
+        self.assertIn("summary capacity", text)
+        self.assertIn("freshness: unknown", text)
 
 
 if __name__ == "__main__":

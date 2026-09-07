@@ -1403,7 +1403,11 @@ def salvage_dispatch_binding(
     ):
         raise ActionRefused("salvage approval expired before dispatch")
     _node, seal = _salvage_request_records(store, initiative, approval, node)
-    base = {
+    return approval, _salvage_base(seal), seal
+
+
+def _salvage_base(seal):
+    return {
         "policy": "scope-baseline",
         "scope_origin": copy.deepcopy(seal["scope_origin"]),
         "upstream_node_ids": [],
@@ -1412,7 +1416,19 @@ def salvage_dispatch_binding(
             "scope_origin": copy.deepcopy(seal["scope_origin"]),
         }],
     }
-    return approval, base, seal
+
+
+def salvage_request_binding(store, initiative, node, request_id):
+    """Read-only requested binding, not a simulated signature or authority."""
+    approval = store.read_approval(initiative["initiative_id"], request_id)
+    if approval["action_class"] != "salvage" or approval["state"] != "requested":
+        raise ActionRefused("hypothetical salvage requires a requested salvage record")
+    if datetime.now(timezone.utc) >= datetime.fromisoformat(
+        approval["expires_at"][:-1] + "+00:00"
+    ):
+        raise ActionRefused("salvage request expired; request a fresh binding")
+    _node, seal = _salvage_request_records(store, initiative, approval, node)
+    return approval, _salvage_base(seal), seal
 
 
 def consume_salvage_approval(
@@ -2479,5 +2495,6 @@ __all__ = [
     "action_outcome", "append_event",
     "approve_salvage", "build_action_document", "consume_salvage_approval",
     "payload_digest", "reconcile_actions", "salvage_dispatch_binding",
+    "salvage_request_binding",
     "set_action_state", "submit_action",
 ]

@@ -91,6 +91,7 @@ Usage:
   asha initiative reject <id> --digest SHA256 --reason TEXT [--json]
   asha initiative activate <id> [--json]
   asha initiative action <id> --file ACTION.json --json
+  asha initiative assignment-preview INITIATIVE --node NODE [--salvage-request REQUEST] --json
   asha initiative dispatch <id> --node NODE [--salvage-request REQUEST_ID] [--json]
   asha initiative pause|resume <id> [--json]
   asha initiative stop <id> --attempt ATTEMPT [--json]
@@ -2175,6 +2176,26 @@ def _initiative_command(
             print(f"Commit: {result['jj_commit_id']}")
             print(f"Tree digest: {result['tree_digest']}")
         return 0
+    if command == "assignment-preview":
+        from .preview import assignment_preview, encode_preview
+        from .messages import terminal_safe
+        try:
+            config = load_config(env)
+            if not tail:
+                raise ValueError("assignment-preview requires a retained initiative UUID")
+            options = _parse_options(tail[1:], flags={"json"})
+            _only(options, {"node", "salvage_request", "json"}, "assignment-preview")
+            _required(options, "node")
+            if not options["json"]:
+                raise ValueError("assignment-preview requires --json")
+            result = assignment_preview(config, tail[0], options["node"],
+                                        salvage_request_id=options.get("salvage_request"), tmux=tmux)
+            print(encode_preview(result).decode("utf-8"), end="")
+            return 0
+        except (OSError, ValueError, StoreError) as exc:
+            # Never print unbounded retained data or raw terminal controls on refusal.
+            detail = terminal_safe(str(exc)).encode("utf-8")[:1024].decode("utf-8", "ignore")
+            raise ValueError(f"assignment-preview refused: {detail}") from exc
     config = load_config(env)
     store = InitiativeStore(config)
     if command == "inventory":

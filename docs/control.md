@@ -1354,7 +1354,8 @@ reconciling, or creating files. It reports retained non-ended Rooms with observe
 ownership status, actually live owned task runs (not historical task lifecycle
 labels), nonterminal initiative heads, pending approvals/needs-input heads, and
 unacknowledged addressed message IDs. It never renders criteria, plans, message
-bodies, or whole event history. No launcher or UI startup wiring is included.
+bodies, or whole event history. The Codex chair startup below consumes this
+API; other harnesses and the TUI retain their existing startup behavior.
 
 Defaults and hard upper bounds:
 
@@ -1394,6 +1395,32 @@ latency. Platform flock behavior is not inferred from Linux tests.
 
 **Execution consent remains separate.** Native Codex approval/sandbox settings
 may still refuse a command before Control runs, even when it is read-only. This
-slice changes no execution rules, approvals, hooks, wrappers, or worker sandbox.
+foundation changed no execution rules, approvals, hooks, wrappers, or worker sandbox.
 A Control authorization check is not native execution consent, and native hooks
-are not complete enforcement of every execution seam. U1b and U3–U8 remain backlog.
+are not complete enforcement of every execution seam. The U1b/U3 candidates
+below do not close native-consent or chair-owned acceptance; U4–U8 remain open.
+
+
+### Bounded Codex chair startup (U3 candidate)
+
+After **successful actual no-argument seat entry**, `bin/asha` passes a generated
+current-activity observation as Codex's native initial positional `PROMPT`. The
+launch decision is local and non-exported, not caller-provided `ASHA_SEAT`.
+The prompt contains only fixed headings, a UTC observation timestamp/freshness,
+observed lower-bound counts and coverage status; it never includes retained
+labels, objectives, commands, message bodies, or criteria. It is at most 4096
+UTF-8 bytes, including unavailable evidence, and uses the existing inventory's
+unchanged or narrower IO bounds. Missing, capped, unavailable and known-empty
+observed registries are distinct. A known-empty sample is not an atomic proof
+of absence. No record text is executed.
+
+Explicit arguments retain their exact argv and caller cwd. `--yes`, failed seat
+entry, persona-off, Rooms, managed workers and coordinator launches receive no
+startup prompt. Other harnesses are unchanged. There are no new hook, sandbox,
+approval, terminal-typing, service or generic transport mechanisms.
+
+The seat tests use harness fakes and establish only argument delivery and
+exclusions. **Visible rendering inside a real native Codex conversation remains
+chair-owned acceptance**; neither those fakes, pre-exec scrollback, instructions
+files nor an assistant paraphrase establish it. This slice does not claim the
+foundation integrated or the read-only transport-consent question resolved.

@@ -60,6 +60,7 @@ run_asha() {
   rm -f "$CAPTURE" "$ENVCAP"
   if (cd "$cwd" && env -u ASHA_HOME -u ASHA_SEAT -u ASHA_PERSONA \
       -u ASHA_CONTROL_MANAGED -u ASHA_COORDINATOR_LAUNCH \
+      -u ASHA_ROOM_ID -u ASHA_ORCHESTRATION_COORDINATOR_ID \
       -u ASHA_ORCHESTRATOR_STANCE -u ASHA_ORCHESTRATOR_BRIEF_FILE \
       -u ASHA_CONFIG -u ASHA_INSTRUCTIONS_FILE -u ASHA_CLAUDE_INSTRUCTIONS_FILE \
       HOME="$HOME_DIR" PATH="$HOME_DIR/bin:$PATH" \
@@ -263,5 +264,81 @@ else
   fail "pre-existing seat keeps its customized mode (status=$LAST_STATUS; pwd=$(env_value PWD); mode=$(stat -c '%a' "$CHAIR_DIR"); stderr=$(cat "$WORK/stderr"))"
 fi
 
+# The fake proves argv and exclusion behavior only. The chair must separately
+# demonstrate visibility inside a real native Codex conversation.
+startup_prompt_ok() {
+  python3 - "$CAPTURE" <<'PY_CHECK'
+import pathlib, re, sys
+args = pathlib.Path(sys.argv[1]).read_bytes().split(b'\0')[:-1]
+prompts = [v for v in args if v.startswith(b'Asha current activity observation\n')]
+assert len(prompts) == 1 and args[-1] == prompts[0]
+assert len(prompts[0]) <= 4096
+assert re.search(rb'Observed at: [0-9]{4}-[0-9]{2}-[0-9]{2}T', prompts[0])
+assert b'freshness:' in prompts[0] and b'no execution authority' in prompts[0]
+assert b'Counts are observed lower bounds' in prompts[0] or b'counts unknown' in prompts[0]
+PY_CHECK
+}
+no_startup_prompt() {
+  local arg
+  while IFS= read -r -d '' arg; do
+    [[ "$arg" == 'Asha current activity observation'* ]] && return 1
+  done <"$CAPTURE"
+  return 0
+}
+run_asha "$SCRATCH" codex
+if [[ $LAST_STATUS -eq 0 ]] && startup_prompt_ok \
+   && ! env_has chair_entered && ! env_has chair_observation; then
+  ok "successful Codex chair passes one bounded native initial PROMPT, with local decision"
+else
+  fail "Codex native PROMPT argument contract (not a native visibility acceptance)"
+fi
+run_codex_shim "$SCRATCH"
+if [[ $LAST_STATUS -eq 0 ]] && startup_prompt_ok; then
+  ok "Codex shim carries the same bounded native PROMPT"
+else
+  fail "Codex shim native PROMPT argument contract"
+fi
+exclusions_ok=1
+for marker in ASHA_PERSONA=0 ASHA_CONTROL_MANAGED=1 ASHA_ROOM_ID=room \
+              ASHA_COORDINATOR_LAUNCH=tok ASHA_ORCHESTRATION_COORDINATOR_ID=coord; do
+  run_asha "$SCRATCH" "$marker" ASHA_SEAT=1 chair_entered=1 codex
+  if [[ $LAST_STATUS -ne 0 || "$(env_value PWD)" != "$SCRATCH" ]] || ! no_startup_prompt; then
+    exclusions_ok=0
+  fi
+done
+if [[ $exclusions_ok -eq 1 ]]; then
+  ok "worker Room coordinator and persona-off exclusions ignore forged seat decisions"
+else
+  fail "managed/excluded Codex launch injected startup or moved cwd"
+fi
+run_asha "$SCRATCH" ASHA_SEAT=1 chair_entered=1 codex PAYLOAD
+if [[ $LAST_STATUS -eq 0 && "$(env_value PWD)" == "$SCRATCH" ]] \
+   && no_startup_prompt && argv_has_exact PAYLOAD; then
+  ok "caller ASHA_SEAT and local-variable lookalikes cannot append a PROMPT to explicit argv"
+else
+  fail "explicit argv startup exclusion"
+fi
+run_asha "$SCRATCH" ASHA_SEAT=1 --yes codex
+if [[ $LAST_STATUS -eq 0 && "$(env_value PWD)" == "$SCRATCH" ]] && no_startup_prompt; then
+  ok "--yes Codex launch excludes startup even with caller seat marker"
+else
+  fail "--yes startup exclusion"
+fi
+mkdir -m 700 "$WORK/failed-seat"
+printf 'not a directory\n' >"$WORK/failed-seat/chair"
+run_asha "$SCRATCH" "ASHA_HOME=$WORK/failed-seat" ASHA_SEAT=1 codex
+if [[ $LAST_STATUS -eq 0 && "$(env_value PWD)" == "$SCRATCH" ]] \
+   && no_startup_prompt && ! env_has ASHA_SEAT; then
+  ok "failed seat cannot inject startup and preserves caller cwd"
+else
+  fail "failed seat startup exclusion"
+fi
+run_asha "$SCRATCH" claude
+if [[ $LAST_STATUS -eq 0 ]] && no_startup_prompt; then
+  ok "other harnesses retain their existing launch behavior"
+else
+  fail "non-Codex startup exclusion"
+fi
+
 echo "test-seat: $PASS passed, $FAIL failed"
-[[ $PASS -eq 14 && $FAIL -eq 0 ]]
+[[ $PASS -eq 21 && $FAIL -eq 0 ]]

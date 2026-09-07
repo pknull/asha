@@ -390,6 +390,45 @@ def salvage_assignment_context(
     }
 
 
+def assignment_evidence(store, initiative_id, base):
+    """Read the exact seal/result/findings inputs used by the worker renderer."""
+    resolved_seals = []
+    for item in base["seal_inputs"]:
+        seal = store.read_seal(initiative_id, item["seal_id"])
+        result_summary = None
+        if seal["result_id"] is not None:
+            result = store.read_result(initiative_id, seal["result_id"])
+            result_summary = {
+                "result_id": result["result_id"],
+                "payload_digest": result["payload_digest"],
+                "claim_status": result["claim_status"],
+                "summary": result["summary"],
+                "concerns": result["concerns"],
+                "follow_up": result["follow_up"],
+            }
+        resolved_seals.append({
+            **copy.deepcopy(item),
+            "jj_commit_id": seal["jj_commit_id"],
+            "tree_digest": seal["tree_digest"],
+            "diff_digest": seal["diff_digest"],
+            "base_seal_ids": list(seal["base"]["seal_ids"]),
+            "changed_paths": seal["changed_paths"],
+            "cumulative_changed_paths": seal["cumulative_changed_paths"],
+            "result": result_summary,
+        })
+    input_seal_ids = {
+        item["seal_id"] for item in base.get("seal_inputs", [])
+    }
+    accepted_findings = [
+        {"review_id": review["review_id"], "seal_id": review["target"]["seal_id"], **finding}
+        for review in store.list_reviews_snapshot(initiative_id)
+        if review["state"] == "accepted-findings"
+        and review["target"]["seal_id"] in input_seal_ids
+        for finding in review.get("findings", [])
+    ] if input_seal_ids else []
+    return resolved_seals, accepted_findings
+
+
 def assignment_bytes(
     initiative: dict[str, Any],
     plan: dict[str, Any],
@@ -1315,40 +1354,9 @@ def dispatch(
                 config.initiatives_dir / initiative_id / "assignments"
                 / f"{attempt['attempt_id']}.md"
             )
-            resolved_seals = []
-            for item in attempt["base"]["seal_inputs"]:
-                seal = store.read_seal(initiative_id, item["seal_id"])
-                result_summary = None
-                if seal["result_id"] is not None:
-                    result = store.read_result(initiative_id, seal["result_id"])
-                    result_summary = {
-                        "result_id": result["result_id"],
-                        "payload_digest": result["payload_digest"],
-                        "claim_status": result["claim_status"],
-                        "summary": result["summary"],
-                        "concerns": result["concerns"],
-                        "follow_up": result["follow_up"],
-                    }
-                resolved_seals.append({
-                    **copy.deepcopy(item),
-                    "jj_commit_id": seal["jj_commit_id"],
-                    "tree_digest": seal["tree_digest"],
-                    "diff_digest": seal["diff_digest"],
-                    "base_seal_ids": list(seal["base"]["seal_ids"]),
-                    "changed_paths": seal["changed_paths"],
-                    "cumulative_changed_paths": seal["cumulative_changed_paths"],
-                    "result": result_summary,
-                })
-            input_seal_ids = {
-                item["seal_id"] for item in attempt["base"].get("seal_inputs", [])
-            }
-            accepted_findings = [
-                {"review_id": review["review_id"], "seal_id": review["target"]["seal_id"], **finding}
-                for review in store.list_reviews_snapshot(initiative_id)
-                if review["state"] == "accepted-findings"
-                and review["target"]["seal_id"] in input_seal_ids
-                for finding in review.get("findings", [])
-            ] if input_seal_ids else []
+            resolved_seals, accepted_findings = assignment_evidence(
+                store, initiative_id, attempt["base"],
+            )
             assignment = assignment_bytes(
                 initiative, plan, node, attempt, exact_base, resolved_seals,
                 accepted_findings=accepted_findings,
@@ -1545,7 +1553,7 @@ def dispatch(
 
 __all__ = [
     "DISPATCH_CONTRACT", "DISPATCH_TIMEOUT_SECONDS", "MAX_ASSIGNMENT_BYTES",
-    "READINESS_CONTRACT", "SchedulerError", "assignment_bytes",
+    "READINESS_CONTRACT", "SchedulerError", "assignment_bytes", "assignment_evidence",
     "consecutive_failures", "dispatch", "mark_launch_failed",
     "pause_for_breaker", "readiness", "refresh_readiness", "validate_goal_capacity",
     "salvage_assignment_context",

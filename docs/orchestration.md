@@ -1232,3 +1232,57 @@ No Claude/provider smoke, new coordinator, approval relaxation, worker sandbox
 widening, installation, integration, or terminal typing is part of this demo.
 If either existing actor cannot perform it under native controls, record precisely
 that unavailable evidence and leave the live acceptance item pending.
+
+
+### Typed read-only assignment preview (U1b candidate)
+
+```text
+asha initiative assignment-preview INITIATIVE_UUID --node NODE --json
+asha initiative assignment-preview INITIATIVE_UUID --node NODE --salvage-request REQUEST_UUID --json
+```
+
+This accepts retained IDs only: no executable, path, arbitrary command or body.
+It returns `asha.orchestration-assignment-preview.v1` from bounded, validated
+production records. A read-only snapshot adapter supplies the actual scheduler
+base resolution, gate extraction, seal/result/findings composition, assignment
+renderer and conservative future-framing/goal-capacity checks. Ordinary store
+readers that lock or sweep write residue are deliberately not used.
+
+The JSON contains plan/repository/base/seal/request/rationale/binding hashes,
+current independently checked coordinator UUID/generation/liveness, actual
+salvage approval state/signer/expiry, exact controller gate argv/cwd/timeouts,
+byte capacities and the rendered UTF-8 SHA256. `worker_attestations` retains the
+node's exact goal and acceptance separately. The node schema has no structured
+command-subset field: `commands: null` means **not machine-encoded**, not “attest
+nothing” or “attest every controller gate.” Follow the retained node directive.
+
+Rendering uses the labelled fixed preview attempt UUID solely for framing;
+it allocates nothing and is not an actual assignment path or dispatch permit.
+Requested salvage invokes the same immutable binding checks as signing and
+returns `rendering.kind: hypothetical-if-approved` with an explicit NOT APPROVED
+notice. The production-rendered approval language in `rendering.text` is
+conditional in that layout; the requested record is never copied into approved
+state and no signature is invented. Approved salvage invokes the actual dispatch
+binding checker without consumption and additionally requires retained operator
+signing evidence. The exact scope-origin base is preserved; a failure seal is a
+read-only input, never silently inherited as the execution base.
+
+The preview refuses stale/foreign/forged/expired bindings, conflicting live or
+reserved attempts, dispatch replays, missing/unprovable current coordinator
+generations, required-text overflow and observed snapshot changes. Every used
+record set is re-read and compared before return, including the initiative head;
+liveness and expiry are checked again. This is an optimistic observation, not
+an atomic reservation: actual dispatch still independently revalidates.
+
+Bounds are 256 directory entries per used record class, the store's existing
+256 KiB per-record ceiling, a 2 MiB composed snapshot ceiling, 256 KiB serialized
+JSON response and a shared two-second cooperative read/probe deadline. Hidden
+residue consumes scan budget but is never swept. Missing or capped required
+sets refuse rather than guessing. The response is JSON-escaped without changing
+decoded commands or rendered Unicode; diagnostics are escaped and bounded.
+No tasks/workspaces/assignments, records, events, cursors, approvals or config are
+created or changed, no write-enabled locks are acquired, and no allocation,
+materialization or reconciliation is performed. No new transport consent,
+sandbox or execution authority is conferred. A native environment that cannot
+read the host records or independently prove the coordinator anchor must refuse,
+not ask the model to pretend the preview succeeded.
