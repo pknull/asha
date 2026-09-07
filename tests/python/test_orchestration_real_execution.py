@@ -112,6 +112,10 @@ class RealOrchestrationExecutionTests(unittest.TestCase):
             raise exc
 
     def _initialize_repository(self) -> None:
+        # Exercise the canonical producer instead of hand-copying transport
+        # rules that can drift from the private selected-base preflight.
+        from lib.control.context import read_published_snapshot
+        from memory_v2 import initialize
         (self.repo / ".asha").mkdir()
         (self.repo / "Memory").mkdir()
         (self.repo / "Work/session-state").mkdir(parents=True)
@@ -125,10 +129,13 @@ class RealOrchestrationExecutionTests(unittest.TestCase):
         )
         (self.repo / "Memory/decisions.md").write_text("# Decisions\n\n- Test.\n")
         (self.repo / ".gitignore").write_text(
-            ".asha/config.json\n.asha/control-task.json\nMemory/activeContext.md\n"
-            "Memory/decisions.md\nWork/session-state/\n"
+            ".asha/config.json\nMemory/activeContext.md\n"
+            "Memory/decisions.md\n"
             "__pycache__/\n"
         )
+        initialize(self.repo)
+        self.assertEqual(read_published_snapshot(self.repo).project_id,
+                         "orchestration-real-execution")
         (self.repo / "seed.txt").write_text("base\n")
         (self.repo / "odd | name.txt").write_text("quoted fileset path\n")
         (self.repo / "target-a.txt").write_text("A\n")
@@ -676,6 +683,7 @@ RESULTPY
 
     def _initialize_member(self, root: Path, project_id: str) -> tuple[str, str]:
         """A minimal jj-colocated Asha project; returns its base commit and tree digest."""
+        from memory_v2 import initialize
         root.mkdir(mode=0o755)
         (root / ".asha").mkdir(mode=0o755)
         (root / "Memory").mkdir(mode=0o755)
@@ -688,9 +696,10 @@ RESULTPY
         )
         (root / "Memory/decisions.md").write_text("# Decisions\n\n- Test.\n")
         (root / ".gitignore").write_text(
-            ".asha/config.json\n.asha/control-task.json\nMemory/activeContext.md\n"
-            "Memory/decisions.md\nWork/session-state/\n__pycache__/\n"
+            ".asha/config.json\nMemory/activeContext.md\n"
+            "Memory/decisions.md\n__pycache__/\n"
         )
+        initialize(root)
         (root / "seed.txt").write_text(f"{project_id}\n")
         self._run_command(["git", "init", "-q"], cwd=root)
         self._run_command(["git", "config", "user.email", "integration@example.invalid"], cwd=root)

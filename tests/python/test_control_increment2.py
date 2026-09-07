@@ -244,6 +244,37 @@ class ContextProvisionTests(unittest.TestCase):
         self.assertIn(".asha/config.json", created)
         self.assertIn("Memory/decisions.md", created)
 
+    def test_opt_in_result_transport_reports_owned_outbox(self) -> None:
+        created = {}
+        provision_context(
+            self.source, self.destination, self.marker(), private_result_transport=True,
+            after_entry=lambda path, fact: created.update({path: fact}),
+        )
+        for path in (".asha", ".asha/outbox"):
+            self.assertEqual(created[path]["mode"], 0o700)
+            self.assertEqual(created[path]["uid"], os.geteuid())
+            self.assertEqual(created[path]["ino"], (self.destination / path).lstat().st_ino)
+        self.assertEqual(list((self.destination / ".asha/outbox").iterdir()), [])
+
+    def test_opt_in_never_privatizes_reused_directory(self) -> None:
+        (self.destination / ".asha").mkdir()
+        (self.destination / ".asha").chmod(0o775)
+        with self.assertRaisesRegex(ContextError, "owned mode 0700"):
+            provision_context(self.source, self.destination, self.marker(),
+                              private_result_transport=True)
+        self.assertEqual((self.destination / ".asha").stat().st_mode & 0o777, 0o775)
+        self.assertEqual(list((self.destination / ".asha").iterdir()), [])
+
+    def test_opt_in_pins_private_parent_across_context_callbacks(self) -> None:
+        def replace(path, _fact):
+            if path == ".asha":
+                (self.destination / ".asha").rename(self.destination / "retained")
+                (self.destination / ".asha").mkdir(mode=0o700)
+        with self.assertRaisesRegex(ContextError, "identity changed"):
+            provision_context(self.source, self.destination, self.marker(),
+                              private_result_transport=True, after_entry=replace)
+        self.assertEqual(list((self.destination / ".asha").iterdir()), [])
+
     def test_marker_symlink_and_non_directory_paths_still_collide(self) -> None:
         (self.destination / ".asha").mkdir(mode=0o700)
         (self.destination / ".asha" / "control-task.json").write_text("{}\n")
@@ -736,6 +767,126 @@ class RealJjPreparationTests(unittest.TestCase):
             check=True, capture_output=True, text=True,
         ).stdout.strip()
         self.assertEqual(head_before, head_after)
+
+    def tracked_result_request(self, slug="private-result", *, ignore=None) -> PrepareRequest:
+        """Real selected config and executable; no fixture privacy workaround."""
+        (self.source / ".gitignore").write_text(ignore if ignore is not None else
+            "/.asha/*\n!/.asha/config.json\n/Memory/\n/Work/\n")
+        (self.source / "tool").write_bytes(b"#!/bin/sh\nexit 0\n")
+        (self.source / "tool").chmod(0o775)
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        subprocess.run(["git", "-C", str(self.source), "add", "-f", ".gitignore",
+                        ".asha/config.json", "tool"], check=True, env=env)
+        subprocess.run(["git", "-C", str(self.source), "commit", "-qm", slug],
+                       check=True, env=env)
+        base = subprocess.check_output(
+            ["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True,
+        ).strip()
+        self.jj("git", "import")
+        return PrepareRequest(repository=self.source, requested_base=base,
+                              task_id=str(uuid.uuid4()), slug=slug, label="Private result")
+
+    def start_fake_codex(self, request, *, adapter=None, failure_injector=None):
+        from lib.control.cli import _parse_start, _start_new_task
+        parsed = _parse_start(["--base", request.requested_base,
+                               "--slug", request.slug, "--headless", "--goal", request.label])
+        calls = []
+
+        def fake_launch(_config, prepared, **kwargs):
+            self.assertEqual(kwargs["harness"], "codex")
+            workspace = Path(prepared["jj"]["workspace_path"])
+            # Execute only this local fake provider; record the actual prelaunch
+            # filesystem without creating or repairing its transport.
+            output = subprocess.check_output([
+                "/bin/python3", "-c",
+                "import json,os,stat; from pathlib import Path; "
+                "print(json.dumps({p: stat.S_IMODE(Path(p).lstat().st_mode) "
+                "if Path(p).exists() else None for p in ['.asha','.asha/outbox']}))",
+            ], cwd=workspace, text=True)
+            calls.append(json.loads(output))
+            if hasattr(self, "provider_action"):
+                self.provider_action(prepared)
+            return prepared
+
+        self.fake_provider_calls = calls
+        with mock.patch("lib.control.cli.prepare_task_workspace", side_effect=lambda config, req, **kw:
+                        prepare_task_workspace(config, req, failure_injector=failure_injector, **kw)), \
+                mock.patch("lib.control.cli.launch_task", side_effect=fake_launch), \
+                mock.patch("lib.control.cli._emit_start_result", return_value=0):
+            _start_new_task(parsed, self.env, self.config, adapter or JjAdapter(),
+                            self.source, task_id=request.task_id,
+                            selected_harness="codex", selected_role="worker")
+        return calls
+
+    def test_tracked_config_private_transport_exists_before_fake_codex(self) -> None:
+        previous = os.umask(0o002)
+        self.addCleanup(os.umask, previous)
+        request = self.tracked_result_request()
+        before = self.source_facts()
+        captured = {}
+
+        def capture(phase):
+            if phase == "private-result:authenticated":
+                journal = CreationJournalStore(self.config).read(request.task_id)
+                workspace = Path(journal["workspace"]["path"])
+                captured["files"] = {
+                    p: ((workspace / p).read_bytes(), (workspace / p).stat().st_mode)
+                    for p in (".gitignore", ".asha/config.json", "tool", "tracked.txt")
+                }
+                self.assertEqual((workspace / ".asha").stat().st_mode & 0o777, 0o775)
+                self.assertIsNone(journal["materialization_ownership"])
+
+        calls = self.start_fake_codex(request, failure_injector=capture)
+        self.assertEqual(calls, [{".asha": 0o700, ".asha/outbox": 0o700}])
+        self.assertEqual(self.source_facts(), before)
+        journal = CreationJournalStore(self.config).read(request.task_id)
+        workspace = Path(journal["workspace"]["path"])
+        self.assertEqual(captured["files"], {
+            p: ((workspace / p).read_bytes(), (workspace / p).stat().st_mode)
+            for p in captured["files"]
+        })
+        plan = JjAdapter().materialization_plan(
+            self.source / ".git", request.requested_base, exact_root=self.source,
+        )
+        stored = prepare_module.MaterializationOwnershipStore(self.config).read(
+            journal["materialization_ownership"]["sidecar"],
+        )
+        index = next(i for i, e in enumerate(plan.entries) if e.path == ".asha")
+        metadata = (workspace / ".asha").lstat()
+        self.assertEqual(stored[index], [metadata.st_dev, metadata.st_ino, 0o700, os.geteuid()])
+        self.assertEqual(journal["context_owned"][".asha/outbox"],
+                         prepare_module._inode_fact((workspace / ".asha/outbox").lstat()))
+        self.assertEqual(journal["planned_context"][".asha/outbox"]["mode"], 0o700)
+        self.assertNotIn(".asha", journal["context_owned"])
+        self.assertEqual(journal["phase"], "ready-for-launch")
+
+    def test_private_transport_ignore_and_tracked_collisions_never_launch(self) -> None:
+        for number, ignore in enumerate((
+            "/.asha/control-task.json\n/Memory/\n/Work/\n",
+            "/.asha/*\n!/.asha/config.json\n!/.asha/outbox/\n/Memory/\n/Work/\n",
+            "/.asha/*\n!/.asha/config.json\n!/.asha/result.json\n/Memory/\n/Work/\n",
+        )):
+            with self.subTest(ignore=ignore):
+                request = self.tracked_result_request(f"ignore-{number}", ignore=ignore)
+                before = self.source_facts()
+                with self.assertRaisesRegex(PreparationError, "ignore"):
+                    self.start_fake_codex(request)
+                self.assertEqual(self.fake_provider_calls, [])
+                self.assertEqual(self.source_facts(), before)
+        for number, path in enumerate((".asha/outbox/candidate.json", ".asha/result.json")):
+            with self.subTest(path=path):
+                leaf = self.source / path
+                leaf.parent.mkdir(parents=True, exist_ok=True)
+                leaf.write_bytes(b"foreign tracked transport\n")
+                env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                       "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+                subprocess.run(["git", "-C", str(self.source), "add", "-f", path], check=True, env=env)
+                request = self.tracked_result_request(f"collision-{number}")
+                with self.assertRaisesRegex(PreparationError, "controller-private"):
+                    self.start_fake_codex(request)
+                self.assertEqual(self.fake_provider_calls, [])
+                self.assertEqual(leaf.read_bytes(), b"foreign tracked transport\n")
 
     def test_refusals_lead_with_the_cause_and_name_the_remedy(self) -> None:
         # Preflight refusal: cause first, framing last, no task state.
@@ -1313,6 +1464,205 @@ class RealJjPreparationTests(unittest.TestCase):
             ).change_id,
             adopted["jj"]["change_id"],
         )
+
+    def test_private_adoption_rechecks_late_boundaries_before_launch(self) -> None:
+        from lib.control.launch import LaunchError
+
+        previous = os.umask(0o002)
+        self.addCleanup(os.umask, previous)
+        intents = prepare_module.ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+        cases = (
+            "outbox", "asha", "root", "selected", "context", "sidecar",
+            "registration", "operation",
+        )
+        for boundary in ("snapshot", "adoption:context-provisioned", "adoption:ready-for-launch"):
+            for case in cases:
+                with self.subTest(boundary=boundary, case=case):
+                    request = self.tracked_result_request(f"late-{boundary.split(':')[-1]}-{case}")
+
+                    def interrupt(phase):
+                        if phase == "private-result:normalized":
+                            raise RuntimeError("authenticated normalization interruption")
+
+                    with self.assertRaisesRegex(PreparationError, "normalization interruption"):
+                        prepare_task_workspace(self.config, request, failure_injector=interrupt)
+                    journals = CreationJournalStore(self.config)
+                    retained = journals.read(request.task_id)
+                    workspace = Path(retained["workspace"]["path"])
+                    source_before = self.source_facts()
+                    captured = {}
+
+                    def replace():
+                        journal = journals.read(request.task_id)
+                        captured["ownership"] = copy.deepcopy(journal["context_owned"])
+                        captured["sidecar"] = copy.deepcopy(journal["materialization_ownership"])
+                        if case in {"outbox", "asha", "root"}:
+                            target = {"outbox": workspace / ".asha/outbox",
+                                      "asha": workspace / ".asha", "root": workspace}[case]
+                            saved = self.root / f"saved-{request.task_id}"
+                            target.rename(saved)
+                            target.mkdir(mode=0o775)
+                            # Preserve contents at their expected paths; only
+                            # the directory inode/mode differs from ownership.
+                            for child in saved.iterdir():
+                                child.rename(target / child.name)
+                        elif case == "selected":
+                            (workspace / "tracked.txt").write_text("replaced selected bytes\n")
+                        elif case == "context":
+                            (workspace / "Memory/decisions.md").write_text("replaced context bytes\n")
+                        elif case == "sidecar":
+                            Path(captured["sidecar"]["sidecar"]["path"]).write_bytes(b"corrupt sidecar")
+                        captured["fired"] = True
+                        captured["workspace"] = self.workspace_bytes(workspace)
+
+                    class LateAdapter(JjAdapter):
+                        def inspect_workspace(inner_self, *args, **kwargs):
+                            result = super().inspect_workspace(*args, **kwargs)
+                            if kwargs.get("snapshot") and boundary == "snapshot":
+                                replace()
+                            return result
+
+                        def workspace_identities(inner_self, *args, **kwargs):
+                            result = super().workspace_identities(*args, **kwargs)
+                            if captured.get("fired") and case == "registration":
+                                result.pop(retained["workspace"]["name"], None)
+                            return result
+
+                        def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                            if captured.get("fired") and case == "operation":
+                                raise JjError("late operation ancestry mismatch")
+                            return super().workspace_add_operation_proof(*args, **kwargs)
+
+                    def late(phase):
+                        if phase == boundary:
+                            replace()
+
+                    with mock.patch(
+                        "lib.control.launch.adopt_preserved_task_workspace",
+                        side_effect=lambda *args, **kwargs: adopt_preserved_task_workspace(
+                            *args, **kwargs, failure_injector=late,
+                        ),
+                    ), mock.patch("lib.control.launch.launch_task") as launch:
+                        with self.assertRaises(LaunchError):
+                            recover_task(
+                                self.config, TaskStore(self.config).read(request.task_id),
+                                tasks=TaskStore(self.config), journals=journals,
+                                jj=LateAdapter(), adopt=True, harness="codex",
+                                role="implementer", goal=request.label,
+                            )
+                        launch.assert_not_called()
+                    self.assertTrue(captured["fired"])
+                    final = journals.read(request.task_id)
+                    self.assertEqual(final["context_owned"], captured["ownership"])
+                    self.assertEqual(final["materialization_ownership"], captured["sidecar"])
+                    self.assertEqual(self.workspace_bytes(workspace), captured["workspace"])
+                    self.assertEqual(self.source_facts(), source_before)
+
+    def test_private_adoption_ready_resume_rechecks_each_return_path(self) -> None:
+        from lib.control.launch import LaunchError
+
+        previous = os.umask(0o002)
+        self.addCleanup(os.umask, previous)
+        intents = prepare_module.ColocationIntentStore(self.config)
+        intents.begin(self.source)
+        intents.mark_verified(self.source)
+        for boundary in ("task-save", "journal-save", "no-write", "unchanged"):
+            with self.subTest(boundary=boundary):
+                request = self.tracked_result_request(f"ready-resume-{boundary}")
+
+                def interrupt(phase):
+                    if phase == "private-result:normalized":
+                        raise RuntimeError("normalization interruption")
+
+                with self.assertRaisesRegex(PreparationError, "normalization interruption"):
+                    prepare_task_workspace(self.config, request, failure_injector=interrupt)
+                tasks = TaskStore(self.config)
+                journals = CreationJournalStore(self.config)
+                real_task_save = TaskStore.save
+                real_journal_save = CreationJournalStore.save
+                resuming = False
+                captured = {}
+                workspace = Path(journals.read(request.task_id)["workspace"]["path"])
+
+                def replace():
+                    captured["ownership"] = copy.deepcopy(journals.read(request.task_id)["context_owned"])
+                    target = workspace / ".asha/outbox"
+                    target.rename(self.root / f"old-outbox-{request.task_id}")
+                    target.mkdir(mode=0o775)
+                    captured["workspace"] = self.workspace_bytes(workspace)
+
+                def save_task(store, record, **kwargs):
+                    selected = boundary == "task-save" and kwargs.get("recovery_adoption")
+                    if selected and not resuming:
+                        raise RuntimeError("ready interruption")
+                    result = real_task_save(store, record, **kwargs)
+                    if selected and resuming:
+                        replace()
+                    return result
+
+                def save_journal(store, record, **kwargs):
+                    selected = (
+                        boundary == "journal-save" and record["phase"] == "ready-for-launch"
+                        and tasks.read(request.task_id)["lifecycle"] == "creating"
+                    )
+                    if selected and not resuming:
+                        raise RuntimeError("ready interruption")
+                    result = real_journal_save(store, record, **kwargs)
+                    if selected and resuming:
+                        replace()
+                    return result
+
+                def ready(phase):
+                    if phase == "adoption:ready-for-launch":
+                        raise RuntimeError("ready interruption")
+
+                class LateProofAdapter(JjAdapter):
+                    proofs = 0
+
+                    def workspace_add_operation_proof(inner_self, *args, **kwargs):
+                        result = super().workspace_add_operation_proof(*args, **kwargs)
+                        inner_self.proofs += 1
+                        if boundary == "no-write" and inner_self.proofs == 2:
+                            # After entry authentication, at the last proof
+                            # before the already-ready branch returns.
+                            replace()
+                        return result
+
+                with mock.patch.object(TaskStore, "save", new=save_task), mock.patch.object(
+                    CreationJournalStore, "save", new=save_journal,
+                ):
+                    with self.assertRaisesRegex(RuntimeError, "ready interruption"):
+                        adopt_preserved_task_workspace(
+                            self.config, request.task_id, harness="codex",
+                            role="implementer", goal=request.label, failure_injector=ready,
+                        )
+                    resuming = True
+                    before = self.source_facts()
+                    with mock.patch("lib.control.launch.launch_task") as launch:
+                        if boundary == "unchanged":
+                            launch.return_value = {"task": tasks.read(request.task_id)}
+                            result = recover_task(
+                                self.config, tasks.read(request.task_id), tasks=tasks,
+                                journals=journals, jj=LateProofAdapter(), adopt=True,
+                                harness="codex", role="implementer", goal=request.label,
+                            )
+                            launch.assert_called_once()
+                            self.assertEqual(result["task"]["lifecycle"], "creating")
+                            self.assertEqual((workspace / ".asha/outbox").stat().st_mode & 0o777, 0o700)
+                        else:
+                            with self.assertRaises(LaunchError):
+                                recover_task(
+                                    self.config, tasks.read(request.task_id), tasks=tasks,
+                                    journals=journals, jj=LateProofAdapter(), adopt=True,
+                                    harness="codex", role="implementer", goal=request.label,
+                                )
+                            launch.assert_not_called()
+                            self.assertEqual(journals.read(request.task_id)["context_owned"],
+                                             captured["ownership"])
+                            self.assertEqual(self.workspace_bytes(workspace), captured["workspace"])
+                    self.assertEqual(self.source_facts(), before)
 
     def test_doctor_and_tui_identify_only_the_exact_forward_adoption_candidate(self) -> None:
         class UnprovableDuringStart(JjAdapter):

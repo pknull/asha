@@ -28,7 +28,9 @@ if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from path_safety import secure_path, secure_project_root
-from control_task_marker import CONTROL_IGNORE_BLOCK, CONTROL_IGNORE_RULE
+from control_task_marker import (
+    CONTROL_IGNORE_BLOCK, CONTROL_IGNORE_RULES, LEGACY_CONTROL_IGNORE_BLOCK,
+)
 
 
 ACTIVE_LIMIT = 4096
@@ -441,24 +443,24 @@ def require_v2_config(project_dir: Path) -> dict[str, Any]:
 
 def _ensure_ignore(project_dir: Path) -> None:
     path = secure_path(project_dir, ".gitignore", create_parents=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = path.read_bytes().decode("utf-8") if path.exists() else ""
     desired = managed_ignore_text(existing)
     if existing != desired:
         atomic_write(path, desired)
 
     git_dir = project_dir / ".git"
     if git_dir.exists():
-        probes = (project_dir / "Work/session-state/.asha-ignore-probe.json",
-                  project_dir / "Work/memory-migration/.asha-ignore-probe.json",
-                  project_dir / ".asha/control-task.json")
+        probes = ("Work/session-state/.asha-ignore-probe.json",
+                  "Work/memory-migration/.asha-ignore-probe.json",
+                  *(rule[1:] for rule in CONTROL_IGNORE_RULES))
         for probe in probes:
             result = subprocess.run(
-                ["git", "check-ignore", "--no-index", "--quiet", "--", str(probe)],
+                ["git", "check-ignore", "--no-index", "--quiet", "--", probe],
                 cwd=project_dir, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 check=False,
             )
             if result.returncode != 0:
-                raise ValueError(f"{probe.parent.relative_to(project_dir)} is not effectively ignored by Git")
+                raise ValueError(f"{probe} is not effectively ignored by Git")
 
 
 def managed_ignore_text(existing: str) -> str:
@@ -466,17 +468,23 @@ def managed_ignore_text(existing: str) -> str:
     managed = memory + CONTROL_IGNORE_BLOCK
     if existing.endswith(managed):
         return existing
+    legacy = LEGACY_CONTROL_IGNORE_BLOCK
+    if existing == legacy or existing.endswith("\n" + legacy):
+        prefix = existing[:-len(legacy)]
+        if prefix == memory or prefix.endswith("\n" + memory):
+            return prefix + CONTROL_IGNORE_BLOCK
+        return prefix + managed
     separator = "" if not existing or existing.endswith("\n") else "\n"
     if existing.endswith(memory):
         return f"{existing}{CONTROL_IGNORE_BLOCK}"
     # A nonterminal managed block can have been defeated by a later negation.
     # Reassert the complete suffix at EOF, where Git's last-match semantics
-    # make all three private paths effective.
+    # make all five private paths effective.
     return f"{existing}{separator}{managed}"
 
 
 def ensure_private_ignores(project_dir: Path) -> None:
-    """Install and verify Memory recovery plus Control private marker rules."""
+    """Install and verify Memory recovery plus Control private transport rules."""
     root = secure_project_root(project_dir)
     _assert_persistence_enabled(root)
     secure_path(root, ".gitignore", create_parents=True)

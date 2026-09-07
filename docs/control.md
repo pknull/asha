@@ -19,6 +19,24 @@ the jj 0.38 workspace surface and requires tmux with `display-popup`, plus the s
 selected revision must positively ignore each task-private `.asha/`, `Memory/`,
 or `Work/` path that Control will create. A regular context file already tracked
 by that revision is reused byte-for-byte and does not need an ignore rule.
+Fresh task preparation also requires immutable ignore coverage for
+`/.asha/result.json` and the whole `/.asha/outbox/` directory, with no tracked
+transport contents. Before launching a harness, Control authenticates the exact
+new jj registration, add/checkout operations, selected tree, and owned no-follow
+directory identity. It makes only that freshly materialized `.asha` directory
+mode `0700` **before** recording immutable ownership, then creates the fixed
+mode-`0700` outbox through context ownership callbacks. This works under ordinary
+umask `0002`; tracked file bytes and modes are not changed. The sidecar, context
+journal, and final prelaunch verification retain the resulting inode/mode facts.
+
+This is not a permission repair API: generic context provisioning still reuses
+tracked directories unchanged, and existing/sealed/foreign workspaces are never
+privatized by this path. A failed or interrupted preparation never launches;
+v2 recovery retains its workspace and registration for inspection. Recovery
+may adopt only its already-supported exactly authenticated creation shape;
+nonprivate retained context is refused rather than chmodded, and published
+ownership is never rewritten to fit a later mutation. Follow the refusal's
+inspection/cleanup guidance and start a fresh task when adoption is unsafe.
 GitHub source modes additionally
 require an installed, authenticated `gh`; ordinary ad-hoc tasks do not.
 

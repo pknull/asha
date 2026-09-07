@@ -40,6 +40,88 @@ from lib.control.orchestration.seals import prepare_and_publish_seal
 from lib.control.orchestration.reconcile import reconcile_live
 from lib.control.store import StoreError, TaskStore
 from tests.python.orchestration_execution_fixtures import ExecutionFixture, now_text
+from tests.python import test_control_increment2 as increment2
+
+
+class FreshPrivateResultReportTests(unittest.TestCase):
+    """The real worker report route on an ordinary-umask selected jj tree."""
+
+    jj = increment2.RealJjPreparationTests.jj
+    request = increment2.RealJjPreparationTests.request
+    tracked_result_request = increment2.RealJjPreparationTests.tracked_result_request
+    start_fake_codex = increment2.RealJjPreparationTests.start_fake_codex
+
+    def setUp(self):
+        previous = os.umask(0o002)
+        self.addCleanup(os.umask, previous)
+        increment2.RealJjPreparationTests.setUp(self)
+
+    def test_fake_codex_can_publish_through_actual_report_staging_route(self):
+        request = self.tracked_result_request()
+        receipts = []
+
+        def report(prepared):
+            workspace = Path(prepared["jj"]["workspace_path"])
+            private_before = {path: (workspace / path).lstat() for path in (".asha", ".asha/outbox")}
+            for metadata in private_before.values():
+                self.assertEqual(metadata.st_mode & 0o777, 0o700)
+                self.assertEqual(metadata.st_uid, os.geteuid())
+            selected = {path: ((workspace / path).read_bytes(), (workspace / path).stat().st_mode)
+                        for path in (".asha/config.json", "tool", "tracked.txt", ".gitignore")}
+            attempt_id, run_id = str(uuid.uuid4()), str(uuid.uuid4())
+            ingestion_id = result_ingestion_id(attempt_id)
+            outbox = workspace / ".asha/outbox" / f"{ingestion_id}.json"
+            body = {
+                "contract": "asha.orchestration-result.v1",
+                "publication_id": str(uuid.uuid4()), "supersedes_result_id": None,
+                "initiative_id": str(uuid.uuid4()), "node_id": "implementation-a",
+                "attempt_id": attempt_id, "task_id": request.task_id, "run_id": run_id,
+                "claim_status": "completed", "summary": "fake Codex private report",
+                "files_changed": [], "verification_attestations": [], "concerns": [],
+                "follow_up": [], "published_at": now_text(),
+            }
+            result_file = workspace / ".asha/result.json"
+            fd = os.open(result_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "w") as stream:
+                json.dump(body, stream)
+            env = {**self.env, "ASHA_CONTROL_MANAGED": "1",
+                   "ASHA_CONTROL_TASK_ID": request.task_id, "ASHA_CONTROL_RUN_ID": run_id,
+                   "ASHA_CONTROL_RESULT_INGESTION_ID": ingestion_id,
+                   "ASHA_CONTROL_RESULT_OUTBOX": str(outbox), "TMUX_PANE": "%71"}
+            tmux = mock.Mock()
+            tmux.pane_facts.return_value = SimpleNamespace(
+                dead=False, pane_pid=os.getpid(), session="fake-codex",
+            )
+            tmux.session_option.side_effect = lambda session, key: {
+                "@asha_managed": "1", "@asha_task_id": request.task_id,
+            }[key]
+            tmux.pane_option.side_effect = lambda pane, key: {
+                "@asha_run_id": run_id, "@asha_result_ingestion": ingestion_id,
+                "@asha_result_outbox_digest": hashlib.sha256(str(outbox).encode()).hexdigest(),
+            }[key]
+            with mock.patch("lib.control.orchestration.ingestion.TmuxAdapter", return_value=tmux), \
+                    mock.patch("lib.control.orchestration.ingestion.caller_descends_from", return_value=True):
+                # Repeat the identical publication through the public CLI to
+                # exercise supported replay, not a direct transport writer.
+                for _ in range(2):
+                    output = StringIO()
+                    with redirect_stdout(output):
+                        self.assertEqual(task_main(["report", "--file", str(result_file), "--json"], env=env), 0)
+                    receipts.append(json.loads(output.getvalue()))
+            self.assertEqual(receipts[0], receipts[1])
+            self.assertEqual(receipts[0]["phase"], "staged")
+            self.assertEqual(json.loads(outbox.read_text())["body"], body)
+            self.assertEqual(outbox.stat().st_mode & 0o777, 0o600)
+            for path, metadata in private_before.items():
+                now = (workspace / path).lstat()
+                self.assertEqual((now.st_dev, now.st_ino, now.st_mode, now.st_uid),
+                                 (metadata.st_dev, metadata.st_ino, metadata.st_mode, metadata.st_uid))
+            self.assertEqual(selected, {path: ((workspace / path).read_bytes(), (workspace / path).stat().st_mode)
+                                        for path in selected})
+
+        self.provider_action = report
+        self.assertEqual(self.start_fake_codex(request), [{".asha": 0o700, ".asha/outbox": 0o700}])
+        self.assertEqual(len(receipts), 2)
 
 
 class SnapshotJj:

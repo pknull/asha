@@ -231,6 +231,8 @@ class PublishedMemoryTests(unittest.TestCase):
             self.assertEqual(first, memory_v2.read_project_config(root)["project_id"])
             self.assertIn("/Work/session-state/", (root / ".gitignore").read_text())
             self.assertIn("/.asha/control-task.json", (root / ".gitignore").read_text())
+            self.assertIn("/.asha/result.json", (root / ".gitignore").read_text())
+            self.assertIn("/.asha/outbox/", (root / ".gitignore").read_text())
             self.assertEqual(
                 ["# Objective", "# State", "# Next", "# Blockers"],
                 [line for line in (root / "Memory/activeContext.md").read_text().splitlines()
@@ -251,6 +253,7 @@ class PublishedMemoryTests(unittest.TestCase):
         self.assertTrue(migrated.endswith(
             "# Asha Control private context (managed)\n"
             "/.asha/control-task.json\n"
+            "/.asha/result.json\n/.asha/outbox/\n"
         ))
         self.assertEqual(memory_v2.managed_ignore_text(migrated), migrated)
 
@@ -275,7 +278,63 @@ class PublishedMemoryTests(unittest.TestCase):
                 "/Work/memory-migration/\n/Work/session-state/\n"
                 "# Asha Control private context (managed)\n"
                 "/.asha/control-task.json\n"
+                "/.asha/result.json\n/.asha/outbox/\n"
             ))
+
+    def test_legacy_control_suffix_upgrade_preserves_user_bytes_and_is_idempotent(self):
+        from control_task_marker import CONTROL_IGNORE_BLOCK, LEGACY_CONTROL_IGNORE_BLOCK
+        memory = (f"{memory_v2.IGNORE_MARKER}\n{memory_v2.MIGRATION_IGNORE_RULE}\n"
+                  f"{memory_v2.IGNORE_RULE}\n")
+        for old_suffix in (LEGACY_CONTROL_IGNORE_BLOCK, memory + LEGACY_CONTROL_IGNORE_BLOCK):
+            with self.subTest(old_suffix=old_suffix), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                prefix = b"# user comment\r\n*.cache\r\n!important.cache\r\n"
+                (root / ".gitignore").write_bytes(prefix + old_suffix.encode())
+                memory_v2.initialize(root)
+                expected = prefix + (memory + CONTROL_IGNORE_BLOCK).encode()
+                self.assertEqual((root / ".gitignore").read_bytes(), expected)
+                memory_v2.initialize(root)
+                self.assertEqual((root / ".gitignore").read_bytes(), expected)
+
+    def test_every_private_rule_reasserts_after_root_negations_without_ignore_all(self):
+        from control_task_marker import CONTROL_IGNORE_RULES
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            memory_v2.initialize(root)
+            ignore = root / ".gitignore"
+            before = ignore.read_bytes() + b"# keep this override history\n" + b"".join(
+                ("!" + rule + "\n").encode() for rule in CONTROL_IGNORE_RULES
+            )
+            ignore.write_bytes(before)
+            memory_v2.initialize(root)
+            self.assertTrue(ignore.read_bytes().startswith(before))
+            for rule in CONTROL_IGNORE_RULES:
+                result = subprocess.run([
+                    "git", "-C", str(root), "check-ignore", "--no-index", "--quiet", "--", rule[1:],
+                ])
+                self.assertEqual(result.returncode, 0, rule)
+            for unrelated in (".asha/config.json", ".asha/keep.txt", "sub/.asha/result.json",
+                              ".asha/outbox-file", ".asha/outbox-sibling/item"):
+                result = subprocess.run([
+                    "git", "-C", str(root), "check-ignore", "--no-index", "--quiet", "--", unrelated,
+                ])
+                self.assertEqual(result.returncode, 1, unrelated)
+            once = ignore.read_bytes()
+            memory_v2.initialize(root)
+            self.assertEqual(ignore.read_bytes(), once)
+
+    def test_initialize_refuses_each_nested_private_negation(self):
+        for negation in ("!control-task.json", "!result.json", "!outbox/"):
+            with self.subTest(negation=negation), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                memory_v2.initialize(root)
+                nested = root / ".asha/.gitignore"
+                nested.write_text(negation + "\n")
+                with self.assertRaisesRegex(ValueError, "not effectively ignored"):
+                    memory_v2.initialize(root)
+                self.assertEqual(nested.read_text(), negation + "\n")
 
     def test_initialize_fails_closed_on_malformed_existing_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -447,7 +506,7 @@ class PublishedMemoryTests(unittest.TestCase):
             )
             self.assertEqual(0, result.returncode)
             self.assertTrue((root / ".gitignore").read_text().rstrip().endswith(
-                "/.asha/control-task.json"
+                "/.asha/outbox/"
             ))
 
     def test_atomic_writer_replaces_from_destination_directory(self):
