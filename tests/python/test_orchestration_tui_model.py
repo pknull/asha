@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import unittest
 from unittest import mock
 
 from lib.control import tui
+from lib.control.orchestration import tui_model
 from lib.control.orchestration.actions import build_action_document, submit_action
 from lib.control.orchestration.coordinator import claim
 from lib.control.orchestration.model import record_digest
@@ -113,7 +116,16 @@ class ParkedWaitingWorkProjectionTests(ExecutionFixture, unittest.TestCase):
         self.act("pause")
         parked = self.views()
         self.assertEqual(parked[0]["initiative"]["state"], "paused")
-        head, node = self.head_and_node(self.screen(parked).rows())
+        # Parked with nothing observed running, no coordinator and no demand,
+        # the head is quiet: the Current view holds it back and says so in its
+        # counts, and All retained still draws it exactly as before.
+        current = self.screen(parked)
+        self.assertEqual([row.kind for row in current.rows()], [])
+        self.assertEqual(
+            {key: current.retained_counts[key] for key in ("shown", "loaded", "hidden")},
+            {"shown": 0, "loaded": 1, "hidden": 1},
+        )
+        head, node = self.head_and_node(self.screen(parked, view_scope="all").rows())
         # Readable in the normal tree, but nothing here waits on the operator.
         self.assertEqual(
             (head.state, head.attention, head.display), ("paused", "-", (INERT, "paused")),
@@ -121,6 +133,10 @@ class ParkedWaitingWorkProjectionTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual((node.state, node.attention), ("needs-input", "-"))
         self.assertFalse(head.needs_human or node.needs_human)
         self.assertEqual(self.screen(parked, attention_only=True).rows(), [])
+        self.assertEqual(
+            self.screen(parked, view_scope="all", attention_only=True).rows(), [],
+            "the retained view widens what is drawn, never what counts as demand",
+        )
         self.assertEqual(attention_items(parked), [])
         # The decision was parked, not answered.
         self.assertEqual(
@@ -498,6 +514,350 @@ class EdgeLessAnsweredQuestionProjectionTests(ExecutionFixture, unittest.TestCas
         self.assertEqual(
             self.details(without_actions), [f"operator decision: {self.QUESTION}"],
         )
+
+
+class RetainedDirectiveParityTests(ExecutionFixture, unittest.TestCase):
+    """One retained pending directive, read against its own bound records.
+
+    Nothing is hand-built: the coordinator generation, the dispatched attempt,
+    its Control task link and the directive are records the production actions
+    wrote, and every verdict below is read from the production loader, tree,
+    node projection and attention assembler. The live case this generalises is
+    a valid directive whose sole target later sealed paused while its worker
+    exited: `delivery == "pending"` was the only thing the old selection read,
+    so retained history was reported as a live ask forever.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.tmux = FakeTmux()
+        self.coordinator = claim(
+            self.store, self.initiative(),
+            env={**self.env, "TMUX_PANE": "%7"}, tmux=self.tmux,
+        )
+        self.attempt = self.dispatch()
+        self.directive = self.submit_directive(self.attempt["attempt_id"])
+
+    # -- real records -----------------------------------------------------
+
+    def dispatch(self) -> dict:
+        def capture(argv, **_kwargs):
+            payload = self.control_payload(argv)
+            self.control_task = payload["task"]
+            return 0, json.dumps(payload).encode(), b""
+
+        document = build_action_document(
+            self.initiative(), "dispatch-node", {"node_id": "implementation-a"},
+        )
+        with mock.patch(
+            "lib.control.orchestration.scheduler.storage_report",
+            return_value={"pause_recommended": False},
+        ), mock.patch(
+            "lib.control.orchestration.scheduler.capture_bytes", side_effect=capture,
+        ):
+            action = submit_action(self.store, self.initiative_id, document)
+        self.assertEqual(action["state"], "completed", action["outcome"])
+        return self.store.list_attempts_snapshot(self.initiative_id)[0]
+
+    def submit_directive(self, attempt_id: str) -> dict:
+        record = submit_action(self.store, self.initiative_id, build_action_document(
+            self.initiative(), "directive",
+            {"node_id": "implementation-a", "attempt_id": attempt_id,
+             "text": "prefer the smaller diff"},
+            actor_id=f"coordinator:{self.coordinator['coordinator_id']}",
+            coordinator=self.coordinator,
+        ))
+        self.assertEqual(record["state"], "completed", record["outcome"])
+        self.assertIn('"delivery":"pending"', record["outcome"])
+        return record
+
+    def seal_attempt_paused(self) -> None:
+        current = self.store.read_attempt(self.initiative_id, self.attempt["attempt_id"])
+        for state in ("reported", "awaiting-exit", "paused-seal-ready", "sealing",
+                      "sealed-paused"):
+            changed = copy.deepcopy(current)
+            changed.update({"state": state, "updated_at": now_text()})
+            self.store.save_attempt(
+                self.initiative_id, changed, expected_digest=record_digest(current),
+            )
+            current = changed
+
+    def worker(self, state: str) -> tui.TuiRow:
+        task = copy.deepcopy(self.control_task)
+        return tui.TuiRow.from_records(task, {
+            "contract": "asha.control-reconciliation.v1",
+            "task_id": task["task_id"], "state": state, "blocker": None,
+            "evidence": [], "runs": [],
+        })
+
+    def views(self) -> list[dict]:
+        return tui._load_initiative_views(self.env, tmux=self.tmux)
+
+    def screen(self, views, rows, **kwargs) -> InitiativesScreen:
+        screen = InitiativesScreen(
+            views, height=28, width=122, task_rows=rows, **kwargs,
+        )
+        screen.expanded.add(("initiative", self.initiative_id))
+        return screen
+
+    def node_row(self, screen: InitiativesScreen):
+        return next(
+            row for row in screen.rows()
+            if row.kind == "node" and row.id == "implementation-a"
+        )
+
+    def records_digest(self) -> str:
+        payload = json.dumps({
+            "actions": self.store.list_actions_snapshot(self.initiative_id),
+            "attempts": self.store.list_attempts_snapshot(self.initiative_id),
+            "links": self.store.list_links_snapshot(self.initiative_id),
+            "events": self.store.list_events_snapshot(self.initiative_id),
+        }, sort_keys=True)
+        return hashlib.sha256(payload.encode()).hexdigest()
+
+    # -- behaviour --------------------------------------------------------
+
+    def test_a_live_target_keeps_the_directive_in_the_tree_and_the_verb(self) -> None:
+        rows = (self.worker("working"),)
+        views = self.views()
+        items = attention_items(views, rows)
+        directive = next(item for item in items if item["kind"] == "directive-pending")
+        self.assertEqual(directive["certainty"], "live")
+        self.assertIn(self.directive["action_id"], directive["detail"])
+        self.assertEqual(directive["node_id"], "implementation-a")
+        # The tree carries the same ask on the node row it binds to, which is
+        # where the old code showed nothing at all.
+        node = self.node_row(self.screen(views, rows))
+        self.assertEqual(node.attention, "directive pending")
+        self.assertTrue(node.needs_human)
+        self.assertEqual(
+            [row.id for row in self.screen(views, rows, attention_only=True).rows()],
+            [self.initiative_id, "implementation-a"],
+        )
+
+    def test_a_sealed_ended_target_defers_the_directive_without_touching_it(self) -> None:
+        self.seal_attempt_paused()
+        before = self.records_digest()
+        rows = (self.worker("exited"),)
+        views = self.views()
+
+        self.assertEqual(
+            [item["kind"] for item in attention_items(views, rows)], [],
+            "a directive whose only target sealed and exited is history, not demand",
+        )
+        node = self.node_row(self.screen(views, rows))
+        self.assertEqual(node.attention, "-")
+        # The record itself is untouched and still readable as retained history.
+        retained = tui_model._pending_directives(
+            views[0], *self._maps(views, rows),
+        )
+        self.assertEqual(
+            [(item["action_id"], item["classification"]) for item in retained],
+            [(self.directive["action_id"], "deferred")],
+        )
+        self.assertEqual(self.records_digest(), before, "classification writes nothing")
+        self.assertEqual(
+            self.store.read_action(self.initiative_id, self.directive["action_id"])["state"],
+            "completed",
+        )
+        self.assertNotIn(
+            "directive-delivered",
+            [event["type"] for event in self.store.list_events_snapshot(self.initiative_id)],
+        )
+
+    def test_a_sealed_target_with_a_live_worker_stays_honestly_unknown(self) -> None:
+        self.seal_attempt_paused()
+        rows = (self.worker("working"),)
+        views = self.views()
+        directive = next(
+            item for item in attention_items(views, rows)
+            if item["kind"] == "directive-pending"
+        )
+        self.assertEqual(directive["certainty"], "unknown")
+        self.assertIn("sealed while its worker still reads live", directive["detail"])
+        self.assertIn(self.directive["action_id"], directive["detail"])
+        self.assertEqual(self.node_row(self.screen(views, rows)).attention, "directive pending")
+
+    def test_a_foreign_or_malformed_binding_is_uncertainty_never_authority(self) -> None:
+        views = self.views()
+        rows = (self.worker("working"),)
+        for outcome, expected in (
+            ({"delivery": "pending"}, "no node binding is recorded"),
+            ({"delivery": "pending", "node_id": "implementation-a"},
+             "no attempt binding is recorded"),
+            ({"delivery": "pending", "node_id": "implementation-a",
+              "attempt_id": "dddddddd-dddd-4ddd-8ddd-dddddddddddd"},
+             "its attempt record is not among the loaded records"),
+            ({"delivery": "pending", "node_id": "review-a",
+              "attempt_id": self.attempt["attempt_id"]},
+             "its node and attempt bindings disagree"),
+        ):
+            with self.subTest(outcome=sorted(outcome)):
+                view = copy.deepcopy(views[0])
+                for action in view["actions"]:
+                    if action["action_class"] == "directive":
+                        action["outcome"] = json.dumps(outcome)
+                item = next(
+                    entry for entry in attention_items([view], rows)
+                    if entry["kind"] == "directive-pending"
+                )
+                self.assertEqual(item["certainty"], "unknown")
+                self.assertIn(expected, item["detail"])
+                self.assertIn(
+                    "nothing here delivers it", item["resolution"],
+                    "an unresolved binding never reads as permission to deliver",
+                )
+        # A malformed record is uncertainty too, never an excuse to drop it.
+        for broken, expected in (
+            ("{not json", "its recorded outcome cannot be read"),
+            (None, "its recorded outcome cannot be read"),
+        ):
+            with self.subTest(outcome=broken):
+                view = copy.deepcopy(views[0])
+                for action in view["actions"]:
+                    if action["action_class"] == "directive":
+                        action["outcome"] = broken
+                items = [
+                    item for item in attention_items([view], rows)
+                    if item["kind"] == "directive-pending"
+                ]
+                if broken is None:
+                    # A directive with no recorded outcome carries no pending
+                    # delivery to read; nothing is invented from its absence.
+                    self.assertEqual(items, [])
+                else:
+                    self.assertEqual(len(items), 1)
+                    self.assertIn(expected, items[0]["detail"])
+                    self.assertEqual(items[0]["certainty"], "unknown")
+        # A state this controller cannot read is uncertainty, not a live ask.
+        view = copy.deepcopy(views[0])
+        view["attempts"][0]["state"] = "teleported"
+        item = next(
+            entry for entry in attention_items([view], rows)
+            if entry["kind"] == "directive-pending"
+        )
+        self.assertEqual(item["certainty"], "unknown")
+        self.assertIn("cannot read", item["detail"])
+
+    def test_the_head_carries_a_directive_no_loaded_node_can(self) -> None:
+        views = self.views()
+        view = copy.deepcopy(views[0])
+        view["nodes"] = []
+        for action in view["actions"]:
+            if action["action_class"] == "directive":
+                action["outcome"] = json.dumps({
+                    "delivery": "pending", "node_id": "implementation-a",
+                    "attempt_id": self.attempt["attempt_id"],
+                })
+        item = next(
+            entry for entry in attention_items([view], ())
+            if entry["kind"] == "directive-pending"
+        )
+        self.assertIsNone(item["node_id"])
+        screen = InitiativesScreen([view], height=28, width=122)
+        head = next(row for row in screen.rows() if row.kind == "initiative")
+        self.assertEqual(head.attention, "directive pending")
+
+    def test_a_directive_bound_to_a_superseded_plan_is_unknown_not_authority(self) -> None:
+        """The accepted finding: the stale active-plan branch had no behaviour test.
+
+        The directive's own record names the plan digest it was written
+        against. When the head has since activated a different plan that
+        binding no longer addresses anything the controller can act on: it is
+        neither a live ask nor proved history, so it stays listed as
+        uncertainty and never confers permission to deliver.
+        """
+        views = self.views()
+        rows = (self.worker("running"),)
+        live = next(
+            item for item in attention_items(views, rows)
+            if item["kind"] == "directive-pending"
+        )
+        self.assertEqual(live["certainty"], "live")
+        binding = views[0]["initiative"]["active_plan"]
+        self.assertIsInstance(binding, dict)
+        self.assertIsInstance(binding["digest"], str)
+        directive = next(
+            action for action in views[0]["actions"]
+            if action["action_class"] == "directive"
+        )
+        # The record was written against the plan that is active right now.
+        self.assertEqual(directive["active_plan_digest"], binding["digest"])
+        stale = copy.deepcopy(views[0])
+        for action in stale["actions"]:
+            if action["action_class"] == "directive":
+                action["active_plan_digest"] = "0" * 64
+        item = next(
+            entry for entry in attention_items([stale], rows)
+            if entry["kind"] == "directive-pending"
+        )
+        self.assertEqual(item["certainty"], "unknown")
+        self.assertIn("bound to a plan that is no longer active", item["detail"])
+        self.assertIn("nothing here delivers it", item["resolution"])
+        # The same verdict reaches the tree, on the node row and by identity.
+        screen = self.screen([stale], rows)
+        self.assertEqual(self.node_row(screen).attention, "directive pending")
+        # An activated plan the directive does match is still live, so the
+        # branch tests the binding and not merely the presence of a digest.
+        matching = copy.deepcopy(views[0])
+        for action in matching["actions"]:
+            if action["action_class"] == "directive":
+                action["active_plan_digest"] = binding["digest"]
+        self.assertEqual(
+            next(
+                entry for entry in attention_items([matching], rows)
+                if entry["kind"] == "directive-pending"
+            )["certainty"],
+            "live",
+        )
+
+    def test_a_nonobject_outcome_is_unknown_and_never_silently_dropped(self) -> None:
+        """The accepted finding: well-formed JSON of the wrong shape was dropped.
+
+        `validate_action` constrains `outcome` only as optional text, so a
+        foreign or corrupted record holding `[]`, `"pending"` or `7` is
+        storable and validates. Reading the missing `delivery` field as "not
+        pending" discharged a directive whose binding was never resolved.
+        """
+        views = self.views()
+        rows = (self.worker("running"),)
+        for outcome in ("[]", '"pending"', "7", "null", '"{}"', "true"):
+            with self.subTest(outcome=outcome):
+                view = copy.deepcopy(views[0])
+                for action in view["actions"]:
+                    if action["action_class"] == "directive":
+                        action["outcome"] = outcome
+                items = [
+                    item for item in attention_items([view], rows)
+                    if item["kind"] == "directive-pending"
+                ]
+                self.assertEqual(len(items), 1, "the ask is never dropped")
+                self.assertEqual(items[0]["certainty"], "unknown")
+                self.assertIn(
+                    "is not a directive record", items[0]["detail"],
+                )
+                self.assertIn("nothing here delivers it", items[0]["resolution"])
+                # And the head still carries it where no node row can.
+                screen = InitiativesScreen([view], height=28, width=122)
+                head = next(
+                    row for row in screen.rows() if row.kind == "initiative"
+                )
+                self.assertEqual(head.attention, "directive pending")
+        # A well-formed record that simply is not pending is still not demand.
+        delivered = copy.deepcopy(views[0])
+        for action in delivered["actions"]:
+            if action["action_class"] == "directive":
+                action["outcome"] = json.dumps({"delivery": "relayed"})
+        self.assertEqual(
+            [item for item in attention_items([delivered], rows)
+             if item["kind"] == "directive-pending"],
+            [],
+        )
+
+    def _maps(self, views, rows):
+        bound, by_attempt = tui_model._link_maps(views)
+        del bound
+        return by_attempt, {row.task["task_id"]: row for row in rows}
 
 
 if __name__ == "__main__":

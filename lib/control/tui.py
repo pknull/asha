@@ -75,18 +75,35 @@ _STATUS_MAX_LINES = 6
 _TREE_FOOTER = (
     # Most-used keys first; drop the secondary group when it cannot fit.
     "Enter attach  o room  ! need  a approve  X close  p pause  s stop  n new  ? help  q quit  |  "
-    "N task  r reconcile  d diff  e events  c seals  v verify  t storage  x actions  A scope  / filter"
+    "N task  r reconcile  d diff  e events  c seals  v verify  t storage  x actions  "
+    "H view  A scope  / filter"
 )
 
 
-def _tree_footer(width: int) -> str:
-    """Keep the focus mode legible before navigation hints may be clipped."""
+def _tree_footer(width: int, view_scope: str | None = None) -> str:
+    """Keep the focus mode legible before navigation hints may be clipped.
+
+    The retained view is named beside the mode when it fits, so `H` reads as a
+    labelled toggle rather than an unexplained key.
+    """
     marker = "[NAVIGATION]"
+    label = "" if view_scope is None else _RETAINED_VIEW_LABELS.get(view_scope, "")
     stable_prefix = "Enter attach  o room  ! need  a approve"
     if width >= len(stable_prefix) + len(marker) + 2:
         full = _TREE_FOOTER.replace(stable_prefix, f"{stable_prefix}  {marker}", 1)
-        return full if len(full) <= width else full.split("  |  ", 1)[0]
+        if label and len(full) + len(label) + 2 <= width:
+            return f"{full}  {label}"
+        if len(full) <= width:
+            return full
+        primary = full.split("  |  ", 1)[0]
+        if label and len(primary) + len(label) + 2 <= width:
+            return f"{primary}  {label}"
+        return primary
     return f"{marker} Enter ! approve ? help"
+
+
+# The two retained views the tree can draw, named the same way everywhere.
+_RETAINED_VIEW_LABELS = {"current": "View: current", "all": "View: all retained"}
 
 
 def _glyph_mode(env: Mapping[str, str] | None = None) -> str:
@@ -117,6 +134,24 @@ _AUTO_REFRESH_WARNING_SECONDS = (
     _AUTO_REFRESH_WARNING_INTERVALS * _AUTO_REFRESH_SECONDS
 )
 _BACKGROUND_REFRESH_STOP_SECONDS = 1.0
+# One retained observation is bounded in every dimension it reads, not only in
+# heads: the registry enumeration, the entries beneath any single head, the
+# entries beneath every head together, the task rows it classifies, the event
+# payloads it reads after a bounded enumeration, and one shared cooperative
+# wall clock. The defaults are the store's own presentation contract. The
+# deadline is cooperative: it is checked between directory entries, so a
+# single blocking filesystem syscall inside one record read is not preempted
+# by it, and nothing here claims otherwise.
+# These are literals rather than imports because this module loads
+# orchestration lazily; `test_the_caps_are_the_store_presentation_contract`
+# pins each one to `orchestration.store`'s own default, so there is still a
+# single source of truth for the numbers.
+_RETAINED_HEAD_LIMIT = 256
+_RETAINED_PER_HEAD_LIMIT = 512
+_RETAINED_NESTED_LIMIT = 8192
+_RETAINED_TASK_LIMIT = 512
+_RETAINED_EVENT_TAIL = 50
+_RETAINED_DEADLINE_SECONDS = 2.0
 _START_OUTPUT_BYTES = 64 * 1024
 _START_DRAIN_SECONDS = 0.25
 _START_CLEANUP_SECONDS = 0.5
@@ -144,6 +179,7 @@ class IntentKind(Enum):
     QUIT = "quit"
     HELP = "help"
     ATTENTION = "attention-filter"
+    RETAINED_VIEW = "retained-view"
     CLOSE_WORKER = "close-worker"
     INIT_OPEN = "initiative-open"
     INIT_RECONCILE = "initiative-reconcile"
@@ -1001,6 +1037,12 @@ class TuiModel:
             return TuiIntent(IntentKind.ATTENTION)
         if key == "A":
             return TuiIntent(IntentKind.TOGGLE_SCOPE)
+        if key == "H":
+            # Bound before the no-selection return: the retained view is a
+            # property of the tree, not of whatever row happens to be under
+            # the cursor, and an empty Current view is exactly when the
+            # operator needs to reach All retained.
+            return TuiIntent(IntentKind.RETAINED_VIEW)
         if key == "RIGHT":
             return TuiIntent(IntentKind.INIT_EXPAND)
         if key == "LEFT":
@@ -1334,8 +1376,9 @@ def _tree_title(model, screen) -> Line:
 
     Priority order is what the operator loses last: the demand count, then
     anything that changes WHAT is on screen (an attention filter, a text
-    filter, a non-default scope), then the quieter counts. "Scope: active" is
-    the default and goes first, because a default tells you nothing.
+    filter, a non-default scope or view, the head counts and their honesty
+    markers), then the quieter counts. "Tasks: active" and "View: current" are
+    the defaults and go first, because a default tells you nothing.
     """
     rows = list(screen.rows()) if screen is not None else []
     counts = summary_counts(rows) if rows else {}
@@ -1357,10 +1400,50 @@ def _tree_title(model, screen) -> Line:
         pieces.append((1, "  ", "[waiting on you]", WAITING))
     if screen is not None and screen.filter_string:
         pieces.append((1, "  ", f"Filter: {screen.filter_string}", INERT))
+    if screen is not None:
+        # Heads the Current view holds back, with the denominator it actually
+        # loaded. `loaded` is never a guaranteed global total; when the
+        # bounded read was short or unreadable the marker says so, and an
+        # `unknown` marker means a shown head rests on missing evidence.
+        counts = screen.retained_counts
+        markers = [
+            name for name, flag in
+            (("partial", counts["partial"]), ("unknown", counts["unknown"])) if flag
+        ]
+        suffix = f" ({', '.join(markers)})" if markers else ""
+        if counts["hidden"] or counts["partial"]:
+            pieces.append((2, "  ", (
+                f"Heads {counts['shown']}/{counts['loaded']} · "
+                f"{counts['hidden']} hidden{suffix}"
+            ), INERT))
+        elif markers:
+            # An honesty marker is not a property of hiding. A head drawn only
+            # because the evidence behind its classification was missing is
+            # uncertain whether or not anything was held back, and All
+            # retained holds nothing back by construction, so the marker must
+            # be reachable with a hidden count of zero. Nothing is being held
+            # back here, so this rides as a quiet count beside the initiative
+            # total rather than ahead of it: the demand and the active
+            # filter/view labels still come first at the chair's own width.
+            pieces.append((9, "  ", (
+                f"Heads {counts['shown']}/{counts['loaded']}{suffix}"
+            ), INERT))
+        if screen.view_scope == "all":
+            pieces.append((2, "  ", "View: all retained", WAITING))
+        else:
+            pieces.append((10, "  ", "View: current", INERT))
+    # `A` scopes the task branch's lifecycle; `H` scopes the initiative view.
+    # The two are named apart so neither reads as the other: the task scope is
+    # literally `Tasks:`. `Scope:` is retained beside it as the lowest-priority
+    # compatibility label, because that is the name every existing reader of a
+    # whole rendered screen has always found the task scope under; it is the
+    # first thing width sheds and it never displaces the literal label.
     if model.include_archived:
-        pieces.append((2, "  ", "Scope: all", WAITING))
+        pieces.append((2, "  ", "Tasks: all", WAITING))
+        pieces.append((12, "  ", "Scope: all", INERT))
     else:
-        pieces.append((10, "  ", "Scope: active", INERT))
+        pieces.append((11, "  ", "Tasks: active", INERT))
+        pieces.append((12, "  ", "Scope: active", INERT))
 
     budget = max(0, model.width) - len("ASHA CONTROL")
     keep: set[int] = set()
@@ -1488,7 +1571,12 @@ def _render_tree(model: TuiModel) -> list[str]:
             "",
             "Keys: Up/Down select | Right/Left expand/collapse | ! only rows waiting on a human",
             "      Enter: attach a room/coordinator/worker; Right/Left opens branch rows",
-            "      o open Room | n new intent | N start ad-hoc task | A archived scope",
+            "      o open Room | n new intent | N start ad-hoc task | "
+            "A archived scope (Tasks: active/all)",
+            "      H initiative view: Current (default) or All retained; Current keeps",
+            "        heads with proved activity, unresolved demand, or evidence too",
+            "        incomplete to call quiet, and holds back quiet and settled ones.",
+            "        All retained adds them plus bounded archived head metadata.",
             "      X close a Room/published worker | x context actions on a task",
             "      r reconcile | d diff | e events | a approve plan / archive task | c candidate seals",
             "      v review+verification evidence | t retained storage | p pause/resume | s stop attempt",
@@ -1568,63 +1656,285 @@ def _render_tree(model: TuiModel) -> list[str]:
     body_budget = max(0, available - len(status_lines))
     lines = lines[:body_budget] + status_lines
     if model.height:
-        lines.append(_tree_footer(model.width))
+        lines.append(_tree_footer(
+            model.width, None if screen is None else screen.view_scope,
+        ))
     return [
         line.clipped(model.width) if isinstance(line, Line) else _clip(line, model.width)
         for line in lines
     ]
 
 
-def _load_initiative_views(env: Mapping[str, str], *, tmux=None) -> list[dict[str, Any]]:
-    """Lock-free per-initiative bundles for Initiatives mode; orchestration is imported lazily."""
-    from .orchestration.cli import snapshot as initiative_snapshot
-    from .orchestration.config import load_config as load_orchestration_config
+def _retained_budget():
+    """One shared cooperative budget for a single read-only observation."""
+    from .orchestration.store import PresentationBudget
+
+    return PresentationBudget(
+        deadline_seconds=_RETAINED_DEADLINE_SECONDS,
+        head_limit=_RETAINED_HEAD_LIMIT,
+        per_head_limit=_RETAINED_PER_HEAD_LIMIT,
+        nested_limit=_RETAINED_NESTED_LIMIT,
+        task_limit=_RETAINED_TASK_LIMIT,
+        event_tail=_RETAINED_EVENT_TAIL,
+    )
+
+
+def _archived_head_view(initiative: dict[str, Any]) -> dict[str, Any]:
+    """An archived head as read-only metadata: its graph is deliberately unread.
+
+    Nothing here may be counted as a node, an attempt or a demand, because
+    nothing beneath the head was loaded. The projection marks the record
+    classes unknown rather than empty, so a metadata row never reports `0/0`
+    for a graph it never opened.
+    """
+    return {
+        "initiative": initiative, "_metadata_only": True, "_graph_complete": True,
+        "_events_complete": False,
+        "plan": None, "nodes": [], "attempts": [], "links": [], "events": [],
+        "actions": [], "coordinator": None, "coordinator_live": None, "seals": [],
+        "reviews": [], "verifications": [], "approvals": [], "storage": None,
+    }
+
+
+def _unreadable_head_view(initiative: dict[str, Any], reason: str) -> dict[str, Any]:
+    """A retained head whose own graph could not be read, kept as unknown.
+
+    One damaged subrecord class never removes the head that carries it: the
+    row stays, its record classes read unknown rather than empty, and the
+    classification treats it as evidence that is missing, not as proof that
+    nothing is happening.
+    """
+    view = _archived_head_view(initiative)
+    view.update({
+        "_metadata_only": False, "_graph_unavailable": True,
+        "_graph_complete": False, "_graph_error": reason,
+    })
+    return view
+
+
+def _bounded_head_view(
+    store, initiative: dict[str, Any], budget, *, adapter, observed,
+) -> dict[str, Any]:
+    """One retained head's presentation bundle, read entirely inside `budget`.
+
+    Every record class goes through the store's bounded presentation readers,
+    so a foreign, truncated or malformed subrecord is excluded and counted
+    while its readable siblings are kept. The bundle records whether its own
+    graph and its own event sample were complete, because a classifier that
+    cannot tell a short read from an empty one will call missing evidence
+    "quiet".
+    """
     from .orchestration.coordinator import anchor_liveness
-    from .orchestration.model import COORDINATOR_LIVE_STATES
-    from .orchestration.store import InitiativeStore
+    from .orchestration.model import (
+        COORDINATOR_LIVE_STATES, NODE_NONTERMINAL_STATES,
+    )
     from .orchestration.tui_model import parked_ready_nodes
 
+    initiative_id = initiative["initiative_id"]
+
+    def read(directory: str) -> list[dict[str, Any]]:
+        return store.bounded_presentation_records(initiative_id, directory, budget)
+
+    before_unavailable = budget.unavailable
+    # Directory order is whatever the filesystem hands back, so anything read
+    # by position here is sorted by its own retained ordinal first.
+    plans = sorted(read("plans"), key=lambda item: item["revision"])
+    nodes = read("nodes")
+    attempts = read("attempts")
+    coordinators = sorted(read("coordinators"), key=lambda item: item["generation"])
+    events, events_complete = store.bounded_event_sample(initiative_id, budget)
+    binding = initiative.get("active_plan")
+    active_plan = None
+    plan_binding_complete = True
+    if binding is None:
+        live_nodes = [
+            node for node in nodes
+            if node.get("state") in NODE_NONTERMINAL_STATES
+        ]
+    else:
+        active_plan = next(
+            (plan for plan in plans
+             if plan.get("revision") == binding.get("revision")
+             and plan.get("digest") == binding.get("digest")),
+            None,
+        )
+        if active_plan is None:
+            # The active plan record is not among the records this bounded
+            # read returned. That is missing evidence, never proof the plan is
+            # gone: keep every node the read did return and say the binding
+            # could not be resolved. The strict readers still refuse.
+            plan_binding_complete = False
+            budget.note(
+                initiative_id,
+                "active plan record was not among the records this observation read",
+            )
+            live_nodes = [node for node in nodes if node.get("state") != "superseded"]
+        else:
+            active_ids = {
+                node["node_id"] for node in active_plan.get("nodes", [])
+                if isinstance(node, dict) and "node_id" in node
+            }
+            live_nodes = [
+                node for node in nodes if node.get("node_id") in active_ids
+            ]
+    coordinator = coordinators[-1] if coordinators else None
+    coordinator_live: bool | None = None
+    if coordinator and coordinator.get("state") in COORDINATOR_LIVE_STATES:
+        state, _detail = anchor_liveness(coordinator["anchor"], adapter)
+        coordinator_live = None if state == "unknown" else state == "live"
+    loaded = {
+        "initiative": initiative,
+        "plan": plans[-1] if plans else None,
+        "nodes": live_nodes,
+        "attempts": attempts,
+        "links": read("links"),
+        "events": events,
+        # The same retained actions the CLI snapshot already carries: the
+        # operator-decision verb reads an interrupted answer's own origin
+        # proof beside the journal, so the tree, the `!` filter, and
+        # `asha initiative attention` classify a question identically.
+        "actions": read("actions"),
+        "coordinator": coordinator,
+        "coordinator_live": coordinator_live,
+        "seals": read("seals"),
+        "reviews": read("reviews"),
+        "verifications": read("verifications"),
+        "approvals": read("approvals"),
+        "storage": None,
+        "_metadata_only": False,
+        "_events_complete": events_complete,
+        "_graph_complete": (
+            plan_binding_complete
+            and budget.unavailable == before_unavailable
+            and not budget.truncated
+        ),
+    }
+    loaded["_parked_ready_nodes"] = list(parked_ready_nodes(loaded, now=observed))
+    return loaded
+
+
+def _load_initiative_views(
+    env: Mapping[str, str], *, tmux=None, budget=None,
+) -> list[dict[str, Any]]:
+    """The one bounded read-only presentation observation, lock-free.
+
+    Both the native Current / All retained tree and the public
+    ``asha initiative attention`` verb read the retained store through this
+    function, so neither can see a head, a record, or a demand the other
+    cannot. There is no second enumeration and no unbounded fallback: heads
+    come from the store's bounded head reader and every record class beneath
+    them from the store's bounded presentation readers, all under one shared
+    `PresentationBudget`.
+
+    Every archived head is carried as head metadata only -- its nodes,
+    attempts, events, seals and links are never loaded -- so `All retained` is
+    a bounded set of retained heads and never an expanded historical graph,
+    and its record counts read unknown rather than zero.
+
+    Every bundle carries `_completeness`, the observation's own account of
+    what it read and what it could not, so a caller can say when its counts
+    rest on a short or partly unreadable read instead of implying a total it
+    never proved. Pass `budget` to keep that account when the observation
+    returns no heads at all.
+    """
+    from .orchestration.config import load_config as load_orchestration_config
+    from .orchestration.store import InitiativeStore
+
+    budget = _retained_budget() if budget is None else budget
     config = load_orchestration_config(env)
     store = InitiativeStore(config)
     views: list[dict[str, Any]] = []
+    metadata: list[dict[str, Any]] = []
     adapter = tmux or TmuxAdapter()
     observed = datetime.now(timezone.utc)
-    for initiative in store.list_initiatives():
-        if initiative.get("state") == "archived":
+    for initiative in store.bounded_head_snapshots(budget):
+        if budget.expired():
+            # Preserve every head already read, without further graph I/O.
+            if initiative.get("state") == "archived":
+                metadata.append(_archived_head_view(initiative))
+            else:
+                views.append(_unreadable_head_view(initiative, "observation deadline exceeded"))
             continue
-        initiative_id = initiative["initiative_id"]
-        current = initiative_snapshot(store, initiative)
-        coordinator = current.get("coordinator")
-        coordinator_live: bool | None = None
-        if coordinator and coordinator.get("state") in COORDINATOR_LIVE_STATES:
-            state, _detail = anchor_liveness(coordinator["anchor"], adapter)
-            coordinator_live = None if state == "unknown" else state == "live"
-        plans = store.list_plans_snapshot(initiative_id)
-        loaded = {
-            "initiative": initiative,
-            "plan": plans[-1] if plans else None,
-            "nodes": current["nodes"],
-            "attempts": current["attempts"],
-            "links": current["links"],
-            "events": store.list_events_snapshot(initiative_id)[-50:],
-            # The same retained actions the CLI snapshot already carries: the
-            # operator-decision verb reads an interrupted answer's own origin
-            # proof beside the journal, so the tree, the `!` filter, and
-            # `asha initiative attention` classify a question identically.
-            "actions": current["actions"],
-            "coordinator": coordinator,
-            "coordinator_live": coordinator_live,
-            "seals": store.list_seals_snapshot(initiative_id),
-            "reviews": store.list_reviews_snapshot(initiative_id),
-            "verifications": store.list_verifications_snapshot(initiative_id),
-            "approvals": store.list_approvals_snapshot(initiative_id),
-            "storage": None,
-        }
-        loaded["_parked_ready_nodes"] = list(
-            parked_ready_nodes(loaded, now=observed)
-        )
-        views.append(loaded)
-    return views
+        if initiative.get("state") == "archived":
+            metadata.append(_archived_head_view(initiative))
+            continue
+        try:
+            views.append(_bounded_head_view(
+                store, initiative, budget, adapter=adapter, observed=observed,
+            ))
+        except Exception as exc:  # noqa: BLE001 - degrade exactly one head
+            # One head whose graph cannot be read must never blank the tree.
+            # The head is retained as unknown, the failure is counted and
+            # named in the observation's account, and every other head is
+            # read exactly as it would have been.
+            budget.unavailable += 1
+            budget.note(
+                initiative.get("initiative_id", "?"),
+                f"{type(exc).__name__}: {exc}",
+            )
+            views.append(_unreadable_head_view(
+                initiative, f"{type(exc).__name__}: {exc}",
+            ))
+    completeness = {
+        **budget.summary(),
+        # Read back from the budget that was actually spent, never from the
+        # module defaults: a caller may own a tighter one, and a report that
+        # named a limit this pass did not use would be the same kind of lie
+        # the completeness exists to prevent.
+        "head_limit": budget.head_limit,
+        "deadline_seconds": budget.deadline_seconds,
+        "graphs_loaded": sum(
+            1 for view in views if not view.get("_graph_unavailable")
+        ),
+        "graphs_unavailable": sum(
+            1 for view in views if view.get("_graph_unavailable")
+        ),
+        "archived_head_metadata": len(metadata),
+    }
+    for view in (*views, *metadata):
+        view["_completeness"] = completeness
+    return [*views, *metadata]
+
+
+def observation_completeness(views, budget) -> dict[str, Any]:
+    """The observation's account, preferring what its loader stamped on the views.
+
+    With no heads at all there is no view to carry it, and a zero-row read is
+    exactly when a caller must still be able to tell an empty store from a
+    read that stopped early. The budget the caller owns answers that, and the
+    structural counts are filled from the heads in hand, so the report has the
+    same shape whether the pass returned many heads or none.
+    """
+    carried = next(
+        (view["_completeness"] for view in views
+         if isinstance(view, Mapping) and isinstance(view.get("_completeness"), Mapping)),
+        None,
+    )
+    report = (
+        copy.deepcopy(dict(carried)) if carried is not None else budget.summary()
+    )
+    # Task admission happens after graph loading. Its cap/deadline evidence
+    # must not be lost behind the earlier summary stamped on each head.
+    current = budget.summary()
+    report["complete"] = bool(report.get("complete", True)) and current["complete"]
+    report["truncated"] = bool(report.get("truncated")) or current["truncated"]
+    report["deadline_exceeded"] = bool(report.get("deadline_exceeded")) or current["deadline_exceeded"]
+    report["caps_reached"] = sorted(set(report.get("caps_reached", [])) | set(current["caps_reached"]))
+    report.setdefault("scanned", {}).update(tasks=current["scanned"]["tasks"])
+    heads = [view for view in views if isinstance(view, Mapping)]
+    report.setdefault("head_limit", budget.head_limit)
+    report.setdefault("deadline_seconds", budget.deadline_seconds)
+    report.setdefault("graphs_loaded", sum(
+        1 for view in heads
+        if not view.get("_metadata_only") and not view.get("_graph_unavailable")
+    ))
+    report.setdefault("graphs_unavailable", sum(
+        1 for view in heads if view.get("_graph_unavailable")
+    ))
+    report.setdefault("archived_head_metadata", sum(
+        1 for view in heads if view.get("_metadata_only")
+    ))
+    return report
 
 
 def _load_room_rows(env: Mapping[str, str], *, tmux=None) -> list[dict[str, Any]]:
@@ -1672,8 +1982,12 @@ def _refresh_initiatives(
         model.begin_synchronous_load()
     if views is None:
         try:
-            loaded_views = _load_initiative_views(env, tmux=tmux)
-            initiatives_error = None
+            budget = _retained_budget()
+            loaded_views = _load_initiative_views(env, tmux=tmux, budget=budget)
+            initiatives_error = (
+                "Initiative observation incomplete; retained work may be unread"
+                if not loaded_views and not budget.summary()["complete"] else None
+            )
         except Exception as exc:  # noqa: BLE001 - degrade this branch only
             loaded_views = []
             initiatives_error = _safe_error(exc)
@@ -2070,8 +2384,12 @@ def _load_refresh_snapshot(
             rows, changed_rows, removed_task_ids, row_order_changed,
         ) = cache.stabilize_rows(loaded_rows)
     try:
-        views = tuple(_load_initiative_views(env, tmux=inventory))
-        initiatives_error = None
+        budget = _retained_budget()
+        views = tuple(_load_initiative_views(env, tmux=inventory, budget=budget))
+        initiatives_error = (
+            "Initiative observation incomplete; retained work may be unread"
+            if not views and not budget.summary()["complete"] else None
+        )
     except Exception as exc:  # noqa: BLE001 - degrade this branch only
         views = ()
         initiatives_error = _safe_error(exc)
@@ -4894,6 +5212,21 @@ def _execute_intent(
         model.message = _start_form(stdscr, curses_module, model, env, config)
         _replace_loaded_rows(model, config, store, journals, jj)
         _enter_tree(model, env)
+        return True
+    if intent.kind is IntentKind.RETAINED_VIEW:
+        if screen is None:
+            model.message = "control tree unavailable"
+            return True
+        scope = screen.toggle_view_scope()
+        counts = screen.retained_counts
+        model.dirty = True
+        model.message = (
+            "showing every loaded retained initiative, including bounded archived "
+            f"head metadata ({counts['loaded']} loaded)"
+            if scope == "all" else
+            "showing current initiatives only (H shows all retained); "
+            f"{counts['hidden']} of {counts['loaded']} loaded heads are not drawn"
+        )
         return True
     if intent.kind is IntentKind.ATTENTION:
         if screen is None:

@@ -636,6 +636,10 @@ class RealOrchestrationDispatchTests(unittest.TestCase):
             "PATH": f"{self.path_bin}:{os.environ.get('PATH', '')}",
             "ASHA_CODEX_CMD": str(codex),
             "ASHA_ROOT": str(self.repo_root),
+            "CODEX_HOME": str(codex_home),
+            "CLAUDE_HOME": str(self.home / ".claude"),
+            "COPILOT_HOME": str(self.home / ".copilot"),
+            "ASHA_OPENCODE_HOME": str(self.home / ".config/opencode"),
         }
         self.env.pop("TMUX", None)
         self.env.pop("TMUX_PANE", None)
@@ -656,8 +660,7 @@ class RealOrchestrationDispatchTests(unittest.TestCase):
             ["bash", str(self.repo_root / "install.sh"), "--target", "codex"],
             env=self.env, capture_output=True, text=True, check=False,
         )
-        if installed.returncode != 0:
-            self.skipTest(f"sandbox Codex install unavailable: {installed.stderr[:200]}")
+        self.assertEqual(installed.returncode, 0, installed.stderr)
 
         self.source = self.root / "source"
         self.source.mkdir(mode=0o755)

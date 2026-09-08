@@ -138,6 +138,82 @@ the tmux socket or host PID ancestry: a digest-bound launch token proves the
 staging reservation, while the pane proof remains primary wherever tmux is
 reachable.
 
+#### Installer preservation boundary
+
+Direct hook registration, full Codex install/update, and uninstall share a
+bounded, nofollow, read-only preflight in `harnesses/codex.sh`. **Shared
+`config.toml` is never created, written, replaced, removed, backed up, renamed,
+or chmodded.** Features, MCP, native hook trust, workspace trust, comments,
+line endings, and trailing bytes remain native-owned. A concurrent native
+replacement or in-place save is not overwritten or restored from a snapshot.
+There is no TOML publisher, feature insertion, trust grant, or migration.
+
+Asha renders deterministic native `CODEX_HOME/hooks.json`, without
+`hooks.state`. Existing JSON requires strict current adapter source/type/path
+and current-hash ownership in the generated-artifact manifest. Unrecorded
+(even identical), modified, symlink/nonregular, malformed/duplicate, unsafe or
+ambiguous artifacts refuse before corresponding adapter staging, mounts,
+rules, agents, or legacy cleanup. All consumed ledger rows are structurally
+validated; the unrelated modified-artifact policy is unchanged. `--force`
+cannot bypass hook ownership. Direct sourced hook calls partial-finalize their
+own manifest cycle, retaining unrelated records and caller shell/stage state.
+Full install records the hook in its own cycle; owned-only uninstall uses the
+same strict proof before the generic lifecycle.
+
+Legacy TOML inspection retains the lexical/parser safety: nested, quoted and
+dotted tables, split native trust, and fake fences inside multiline values
+are classified, not rewritten. Exactly equivalent selected/canary/current-root
+Asha inline definitions mean a genuine hook **no-op**, without duplicate JSON;
+independently requested primitives may proceed. Needed inline update/removal,
+old-root migration, unknown tags, or inline/JSON Asha duplication refuse with
+manual-inspection guidance. Uninstall refuses while Asha inline remains; it
+never reports a fake complete removal. Foreign inline handlers coexist with
+nonduplicate owned JSON and a mixed-source warning.
+
+Absent JSON publication uses an atomic no-clobber link: a newly appeared
+foreign destination survives. Detectable owned-artifact/manifest drift refuses;
+the last recheck and owned-file replacement are **not arbitrary-writer CAS**.
+Interrupted publication without a ledger is an actionable ownership refusal,
+not automatic adoption. This is not a general transaction/rollback framework
+or a crash-atomicity claim. Dry-run performs the same strict preflight without
+publishing config, hooks, or ownership.
+
+The preserved `f491` last-config-rename failure and its red receipt remain
+historical evidence; they were not waived or relabeled. The obsolete writer
+assertion is replaced by real native replacement/in-place saves at owned JSON
+publication/removal, plus full-process syscall evidence of zero installer
+config writes. Removing the shared-config writer removes that native-save
+loss path, not every possible race against arbitrary artifact writers.
+
+Both installed drift and Control hook probes inspect JSON-only, combined,
+legacy, absent, malformed and ownership evidence against actual expected
+commands/filters, including verification `Stop` and style `PostToolUse`.
+Explicit `features.hooks=false` is disabled. The retained **0.153.4** empty-config
+default-true evidence applies only to that release; other absent-flag versions
+remain unavailable/unsupported. Neither probe inserts a feature flag.
+**Registered, enabled, trusted and executed are different states.** Hash-bound
+hook trust stays native and user-controlled; slot counts and a workspace trust
+fixture are not hook loading/execution proof. Native acceptance remains the
+operator's separate live step.
+
+The parent install/uninstall engines own launcher outcomes. Failed attempted
+adapters are distinct from unattempted harnesses requested independently by
+`--bin` or `--default`: documented `./install.sh --bin all` still requests all
+four shims with the default Claude target, and sourced `install_bin` needs no
+adapter-result prerequisite. Failed targets cannot retarget their shims or
+default. Shared dispatcher/root/default changes must reuse compatible routing
+or refuse nonzero when they would redirect failed or unrequested existing
+consumers; successful other adapters are not rolled back. `--default` without
+bin installation retains its existing no-default-write behavior. Uninstall
+removes only proven-owned shims for successful selected adapters, including
+`--target all`, and retains the dispatcher for protected, foreign or unknown
+survivors. Outcome state is invocation-local, including repeated sourced calls.
+Hidden immediate bin entries count as consumers too. An unknown invocation
+that depends on the default remains protected even when all known harnesses
+are requested; compatible routing with an unchanged default remains reusable.
+The source-only launcher helper is `lib/installer-launchers.sh`; public entry
+points and Bash 3.2 compatibility are retained.
+
 ### GitHub Copilot CLI
 
 The installer emits:

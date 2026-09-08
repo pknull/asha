@@ -14,8 +14,8 @@ FAIL=0
 ok()   { echo "  ✓ $1"; PASS=$((PASS + 1)); }
 fail() { echo "  ✗ $1" >&2; FAIL=$((FAIL + 1)); }
 
-command -v jq      >/dev/null 2>&1 || { echo "SKIP: jq not available" >&2; exit 0; }
-command -v python3 >/dev/null 2>&1 || { echo "SKIP: python3 not available" >&2; exit 0; }
+command -v jq      >/dev/null 2>&1 || { echo "ERROR: jq not available" >&2; exit 1; }
+command -v python3 >/dev/null 2>&1 || { echo "ERROR: python3 not available" >&2; exit 1; }
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -67,7 +67,7 @@ fi
 
 echo "--- fixture: real codex install into sandbox HOME ---"
 mkdir -p "$SANDBOX/.codex"
-: > "$SANDBOX/.codex/config.toml"
+printf 'features.hooks=true\n' > "$SANDBOX/.codex/config.toml"
 if env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
      bash "$REPO_ROOT/install.sh" --target codex >/dev/null 2>&1; then
   ok "sandbox codex install succeeds"
@@ -150,7 +150,13 @@ grep -q 'Memory v2 recovery hooks match installer-expected content' <<<"$out" \
 
 out="$(run --target codex 2>&1)"; rc=$?
 if [[ $rc -eq 0 ]] \
-    && grep -q 'Codex verification Stop and style PostToolUse seams are installed' <<<"$out"; then
+    && grep -Eq 'Codex [1-9][0-9]* expected commands registered, executable paths verified; verification Stop and style PostToolUse checked;' <<<"$out" \
+    && jq -e --arg handlers "$REPO_ROOT/plugins/session/hooks/handlers/" '
+      any(.hooks.Stop[]?.hooks[]?;
+        .command == ("env ASHA_HARNESS=codex " + $handlers + "verify-pass-complete.sh"))
+      and any(.hooks.PostToolUse[]?.hooks[]?;
+        .command == ("env ASHA_HARNESS=codex " + $handlers + "post-tool-use.sh"))
+    ' "$SANDBOX/.codex/hooks.json" >/dev/null; then
   ok "doctor validates Codex completion/style rendering"
 else
   fail "doctor validates Codex completion/style rendering (rc=$rc)"
@@ -419,20 +425,14 @@ fi
 # ---------------------------------------------------------------------------
 echo "--- test 3b: codex hook audit resolves env-wrapped executables ---"
 mkdir -p "$SANDBOX/.codex"
-cat > "$SANDBOX/.codex/config.toml" <<EOF
-[features]
-hooks = true
-
-[[hooks.SessionStart]]
-[[hooks.SessionStart.hooks]]
-command = "env ASHA_HARNESS=codex $REPO_ROOT/plugins/session/hooks/handlers/session-start.sh"
-EOF
+printf 'features.hooks=true\n' > "$SANDBOX/.codex/config.toml"
 out="$(run --target codex 2>&1 || true)"
-if grep -q "all hook command paths exist (codex: 1 command(s) enumerated)" <<<"$out" \
-    && ! grep -q "tagged hook paths missing" <<<"$out"; then
-  ok "env wrapper resolves to the actual hook executable"
+if grep -q "expected commands registered, executable paths verified" <<<"$out" \
+    && grep -q "verification Stop and style PostToolUse checked" <<<"$out" \
+    && grep -q 'env ASHA_HARNESS=codex' "$SANDBOX/.codex/hooks.json"; then
+  ok "owned JSON env wrappers resolve real expected hook executables and required seams"
 else
-  fail "env wrapper resolves to the actual hook executable (output: $(grep -E 'hook command|hook paths' <<<"$out"))"
+  fail "owned JSON command/seam inspection (output: $(grep -E 'Codex|hook' <<<"$out"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -497,5 +497,101 @@ else
 fi
 
 echo ""
+# The doctor remains read-only: it diagnoses preserved explicit hooks=false
+# rather than granting trust or flipping the user's feature flag on their behalf.
+if python3 - "$REPO_ROOT" "$SANDBOX" <<'PY_U8_DOCTOR'
+import hashlib, json, os, pathlib, shlex, site, subprocess, sys, tempfile
+tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
+root, work = map(pathlib.Path, sys.argv[1:])
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(root))
+from lib.control.doctor import codex_hooks_probe
+def snapshot(home):
+    return {str(p.relative_to(home)): (p.lstat().st_mode, p.lstat().st_uid,
+            p.lstat().st_gid, os.readlink(p) if p.is_symlink() else
+            None if p.is_dir() else p.read_bytes()) for p in home.rglob('*')}
+with tempfile.TemporaryDirectory(dir=work) as directory:
+    home = pathlib.Path(directory)
+    (home/'.codex').mkdir()
+    config = home/'.codex/config.toml'
+    raw = (b'# exact foreign bytes\r\n["features"]\r\nhooks = false\r\n'
+           b'[mcp_servers.playwright]\r\ncommand = "/bin/true"\r\n'
+           b'[hooks.state."one.slot"]\r\ntrusted_hash = "one"\r\n'
+           b'[hooks.state."two.slot"]\r\ntrusted_hash = "two"\r\n# tail\r\n\r\n')
+    config.write_bytes(raw)
+    config.chmod(0o640)
+    env = {'HOME':directory, 'PATH':os.environ['PATH'], 'USER':os.environ.get('USER','test'),
+           'PYTHONPATH':site.getusersitepackages()}
+    installed = subprocess.run([str(root/'install.sh'),'--target','codex'], cwd=root,
+        env=env, capture_output=True, timeout=180)
+    assert installed.returncode == 0, installed.stderr.decode()
+    assert raw in config.read_bytes()
+    parsed = tomllib.loads(config.read_text())
+    original = tomllib.loads(raw.decode())
+    assert parsed['features'] == original['features']
+    assert parsed['mcp_servers'] == original['mcp_servers']
+    assert parsed['hooks']['state'] == original['hooks']['state']
+    assert config.stat().st_mode & 0o777 == 0o640
+
+    hooks = home/'.codex/hooks.json'
+    ledger = home/'.asha/install-manifests/codex.json'
+    hook_bytes, ledger_bytes = hooks.read_bytes(), ledger.read_bytes()
+    groups = json.loads(hook_bytes)['hooks']
+    expected_count = sum(len(group['hooks']) for event in groups.values() for group in event)
+    assert expected_count > 0
+    seams = (('Stop', 'verify-pass-complete.sh'), ('PostToolUse', 'post-tool-use.sh'))
+    for event, name in seams:
+        expected = ['env', 'ASHA_HARNESS=codex', str(root/'plugins/session/hooks/handlers'/name)]
+        assert sum(shlex.split(h['command']) == expected
+                   for group in groups[event] for h in group['hooks']) == 1
+
+    for case in ('healthy', 'Stop', 'PostToolUse', 'disabled', 'malformed'):
+        config.write_bytes(raw.replace(b'hooks = false', b'hooks = true'))
+        hooks.write_bytes(hook_bytes)
+        ledger.write_bytes(ledger_bytes)
+        if case in ('Stop', 'PostToolUse'):
+            # Keep ownership valid so this tests missing semantic coverage,
+            # not just the separate modified-artifact refusal.
+            value = json.loads(hook_bytes)
+            name = dict(seams)[case]
+            value['hooks'][case] = [group for group in value['hooks'][case]
+                if not any(shlex.split(h['command'])[-1].endswith('/'+name) for h in group['hooks'])]
+            hooks.write_text(json.dumps(value))
+            rows = json.loads(ledger_bytes)
+            for row in rows['artifacts']:
+                if row['destination'] == str(hooks):
+                    row['sha256'] = hashlib.sha256(hooks.read_bytes()).hexdigest()
+            ledger.write_text(json.dumps(rows))
+        elif case == 'disabled': config.write_bytes(raw)
+        elif case == 'malformed': config.write_bytes(b'bad = [')
+        before = snapshot(home)
+        probe = codex_hooks_probe(home/'.codex', home/'.asha', user_home=home, root=root)
+        checked = subprocess.run([str(root/'bin/asha-drift-check.sh'),'--target','codex'],
+            cwd=root, env=env, capture_output=True, timeout=180)
+        assert checked.returncode == (0 if case == 'healthy' else 1), checked.stdout.decode()+checked.stderr.decode()
+        assert snapshot(home) == before
+        assert probe.detail.encode() in checked.stdout, (probe, checked.stdout)
+        if case == 'healthy':
+            assert probe.outcome == 'match', probe
+            assert f'Codex {expected_count} expected commands registered, executable paths verified;' in probe.detail
+            assert 'verification Stop and style PostToolUse checked;' in probe.detail
+            assert 'native trust and execution NOT verified' in probe.detail
+        elif case in ('Stop', 'PostToolUse'):
+            assert probe.outcome == 'missing', probe
+            assert 'missing/duplicate expected hook groups: '+case in probe.detail
+        elif case == 'malformed':
+            assert probe.outcome == 'unavailable', probe
+            assert b'Codex hook inspection refused' in checked.stdout
+            assert b'Invalid value' in checked.stdout
+        else:
+            assert probe.outcome == 'mismatch', probe
+            assert b'Codex hooks registered but disabled' in checked.stdout
+            assert b'explicit features.hooks=false' in checked.stdout
+        print(f'U8 doctor {case}: rc={checked.returncode}, outcome={probe.outcome}, {probe.detail}')
+PY_U8_DOCTOR
+then ok "U8 read-only doctor preserves foreign bytes, parsed trust, modes and artifacts"
+else fail "U8 read-only doctor preserves foreign bytes, parsed trust, modes and artifacts"
+fi
+
 echo "test-doctor: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]
