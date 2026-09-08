@@ -113,6 +113,7 @@ fix_regen_command_skill() {
   if [[ "$mode" == render ]]; then
     ASHA_ARTIFACT_HARNESS="" _codex_emit_command_skill "$cmd" "$skill_md"
   else
+    _codex_prepare_hooks install >/dev/null || return $?
     FORCE=1
     asha_artifact_begin codex
     _codex_emit_command_skill "$cmd" "$skill_md"
@@ -136,6 +137,7 @@ fix_regen_codex_agent() {
   if [[ "$mode" == render ]]; then
     ASHA_ARTIFACT_HARNESS="" _codex_emit_agent_toml "$agent" "$dest"
   else
+    _codex_prepare_hooks install >/dev/null || return $?
     FORCE=1
     asha_artifact_begin codex
     _codex_emit_agent_toml "$agent" "$dest"
@@ -679,91 +681,33 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
   section "codex harness"
 
   if [[ ! -d "$CODEX" ]]; then
-    pass "codex not installed (skipping codex checks)"
+    nope "Codex hook installation absent; no expected commands or ownership evidence"
   else
     # No dangling asha symlinks under Codex scan dirs
     check_dangling "$CODEX" codex skills:1 agents:1 prompts:1
     check_skill_links "$CODEX" codex
 
-    # config.toml parses as TOML
-    if [[ -f "$CODEX/config.toml" ]]; then
-      if python3 -c "import sys; tomllib=__import__('tomllib' if sys.version_info >= (3, 11) else 'tomli'); tomllib.load(open('$CODEX/config.toml','rb'))" 2>/dev/null; then
-        pass "$HOME_LABEL/.codex/config.toml parses as valid TOML"
-      else
-        nope "$HOME_LABEL/.codex/config.toml is invalid TOML"
-      fi
-
-      # Every tagged hook command path exists. Commands live one level down
-      # ([[hooks.EVENT.hooks]]), and [hooks.state] is codex's trust store, not
-      # an event — the old shallow walk crashed on it and the silenced
-      # exception made this check pass vacuously.
-      missing=0
-      enumerated=0
-      while IFS= read -r c; do
-        [[ -z "$c" ]] && continue
-        enumerated=$((enumerated+1))
-        # The extractor emits the effective executable (including the
-        # installer's `env ASHA_HARNESS=... /path/to/hook` wrapper).
-        if [[ ! -e "$c" ]]; then
-          [[ $missing -eq 0 ]] && nope "tagged hook paths missing in config.toml:"
-          echo "  $c"
-          missing=$((missing+1))
-        fi
-      done < <(python3 -c "
-import re, shlex, sys
-tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
-c = tomllib.load(open('$CODEX/config.toml','rb'))
-def executable(command):
-    try:
-        words = shlex.split(command)
-    except ValueError:
-        return command
-    if not words:
-        return ''
-    if words[0] == 'env':
-        words = words[1:]
-        while words and re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*=.*', words[0]):
-            words = words[1:]
-    return words[0] if words else ''
-for ev, blocks in (c.get('hooks') or {}).items():
-    if not isinstance(blocks, list):
-        continue  # [hooks.state] trust store
-    for b in blocks:
-        if not isinstance(b, dict):
-            continue
-        if b.get('command'):
-            print(executable(b['command']))
-        for h in (b.get('hooks') or []):
-            if isinstance(h, dict) and h.get('command'):
-                print(executable(h['command']))
-" 2>/dev/null)
-      [[ $missing -eq 0 ]] && pass "all hook command paths exist (codex: $enumerated command(s) enumerated)"
-      if grep -Fq "env ASHA_HARNESS=codex $verify_pass_handler" "$CODEX/config.toml" \
-          && grep -Fq "env ASHA_HARNESS=codex $ASHA/plugins/session/hooks/handlers/post-tool-use.sh" \
-            "$CODEX/config.toml"; then
-        pass "Codex verification Stop and style PostToolUse seams are installed"
-      else
-        nope "Codex verification Stop or style PostToolUse seam is missing"
-      fi
-
-      # Feature gate: codex runs hooks only with [features] hooks = true AND
-      # per-entry persisted trust (hash-bound). A registered fence without the
-      # flag is silently inert — the exact failure verified live 2026-07-26.
-      hook_gate="$(python3 -c "
+    # One real read-only ownership/legacy/expected-command inspection, shared
+    # with Control. JSON-only installs are not absent; empty/malformed evidence
+    # never passes vacuously. --fix does not grant native trust or edit config.
+    codex_hook_out="$(PYTHONDONTWRITEBYTECODE=1 python3 - "$ASHA" "$CODEX" \
+      "${ASHA_HOME:-$HOME/.asha}" "$HOME" "$WITH_CANARY" <<'PY'
 import sys
-tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
-c = tomllib.load(open('$CODEX/config.toml','rb'))
-events = [k for k, v in (c.get('hooks') or {}).items() if isinstance(v, list) and v]
-feats = c.get('features') or {}
-trust = (c.get('hooks') or {}).get('state') or {}
-print(f\"{len(events)} {str(feats.get('hooks', False)).lower()} {len(trust)}\")
-" 2>/dev/null || echo "0 false 0")"
-      read -r gate_events gate_flag gate_trust <<< "$hook_gate"
-      if [[ "$gate_events" != "0" && "$gate_flag" != "true" ]]; then
-        nope "codex hooks registered but [features] hooks != true — the whole fence silently skips (rerun install: the installer now adds the flag)"
-      elif [[ "$gate_events" != "0" ]]; then
-        pass "codex hooks feature-enabled ([features] hooks = true; $gate_trust trusted entry slot(s) in [hooks.state] — hash validity is not externally verifiable, codex re-prompts on drift)"
-      fi
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from lib.control.doctor import codex_hooks_probe
+probe = codex_hooks_probe(Path(sys.argv[2]), Path(sys.argv[3]),
+                          user_home=Path(sys.argv[4]), root=Path(sys.argv[1]),
+                          with_canary=sys.argv[5] == "1")
+print(probe.detail)
+raise SystemExit(0 if probe.outcome == "match" else 1)
+PY
+)"
+    codex_hook_rc=$?
+    if [[ $codex_hook_rc -eq 0 ]]; then
+      pass "$codex_hook_out"
+    else
+      nope "${codex_hook_out:-Codex hook probe unavailable}"
     fi
 
     # ───── Command-skill coverage check (shared with copilot) ─────

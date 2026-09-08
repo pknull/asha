@@ -162,12 +162,13 @@ isolation is required.
 ## Terminal TUI: one control tree
 
 `asha control` opens a single tree in the current terminal: an expanded
-**Rooms** branch when at least one durable Room record exists, every non-archived
-initiative (expandable to its nodes and attempts, each showing its linked
+**Rooms** branch when at least one durable Room record exists, the current
+initiatives (expandable to its nodes and attempts, each showing its linked
 worker's live state inline) followed by an **Unbound tasks** branch holding
-Control tasks bound to no initiative. With no initiatives on screen the branch
-flattens and the tree is exactly the task list. Keys act on the selected row's
-kind:
+Control tasks bound to no initiative. `H` widens the middle branch to every
+retained head the refresh loaded — see *Current and All retained initiatives*
+below. With no initiatives on screen the branch flattens and the tree is
+exactly the task list. Keys act on the selected row's kind:
 
 | Key | Action |
 |---|---|
@@ -184,7 +185,8 @@ kind:
 | `d` | jj diff summary of the selected row's linked workspace. |
 | `e`, `c`, `v`, `t` | Initiative panes: events, candidate seals, review + verification evidence, retained storage. |
 | `p` / `s` | After exact `yes`: `p` parks a running or needs-input initiative, or resumes a paused one (back to `needs-input` when the park left an operator question unanswered, otherwise `running`; the result line names the state); `s` stops the selected attempt's task. Anything else records nothing. |
-| `A` | Toggle the `active` / `all` lifecycle scope for tasks. |
+| `A` | Toggle the `active` / `all` lifecycle scope for tasks. The title names it `Tasks: active` / `Tasks: all`. |
+| `H` | Toggle the initiative view between `Current` (default) and `All retained`. Session-local presentation only. |
 | `/` | Filter rows. `?` help. `q` exits the TUI only. |
 
 The bottom line always labels tree focus as `[NAVIGATION]`. Every prompt and
@@ -210,8 +212,30 @@ launches only after all required fields are valid.
 everything waiting on a human across initiatives and tasks, each item naming
 its resolution. A needs-input head is listed as `operator-decision`, quoting
 the coordinator's question when its event is in the loaded tail, with or
-without any node decision or approval beneath it. The tree and the verb share
-one assembler and cannot disagree.
+without any node decision or approval beneath it.
+
+The tree and the verb read one demand projection. `initiative_demand` is the
+only classifier: the tree's WAITING ON text, the `need you` count, the `!`
+filter, the Current/All retained decision and every `attention` item are
+derived from its output for the same loaded head, so they cannot disagree
+about what an ask is. Three head asks the tree wrote and the verb used to omit
+are now listed as well: `integration` for a `ready-for-integration` head,
+`activation` for an `approved` one, and `failed-nodes` for failed nodes under
+a live head. Every item carries `certainty`: `live` when the records prove the
+ask, `unknown` when the evidence is missing, stale, foreign, or self-
+contradictory. An `unknown` item stays listed — absent evidence is never read
+as an absent ask, and never as authority to act on one.
+
+Two counts in this area are deliberately different and must not be read as
+one. The header's `N need you` counts the *rows* on screen that are waiting;
+`attention` reports *asks*, and one head can carry several (a question, a
+requested approval, and two node decisions are four items on one row). The
+verb is also independent of this terminal: `H`, `/` and `!` narrow what the
+tree draws and never what the verb reports, which stays the complete bounded
+projection over every loaded head. An archived head is loaded as metadata only
+and asserts nothing in either direction. What the verb's read could not see is
+reported beside the items rather than inside them — see *Bounded retained
+reads*.
 
 ### Parking waiting work
 
@@ -294,8 +318,207 @@ and the result, not the interruption's transient status or reason.
 The default `active` scope does not load or reconcile archived tasks. `A`
 switches to `all`; archived records use their durable lifecycle projection and
 display `archived` even after their session and workspace have been pruned.
-The title always names the current scope. Scope reloads preserve the selected
-task when it remains visible, and the text filter remains independent.
+The title always names the current scope, literally as `Tasks: active` or
+`Tasks: all`, because `A` scopes the task branch's lifecycle while `H` scopes
+which retained initiatives the tree draws. The older `Scope: active` /
+`Scope: all` wording is kept beside it as a compatibility label for readers of
+a whole rendered screen that have always found the task scope under that name;
+it carries the same fact, is the lowest-priority piece in the title, and is the
+first thing width sheds. Scope reloads preserve the selected task when it
+remains visible, and the text filter remains independent.
+
+### Current and All retained initiatives
+
+`H` toggles the initiative view. `Current` is the default and is what the
+operator's own terminal shows on open; `All retained` adds every other head
+the refresh loaded. The title names the active view (`View: current` /
+`View: all retained`), the footer names it beside `[NAVIGATION]`, and `?`
+explains it — all three without any row being selected, because an empty
+Current view is exactly when the other one is needed. The toggle is
+session-local presentation: it loads nothing extra, reconciles nothing,
+records nothing, and does not reach the CLI, Rooms, workers, coordinators or
+native launch. Switching preserves the selected row by identity, every
+expansion, the text filter and the `!` filter; a selection the new view hides
+falls back to the first row.
+
+A loaded head is **Current** when the records at hand support it, never
+because of a status word:
+
+- an ask exists for it under the one demand projection above, `live` or
+  `unknown`;
+- its coordinator record is in a live state and its anchor is not proved gone
+  (a `None` liveness is unknown, which keeps the head);
+- an attempt is in a non-terminal state — actual work, or an attempt whose
+  worker contradicts it, which the operator must see either way;
+- or its evidence is unexplained: the bounded read was short or partly
+  unreadable, a started head returned no node records at all, or the plan
+  calls a node `ready` or `dispatching` with no attempt carrying it and no
+  live coordinator watching. The last case is a stall; the parked-coordinator
+  rule only fires while a coordinator is live, so without it a dead
+  coordinator would take its ready work off screen with it.
+
+Everything else is retained work, reversibly held back and reachable with one
+keystroke: a quiet `draft` or `planning` head is **queued unfinished**, not
+completed and never counted as settled; a quiet `paused` head is parked; a
+terminal head is settled. A `running` head with nothing observed running, no
+coordinator and no ask is a label, not activity, and is held back too.
+
+`All retained` means the retained heads this refresh actually read. It is not
+a guaranteed global total and it does not expand history: an archived head is
+carried as **head metadata only** — its nodes, attempts, events, seals, links
+and actions are never loaded, its detail pane says so, its NODES column reads
+`?` rather than `0/0`, and it asserts no demand in either direction. Read an
+archived graph with `asha initiative show`, outside this refresh.
+
+A head whose own graph could not be read in this refresh is treated the same
+way in one direction only: its records read `?`, its detail pane names the
+failure and claims nothing else, and it is never counted as quiet. Unlike an
+archived head it stays in **Current**, because missing evidence is not proof
+that nothing is happening.
+
+The title carries the counts and their honesty: `Heads 1/3 · 2 hidden` names
+the drawn count over the heads this refresh loaded, and how many loaded heads
+are not drawn — by this view, by `!`, or by the text filter, each of which
+also names itself in the title. A `(partial)` marker means the bounded read
+was short or lost a record, so the denominator is a floor rather than a total;
+`(unknown)` means at least one shown head is shown because its evidence was
+missing, not because activity was proved.
+
+Neither marker depends on anything being hidden. All retained holds nothing
+back by construction and Current holds nothing back whenever every loaded head
+is current, so a marker gated on a hidden count would have been unreachable on
+exactly the screens that most need it. With nothing hidden the title reads
+`Heads 2/2 (unknown)`; with nothing hidden and nothing uncertain it carries no
+head count at all, so the marker still means something when it appears. At
+122x28 the demand count comes first, then the labels that change what is on
+screen — the `!` filter, the text filter, a non-default view or task scope —
+and the quieter counts, including an unhidden head count, shed first.
+
+### Bounded retained reads
+
+The native tree and `asha initiative attention` read the retained store
+through one loader, `_load_initiative_views` in `lib/control/tui.py`. There is
+no second enumeration and no unbounded fallback: neither surface can see a
+head, a record, or an ask the other cannot, and neither can outrun the caps
+below.
+
+One observation is bounded in every dimension it reads, under a single
+`PresentationBudget` from `lib/control/orchestration/store.py`:
+
+| Bound | Default | What it limits |
+|---|---|---|
+| `PRESENTATION_HEAD_LIMIT` | 256 | Entries enumerated in the initiative registry. |
+| `PRESENTATION_PER_HEAD_LIMIT` | 512 | Entries enumerated beneath any one head. |
+| `PRESENTATION_NESTED_LIMIT` | 8192 | Entries enumerated beneath every head together. |
+| `PRESENTATION_TASK_LIMIT` | 512 | Control task rows admitted into the observation. |
+| `PRESENTATION_EVENT_TAIL` | 50 | Event payloads read *after* a bounded enumeration. |
+| `PRESENTATION_DEADLINE_SECONDS` | 2.0 | One shared cooperative wall clock. |
+
+Every enumerated entry costs one unit, so a graph of a thousand records spends
+a thousand units: a whole graph is never priced at one. That is why the head
+cap alone was not boundedness — it limited how many record *sets* were opened,
+not how much was read. 2.0s leaves the five-second automatic interval room for
+the task and Room branches after it.
+
+The per-record reads go through the store's bounded presentation readers,
+which reuse the same descriptor-relative, no-follow, ownership-checked file
+readers and the same model validators as the strict readers. They add no
+validator and no record class. What they add is tolerance with an account: an
+entry that is foreign, truncated, malformed, symlinked, or whose identity does
+not match its filename is excluded and counted — never repaired, adopted,
+renamed, removed, or presented as valid — and its readable siblings are kept.
+The strict journal and control readers are untouched and still fail closed.
+
+The deadline is **cooperative**: it is checked between directory entries, so a
+single blocking filesystem syscall inside one record read is not preempted by
+it and no hard containment is claimed. Reaching a cap, spending the deadline,
+or failing to read a record is reported rather than absorbed. The observation's
+summary names which caps it reached, whether the deadline was spent, how many
+records were unavailable, and the first few failures verbatim.
+
+Nothing already read is thrown away. A spent head cap stops the pass and keeps
+the heads it read. One damaged subrecord degrades its own record class, not the
+head: the head keeps its row and its readable records, and the counts say
+`partial`. Even an unexpected failure while assembling one head leaves that
+head on screen as unknown rather than blanking the tree behind it — a head with
+records nobody could read is missing evidence, never proof of quiet, so it
+stays in Current with its record counts shown as `?` instead of `0/0`.
+
+An archived head's graph is deliberately never opened, and its counts read `?`
+for the same reason: `0/0` would assert a count over records nobody read.
+
+A capped or damaged event sample is a sample, not an exact tail. The bundle
+records whether its journal was enumerated whole, parsed whole, contiguous from
+sequence 1, and no longer than the tail; only then may the causal
+answer-discharge classifier read it. Given anything less, an unanswered
+operator question stays the operator's and is marked `unknown`, because a
+sample cannot show the edge that would discharge it and reading its silence as
+an answer would retire a question nobody answered.
+
+The title marks incomplete counts `(partial)`, and the unbound-task branch is
+labelled `Unbound tasks (binding partial)` because a read that could not see
+every head's ownership records cannot prove which tasks are unowned.
+
+`asha initiative attention` carries the same account beside its existing
+`contract` and `items` fields, as an additive `observation` object holding
+`complete`, `truncated`, `deadline_exceeded`, `caps_reached`,
+`unavailable_records`, the first `failures` verbatim, the `scanned` counts, the
+`limits` this pass actually spent, `heads_loaded` and `items_reported`. It is
+present for zero rows as much as for many — a zero-item list is exactly where
+an unread source would otherwise read as proof. Nothing is ever fabricated as
+an item to carry it: an item in that list is a claim that something waits on a
+human, and a short read is not that claim. The human output says
+`Nothing is waiting on a human.` only when the read was complete; otherwise it
+says so and names the cap, the deadline, or the unreadable records instead.
+
+Task ownership is resolved before any presentation filter runs, over every
+loaded head including the ones the current view hides, and from both durable
+records: the link a dispatched attempt writes, and the attempt's own `task_id`
+reservation, which exists first. Filtering first listed a hidden head's worker
+as an unbound task; reading only links listed a reserved-but-unlinked worker
+the same way.
+
+### Retained directives and current demand
+
+A `directive` action records a bounded instruction for a live attempt and
+leaves `delivery` at `pending`; no harness seam is proven safe for mid-run
+delivery, so the controller never types into a pane. `pending` is therefore a
+durable record, not evidence that anything is still waiting — and reading
+`delivery == "pending"` alone reported a directive whose target had long since
+sealed as a live ask forever.
+
+Each pending directive is now read against its own bound records — node,
+attempt, active plan, and whatever observation of its Control task is at hand
+— and lands in exactly one of three classes:
+
+- **live** — the binding resolves and its target has not ended. The ask is
+  listed by `attention` and drawn on the node row it binds to, including
+  beneath a collapsed paused head, because a live directive is happening now
+  regardless of the head's schedule.
+- **deferred** — the binding resolves and proves the target already sealed
+  with no live worker. This is retained history: it leaves the demand list and
+  the WAITING ON column, and nothing about it is delivered, acknowledged,
+  relayed, or deleted. The action record, its `directive-accepted` event and
+  its `pending` delivery stay exactly as they were.
+- **unknown** — the binding is missing, malformed, foreign to the loaded
+  records, bound to a plan that is no longer active, or contradicted by the
+  observations (a sealed attempt whose worker still reads live, an unsealed
+  attempt whose worker has ended). The ask stays listed with the reason
+  named, and its resolution says to verify the target rather than relay it.
+  Uncertainty is never silently discharged and never confers authority.
+
+`validate_action` constrains `outcome` only as optional text, so a foreign or
+corrupted record can hold well-formed JSON of the wrong shape — `[]`,
+`"pending"`, `7`. That is exactly as unreadable as a truncated record: the
+`delivery` field it would have carried is not there to read. Such a record is
+`unknown`, on the same branch as a parse failure. Reading a missing field as
+"not pending" would have discharged a directive whose binding was never
+resolved.
+
+A directive whose node binding matches no loaded node record cannot address a
+node row, so it is shown on the head instead of disappearing. Nothing in this
+classification writes a record, sends a keystroke, or invents an
+acknowledgement, and no directive is suppressed as a class.
 
 ### Tree mechanics
 

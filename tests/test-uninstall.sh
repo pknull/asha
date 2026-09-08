@@ -29,7 +29,7 @@ assert_eq() { # desc expected actual
   if [[ "$2" == "$3" ]]; then ok "$1"; else fail "$1 (expected: $2, got: $3)"; fi
 }
 
-command -v jq >/dev/null 2>&1 || { echo "SKIP: jq not available" >&2; exit 0; }
+command -v jq >/dev/null 2>&1 || { echo "ERROR: jq not available" >&2; exit 1; }
 
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -275,5 +275,141 @@ fi
   || fail "legacy generated file preserved until explicit adoption"
 
 echo ""
+# U8 parent outcomes: real uninstall engines never sweep foreign bin links or
+# remove a failed adapter's shim simply because --target all was requested.
+if python3 - "$REPO_ROOT" "$SANDBOX" <<'PY_U8_UNINSTALL'
+import json, os, pathlib, site, subprocess, sys, tempfile, unittest
+ROOT, WORK = map(pathlib.Path, sys.argv[1:])
+ENV = {'PATH':os.environ['PATH'], 'USER':os.environ.get('USER', 'test'),
+       'PYTHONPATH':site.getusersitepackages()}
+
+def snapshot(root):
+    return {str(p.relative_to(root)): (p.lstat().st_mode, p.lstat().st_uid,
+            p.lstat().st_gid, os.readlink(p) if p.is_symlink() else
+            None if p.is_dir() else p.read_bytes()) for p in root.rglob('*')}
+
+class UninstallLauncherTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir=WORK)
+        self.addCleanup(self.temp.cleanup)
+        self.home = pathlib.Path(self.temp.name)
+        self.bin = self.home/'.local/bin'
+        self.bin.mkdir(parents=True)
+        (self.bin/'asha').symlink_to(ROOT/'bin/asha')
+        for h in ('claude','codex','copilot','opencode'):
+            (self.bin/('asha-'+h)).symlink_to('asha')
+        (self.home/'.codex/skills').mkdir(parents=True)
+        (self.home/'.codex/skills/owned').symlink_to(ROOT/'plugins/test/skills/ping')
+        self.config = self.home/'.codex/config.toml'
+        self.config.write_bytes(b'features.hooks = false\n[mcp_servers.playwright]\ncommand="foreign"\n')
+        self.config.chmod(0o640)
+        (self.home/'.claude').mkdir()
+        (self.home/'.claude/settings.json').write_bytes(b'{}\n')
+
+    def run_uninstall(self, *args):
+        return subprocess.run([str(ROOT/'uninstall.sh'), *args], cwd=ROOT,
+            env=dict(ENV, HOME=str(self.home)), capture_output=True, timeout=120)
+
+    def test_mixed_failure_keeps_codex_dispatcher_and_foreign(self):
+        self.config.write_bytes(b'bad = [')
+        (self.bin/'foreign').symlink_to(ROOT/'plugins/test/skills/ping')
+        (self.bin/'asha-unknown').write_bytes(b'unknown consumer\n')
+        before = snapshot(self.home/'.codex')
+        p = self.run_uninstall('--target','all')
+        self.assertEqual(p.returncode, 1, p.stderr.decode())
+        self.assertEqual(snapshot(self.home/'.codex'), before)
+        for name in ('asha','asha-codex','foreign'):
+            self.assertTrue((self.bin/name).is_symlink(), name)
+        self.assertEqual((self.bin/'asha-unknown').read_bytes(), b'unknown consumer\n')
+        for h in ('claude','copilot','opencode'):
+            self.assertFalse((self.bin/('asha-'+h)).is_symlink(), h)
+        state = snapshot(self.home)
+        p = self.run_uninstall('--target','all')
+        self.assertEqual(p.returncode, 1, p.stderr.decode())
+        self.assertEqual(snapshot(self.home), state)
+
+    def test_successful_all_removes_only_owned_and_preserves_config(self):
+        before = self.config.read_bytes(), self.config.stat().st_mode
+        p = self.run_uninstall('--target','all')
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertEqual((self.config.read_bytes(), self.config.stat().st_mode), before)
+        self.assertEqual(list(self.bin.iterdir()), [])
+        p = self.run_uninstall('--target','all')
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+
+    def test_foreign_stale_and_broken_routing_never_claimed(self):
+        for target in ('/usr/bin/env', str(self.home/'stale/bin/asha'), 'missing-dispatcher'):
+            with self.subTest(target=target):
+                dispatcher = self.bin/'asha'
+                dispatcher.unlink()
+                dispatcher.symlink_to(target)
+                before = snapshot(self.bin)
+                p = self.run_uninstall('--target','all')
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertEqual(snapshot(self.bin), before)
+
+    def test_unknown_and_foreign_consumers_retain_owned_dispatcher(self):
+        foreign = self.bin/'asha-codex'
+        foreign.unlink()
+        foreign.symlink_to('/usr/bin/env')
+        (self.bin/'unknown-name').symlink_to('asha')
+        p = self.run_uninstall('--target','all')
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertEqual(os.readlink(foreign), '/usr/bin/env')
+        self.assertEqual(os.readlink(self.bin/'asha'), str(ROOT/'bin/asha'))
+        self.assertEqual(os.readlink(self.bin/'unknown-name'), 'asha')
+
+    def test_dry_run_all_failed_and_sourced_repeat(self):
+        before = snapshot(self.home)
+        p = self.run_uninstall('--target','all','--dry-run')
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertEqual(snapshot(self.home), before)
+        self.config.write_bytes(b'bad = [')
+        before = snapshot(self.home)
+        p = self.run_uninstall('--target','codex')
+        self.assertEqual(p.returncode, 1, p.stderr.decode())
+        self.assertEqual(snapshot(self.home), before)
+        p = subprocess.run(['bash','-c',
+            'set -uo pipefail; source "$1/lib/uninstall.sh"; '
+            'asha_uninstall_main --target codex; [[ $? == 1 ]] || exit 90; '
+            'asha_uninstall_main --target claude', 'u8', str(ROOT)], cwd=ROOT,
+            env=dict(ENV, HOME=str(self.home)), capture_output=True, timeout=120)
+        self.assertEqual(p.returncode, 0, p.stderr.decode())
+        self.assertTrue((self.bin/'asha-codex').is_symlink())
+        self.assertFalse((self.bin/'asha-claude').is_symlink())
+
+    def test_hidden_survivor_alone_retains_dispatcher_after_all_uninstall(self):
+        for name in ('.custom-wrapper', '..custom-wrapper'):
+            with self.subTest(name=name):
+                alias = self.bin/name
+                alias.symlink_to('asha')
+                before = snapshot(self.home)
+                p = self.run_uninstall('--target','all','--dry-run')
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertEqual(snapshot(self.home), before)
+                p = self.run_uninstall('--target','all')
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertEqual(snapshot(self.bin), {key: before['.local/bin/'+key]
+                    for key in ('asha', name)})
+                self.assertEqual(self.config.read_bytes(), before['.codex/config.toml'][-1])
+                self.assertEqual(self.config.stat().st_mode, before['.codex/config.toml'][0])
+                p = subprocess.run(['bash','-c',
+                    'set -euo pipefail; for mode in -u -s; do shopt "$mode" dotglob; '
+                    'before=$(shopt -p); source "$1/lib/uninstall.sh"; '
+                    'asha_uninstall_main --target all; '
+                    '[[ "$(shopt -p)" == "$before" ]] || exit 90; done',
+                    'u8', str(ROOT)], cwd=ROOT, env=dict(ENV, HOME=str(self.home)),
+                    capture_output=True, timeout=120)
+                self.assertEqual(p.returncode, 0, p.stderr.decode())
+                self.assertEqual(snapshot(self.bin), {key: before['.local/bin/'+key]
+                    for key in ('asha', name)})
+                alias.unlink()
+
+unittest.main(argv=['u8-uninstall'], verbosity=2)
+PY_U8_UNINSTALL
+then ok "U8 uninstall successful-selected ownership and protected routing"
+else fail "U8 uninstall successful-selected ownership and protected routing"
+fi
+
 echo "test-uninstall: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

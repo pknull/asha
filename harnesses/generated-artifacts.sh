@@ -134,19 +134,23 @@ asha_artifact_retire_prepared() {
 }
 
 asha_artifact_finalize() {
-  local harness="$1" full="${2:-1}" manifest stage tmp
-  manifest="$(asha_artifact_manifest_path "$harness")"
+  local harness="$1" full="${2:-1}" manifest manifest_dir stage tmp
+  # Callers may use an if/OR-list, disabling errexit throughout this helper.
+  # Guard every boundary explicitly; retain stage/output evidence on failure.
+  manifest="$(asha_artifact_manifest_path "$harness")" || return $?
+  [[ -n "$manifest" ]] || return 1
   stage="${ASHA_ARTIFACT_STAGE:-}"
   [[ -n "$stage" && -f "$stage" ]] || return 0
-  if [[ ${DRY_RUN:-0} -eq 1 ]]; then rm -f "$stage"; return 0; fi
-  ensure_dir "$(dirname "$manifest")"
+  if [[ ${DRY_RUN:-0} -eq 1 ]]; then rm -f "$stage"; return $?; fi
+  manifest_dir="$(dirname "$manifest")" || return $?
+  ensure_dir "$manifest_dir" || return $?
   tmp="$manifest.tmp.$$"
-  python3 - "$manifest" "$stage" "$harness" "$full" > "$tmp" <<'PY'
+  python3 - "$manifest" "$stage" "$harness" "$full" > "$tmp" <<'PY' || return $?
 import hashlib, json, os, sys
 manifest, stage, harness, full = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 try:
     old = json.load(open(manifest, encoding="utf-8")).get("artifacts", [])
-except (OSError, ValueError):
+except FileNotFoundError:
     old = []
 desired = []
 with open(stage, encoding="utf-8") as f:
@@ -177,8 +181,8 @@ out = {
 }
 print(json.dumps(out, indent=2, sort_keys=True))
 PY
-  mv "$tmp" "$manifest"
-  rm -f "$stage"
+  mv "$tmp" "$manifest" || return $?
+  rm -f "$stage" || return $?
 }
 
 # Remove only files whose bytes still match the recorded installed hash.

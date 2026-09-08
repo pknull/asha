@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import unittest
 from types import SimpleNamespace
 
 from lib.control import tui
 from lib.control.tui import TuiModel, render
-from lib.control.orchestration.tui_model import InitiativesScreen
+from lib.control.orchestration.tui_model import InitiativesScreen, attention_items
 from lib.control.tui_style import (
     BAD, GOOD, INERT, MACHINE, TIER_PAIR, TIER_XTERM, WAITING, Line, LineBuilder,
     display_state, rail_text, rail_tiers, short_label, summary_counts, tier_for,
@@ -412,12 +413,24 @@ class DegradationTests(unittest.TestCase):
                 for shortcut in ("Enter attach", "o room", "! need", "a approve", "X close",
                                  "p pause", "s stop", "n new", "? help", "q quit"):
                     self.assertIn(shortcut, footer)
-                self.assertTrue(footer.endswith("q quit"), footer)
+                # The primary group survives whole at both sizes; the retained
+                # view is named after it, so `H` is a labelled toggle and not
+                # an unexplained key.
+                self.assertIn("q quit", footer)
+                self.assertTrue(footer.endswith("View: current"), footer)
                 self.assertNotIn("…", footer)
+                model.initiatives.set_view_scope("all")
+                flipped = next(
+                    str(line) for line in render(model) if "[NAVIGATION]" in line
+                )
+                self.assertTrue(flipped.endswith("View: all retained"), flipped)
+                self.assertIn("q quit", flipped)
+                model.initiatives.set_view_scope("current")
                 model.help_visible = True
                 help_text = "\n".join(render(model))
                 for shortcut in ("N start", "r reconcile", "d diff", "e events", "c candidate",
-                                 "v review", "t retained", "x context", "A archived", "/ filter"):
+                                 "v review", "t retained", "x context", "A archived", "/ filter",
+                                 "H initiative view"):
                     self.assertIn(shortcut, help_text)
 
     def test_the_title_sheds_by_width_keeping_the_demand_last(self) -> None:
@@ -630,6 +643,241 @@ class ReviewFindingTests(unittest.TestCase):
 
     def test_a_negative_column_width_cannot_eat_the_text(self) -> None:
         self.assertEqual(LineBuilder().add("abcdefgh", -3).build(), "")
+
+
+class RetainedViewTitleTests(unittest.TestCase):
+    """The title tells the truth about what it is not showing.
+
+    At the operator's 122x28 terminal the demand and the labels that change
+    WHAT is on screen come first; the shown/loaded/hidden counts carry their
+    own denominators and a marker when the read behind them was short.
+    """
+
+    WIDTH = 122
+    HEIGHT = 28
+
+    def quiet(self, slug: str, state: str = "integrated") -> dict:
+        payload = view(slug, state, [{"type": "work", "state": "succeeded"}])
+        payload.update({
+            "coordinator": None, "coordinator_live": False,
+            "attempts": [{"attempt_id": f"{slug}-1", "node_id": "n0",
+                          "ordinal": 1, "state": "sealed-success"}],
+        })
+        return payload
+
+    def live(self, slug: str, state: str = "running") -> dict:
+        payload = view(slug, state, [{"type": "work", "state": "running"}])
+        payload["attempts"] = [{"attempt_id": f"{slug}-1", "node_id": "n0",
+                                "ordinal": 1, "state": "running"}]
+        return payload
+
+    def model(self, views, **kwargs) -> TuiModel:
+        model = TuiModel(height=self.HEIGHT, width=self.WIDTH)
+        model.initiatives = InitiativesScreen(
+            views, height=self.HEIGHT, width=self.WIDTH, **kwargs,
+        )
+        return model
+
+    def test_hidden_heads_are_counted_with_their_denominator_at_122x28(self) -> None:
+        views = [self.live("busy"), self.quiet("settled"), self.quiet("older")]
+        model = self.model(views)
+        lines = render(model)
+        title = str(lines[0])
+        self.assertLessEqual(len(title), self.WIDTH)
+        self.assertIn("Heads 1/3 · 2 hidden", title)
+        self.assertIn("View: current", title)
+        # The task scope is named literally, and the name every existing
+        # reader of a whole rendered screen has always found it under is kept
+        # beside it rather than replaced.
+        self.assertIn("Tasks: active", title)
+        self.assertIn("Scope: active", title)
+        self.assertNotIn("(partial", title)
+        # H names the other view in the title and the footer together.
+        model.initiatives.set_view_scope("all")
+        lines = render(model)
+        title = str(lines[0])
+        self.assertIn("View: all retained", title)
+        self.assertNotIn("hidden", title, "nothing is held back in All retained")
+        self.assertTrue(
+            next(str(line) for line in lines if "[NAVIGATION]" in line)
+            .endswith("View: all retained"),
+        )
+
+    def test_the_task_scope_is_literal_and_the_legacy_name_still_renders(self) -> None:
+        """`A` is labelled `Tasks:`, and the older `Scope:` name still renders.
+
+        The literal label is the one the operator reads; the compatibility
+        label exists because readers of a whole rendered screen -- including
+        the inherited gate module `tests/python/test_control_increment5.py`,
+        which is read-only here -- have always found the task scope under
+        `Scope:`. Both name the same fact, and the compatibility one is the
+        lowest-priority piece in the title.
+        """
+        for archived, literal, legacy in (
+            (False, "Tasks: active", "Scope: active"),
+            (True, "Tasks: all", "Scope: all"),
+        ):
+            with self.subTest(include_archived=archived):
+                model = self.model([self.live("busy")])
+                model.include_archived = archived
+                whole = "\n".join(str(line) for line in render(model))
+                title = str(render(model)[0])
+                self.assertIn(literal, title)
+                self.assertIn(legacy, whole)
+                # The literal label outranks the compatibility one: it is
+                # never the piece that survives alone.
+                self.assertLess(title.index(literal), title.index(legacy))
+        # The help names the key and the label it toggles, without dropping
+        # the wording the inherited gate reads.
+        model = self.model([self.live("busy")])
+        model.help_visible = True
+        help_text = "\n".join(str(line) for line in render(model))
+        self.assertIn("A archived scope", help_text)
+        self.assertIn("Tasks: active/all", help_text)
+
+    def test_the_marker_is_reachable_with_nothing_hidden_in_either_view(self) -> None:
+        """The accepted finding: the honesty markers were unreachable at hidden 0.
+
+        The marker had been emitted only inside the `N hidden` piece, which is
+        gated on something being held back. All retained holds nothing back by
+        construction, and Current holds nothing back whenever every loaded
+        head is current -- so a head shown only because its evidence was
+        missing carried no marker on either surface.
+        """
+        # A running head with a non-terminal attempt, no live coordinator and
+        # no worker row: it is drawn because the classification that keeps it
+        # rests on evidence the read did not have, not on evidence it had.
+        uncertain = self.live("busy")
+        uncertain.update({"links": [], "coordinator": None, "coordinator_live": None})
+        counts = InitiativesScreen(
+            [uncertain], height=self.HEIGHT, width=self.WIDTH,
+        ).retained_counts
+        self.assertEqual(
+            (counts["shown"], counts["loaded"], counts["hidden"]), (1, 1, 0),
+        )
+        self.assertFalse(counts["partial"])
+        self.assertTrue(counts["unknown"])
+        for scope in ("current", "all"):
+            with self.subTest(view_scope=scope):
+                model = self.model([uncertain], view_scope=scope)
+                title = str(render(model)[0])
+                self.assertIn("Heads 1/1 (unknown)", title)
+                self.assertNotIn("hidden", title)
+                self.assertLessEqual(len(title), self.WIDTH)
+        # All retained hides nothing even with quiet heads beside it, and the
+        # marker still reaches the title with the denominator it loaded.
+        views = [uncertain, self.quiet("settled")]
+        title = str(render(self.model(views, view_scope="all"))[0])
+        self.assertIn("Heads 2/2 (unknown)", title)
+        self.assertNotIn("hidden", title)
+        # A read that is short says partial there too, with nothing hidden.
+        short = copy.deepcopy(views)
+        for item in short:
+            item["_completeness"] = {
+                "complete": False, "truncated": True, "unavailable_records": 0,
+            }
+        title = str(render(self.model(short, view_scope="all"))[0])
+        self.assertIn("partial", title)
+        self.assertIn("Heads 2/2", title)
+        # Certainty on every drawn head leaves the title unmarked: the marker
+        # means something, so it may not simply always be printed.
+        settled = [self.quiet("settled"), self.quiet("older")]
+        title = str(render(self.model(settled, view_scope="all"))[0])
+        self.assertNotIn("(unknown)", title)
+        self.assertNotIn("(partial", title)
+
+    def test_the_marker_names_a_short_or_unreadable_read(self) -> None:
+        views = [self.live("busy"), self.quiet("settled")]
+        views[0]["_completeness"] = {
+            "complete": False, "truncated": True, "unavailable_records": 0,
+        }
+        title = str(render(self.model(views))[0])
+        self.assertIn("Heads 1/2 · 1 hidden (partial, unknown)", title)
+        self.assertLessEqual(len(title), self.WIDTH)
+
+    def test_the_view_label_sheds_after_the_demand_and_the_counts(self) -> None:
+        views = [view("waiting", "awaiting-plan-approval"), self.quiet("settled")]
+        widths = {}
+        for width in (122, 60, 40, 26):
+            model = TuiModel(height=24, width=width)
+            model.initiatives = InitiativesScreen(views, height=24, width=width)
+            widths[width] = str(render(model)[0])
+            self.assertLessEqual(len(widths[width]), width, width)
+        self.assertIn("View: current", widths[122])
+        self.assertIn("Heads 1/2 · 1 hidden", widths[122])
+        self.assertIn("Tasks: active", widths[122])
+        self.assertNotIn("Tasks: active", widths[40])
+        self.assertNotIn("Scope: active", widths[40])
+        self.assertNotIn("Heads", widths[40])
+        self.assertIn("1 need you", widths[40], "the demand is the last thing to go")
+        self.assertEqual(widths[26], "ASHA CONTROL   1 need you")
+        # The non-default view outranks the quieter counts, exactly as the
+        # non-default task scope does.
+        model = TuiModel(height=24, width=60)
+        model.initiatives = InitiativesScreen(views, height=24, width=60, view_scope="all")
+        self.assertIn("View: all retained", str(render(model)[0]))
+
+    def test_shown_rows_and_demand_items_are_different_counts(self) -> None:
+        """One head can carry several asks; the title counts rows, not asks."""
+        crowded = view("crowded", "needs-input", [
+            {"type": "work", "state": "needs-input"},
+            {"type": "review", "state": "needs-input"},
+        ])
+        crowded["approvals"] = [{"state": "requested", "request_id": "r1"}]
+        model = self.model([crowded])
+        title = str(render(model)[0])
+        self.assertIn("1 need you", title)
+        rows = model.initiatives.rows()
+        self.assertEqual(
+            len([row for row in rows if row.kind == "initiative"]), 1,
+        )
+        self.assertEqual(
+            [item["kind"] for item in attention_items([crowded])],
+            ["operator-decision", "salvage-approval", "needs-input", "needs-input"],
+            "the verb reports every ask; the header counts the rows that carry them",
+        )
+
+    def test_the_glyph_mode_and_row_rendering_survive_the_toggle(self) -> None:
+        busy = self.live("busy")
+        for glyphs, env in (("unicode", {}), ("ascii", {"ASHA_CONTROL_GLYPHS": "ascii"})):
+            with self.subTest(glyphs=glyphs):
+                self.assertEqual(tui._glyph_mode(env), glyphs)
+                model = self.model([busy, self.quiet("settled")])
+                model.env = env
+                current = [
+                    str(line) for line in render(model)
+                    if "busy" in str(line) and "ASHA CONTROL" not in str(line)
+                ]
+                model.initiatives.set_view_scope("all")
+                retained = [
+                    str(line) for line in render(model)
+                    if "busy" in str(line) and "ASHA CONTROL" not in str(line)
+                ]
+                self.assertEqual(
+                    current, retained,
+                    "a head's row is drawn identically in either retained view",
+                )
+                self.assertTrue(current)
+
+    def test_the_chair_geometry_is_unchanged_by_the_retained_view(self) -> None:
+        views = [self.live("busy"), self.quiet("settled")]
+        for scope in ("current", "all"):
+            with self.subTest(scope=scope):
+                model = TuiModel(height=36, width=122)
+                model.initiatives = InitiativesScreen(
+                    views, height=36, width=122, view_scope=scope,
+                )
+                lines = render(model)
+                self.assertLessEqual(len(lines), 36)
+                for line in lines:
+                    self.assertLessEqual(len(str(line)), 122)
+                # The view narrows rows; it never resizes the pane it draws in.
+                self.assertEqual(model.initiatives.height, 36)
+                self.assertEqual(model.initiatives.width, 122)
+                self.assertEqual(model.initiatives.visible_capacity, 36 - 16)
+                header = next(str(line) for line in lines if "PIPELINE" in str(line))
+                self.assertIn("WAITING ON", header)
+                self.assertIn("[NAVIGATION]", str(lines[-1]))
 
 
 if __name__ == "__main__":

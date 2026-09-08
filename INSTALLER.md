@@ -77,9 +77,10 @@ selects the test plugin directly.
 
 Launching with `asha <harness>` checks whether that target is installed and
 fresh. Interactive first use offers to configure it; non-interactive first use
-requires `asha --yes <harness>` or `ASHA_YES=1`. Claude and Codex must already
-have their harness-owned native config files, created by running the plain
-harness once. Asha will not fabricate those files.
+requires `asha --yes <harness>` or `ASHA_YES=1`. Claude must already have its harness-owned native config, created by running
+the plain harness once. Direct Codex installation also supports absent
+`config.toml`; Asha never fabricates or edits it. Wrapper bootstrap prerequisites
+are distinct from native hook registration.
 
 If an installer finds pre-v2 global learning sources, it points to the
 reviewed `/session:consolidate` path rather than interpreting them. Migration
@@ -89,9 +90,12 @@ warnings without deleting the evidence or backups.
 
 ### One-time migration from pre-manifest installs
 
-Generated Codex, Copilot, and OpenCode files use ownership manifests. Existing
-generated files cannot be distinguished
-from foreign files safely until adopted. Run the relevant install once with
+Generated Codex, Copilot, and OpenCode files use ownership manifests.
+**Codex `hooks.json` is the strict exception to adoption:** an existing file
+requires the current adapter source, exact destination/type, and current hash
+in a valid ledger. Foreign, identical-but-unrecorded, modified, or ambiguous
+hooks refuse even with `--force`. Inspect interrupted publication manually.
+Other legacy generated files retain their existing adoption policy. Run the relevant install once with
 `--force`:
 
 ```bash
@@ -133,10 +137,9 @@ successful removal whilst leaving live workflows behind.
 │                                       from plugins/<ns>/agents/<agent>.md
 ├── rules/asha.rules                  → native Codex execution-policy prompts
 │                                       for coarse command approval fallback
-└── config.toml
-    └── # ===== asha:start ===== ... # ===== asha:end =====
-        # ↑ fenced region with nested [[hooks.X.hooks]] handlers,
-        #   each tagged "# asha:<ns>"
+├── hooks.json                       # strictly owned native hooks, ledger-recorded
+│                                    # hooks.Event[].hooks[]; no hooks.state
+└── config.toml                      # native-owned; bounded read-only inspection
 ```
 
 **No persona overlay.** The `asha codex` launch path regenerates the capped hot
@@ -309,7 +312,7 @@ Checks (paraphrased):
 
 - **Repo:** installer scripts present, no `CLAUDE_PLUGIN_ROOT` placeholders in markdown
 - **Claude:** no legacy enabledPlugins / installed_plugins.json / marketplaces; no dangling symlinks; tagged hook command paths exist
-- **Codex:** no dangling symlinks; `config.toml` parses as TOML; tagged hook paths exist; native `rules/asha.rules` installed; cached identity instructions are fresh; inherit symlinks intact
+- **Codex:** no dangling symlinks; inline/JSON-only/combined hook evidence, strict ownership, actual expected commands and feature enablement checked; native `rules/asha.rules` installed; cached identity instructions are fresh; inherit symlinks intact
 - **OpenCode:** no dangling skills; generated-artifact manifest matches; plugin carries policy/session/dispose hooks; CLI version satisfies the stable-v1 floor
 
 Optionally schedule it via a systemd user timer or cron; append output to a
@@ -317,11 +320,13 @@ log of your choice (e.g. `drift-check.log`).
 
 ## Backups
 
-Every mutating operation backs up the affected file with a timestamped
-suffix before editing:
+Claude settings edits back up the affected file with a timestamped suffix:
 
 - `~/.claude/settings.json` → `.bak-<YYYYMMDD-HHMMSS>`
-- `~/.codex/config.toml` → `.bak-<YYYYMMDD-HHMMSS>`
+
+Routine Codex install, update, and uninstall inspect `config.toml` read-only:
+they never write or back it up. Native settings, features, and hook trust remain
+Codex/user-owned; Asha's generated `hooks.json` uses its ownership ledger instead.
 
 ## Test plugin
 
@@ -374,8 +379,26 @@ Codex supports SessionStart, PreToolUse, PermissionRequest, PostToolUse,
 PreCompact, PostCompact, UserPromptSubmit, Stop, SubagentStart, and
 SubagentStop. Claude additionally has SessionEnd, Setup, etc. Hooks bound to
 unsupported events are dropped during install with a warning. Asha emits the
-current nested TOML shape (`[[hooks.Event]]` groups containing
-`[[hooks.Event.hooks]]` handlers).
+native JSON shape (`hooks.Event[]` groups containing `hooks[]` command
+handlers). Matchers, timeouts, harness filtering, namespace paths, and optional
+canary selection retain their existing translation semantics. Every command
+carries `env ASHA_HARNESS=codex`. `--only` limits primitives, not the global
+nonoptional hook set; an explicitly selected canary joins that set.
+
+Shared `config.toml`, including features, MCP, workspace trust, and hash-bound
+native hook trust, is strictly read-only during install/update/uninstall.
+Exactly equivalent current-root/selected/canary legacy inline definitions
+produce a hook no-op, with no duplicate JSON. Needed legacy updates/removal or
+ambiguous ownership refuse before the corresponding adapter changes; uninstall
+cannot claim completion while Asha inline hooks remain. Foreign inline hooks
+may coexist with nonduplicate owned JSON, with a mixed-source warning.
+
+Explicit `features.hooks=false` remains disabled. The absent-flag default-true
+evidence is specific to native 0.153.4; unknown versions/defaults report
+unavailable rather than assuming enablement. Registration, enablement, native
+user-controlled trust, and execution are separate claims. Neither doctor
+consumer grants trust or treats slot counts/workspace trust as hook execution.
+See [the preservation boundary](docs/harness-enforcement.md#installer-preservation-boundary).
 
 ### Codex native rules are installed as a coarse fallback
 

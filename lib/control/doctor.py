@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import stat
+import subprocess
 import tomllib
 import unicodedata
 from datetime import datetime, timezone
@@ -351,6 +352,76 @@ def _claimed_hook_homes(config) -> tuple[Path, Path]:
     return claude, codex
 
 
+def codex_hooks_probe(home: Path, asha_home: Path, *, user_home: Path,
+                      root: Path | None = None, with_canary: bool = False) -> Probe:
+    """Read-only installed drift, shared by Control and the installed doctor.
+
+    The real adapter supplies expected commands AND strict ownership/legacy
+    preflight. No copied renderer or permissive ledger parser can turn an empty
+    extraction into green. No staging or native trust operation runs.
+    """
+    root = root or Path(__file__).resolve().parents[2]
+    env = {"PATH": os.environ.get("PATH", os.defpath), "HOME": str(user_home),
+           "CODEX_HOME": str(home), "ASHA_HOME": str(asha_home),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    script = ('source "$1/lib/install.sh"; DRY_RUN=1; FORCE=0; VERBOSE=0; ONLY=""; '
+              'WITH_CANARY="$2"; source "$1/harnesses/codex.sh"; '
+              '_codex_prepare_hooks inspect')
+    try:
+        result = subprocess.run(
+            ["bash", "-c", script, "codex-hooks-probe", str(root), str(int(with_canary))],
+            env=env, cwd=root, capture_output=True, timeout=45,
+        )
+        if result.returncode:
+            raise ValueError(result.stderr.decode("utf-8", "replace")[-2000:])
+        plan = json.loads(result.stdout)
+        expected = json.loads(plan["content"])["hooks"]
+        # The diagnostic-only capture carries the same bounded/nofollow bytes
+        # that passed preflight, not an independent pathname-following read.
+        value = tomllib.loads(plan["config_text"])
+        groups = (value.get("hooks", {}) if plan["mode"] == "legacy" else
+                  json.loads(plan["json_text"])["hooks"]
+                  if plan["hook_identity"] is not None else {})
+        missing = [event for event, wanted in expected.items()
+                   if any(groups.get(event, []).count(group) != 1 for group in wanted)]
+        if not expected or missing:
+            return Probe("hooks", "missing", "Codex missing/duplicate expected hook groups: " +
+                         (", ".join(missing) or "empty source selection"))
+        if plan["mode"] == "json" and groups != expected:
+            return Probe("hooks", "mismatch", "Codex owned hooks.json differs from selected source commands/filters")
+        commands = [h["command"] for blocks in expected.values()
+                    for group in blocks for h in group["hooks"]]
+        for command in commands:
+            words = shlex.split(command)
+            if words[:2] != ["env", "ASHA_HARNESS=codex"] or len(words) < 3:
+                raise ValueError("invalid expected Codex harness command seam")
+            executable = Path(words[2])
+            if not executable.is_absolute() or not executable.is_file() or not os.access(executable, os.X_OK):
+                return Probe("hooks", "missing", "Codex expected hook executable missing: " + str(executable)[-350:])
+        again = subprocess.run(
+            ["bash", "-c", script, "codex-hooks-probe", str(root), str(int(with_canary))],
+            env=env, cwd=root, capture_output=True, timeout=45,
+        )
+        if again.returncode or json.loads(again.stdout) != plan:
+            raise ValueError("Codex hook evidence changed while inspecting")
+        feature = value.get("features", {}).get("hooks")
+        if feature is False:
+            return Probe("hooks", "mismatch", "Codex hooks registered but disabled: explicit features.hooks=false; trust/execution unverified")
+        feature_detail = "explicit features.hooks=true"
+        if feature is None:
+            binary = shutil.which("codex", path=env["PATH"])
+            if not binary:
+                return Probe("hooks", "unavailable", "Codex hooks registered; absent feature flag and native version unavailable; trust/execution unverified")
+            version = subprocess.run([binary, "--version"], env=env, capture_output=True, timeout=5)
+            if version.returncode or version.stdout.strip() != b"codex-cli 0.153.4":
+                return Probe("hooks", "unavailable", "Codex hooks registered; absent feature flag default unsupported for this native version; trust/execution unverified")
+            feature_detail = "0.153.4 default-true evidence only"
+        mixed = "; mixed foreign inline/JSON sources" if plan["mode"] == "json" and value.get("hooks", {}).keys() - {"state"} else ""
+        return Probe("hooks", "match", f"Codex {len(commands)} expected commands registered, executable paths verified; verification Stop and style PostToolUse checked; {feature_detail}{mixed}; native trust and execution NOT verified")
+    except (OSError, ValueError, TypeError, KeyError, RecursionError, subprocess.TimeoutExpired) as exc:
+        return Probe("hooks", "unavailable", "Codex hook inspection refused: " + _safe_detail(exc)[:460])
+
+
 def _hooks_probe(config) -> Probe:
     if config is None:
         return Probe(
@@ -361,14 +432,17 @@ def _hooks_probe(config) -> Probe:
     claude_path = claude_home / "settings.json"
     codex_path = codex_home / "config.toml"
     installed: list[str] = []
-    for name, path in (("claude", claude_path), ("codex", codex_path)):
+    for name, path in (("claude", claude_path), ("codex", codex_path),
+                       ("codex", codex_home / "hooks.json"),
+                       ("codex", config.asha_home / "install-manifests/codex.json")):
         try:
             path.lstat()
         except FileNotFoundError:
             continue
         except OSError:
             pass
-        installed.append(name)
+        if name not in installed:
+            installed.append(name)
     if not installed:
         return Probe(
             "hooks", "match",
@@ -377,9 +451,7 @@ def _hooks_probe(config) -> Probe:
     expected_claude = {
         "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
     }
-    expected_codex = {
-        "SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest", "Stop",
-    }
+    codex_probe = None
     missing: list[str] = []
     try:
         if "claude" in installed:
@@ -400,19 +472,9 @@ def _hooks_probe(config) -> Probe:
                     missing.append(f"claude:{event}")
 
         if "codex" in installed:
-            codex_value = tomllib.loads(_read_install_config(codex_path))
-            codex_hooks = codex_value.get("hooks", {})
-            if not isinstance(codex_hooks, dict):
-                raise ValueError("Codex hooks root is not a table")
-            for event in sorted(expected_codex):
-                groups = codex_hooks.get(event, [])
-                found = any(
-                    _control_hook_command(hook.get("command"), event)
-                    for group in groups if isinstance(group, dict)
-                    for hook in group.get("hooks", []) if isinstance(hook, dict)
-                ) if isinstance(groups, list) else False
-                if not found:
-                    missing.append(f"codex:{event}")
+            codex_probe = codex_hooks_probe(codex_home, config.asha_home, user_home=config.home)
+            if codex_probe.outcome != "match":
+                return codex_probe
     except (ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError, RecursionError) as exc:
         return Probe(
             "hooks", "unavailable",
@@ -424,7 +486,8 @@ def _hooks_probe(config) -> Probe:
     labels = [name.title() for name in installed]
     return Probe(
         "hooks", "match",
-        f"expected {' and '.join(labels)} Control hook command paths are installed and executable",
+        (("Claude Control hooks checked; " if "claude" in installed else "") + codex_probe.detail)[:500]
+        if codex_probe else f"expected {' and '.join(labels)} Control hook command paths are installed and executable",
     )
 
 

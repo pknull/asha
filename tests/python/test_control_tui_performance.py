@@ -2,19 +2,31 @@
 
 from __future__ import annotations
 
+import ast
 import contextlib
 import copy
+import inspect
+import json
 import subprocess
 import threading
+import types
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 from lib.control import tui
-from lib.control.orchestration.tui_model import InitiativesScreen, attention_items
+from lib.control.orchestration import cli
+from lib.control.orchestration import store as tui_store
+from lib.control.orchestration import tui_model
+from lib.control.orchestration.model import record_digest
+from lib.control.orchestration.tui_model import (
+    InitiativesScreen, attention_items, retained_classification,
+)
 from lib.control.reconcile import Evidence, StateObservation
 from lib.control.tmux import TmuxAdapter, TmuxError
+from tests.python.orchestration_execution_fixtures import ExecutionFixture
 from tests.python.test_control_config_model import task_record
 
 
@@ -956,6 +968,709 @@ class ParkedWorkIncrementalPatchTests(unittest.TestCase):
         self.assertEqual(
             [item["kind"] for item in attention_items(screen.views, model.rows)], ["needs-input"],
         )
+
+
+
+
+class BoundedRetainedReadTests(ExecutionFixture, unittest.TestCase):
+    """The one observation is bounded in every dimension, and says what it missed.
+
+    The caps are the store's presentation contract, shared by the native tree
+    and by `asha initiative attention`: there is no second enumeration and no
+    unbounded fallback. Every deadline here is cooperative -- it is checked
+    between directory entries, so one blocking filesystem syscall inside a
+    single record read is not preempted by it, and nothing below claims a
+    syscall-level guarantee. What is asserted is the reported completeness.
+    """
+
+    def archive_head(self) -> str:
+        current = self.initiative()
+        for state in ("running", "ready-for-integration", "integrated", "archived"):
+            if current["state"] == state:
+                continue
+            changed = copy.deepcopy(current)
+            changed.update({
+                "state": state, "state_revision": current["state_revision"] + 1,
+                "updated_at": tui._utc_now().isoformat(
+                    timespec="microseconds",
+                ).replace("+00:00", "Z"),
+            })
+            self.store.save_initiative(changed, expected_digest=record_digest(current))
+            current = changed
+        return current["initiative_id"]
+
+    def test_heads_already_read_survive_a_deadline_before_graph_loading(self) -> None:
+        budget = tui_store.PresentationBudget(deadline_seconds=30.0)
+        def heads(store, shared):
+            records = [self.initiative()]
+            shared.deadline = -1.0
+            return records
+        with mock.patch.object(tui_store.InitiativeStore, "bounded_head_snapshots", heads), \
+                mock.patch.object(tui_store.InitiativeStore, "bounded_presentation_records",
+                                  side_effect=AssertionError("graph read after deadline")):
+            views = tui._load_initiative_views(self.env, budget=budget)
+        self.assertEqual([v["initiative"]["initiative_id"] for v in views], [self.initiative_id])
+        self.assertTrue(views[0]["_graph_unavailable"])
+        self.assertFalse(views[0]["_completeness"]["complete"])
+
+    def test_missing_active_plan_is_incomplete_even_when_all_reads_succeeded(self) -> None:
+        budget = tui_store.PresentationBudget(deadline_seconds=30.0)
+        real_read = tui_store.InitiativeStore.bounded_presentation_records
+        def omit_plan(store, iid, directory, shared):
+            return [] if directory == "plans" else real_read(store, iid, directory, shared)
+        with mock.patch.object(tui_store.InitiativeStore, "bounded_presentation_records", omit_plan):
+            views = tui._load_initiative_views(self.env, budget=budget)
+        self.assertFalse(views[0]["_graph_complete"])
+        self.assertEqual(budget.unavailable, 0)
+        self.assertFalse(tui.observation_completeness(views, budget)["complete"])
+
+    def test_task_cap_is_reported_after_the_head_summary_was_captured(self) -> None:
+        budget = tui_store.PresentationBudget(task_limit=1, deadline_seconds=30.0)
+        views = tui._load_initiative_views(self.env, budget=budget)
+        self.assertTrue(views[0]["_completeness"]["complete"])
+        self.assertEqual(budget.admit_tasks(["first", "second"]), ["first"])
+        report = tui.observation_completeness(views, budget)
+        self.assertFalse(report["complete"])
+        self.assertIn("tasks", report["caps_reached"])
+        self.assertEqual(report["scanned"]["tasks"], 2)
+
+    def test_the_caps_are_the_store_presentation_contract(self) -> None:
+        # The loader keeps literals so this module can load orchestration
+        # lazily; the numbers themselves have exactly one source of truth.
+        self.assertEqual(tui._RETAINED_HEAD_LIMIT, tui_store.PRESENTATION_HEAD_LIMIT)
+        self.assertEqual(tui._RETAINED_PER_HEAD_LIMIT, tui_store.PRESENTATION_PER_HEAD_LIMIT)
+        self.assertEqual(tui._RETAINED_NESTED_LIMIT, tui_store.PRESENTATION_NESTED_LIMIT)
+        self.assertEqual(tui._RETAINED_TASK_LIMIT, tui_store.PRESENTATION_TASK_LIMIT)
+        self.assertEqual(tui._RETAINED_EVENT_TAIL, tui_store.PRESENTATION_EVENT_TAIL)
+        self.assertEqual(
+            tui._RETAINED_DEADLINE_SECONDS, tui_store.PRESENTATION_DEADLINE_SECONDS,
+        )
+        self.assertEqual(
+            (tui._RETAINED_HEAD_LIMIT, tui._RETAINED_TASK_LIMIT,
+             tui._RETAINED_NESTED_LIMIT, tui._RETAINED_PER_HEAD_LIMIT,
+             tui._RETAINED_EVENT_TAIL, tui._RETAINED_DEADLINE_SECONDS),
+            (256, 512, 8192, 512, 50, 2.0),
+        )
+
+    def test_the_read_reports_its_own_completeness(self) -> None:
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        completeness = views[0]["_completeness"]
+        self.assertEqual(completeness["head_limit"], tui._RETAINED_HEAD_LIMIT)
+        self.assertEqual(completeness["deadline_seconds"], tui._RETAINED_DEADLINE_SECONDS)
+        self.assertTrue(completeness["complete"])
+        self.assertFalse(completeness["truncated"])
+        self.assertFalse(completeness["deadline_exceeded"])
+        self.assertEqual(completeness["caps_reached"], [])
+        self.assertEqual(completeness["unavailable_records"], 0)
+        self.assertEqual(completeness["failures"], [])
+        self.assertEqual(completeness["graphs_loaded"], 1)
+        self.assertEqual(completeness["graphs_unavailable"], 0)
+        self.assertEqual(completeness["archived_head_metadata"], 0)
+        self.assertEqual(completeness["limits"], {
+            "heads": 256, "per_head": 512, "nested": 8192, "tasks": 512,
+            "event_tail": 50, "deadline_seconds": 2.0,
+        })
+
+    def test_one_shared_loader_serves_the_tree_and_the_public_verb(self) -> None:
+        """No second enumeration exists: both callers read the same bounded pass."""
+        self.assertNotIn(
+            "list_initiatives",
+            inspect.getsource(tui._load_initiative_views),
+            "the loader must not keep an unbounded registry fallback",
+        )
+        with mock.patch.object(
+            tui_store.InitiativeStore, "list_initiatives",
+            side_effect=AssertionError("the bounded loader must not lock the registry"),
+        ), mock.patch.object(
+            tui_store.InitiativeStore, "list_nodes_snapshot",
+            side_effect=AssertionError("the bounded loader must not use strict listings"),
+        ), mock.patch.object(
+            tui_store.InitiativeStore, "list_events_snapshot",
+            side_effect=AssertionError("the bounded loader must not use strict listings"),
+        ):
+            views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+            with mock.patch(
+                "lib.control.cli._load_rows_for_attention", return_value=(),
+            ):
+                payload = cli._attention_payload(self.env)
+        self.assertEqual(len(views), 1)
+        self.assertEqual(payload["contract"], cli.ATTENTION_CONTRACT)
+        self.assertEqual(payload["observation"]["heads_loaded"], 1)
+
+    def test_an_archived_head_is_metadata_and_never_an_expanded_graph(self) -> None:
+        initiative_id = self.archive_head()
+        with mock.patch.object(
+            tui_store.InitiativeStore, "bounded_presentation_records",
+            side_effect=AssertionError("archived graph must not be read"),
+        ), mock.patch.object(
+            tui_store.InitiativeStore, "bounded_event_sample",
+            side_effect=AssertionError("archived graph must not be read"),
+        ):
+            views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertEqual([view["initiative"]["initiative_id"] for view in views],
+                         [initiative_id])
+        archived = views[0]
+        self.assertTrue(archived["_metadata_only"])
+        self.assertEqual(archived["initiative"]["state"], "archived")
+        for empty in ("nodes", "attempts", "links", "events", "actions", "seals",
+                      "approvals", "reviews", "verifications"):
+            self.assertEqual(archived[empty], [], empty)
+        self.assertEqual(archived["_completeness"]["archived_head_metadata"], 1)
+        self.assertEqual(archived["_completeness"]["graphs_loaded"], 0)
+        # An unread graph is unknown, not zero, and reading it is still
+        # complete: nothing was skipped, it was deliberately never opened.
+        screen = InitiativesScreen(views, height=28, width=122, view_scope="all")
+        head = next(row for row in screen.rows() if row.kind == "initiative")
+        self.assertEqual(head.nodes, "?")
+        self.assertTrue(archived["_completeness"]["complete"])
+
+    def test_a_short_read_marks_the_counts_partial_instead_of_implying_a_total(self) -> None:
+        with mock.patch.object(tui, "_RETAINED_HEAD_LIMIT", 0):
+            views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertEqual(views, [], "nothing loads inside a zero-head budget")
+        # One head loaded under a budget that stops before the rest is partial,
+        # and the title says so rather than presenting a short list as a total.
+        loaded = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        loaded[0]["_completeness"] = dict(
+            loaded[0]["_completeness"], truncated=True, complete=False,
+        )
+        screen = InitiativesScreen(loaded, height=28, width=122)
+        self.assertTrue(screen.retained_counts["partial"])
+        model = tui.TuiModel(height=28, width=122)
+        model.initiatives = screen
+        title = str(tui.render(model)[0])
+        self.assertIn("Heads 1/1", title)
+        self.assertIn("partial", title)
+
+    def test_the_head_cap_stops_the_pass_without_discarding_what_it_read(self) -> None:
+        """Reaching the cap is truncation to report, never work to throw away."""
+        budget = tui_store.PresentationBudget(head_limit=1, deadline_seconds=30.0)
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock(), budget=budget)
+        self.assertEqual(len(views), 1)
+        summary = budget.summary()
+        self.assertEqual(summary["scanned"]["heads"], 1)
+        self.assertTrue(summary["truncated"])
+        self.assertIn("heads", summary["caps_reached"])
+        self.assertFalse(summary["deadline_exceeded"])
+        self.assertFalse(summary["complete"])
+        self.assertEqual(views[0]["_completeness"]["graphs_loaded"], 1)
+        # The report names the budget that was spent, not the module default.
+        self.assertEqual(views[0]["_completeness"]["head_limit"], 1)
+        self.assertEqual(views[0]["_completeness"]["deadline_seconds"], 30.0)
+
+    def test_the_cooperative_deadline_truncates_and_reports_instead_of_lying(self) -> None:
+        # A deadline already spent stops the read between records. Nothing here
+        # claims a blocking syscall inside one record read is preempted.
+        with mock.patch.object(tui, "_RETAINED_DEADLINE_SECONDS", -1.0):
+            views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertEqual(views, [])
+        # The same spent deadline is reported, not hidden, to a caller that
+        # owns the budget and gets no view back to read it from.
+        budget = tui_store.PresentationBudget(deadline_seconds=-1.0)
+        self.assertEqual(
+            tui._load_initiative_views(self.env, tmux=mock.Mock(), budget=budget), [],
+        )
+        summary = tui.observation_completeness([], budget)
+        self.assertTrue(summary["truncated"])
+        self.assertTrue(summary["deadline_exceeded"])
+        self.assertFalse(summary["complete"])
+
+    def test_an_unreadable_record_is_counted_not_silently_dropped(self) -> None:
+        (self.config.initiatives_dir / "not-a-uuid").mkdir()
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        completeness = views[0]["_completeness"]
+        self.assertEqual(completeness["unavailable_records"], 1)
+        self.assertFalse(completeness["complete"])
+        screen = InitiativesScreen(views, height=28, width=122)
+        self.assertTrue(screen.retained_counts["partial"])
+        self.assertEqual(
+            [row.label for row in screen.rows() if row.kind == "initiative"],
+            ["execution-test"],
+            "a record that could not be read never removes one that could",
+        )
+        self.assertFalse(
+            screen.binding_complete,
+            "an incomplete read cannot prove which tasks are unbound",
+        )
+
+    def test_one_malformed_subrecord_keeps_the_head_and_its_readable_rows(self) -> None:
+        """The accepted finding: a bad nested record must degrade, not blank the tree."""
+        clean = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertEqual(len(clean), 1)
+        self.assertTrue(clean[0]["_completeness"]["complete"])
+        readable_nodes = sorted(node["node_id"] for node in clean[0]["nodes"])
+        self.assertTrue(readable_nodes)
+        attempts_dir = self.config.initiatives_dir / self.initiative_id / "attempts"
+        corrupt = attempts_dir / "11111111-2222-4333-8444-555555555555.json"
+        corrupt.write_text("{not json")
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertEqual(len(views), 1, "the head survives its damaged subrecord")
+        completeness = views[0]["_completeness"]
+        self.assertGreaterEqual(completeness["unavailable_records"], 1)
+        self.assertFalse(completeness["complete"])
+        self.assertTrue(any(
+            "attempts" in failure["scope"] for failure in completeness["failures"]
+        ), completeness["failures"])
+        self.assertEqual(
+            sorted(node["node_id"] for node in views[0]["nodes"]), readable_nodes,
+            "the records that read back as themselves are kept",
+        )
+        screen = InitiativesScreen(views, height=28, width=122)
+        self.assertEqual(
+            [row.label for row in screen.rows() if row.kind == "initiative"],
+            ["execution-test"],
+        )
+        self.assertTrue(screen.retained_counts["partial"])
+        model = tui.TuiModel(height=28, width=122)
+        model.initiatives = screen
+        self.assertIn("partial", str(tui.render(model)[0]))
+
+    def test_a_head_whose_graph_cannot_be_read_stays_visible_as_unknown(self) -> None:
+        """Not even an unexpected failure may blank the tree behind one head."""
+        with mock.patch.object(
+            tui_store.InitiativeStore, "bounded_event_sample",
+            side_effect=RuntimeError("event directory exploded"),
+        ):
+            views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertEqual(len(views), 1)
+        self.assertTrue(views[0]["_graph_unavailable"])
+        self.assertEqual(views[0]["_completeness"]["graphs_unavailable"], 1)
+        self.assertEqual(views[0]["_completeness"]["graphs_loaded"], 0)
+        self.assertIn(
+            "RuntimeError", views[0]["_completeness"]["failures"][0]["reason"],
+        )
+        verdict = retained_classification(views[0])
+        self.assertEqual(
+            (verdict["current"], verdict["certain"]), (True, False),
+            "missing evidence keeps a head in Current and marks it uncertain",
+        )
+        screen = InitiativesScreen(views, height=28, width=122)
+        head = next(row for row in screen.rows() if row.kind == "initiative")
+        self.assertEqual(head.nodes, "?")
+        self.assertTrue(screen.retained_counts["unknown"])
+        # And nothing is asserted or denied about a graph nobody could read.
+        self.assertEqual(attention_items(views), [])
+        screen.selection = next(
+            index for index, row in enumerate(screen.rows()) if row.key == head.key
+        )
+        detail = "\n".join(screen.detail_lines())
+        self.assertIn("could not be read in this refresh", detail)
+        self.assertIn("event directory exploded", detail)
+        for claimed in ("no terminal seal", "Review:", "Verify:", "Limits:"):
+            self.assertNotIn(
+                claimed, detail,
+                "the pane may not assert facts over records nobody opened",
+            )
+
+    def test_a_foreign_or_symlinked_record_is_refused_and_counted(self) -> None:
+        clean = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        expected = sorted(node["node_id"] for node in clean[0]["nodes"])
+        self.assertTrue(expected)
+        nodes_dir = self.config.initiatives_dir / self.initiative_id / "nodes"
+        readable = sorted(path.name for path in nodes_dir.glob("*.json"))
+        # A record whose own identity contradicts the filename carrying it.
+        foreign = json.loads((nodes_dir / readable[0]).read_text())
+        foreign["node_id"] = "somewhere-else"
+        (nodes_dir / "not-the-same-node.json").write_text(json.dumps(foreign))
+        # A symlink is refused outright rather than followed to its target,
+        # even though that target is a record this reader would accept.
+        (nodes_dir / "link-a.json").symlink_to(nodes_dir / readable[0])
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        completeness = views[0]["_completeness"]
+        self.assertEqual(completeness["unavailable_records"], 2)
+        self.assertFalse(completeness["complete"])
+        self.assertEqual(
+            sorted(node["node_id"] for node in views[0]["nodes"]), expected,
+            "the valid records beside a refused one are unchanged",
+        )
+        reasons = " ".join(
+            failure["reason"] for failure in completeness["failures"]
+        )
+        self.assertIn("symlink", reasons.lower())
+
+    def test_nested_entries_cost_the_budget_one_by_one_not_one_per_graph(self) -> None:
+        budget = tui_store.PresentationBudget(deadline_seconds=30.0)
+        tui._load_initiative_views(self.env, tmux=mock.Mock(), budget=budget)
+        summary = budget.summary()
+        entries = 0
+        root = self.config.initiatives_dir / self.initiative_id
+        for directory in ("plans", "nodes", "attempts", "links", "actions",
+                          "approvals", "seals", "reviews", "verifications",
+                          "coordinators", "events"):
+            path = root / directory
+            if path.is_dir():
+                entries += len([item for item in path.iterdir()
+                                if not item.name.startswith(".")])
+        self.assertEqual(summary["scanned"]["nested"], entries)
+        self.assertGreater(entries, 1, "one graph must cost more than one unit")
+        self.assertTrue(summary["complete"])
+
+    def test_the_nested_cap_truncates_the_observation_and_names_itself(self) -> None:
+        budget = tui_store.PresentationBudget(nested_limit=1, deadline_seconds=30.0)
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock(), budget=budget)
+        summary = budget.summary()
+        self.assertEqual(len(views), 1, "the head is kept, its graph is short")
+        self.assertTrue(summary["truncated"])
+        self.assertIn("nested", summary["caps_reached"])
+        self.assertFalse(summary["complete"])
+        self.assertFalse(tui_model._view_complete(views[0]))
+
+    def test_the_per_head_cap_truncates_one_head_without_ending_the_pass(self) -> None:
+        budget = tui_store.PresentationBudget(per_head_limit=1, deadline_seconds=30.0)
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock(), budget=budget)
+        summary = budget.summary()
+        self.assertEqual(len(views), 1)
+        self.assertIn("per-head", summary["caps_reached"])
+        self.assertLessEqual(summary["scanned"]["nested"], 2)
+        self.assertFalse(summary["complete"])
+
+    def test_the_event_sample_is_capped_and_never_claimed_as_exact_history(self) -> None:
+        budget = tui_store.PresentationBudget(event_tail=1, deadline_seconds=30.0)
+        events, complete = self.store.bounded_event_sample(self.initiative_id, budget)
+        whole = self.store.list_events_snapshot(self.initiative_id)
+        self.assertGreater(len(whole), 1, "the fixture must have a history to cap")
+        self.assertEqual(len(events), 1)
+        self.assertEqual(events[0]["sequence"], whole[-1]["sequence"])
+        self.assertFalse(
+            complete, "a capped sample is a sample, never an exact tail",
+        )
+        # Uncapped, the same read is the journal and says so.
+        whole_budget = tui_store.PresentationBudget(deadline_seconds=30.0)
+        sample, exact = self.store.bounded_event_sample(
+            self.initiative_id, whole_budget,
+        )
+        self.assertTrue(exact)
+        self.assertEqual(
+            [item["sequence"] for item in sample],
+            [item["sequence"] for item in whole],
+        )
+
+    def test_a_noncontiguous_journal_is_not_offered_as_complete_evidence(self) -> None:
+        events_dir = self.config.initiatives_dir / self.initiative_id / "events"
+        names = sorted(path.name for path in events_dir.glob("*.json"))
+        self.assertGreater(len(names), 1)
+        (events_dir / names[0]).unlink()
+        budget = tui_store.PresentationBudget(deadline_seconds=30.0)
+        _events, complete = self.store.bounded_event_sample(self.initiative_id, budget)
+        self.assertFalse(complete)
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertFalse(views[0]["_events_complete"])
+
+
+class RetainedViewRefreshTests(unittest.TestCase):
+    """A refresh reveals hidden work that starts asking, and re-hides it after.
+
+    Both refresh paths are covered: the full rebuild an initiative change
+    forces, and the task-only cache patch, which must not be able to leave a
+    newly asking head off screen just because the head row was not cached.
+    """
+
+    INITIATIVE = "11111111-1111-4111-8111-111111111111"
+    TASK = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    ATTEMPT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    def setUp(self) -> None:
+        self.task = task_record(task_id=self.TASK, slug="quiet-worker")
+        self.run_id = self.task["runs"][0]["run_id"]
+
+    def view(self) -> dict:
+        view = IncrementalSnapshotTests._initiative("paused")
+        view["nodes"] = [{
+            "node_id": "implementation-a", "state": "succeeded", "type": "work",
+            "goal": "Implement A",
+        }]
+        view["attempts"] = [{
+            "attempt_id": self.ATTEMPT, "node_id": "implementation-a",
+            "ordinal": 1, "state": "sealed-success",
+        }]
+        view["links"] = [{"attempt_id": self.ATTEMPT, "control_task_id": self.TASK}]
+        return view
+
+    def test_a_completeness_change_alone_invalidates_the_cached_rows(self) -> None:
+        """Cache identity carries every completeness the classification reads.
+
+        A refresh that changes nothing but what the read could see still
+        changes which heads belong on screen and what the counts may claim, so
+        a row set built under one completeness must never be reused under
+        another.
+        """
+        screen = InitiativesScreen([self.view()], height=28, width=122)
+        screen.rows()
+        for field, value in (
+            ("_completeness", {"complete": False, "truncated": True,
+                               "unavailable_records": 0}),
+            ("_graph_complete", False),
+            ("_graph_unavailable", True),
+            ("_events_complete", False),
+            ("_metadata_only", True),
+        ):
+            with self.subTest(field=field):
+                fresh = InitiativesScreen([self.view()], height=28, width=122)
+                before = fresh._current_rows_key()
+                fresh.rows()
+                fresh.views[0][field] = value
+                self.assertNotEqual(
+                    fresh._current_rows_key(), before,
+                    "the cache key must depend on this completeness",
+                )
+        # And the view scope is part of the same identity.
+        scoped = InitiativesScreen([self.view()], height=28, width=122)
+        key = scoped._current_rows_key()
+        scoped.view_scope = "all"
+        self.assertNotEqual(scoped._current_rows_key(), key)
+
+    def worker(self, state: str, detail: str, observed_at: str) -> tui.TuiRow:
+        reconciliation = {
+            "contract": "asha.control-reconciliation.v1", "task_id": self.TASK,
+            "state": state, "blocker": None,
+            "evidence": [{"state": state, "detail": detail}],
+            "runs": [{
+                "contract": "asha.control-run-reconciliation.v1",
+                "run_id": self.run_id, "state": "active", "blocker": None, "evidence": [],
+            }],
+        }
+        observation = StateObservation(state, self.run_id, "events", observed_at, "fresh", detail)
+        return tui.TuiRow.from_records(copy.deepcopy(self.task), reconciliation, observation)
+
+    def snapshot(self, cache: tui.RefreshCache, worker: tui.TuiRow) -> tui.RefreshSnapshot:
+        rows, changed, removed, order_changed = cache.stabilize_rows([worker])
+        views, views_changed = cache.stabilize_branch("initiatives", (self.view(),), None)
+        rooms, rooms_changed = cache.stabilize_branch("rooms", (), None)
+        return _snapshot(
+            rows, changed_rows=changed, removed=removed, order_changed=order_changed,
+            initiatives=views, rooms=rooms, initiatives_changed=views_changed,
+            rooms_changed=rooms_changed,
+        )
+
+    @staticmethod
+    def facts(screen: InitiativesScreen) -> list:
+        return [(row.key, row.state, row.attention, row.worker) for row in screen.rows()]
+
+    def rebuild(self, model: tui.TuiModel) -> InitiativesScreen:
+        screen = model.initiatives
+        return InitiativesScreen(
+            screen.views, height=screen.height, width=screen.width,
+            expanded=set(screen.expanded), task_rows=model.rows,
+            view_scope=screen.view_scope,
+        )
+
+    def heads(self, screen: InitiativesScreen) -> list:
+        return [row.id for row in screen.rows() if row.kind == "initiative"]
+
+    def test_a_task_only_patch_reveals_a_hidden_head_that_starts_asking(self) -> None:
+        cache = tui.RefreshCache()
+        cache.begin_generation(0)
+        model = tui.TuiModel(())
+        model._ensure_screen()
+        quiet = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:05Z"))
+        tui._apply_refresh_snapshot(model, {}, quiet)
+        cache.mark_applied(quiet)
+        screen = model.initiatives
+        self.assertEqual(self.heads(screen), [], "a sealed, parked, idle head is quiet")
+        self.assertEqual(screen.retained_counts, {
+            "shown": 0, "loaded": 1, "hidden": 1, "partial": False, "unknown": False,
+        })
+        # The worker beneath it reaches a prompt on a task-only pass.
+        prompt = self.snapshot(
+            cache, self.worker("needs-input", "pane shows the input prompt", "2026-08-14T18:00:06Z"),
+        )
+        self.assertFalse(prompt.initiative_views_changed)
+        self.assertEqual([row.task["task_id"] for row in prompt.changed_rows], [self.TASK])
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, prompt))
+        cache.mark_applied(prompt)
+        self.assertEqual(self.heads(screen), [self.INITIATIVE], "the ask brings its head back")
+        self.assertEqual(screen.retained_counts["shown"], 1)
+        self.assertEqual(screen.retained_counts["hidden"], 0)
+        self.assertEqual(self.facts(screen), self.facts(self.rebuild(model)))
+        self.assertEqual(
+            [item["kind"] for item in attention_items(screen.views, model.rows)], ["worker"],
+        )
+        # Answered, the evidence permits the quiet classification again.
+        answered = self.snapshot(
+            cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:07Z"),
+        )
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, answered))
+        cache.mark_applied(answered)
+        self.assertEqual(self.heads(screen), [])
+        self.assertEqual(screen.retained_counts["hidden"], 1)
+        self.assertEqual(self.facts(screen), self.facts(self.rebuild(model)))
+        # All retained draws it throughout, with the same facts a rebuild has.
+        screen.set_view_scope("all")
+        self.assertEqual(self.heads(screen), [self.INITIATIVE])
+        self.assertEqual(self.facts(screen), self.facts(self.rebuild(model)))
+
+    def test_a_full_refresh_reveals_a_hidden_head_that_starts_asking(self) -> None:
+        cache = tui.RefreshCache()
+        cache.begin_generation(0)
+        model = tui.TuiModel(())
+        model._ensure_screen()
+        quiet = self.snapshot(cache, self.worker("idle", "turn stopped", "2026-08-14T18:00:05Z"))
+        tui._apply_refresh_snapshot(model, {}, quiet)
+        cache.mark_applied(quiet)
+        screen = model.initiatives
+        self.assertEqual(self.heads(screen), [])
+
+        # The initiative branch changes: the node itself now needs a decision,
+        # which is durable demand and forces a full rebuild, not a patch.
+        asking = self.view()
+        asking["initiative"]["state"] = "running"
+        asking["nodes"][0]["state"] = "needs-input"
+        rows, changed, removed, order = cache.stabilize_rows([
+            self.worker("idle", "turn stopped", "2026-08-14T18:00:05Z"),
+        ])
+        views, views_changed = cache.stabilize_branch("initiatives", (asking,), None)
+        rooms, rooms_changed = cache.stabilize_branch("rooms", (), None)
+        snapshot = _snapshot(
+            rows, changed_rows=changed, removed=removed, order_changed=order,
+            initiatives=views, rooms=rooms, initiatives_changed=views_changed,
+            rooms_changed=rooms_changed,
+        )
+        self.assertTrue(snapshot.initiative_views_changed)
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, snapshot))
+        cache.mark_applied(snapshot)
+        self.assertEqual(self.heads(screen), [self.INITIATIVE])
+        self.assertEqual(screen.retained_counts["hidden"], 0)
+        self.assertEqual(self.facts(screen), self.facts(self.rebuild(model)))
+        self.assertEqual(
+            [item["kind"] for item in attention_items(screen.views, model.rows)],
+            ["needs-input"],
+        )
+
+    def test_a_patch_that_keeps_the_head_keeps_the_counts_truthful(self) -> None:
+        cache = tui.RefreshCache()
+        cache.begin_generation(0)
+        model = tui.TuiModel(())
+        model._ensure_screen()
+        prompt = self.snapshot(
+            cache, self.worker("needs-input", "pane shows the input prompt", "2026-08-14T18:00:05Z"),
+        )
+        tui._apply_refresh_snapshot(model, {}, prompt)
+        cache.mark_applied(prompt)
+        screen = model.initiatives
+        self.assertEqual(self.heads(screen), [self.INITIATIVE])
+        head_before = next(row for row in screen.rows() if row.kind == "initiative")
+
+        still_asking = self.snapshot(
+            cache, self.worker("needs-input", "pane shows the trust prompt", "2026-08-14T18:00:06Z"),
+        )
+        self.assertFalse(still_asking.initiative_views_changed)
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, still_asking))
+        cache.mark_applied(still_asking)
+        self.assertIs(
+            next(row for row in screen.rows() if row.kind == "initiative"), head_before,
+            "the head row is reused: this really is the patched path",
+        )
+        self.assertEqual(screen.retained_counts, {
+            "shown": 1, "loaded": 1, "hidden": 0, "partial": False, "unknown": False,
+        })
+        self.assertEqual(
+            screen.retained_counts, self.rebuild(model).retained_counts,
+            "the patched counts are the counts a full rebuild would report",
+        )
+
+    def test_an_unbound_task_change_still_patches_without_a_rebuild(self) -> None:
+        cache = tui.RefreshCache()
+        cache.begin_generation(0)
+        model = tui.TuiModel(())
+        model._ensure_screen()
+        first = tui._terminal_row(_terminal_task("loose"))
+        rows, changed, removed, order = cache.stabilize_rows([first])
+        cache.stabilize_branch("initiatives", (), None)
+        cache.stabilize_branch("rooms", (), None)
+        applied = _snapshot(rows, changed_rows=changed, removed=removed, order_changed=order)
+        tui._apply_refresh_snapshot(model, {}, applied)
+        cache.mark_applied(applied)
+        before = next(row for row in model.initiatives.rows() if row.task_id is not None)
+
+        changed_task = copy.deepcopy(first.task)
+        changed_task["updated_at"] = "2026-08-14T18:00:02Z"
+        rows, changed, removed, order = cache.stabilize_rows([tui._terminal_row(changed_task)])
+        _, initiatives_changed = cache.stabilize_branch("initiatives", (), None)
+        _, rooms_changed = cache.stabilize_branch("rooms", (), None)
+        self.assertTrue(tui._apply_refresh_snapshot(model, {}, _snapshot(
+            rows, changed_rows=changed, removed=removed, order_changed=order,
+            initiatives_changed=initiatives_changed, rooms_changed=rooms_changed,
+        )))
+        after = next(row for row in model.initiatives.rows() if row.task_id is not None)
+        self.assertIsNot(after, before)
+        self.assertEqual(after.task_id, before.task_id)
+
+
+class OwnedTestFileGuardTests(unittest.TestCase):
+    """Running an owned test file directly must collect exactly what `-m` does.
+
+    The accepted finding: a ``if __name__ == "__main__": unittest.main()``
+    guard placed anywhere but the end of a file calls `unittest.main()` before
+    the classes below it exist, so direct execution silently omits them while
+    every gate passes, because every gate invokes ``python3 -m unittest
+    <module>`` where the guard is false.
+
+    The equality below is measured through the real mechanism rather than a
+    proxy for it: the file is executed with ``__name__`` set to ``"__main__"``
+    and `unittest.main` replaced by a collector, so the number counted is
+    exactly what the guard would have handed the runner at the exact point it
+    fires.
+    """
+
+    OWNED = (
+        "test_control_tui_initiatives_mode",
+        "test_control_tui_style",
+        "test_control_tui_performance",
+        "test_orchestration_tui_model",
+    )
+
+    def owned_path(self, name: str) -> Path:
+        return Path(__file__).resolve().parent / f"{name}.py"
+
+    def direct_collection(self, path: Path) -> int:
+        """What `unittest.main()` would collect when this file is run directly."""
+        module = types.ModuleType("__main__")
+        module.__file__ = str(path)
+        collected: list[int] = []
+
+        def collector(*args, **kwargs):
+            del args, kwargs
+            collected.append(
+                unittest.defaultTestLoader.loadTestsFromModule(module).countTestCases()
+            )
+
+        compiled = compile(path.read_text(), str(path), "exec")
+        with mock.patch.object(unittest, "main", collector):
+            exec(compiled, module.__dict__)  # noqa: S102 - the guard is the subject
+        self.assertEqual(
+            len(collected), 1, f"{path.name} never reached its own guard",
+        )
+        return collected[0]
+
+    def test_direct_and_module_collection_are_equal_for_every_owned_file(self) -> None:
+        for name in self.OWNED:
+            with self.subTest(module=name):
+                by_module = unittest.defaultTestLoader.loadTestsFromName(
+                    f"tests.python.{name}",
+                ).countTestCases()
+                self.assertGreater(by_module, 0)
+                self.assertEqual(
+                    self.direct_collection(self.owned_path(name)), by_module,
+                    "running this file directly must not omit a single test",
+                )
+
+    def test_the_guard_is_the_last_statement_in_every_owned_file(self) -> None:
+        for name in self.OWNED:
+            with self.subTest(module=name):
+                body = ast.parse(self.owned_path(name).read_text()).body
+                guards = [
+                    index for index, node in enumerate(body)
+                    if isinstance(node, ast.If) and any(
+                        isinstance(child, ast.Name) and child.id == "__name__"
+                        for child in ast.walk(node.test)
+                    )
+                ]
+                self.assertEqual(len(guards), 1, "exactly one entry-point guard")
+                self.assertEqual(
+                    guards[0], len(body) - 1,
+                    "no test class may be defined after the guard",
+                )
+
 
 
 if __name__ == "__main__":

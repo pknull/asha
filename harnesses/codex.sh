@@ -13,9 +13,8 @@
 #                                  plugins/<ns>/commands/<cmd>.md
 #   agents/<ns>-<agent>.toml     → generated Codex custom-agent TOML from
 #                                  plugins/<ns>/agents/<agent>.md
-#   config.toml                  → existing user config + appended fenced
-#                                  region of [[hooks.X]] arrays tagged
-#                                  "# asha:<ns>"
+#   hooks.json                   → strictly owned native hook definitions
+#   config.toml                  → native user config, inspected READ-ONLY
 #   rules/asha.rules             → native Codex execution-policy prompts for
 #                                  coarse shell approvals where hooks cannot
 #                                  be relied upon as the enforcement boundary
@@ -28,6 +27,7 @@
 
 CODEX_HOME="$(asha_harness_home codex)"
 CODEX_CONFIG_FILE="$CODEX_HOME/config.toml"
+CODEX_HOOKS_FILE="$CODEX_HOME/hooks.json"
 CODEX_SKILLS_DIR="$CODEX_HOME/skills"
 CODEX_AGENTS_DIR="$CODEX_HOME/agents"
 CODEX_RULES_DIR="$CODEX_HOME/rules"
@@ -62,31 +62,6 @@ _codex_is_skip_plugin() {
   return 1
 }
 
-# Atomic write to config.toml, validated by tomllib re-parse.
-_codex_atomic_write_config() {
-  local content="$1"
-  local tmp="$CODEX_CONFIG_FILE.tmp.$$"
-  if [[ $DRY_RUN -eq 1 ]]; then
-    log "would write $CODEX_CONFIG_FILE ($(printf '%s' "$content" | wc -c) bytes)"
-    return 0
-  fi
-  printf '%s' "$content" > "$tmp"
-  python3 -c "import sys; tomllib=__import__('tomllib' if sys.version_info >= (3, 11) else 'tomli'); tomllib.load(open(sys.argv[1],'rb'))" "$tmp" \
-    || { rm -f "$tmp"; die "config.toml would be invalid TOML after write" 4; }
-  mv "$tmp" "$CODEX_CONFIG_FILE"
-}
-
-_codex_backup_done=0
-_codex_backup_config_once() {
-  [[ $DRY_RUN -eq 1 ]] && return 0
-  [[ $_codex_backup_done -eq 1 ]] && return 0
-  local stamp; stamp="$(date +%Y%m%d-%H%M%S)"
-  local bkp="$CODEX_CONFIG_FILE.bak-$stamp"
-  cp -p "$CODEX_CONFIG_FILE" "$bkp"
-  say "backed up config.toml -> $bkp"
-  _codex_backup_done=1
-}
-
 # Extract the `name:` value from a YAML frontmatter file. Echoes the name
 # (or empty string if not present). Looks at the first frontmatter block only.
 _codex_skill_name_from_md() {
@@ -119,7 +94,7 @@ codex_install_skills() {
     return 0
   fi
   [[ -d "$src_dir" ]] || return 0
-  validate_skill_source "$src_dir" "$kind"
+  validate_skill_source "$src_dir" "$kind" || return $?
 
   local skill
   while IFS= read -r skill; do
@@ -130,16 +105,16 @@ codex_install_skills() {
     local dest_name
     if [[ "$kind" == imported ]]; then
       dest_name="${ns}-${skill_name}"
-      prepare_imported_skill_adapter "${skill%/}" "$dest_name"
+      prepare_imported_skill_adapter "${skill%/}" "$dest_name" || return $?
       mklink_imported_skill "${skill%/}" "$ASHA_IMPORTED_SKILL_ADAPTER" \
-        "$CODEX_SKILLS_DIR/${dest_name}" "codex-skill"
+        "$CODEX_SKILLS_DIR/${dest_name}" "codex-skill" || return $?
       continue
     fi
     if ! dest_name="$(plugin_skill_destination_name "${skill%/}" "$ns")"; then
       continue
     fi
 
-    mklink "${skill%/}" "$CODEX_SKILLS_DIR/${dest_name}" "codex-skill"
+    mklink "${skill%/}" "$CODEX_SKILLS_DIR/${dest_name}" "codex-skill" || return $?
   done < <(skill_dirs_from_source "$src_dir" "$kind")
 }
 
@@ -178,8 +153,8 @@ codex_install_command_skills() {
       continue
     fi
 
-    ensure_dir "$skill_dir"
-    _codex_emit_command_skill "$cmd" "$skill_dir/SKILL.md"
+    ensure_dir "$skill_dir" || return $?
+    _codex_emit_command_skill "$cmd" "$skill_dir/SKILL.md" || return $?
   done
 }
 
@@ -238,14 +213,14 @@ This file was rendered from an Asha command source. Treat slash-command and Clau
 """
 sys.stdout.write(f"---\n{new_fm}\n---\n{preamble}{body}")
 PYEOF
-)"
+)" || return $?
 
   local prepared
-  prepared="$(mktemp)"
+  prepared="$(mktemp)" || return $?
   printf '%s' "$content" > "$prepared"
   if declare -F asha_artifact_install_prepared >/dev/null 2>&1 \
      && [[ "${ASHA_ARTIFACT_HARNESS:-}" == codex ]]; then
-    asha_artifact_install_prepared codex "$src" "$dest" codex-command-skill "$prepared"
+    asha_artifact_install_prepared codex "$src" "$dest" codex-command-skill "$prepared" || { local rc=$?; rm -f "$prepared"; return "$rc"; }
   elif [[ $DRY_RUN -eq 1 ]]; then
     say "  EMIT [codex-command-skill]  $src -> $dest"
   else
@@ -273,7 +248,7 @@ codex_install_agents() {
   done
   [[ $has -eq 1 ]] || return 0
 
-  ensure_dir "$CODEX_AGENTS_DIR"
+  ensure_dir "$CODEX_AGENTS_DIR" || return $?
   for agent in "$src_dir"/*.md; do
     [[ -f "$agent" ]] || continue
     local base declared_name dest legacy existing
@@ -293,7 +268,7 @@ codex_install_agents() {
       fi
     fi
 
-    _codex_emit_agent_toml "$agent" "$dest"
+    _codex_emit_agent_toml "$agent" "$dest" || return $?
   done
 }
 
@@ -345,14 +320,14 @@ print(f"name = {json.dumps(name)}")
 print(f"description = {json.dumps(description)}")
 print("developer_instructions = " + json.dumps(instructions))
 PYEOF
-)"
+)" || return $?
 
   local prepared
-  prepared="$(mktemp)"
+  prepared="$(mktemp)" || return $?
   printf '%s\n' "$content" > "$prepared"
   if declare -F asha_artifact_install_prepared >/dev/null 2>&1 \
      && [[ "${ASHA_ARTIFACT_HARNESS:-}" == codex ]]; then
-    asha_artifact_install_prepared codex "$src" "$dest" codex-agent-toml "$prepared"
+    asha_artifact_install_prepared codex "$src" "$dest" codex-agent-toml "$prepared" || { local rc=$?; rm -f "$prepared"; return "$rc"; }
   elif [[ $DRY_RUN -eq 1 ]]; then
     say "  EMIT [codex-agent-toml]  $src -> $dest"
   else
@@ -369,7 +344,7 @@ PYEOF
 
 codex_install_rules() {
   local content user_home rules_template
-  rules_template="$(mktemp)"
+  rules_template="$(mktemp)" || return $?
   cat > "$rules_template" <<'EOF'
 # Managed by asha installer; do not edit.
 #
@@ -482,65 +457,18 @@ EOF
     return 0
   fi
 
-  ensure_dir "$CODEX_RULES_DIR"
+  ensure_dir "$CODEX_RULES_DIR" || return $?
   if [[ -f "$CODEX_RULES_FILE" ]] && [[ "$(cat "$CODEX_RULES_FILE")" == "$content" ]]; then
     log "[codex] native rules unchanged: $CODEX_RULES_FILE"
     return 0
   fi
-  printf '%s\n' "$content" > "$CODEX_RULES_FILE"
+  printf '%s\n' "$content" > "$CODEX_RULES_FILE" || return $?
   log "[codex] installed native execution-policy rules: $CODEX_RULES_FILE"
 }
 
 # ---------------------------------------------------------------------------
-# Hooks (TOML emission, fenced, atomic)
+# Hooks (native owned JSON; legacy TOML is read-only)
 # ---------------------------------------------------------------------------
-
-# Excise the asha fence, PRESERVING codex-owned content inside it: codex
-# persists hook trust as [hooks.state] subtables appended after the hook
-# arrays it trusts — which lands mid-fence, so a naive region strip destroys
-# every trust grant on reinstall (found live 2026-07-26: 11 trusted_hash
-# entries wiped). Preserved state is re-emitted after the fence region,
-# skipped entirely if a [hooks.state] table already exists outside it.
-_codex_excise_fence() {
-  [[ -f "$CODEX_CONFIG_FILE" ]] || return 0
-  PYTHONIOENCODING=utf-8 python3 - "$CODEX_CONFIG_FILE" "$CODEX_HOOK_FENCE_START" "$CODEX_HOOK_FENCE_END" <<'PYEOF'
-import sys
-path, start, end = sys.argv[1], sys.argv[2], sys.argv[3]
-out, preserved = [], []
-in_fence = False
-in_state = False
-for line in open(path, encoding="utf-8").read().splitlines():
-    if line == start:
-        in_fence, in_state = True, False
-        continue
-    if line == end:
-        in_fence, in_state = False, False
-        continue
-    if not in_fence:
-        out.append(line)
-        continue
-    stripped = line.lstrip()
-    if stripped.startswith("[hooks.state]") or stripped.startswith('[hooks.state.'):
-        in_state = True
-        preserved.append(line)
-        continue
-    if in_state:
-        if stripped.startswith("[") and not stripped.startswith('[hooks.state'):
-            in_state = False  # a different table ends the state block; drop below
-        else:
-            preserved.append(line)
-            continue
-    # anything else inside the fence is asha-owned: dropped for the rebuild
-already_outside = any(l.lstrip().startswith("[hooks.state]")
-                      or l.lstrip().startswith('[hooks.state.') for l in out)
-if preserved and not already_outside:
-    while preserved and not preserved[-1].strip():
-        preserved.pop()
-    out += ["", "# codex-owned hook trust state (preserved across asha fence rewrites)"]
-    out += preserved
-sys.stdout.write("\n".join(out) + ("\n" if out else ""))
-PYEOF
-}
 
 _codex_emit_hooks_for_plugin() {
   local abs_root="$1" hooks_json="$2" ns="$3"
@@ -604,123 +532,491 @@ PYEOF
 }
 
 _codex_build_hook_block() {
-  local plugin_dir ns plugin_root abs_root hooks_json count=0
+  local plugin_dir ns plugin_root abs_root hooks_json count=0 plugin_list
   local emitted="$CODEX_HOOK_FENCE_START"$'\n'
 
+  plugin_list="$(
+    if [[ "${1:-}" != all ]] && declare -F all_plugin_dirs >/dev/null; then
+      all_plugin_dirs
+    else
+      # Uninstall has no install-only enumeration helpers. Ownership includes
+      # previously enabled optional plugins as well as currently selected ones.
+      for plugin_root in "$PLUGINS_DIR"/*/; do
+        [[ -d "$plugin_root" ]] || continue
+        plugin_root="${plugin_root%/}"
+        printf '%s\n' "${plugin_root##*/}"
+      done
+    fi
+  )" || return 4
   while read -r plugin_dir; do
     [[ -n "$plugin_dir" ]] || continue
     [[ -d "$PLUGINS_DIR/$plugin_dir" ]] || continue
     _codex_is_skip_plugin "$plugin_dir" && continue
 
     plugin_root="$PLUGINS_DIR/$plugin_dir"
-    abs_root="$(resolve_path "$plugin_root")"
+    abs_root="$(resolve_path "$plugin_root")" || return 4
     if   [[ -f "$plugin_root/hooks/hooks.json" ]]; then hooks_json="$plugin_root/hooks/hooks.json"
     elif [[ -f "$plugin_root/hooks.json"      ]]; then hooks_json="$plugin_root/hooks.json"
     else continue
     fi
 
     local lifecycles_count
-    lifecycles_count="$(jq -r '.hooks // {} | length' "$hooks_json")"
+    lifecycles_count="$(jq -r '.hooks // {} | length' "$hooks_json")" || return 4
     [[ "$lifecycles_count" -gt 0 ]] || continue
 
-    ns="$(ns_for "$plugin_dir")"
+    ns="$(ns_for "$plugin_dir")" || return 4
     local plugin_emit
-    plugin_emit="$(_codex_emit_hooks_for_plugin "$abs_root" "$hooks_json" "$ns")"
+    plugin_emit="$(_codex_emit_hooks_for_plugin "$abs_root" "$hooks_json" "$ns")" || return 4
     [[ -z "$plugin_emit" ]] && continue
     emitted+="$plugin_emit"$'\n'
     count=$((count+1))
-  done < <(all_plugin_dirs)
+  done <<< "$plugin_list"
 
   emitted+="$CODEX_HOOK_FENCE_END"$'\n'
   [[ $count -eq 0 ]] && return 1
   printf '%s' "$emitted"
 }
 
-# Codex runs a configured hook only when BOTH [features] hooks = true is set
-# AND the entry has persisted trust (hash-bound, granted interactively; see
-# docs/harness-enforcement.md "Codex hook gating", 2026-07-26). The installer
-# owns the fence, not [features] — so this ADDS the key only when absent and
-# never rewrites an explicit user value (hooks = false stays untouched). The
-# trust grant remains the operator's interactive step; uninstall leaves the
-# flag in place (shared config, user-visible).
-_codex_ensure_hooks_feature() {
-  [[ -f "$CODEX_CONFIG_FILE" ]] || return 0
-  # Detect first (read-only) so the backup fires only when a write follows.
-  local needs
-  needs="$(python3 -c '
+# Codex-local preflight and publication. The lexical TOML reader is retained
+# solely to classify legacy inline definitions, never to rewrite shared config.
+# Plans bind the owned JSON and consumed manifest, NOT a native config snapshot.
+_codex_hook_plan() {
+  local manifest
+  manifest="$(asha_artifact_manifest_path codex)" || return $?
+  python3 - "$CODEX_CONFIG_FILE" "$CODEX_HOOK_FENCE_START" "$CODEX_HOOK_FENCE_END" \
+    "$CODEX_HOOKS_FILE" "$manifest" "$MARKET_ROOT/harnesses/codex.sh" "$$" "$@" <<'PYEOF'
+import hashlib
+import json
+import math
+import os
+import re
+import stat
 import sys
-tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
+import tempfile
+
+tomllib = __import__('tomllib' if sys.version_info >= (3, 11) else 'tomli')
+path, start, end, destination, manifest, source, shell_pid, action = sys.argv[1:9]
+LIMIT = 4 * 1024 * 1024
+
+def refuse(message):
+    raise ValueError(message)
+
+def identity(s):
+    return [s.st_dev, s.st_ino, s.st_uid, s.st_gid, s.st_mode,
+            s.st_size, s.st_mtime_ns, s.st_ctime_ns, s.st_nlink]
+
+def canonical(value):
+    return (isinstance(value, str) and value.startswith('/') and
+            os.path.normpath(value) == value and not value.startswith('//') and
+            not any(ord(c) < 32 or ord(c) == 127 for c in value))
+
+def parents(filename):
+    if not canonical(filename):
+        refuse('noncanonical path: ' + str(filename))
+    result = []
+    root_uid = os.lstat('/').st_uid
+    system_paths = ('/', '/tmp', '/home', '/Users', '/private', '/private/tmp')
+    parent = os.path.dirname(filename)
+    while True:
+        try:
+            s = os.lstat(parent)
+        except FileNotFoundError:
+            parent = os.path.dirname(parent)
+            continue
+        if not stat.S_ISDIR(s.st_mode):
+            refuse('symlink or non-directory ancestor: ' + parent)
+        if s.st_uid not in (0, os.getuid()) and not (parent in system_paths and s.st_uid == root_uid):
+            refuse('unsafe ancestor: ' + parent)
+        result.append([parent, s.st_dev, s.st_ino, s.st_uid, s.st_gid, s.st_mode])
+        if parent == '/':
+            break
+        parent = os.path.dirname(parent)
+    private = False
+    for parent, _, _, uid, _, mode in reversed(result):
+        system = uid == 0 or (parent in system_paths and uid == root_uid)
+        if mode & 0o022 and not private and not (system and mode & stat.S_ISVTX):
+            refuse('unsafe writable ancestor: ' + parent)
+        if uid == os.getuid() and not mode & 0o077:
+            private = True
+    return result
+
+def capture(filename):
+    ancestry = parents(filename)
+    try:
+        s = os.lstat(filename)
+    except FileNotFoundError:
+        return None, b''
+    if not stat.S_ISREG(s.st_mode) or s.st_uid != os.getuid() or s.st_nlink != 1:
+        refuse('not a regular file owned by this user with one link (no symlinks): ' + filename)
+    if s.st_size > LIMIT:
+        refuse('bounded read limit exceeded: ' + filename)
+    fd = os.open(filename, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as handle:
+        if identity(os.fstat(handle.fileno())) != identity(s):
+            refuse('identity changed while opening: ' + filename)
+        data = handle.read(LIMIT + 1)
+        if len(data) > LIMIT or identity(os.fstat(handle.fileno())) != identity(s):
+            refuse('identity changed or read limit exceeded: ' + filename)
+    if identity(os.lstat(filename)) != identity(s) or parents(filename) != ancestry:
+        refuse('identity changed while capturing: ' + filename)
+    return identity(s), data
+
+def pairs(items):
+    result = {}
+    for key, value in items:
+        if key in result:
+            refuse('duplicate JSON key: ' + key)
+        result[key] = value
+    return result
+
+def json_value(raw):
+    return json.loads(raw, object_pairs_hook=pairs,
+                      parse_constant=lambda value: refuse('invalid JSON constant: ' + value))
+
+def statements(text):
+    # Split ONLY at lexical statement boundaries. Header/fence-looking lines
+    # in multiline strings or nested arrays are ordinary value bytes. Parsing
+    # validity remains tomllib's job; this scanner never repairs invalid TOML.
+    offset = i = depth = 0
+    quote = None
+    while i < len(text):
+        c = text[i]
+        if quote:
+            if quote[0] == '"' and c == '\\':
+                i += 2
+                continue
+            if text.startswith(quote, i):
+                width = len(quote)
+                if width == 3:
+                    # TOML permits one or two quote characters immediately
+                    # before a multiline closing delimiter (runs of 4 or 5).
+                    while i + width < len(text) and text[i + width] == quote[0]:
+                        width += 1
+                i += width
+                quote = None
+                continue
+        elif c in ('"', "'"):
+            quote = c * 3 if text.startswith(c * 3, i) else c
+            i += len(quote)
+            continue
+        elif c == '#':
+            newline = text.find('\n', i)
+            i = len(text) if newline < 0 else newline
+            if i == len(text):
+                break
+            c = '\n'
+        elif c in '[{':
+            depth += 1
+        elif c in ']}':
+            depth -= 1
+        if c == '\n' and not quote and depth == 0:
+            yield offset, i + 1, text[offset:i + 1]
+            offset = i + 1
+        i += 1
+    if offset < len(text):
+        yield offset, len(text), text[offset:]
+
+def header(raw):
+    raw = raw.lstrip()
+    if not raw.startswith('['):
+        return None
+    array = raw.startswith('[[')
+    # Let TOML decode quoted, escaped and dotted key components for us.
+    value = tomllib.loads(raw)
+    keys = []
+    while isinstance(value, dict) and len(value) == 1:
+        key, value = next(iter(value.items()))
+        keys.append(key)
+        if isinstance(value, list):
+            value = value[0]
+    return tuple(keys), array
+
+def same(left, right):
+    # TOML booleans, integers and floats are distinct, unlike Python's ==.
+    # NaN is a valid TOML value and must compare equal to its reparse here.
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, dict):
+        return left.keys() == right.keys() and all(same(left[k], right[k]) for k in left)
+    if isinstance(left, list):
+        return len(left) == len(right) and all(same(a, b) for a, b in zip(left, right))
+    if isinstance(left, float) and math.isnan(left):
+        return math.isnan(right)
+    return left == right
+
+def classify(raw, wanted, catalog, installing):
+    text = raw.decode('utf-8')
+    original = tomllib.loads(text)
+    hooks = original.get('hooks', {})
+    if not isinstance(hooks, dict) or not isinstance(hooks.get('state', {}), dict):
+        refuse('hooks and hooks.state must be tables')
+    for slot, trust in hooks.get('state', {}).items():
+        if not isinstance(trust, dict):
+            refuse('malformed hook trust slot: ' + slot)
+        if 'trusted_hash' in trust and not isinstance(trust['trusted_hash'], str):
+            refuse('malformed trusted_hash in hook trust slot: ' + slot)
+        if 'enabled' in trust and not isinstance(trust['enabled'], bool):
+            refuse('malformed enabled value in hook trust slot: ' + slot)
+    for event, groups in hooks.items():
+        if event != 'state':
+            validate_groups(event, groups)
+    tokens = list(statements(text))
+    fences = [(i, r.strip()) for i, (_, _, r) in enumerate(tokens)
+              if r.strip() in (start, end)]
+    if fences and ([v for _, v in fences] != [start, end]):
+        refuse('unmatched, nested or multiple managed fences')
+    lo, hi = (fences[0][0], fences[1][0]) if fences else (-1, -1)
+    known = tomllib.loads(catalog).get('hooks', {})
+    catalog_tags = {}
+    catalog_indexes = {}
+    current = None
+    for _, _, r in statements(catalog):
+        h = header(r)
+        if h and h[1] and len(h[0]) == 2 and h[0][0] == 'hooks':
+            event = h[0][1]
+            index = catalog_indexes.get(event, 0)
+            catalog_indexes[event] = index + 1
+            current = (event, index)
+        if current and re.fullmatch(r'# asha:[A-Za-z0-9_-]+', r.strip()):
+            catalog_tags[current] = r.strip()
+    desired = tomllib.loads(wanted).get('hooks', {})
+    headers = [(i, header(r)) for i, (_, _, r) in enumerate(tokens)
+               if r.lstrip().startswith('[')]
+    counters = {}
+    owned = {}
+    accounted_tags = set()
+    for position, (i, (keys, array)) in enumerate(headers):
+        if not (array and len(keys) == 2 and keys[0] == 'hooks'):
+            continue
+        event = keys[1]
+        index = counters.get(event, 0)
+        counters[event] = index + 1
+        j = len(tokens)
+        for next_i, (next_keys, _) in headers[position + 1:]:
+            if next_keys[:2] != keys or len(next_keys) <= 2:
+                j = next_i
+                break
+        group = original['hooks'][event][index]
+        if not lo < i < hi:
+            # Unfenced generated-looking handlers are ambiguous, not foreign.
+            if any('/plugins/' in str(h.get('command', '')) or
+                   'ASHA_HARNESS=codex' in str(h.get('command', ''))
+                   for h in group.get('hooks', []) if isinstance(h, dict)):
+                refuse('unfenced Asha inline hooks require manual inspection')
+            continue
+        tags = [r.strip() for _, _, r in tokens[i:min(j, hi)]
+                if r.strip().startswith('# asha:')]
+        accounted_tags.update(k for k in range(i, min(j, hi))
+                              if tokens[k][2].strip().startswith('# asha:'))
+        candidates = known.get(event, [])
+        proven = any(same(group, candidate) and
+                     tags == [catalog_tags.get((event, ci))]
+                     for ci, candidate in enumerate(candidates))
+        if not proven:
+            if tags:
+                refuse('tagged hook ownership cannot be proven for ' + event)
+            if any('/plugins/' in str(h.get('command', '')) or
+                   'ASHA_HARNESS=codex' in str(h.get('command', ''))
+                   for h in group.get('hooks', []) if isinstance(h, dict)):
+                refuse('untagged Asha inline ownership is ambiguous')
+            continue  # genuinely foreign group: keep every byte and value
+        # Assignments beyond the fence make its ownership region ambiguous.
+        for k in range(i, j):
+            r = tokens[k][2].strip()
+            if k >= hi and r and not r.startswith('#'):
+                refuse('generated hook extends beyond its managed fence')
+        owned.setdefault(event, []).append(group)
+    for i, (_, _, raw_token) in enumerate(tokens):
+        if raw_token.strip().startswith('# asha:') and i not in accounted_tags:
+            refuse('unassociated Asha inline ownership tag')
+    for event, groups in hooks.items():
+        if event == 'state':
+            continue
+        proven_groups = list(owned.get(event, []))
+        for group in groups:
+            if group in proven_groups:
+                proven_groups.remove(group)
+            elif any('/plugins/' in str(h.get('command', '')) or
+                     'ASHA_HARNESS=codex' in str(h.get('command', ''))
+                     for h in group['hooks']):
+                refuse('unproven dotted/inline or duplicate Asha hook definition')
+    features = original.get('features', {})
+    if not isinstance(features, dict):
+        refuse('features is not a table')
+    if 'hooks' in features and not isinstance(features['hooks'], bool):
+        refuse('features.hooks must be a boolean')
+    for event, groups in hooks.items():
+        if event == 'state':
+            continue
+        validate_groups(event, groups)
+    if owned:
+        if not installing or not same(owned, desired):
+            refuse('legacy inline hooks need update/removal; config.toml is read-only; inspect and migrate manually')
+        return 'legacy'
+    if fences:
+        refuse('managed fence without proven selected hooks requires manual inspection')
+    return 'json'
+
+def validate_groups(event, groups):
+    if not isinstance(groups, list):
+        refuse('hook event is not an array: ' + event)
+    for group in groups:
+        if not isinstance(group, dict) or not isinstance(group.get('hooks'), list):
+            refuse('malformed hook group: ' + event)
+        if 'matcher' in group and not isinstance(group['matcher'], str):
+            refuse('malformed matcher: ' + event)
+        for hook in group['hooks']:
+            if not isinstance(hook, dict) or hook.get('type', 'command') != 'command' or not isinstance(hook.get('command'), str):
+                refuse('malformed hook command: ' + event)
+
+def inspect(wanted, catalog, installing, diagnostic=False):
+    if destination != os.path.dirname(path) + '/hooks.json' or os.path.basename(path) != 'config.toml':
+        refuse('native config and owned hooks paths are incoherent')
+    _, raw = capture(path)
+    mode = classify(raw, wanted, catalog, installing)
+    hook_id, hook_raw = capture(destination)
+    manifest_id, manifest_raw = capture(manifest)
+    if os.path.lexists(manifest + '.tmp.' + shell_pid):
+        refuse('existing generic manifest staging path; inspect interrupted publication')
+    record = None
+    if manifest_id is not None:
+        ledger = json_value(manifest_raw)
+        if (not isinstance(ledger, dict) or set(ledger) != {'schema_version', 'harness', 'artifacts'} or
+                type(ledger['schema_version']) is not int or ledger['schema_version'] != 1 or
+                ledger['harness'] != 'codex' or not isinstance(ledger['artifacts'], list)):
+            refuse('invalid Codex generated-artifact manifest')
+        seen = set()
+        home = os.path.dirname(destination)
+        for row in ledger['artifacts']:
+            if (not isinstance(row, dict) or set(row) != {'source', 'destination', 'type', 'sha256', 'orphan'} or
+                    not canonical(row['source']) or not canonical(row['destination']) or
+                    not isinstance(row['type'], str) or type(row['orphan']) is not bool or
+                    not isinstance(row['sha256'], str) or not re.fullmatch('[0-9a-f]{64}', row['sha256'])):
+                refuse('malformed consumed manifest row')
+            dest = row['destination']
+            if dest in seen:
+                refuse('duplicate/conflicting manifest destination: ' + dest)
+            seen.add(dest)
+            allowed = ((row['type'] == 'codex-hooks-json' and dest == destination) or
+                       (row['type'] == 'codex-command-skill' and dest.startswith(home + '/skills/') and dest.endswith('/SKILL.md')) or
+                       (row['type'] == 'codex-agent-toml' and dest.startswith(home + '/agents/') and dest.endswith('.toml')))
+            if not allowed:
+                refuse('unsafe manifest type/destination: ' + dest)
+            parents(dest)  # generic lifecycle must never follow an unsafe parent
+            if dest == destination:
+                if row['source'] != source or row['orphan']:
+                    refuse('hook manifest source/type ownership does not match current adapter')
+                record = row
+    if hook_id is not None:
+        value = json_value(hook_raw)
+        if not isinstance(value, dict) or set(value) != {'hooks'} or not isinstance(value['hooks'], dict) or 'state' in value['hooks']:
+            refuse('malformed native hooks.json (hooks.state is native-only)')
+        for event, groups in value['hooks'].items():
+            validate_groups(event, groups)
+        if record is None or record['sha256'] != hashlib.sha256(hook_raw).hexdigest():
+            refuse('hooks.json is unrecorded or modified; FORCE cannot authorize adoption; inspect ownership manually')
+    elif record is not None:
+        refuse('recorded hooks.json is missing; inspect interrupted ownership manually')
+    if mode == 'legacy' and hook_id is not None:
+        refuse('ambiguous inline/JSON Asha hook duplication')
+    if mode == 'json' and tomllib.loads(raw.decode('utf-8')).get('hooks', {}).keys() - {'state'}:
+        print('WARN: foreign inline hooks coexist with owned JSON; native trust remains user-controlled', file=sys.stderr)
+    desired = tomllib.loads(wanted).get('hooks', {})
+    result = {'mode': mode, 'hook_identity': hook_id,
+            'hook_hash': hashlib.sha256(hook_raw).hexdigest(),
+            'manifest_identity': manifest_id,
+            'manifest_hash': hashlib.sha256(manifest_raw).hexdigest(),
+            'wanted': wanted, 'catalog': catalog,
+            'content': json.dumps({'hooks': desired}, indent=2, sort_keys=True) + '\n'}
+    if diagnostic:
+        # Only read-only doctor evidence includes native bytes. Publication
+        # never binds, rewrites or restores a shared-config snapshot.
+        result.update(config_text=raw.decode('utf-8'), json_text=hook_raw.decode('utf-8'))
+    return result
+
 try:
-    feats = tomllib.load(open(sys.argv[1], "rb")).get("features") or {}
-except Exception:
-    print("no"); raise SystemExit
-print("no" if "hooks" in feats else "yes")' "$CODEX_CONFIG_FILE" 2>/dev/null || echo no)"
-  [[ "$needs" == "yes" ]] || return 0
-  _codex_backup_config_once
-  local result
-  result="$(PYTHONIOENCODING=utf-8 python3 - "$CODEX_CONFIG_FILE" <<'PYEOF'
-import os, re, sys, tempfile
-path = sys.argv[1]
-text = open(path, encoding="utf-8").read()
-try:
-    tomllib = __import__("tomllib" if sys.version_info >= (3, 11) else "tomli")
-    feats = tomllib.loads(text).get("features") or {}
-except Exception:
-    sys.exit(0)  # unparseable: leave alone; the doctor TOML check reports it
-if "hooks" in feats:
-    sys.exit(0)  # explicit user value (true or false) — never rewrite
-if re.search(r"(?m)^\[features\][ \t]*$", text):
-    text = re.sub(r"(?m)^\[features\][ \t]*\n", "[features]\nhooks = true\n",
-                  text, count=1)
-else:
-    text = text.rstrip("\n") + "\n\n[features]\nhooks = true\n"
-fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path) or ".")
-with os.fdopen(fd, "w", encoding="utf-8") as handle:
-    handle.write(text)
-os.replace(tmp, path)
-print("added")
+    if action in ('install', 'uninstall', 'inspect'):
+        print(json.dumps(inspect(sys.argv[9], sys.argv[10], action != 'uninstall', action == 'inspect')))
+    elif action in ('publish', 'recheck'):
+        plan = json_value(sys.argv[9])
+        current = inspect(plan['wanted'], plan['catalog'], action == 'publish')
+        if current != plan:
+            refuse('owned hooks/manifest drift since preflight; inspect before retrying')
+        if action == 'publish' and plan['mode'] != 'legacy' and sys.argv[10] != '1':
+            content = plan['content'].encode('utf-8')
+            if plan['hook_identity'] is None or hashlib.sha256(content).hexdigest() != plan['hook_hash']:
+                directory = os.path.dirname(destination)
+                os.makedirs(directory, exist_ok=True)
+                parents(destination)
+                fd, temporary = tempfile.mkstemp(prefix='.asha-hooks-', dir=directory)
+                try:
+                    with os.fdopen(fd, 'wb') as handle:
+                        handle.write(content)
+                        handle.flush()
+                        os.fsync(handle.fileno())
+                    if inspect(plan['wanted'], plan['catalog'], True) != plan:
+                        refuse('owned hooks/manifest drift before publication')
+                    if plan['hook_identity'] is None:
+                        # Atomic no-clobber for absent destinations, including
+                        # newly appeared foreign paths at the last syscall.
+                        os.link(temporary, destination)
+                    else:
+                        # Detectable drift refuses. This is NOT arbitrary-writer
+                        # compare-and-swap at the final replace syscall.
+                        os.replace(temporary, destination)
+                finally:
+                    if os.path.lexists(temporary):
+                        os.unlink(temporary)
+        if action == 'publish':
+            print('legacy' if plan['mode'] == 'legacy' else hashlib.sha256(plan['content'].encode()).hexdigest())
+    else:
+        refuse('unknown owned hook action')
+except (OSError, ValueError, TypeError, KeyError, RecursionError) as exc:
+    print('ERROR: Codex preservation refused: ' + str(exc), file=sys.stderr)
+    sys.exit(4)
 PYEOF
-)" || true
-  if [[ "$result" == "added" ]]; then
-    log "[codex] enabled [features] hooks = true (hooks were feature-gated off; trust grant remains interactive)"
-  fi
 }
 
-codex_install_hooks() {
-  [[ -f "$CODEX_CONFIG_FILE" ]] || die "Codex config.toml not found: $CODEX_CONFIG_FILE"
-
-  _codex_ensure_hooks_feature
-
-  local existing_no_fence
-  existing_no_fence="$(_codex_excise_fence)"
-
-  local block status
-  block="$(_codex_build_hook_block)" && status=0 || status=$?
-
-  local new_content="$existing_no_fence"
-  if [[ -n "$new_content" && "${new_content: -1}" != $'\n' ]]; then
-    new_content+=$'\n'
+_codex_prepare_hooks() {
+  local action="$1" block="" catalog="" rc
+  if [[ "$action" == install || "$action" == inspect ]]; then
+    block="$(_codex_build_hook_block)" || { rc=$?; [[ $rc -eq 1 ]] || return "$rc"; }
   fi
-  if [[ $status -eq 0 && -n "$block" ]]; then
-    new_content+=$'\n'"$block"
-  fi
+  catalog="$(_codex_build_hook_block all)" || { rc=$?; [[ $rc -eq 1 ]] || return "$rc"; }
+  _codex_hook_plan "$action" "$block" "$catalog"
+}
 
-  if [[ -f "$CODEX_CONFIG_FILE" ]]; then
-    local current; current="$(cat "$CODEX_CONFIG_FILE")"
-    if [[ "$current" == "${new_content%$'\n'}" || "$current" == "$new_content" ]]; then
-      log "[codex] config.toml hook block unchanged"
-      return 0
+# Publish through the strict Codex seam; reuse only generic ledger recording.
+# No --force adoption and no shared config writer exists in this path.
+_codex_publish_hooks() {
+  local plan="$1" digest
+  digest="$(_codex_hook_plan publish "$plan" "${DRY_RUN:-0}")" || return $?
+  [[ "$digest" != legacy ]] || { log "[codex] equivalent legacy inline hooks: no-op"; return 0; }
+  [[ ${DRY_RUN:-0} -ne 1 ]] || { say "  EMIT [codex-hooks-json] $CODEX_HOOKS_FILE"; return 0; }
+  asha_artifact_record "$MARKET_ROOT/harnesses/codex.sh" "$CODEX_HOOKS_FILE" codex-hooks-json "$digest" || return $?
+}
+
+# A standalone sourced call owns a partial manifest cycle. A subshell isolates
+# all stage/result/option state from a caller's active, unrelated artifact cycle.
+codex_install_hooks() (
+  # New generated directories must pass the next install's ownership check,
+  # even when the caller uses a group-writable umask. Keep stricter masks.
+  umask go-w
+  local plan TMPDIR ASHA_ARTIFACT_HARNESS ASHA_ARTIFACT_STAGE
+  plan="$(_codex_prepare_hooks install)" || return $?
+  [[ "$(printf '%s' "$plan" | python3 -c 'import json,sys; print(json.load(sys.stdin)["mode"])')" != legacy ]] || return 0
+  TMPDIR="$(mktemp -d)" || return $?
+  trap 'rc=$?
+    if [[ $rc -eq 0 ]]; then
+      { rm -f "${ASHA_ARTIFACT_STAGE:-}" && rmdir "$TMPDIR"; } || rc=$?
+    else
+      printf "WARN: Codex install failed; staging evidence retained at %s\n" "$TMPDIR" >&2
     fi
-  fi
-
-  _codex_backup_config_once
-  _codex_atomic_write_config "$new_content"
-
-  local n
-  n="$(grep -c '^# asha:' "$CODEX_CONFIG_FILE" 2>/dev/null || true)"
-  n="${n:-0}"
-  log "[codex] registered $n hook entr$([[ $n -eq 1 ]] && echo y || echo ies)"
-}
+    exit "$rc"' EXIT
+  asha_artifact_begin codex || return $?
+  _codex_publish_hooks "$plan" || return $?
+  asha_artifact_finalize codex 0 || return $?
+)
 
 # ---------------------------------------------------------------------------
 # Migration: clean up pre-Step-7 install state if present
@@ -767,26 +1063,35 @@ _codex_migrate_legacy() {
 # Entry point: codex_install
 # ---------------------------------------------------------------------------
 
-codex_install() {
+codex_install() (
+  umask go-w
   command -v python3 >/dev/null 2>&1 || die "python3 required for Codex install (TOML + frontmatter parsing)" 3
 
   : "${ABS_MARKET_ROOT:=$(resolve_path "$MARKET_ROOT")}"
 
-  ensure_dir "$CODEX_SKILLS_DIR"
-
-  [[ -f "$CODEX_CONFIG_FILE" ]] || die "Codex config.toml not found: $CODEX_CONFIG_FILE (run codex once to bootstrap)"
-
+  local plan TMPDIR ASHA_ARTIFACT_HARNESS ASHA_ARTIFACT_STAGE
+  plan="$(_codex_prepare_hooks install)" || return $?
+  TMPDIR="$(mktemp -d)" || return $?
+  trap 'rc=$?
+    if [[ $rc -eq 0 ]]; then
+      { rm -f "${ASHA_ARTIFACT_STAGE:-}" && rmdir "$TMPDIR"; } || rc=$?
+    else
+      printf "WARN: Codex install failed; staging evidence retained at %s\n" "$TMPDIR" >&2
+    fi
+    exit "$rc"' EXIT
+  asha_artifact_begin codex || return $?
+  _codex_publish_hooks "$plan" || return $?
+  ensure_dir "$CODEX_SKILLS_DIR" || return $?
   say "[codex] target = $CODEX_HOME"
-  asha_artifact_begin codex
 
-  _codex_migrate_legacy
+  _codex_migrate_legacy || return $?
 
   local plugin_dir ns src_dir kind label
   while IFS=$'\t' read -r src_dir ns kind label; do
     [[ -n "$src_dir" ]] || continue
     say ""
     say "== [codex] $label skills  (ns=$ns) =="
-    codex_install_skills "$src_dir" "$ns" "$kind" "$label"
+    codex_install_skills "$src_dir" "$ns" "$kind" "$label" || return $?
   done < <(selected_imported_skill_sources)
 
   while read -r plugin_dir; do
@@ -797,23 +1102,20 @@ codex_install() {
       say "== [codex] $plugin_dir  (skipped: Claude-only) =="
       continue
     fi
-    ns="$(ns_for "$plugin_dir")"
+    ns="$(ns_for "$plugin_dir")" || return $?
     say ""
     say "== [codex] $plugin_dir  (ns=$ns) =="
-    codex_install_skills         "$PLUGINS_DIR/$plugin_dir/skills" "$ns" plugin "$plugin_dir"
-    codex_install_agents         "$plugin_dir" "$ns"
-    codex_install_command_skills "$plugin_dir" "$ns"
+    codex_install_skills         "$PLUGINS_DIR/$plugin_dir/skills" "$ns" plugin "$plugin_dir" || return $?
+    codex_install_agents         "$plugin_dir" "$ns" || return $?
+    codex_install_command_skills "$plugin_dir" "$ns" || return $?
   done < <(selected_plugins)
 
   say ""
   say "== [codex] native rules =="
-  codex_install_rules
+  codex_install_rules || return $?
 
-  say ""
-  say "== [codex] hooks =="
-  codex_install_hooks
-  asha_artifact_finalize codex "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)"
-}
+  asha_artifact_finalize codex "$([[ -z "${ONLY:-}" ]] && echo 1 || echo 0)" || return $?
+)
 
 # ---------------------------------------------------------------------------
 # Entry point: codex_uninstall
@@ -821,8 +1123,11 @@ codex_install() {
 
 codex_uninstall() {
   command -v python3 >/dev/null 2>&1 || die "python3 required for Codex uninstall (TOML validation)" 3
+  local hook_plan
+  hook_plan="$(_codex_prepare_hooks uninstall)" || return $?
   [[ -d "$CODEX_HOME" ]] || { say "[codex] $CODEX_HOME does not exist; nothing to remove"; CODEX_UNINSTALL_TOTAL=0; return 0; }
-
+  # Legacy generated artifacts retain their separate adoption path. Strict
+  # hook proof never authorizes adoption of native JSON or TOML.
   local ownership_manifest
   ownership_manifest="$(asha_artifact_manifest_path codex)"
   if [[ ! -f "$ownership_manifest" ]] && {
@@ -832,10 +1137,15 @@ codex_uninstall() {
     die "pre-manifest Codex artifacts detected; run 'asha install codex --force' once, then retry uninstall" 2
   fi
 
+  _codex_hook_plan recheck "$hook_plan" >/dev/null || return $?
   say "[codex] target = $CODEX_HOME"
 
   local total=0 n
-  n="$(asha_artifact_uninstall codex)"
+  n="$(asha_artifact_uninstall codex)" || return $?
+  if [[ ${DRY_RUN:-0} -ne 1 && ( -e "$CODEX_HOOKS_FILE" || -L "$CODEX_HOOKS_FILE" ) ]]; then
+    info "ERROR: Codex owned hooks remained after removal; inspect concurrent drift"
+    return 4
+  fi
   [[ "$n" -gt 0 ]] && say "[codex] removed $n owned generated artifact(s)"
   total=$((total + n))
 
@@ -846,7 +1156,7 @@ codex_uninstall() {
   #   3. Generated SKILL.md files inside our created dirs (current command-
   #      skills with stripped frontmatter) — match by source name lookup
   if [[ -d "$CODEX_SKILLS_DIR" ]]; then
-    n="$(remove_symlinks_under "$CODEX_SKILLS_DIR" 2)"
+    n="$(remove_symlinks_under "$CODEX_SKILLS_DIR" 2)" || return $?
     [[ "$n" -gt 0 ]] && say "[codex] removed $n skill symlink(s) from $CODEX_SKILLS_DIR"
     total=$((total + n))
 
@@ -866,7 +1176,7 @@ codex_uninstall() {
 
   # Agents: depth 1
   if [[ -d "$CODEX_AGENTS_DIR" ]]; then
-    n="$(remove_symlinks_under "$CODEX_AGENTS_DIR" 1)"
+    n="$(remove_symlinks_under "$CODEX_AGENTS_DIR" 1)" || return $?
     [[ "$n" -gt 0 ]] && say "[codex] removed $n agent symlink(s) from $CODEX_AGENTS_DIR"
     total=$((total + n))
 
@@ -874,28 +1184,11 @@ codex_uninstall() {
 
   # Legacy: any remaining prompts dir entries from pre-Step-7 installs
   if [[ -d "$CODEX_LEGACY_PROMPTS_DIR" ]]; then
-    n="$(remove_symlinks_under "$CODEX_LEGACY_PROMPTS_DIR" 1)"
+    n="$(remove_symlinks_under "$CODEX_LEGACY_PROMPTS_DIR" 1)" || return $?
     [[ "$n" -gt 0 ]] && say "[codex] removed $n legacy prompt symlink(s) from $CODEX_LEGACY_PROMPTS_DIR"
     total=$((total + n))
     # `|| true`: a failed rmdir at the tail of an && list aborts under set -e.
     [[ $DRY_RUN -eq 0 && ! -L "$CODEX_LEGACY_PROMPTS_DIR" && -z "$(ls -A "$CODEX_LEGACY_PROMPTS_DIR")" ]] && rmdir "$CODEX_LEGACY_PROMPTS_DIR" || true
-  fi
-
-  # Excise hook fence from config.toml
-  if [[ -f "$CODEX_CONFIG_FILE" ]] && grep -q "^${CODEX_HOOK_FENCE_START}\$" "$CODEX_CONFIG_FILE" 2>/dev/null; then
-    if [[ $DRY_RUN -eq 1 ]]; then
-      local count
-      count="$(grep -c '^# asha:' "$CODEX_CONFIG_FILE" 2>/dev/null || true)"
-      count="${count:-0}"
-      say "[codex] would remove $count tagged hook entr$([[ $count -eq 1 ]] && echo y || echo ies) from config.toml"
-    else
-      _codex_backup_config_once
-      local content; content="$(_codex_excise_fence)"
-      _codex_atomic_write_config "$content"
-      say "[codex] excised asha hook block from config.toml"
-    fi
-  else
-    log "[codex] no asha hook fence in config.toml"
   fi
 
   # Dedicated native Codex execution-policy rules file.

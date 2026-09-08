@@ -62,13 +62,33 @@ informed:
   REQUEST_ID`, only on the word, only after explaining what the salvage
   reuses from the failure seal.
 
-A signed act is recorded, not delivered. The coordinator hears events only
-while its own wait is armed; a stopped watcher leaves it deaf, and an
-approval landing then sits unseen in the journal while the plane holds.
-After signing any act a coordinator is blocked on, relay the fact into that
-coordinator's conversation — a cross-session message where the harness has
-one, else `coordinator attach` so the Keeper can say it — naming the event
-and its sequence. Never by typing into its pane.
+A signed act is durable, but its recording does not prove the coordinator
+has read it. After signing an act it is waiting on, read the current
+coordinator identity and generation from `asha initiative show ID --json`.
+Send context addressed to that exact generation, naming the actual action
+or event and sequence:
+
+```bash
+asha initiative message send "$ID" --message-id "$MESSAGE_ID" \
+  --coordinator-id "$COORDINATOR_ID" --generation "$GENERATION" \
+  --body "$CONTEXT" --json
+asha initiative message pending "$ID" --json
+```
+
+Choose one UUID and body for the message; reuse both when retrying the same
+send. Treat the body as data, never shell code or a substitute for approval.
+Explicit recipient selectors are checked against the live generation; on a
+stale recipient or unavailable role evidence, inspect the current state
+instead of changing environment labels to bypass the refusal.
+
+Report delivery precisely: **persisted** is a durable message, **observed**
+means the coordinator received it, and **acknowledged** means it explicitly
+acknowledged that content digest after processing it. An armed wait returns
+pending message IDs; an unarmed arrival survives for the next wait even if
+the event cursor advances. A completely idle model still needs a supported
+harness notification or the Keeper to resume its conversation. Queue arrival
+does not prove a wakeup. Never type into coordinator or worker panes or
+acknowledge on the coordinator's behalf.
 
 ## Monitoring
 

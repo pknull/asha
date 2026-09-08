@@ -1078,74 +1078,48 @@ class Increment4DoctorTests(Increment4Fixture):
         (claude / "settings.json").write_text(
             json.dumps({"hooks": claude_hooks}), encoding="utf-8",
         )
-        codex_lines = []
-        for event in (
-            "SessionStart", "UserPromptSubmit", "PostToolUse",
-            "PermissionRequest", "Stop",
-        ):
-            codex_lines.extend([
-                f"[[hooks.{event}]]",
-                f"[[hooks.{event}.hooks]]",
-                'type = "command"',
-                f'command = "env ASHA_HARNESS=codex {handler} {event}"',
-            ])
-        (codex / "config.toml").write_text(
-            "\n".join(codex_lines) + "\n", encoding="utf-8",
+        # Install through the real ownership seam; hand-written inline commands
+        # are not evidence of a complete, owned installation.
+        import hashlib
+        import subprocess
+        repo = Path(__file__).resolve().parents[2]
+        native = codex / "config.toml"
+        native.write_text("features.hooks=true\n", encoding="utf-8")
+        installed = subprocess.run(
+            ["bash", "-c", 'source "$1/lib/install.sh"; DRY_RUN=0; FORCE=0; '
+             'VERBOSE=0; ONLY=""; WITH_CANARY=0; source "$1/harnesses/codex.sh"; '
+             'codex_install_hooks', "doctor-test", str(repo)],
+            cwd=repo, env={"PATH": os.environ["PATH"], "HOME": str(self.home),
+                           "ASHA_HOME": str(self.config.asha_home)},
+            capture_output=True, timeout=60,
         )
+        self.assertEqual(installed.returncode, 0, installed.stderr.decode())
+        hooks_path = codex / "hooks.json"
+        ledger_path = self.config.asha_home / "install-manifests/codex.json"
+        original_hooks, original_ledger = hooks_path.read_bytes(), ledger_path.read_bytes()
+        before = {path: path.read_bytes() for path in
+                  (claude / "settings.json", native, hooks_path, ledger_path)}
+        result = run_doctor(self.config, probes={"hooks": DEFAULT_PROBES["hooks"]})["probes"][0]
+        self.assertEqual(result["outcome"], "match", result["detail"])
+        self.assertEqual(before, {path: path.read_bytes() for path in before})
 
-        before = {
-            path: path.read_bytes()
-            for path in (claude / "settings.json", codex / "config.toml")
-        }
-        result = run_doctor(
-            self.config, probes={"hooks": DEFAULT_PROBES["hooks"]},
-        )["probes"][0]
-
-        self.assertEqual(result["outcome"], "match")
-        self.assertEqual(
-            before,
-            {path: path.read_bytes() for path in before},
-        )
-
-        codex_without_permission = []
-        for event in ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop"):
-            codex_without_permission.extend([
-                f"[[hooks.{event}]]",
-                f"[[hooks.{event}.hooks]]",
-                'type = "command"',
-                f'command = "env ASHA_HARNESS=codex {handler} {event}"',
-            ])
-        (codex / "config.toml").write_text(
-            "\n".join(codex_without_permission) + "\n", encoding="utf-8",
-        )
-        result = run_doctor(
-            self.config, probes={"hooks": DEFAULT_PROBES["hooks"]},
-        )["probes"][0]
-        self.assertEqual(result["outcome"], "missing")
-        self.assertIn("codex:PermissionRequest", result["detail"])
-
-        codex_without_stop = []
-        for event in (
-            "SessionStart", "UserPromptSubmit", "PostToolUse", "PermissionRequest",
-        ):
-            codex_without_stop.extend([
-                f"[[hooks.{event}]]",
-                f"[[hooks.{event}.hooks]]",
-                'type = "command"',
-                f'command = "env ASHA_HARNESS=codex {handler} {event}"',
-            ])
-        (codex / "config.toml").write_text(
-            "\n".join(codex_without_stop) + "\n", encoding="utf-8",
-        )
-        result = run_doctor(
-            self.config, probes={"hooks": DEFAULT_PROBES["hooks"]},
-        )["probes"][0]
-        self.assertEqual(result["outcome"], "missing")
-        self.assertIn("codex:Stop", result["detail"])
-
-        (codex / "config.toml").write_text(
-            "\n".join(codex_lines) + "\n", encoding="utf-8",
-        )
+        # Model an older, manifest-owned install missing a required event.
+        # The probe must detect missing commands even when ownership is valid.
+        for event in ("PermissionRequest", "Stop"):
+            with self.subTest(event=event):
+                hooks = json.loads(original_hooks)
+                del hooks["hooks"][event]
+                hooks_path.write_text(json.dumps(hooks), encoding="utf-8")
+                ledger = json.loads(original_ledger)
+                for row in ledger["artifacts"]:
+                    if row["destination"] == str(hooks_path):
+                        row["sha256"] = hashlib.sha256(hooks_path.read_bytes()).hexdigest()
+                ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+                result = run_doctor(self.config, probes={"hooks": DEFAULT_PROBES["hooks"]})["probes"][0]
+                self.assertEqual(result["outcome"], "missing", result["detail"])
+                self.assertIn(event, result["detail"])
+        hooks_path.write_bytes(original_hooks)
+        ledger_path.write_bytes(original_ledger)
 
         (claude / "settings.json").write_text('{"hooks":{}}', encoding="utf-8")
         result = run_doctor(

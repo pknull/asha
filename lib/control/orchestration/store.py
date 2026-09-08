@@ -11,12 +11,14 @@ import os
 import re
 import secrets
 import stat
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping
 
 from ..store import (
+    SnapshotBudget,
     StoreCommittedError,
     StoreError,
     _directory_fd,
@@ -84,6 +86,24 @@ _LAYOUT_DIRECTORIES = (
     "messages", "message-observations", "message-acks",
 )
 _INVENTORY_CLASSES = ("initiative",) + _LAYOUT_DIRECTORIES
+
+# Default bounds for one read-only presentation observation. They are the
+# operator-facing tree's and the public attention verb's shared contract: a
+# refresh reads at most this much and then says what it did not read, rather
+# than presenting a short list as a total.
+PRESENTATION_HEAD_LIMIT = 256
+PRESENTATION_TASK_LIMIT = 512
+PRESENTATION_NESTED_LIMIT = 8192
+PRESENTATION_PER_HEAD_LIMIT = 512
+PRESENTATION_EVENT_TAIL = 50
+PRESENTATION_DEADLINE_SECONDS = 2.0
+# Failures are evidence, not a log: the report keeps the first few verbatim
+# and counts the rest, so a store with thousands of damaged records cannot
+# turn one refresh's completeness report into an unbounded payload.
+PRESENTATION_MAX_FAILURES = 32
+
+_PRESENTATION_UUID_FILENAME = re.compile(r"([0-9a-f-]{36})\.json")
+_PRESENTATION_EVENT_FILENAME = re.compile(r"([0-9]{6})-([0-9a-f-]{36})\.json")
 
 
 class _DuplicateJsonKey(ValueError):
@@ -169,6 +189,186 @@ def _canonical_bytes(validator: Callable[[Any], dict[str, Any]], record: Any) ->
     if len(raw) > MAX_RECORD_BYTES:
         raise StoreError(f"record exceeds {MAX_RECORD_BYTES} bytes")
     return validated, raw
+
+
+class PresentationBudget:
+    """One shared cooperative budget for a bounded read-only observation.
+
+    `SnapshotBudget` bounds a single directory enumeration. A presentation
+    observation reads many: one head directory, then several record classes
+    beneath each head. This composes them under one wall clock and one set of
+    caps so that the whole refresh is bounded, not merely each directory:
+
+    ``head_limit``       entries enumerated in the initiative registry.
+    ``per_head_limit``   entries enumerated beneath any single head.
+    ``nested_limit``     entries enumerated beneath every head together, so a
+                         store of many small graphs is bounded exactly as a
+                         store of one enormous one is. Every entry consumes
+                         one unit; a whole graph never costs one unit.
+    ``task_limit``       Control task rows admitted into the observation.
+    ``event_tail``       event payloads read after a bounded enumeration.
+    ``deadline``         one cooperative monotonic wall clock shared by every
+                         enumeration. It is checked between directory entries,
+                         so a single blocking filesystem syscall inside one
+                         record read is not preempted by it.
+
+    Every cap and the deadline are conservatively incomplete: reaching one
+    records why, and the observation reports it rather than implying a total
+    it never proved. Records that were already read stay read.
+    """
+
+    def __init__(
+        self,
+        *,
+        deadline: float | None = None,
+        deadline_seconds: float = PRESENTATION_DEADLINE_SECONDS,
+        head_limit: int = PRESENTATION_HEAD_LIMIT,
+        per_head_limit: int = PRESENTATION_PER_HEAD_LIMIT,
+        nested_limit: int = PRESENTATION_NESTED_LIMIT,
+        task_limit: int = PRESENTATION_TASK_LIMIT,
+        event_tail: int = PRESENTATION_EVENT_TAIL,
+    ) -> None:
+        self.deadline_seconds = deadline_seconds
+        self.deadline = (
+            time.monotonic() + deadline_seconds if deadline is None else deadline
+        )
+        self.head_limit = head_limit
+        self.per_head_limit = per_head_limit
+        self.nested_limit = nested_limit
+        self.task_limit = task_limit
+        self.event_tail = event_tail
+        self.heads_scanned = 0
+        self.nested_scanned = 0
+        self.tasks_scanned = 0
+        self.unavailable = 0
+        self.truncated = False
+        self.deadline_exceeded = False
+        self.caps_reached: set[str] = set()
+        self.failures: list[dict[str, str]] = []
+        self.failure_count = 0
+        self.per_head: dict[str, int] = {}
+
+    # -- accounting -------------------------------------------------------
+
+    def expired(self) -> bool:
+        """Whether the shared cooperative deadline has already passed."""
+        if time.monotonic() >= self.deadline:
+            self.truncated = True
+            self.deadline_exceeded = True
+            return True
+        return False
+
+    def note(self, scope: str, reason: str) -> None:
+        """Record one identity, missing-record, or read failure as evidence."""
+        self.failure_count += 1
+        if len(self.failures) < PRESENTATION_MAX_FAILURES:
+            self.failures.append({"scope": scope, "reason": str(reason)[:512]})
+
+    def _cap(self, name: str) -> None:
+        self.truncated = True
+        self.caps_reached.add(name)
+
+    def _attribute(self, child: SnapshotBudget, cap: str) -> None:
+        """Name why one child enumeration stopped short: its cap or the clock.
+
+        `SnapshotBudget.ready` stops for either reason without distinguishing
+        them, so the entry count decides: a child that reached its own limit
+        was stopped by a cap, and one that did not can only have been stopped
+        by the shared deadline.
+        """
+        if child.scanned >= child.limit:
+            self._cap(cap)
+        else:
+            self.deadline_exceeded = True
+
+    def head_budget(self) -> SnapshotBudget | None:
+        """A child enumeration budget for the head directory, or None when spent."""
+        remaining = self.head_limit - self.heads_scanned
+        if remaining <= 0:
+            self._cap("heads")
+            return None
+        if self.expired():
+            return None
+        return SnapshotBudget(deadline=self.deadline, limit=remaining)
+
+    def absorb_heads(self, child: SnapshotBudget) -> None:
+        """Fold one finished head enumeration into the shared account."""
+        self.heads_scanned += child.scanned
+        self.unavailable += child.unavailable
+        if child.truncated:
+            self.truncated = True
+            self._attribute(child, "heads")
+
+    def record_budget(self, initiative_id: str) -> SnapshotBudget | None:
+        """A child enumeration budget for one record class beneath one head.
+
+        The child is bounded by whichever is tighter: what this head has left
+        of its own allowance, or what the whole observation has left.
+        """
+        used = self.per_head.get(initiative_id, 0)
+        remaining = min(
+            self.per_head_limit - used, self.nested_limit - self.nested_scanned,
+        )
+        if remaining <= 0:
+            self._cap("per-head" if self.per_head_limit - used <= 0 else "nested")
+            return None
+        if self.expired():
+            return None
+        return SnapshotBudget(deadline=self.deadline, limit=remaining)
+
+    def absorb_records(self, child: SnapshotBudget, initiative_id: str) -> None:
+        # Every enumerated entry costs the observation, not the graph: a head
+        # with a thousand records spends a thousand units, so one large graph
+        # cannot consume an unbounded share behind a per-graph unit price.
+        self.per_head[initiative_id] = self.per_head.get(initiative_id, 0) + child.scanned
+        self.nested_scanned += child.scanned
+        self.unavailable += child.unavailable
+        if child.truncated:
+            self.truncated = True
+            self._attribute(
+                child,
+                "nested" if self.nested_scanned >= self.nested_limit else "per-head",
+            )
+
+    def admit_tasks(self, rows: Any) -> list[Any]:
+        """Admit Control task rows up to the shared cap, reporting truncation.
+
+        Rows are already-observed handoffs: this bounds how many of them the
+        observation classifies, and never reads or reconciles task storage.
+        """
+        admitted = list(rows)
+        self.tasks_scanned += len(admitted)
+        if len(admitted) > self.task_limit:
+            admitted = admitted[:self.task_limit]
+            self._cap("tasks")
+        return admitted
+
+    # -- report -----------------------------------------------------------
+
+    def summary(self) -> dict[str, Any]:
+        """The observation's own completeness, safe to publish beside its rows."""
+        return {
+            "complete": not (self.truncated or self.unavailable or self.failure_count),
+            "truncated": self.truncated,
+            "deadline_exceeded": self.deadline_exceeded,
+            "caps_reached": sorted(self.caps_reached),
+            "unavailable_records": self.unavailable,
+            "failures": copy.deepcopy(self.failures),
+            "failure_count": self.failure_count,
+            "scanned": {
+                "heads": self.heads_scanned,
+                "nested": self.nested_scanned,
+                "tasks": self.tasks_scanned,
+            },
+            "limits": {
+                "heads": self.head_limit,
+                "per_head": self.per_head_limit,
+                "nested": self.nested_limit,
+                "tasks": self.task_limit,
+                "event_tail": self.event_tail,
+                "deadline_seconds": self.deadline_seconds,
+            },
+        }
 
 
 class InitiativeStore:
@@ -628,6 +828,221 @@ class InitiativeStore:
         except (OSError, StoreError):
             budget.unavailable += 1
         return records
+
+    # -- bounded read-only presentation reads ------------------------------
+    #
+    # These exist so the operator tree and the public attention verb can share
+    # one bounded observation. They add no new validator and no new record
+    # class: each reuses this module's descriptor-relative, no-follow,
+    # ownership-checked readers and the same model validators the strict
+    # readers use. What they add is tolerance with an account: a record that
+    # does not read back as itself is excluded and counted, never repaired,
+    # adopted, renamed, removed, or presented as valid. The strict journal and
+    # control readers above are untouched and keep failing closed.
+
+    def _presentation_class(
+        self, directory: str,
+    ) -> tuple[Callable[[Any], dict[str, Any]], re.Pattern[str], str, Callable[[str], Any]]:
+        """(validator, filename pattern, identity field, identity parser).
+
+        The filename grammar is the retained one for each class: UUID stems
+        for most records, a node's own slug-shaped ID for `nodes`, and a
+        zero-padded revision for `plans`.
+        """
+        classes: dict[str, tuple[Any, re.Pattern[str], str, Callable[[str], Any]]] = {
+            "plans": (
+                self._validate_stored_plan_observation,
+                re.compile(r"([0-9]{4})\.json"), "revision", int,
+            ),
+            "nodes": (
+                validate_node,
+                re.compile(r"([a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?)\.json"),
+                "node_id", str,
+            ),
+            "attempts": (validate_attempt, _PRESENTATION_UUID_FILENAME, "attempt_id", str),
+            "links": (validate_link, _PRESENTATION_UUID_FILENAME, "attempt_id", str),
+            "actions": (validate_action, _PRESENTATION_UUID_FILENAME, "action_id", str),
+            "approvals": (validate_approval, _PRESENTATION_UUID_FILENAME, "request_id", str),
+            "seals": (validate_seal, _PRESENTATION_UUID_FILENAME, "seal_id", str),
+            "reviews": (validate_review, _PRESENTATION_UUID_FILENAME, "review_id", str),
+            "verifications": (
+                validate_verification, _PRESENTATION_UUID_FILENAME, "verification_id", str,
+            ),
+            "coordinators": (
+                validate_coordinator, _PRESENTATION_UUID_FILENAME, "coordinator_id", str,
+            ),
+        }
+        try:
+            return classes[directory]
+        except KeyError:
+            raise StoreError(
+                f"unknown presentation record class: {directory}"
+            ) from None
+
+    def bounded_head_snapshots(self, budget: PresentationBudget) -> list[dict[str, Any]]:
+        """Retained heads under one shared observation budget, lock-free.
+
+        Reaching the head cap or the deadline stops the enumeration; it never
+        discards a head that was already read.
+        """
+        child = budget.head_budget()
+        if child is None:
+            return []
+        before = child.unavailable
+        records = self.bounded_snapshots(child)
+        if child.unavailable > before:
+            budget.note(
+                "initiatives", f"{child.unavailable - before} head record(s) unreadable",
+            )
+        budget.absorb_heads(child)
+        return records
+
+    def bounded_presentation_records(
+        self, initiative_id: str, directory: str, budget: PresentationBudget,
+    ) -> list[dict[str, Any]]:
+        """One record class beneath one head, bounded, validated, identity-checked.
+
+        A missing directory is a legacy absence and reads as an empty class.
+        An entry that is foreign, malformed, truncated, or whose identity does
+        not match its filename is excluded and counted; the valid records read
+        beside it are kept, so one bad subrecord never blanks a readable head.
+        """
+        validator, pattern, identity_field, parser = self._presentation_class(directory)
+        child = budget.record_budget(initiative_id)
+        if child is None:
+            return []
+        records: list[dict[str, Any]] = []
+        try:
+            with self._initiative_directory(
+                initiative_id, create_root=False, create_initiative=False,
+            ) as (_, initiative_fd):
+                directory_fd = _open_directory(initiative_fd, directory, create=False)
+                if directory_fd is None:
+                    return records
+                try:
+                    for name in child.names(directory_fd):
+                        if name.startswith("."):
+                            continue
+                        try:
+                            match = pattern.fullmatch(name)
+                            if match is None:
+                                raise StoreError(
+                                    f"invalid {directory} record filename: {name}"
+                                )
+                            identity = parser(match.group(1))
+                            record = self._validated_read(
+                                directory_fd, name, f"{directory} record", validator,
+                            )
+                            if record.get("initiative_id", initiative_id) != initiative_id:
+                                raise StoreError(
+                                    f"{directory} record {name} belongs to another initiative"
+                                )
+                            if record[identity_field] != identity:
+                                raise StoreError(
+                                    f"{directory} record {name} does not match its filename"
+                                )
+                            records.append(record)
+                        except (OSError, ValueError, KeyError, StoreError) as exc:
+                            child.unavailable += 1
+                            budget.note(f"{initiative_id}/{directory}", str(exc))
+                finally:
+                    _close(directory_fd)
+        except (OSError, ValueError, StoreError) as exc:
+            child.unavailable += 1
+            budget.note(f"{initiative_id}/{directory}", str(exc))
+        finally:
+            budget.absorb_records(child, initiative_id)
+        # Match the strict snapshot readers' stable filename order after the
+        # bounded enumeration. Filesystem insertion order must not reorder
+        # nodes between refreshes or change the public projection contract.
+        return sorted(records, key=lambda record: record[identity_field])
+
+    def bounded_event_sample(
+        self, initiative_id: str, budget: PresentationBudget,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """``(newest event records, whether they are the complete journal)``.
+
+        The directory is enumerated inside the shared budget first; only then
+        are at most ``budget.event_tail`` payloads read. The second value is
+        True only when every entry was enumerated, every filename parsed, the
+        sequences ran contiguously from 1, no payload failed to read, and the
+        journal was no longer than the tail. A capped or damaged sample is a
+        sample: it is not an exact tail and must not be read as complete
+        question history.
+        """
+        child = budget.record_budget(initiative_id)
+        if child is None:
+            return [], False
+        complete = True
+        indexed: list[tuple[int, str, str]] = []
+        records: list[dict[str, Any]] = []
+        try:
+            with self._initiative_directory(
+                initiative_id, create_root=False, create_initiative=False,
+            ) as (_, initiative_fd):
+                events_fd = _open_directory(initiative_fd, "events", create=False)
+                if events_fd is None:
+                    return records, True
+                try:
+                    for name in child.names(events_fd):
+                        if name.startswith("."):
+                            continue
+                        match = _PRESENTATION_EVENT_FILENAME.fullmatch(name)
+                        if match is None:
+                            child.unavailable += 1
+                            complete = False
+                            budget.note(
+                                f"{initiative_id}/events",
+                                f"invalid event filename: {name}",
+                            )
+                            continue
+                        indexed.append((int(match.group(1)), name, match.group(2)))
+                    indexed.sort()
+                    if child.truncated:
+                        # A capped enumeration is not the journal, and the
+                        # sequences it did see are a slice: contiguity says
+                        # nothing about them, so it is not asserted here.
+                        complete = False
+                    else:
+                        sequences = [sequence for sequence, _n, _e in indexed]
+                        if sequences != list(range(1, len(indexed) + 1)):
+                            # A gap or a duplicate means the retained history
+                            # is not the contiguous journal a sample of it
+                            # would otherwise imply.
+                            complete = False
+                            budget.note(
+                                f"{initiative_id}/events",
+                                "event sequences are not contiguous from 1",
+                            )
+                    if len(indexed) > budget.event_tail:
+                        complete = False
+                    for sequence, name, event_id in indexed[-budget.event_tail:]:
+                        try:
+                            record = self._validated_read(
+                                events_fd, name, "event record", validate_event,
+                            )
+                            if (
+                                record["sequence"] != sequence
+                                or record["event_id"] != event_id
+                                or record["initiative_id"] != initiative_id
+                            ):
+                                raise StoreError(
+                                    f"event identity does not match filename: {name}"
+                                )
+                            records.append(record)
+                        except (OSError, ValueError, KeyError, StoreError) as exc:
+                            child.unavailable += 1
+                            complete = False
+                            budget.note(f"{initiative_id}/events", str(exc))
+                finally:
+                    _close(events_fd)
+        except (OSError, ValueError, StoreError) as exc:
+            child.unavailable += 1
+            complete = False
+            budget.note(f"{initiative_id}/events", str(exc))
+        finally:
+            budget.absorb_records(child, initiative_id)
+        return records, complete
 
     def list_initiatives(self) -> list[dict[str, Any]]:
         self.skipped = []
@@ -2065,5 +2480,8 @@ class InitiativeStore:
 
 __all__ = [
     "MAX_RECORD_BYTES", "InitiativeStore", "ObservationOnlyPlanError",
-    "StoreError", "StoreCommittedError",
+    "PresentationBudget", "StoreError", "StoreCommittedError",
+    "PRESENTATION_DEADLINE_SECONDS", "PRESENTATION_EVENT_TAIL",
+    "PRESENTATION_HEAD_LIMIT", "PRESENTATION_NESTED_LIMIT",
+    "PRESENTATION_PER_HEAD_LIMIT", "PRESENTATION_TASK_LIMIT",
 ]

@@ -266,6 +266,33 @@ class MessageTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual([e["type"] for e in events if e["type"].startswith("message-")],
                          ["message-persisted", "message-observed", "message-acknowledged"])
 
+    def test_documented_cli_delivery_survives_terminal_wait_until_explicit_ack(self):
+        iid, mid = self.initiative_id, str(uuid.uuid4())
+        sent = self.call("%1", "cli", argv=["message", "send", iid,
+            "--message-id", mid, "--body", "Hold further work; preserve the result.",
+            "--coordinator-id", self.current["coordinator_id"],
+            "--generation", str(self.current["generation"]), "--json"])["output"]
+        current = self.initiative()
+        terminal = copy.deepcopy(current)
+        terminal.update(state="cancelled", state_revision=current["state_revision"] + 1)
+        self.store.save_initiative(terminal, expected_digest=record_digest(current))
+        tail = self.store.peek(iid)["last_event_sequence"]
+        for _ in range(2):
+            result = self.call("%2", "cli", argv=["wait", iid,
+                "--after", str(tail), "--timeout", "0", "--json"])["output"]
+            self.assertEqual(result["ended"], "terminal-initiative")
+            self.assertEqual(result["events"], [])
+            self.assertEqual(result["pending_message_ids"], [mid])
+        received = self.call("%2", "cli", argv=["message", "receive", iid,
+            "--message-id", mid, "--json"])["output"]
+        self.assertIsNone(received["acknowledgement"])
+        inventory = self.call("%2", "cli", argv=["message", "pending", iid, "--json"])["output"]
+        self.assertEqual(inventory["messages"][0]["status"], "observed")
+        self.call("%2", "cli", argv=["message", "ack", iid,
+            "--message-id", mid, "--digest", sent["content_digest"], "--json"])
+        inventory = self.call("%2", "cli", argv=["message", "pending", iid, "--json"])["output"]
+        self.assertEqual(inventory["messages"], [])
+
     def test_cli_surface_and_optional_derived_identity_checks(self):
         mid = str(uuid.uuid4())
         value = self.call("%1", "cli", argv=["message", "send", self.initiative_id,

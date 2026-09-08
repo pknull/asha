@@ -120,7 +120,7 @@ mklink() {
       die "refusing to overwrite symlink pointing elsewhere: $dest -> $existing (use --force)" 2
     fi
     log "replacing: $dest -> $abs_src (was: $existing)"
-    [[ ${DRY_RUN:-0} -eq 1 ]] || rm "$dest"
+    if [[ ${DRY_RUN:-0} -ne 1 ]]; then rm "$dest" || return $?; fi
   elif [[ -e "$dest" ]]; then
     if [[ ${FORCE:-0} -eq 0 ]]; then
       die "refusing to overwrite non-link at destination: $dest" 2
@@ -129,14 +129,14 @@ mklink() {
       die "refusing to delete non-link not recorded as Asha-generated: $dest" 2
     fi
     log "replacing manifest-recorded generated directory: $dest"
-    [[ ${DRY_RUN:-0} -eq 1 ]] || rm -rf -- "$dest"
+    if [[ ${DRY_RUN:-0} -ne 1 ]]; then rm -rf -- "$dest" || return $?; fi
   fi
 
   if [[ ${DRY_RUN:-0} -eq 1 ]]; then
     say "  LINK [$kind]  $abs_src -> $dest"
   else
-    ensure_dir "$(dirname "$dest")"
-    ln -s "$abs_src" "$dest"
+    ensure_dir "$(dirname "$dest")" || return $?
+    ln -s "$abs_src" "$dest" || return $?
     log "linked [$kind]: $dest -> $abs_src"
   fi
 }
@@ -311,6 +311,10 @@ EOF
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --only|--target|--bin|--default)
+        [[ $# -ge 2 ]] || die "missing value for $1" 1 ;;
+    esac
+    case "$1" in
       --dry-run) DRY_RUN=1 ;;
       --force)   FORCE=1 ;;
       --verbose|-v) VERBOSE=1 ;;
@@ -326,7 +330,7 @@ parse_args() {
       -h|--help) usage ;;
       *)         die "unknown argument: $1" 1 ;;
     esac
-    shift
+    if [[ $# -gt 0 ]]; then shift; fi
   done
 
   asha_target_exists "$TARGET" \
@@ -339,159 +343,9 @@ parse_args() {
     || die "invalid --default '$BIN_DEFAULT' (expected: $(asha_harness_names_inline))" 1
 }
 
-# ---------------------------------------------------------------------------
-# Bin installer
-# ---------------------------------------------------------------------------
-#
-# Installs the `asha` dispatcher and per-harness shims into ~/.local/bin (XDG,
-# on PATH). The dispatcher (bin/asha) routes by argv / invocation name.
-#
-# Layout:
-#   ~/.local/bin/asha          -> $MARKET_ROOT/bin/asha          (absolute)
-#   ~/.local/bin/asha-claude   -> asha   (relative shim; basename routing)
-#   ~/.local/bin/asha-codex    -> asha
-#   ~/.local/bin/asha-copilot  -> asha
-#   ~/.local/bin/asha-opencode -> asha
-#
-# `--default <h>` persists the bare-`asha` default harness to
-# ~/.asha/config.json (.default_harness); absent => bin/asha falls back to claude.
-
-install_bin() {
-  local choice="$1"
-  local user_bin="$HOME/.local/bin"
-
-  say ""
-  say "== bin installer (--bin $choice) =="
-
-  ensure_dir "$user_bin"
-
-  # The dispatcher binary (absolute symlink into the repo).
-  mklink "$MARKET_ROOT/bin/asha" "$user_bin/asha" "dispatcher"
-
-  # Per-harness shims: relative symlinks to `asha` (bin/asha routes on basename).
-  local h
-  while IFS= read -r h; do
-    case "$choice" in
-      "$h"|all) _install_shim_link "$user_bin" "asha-$h" ;;
-    esac
-  done < <(asha_harnesses)
-
-  # Persist the default harness only when --default was explicitly given (so a
-  # first-run `asha codex` auto-config doesn't silently change the default).
-  [[ ${DEFAULT_SET:-0} -eq 1 ]] && _write_default_harness "$BIN_DEFAULT"
-
-  _detect_legacy_asha
-}
-
-# Create/retarget a relative shim symlink (asha-<h> -> asha). Idempotent.
-_install_shim_link() {
-  local user_bin="$1" name="$2"
-  local link="$user_bin/$name"
-
-  if [[ -L "$link" ]]; then
-    local existing
-    existing="$(readlink "$link" 2>/dev/null || true)"
-    if [[ "$existing" == "asha" ]]; then
-      log "ok: $link -> asha"
-      return 0
-    fi
-    if [[ ${FORCE:-0} -eq 0 ]]; then
-      die "refusing to retarget $link (currently -> $existing); use --force" 2
-    fi
-    log "retargeting: $link ($existing -> asha)"
-    [[ ${DRY_RUN:-0} -eq 1 ]] || rm "$link"
-  elif [[ -e "$link" ]]; then
-    if [[ ${FORCE:-0} -eq 0 ]]; then
-      die "$link exists as a non-symlink; use --force to replace" 2
-    fi
-    log "removing non-link at $link"
-    [[ ${DRY_RUN:-0} -eq 1 ]] || rm -rf "$link"
-  fi
-
-  if [[ ${DRY_RUN:-0} -eq 1 ]]; then
-    say "  LINK [shim]  asha -> $link"
-  else
-    ln -s "asha" "$link"
-    say "  shim $name -> asha"
-  fi
-}
-
-# Persist .default_harness into ~/.asha/config.json. Writes THROUGH the file so
-# a symlinked config.json (dotfiles) keeps its symlink and its other keys.
-_write_default_harness() {
-  local h="$1"
-  local cfg="${ASHA_CONFIG:-${ASHA_HOME:-$HOME/.asha}/config.json}"
-
-  if [[ ${DRY_RUN:-0} -eq 1 ]]; then
-    say "  CONFIG  default_harness=$h -> $cfg"
-    return 0
-  fi
-
-  ensure_dir "$(dirname "$cfg")"
-  if [[ -f "$cfg" ]]; then
-    local tmp
-    tmp="$(mktemp)"
-    if jq --arg h "$h" '.default_harness = $h' "$cfg" >"$tmp" 2>/dev/null; then
-      cat "$tmp" >"$cfg"      # truncate+write through symlink; preserves the link
-      say "  default_harness -> $h ($cfg)"
-    else
-      info "warn: could not update $cfg (invalid JSON?); leaving as-is"
-    fi
-    rm -f "$tmp"
-  else
-    printf '{\n  "default_harness": "%s"\n}\n' "$h" >"$cfg"
-    say "  default_harness -> $h ($cfg, created)"
-  fi
-}
-
-# Persist .asha_root into ~/.asha/config.json so commands and hooks can resolve
-# the repo without the `asha` wrapper's exported ASHA_ROOT (bare `claude`/`codex`/
-# `copilot`/`opencode` launches). Same write-through-symlink discipline as _write_default_harness.
-_write_asha_root() {
-  local cfg="${ASHA_CONFIG:-${ASHA_HOME:-$HOME/.asha}/config.json}"
-
-  if [[ ${DRY_RUN:-0} -eq 1 ]]; then
-    say "  CONFIG  asha_root=$MARKET_ROOT -> $cfg"
-    return 0
-  fi
-
-  ensure_dir "$(dirname "$cfg")"
-  if [[ -f "$cfg" ]]; then
-    local tmp
-    tmp="$(mktemp)"
-    if jq --arg r "$MARKET_ROOT" '.asha_root = $r' "$cfg" >"$tmp" 2>/dev/null; then
-      cat "$tmp" >"$cfg"      # truncate+write through symlink; preserves the link
-      say "  asha_root -> $MARKET_ROOT ($cfg)"
-    else
-      info "warn: could not update $cfg (invalid JSON?); leaving as-is"
-    fi
-    rm -f "$tmp"
-  else
-    jq -n --arg r "$MARKET_ROOT" '{asha_root: $r}' >"$cfg"
-    say "  asha_root -> $MARKET_ROOT ($cfg, created)"
-  fi
-}
-
-# Detect a legacy ~/bin/asha (typically dotfile-tracked) and inform the user.
-# Does NOT touch dotfiles repos. Skips if it already points into our repo.
-_detect_legacy_asha() {
-  local legacy="$HOME/bin/asha"
-  [[ -e "$legacy" ]] || return 0
-
-  if [[ -L "$legacy" ]]; then
-    local target
-    target="$(resolve_path "$legacy" 2>/dev/null || true)"
-    case "$target" in
-      "$MARKET_ROOT"/*) return 0 ;;   # already pointing into asha repo
-    esac
-  fi
-
-  say ""
-  say "NOTE: legacy wrapper detected at $legacy"
-  say "      ~/.local/bin precedes ~/bin in your PATH, so the new wrapper takes precedence."
-  say "      To retire the old one, in the repo where it's tracked (e.g. dotfiles):"
-  say "        git rm bin/asha && git commit -m 'retire bin/asha (replaced by asha installer)'"
-}
+# Launcher helpers depend on the shared functions above (also a public sourced API).
+# shellcheck source=lib/installer-launchers.sh
+source "$MARKET_ROOT/lib/installer-launchers.sh"
 
 # Detect every shipped legacy learning store. Installation never migrates
 # authority: root OKF concepts, the old archive, and the flat file must be
@@ -772,6 +626,8 @@ asha_install_main() {
   local t
   local -a results=()
   local -a failed=()
+  local _asha_failed_targets="" _asha_requested_targets="${targets[*]}"
+  local launcher_failed=0
   # Remember the caller's errexit state so we can toggle around each harness.
   local had_e=0
   case "$-" in *e*) had_e=1 ;; esac
@@ -788,6 +644,11 @@ asha_install_main() {
     (
       set -e
       "${t}_install"
+      # A sourced caller may itself be in an if/|| context, where Bash ignores
+      # errexit even in this subshell. Preserve an adapter's explicit refusal
+      # rather than letting later successful pruning erase its return status.
+      local adapter_rc=$?
+      [[ $adapter_rc -eq 0 ]] || exit "$adapter_rc"
       if [[ -z "$ONLY" ]]; then
         prune_retired_asha_symlinks "$(asha_harness_home "$t")"
       fi
@@ -805,6 +666,7 @@ asha_install_main() {
     else
       results+=("FAILED")
       failed+=("$t")
+      _asha_failed_targets+=" $t"
       info "WARN: [$t] install failed (exit $rc); continuing with remaining targets"
     fi
   done
@@ -813,9 +675,21 @@ asha_install_main() {
   bootstrap_identity
 
   # Record the repo root for wrapper-less launches (commands fall back to it).
-  _write_asha_root
-
-  [[ -n "$BIN" ]] && install_bin "$BIN"
+  # Routing has its own failure boundary. An attempted adapter failure must
+  # not be confused with an independently requested, unattempted --bin target.
+  if _launcher_preflight "$BIN" && _write_asha_root; then
+    if [[ -n "$BIN" ]]; then
+      # Keep mklink/die and unguarded I/O failures in a child, not a condition
+      # that suppresses Bash errexit throughout the launcher implementation.
+      set +e
+      ( set -e; install_bin "$BIN" )
+      local launcher_rc=$?
+      [[ $had_e -eq 1 ]] && set -e
+      [[ $launcher_rc -eq 0 ]] || launcher_failed=1
+    fi
+  else
+    launcher_failed=1
+  fi
 
   _detect_legacy_learnings
 
@@ -826,7 +700,7 @@ asha_install_main() {
     say "  ${targets[$i]}: ${results[$i]}"
   done
 
-  if [[ ${#failed[@]} -gt 0 ]]; then
+  if [[ ${#failed[@]} -gt 0 || $launcher_failed -ne 0 ]]; then
     say "WARNING: install incomplete for: ${failed[*]} — re-run after fixing the errors above"
     return 1
   fi

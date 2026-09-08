@@ -14,7 +14,9 @@ from lib.control.model import TASK_CONTRACT  # noqa: F401 - import guards the Co
 from lib.control.orchestration import cli as orchestration_cli
 from lib.control.orchestration.actions import SUPPORTED_ACTION_KINDS
 from lib.control.orchestration.model import FORBIDDEN_ACTION_CLASSES, record_digest
-from lib.control.orchestration.tui_model import InitiativesScreen
+from lib.control.orchestration.tui_model import (
+    InitiativesScreen, attention_items, retained_classification,
+)
 from lib.control.store import TaskStore
 from lib.control.transaction import CreationJournalStore
 from lib.control.tui import IntentKind, TuiModel, render
@@ -198,11 +200,18 @@ class InitiativesRenderAndKeyTests(unittest.TestCase):
         )
         lines = render(model)
         self.assertTrue(any("Initiatives unavailable: bad orchestration config" in line for line in lines))
-        self.assertEqual(lines[0], "ASHA CONTROL  Scope: active")
-        # A bare model without any screen still renders the (empty) tree.
+        # The two scopes are named apart: `A` scopes the task branch's
+        # lifecycle, `H` scopes which retained initiatives the tree draws. The
+        # task scope's literal label is `Tasks:`; `Scope:` follows it as the
+        # compatibility name and never as a second, different fact.
+        self.assertEqual(
+            lines[0], "ASHA CONTROL  View: current  Tasks: active  Scope: active",
+        )
+        # A bare model without any screen still renders the (empty) tree; with
+        # no tree there is no initiative view to name yet.
         bare = TuiModel([], height=24, width=80)
         lines = render(bare)
-        self.assertEqual(lines[0], "ASHA CONTROL  Scope: active")
+        self.assertEqual(lines[0], "ASHA CONTROL  Tasks: active  Scope: active")
         self.assertTrue(any("Nothing to show" in line for line in lines))
 
     def test_initiative_keys_map_only_to_bounded_intents(self) -> None:
@@ -494,8 +503,9 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
 
     def test_pause_and_resume_from_the_tui_are_confirmed_operator_actions(self) -> None:
         self.set_running(self.store.peek(self.initiative_id))
+        # All retained keeps the paused row available for the resume action.
         # Running sorts after awaiting-plan-approval: move down once.
-        keys = [9, FakeCurses.KEY_DOWN, ord("p"), *map(ord, "yes"), 10, ord("p"), *map(ord, "yes"), 10, ord("q")]
+        keys = [ord("H"), 9, FakeCurses.KEY_DOWN, ord("p"), *map(ord, "yes"), 10, ord("p"), *map(ord, "yes"), 10, ord("q")]
         screen, _model = self.run_loop(keys)
         text = screen.text()
         self.assertIn("Pause initiative", text)
@@ -959,6 +969,758 @@ class UnifiedTreeTests(unittest.TestCase):
         payload = json_module.loads(out.getvalue())
         self.assertEqual(payload["contract"], "asha.orchestration-attention.v1")
         self.assertEqual({item["kind"] for item in payload["items"]}, {"plan-approval", "task"})
+
+
+class RetainedViewTests(unittest.TestCase):
+    """`H` toggles Current / All retained: presentation only, never records.
+
+    Current keeps a head on proved activity, unresolved demand, or evidence
+    too incomplete to call it quiet. Everything else is retained work the
+    operator can still reach with one keystroke.
+    """
+
+    def screen(self, views, **kwargs) -> InitiativesScreen:
+        return InitiativesScreen(views, height=28, width=122, **kwargs)
+
+    @staticmethod
+    def attempt_id(slug: str) -> str:
+        """A distinct attempt per head: attempt IDs are unique in the store."""
+        return f"{abs(hash(slug)) % 10**8:08d}-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+
+    def quiet(self, slug: str, state: str = "integrated", **extra) -> dict:
+        """A head with complete evidence and nothing running or waiting."""
+        view = _view(slug, state)
+        view.update({
+            "nodes": [{"node_id": "implementation-a", "state": "succeeded",
+                       "type": "work", "goal": "Implement A"}],
+            "attempts": [{"attempt_id": self.attempt_id(slug),
+                          "node_id": "implementation-a", "ordinal": 1,
+                          "state": "sealed-success"}],
+            "links": [], "coordinator_live": False,
+        })
+        view.update(extra)
+        return view
+
+    def test_current_is_the_default_and_h_reaches_the_quiet_heads(self) -> None:
+        views = [_view("live", "running"), self.quiet("settled")]
+        screen = self.screen(views)
+        self.assertEqual(screen.view_scope, "current")
+        self.assertEqual(
+            [row.label for row in screen.rows() if row.kind == "initiative"], ["live"],
+        )
+        self.assertEqual(
+            {key: screen.retained_counts[key] for key in ("shown", "loaded", "hidden")},
+            {"shown": 1, "loaded": 2, "hidden": 1},
+        )
+        self.assertEqual(screen.toggle_view_scope(), "all")
+        self.assertEqual(
+            sorted(row.label for row in screen.rows() if row.kind == "initiative"),
+            ["live", "settled"],
+        )
+        self.assertEqual(screen.retained_counts["hidden"], 0)
+        self.assertEqual(screen.toggle_view_scope(), "current")
+        self.assertEqual(
+            [row.label for row in screen.rows() if row.kind == "initiative"], ["live"],
+        )
+
+    def test_paused_unstarted_work_is_retained_until_resumed(self) -> None:
+        paused = self.quiet("parked", state="paused", attempts=[])
+        paused["nodes"][0]["state"] = "ready"
+        self.assertFalse(retained_classification(paused)["current"])
+        screen = self.screen([paused])
+        self.assertEqual(screen.rows(), [])
+        screen.toggle_view_scope()
+        self.assertEqual([row.label for row in screen.rows()], ["parked"])
+        paused["initiative"]["state"] = "running"
+        self.assertTrue(retained_classification(paused)["current"])
+
+    def test_quiet_planning_is_queued_unfinished_and_never_settled(self) -> None:
+        empty = {"nodes": [], "attempts": [], "links": [], "coordinator_live": False}
+        draft = _view("drafting", "draft")
+        draft.update(empty)
+        planning = _view("planning-it", "planning")
+        planning.update(copy.deepcopy(empty))
+        for view in (draft, planning):
+            with self.subTest(slug=view["initiative"]["slug"]):
+                verdict = retained_classification(view)
+                self.assertFalse(verdict["current"])
+                self.assertEqual(verdict["reason"], "queued unfinished")
+        rows = self.screen([draft, planning], view_scope="all").rows()
+        self.assertEqual(
+            [(row.label, row.state) for row in rows if row.kind == "initiative"],
+            [("planning-it", "planning"), ("drafting", "draft")],
+        )
+
+    def test_a_running_label_alone_is_not_current_but_its_evidence_is(self) -> None:
+        # A running head with nothing observed running, no coordinator and no
+        # demand is a status word, not activity.
+        idle = _view("labelled", "running")
+        idle.update({
+            "nodes": [{"node_id": "implementation-a", "state": "succeeded",
+                       "type": "work", "goal": "A"}],
+            "attempts": [], "links": [], "coordinator_live": False,
+        })
+        self.assertEqual(
+            retained_classification(idle),
+            {"current": False, "reason": "quiet", "certain": True},
+        )
+        # The same head with work the plan calls ready and nothing carrying it
+        # is a stall the operator must see, not a quiet head.
+        stalled = copy.deepcopy(idle)
+        stalled["nodes"][0]["state"] = "ready"
+        verdict = retained_classification(stalled)
+        self.assertEqual(
+            (verdict["current"], verdict["reason"], verdict["certain"]),
+            (True, "ready work with no attempt", False),
+        )
+        # And with an unsealed attempt it is current on the attempt alone.
+        working = copy.deepcopy(idle)
+        working["attempts"] = [{
+            "attempt_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "node_id": "implementation-a", "ordinal": 1, "state": "running",
+        }]
+        self.assertTrue(retained_classification(working)["current"])
+
+    def test_incomplete_or_conflicting_evidence_stays_visible_as_unknown(self) -> None:
+        partial = self.quiet("short-read")
+        partial["_completeness"] = {"complete": False, "truncated": True,
+                                    "unavailable_records": 0}
+        verdict = retained_classification(partial)
+        self.assertEqual(
+            (verdict["current"], verdict["certain"], verdict["reason"]),
+            (True, False, "incomplete source evidence"),
+        )
+        screen = self.screen([partial])
+        self.assertEqual(
+            [row.label for row in screen.rows() if row.kind == "initiative"],
+            ["short-read"],
+            "absent data is never read as an absent head",
+        )
+        self.assertTrue(screen.retained_counts["partial"])
+        self.assertTrue(screen.retained_counts["unknown"])
+
+    def test_a_hidden_head_still_owns_its_tasks_before_any_filtering(self) -> None:
+        worker = _FakeTaskRow("cccccccc-cccc-4ccc-8ccc-cccccccccccc", "sealed-worker",
+                              display_state="exited")
+        quiet = self.quiet("settled", links=[{
+            "attempt_id": self.attempt_id("settled"),
+            "control_task_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        }])
+        screen = self.screen([_view("live", "running"), quiet], task_rows=(worker,))
+        labels = [(row.kind, row.label) for row in screen.rows()]
+        self.assertNotIn(("initiative", "settled"), labels)
+        self.assertNotIn(
+            ("task", "sealed-worker"), labels,
+            "a hidden head's worker is bound, never relabelled as an unbound task",
+        )
+        self.assertNotIn("tasks-root", [kind for kind, _label in labels])
+        # An attempt that reserved its task before the link record existed is
+        # bound by that reservation alone.
+        reserved = self.quiet("reserving")
+        reserved["attempts"][0]["task_id"] = "dddddddd-dddd-4ddd-8ddd-dddddddddddd"
+        loose = _FakeTaskRow("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "reserved-worker")
+        screen = self.screen([reserved], task_rows=(loose,), view_scope="all")
+        self.assertNotIn(
+            "reserved-worker", [row.label for row in screen.rows() if row.kind == "task"],
+        )
+
+    def test_a_parked_head_with_a_live_ask_beneath_it_stays_current(self) -> None:
+        # Parking is the head's schedule, not the ask's. An approval request, a
+        # live coordinator and a worker at a prompt each keep a paused head in
+        # the Current view, collapsed or not.
+        asked = self.quiet("parked-asked", "paused")
+        asked["approvals"] = [{"state": "requested",
+                               "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}]
+        watched = self.quiet("parked-watched", "paused")
+        watched.update({
+            "coordinator": {"harness": "claude", "generation": 1, "state": "active",
+                            "updated_at": "2026-09-01T10:00:00Z",
+                            "anchor": {"pane_id": "%7"}},
+            "coordinator_live": True,
+        })
+        prompted = self.quiet("parked-prompted", "paused")
+        prompted["links"] = [{
+            "attempt_id": self.attempt_id("parked-prompted"),
+            "control_task_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        }]
+        worker = _FakeTaskRow(
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc", "prompted-worker",
+            display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "pane shows the input prompt"}],
+        )
+        quiet = self.quiet("parked-quiet", "paused")
+        screen = self.screen([asked, watched, prompted, quiet], task_rows=(worker,))
+        self.assertEqual(
+            sorted(row.label for row in screen.rows() if row.kind == "initiative"),
+            ["parked-asked", "parked-prompted", "parked-watched"],
+        )
+        self.assertEqual(screen.retained_counts["hidden"], 1)
+        # The collapsed heads still carry their asks to `!`.
+        filtered = self.screen(
+            [asked, prompted], task_rows=(worker,), attention_only=True,
+        )
+        self.assertEqual(
+            [(row.kind, row.attention) for row in filtered.rows()],
+            [("initiative", "salvage approval"),
+             ("initiative", "-"),
+             ("node", "at prompt: pane shows the input prompt")],
+        )
+
+    def test_archived_heads_are_metadata_only_history_in_all_retained(self) -> None:
+        archived = {
+            "initiative": {
+                "initiative_id": "99999999-9999-4999-8999-999999999999",
+                "slug": "old-work", "label": "Old work", "state": "archived",
+                "updated_at": "2026-08-01T10:00:00Z",
+            },
+            "_metadata_only": True,
+            "plan": None, "nodes": [], "attempts": [], "links": [], "events": [],
+            "actions": [], "coordinator": None, "coordinator_live": None,
+            "seals": [], "reviews": [], "verifications": [], "approvals": [],
+            "storage": None,
+        }
+        current = self.screen([_view("live", "running"), archived])
+        self.assertEqual(
+            [row.label for row in current.rows() if row.kind == "initiative"], ["live"],
+        )
+        self.assertFalse(current.binding_complete)
+        self.assertIn(
+            "binding partial",
+            "".join(row.label for row in current.rows() if row.kind == "tasks-root")
+            or "binding partial",
+        )
+        retained = self.screen([_view("live", "running"), archived], view_scope="all")
+        rows = [row for row in retained.rows() if row.kind == "initiative"]
+        self.assertEqual(sorted(row.label for row in rows), ["live", "old-work"])
+        head = next(row for row in rows if row.label == "old-work")
+        # NODES is unknown, never `0/0`: no node record was opened, and a
+        # count of zero over records nobody read is an assertion, not a fact.
+        self.assertEqual((head.state, head.attention, head.nodes), ("archived", "-", "?"))
+        retained.selection = next(
+            index for index, row in enumerate(retained.rows()) if row.key == head.key
+        )
+        detail = retained.detail_lines()
+        self.assertTrue(any("archived head metadata only" in line for line in detail), detail)
+        self.assertTrue(any("were not loaded" in line for line in detail), detail)
+        self.assertEqual(attention_items([archived]), [])
+
+    def test_switching_views_keeps_selection_expansion_and_the_text_filter(self) -> None:
+        live = _view("live", "running")
+        views = [live, self.quiet("settled")]
+        screen = self.screen(views, filter_string="live")
+        screen.expand()
+        expanded = set(screen.expanded)
+        selected = screen.selected_row.key
+        screen.set_view_scope("all")
+        self.assertEqual(screen.expanded, expanded)
+        self.assertEqual(screen.selected_row.key, selected)
+        self.assertEqual(screen.filter_string, "live")
+        self.assertEqual(
+            [row.label for row in screen.rows() if row.kind == "initiative"], ["live"],
+            "the text filter stays independent of the retained view",
+        )
+        # A selection the new view hides falls back harmlessly to the first row.
+        screen.set_filter("")
+        screen.selection = next(
+            index for index, row in enumerate(screen.rows()) if row.label == "settled"
+        )
+        screen.set_view_scope("current")
+        self.assertEqual(screen.selection, 0)
+        self.assertEqual(screen.selected_row.label, "live")
+
+    def test_rooms_and_task_rows_are_untouched_by_the_retained_view(self) -> None:
+        rooms = [{
+            "room_id": "11111111-1111-4111-8111-111111111111", "name": "aas",
+            "state": "open", "harness": "claude", "project_name": "AAS",
+            "project_root": "/p", "session": "s", "pane_id": "%1",
+            "shared_working_tree": False, "updated_at": "2026-08-24T10:00:00Z",
+            "detail": "owned",
+        }]
+        loose = _FakeTaskRow("dddddddd-dddd-4ddd-8ddd-dddddddddddd", "loose-task")
+        screen = self.screen(
+            [self.quiet("settled")], task_rows=(loose,), room_rows=rooms,
+        )
+        before = [(row.kind, row.label) for row in screen.rows() if row.kind != "initiative"]
+        screen.set_view_scope("all")
+        after = [(row.kind, row.label) for row in screen.rows() if row.kind != "initiative"]
+        self.assertEqual(before, after)
+        self.assertIn(("room", "aas"), before)
+        self.assertIn(("task", "loose-task"), before)
+
+    def test_the_view_scope_only_accepts_its_two_names(self) -> None:
+        with self.assertRaises(ValueError):
+            self.screen([], view_scope="everything")
+        screen = self.screen([])
+        with self.assertRaises(ValueError):
+            screen.set_view_scope("archived")
+
+
+class RetainedViewKeyTests(unittest.TestCase):
+    """`H` is a tree key with no row, and no row action anywhere else."""
+
+    def test_h_toggles_the_view_before_any_row_is_required(self) -> None:
+        empty = TuiModel([], height=24, width=100)
+        empty.initiatives = InitiativesScreen([], height=24, width=100)
+        self.assertIsNone(empty.initiatives.selected_row)
+        self.assertIs(empty.dispatch_key("H").kind, IntentKind.RETAINED_VIEW)
+        # With a row selected it is still the tree's key, never the row's.
+        model = TuiModel([], height=24, width=100)
+        model.initiatives = InitiativesScreen(
+            [_view("one", "running")], height=24, width=100,
+        )
+        self.assertIs(model.dispatch_key("H").kind, IntentKind.RETAINED_VIEW)
+        intent = model.dispatch_key("H")
+        self.assertFalse(intent.requires_confirmation)
+        self.assertIsNone(intent.initiative_id)
+        self.assertIsNone(intent.task_id)
+
+    def test_h_is_not_a_row_action_and_a_scopes_tasks_independently(self) -> None:
+        from lib.control.tui import _INITIATIVE_KEYS
+
+        self.assertNotIn("H", _INITIATIVE_KEYS)
+        model = TuiModel([], height=24, width=100)
+        model.initiatives = InitiativesScreen(
+            [_view("one", "running")], height=24, width=100,
+        )
+        self.assertIs(model.dispatch_key("A").kind, IntentKind.TOGGLE_SCOPE)
+        self.assertIs(model.dispatch_key("!").kind, IntentKind.ATTENTION)
+        self.assertIs(model.dispatch_key("/").kind, IntentKind.FILTER)
+        self.assertIs(model.dispatch_key("h").kind, IntentKind.NONE)
+
+    def test_h_typed_into_an_editor_is_text_and_never_a_tree_action(self) -> None:
+        # The prompt reader owns every printable key while it is open, so `H`
+        # reaches the field. The tree's toggle is unreachable until it closes.
+        value: list[str] = []
+        self.assertTrue(tui._prompt_character_allowed(value, "H"))
+        self.assertTrue(tui._prompt_character_allowed(value, "A"))
+
+    def test_the_view_intent_names_the_scope_and_writes_nothing(self) -> None:
+        model = TuiModel([], height=24, width=100)
+        model.initiatives = InitiativesScreen(
+            [_view("one", "running")], height=24, width=100,
+        )
+        applied = tui._execute_intent(
+            tui.TuiIntent(IntentKind.RETAINED_VIEW), stdscr=None, curses_module=None,
+            model=model, config=None, env={}, store=None, journals=None, jj=None,
+        )
+        self.assertTrue(applied)
+        self.assertEqual(model.initiatives.view_scope, "all")
+        self.assertIn("every loaded retained initiative", model.message)
+        tui._execute_intent(
+            tui.TuiIntent(IntentKind.RETAINED_VIEW), stdscr=None, curses_module=None,
+            model=model, config=None, env={}, store=None, journals=None, jj=None,
+        )
+        self.assertEqual(model.initiatives.view_scope, "current")
+        self.assertIn("current initiatives only", model.message)
+
+
+class DemandParityTests(unittest.TestCase):
+    """The tree's WAITING ON text and the CLI verb read one projection.
+
+    Two divergences predate this slice: the tree wrote `integrate` and
+    `activate` on a head the verb never listed, and the verb listed a pending
+    directive the tree never drew. Both are the same defect — two assemblers —
+    and both are settled here by making one produce the other.
+    """
+
+    def head(self, view, **kwargs):
+        screen = InitiativesScreen([view], height=28, width=122, **kwargs)
+        return next(row for row in screen.rows() if row.kind == "initiative")
+
+    def test_integrate_and_activate_reach_the_verb_as_well_as_the_tree(self) -> None:
+        for state, label, kind, fragment in (
+            ("ready-for-integration", "integrate", "integration", "ready for the operator"),
+            ("approved", "activate", "activation", "awaits activation"),
+        ):
+            with self.subTest(state=state):
+                view = _view("candidate", state)
+                self.assertEqual(self.head(view).attention, label)
+                items = attention_items([view])
+                item = next(entry for entry in items if entry["kind"] == kind)
+                self.assertIn(fragment, item["detail"])
+                self.assertEqual(item["initiative_id"],
+                                 view["initiative"]["initiative_id"])
+                self.assertEqual(item["certainty"], "live")
+                # A head with demand is current: neither view can hide it.
+                self.assertEqual(
+                    [row.id for row in InitiativesScreen(
+                        [view], height=28, width=122, attention_only=True,
+                    ).rows()][:1],
+                    [view["initiative"]["initiative_id"]],
+                )
+
+    def test_the_integration_resolution_never_offers_to_merge(self) -> None:
+        item = next(
+            entry for entry in attention_items([_view("candidate", "ready-for-integration")])
+            if entry["kind"] == "integration"
+        )
+        for forbidden in ("merge", "rebase", "push", "bookmark"):
+            self.assertNotIn(forbidden, item["resolution"])
+        self.assertIn("no automated integration", item["resolution"])
+
+    def test_failed_nodes_are_the_same_ask_on_both_surfaces(self) -> None:
+        view = _view("broken", "running", nodes=[
+            {"node_id": "implementation-a", "state": "failed", "type": "work", "goal": "A"},
+            {"node_id": "review-a", "state": "failed", "type": "review", "goal": "R"},
+        ])
+        self.assertEqual(self.head(view).attention, "2 failed")
+        item = next(
+            entry for entry in attention_items([view]) if entry["kind"] == "failed-nodes"
+        )
+        self.assertIn("implementation-a", item["detail"])
+        self.assertIn("review-a", item["detail"])
+        # Parked, the same head is status on both surfaces.
+        parked = copy.deepcopy(view)
+        parked["initiative"]["state"] = "paused"
+        self.assertEqual(self.head(parked).attention, "-")
+        self.assertNotIn(
+            "failed-nodes", [entry["kind"] for entry in attention_items([parked])],
+        )
+        # So is a terminal head: its failures are history the STATE column and
+        # the rail already carry, and nothing waits on the operator for them.
+        ended = copy.deepcopy(view)
+        ended["initiative"]["state"] = "failed"
+        head = self.head(ended)
+        self.assertEqual(head.attention, "-")
+        self.assertFalse(head.needs_human)
+        self.assertEqual([entry["kind"] for entry in attention_items([ended])], [])
+
+    def test_a_live_directive_survives_a_collapsed_paused_parent(self) -> None:
+        view = _view(
+            "parked", "paused",
+            nodes=[{"node_id": "implementation-a", "state": "running", "type": "work",
+                    "goal": "A"}],
+            attempts=[{"attempt_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                       "node_id": "implementation-a", "ordinal": 1, "state": "running"}],
+            links=[],
+        )
+        view["actions"] = [{
+            "action_class": "directive",
+            "action_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "active_plan_digest": None,
+            "outcome": json.dumps({
+                "delivery": "pending", "node_id": "implementation-a",
+                "attempt_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            }),
+        }]
+        screen = InitiativesScreen(
+            [view], height=28, width=122, attention_only=True,
+        )
+        self.assertNotIn(
+            ("initiative", view["initiative"]["initiative_id"]), screen.expanded,
+        )
+        self.assertEqual(
+            [(row.kind, row.attention) for row in screen.rows()],
+            [("initiative", "-"), ("node", "directive pending")],
+            "parking is the head's schedule; a live directive is happening now",
+        )
+        self.assertEqual(
+            [item["kind"] for item in attention_items([view])], ["directive-pending"],
+        )
+
+
+class RetainedViewRoundTripTests(unittest.TestCase):
+    """`H`, `A`, `!` and `/` compose without any of them capturing another."""
+
+    def views(self):
+        live = _view("live", "running")
+        quiet = _view("settled", "integrated")
+        quiet.update({
+            "nodes": [{"node_id": "implementation-a", "state": "succeeded",
+                       "type": "work", "goal": "A"}],
+            "attempts": [], "links": [], "coordinator_live": False,
+        })
+        return [live, quiet]
+
+    def test_each_control_keeps_its_own_state_through_the_others(self) -> None:
+        model = TuiModel([], height=28, width=122)
+        model.initiatives = InitiativesScreen(
+            self.views(), height=28, width=122,
+        )
+        screen = model.initiatives
+        self.assertIs(model.dispatch_key("H").kind, IntentKind.RETAINED_VIEW)
+        screen.toggle_view_scope()
+        screen.attention_only = True
+        screen.set_filter("live")
+        self.assertEqual(
+            (screen.view_scope, screen.attention_only, screen.filter_string),
+            ("all", True, "live"),
+        )
+        screen.toggle_view_scope()
+        self.assertEqual(
+            (screen.view_scope, screen.attention_only, screen.filter_string),
+            ("current", True, "live"),
+        )
+        screen.attention_only = False
+        screen.set_filter("")
+        self.assertEqual(screen.view_scope, "current")
+        self.assertEqual(
+            [row.label for row in screen.rows() if row.kind == "initiative"], ["live"],
+        )
+        # `A` scopes the task branch's lifecycle and leaves the view alone.
+        model.include_archived = True
+        self.assertEqual(screen.view_scope, "current")
+        title = str(render(model)[0])
+        self.assertIn("Tasks: all", title)
+        self.assertIn("Scope: all", title)
+        self.assertIn("View: current", title)
+
+    def test_the_verb_is_independent_of_every_session_local_control(self) -> None:
+        views = self.views()
+        complete = attention_items(views)
+        screen = InitiativesScreen(views, height=28, width=122)
+        for scope, attention_only, needle in (
+            ("current", False, ""), ("all", False, ""),
+            ("current", True, "nothing-matches"), ("all", True, "live"),
+        ):
+            with self.subTest(scope=scope, attention_only=attention_only, needle=needle):
+                screen.set_view_scope(scope)
+                screen.attention_only = attention_only
+                screen.set_filter(needle)
+                screen.rows()
+                self.assertEqual(
+                    attention_items(screen.views), complete,
+                    "the CLI projection never narrows with this terminal's view",
+                )
+
+
+class AttentionObservationTests(unittest.TestCase):
+    """`asha initiative attention` says what its bounded read could not see.
+
+    The verb's contract is a list of asks. An ask is a claim that something
+    waits on a human, so a short or partly unreadable observation may never be
+    carried as an item: no sentinel row is invented, and no row is invented to
+    hold metadata. The completeness rides beside `items` instead, and it is
+    available even when no head and no item came back at all -- which is
+    exactly the case where an empty list would otherwise read as proof.
+    """
+
+    def empty_env(self) -> dict[str, str]:
+        import tempfile
+        from pathlib import Path as _Path
+
+        base = _Path(tempfile.mkdtemp()).resolve()
+        self.addCleanup(__import__("shutil").rmtree, base, True)
+        env = {
+            "HOME": str(base / "home"), "ASHA_CONFIG": str(base / "missing.json"),
+            "ASHA_HOME": str(base / "asha"),
+            "XDG_RUNTIME_DIR": str(base / "runtime"),
+        }
+        for key in ("HOME", "ASHA_HOME", "XDG_RUNTIME_DIR"):
+            _Path(env[key]).mkdir(mode=0o700)
+        return env
+
+    def invoke(self, env, *args) -> tuple[int, str]:
+        import contextlib
+        import io
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = orchestration_cli.main(["initiative", "attention", *args], env=env)
+        return rc, out.getvalue()
+
+    def test_a_zero_head_zero_item_read_still_carries_its_completeness(self) -> None:
+        env = self.empty_env()
+        with mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            rc, text = self.invoke(env, "--json")
+        self.assertEqual(rc, 0)
+        payload = json.loads(text)
+        self.assertEqual(payload["contract"], "asha.orchestration-attention.v1")
+        self.assertEqual(payload["items"], [])
+        observation = payload["observation"]
+        self.assertTrue(observation["complete"])
+        self.assertFalse(observation["truncated"])
+        self.assertEqual(observation["heads_loaded"], 0)
+        self.assertEqual(observation["items_reported"], 0)
+        self.assertEqual(observation["unavailable_records"], 0)
+        # Proved empty, so the plain sentence is the truth.
+        with mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            rc, human = self.invoke(env)
+        self.assertEqual(rc, 0)
+        self.assertIn("Nothing is waiting on a human.", human)
+        self.assertNotIn("Observation incomplete", human)
+
+    def test_an_incomplete_read_is_never_reported_as_proof_of_no_demand(self) -> None:
+        env = self.empty_env()
+        with mock.patch.object(tui, "_RETAINED_DEADLINE_SECONDS", -1.0), \
+                mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            rc, text = self.invoke(env, "--json")
+        self.assertEqual(rc, 0)
+        payload = json.loads(text)
+        observation = payload["observation"]
+        self.assertFalse(observation["complete"])
+        self.assertTrue(observation["truncated"])
+        self.assertTrue(observation["deadline_exceeded"])
+        self.assertEqual(
+            payload["items"], [],
+            "metadata is never carried as a fabricated authority or demand item",
+        )
+        with mock.patch.object(tui, "_RETAINED_DEADLINE_SECONDS", -1.0), \
+                mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            rc, human = self.invoke(env)
+        self.assertEqual(rc, 0)
+        self.assertNotIn("Nothing is waiting on a human.", human)
+        self.assertIn("nothing here proves that nothing is waiting", human)
+        self.assertIn("Observation incomplete", human)
+
+    def test_a_capped_read_names_the_cap_it_reached(self) -> None:
+        env = self.empty_env()
+        with mock.patch.object(tui, "_RETAINED_HEAD_LIMIT", 0), \
+                mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            rc, text = self.invoke(env, "--json")
+            rc_human, human = self.invoke(env)
+        self.assertEqual((rc, rc_human), (0, 0))
+        observation = json.loads(text)["observation"]
+        self.assertIn("heads", observation["caps_reached"])
+        self.assertFalse(observation["complete"])
+        self.assertIn("reached the heads cap", human)
+
+    def test_existing_consumers_keep_contract_and_items_unchanged(self) -> None:
+        env = self.empty_env()
+        stuck = _FakeTaskRow(
+            "dddddddd-dddd-4ddd-8ddd-dddddddddddd", "stuck-task",
+            display_state="needs-input",
+            evidence=[{"state": "needs-input", "detail": "prompt"}],
+        )
+        with mock.patch(
+            "lib.control.tui._load_initiative_views",
+            return_value=[_view("waiting", "awaiting-plan-approval")],
+        ), mock.patch(
+            "lib.control.cli._load_rows_for_attention", return_value=(stuck,),
+        ):
+            rc, text = self.invoke(env, "--json")
+        self.assertEqual(rc, 0)
+        payload = json.loads(text)
+        self.assertEqual(sorted(payload), ["contract", "items", "observation"])
+        self.assertEqual(payload["contract"], "asha.orchestration-attention.v1")
+        self.assertEqual(
+            {item["kind"] for item in payload["items"]}, {"plan-approval", "task"},
+        )
+        self.assertEqual(
+            payload["observation"]["items_reported"], len(payload["items"]),
+        )
+        for item in payload["items"]:
+            self.assertIn("resolution", item)
+            self.assertIn("certainty", item)
+
+
+class RetainedCliParityTests(ExecutionFixture, unittest.TestCase):
+    """Current, All retained and the CLI verb read one populated observation."""
+
+    def test_the_three_surfaces_agree_on_a_populated_store(self) -> None:
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        self.assertEqual(len(views), 1)
+        current = InitiativesScreen(views, height=28, width=122)
+        retained = InitiativesScreen(views, height=28, width=122, view_scope="all")
+        drawn = {
+            row.initiative_id for row in retained.rows() if row.kind == "initiative"
+        }
+        self.assertEqual(drawn, {self.initiative_id})
+        self.assertLessEqual(
+            {row.initiative_id for row in current.rows() if row.kind == "initiative"},
+            drawn,
+            "Current is a subset of what All retained draws",
+        )
+        with mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            payload = orchestration_cli._attention_payload(self.env)
+        self.assertEqual(payload["observation"]["heads_loaded"], 1)
+        self.assertTrue(payload["observation"]["complete"])
+        # The verb is the demand over every loaded head, whichever view the
+        # terminal happens to be showing.
+        self.assertEqual(
+            [item["kind"] for item in payload["items"]],
+            [item["kind"] for item in attention_items(views)],
+        )
+
+    def test_the_task_cap_bounds_the_observation_without_touching_task_storage(self) -> None:
+        from lib.control.orchestration import store as orchestration_store
+        from lib.control.store import TaskStore as _TaskStore
+
+        rows = tuple(
+            SimpleNamespace(
+                task={"task_id": f"{index:08d}-1111-4111-8111-111111111111"},
+                display_state="idle", reconciliation={"blocker": None, "evidence": []},
+                summary={"slug": f"row-{index}"}, observation=None,
+            )
+            for index in range(3)
+        )
+        budget = orchestration_store.PresentationBudget(
+            task_limit=2, deadline_seconds=30.0,
+        )
+        admitted = budget.admit_tasks(rows)
+        self.assertEqual(len(admitted), 2)
+        summary = budget.summary()
+        self.assertEqual(summary["scanned"]["tasks"], 3)
+        self.assertIn("tasks", summary["caps_reached"])
+        self.assertFalse(summary["complete"])
+        # Admission reuses already-observed rows: no task record is read,
+        # reconciled or written to bound them.
+        with mock.patch.object(
+            _TaskStore, "list", side_effect=AssertionError("no task read"),
+        ):
+            self.assertEqual(
+                len(orchestration_store.PresentationBudget().admit_tasks(rows)), 3,
+            )
+
+    def test_one_observation_writes_nothing_it_reads(self) -> None:
+        import hashlib
+
+        def digest() -> str:
+            root = self.config.initiatives_dir
+            payload = sorted(
+                (str(path.relative_to(root)), path.stat().st_mode,
+                 hashlib.sha256(path.read_bytes()).hexdigest())
+                for path in root.rglob("*") if path.is_file()
+            )
+            return hashlib.sha256(repr(payload).encode()).hexdigest()
+
+        before = digest()
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        screen = InitiativesScreen(views, height=28, width=122, view_scope="all")
+        screen.rows()
+        screen.detail_lines()
+        with mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            orchestration_cli._attention_payload(self.env)
+        self.assertEqual(
+            digest(), before,
+            "classifying a head never mutates or reconciles the records it reads",
+        )
+
+    def test_an_archived_head_reaches_the_verb_as_unknown_never_as_zero(self) -> None:
+        from lib.control.orchestration import store as orchestration_store
+
+        current = self.store.peek(self.initiative_id)
+        for state in ("running", "ready-for-integration", "integrated", "archived"):
+            if current["state"] == state:
+                continue
+            changed = copy.deepcopy(current)
+            changed.update({
+                "state": state, "state_revision": current["state_revision"] + 1,
+                "updated_at": tui._utc_now().isoformat(
+                    timespec="microseconds",
+                ).replace("+00:00", "Z"),
+            })
+            self.store.save_initiative(changed, expected_digest=record_digest(current))
+            current = changed
+        with mock.patch.object(
+            orchestration_store.InitiativeStore, "bounded_presentation_records",
+            side_effect=AssertionError("the verb must not expand an archived graph"),
+        ), mock.patch("lib.control.cli._load_rows_for_attention", return_value=()):
+            payload = orchestration_cli._attention_payload(self.env)
+        observation = payload["observation"]
+        self.assertEqual(payload["items"], [])
+        self.assertEqual(observation["archived_head_metadata"], 1)
+        self.assertEqual(observation["graphs_loaded"], 0)
+        self.assertTrue(observation["complete"])
+        # The tree draws the same head with unknown counts, never `0/0`.
+        views = tui._load_initiative_views(self.env, tmux=mock.Mock())
+        head = next(
+            row for row in InitiativesScreen(
+                views, height=28, width=122, view_scope="all",
+            ).rows() if row.kind == "initiative"
+        )
+        self.assertEqual(head.nodes, "?")
+
 
 
 if __name__ == "__main__":

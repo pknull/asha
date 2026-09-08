@@ -1040,17 +1040,82 @@ def _home_relative(path: str) -> str:
 
 
 def _attention_payload(env: Mapping[str, str]) -> dict[str, Any]:
-    """Everything waiting on a human, from the same assembler the tree uses."""
+    """Everything waiting on a human, from the same assembler the tree uses.
+
+    The payload keeps its existing `contract` and `items` exactly, and adds
+    `observation`: the bounded read's own account of what it read and what it
+    could not. The metadata is additive and never an item -- no sentinel row
+    is ever invented to carry it -- because an item in this list is a claim
+    that something waits on a human, and a short read is not that claim.
+
+    `items` is the complete bounded demand projection over every loaded head.
+    The session-local `H` view and the tree's text and `!` filters narrow a
+    terminal, never this.
+    """
     from ..cli import _load_rows_for_attention
-    from ..tui import _load_initiative_views
+    from ..tui import (
+        _load_initiative_views, _retained_budget, observation_completeness,
+    )
     from .tui_model import attention_items
 
-    views = _load_initiative_views(env)
-    task_rows = _load_rows_for_attention(env)
+    budget = _retained_budget()
+    views = _load_initiative_views(env, budget=budget)
+    task_rows = budget.admit_tasks(_load_rows_for_attention(env))
+    items = attention_items(views, task_rows)
+    observation = observation_completeness(views, budget)
+    observation["heads_loaded"] = len(views)
+    # Named apart from the payload's own `items` list, which is the demand
+    # itself; this is only how many of them this read produced.
+    observation["items_reported"] = len(items)
     return {
         "contract": ATTENTION_CONTRACT,
-        "items": attention_items(views, task_rows),
+        "items": items,
+        "observation": observation,
     }
+
+
+def _print_attention(payload: Mapping[str, Any]) -> None:
+    """Print the demand, and say plainly when the read could not prove there is none.
+
+    An incomplete observation is not an absence of demand. With nothing found
+    and something unread, this says so instead of printing the sentence that
+    means the operator has nothing to do.
+    """
+    observation = payload.get("observation")
+    complete = True
+    if isinstance(observation, Mapping):
+        complete = bool(observation.get("complete", True))
+    items = payload["items"]
+    if not items:
+        if complete:
+            print("Nothing is waiting on a human.")
+        else:
+            print(
+                "No demand was found, but this read was incomplete: nothing here "
+                "proves that nothing is waiting."
+            )
+    for item in items:
+        where = item.get("slug") or item.get("task_id", "")
+        print(f"{item['kind']:<18} {str(where)[:28]:<28} {item['detail'][:70]}")
+        print(f"{'':<18} -> {item['resolution']}")
+    if isinstance(observation, Mapping) and not complete:
+        print(_attention_observation_line(observation))
+
+
+def _attention_observation_line(observation: Mapping[str, Any]) -> str:
+    """One line naming exactly why the bounded read could not be called complete."""
+    reasons: list[str] = []
+    caps = [str(name) for name in observation.get("caps_reached") or []]
+    if caps:
+        reasons.append("reached the " + ", ".join(caps) + " cap")
+    if observation.get("deadline_exceeded"):
+        reasons.append("ran out of its shared deadline")
+    unavailable = observation.get("unavailable_records") or 0
+    if unavailable:
+        reasons.append(f"could not read {unavailable} record(s)")
+    if not reasons:
+        reasons.append("did not complete")
+    return "Observation incomplete: this read " + "; ".join(reasons) + "."
 
 
 def _coordinator_command(
@@ -2294,12 +2359,7 @@ def _initiative_command(
         if options["json"]:
             _json(payload)
         else:
-            if not payload["items"]:
-                print("Nothing is waiting on a human.")
-            for item in payload["items"]:
-                where = item.get("slug") or item.get("task_id", "")
-                print(f"{item['kind']:<18} {str(where)[:28]:<28} {item['detail'][:70]}")
-                print(f"{'':<18} -> {item['resolution']}")
+            _print_attention(payload)
         return 0
     if command == "projects":
         options = _parse_options(tail, repeat={"root"}, flags={"json"})

@@ -148,6 +148,9 @@ EOF
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
+    if [[ "$1" == --target && $# -lt 2 ]]; then
+      die "missing value for --target" 1
+    fi
     case "$1" in
       --dry-run) DRY_RUN=1 ;;
       --verbose|-v) VERBOSE=1 ;;
@@ -156,7 +159,7 @@ parse_args() {
       -h|--help) usage ;;
       *) die "unknown arg: $1" 1 ;;
     esac
-    shift
+    if [[ $# -gt 0 ]]; then shift; fi
   done
 
   asha_target_exists "$TARGET" \
@@ -190,6 +193,7 @@ asha_uninstall_main() {
 
   local t total=0
   local -a failed=()
+  local -a successful=()
   # Remember the caller's errexit state so we can toggle around each harness.
   local had_e=0
   case "$-" in *e*) had_e=1 ;; esac
@@ -216,12 +220,20 @@ asha_uninstall_main() {
     # `|| true`, an unwritable TMPDIR would abort the subshell AFTER a fully
     # successful uninstall and report a false failure (review pass 2).
     set +e
-    ( set -e; "${t}_uninstall"; echo "${!var:-0}" > "$total_file" 2>/dev/null || true )
+    (
+      set -e
+      "${t}_uninstall"
+      local adapter_rc=$?
+      [[ $adapter_rc -eq 0 ]] || exit "$adapter_rc"
+      echo "${!var:-0}" > "$total_file" 2>/dev/null || true
+    )
     local rc=$?
     [[ $had_e -eq 1 ]] && set -e
     if [[ $rc -ne 0 ]]; then
       failed+=("$t")
       info "WARN: [$t] uninstall failed (exit $rc); continuing with remaining targets"
+    else
+      successful+=("$t")
     fi
     local n_harness
     n_harness="$(cat "$total_file" 2>/dev/null || true)"
@@ -229,22 +241,51 @@ asha_uninstall_main() {
     total=$((total + ${n_harness:-0}))
   done
 
-  # Targeted uninstall removes only the selected harness shims. The shared
-  # dispatcher and unselected shims remain usable. Full uninstall removes all.
+  # Only successful selected adapters authorize shim removal, even for all.
+  # A relative spelling alone is not ownership: prove its dispatcher as well.
+  # Never sweep the bin directory with the generic artifact-link remover.
   local user_bin="$HOME/.local/bin"
   if [[ -d "$user_bin" ]]; then
-    local n=0 shim h raw
-    if [[ "$TARGET" == all ]]; then
-      n="$(remove_symlinks_under "$user_bin" 1)"
-    else
-      for h in "${targets[@]}"; do
-        shim="$user_bin/asha-$h"
-        [[ -L "$shim" ]] || continue
-        raw="$(readlink "$shim" 2>/dev/null || true)"
-        [[ "$raw" == asha ]] || continue
-        if [[ $DRY_RUN -eq 1 ]]; then info "  RM  $shim"; else rm -f "$shim"; fi
-        n=$((n+1))
-      done
+    local n=0 shim h raw dispatcher_owned=0 survivors=0 removed=""
+    local dispatcher="$user_bin/asha" resolved
+    if [[ -L "$dispatcher" ]]; then
+      raw="$(readlink "$dispatcher")"
+      resolved="$(resolve_path "$dispatcher" 2>/dev/null || true)"
+      if [[ "$raw" == "$MARKET_ROOT/bin/asha" || "$raw" == "$ABS_MARKET_ROOT/bin/asha" \
+          || "$resolved" == "$ABS_MARKET_ROOT/bin/asha" ]]; then
+        dispatcher_owned=1
+      fi
+    fi
+    for h in ${successful[@]+"${successful[@]}"}; do
+      shim="$user_bin/asha-$h"
+      [[ -L "$shim" ]] || continue
+      raw="$(readlink "$shim")"
+      if [[ "$raw" != "$MARKET_ROOT/bin/asha" && "$raw" != "$ABS_MARKET_ROOT/bin/asha" ]]; then
+        [[ "$raw" == asha && $dispatcher_owned -eq 1 ]] || continue
+      fi
+      if [[ $DRY_RUN -eq 1 ]]; then info "  RM  $shim"; else rm -f "$shim"; fi
+      removed+=" $shim"
+      n=$((n+1))
+    done
+    # Include unknown names and foreign/broken entries. Dry-run computes the
+    # same survival decision without actually removing any of the shims.
+    # Hidden aliases are consumers too; do not mutate source callers' glob
+    # options or enumerate . / .. as candidates.
+    for shim in "$user_bin"/* "$user_bin"/.[!.]* "$user_bin"/..?*; do
+      [[ "$shim" != "$dispatcher" ]] || continue
+      [[ -e "$shim" || -L "$shim" ]] || continue
+      case " $removed " in *" $shim "*) continue ;; esac
+      case "$shim" in "$user_bin"/asha-*) survivors=1 ;; esac
+      if [[ -L "$shim" ]]; then
+        raw="$(readlink "$shim")"
+        resolved="$(resolve_path "$shim" 2>/dev/null || true)"
+        case "$raw" in asha|asha-*|"$dispatcher") survivors=1 ;; esac
+        [[ "$resolved" != "$ABS_MARKET_ROOT/bin/asha" ]] || survivors=1
+      fi
+    done
+    if [[ "$TARGET" == all && ${#failed[@]} -eq 0 && $survivors -eq 0 && $dispatcher_owned -eq 1 ]]; then
+      if [[ $DRY_RUN -eq 1 ]]; then info "  RM  $dispatcher"; else rm -f "$dispatcher"; fi
+      n=$((n+1))
     fi
     [[ "$n" -gt 0 ]] && say "removed $n bin entr(y/ies) from $user_bin"
     total=$((total + n))
