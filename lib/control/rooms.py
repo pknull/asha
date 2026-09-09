@@ -280,6 +280,10 @@ def resolve_project(
 class RoomStore:
     """Small atomic JSON registry beneath the single Asha state root."""
 
+    def __new__(cls, config):
+        from .registry_backend import construct_store
+        return construct_store(cls, RoomStore, config, "rooms")
+
     def __init__(self, config: Any):
         self.root = Path(config.asha_home) / "state/control/rooms"
         self._managed_start = _managed_start(self.root, ("control", "rooms"))
@@ -520,6 +524,10 @@ class RoomStore:
         if record["room_id"] != path.stem:
             raise RoomError("room filename and record identity differ")
         return record
+
+    def bounded_active_snapshots(self, budget) -> list[dict[str, Any]]:
+        return [row for row in self.bounded_snapshots(budget)
+                if row["lifecycle"] in {"creating", "open"}]
 
     def bounded_snapshots(self, budget) -> list[dict[str, Any]]:
         """Bounded names and existing no-follow snapshot reader; never reconcile."""

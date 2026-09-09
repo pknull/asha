@@ -22,6 +22,7 @@ mkdir -p "$HOME_DIR/.asha" "$HOME_DIR/.codex/skills" "$HOME_DIR/bin"
 printf 'SOUL\n' >"$HOME_DIR/.asha/soul.md"
 printf 'VOICE\n' >"$HOME_DIR/.asha/voice.md"
 printf 'KEEPER\n' >"$HOME_DIR/.asha/keeper.md"
+printf 'OPERATION RULES\n' >"$HOME_DIR/.asha/operation.md"
 printf '\n' >"$HOME_DIR/.codex/config.toml"
 ln -s "$REPO_ROOT/plugins/test" "$HOME_DIR/.codex/skills/test-fixture"
 
@@ -117,6 +118,22 @@ assert_argv "managed worker argv has trust without coordinator posture" \
   -c "projects={\"$GIT_ROOT\"={trust_level=\"trusted\"}}" PAYLOAD
 
 echo ""
+echo "--- managed app-server conversation ---"
+(cd "$GIT_ROOT/nested/workspace" && env -u ASHA_CONTROL_MANAGED -u ASHA_COORDINATOR_LAUNCH \
+  -u ASHA_ROOM_ID -u ASHA_SEAT HOME="$HOME_DIR" ASHA_CODEX_CMD="$HOME_DIR/bin/codex" \
+  ASHA_TEST_CAPTURE="$CAPTURE" ASHA_MANAGED_SESSION_ID=fixture-session \
+  ASHA_PERSONA=1 ASHA_ORCHESTRATOR_STANCE=0 \
+  bash "$DISPATCHER" codex app-server --listen stdio:// --disable multi_agent \
+  >/dev/null 2>"$WORK/stderr")
+assert_argv "managed app-server retains identity without coordinator execution overrides" \
+  -c "model_instructions_file=\"$COORDINATOR_MODEL_FILE\"" \
+  app-server --listen stdio:// --disable multi_agent
+if rg -q 'SOUL' "$COORDINATOR_MODEL_FILE" && rg -q 'OPERATION RULES' "$COORDINATOR_MODEL_FILE"; then
+  ok "managed app-server receives identity and operational instructions"
+else
+  fail "managed app-server receives identity and operational instructions"
+fi
+
 echo "=== Codex Trust Override Test Summary ==="
 echo "Passed: $PASS"
 echo "Failed: $FAIL"

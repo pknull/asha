@@ -1,26 +1,77 @@
 ---
 name: session-orchestrate-initiative
-description: "Run a bounded initiative as its coordinator from Asha's own tmux pane: resolve the intent to one repository, create the initiative, claim the coordinator generation, propose the plan, wait on events in the background, and report evidence back to the Keeper. Use when the Keeper asks Asha to take on a coding task that should run as isolated Control workers with sealed evidence rather than in this session's working tree."
+description: "Coordinate one bounded initiative through a managed session or legacy tmux coordinator: resolve the repository, propose the plan, dispatch approved stages, and report sealed evidence. Use for coding tasks assigned to isolated Control workers."
 ---
 
 # Orchestrate an initiative (Asha as coordinator)
 
-The controller never launches a coordinator. This session is the coordinator:
-it claims one generation per initiative from the tmux pane it runs in, and
-every coordinator verb re-proves that pane. The Keeper is the operator and
-approves from his own terminal. That split is structural, not a courtesy.
+This session coordinates one initiative. The Keeper approves operator acts from
+the chair or Control. Coordinator commands re-prove the current generation and
+its anchor: a managed session owner or a legacy tmux pane. Environment identifiers
+select records; they do not grant authority.
 
-## How this session usually starts
+## Managed session execution
 
-When Control launched this session (`n` in `asha control`, or `asha initiative
-coordinator launch`), the Keeper's intent is the first message, the working
+When the runtime identifies this as an already-claimed managed coordinator, use
+the supplied initiative ID and generation. Read `asha initiative show ID --json`;
+do not create a second initiative, claim again, launch a watcher, or require tmux.
+The supervisor starts the session owner and delivers queued turns. The absence of
+`TMUX_PANE` is expected. CLI process and generation checks remain mandatory.
+
+When managed Codex supplies the native `asha_control` tool, use it for the Control
+operations below: `inspect` reads the assigned initiative, `propose_plan` takes
+the plan object, and `action` takes the coordinator action class and payload.
+Use `ask` for clarification and `receive_message`/`ack_message` for addressed
+messages (ack requires the received content digest). The owner binds session,
+initiative and generation; do not supply replacement identifiers. These hosted
+operations preserve the ordinary Codex execution sandbox. Check the returned
+record's state and IDs; tool transport success alone does not prove a worker or
+review succeeded. On an uncertain execution reply, inspect retained state before
+issuing new work.
+
+For planning, use the existing initiative and the plan template below. If the
+example needs `create.json`, save `initiative show ID --json` there; its
+`initiative` member supplies the existing repository and limits. Skip creation
+and claiming in steps 2–3. Resolve `plan-template.json` relative to this skill's
+actual installed directory, whichever harness is running.
+
+After proposing a plan, report its digest and finish the turn. After dispatching
+work, finish the turn. The backend delivers approval, activation and result
+notifications; on each resumed turn read current records before acting. Do not
+run the legacy background wait loop in step 6. Process addressed messages using
+the receive/ack commands there; an event notification is not an acknowledgement.
+
+Once the plan is approved and activated, dispatch ready work, review and verify
+nodes with `asha initiative dispatch ID --node NODE --as-coordinator --json`.
+Those stages are already authorized by the active plan; do not request another
+approval just to advance a ready stage. A worker seal, independent review verdict
+and controller verification are distinct facts. Report each actual outcome and
+stop before integration.
+
+For missing information, use `asha control session ask --question 'QUESTION'
+--json`, confirm its returned request ID, then finish the turn. If the command
+returns a running tool handle, wait on that same handle for its result first;
+a running command is not a retained question. The operator's digest-bound answer queues a
+follow-up. A clarification does not approve a plan, grant a native tool permission
+or resolve an initiative decision. Use the existing typed decision or budget
+request when that authority is required. Report native permission refusals;
+never retry through another tool to avoid the decision.
+
+Managed stop and recovery belong to the operator. When work is finished, report
+and end the turn; do not perform the legacy release step or stop the supervisor.
+The tmux preconditions and claim/wait/release steps below apply only to legacy
+coordinator sessions.
+
+## Legacy terminal launch
+
+When explicitly launched with `asha initiative coordinator launch --transport tmux`, the Keeper's intent is the first message, the working
 directory is the projects root, and the Keeper watches the monitor: report the
 plan digest in chat and keep the loop below; approvals arrive through the
 monitor, never through this pane.
 
 ## Preconditions
 
-- This session runs inside tmux (`$TMUX_PANE` is set). Outside tmux, `claim`
+- A legacy session runs inside tmux (`$TMUX_PANE` is set). Outside tmux, `claim`
   refuses; say so and stop.
 - `asha initiative doctor` reports ok. The `coordinator-seam` probe is
   advisory; read its detail if it is not `match`.
@@ -72,15 +123,17 @@ monitor, never through this pane.
 4. Author the plan from `plan-template.json` beside this skill (the
    canonical three-node Core plan: one `work` producer, one `review`, one
    `verify`). Do not read the reference document to learn the schema; fill the
-   `<FILL: …>` markers and nothing else. Mechanically:
+   `<FILL: …>` markers and nothing else. Set `SKILL_DIR` to the directory of this
+   loaded SKILL.md before running the example; the required variable avoids
+   guessing a harness-specific installation path. Mechanically:
 
    ```bash
    asha initiative baseline --repo "$REPO" --json > baseline.json   # exact scope origin
-   python3 - <<'PY'
-   import json, pathlib
+   python3 - "${SKILL_DIR:?Set SKILL_DIR to this loaded skill directory}/plan-template.json" <<'PY'
+   import json, sys
    created = json.load(open("create.json"))["initiative"]        # saved from step 2
    base = json.load(open("baseline.json"))
-   plan = json.load(open(pathlib.Path("~/.claude/skills/session-orchestrate-initiative/plan-template.json").expanduser()))
+   plan = json.load(open(sys.argv[1]))
    plan["initiative_id"] = created["initiative_id"]
    plan["repositories"] = [created["scope"]["repository"]]
    plan["limits"] = created["limits"]
@@ -170,7 +223,8 @@ monitor, never through this pane.
 Besides claim, propose, wait, checkpoint, and release, the coordinator actor
 may submit exactly: `dispatch-node`, `repair-node`, `request-salvage` (the
 Keeper approves it), `stop-attempt`, `pause`, `continue-node`,
-`request-decision`, `propose-outcome`, and `directive`. From the anchored pane:
+`request-decision`, `request-review-budget`, `propose-outcome`, and `directive`.
+From the proven coordinator session:
 
 ```bash
 asha initiative dispatch "$ID" --node "$NODE" --as-coordinator --json

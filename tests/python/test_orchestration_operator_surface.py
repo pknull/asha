@@ -63,6 +63,7 @@ class OrchestrationOperatorSurfaceTests(ExecutionFixture, unittest.TestCase):
                 "initiative_id": initiative_id,
                 "slug": "attention-test",
                 "state": "awaiting-plan-approval" if not salvage else "running",
+                "active_plan": {"digest": "b" * 64} if salvage else None,
             },
             "plan": {"revision": 1, "digest": "d" * 64} if not salvage else None,
             "nodes": [],
@@ -72,6 +73,8 @@ class OrchestrationOperatorSurfaceTests(ExecutionFixture, unittest.TestCase):
             "approvals": ([{
                 "state": "requested",
                 "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "action_class": "salvage", "active_plan_digest": "b" * 64,
+                "expires_at": "2099-01-01T00:00:00Z",
             }] if salvage else []),
         }
 
@@ -187,6 +190,7 @@ class OrchestrationOperatorSurfaceTests(ExecutionFixture, unittest.TestCase):
                 "initiative": {
                     "initiative_id": f"{index * 8}-1111-4111-8111-111111111111",
                     "slug": slug, "state": state,
+                    "active_plan": {"digest": "b" * 64} if extra.get("approvals") else None,
                 },
                 "plan": None, "nodes": [], "attempts": [], "links": [], "actions": [],
                 "approvals": [], "events": [], "coordinator": None, "coordinator_live": None,
@@ -217,6 +221,8 @@ class OrchestrationOperatorSurfaceTests(ExecutionFixture, unittest.TestCase):
                  coordinator=idle_coordinator, coordinator_live=True),
             head("2", "parked-asked", "paused", approvals=[{
                 "state": "requested", "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "action_class": "salvage", "active_plan_digest": "b" * 64,
+                "expires_at": "2099-01-01T00:00:00Z",
             }]),
             head("3", "parked-live", "paused",
                  nodes=[{"node_id": "review-a", "state": "running", "type": "review"}],

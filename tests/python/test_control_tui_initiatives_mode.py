@@ -411,30 +411,30 @@ class InitiativesLoopTests(ExecutionFixture, unittest.TestCase):
             )
         self.assertEqual(code, 0)
 
-    def test_n_prompts_for_an_intent_launches_the_coordinator_and_opens_its_popup(self) -> None:
-        calls: dict = {}
+    def test_n_collects_project_harness_assignment_and_shows_queued_receipt(self) -> None:
+        launched = {"initiative_id": self.pending_id, "session_id": "session-one",
+                    "state": "queued", "admission": {"mode": "paused"},
+                    "supervisor": {"message": "work retained"}}
+        projects = {"projects": [{"root": str(self.repo), "name": "Project",
+                                  "asha_project": True, "project_id": "project-one"}]}
+        with mock.patch("lib.control.managed_launch.harness_available", return_value=True), \
+             mock.patch("lib.control.managed_launch.launch_managed", return_value=launched) as launch, \
+             mock.patch("lib.control.orchestration.projects.list_projects_across", return_value=projects), \
+             mock.patch("lib.control.tui._popup_session") as popup:
+            _screen, model = self.run_loop([ord("n"), 10, 10, *map(ord, "update termart"), 10, ord("q")])
+        self.assertEqual(launch.call_args.kwargs['project'], str(self.repo))
+        self.assertEqual(launch.call_args.kwargs['intent'], 'update termart')
+        self.assertEqual(launch.call_args.kwargs['harness'], 'claude')
+        self.assertIn('launch_id', launch.call_args.kwargs)
+        popup.assert_not_called()
+        self.assertIn('session session-one queued; runtime paused', model.message)
 
-        def fake_launch(config, *, root, intent, tmux, asha_root, harness="claude", token=None):
-            calls["launch"] = {"root": str(root), "intent": intent, "harness": harness}
-            return {"session": "asha-coord-feedbeef", "pane_id": "%9"}
-
-        def fake_popup(stdscr, curses_module, config, env, session, label):
-            calls["popup"] = (session, label)
-            return None
-
-        self.env = {**self.env, "ASHA_PROJECTS_ROOT": str(self.root)}
-        with mock.patch("lib.control.orchestration.coordinator.launch_session", fake_launch), \
-             mock.patch("lib.control.tui._popup_session", fake_popup):
-            _screen, model = self.run_loop([ord("n"), *map(ord, "update termart"), 10, ord("q")])
-        self.assertEqual(calls["launch"], {"root": str(self.root), "intent": "update termart", "harness": "claude"})
-        self.assertEqual(calls["popup"], ("asha-coord-feedbeef", "coordinator"))
-        self.assertIn("coordinator session asha-coord-feedbeef started", model.message)
-
-    def test_n_with_an_empty_intent_launches_nothing(self) -> None:
-        with mock.patch("lib.control.orchestration.coordinator.launch_session") as launch:
-            _screen, model = self.run_loop([9, ord("n"), 10, ord("q")])
+    def test_n_cancel_launches_nothing(self) -> None:
+        with mock.patch("lib.control.managed_launch.harness_available", return_value=True), \
+             mock.patch("lib.control.managed_launch.launch_managed") as launch:
+            _screen, model = self.run_loop([9, ord("n"), 27, ord("q")])
         launch.assert_not_called()
-        self.assertEqual(model.message, "intent cancelled")
+        self.assertEqual(model.message, "initiative launch cancelled")
 
     def test_enter_on_an_initiative_row_attaches_to_its_live_coordinator_or_explains(self) -> None:
         from lib.control.orchestration.coordinator import claim
@@ -857,8 +857,10 @@ class UnifiedTreeTests(unittest.TestCase):
 
         asked = _view(
             "asked", "paused",
-            approvals=[{"state": "requested", "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}],
+            approvals=[{"state": "requested", "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "action_class": "salvage", "expires_at": "2099-01-01T00:00:00Z", "active_plan_digest": "d" * 64}],
         )
+        asked["initiative"]["active_plan"] = {"digest": "d" * 64}
         coordinator = {
             "harness": "claude", "generation": 1, "state": "active",
             "updated_at": "2000-01-01T00:00:00Z", "anchor": {"pane_id": "%7"},
@@ -1130,7 +1132,9 @@ class RetainedViewTests(unittest.TestCase):
         # the Current view, collapsed or not.
         asked = self.quiet("parked-asked", "paused")
         asked["approvals"] = [{"state": "requested",
-                               "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}]
+                               "request_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                               "action_class": "salvage", "expires_at": "2099-01-01T00:00:00Z", "active_plan_digest": "d" * 64}]
+        asked["initiative"]["active_plan"] = {"digest": "d" * 64}
         watched = self.quiet("parked-watched", "paused")
         watched.update({
             "coordinator": {"harness": "claude", "generation": 1, "state": "active",

@@ -14,6 +14,9 @@ from lib.control.orchestration import cli, model, preview, scheduler, verificati
 from lib.control.orchestration.actions import (ActionRefused, approve_salvage,
     action_outcome, build_action_document, salvage_dispatch_binding, submit_action)
 from lib.control.orchestration.store import InitiativeStore
+from lib.control.database import ControlDatabase
+from lib.control.orchestration.sqlite_store import SQLiteInitiativeStore
+from tests.python.test_control_registry_backend import install_marker_fixture
 from tests.python import test_orchestration_salvage as salvage_tests
 from tests.python.orchestration_execution_fixtures import ExecutionFixture
 from tests.python.test_orchestration_actions import CoordinatorEnvelope
@@ -94,6 +97,24 @@ class AssignmentPreviewTests(CoordinatorEnvelope, ExecutionFixture, unittest.Tes
         self.assertEqual(value["coordinator"]["generation"], self.coordinator()["generation"])
         self.assertEqual(value["coordinator"]["liveness"], "live")
         self.assertIsNone(value["approval"])
+
+    def test_public_preview_uses_selected_sqlite_store_without_artifact_writes(self):
+        # Load fixture records to exercise the public constructor. Production
+        # activation/quiescence is tested separately by the migration suite.
+        sql = SQLiteInitiativeStore(self.config)
+        with ControlDatabase(self.config.control, create=True) as db, db.transaction(write=True) as c:
+            root = self.config.initiatives_dir / self.initiative_id
+            for path in root.rglob("*.json"):
+                parts = path.relative_to(root).parts
+                directory = "initiative" if len(parts) == 1 else parts[0]
+                key = self.initiative_id if directory == "initiative" else path.name
+                sql._registry(self.initiative_id, directory).put(c, key, path.read_bytes())
+        install_marker_fixture(self.config.control)
+        with mock.patch.object(SQLiteInitiativeStore, "write_assignment", side_effect=AssertionError("preview write")):
+            value = preview.assignment_preview(self.config, self.initiative_id, "implementation-a", tmux=self.tmux)
+        path = sql.assignment_path(self.initiative_id, preview.PREVIEW_ATTEMPT_ID)
+        self.assertEqual(value["capacity"]["goal_characters"], len(scheduler._goal(sql.peek(self.initiative_id), {}, path)))
+        self.assertFalse(sql.artifacts.root.exists())
 
     def test_review_layout_is_exact_seal_target(self):
         seal = self.seal("success")

@@ -96,7 +96,10 @@ Run `asha control` in a terminal to open the Control TUI.
 Use `asha control --initiatives` to open it in Initiatives mode.
 Use `asha task list --json` as the non-interactive fallback.
 Use `asha control tmux` to print the optional tmux integration snippet.
-Use `asha control supervisor {run|start|stop|status} [--json]` for routine
+Use `asha control session {create|current|list|show|summary|send|answer|stop|resume|doctor|backup}`
+for opt-in structured managed sessions; `--help` lists each command's arguments.
+Use `asha control registry {status|stage|activate|recover|rollback}` for SQLite registry cutover.
+Use `asha control supervisor {run|start|stop|pause|drain|resume|status} [--json]` for routine
 initiative progression; `install` manages its systemd user service.""", file=stream)
 
 
@@ -2013,6 +2016,12 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
             if tail and tail[0] == "supervisor":
                 from .orchestration.supervisor_daemon import supervisor_main
                 return supervisor_main(tail[1:], env=values)
+            if tail and tail[0] == "session":
+                from .sessions import main as session_main
+                return session_main(tail[1:], env=values)
+            if tail and tail[0] == "registry":
+                from .registry_cli import main as registry_main
+                return registry_main(tail[1:], env=values)
             if not tail:
                 from .tui import run_tui
                 return run_tui(values)

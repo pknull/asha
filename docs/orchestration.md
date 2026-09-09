@@ -59,8 +59,8 @@ asha control supervisor {run|start|stop|status} [--json]
 asha control supervisor {install|uninstall} [--dry-run] [--json]
 asha initiative coordinator claim ID [--harness H] [--json]     (from the Asha pane)
 asha initiative coordinator release|show ID [--json]
-asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
-asha initiative coordinator sessions [--json]
+asha initiative coordinator launch [--project PROJECT] --intent TEXT [--harness H] [--launch-id UUID] [--transport managed|tmux] [--json]
+asha initiative coordinator sessions [--limit N] [--after CURSOR] [--json]
 asha initiative coordinator attach ID | --session NAME [--json]
 asha initiative propose-plan ID --file PLAN.json [--json]       (coordinator actor)
 asha initiative wait ID --after SEQUENCE [--timeout SECONDS] --json  # maximum 3600
@@ -317,7 +317,7 @@ reaches coordinator sessions or workers, so the split below stays exact.
 
 Codex coordinators are launch-equivalent to Claude ones (verified live
 2026-08-25: prompt delivery, skill adherence, create, claim with the pane
-proofs, and propose-plan all hold): `coordinator launch --harness codex`
+proofs, and propose-plan all hold): `coordinator launch --transport tmux --harness codex`
 adds the per-launch trust override and the unattended workspace-write
 posture described in docs/control.md, since an unattended session cannot
 answer Codex's own approval prompts.
@@ -905,8 +905,9 @@ remain available where their ordinary lifecycle rules permit containment.
 | `attention` | `asha.orchestration-attention.v1` `{contract, items}`; JSON retains complete detail and resolution strings, while only the human renderer may elide descriptive columns, and runnable resolution commands are printed whole |
 | `coordinator claim` | `asha.orchestration-coordinator-claim.v1` `{contract, initiative_id, coordinator, environment}` |
 | `coordinator release` | `asha.orchestration-coordinator-release.v1` `{contract, initiative_id, coordinator, reaped_pane_id}` (`reaped_pane_id` is non-null only for terminal operator cleanup that killed the exact anchor pane) |
-| `coordinator launch` | `asha.orchestration-coordinator-launch.v1` `{contract, session, pane_id, root, harness, intent, launched_at}` |
-| `coordinator sessions` | `asha.orchestration-coordinator-sessions.v1` `{contract, sessions: [{session, initiative_id, slug, coordinator_id, generation, state}]}` |
+| `coordinator launch` | `asha.managed-launch.v1` `{contract, launch_id, initiative_id, session_id, root, harness, intent, state, admission, supervisor}` |
+| `coordinator launch --transport tmux` | `asha.orchestration-coordinator-launch.v1` `{contract, session, pane_id, root, harness, intent, launched_at}` |
+| `coordinator sessions` | `asha.orchestration-coordinator-sessions.v2` `{contract, sessions, managed_page, managed_error, legacy_error}`; managed rows carry `session_id`, legacy rows carry terminal `session` |
 | `coordinator attach` | `asha.orchestration-coordinator-attach.v1` `{contract, initiative_id, session, pane_id, coordinator_id, generation}` |
 | `coordinator show` | `asha.orchestration-coordinator-show.v1` `{contract, initiative_id, coordinator, anchor_live, anchor_detail, generations}` |
 | `propose-plan` | stored `asha.orchestration-plan.v1` record (event actor `coordinator`) |

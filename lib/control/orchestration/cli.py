@@ -88,6 +88,10 @@ Usage:
   asha initiative plan <id> --show [--revision N] [--json]
   asha initiative approve <id> --digest SHA256 [--json]
   asha initiative approve-salvage <id> --request REQUEST_ID [--json]
+  asha initiative approve-review-budget <id> --request REQUEST_ID [--json]
+  asha initiative reject-request <id> --request REQUEST_ID --digest REQUEST_DIGEST [--json]
+  asha initiative approval <id> --request REQUEST_ID --json
+  asha initiative request-review-budget <id> --node NODE --review REVIEW_ID --reason TEXT [--as-coordinator] [--json]
   asha initiative reject <id> --digest SHA256 --reason TEXT [--json]
   asha initiative activate <id> [--json]
   asha initiative action <id> --file ACTION.json --json
@@ -113,15 +117,15 @@ Usage:
   asha initiative show|events|reconcile|storage|snapshot <id> [options]
   asha initiative doctor [--json]
   asha initiative projects [--root DIR] [--depth N] [--match TEXT] [--json]
-  asha initiative attention [--json]
+  asha initiative attention [--json] [--page initiatives|approvals --limit N --after CURSOR]
   asha initiative authority add NAME --repo DIR --scope PREFIX... [--max-nodes N]
                                  [--harness H,...] [--max-attempts N] [--require-headless]
                                  [--no-auto-activate] [--json]
   asha initiative authority list [--all] [--json]
   asha initiative authority revoke AUTHORITY_ID [--json]
   asha initiative coordinator claim <id> [--harness H] [--json]   (from the Asha pane)
-  asha initiative coordinator launch [--root DIR] --intent TEXT [--harness H] [--json]
-  asha initiative coordinator sessions [--json]
+  asha initiative coordinator launch [--project PROJECT] --intent TEXT [--harness H] [--launch-id UUID] [--transport managed|tmux] [--json]
+  asha initiative coordinator sessions [--limit N] [--after CURSOR] [--json]
   asha initiative coordinator attach ID | --session NAME [--json]
   asha initiative coordinator release|show <id> [--json]
   asha initiative propose-plan <id> --file PLAN.json [--json]     (coordinator actor)
@@ -346,7 +350,7 @@ def _baseline(
     }, bool(options["json"])
 
 
-def _create(args: list[str], config, store: InitiativeStore, jj: JjAdapter) -> dict[str, Any]:
+def _prepare_initiative(args: list[str], config, jj: JjAdapter, *, initiative_id=None) -> dict[str, Any]:
     options = _parse_options(args, repeat={"acceptance"}, flags={"json"})
     allowed = {"repo", "workspace", "slug", "label", "objective", "acceptance", "max_parallel",
                "max_total_tasks", "max_attempts_per_node", "max_repair_cycles", "deadline", "json"}
@@ -393,7 +397,7 @@ def _create(args: list[str], config, store: InitiativeStore, jj: JjAdapter) -> d
         scope = {"kind": "repository", "repository": repository_scope(Path(options["repo"]), jj)}
         contract = INITIATIVE_CONTRACT
     initiative = validate_initiative({
-        "contract": contract, "initiative_id": new_uuid(),
+        "contract": contract, "initiative_id": initiative_id or new_uuid(),
         "slug": options["slug"], "label": options["label"], "state": "draft",
         "objective": options["objective"],
         "acceptance_criteria": acceptance,
@@ -402,11 +406,16 @@ def _create(args: list[str], config, store: InitiativeStore, jj: JjAdapter) -> d
         "state_revision": 0, "forbidden_action_classes": list(FORBIDDEN_ACTION_CLASSES),
         "last_event_sequence": 0, "created_at": at, "updated_at": at,
     })
-    created_event = _event(initiative, "initiative-created", {"slug": initiative["slug"]}, at)
+    return initiative
+
+
+def _create(args: list[str], config, store: InitiativeStore, jj: JjAdapter) -> dict[str, Any]:
+    initiative = _prepare_initiative(args, config, jj)
+    created_event = _event(initiative, "initiative-created", {"slug": initiative["slug"]}, initiative['created_at'])
     store.save_initiative(initiative)
     with store.transaction_lock(initiative["initiative_id"]):
         store.append_event(initiative["initiative_id"], created_event)
-    return {"contract": CREATE_CONTRACT, "initiative": store.peek(initiative["initiative_id"]), "json": options["json"]}
+    return {"contract": CREATE_CONTRACT, "initiative": store.peek(initiative["initiative_id"]), "json": '--json' in args}
 
 
 def _latest_plan(store: InitiativeStore, initiative_id: str) -> dict[str, Any]:
@@ -623,7 +632,7 @@ def _propose_gate_recovery_plan(
     if any(node["state"] != "proposed" for node in nodes):
         raise ValueError("new plan nodes must be proposed")
     _verify_approved_baselines(nodes, plan, jj)
-    validate_goal_capacity(config, initiative, plan)
+    validate_goal_capacity(config, initiative, plan, store=store)
     retained = {
         node["node_id"]: node
         for node in store.list_nodes_snapshot(initiative_id)
@@ -784,7 +793,7 @@ def propose_plan(
     if any(node["state"] != "proposed" for node in nodes):
         raise ValueError("new plan nodes must be proposed")
     _verify_approved_baselines(nodes, plan, jj)
-    validate_goal_capacity(config, initiative, plan)
+    validate_goal_capacity(config, initiative, plan, store=store)
     retained = {
         node["node_id"]: node
         for node in store.list_nodes_snapshot(initiative["initiative_id"])
@@ -939,6 +948,8 @@ def _authority_command(
                 )
         return 0
     _refuse_any_coordinator_session(env)
+    from ..sessions import refuse_managed_operator
+    refuse_managed_operator(config.control, env)
     refuse_coordinator_pane_any = getattr(tmux, "pane_option", None)
     pane = env.get("TMUX_PANE")
     if pane and callable(refuse_coordinator_pane_any):
@@ -1172,8 +1183,23 @@ def _coordinator_session_command(
 
     if verb == "launch":
         options = _parse_options(args, flags={"json"})
-        _only(options, {"root", "intent", "harness", "json"}, "coordinator launch")
+        _only(options, {"root", "project", "intent", "harness", "transport", "launch_id", "json"}, "coordinator launch")
         _required(options, "intent")
+        transport = options.get('transport') or 'managed'
+        if transport not in {'managed', 'tmux'}:
+            raise ValueError('--transport must be managed or tmux')
+        if options.get('root') and options.get('project'):
+            raise ValueError('use one of --project or --root')
+        if transport == 'managed':
+            from ..managed_launch import launch_managed
+            result = launch_managed(
+                config.control, project=options.get('project') or options.get('root') or str(Path.cwd()),
+                intent=options['intent'], harness=options.get('harness') or 'claude',
+                env=env, launch_id=options.get('launch_id'),
+            )
+            return result, bool(options['json'])
+        if options.get('launch_id') or options.get('project'):
+            raise ValueError('legacy tmux launch uses --root and does not support --launch-id')
         root = Path(options["root"]) if options.get("root") else Path.cwd()
         result = launch_session(
             config.control, root=root, intent=options["intent"], tmux=tmux,
@@ -1182,8 +1208,9 @@ def _coordinator_session_command(
         return result, bool(options["json"])
     if verb == "sessions":
         options = _parse_options(args, flags={"json"})
-        _only(options, {"json"}, "coordinator sessions")
-        return list_coordinator_sessions(config.control, store=store, tmux=tmux), bool(options["json"])
+        _only(options, {"json", "limit", "after"}, "coordinator sessions")
+        return list_coordinator_sessions(config.control, store=store, tmux=tmux,
+            limit=_positive(options.get('limit', '100'), 'limit'), after=options.get('after')), bool(options["json"])
     selector = None
     if args and not args[0].startswith("--"):
         selector, args = args[0], args[1:]
@@ -1191,6 +1218,11 @@ def _coordinator_session_command(
     _only(options, {"session", "json"}, "coordinator attach")
     initiative_id = None if selector is None else _resolve(store, selector)["initiative_id"]
     target = attach_target(store, tmux=tmux, initiative_id=initiative_id, session=options.get("session"))
+    if target.get('transport') == 'managed':
+        from ..session_store import SessionStore
+        with SessionStore(config.control) as sessions:
+            target['snapshot'] = sessions.snapshot(target['session_id'])
+        return target, bool(options['json'])
     if env.get("TMUX") and not options["json"]:
         from ..cli import _run_popup
         refusal = _run_popup(tmux, config.control, target["session"], "coordinator", env)
@@ -1995,6 +2027,10 @@ def _operator_action(
         allowed.add("attempt")
         _required(options, "attempt")
         action_class, payload = "stop-attempt", {"attempt_id": options["attempt"]}
+    elif command == "request-review-budget":
+        allowed.update({"node", "review", "reason"})
+        _required(options, "node", "review", "reason")
+        payload = {"node_id": options["node"], "review_id": options["review"], "reason": options["reason"]}
     elif command == "cancel":
         allowed.add("node")
         _required(options, "node")
@@ -2181,6 +2217,35 @@ def _approve_salvage_command(
     }, bool(options["json"])
 
 
+def _approve_review_budget_command(args, store, env, tmux):
+    from .review_budget import approve
+    if not args:
+        raise ValueError("approve-review-budget requires an initiative ID or exact slug")
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={"json"})
+    _only(options, {"request", "json"}, "approve-review-budget")
+    _required(options, "request")
+    refuse_coordinator_pane(store, initiative["initiative_id"], env, tmux)
+    approval = approve(store, initiative["initiative_id"], options["request"], actor_id="cli")
+    return {"contract": "asha.review-budget-approval-result.v1",
+            "initiative_id": initiative["initiative_id"], "approval": approval}, bool(options["json"])
+
+
+def _reject_request_command(args, store, env, tmux):
+    from .request_decisions import reject
+    if not args:
+        raise ValueError('reject-request requires an initiative ID or exact slug')
+    initiative = _resolve(store, args[0])
+    options = _parse_options(args[1:], flags={'json'})
+    _only(options, {'request', 'digest', 'json'}, 'reject-request')
+    _required(options, 'request', 'digest')
+    refuse_coordinator_pane(store, initiative['initiative_id'], env, tmux)
+    approval = reject(store, initiative['initiative_id'], options['request'],
+                      expected_digest=options['digest'], actor_id='cli')
+    return {'contract': 'asha.request-rejection-result.v1',
+            'initiative_id': initiative['initiative_id'], 'approval': approval}, bool(options['json'])
+
+
 def _message_command(args, store, env, tmux):
     from . import messages
     if len(args) < 2 or args[0] not in {"send", "pending", "receive", "ack"}:
@@ -2296,6 +2361,26 @@ def _initiative_command(
         result, json_output = _approve_salvage_command(tail, store, env, tmux)
         _payload(result, json_output)
         return 0
+    if command == "approve-review-budget":
+        result, json_output = _approve_review_budget_command(tail, store, env, tmux)
+        _payload(result, json_output)
+        return 0
+    if command == 'reject-request':
+        result, json_output = _reject_request_command(tail, store, env, tmux)
+        _payload(result, json_output)
+        return 0
+    if command == 'approval':
+        if not tail:
+            raise ValueError('approval requires an initiative ID or exact slug')
+        initiative = _resolve(store, tail[0])
+        options = _parse_options(tail[1:], flags={'json'})
+        _only(options, {'request', 'json'}, 'approval')
+        _required(options, 'request')
+        approval = store.read_approval(initiative['initiative_id'], options['request'])
+        _payload({'contract': 'asha.approval-inspection.v1',
+                  'initiative_id': initiative['initiative_id'], 'approval': approval,
+                  'digest': record_digest(approval)}, bool(options['json']))
+        return 0
     if command == "action":
         result, json_output = _action_command(tail, store, env, tmux)
         _payload(result, json_output)
@@ -2317,6 +2402,7 @@ def _initiative_command(
     if command in {
         "activate", "dispatch", "pause", "resume", "stop", "cancel",
         "finalize", "archive", "unarchive",
+        "request-review-budget",
     }:
         result, json_output = _operator_action(command, tail, store, env, tmux)
         _payload(result, json_output)
@@ -2354,7 +2440,17 @@ def _initiative_command(
         return _authority_command(tail, config, env, tmux, jj=jj or JjAdapter())
     if command == "attention":
         options = _parse_options(tail, flags={"json"})
-        _only(options, {"json"}, "attention")
+        _only(options, {"json", "page", "limit", "after"}, "attention")
+        if options.get("page") is not None:
+            from .current_actions import page
+            from .messages import terminal_safe
+            if not options["json"]:
+                raise ValueError("paged attention requires --json")
+            _json(terminal_safe(page(store, family=options["page"],
+                       limit=_positive(options.get("limit", "50"), "limit"), after=options.get("after"))))
+            return 0
+        if "limit" in options or "after" in options:
+            raise ValueError("attention pagination requires --page")
         payload = _attention_payload(env)
         if options["json"]:
             _json(payload)
@@ -2544,7 +2640,7 @@ def _task_2b_command(args: list[str], env: Mapping[str, str]) -> int:
             coordinator = require_live_coordinator(
                 store, initiative["initiative_id"],
             )
-            socket = coordinator["anchor"]["tmux_socket"]
+            socket = coordinator["anchor"].get("tmux_socket")
             require_anchored_caller(
                 coordinator, env,
                 TmuxAdapter(socket=None if socket == "default" else socket),

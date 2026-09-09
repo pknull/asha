@@ -42,6 +42,42 @@ class DoctorOkFixture(unittest.TestCase):
 
 
 class DoctorVerdictTests(DoctorOkFixture):
+    def test_runtime_hooks_check_only_plan_harnesses_but_default_doctor_checks_all(self):
+        claude = self.home / ".claude"
+        codex = self.home / ".codex"
+        claude.mkdir()
+        codex.mkdir()
+        handler = Path(__file__).resolve().parents[2] / "plugins/session/hooks/handlers/control-event.sh"
+        events = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
+        (claude / "settings.json").write_text(json.dumps({"hooks": {
+            event: [{"hooks": [{"type": "command", "command": f"{handler} {event}"}]}] for event in events}}))
+        (codex / "config.toml").write_text("broken = [")
+        probes = {"hooks": DEFAULT_PROBES["hooks"]}
+        self.assertTrue(run_doctor(self.config, probes=probes, required_harnesses=("claude",))["ok"])
+        self.assertFalse(run_doctor(self.config, probes=probes)["ok"])
+        self.assertFalse(run_doctor(self.config, probes=probes, required_harnesses=("codex",))["ok"])
+        (claude / "settings.json").write_text('{}')
+        self.assertFalse(run_doctor(self.config, probes=probes, required_harnesses=("claude",))["ok"])
+
+    def test_required_harnesses_must_all_resolve_and_cannot_be_empty_or_unknown(self):
+        probes = {"harness": DEFAULT_PROBES["harness"]}
+        with mock.patch("lib.control.doctor.shutil.which", side_effect=lambda name: "/bin/claude" if name == "claude" else None):
+            self.assertTrue(run_doctor(self.config, probes=probes, required_harnesses=("claude",))["ok"])
+            self.assertFalse(run_doctor(self.config, probes=probes, required_harnesses=("claude", "codex"))["ok"])
+        for value in ((), ("unknown",), "claude"):
+            with self.assertRaises(ValueError):
+                run_doctor(self.config, probes=probes, required_harnesses=value)
+
+    def test_missing_required_hook_installation_refuses_without_affecting_generic_diagnostics(self):
+        probes = {"hooks": DEFAULT_PROBES["hooks"]}
+        self.assertTrue(run_doctor(self.config, probes=probes)["ok"])
+        for name in ("claude", "codex"):
+            result = run_doctor(self.config, probes=probes, required_harnesses=(name,))
+            self.assertFalse(result["ok"])
+            self.assertIn("installation is absent", result["probes"][0]["detail"])
+        result = run_doctor(self.config, probes=probes, required_harnesses=("opencode",))
+        self.assertIn("not inspected", result["probes"][0]["detail"])
+
     def test_rooms_registry_probe_accepts_absent_store_and_refuses_corruption(self) -> None:
         clean = run_doctor(
             self.config, probes={"rooms-registry": DEFAULT_PROBES["rooms-registry"]},

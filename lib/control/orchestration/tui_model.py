@@ -636,13 +636,10 @@ def initiative_demand(
             "certainty": "live",
         })
     for approval in view.get("approvals", []) or []:
-        if approval.get("state") == "requested":
-            items.append({
-                "kind": "salvage-approval",
-                "detail": f"salvage request {approval.get('request_id', '?')} awaits approval",
-                "resolution": f"asha initiative approve-salvage {initiative_id} --request {approval.get('request_id', '?')}",
-                "certainty": "live",
-            })
+        from .current_actions import approval_demand
+        demand = approval_demand(approval, initiative)
+        if demand is not None and demand["disposition"] not in {"expired", "stale-plan", "inactive", "deferred"}:
+            items.append(demand)
     directives = _directive_items(view, by_attempt, task_index)
     for node in view.get("nodes", []) or []:
         if node["node_id"] in parked:
@@ -713,6 +710,8 @@ def _head_attention(view: dict[str, Any], demand: list[dict[str, Any]]) -> str:
         ("integration", "integrate"),
         ("activation", "activate"),
         ("salvage-approval", "salvage approval"),
+        ("review-budget-approval", "review retry"),
+        ("approval-inspection", "inspect approval"),
     ):
         if kind in kinds:
             return label

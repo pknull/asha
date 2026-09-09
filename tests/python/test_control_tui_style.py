@@ -823,7 +823,10 @@ class RetainedViewTitleTests(unittest.TestCase):
             {"type": "work", "state": "needs-input"},
             {"type": "review", "state": "needs-input"},
         ])
-        crowded["approvals"] = [{"state": "requested", "request_id": "r1"}]
+        crowded["initiative"]["active_plan"] = {"digest": "b" * 64}
+        crowded["approvals"] = [{"state": "requested", "request_id": "r1",
+                                 "action_class": "salvage", "active_plan_digest": "b" * 64,
+                                 "expires_at": "2099-01-01T00:00:00Z"}]
         model = self.model([crowded])
         title = str(render(model)[0])
         self.assertIn("1 need you", title)

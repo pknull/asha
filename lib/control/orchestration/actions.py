@@ -51,7 +51,7 @@ from .store import InitiativeStore
 ACTION_RECONCILIATION_CONTRACT = "asha.orchestration-action-reconciliation.v1"
 SUPPORTED_ACTION_KINDS = frozenset({
     "activate-initiative", "dispatch-node", "pause", "resume",
-    "stop-attempt", "cancel-node", "repair-node", "request-salvage",
+    "stop-attempt", "cancel-node", "repair-node", "request-salvage", "request-review-budget",
     "decide", "continue-node", "finalize", "archive", "unarchive",
     "request-decision", "propose-outcome", "directive",
 })
@@ -70,7 +70,7 @@ _COORDINATOR_DOCUMENT_KEYS = frozenset({"coordinator_id", "coordinator_generatio
 # unarchive, cancel-node) stay operator-only; salvage is request-only here and
 # the operator approves it separately.
 COORDINATOR_ACTION_KINDS: frozenset[str] = frozenset({
-    "dispatch-node", "repair-node", "request-salvage", "stop-attempt", "pause",
+    "dispatch-node", "repair-node", "request-salvage", "request-review-budget", "stop-attempt", "pause",
     "continue-node", "request-decision", "propose-outcome", "directive",
 })
 _MAX_REQUEST_TEXT_BYTES = 2048
@@ -285,6 +285,7 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         "cancel-node": frozenset({"node_id"}),
         "repair-node": frozenset({"node_id", "seal_id"}),
         "request-salvage": frozenset({"node_id", "failure_seal_id", "plan"}),
+        "request-review-budget": frozenset({"node_id", "review_id", "reason"}),
         "decide": frozenset({"paused_seal_id", "decision"}),
         "continue-node": frozenset({"node_id", "paused_seal_id", "decision_action_id"}),
         "finalize": frozenset({"outcome", "reason"}),
@@ -322,7 +323,7 @@ def _validate_payload(kind: str, payload: Any) -> dict[str, Any]:
         canonical_uuid(payload["attempt_id"], "action attempt_id")
     for field in (
         "seal_id", "failure_seal_id", "paused_seal_id", "decision_action_id",
-        "salvage_request_id",
+        "salvage_request_id", "review_id",
     ):
         if field in payload:
             canonical_uuid(payload[field], f"action {field}")
@@ -470,10 +471,12 @@ def _activate(
     except VerificationError as exc:
         raise ActionRefused(str(exc)) from exc
     try:
-        validate_goal_capacity(store.config, initiative, plan)
+        validate_goal_capacity(store.config, initiative, plan, store=store)
     except SchedulerError as exc:
         raise ActionRefused(str(exc)) from exc
-    doctor = run_orchestration_doctor(store.config, audit_records=False)
+    required_harnesses = tuple(sorted({node["harness"] for node in plan["nodes"] if node["harness"]}))
+    doctor = run_orchestration_doctor(store.config, audit_records=False,
+                                      required_harnesses=required_harnesses)
     if doctor.get("ok") is not True:
         failed = [
             probe["name"] for probe in doctor.get("probes", [])
@@ -1483,6 +1486,7 @@ def _validate_salvage_capacity(
         validate_goal_capacity(
             store.config, initiative, _active_plan(store, initiative), nodes=[node],
             salvage_recovery=salvage_assignment_context(approval, seal),
+            store=store,
         )
     except SchedulerError as exc:
         raise ActionRefused(str(exc)) from exc
@@ -1857,6 +1861,9 @@ def _execute_local(
         return _repair_node(store, action, payload["node_id"], payload["seal_id"])
     if kind == "request-salvage":
         return _request_salvage(store, action, payload)
+    if kind == "request-review-budget":
+        from .review_budget import request
+        return request(store, action, payload)
     if kind == "decide":
         return _decide(store, action, payload)
     if kind == "continue-node":
@@ -2431,6 +2438,8 @@ def reconcile_actions(
 
     results: list[dict[str, Any]] = []
     with store.transaction_lock(initiative_id):
+        from .review_budget import reconcile_requests
+        reconcile_requests(store, initiative_id)
         for action in store.list_actions_snapshot(initiative_id):
             if action["action_id"] == exclude_action_id:
                 continue
@@ -2736,7 +2745,8 @@ def reconcile_actions(
                         if "not found" not in str(exc):
                             results.append(action)
                             continue
-                        if outcome.get("salvage_request_id") is not None:
+                        if (outcome.get("salvage_request_id") is not None
+                                or (outcome.get("review_budget_request_id") is not None and attempt["state"] == "allocated")):
                             result = dispatch(
                                 store, store.config, initiative_id,
                                 node["node_id"], action=action,
@@ -2824,7 +2834,7 @@ def reconcile_actions(
                     )
                 results.append(action)
                 continue
-            if kind in {"repair-node", "request-salvage", "decide", "continue-node"}:
+            if kind in {"repair-node", "request-salvage", "request-review-budget", "decide", "continue-node"}:
                 try:
                     result = _execute_local(store, action, outcome["payload"])
                     current = store.read_action(initiative_id, action["action_id"])

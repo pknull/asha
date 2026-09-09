@@ -5,8 +5,6 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import os
-import stat
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
@@ -156,14 +154,11 @@ def _qualification(
         try:
             evidence = store.read_evidence(initiative_id, evidence_id)
             summary = json.loads(evidence["summary"])
+            expected_output_path = store.output_path(initiative_id, evidence_id)
         except (StoreError, json.JSONDecodeError, TypeError, ValueError) as exc:
             raise ReadinessError(
                 f"verification command evidence cannot be read: {exc}"
             ) from exc
-        expected_output_path = (
-            store.config.initiatives_dir / initiative_id / "outputs"
-            / f"{evidence_id}.bin"
-        )
         if (
             evidence["kind"] != "verification-command"
             or evidence["subject_id"] != verification["verification_id"]
@@ -197,16 +192,7 @@ def _qualification(
         ):
             raise ReadinessError("immutable command evidence differs from the verification record")
         try:
-            output_metadata = expected_output_path.lstat()
-            if (
-                not stat.S_ISREG(output_metadata.st_mode)
-                or stat.S_ISLNK(output_metadata.st_mode)
-                or output_metadata.st_uid != os.geteuid()
-                or stat.S_IMODE(output_metadata.st_mode) != 0o600
-                or output_metadata.st_size > 1024 * 1024
-            ):
-                raise ReadinessError("verification output artifact is not private and bounded")
-            output = expected_output_path.read_bytes()
+            output = store.read_output(initiative_id, evidence_id)
         except (OSError, ValueError, TypeError) as exc:
             raise ReadinessError(
                 f"verification output artifact cannot be read: {exc}"

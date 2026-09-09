@@ -2142,7 +2142,7 @@ _EVENT_KEYS = frozenset({
 EVENT_TYPES = frozenset({
     "initiative-created", "plan-proposed", "plan-approved", "plan-rejected",
     "plan-gate-invalid", "plan-gate-superseded",
-    "approval-requested", "approval-decided",
+    "approval-requested", "approval-decided", "approval-consumed",
     "initiative-state-changed", "coordinator-handshake-accepted",
     "coordinator-generation-fenced", "node-ready", "action-received",
     "action-refused", "action-indeterminate", "attempt-started",
@@ -2487,6 +2487,19 @@ MAX_SESSION_NAME_BYTES = 200
 
 
 def validate_message_anchor(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict) and value.get("kind") == "managed-session-v1":
+        anchor = _object(value, "managed coordinator anchor", frozenset({
+            "kind", "session_id", "state_dir", "owner_pid", "process_start_identity", "generation",
+        }))
+        canonical_uuid(anchor["session_id"], "managed session_id")
+        _integer(anchor["owner_pid"], "managed owner pid", minimum=1, maximum=MAX_PID)
+        _integer(anchor["generation"], "managed owner generation", minimum=1)
+        _text(anchor["process_start_identity"], "managed owner identity", maximum=MAX_PROCESS_IDENTITY_BYTES)
+        path = anchor["state_dir"]
+        _text(path, "managed state directory", maximum=MAX_PATH_BYTES)
+        if not is_canonical_absolute_path(path, resolved=True):
+            raise ModelError("managed state directory must be canonical and absolute")
+        return copy.deepcopy(anchor)
     anchor = _object(value, "coordinator anchor", _COORDINATOR_ANCHOR_KEYS)
     _optional_text(anchor["tmux_socket"], "coordinator anchor tmux_socket", maximum=MAX_PATH_BYTES)
     _text(anchor["session"], "coordinator anchor session", maximum=MAX_SESSION_NAME_BYTES)
@@ -2619,6 +2632,8 @@ def message_content_digest(body: Any) -> str:
 
 def message_sender_identity(anchor: Mapping[str, Any]) -> str:
     validate_message_anchor(dict(anchor))
+    if anchor.get("kind") == "managed-session-v1":
+        return hashlib.sha256(_canonical_bytes(dict(anchor))).hexdigest()
     facts = {key: anchor[key] for key in (
         "server_pid", "server_start_identity", "pane_id", "pane_pid",
         "process_start_identity",

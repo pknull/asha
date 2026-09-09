@@ -247,6 +247,7 @@ class PresentationBudget:
         self.failures: list[dict[str, str]] = []
         self.failure_count = 0
         self.per_head: dict[str, int] = {}
+        self.incomplete_heads: set[str] = set()
 
     # -- accounting -------------------------------------------------------
 
@@ -299,7 +300,7 @@ class PresentationBudget:
             self.truncated = True
             self._attribute(child, "heads")
 
-    def record_budget(self, initiative_id: str) -> SnapshotBudget | None:
+    def record_budget(self, initiative_id: str, *, max_records=None) -> SnapshotBudget | None:
         """A child enumeration budget for one record class beneath one head.
 
         The child is bounded by whichever is tighter: what this head has left
@@ -309,10 +310,16 @@ class PresentationBudget:
         remaining = min(
             self.per_head_limit - used, self.nested_limit - self.nested_scanned,
         )
+        if max_records is not None:
+            if type(max_records) is not int or max_records <= 0:
+                raise StoreError("record class limit must be a positive integer")
+            remaining = min(remaining, max_records)
         if remaining <= 0:
+            self.incomplete_heads.add(initiative_id)
             self._cap("per-head" if self.per_head_limit - used <= 0 else "nested")
             return None
         if self.expired():
+            self.incomplete_heads.add(initiative_id)
             return None
         return SnapshotBudget(deadline=self.deadline, limit=remaining)
 
@@ -323,11 +330,14 @@ class PresentationBudget:
         self.per_head[initiative_id] = self.per_head.get(initiative_id, 0) + child.scanned
         self.nested_scanned += child.scanned
         self.unavailable += child.unavailable
+        if child.truncated or child.unavailable:
+            self.incomplete_heads.add(initiative_id)
         if child.truncated:
             self.truncated = True
             self._attribute(
                 child,
-                "nested" if self.nested_scanned >= self.nested_limit else "per-head",
+                "nested" if self.nested_scanned >= self.nested_limit else
+                "per-head" if self.per_head[initiative_id] >= self.per_head_limit else "record-class",
             )
 
     def admit_tasks(self, rows: Any) -> list[Any]:
@@ -374,6 +384,10 @@ class PresentationBudget:
 class InitiativeStore:
     """One locked record tree per initiative beneath the Control state root."""
 
+    def __new__(cls, config, **kwargs):
+        from ..registry_backend import construct_store
+        return construct_store(cls, InitiativeStore, config, "initiatives")
+
     def __init__(self, config: OrchestrationConfig, *, lock_wait_hook=None):
         self.config = config
         self._lock_wait_hook = lock_wait_hook
@@ -381,6 +395,24 @@ class InitiativeStore:
             config.initiatives_dir, ("control", "initiatives")
         )
         self.skipped: list[dict[str, str]] = []
+
+    def assignment_path(self, initiative_id: str, attempt_id: str) -> Path:
+        """Resolve the exact assignment destination without allocating it."""
+        try:
+            initiative_id = canonical_uuid(initiative_id, "initiative_id")
+            attempt_id = canonical_uuid(attempt_id, "attempt_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        return self.config.initiatives_dir / initiative_id / "assignments" / f"{attempt_id}.md"
+
+    def output_path(self, initiative_id: str, output_id: str) -> Path:
+        """Resolve the exact output destination without allocating it."""
+        try:
+            initiative_id = canonical_uuid(initiative_id, "initiative_id")
+            output_id = canonical_uuid(output_id, "output_id")
+        except ModelError as exc:
+            raise StoreError(str(exc)) from exc
+        return self.config.initiatives_dir / initiative_id / "outputs" / f"{output_id}.bin"
 
     @contextmanager
     def _initiative_directory(
@@ -428,7 +460,8 @@ class InitiativeStore:
         *,
         create: bool = False,
     ) -> Iterator[tuple[int, int]]:
-        with self._initiative_directory(
+        from ..registry_guards import legacy_mutation_guard
+        with legacy_mutation_guard(self.config), self._initiative_directory(
             initiative_id, create_root=create, create_initiative=create
         ) as (root_fd, initiative_fd):
             # Increment 2b added record classes to initiatives already created
@@ -459,7 +492,8 @@ class InitiativeStore:
             ingestion_id = canonical_uuid(ingestion_id, "ingestion_id")
         except ModelError as exc:
             raise StoreError(str(exc)) from exc
-        with self._initiative_directory(
+        from ..registry_guards import legacy_mutation_guard
+        with legacy_mutation_guard(self.config), self._initiative_directory(
             initiative_id, create_root=False, create_initiative=False,
         ) as (_root_fd, initiative_fd):
             self._ensure_layout(initiative_fd)
@@ -699,6 +733,40 @@ class InitiativeStore:
     def _time(value: str) -> datetime:
         return datetime.fromisoformat(value[:-1] + "+00:00")
 
+    def _validate_initiative_change(self, current, validated):
+        if current is None:
+            # Core v1 creation begins before any journal event or approved
+            # plan exists.  The initial state revision is exactly zero.
+            if (
+                validated["last_event_sequence"] != 0
+                or validated["state"] != "draft"
+                or validated["active_plan"] is not None
+                or validated["state_revision"] != 0
+            ):
+                raise StoreError(
+                    "new initiative requires draft state, null active_plan, "
+                    "state_revision 0, and last_event_sequence 0"
+                )
+        else:
+            self._same_fields(
+                current, validated,
+                (
+                    "contract", "initiative_id", "slug", "label", "created_at",
+                    "scope", "coordinator", "forbidden_action_classes",
+                ),
+            )
+            if validated["state"] != current["state"]:
+                try:
+                    require_transition("initiative", current["state"], validated["state"])
+                except ModelError as exc:
+                    raise StoreError(str(exc)) from exc
+            if validated["state_revision"] != current["state_revision"] + 1:
+                raise StoreError("initiative state_revision must advance by exactly one")
+            if validated["last_event_sequence"] < current["last_event_sequence"]:
+                raise StoreError("initiative last_event_sequence must not move backward")
+            if self._time(validated["updated_at"]) < self._time(current["updated_at"]):
+                raise StoreError("initiative updated_at must not move backward")
+
     def save_initiative(
         self, record: Any, *, expected_digest: str | None = None
     ) -> Path:
@@ -709,38 +777,7 @@ class InitiativeStore:
                 initiative_fd, "initiative.json", "initiative record", validate_initiative
             )
             self._check_expected(current, expected_digest)
-            if current is None:
-                # Core v1 creation begins before any journal event or approved
-                # plan exists.  The initial state revision is exactly zero.
-                if (
-                    validated["last_event_sequence"] != 0
-                    or validated["state"] != "draft"
-                    or validated["active_plan"] is not None
-                    or validated["state_revision"] != 0
-                ):
-                    raise StoreError(
-                        "new initiative requires draft state, null active_plan, "
-                        "state_revision 0, and last_event_sequence 0"
-                    )
-            else:
-                self._same_fields(
-                    current, validated,
-                    (
-                        "contract", "initiative_id", "slug", "label", "created_at",
-                        "scope", "coordinator", "forbidden_action_classes",
-                    ),
-                )
-                if validated["state"] != current["state"]:
-                    try:
-                        require_transition("initiative", current["state"], validated["state"])
-                    except ModelError as exc:
-                        raise StoreError(str(exc)) from exc
-                if validated["state_revision"] != current["state_revision"] + 1:
-                    raise StoreError("initiative state_revision must advance by exactly one")
-                if validated["last_event_sequence"] < current["last_event_sequence"]:
-                    raise StoreError("initiative last_event_sequence must not move backward")
-                if self._time(validated["updated_at"]) < self._time(current["updated_at"]):
-                    raise StoreError("initiative updated_at must not move backward")
+            self._validate_initiative_change(current, validated)
             self._write_mutable(initiative_fd, "initiative.json", raw)
         return self.config.initiatives_dir / initiative_id / "initiative.json"
 
@@ -796,6 +833,22 @@ class InitiativeStore:
         except (OSError, StoreError):
             budget.unavailable += 1
         return records
+
+    def bounded_activity_snapshots(self, budget):
+        """Presentation candidates; legacy files retain bounded enumeration."""
+        return self.bounded_snapshots(budget)
+
+    def iter_record_snapshots(self, initiative_id, directory, validator, budget):
+        """Strict bounded record iteration for backend-independent consumers."""
+        if directory not in _LAYOUT_DIRECTORIES:
+            raise StoreError("unknown snapshot record class")
+        with self._initiative_directory(initiative_id, create_root=False, create_initiative=False) as (_, root):
+            fd = self._subdirectory(root, directory)
+            try:
+                for name in budget.names(fd):
+                    yield name, None if name.startswith(".") else self._validated_read(fd, name, directory, validator)
+            finally:
+                _close(fd)
 
     def bounded_records(self, initiative_id, directory, validator, identity_field, budget):
         """Strictly validated bounded subrecord snapshots, including legacy absence."""
@@ -889,7 +942,7 @@ class InitiativeStore:
         if child is None:
             return []
         before = child.unavailable
-        records = self.bounded_snapshots(child)
+        records = self.bounded_activity_snapshots(child)
         if child.unavailable > before:
             budget.note(
                 "initiatives", f"{child.unavailable - before} head record(s) unreadable",
@@ -898,7 +951,7 @@ class InitiativeStore:
         return records
 
     def bounded_presentation_records(
-        self, initiative_id: str, directory: str, budget: PresentationBudget,
+        self, initiative_id: str, directory: str, budget: PresentationBudget, *, max_records=None,
     ) -> list[dict[str, Any]]:
         """One record class beneath one head, bounded, validated, identity-checked.
 
@@ -908,7 +961,7 @@ class InitiativeStore:
         beside it are kept, so one bad subrecord never blanks a readable head.
         """
         validator, pattern, identity_field, parser = self._presentation_class(directory)
-        child = budget.record_budget(initiative_id)
+        child = budget.record_budget(initiative_id, max_records=max_records)
         if child is None:
             return []
         records: list[dict[str, Any]] = []
@@ -1081,6 +1134,44 @@ class InitiativeStore:
     save = save_initiative
     read = read_initiative
 
+    def _validate_subrecord_change(
+        self, current, validated, *, name, transition_machine=None,
+        immutable_fields=(), bind_once_fields=(), mutable_while_states=None,
+        terminal_states=frozenset(),
+    ):
+        if current is not None:
+            if current.get("state") in terminal_states:
+                raise StoreError(f"write-once terminal record already exists: {name}")
+            self._same_fields(current, validated, immutable_fields)
+            for field in bind_once_fields:
+                # An additive optional field is absent from records
+                # written before it existed; absent binds like null.
+                if (
+                    current.get(field) is not None
+                    and current.get(field) != validated.get(field)
+                ):
+                    raise StoreError(f"immutable record field changed: {field}")
+            for field, states in (mutable_while_states or {}).items():
+                if (
+                    current[field] != validated[field]
+                    and (
+                        current.get("state") not in states
+                        or validated.get("state") not in states
+                    )
+                ):
+                    raise StoreError(f"immutable record field changed: {field}")
+            if transition_machine is not None and validated["state"] != current["state"]:
+                try:
+                    require_transition(transition_machine, current["state"], validated["state"])
+                except ModelError as exc:
+                    raise StoreError(str(exc)) from exc
+            if (
+                "updated_at" in current
+                and self._time(validated["updated_at"])
+                < self._time(current["updated_at"])
+            ):
+                raise StoreError("record updated_at must not move backward")
+
     def _save_subrecord(
         self,
         initiative_id: str,
@@ -1112,38 +1203,11 @@ class InitiativeStore:
                         directory_fd, name, f"{directory} record", validator
                     )
                     self._check_expected(current, expected_digest)
-                    if current is not None:
-                        if current.get("state") in terminal_states:
-                            raise StoreError(f"write-once terminal record already exists: {name}")
-                        self._same_fields(current, validated, immutable_fields)
-                        for field in bind_once_fields:
-                            # An additive optional field is absent from records
-                            # written before it existed; absent binds like null.
-                            if (
-                                current.get(field) is not None
-                                and current.get(field) != validated.get(field)
-                            ):
-                                raise StoreError(f"immutable record field changed: {field}")
-                        for field, states in (mutable_while_states or {}).items():
-                            if (
-                                current[field] != validated[field]
-                                and (
-                                    current.get("state") not in states
-                                    or validated.get("state") not in states
-                                )
-                            ):
-                                raise StoreError(f"immutable record field changed: {field}")
-                        if transition_machine is not None and validated["state"] != current["state"]:
-                            try:
-                                require_transition(transition_machine, current["state"], validated["state"])
-                            except ModelError as exc:
-                                raise StoreError(str(exc)) from exc
-                        if (
-                            "updated_at" in current
-                            and self._time(validated["updated_at"])
-                            < self._time(current["updated_at"])
-                        ):
-                            raise StoreError("record updated_at must not move backward")
+                    self._validate_subrecord_change(
+                        current, validated, name=name, transition_machine=transition_machine,
+                        immutable_fields=immutable_fields, bind_once_fields=bind_once_fields,
+                        mutable_while_states=mutable_while_states, terminal_states=terminal_states,
+                    )
                     self._write_mutable(directory_fd, name, raw)
             finally:
                 _close(directory_fd)
@@ -1289,6 +1353,31 @@ class InitiativeStore:
             terminal_states=frozenset({"failed", "cancelled", "superseded", "stale"}),
         )
 
+    def reopen_failed_review(self, initiative_id: str, request_id: str) -> dict[str, Any]:
+        """One signed exact-review exception; ordinary terminal writes stay frozen."""
+        from .review_budget import authority
+        from .actions import append_event
+        with self.transaction_lock(initiative_id):
+            grant = authority(self, initiative_id, request_id)
+            node_id = grant["binding"]["node_id"]
+            current = self.read_node(initiative_id, node_id)
+            if current["state"] == "failed":
+                changed = copy.deepcopy(current)
+                changed["state"] = "ready"
+                self._save_subrecord(
+                    initiative_id, "nodes", f"{node_id}.json", changed, validate_node,
+                    immutable=False, expected_digest=record_digest(current),
+                    transition_machine={**NODE_TRANSITIONS, "failed": frozenset({"ready"})},
+                    immutable_fields=tuple(k for k in current if k != "state"),
+                    terminal_states=frozenset({"cancelled", "superseded", "stale"}),
+                )
+            if not any(e["type"] == "node-ready" and request_id in e["subject_ids"]
+                       for e in self.list_events_snapshot(initiative_id)):
+                append_event(self, initiative_id, "node-ready", [node_id, request_id],
+                             {"reason": "review-budget-approved", "target_seal_id": grant["binding"]["target"]["seal_id"]},
+                             actor_kind="controller", actor_id="scheduler")
+            return self.read_node(initiative_id, node_id)
+
     def read_node(self, initiative_id: str, node_id: str) -> dict[str, Any]:
         try:
             node_id = validate_slug(node_id, "node_id")
@@ -1376,7 +1465,7 @@ class InitiativeStore:
                         raise StoreError("retained assignment differs from the action reservation")
             finally:
                 _close(directory_fd)
-        return self.config.initiatives_dir / initiative_id / "assignments" / name
+        return self.assignment_path(initiative_id, attempt_id)
 
     def read_attempt(self, initiative_id: str, attempt_id: str) -> dict[str, Any]:
         return self._read_uuid_record(initiative_id, "attempts", attempt_id, validate_attempt)
@@ -1629,7 +1718,7 @@ class InitiativeStore:
             value = validate_coordinator(record)
         except ModelError as exc:
             raise StoreError(str(exc)) from exc
-        with self._locked_fds(initiative_id):
+        with self.transaction_lock(initiative_id):
             existing = self.list_coordinators_snapshot(initiative_id)
             if value["coordinator_id"] not in {item["coordinator_id"] for item in existing}:
                 self._check_new_coordinator(existing, value)
@@ -1773,7 +1862,11 @@ class InitiativeStore:
                 self._write_once(directory_fd, name, content)
             finally:
                 _close(directory_fd)
-        return self.config.initiatives_dir / initiative_id / "outputs" / name
+        return self.output_path(initiative_id, output_id)
+
+    def _output_evidence_exists(self, initiative_id, evidence_fd, output_id):
+        return self._read_if_exists(evidence_fd, f"{output_id}.json",
+                                    "evidence record", validate_evidence) is not None
 
     def reserve_output(self, initiative_id: str, output_id: str) -> Path:
         """Create one private output destination before a command starts."""
@@ -1786,16 +1879,13 @@ class InitiativeStore:
             evidence_fd = self._subdirectory(initiative_fd, "evidence")
             directory_fd = self._subdirectory(initiative_fd, "outputs")
             try:
-                if self._read_if_exists(
-                    evidence_fd, f"{output_id}.json", "evidence record",
-                    validate_evidence,
-                ) is not None:
+                if self._output_evidence_exists(initiative_id, evidence_fd, output_id):
                     raise StoreError("cannot reserve output after evidence publication")
                 self._write_once(directory_fd, name, b"")
             finally:
                 _close(directory_fd)
                 _close(evidence_fd)
-        return self.config.initiatives_dir / initiative_id / "outputs" / name
+        return self.output_path(initiative_id, output_id)
 
     def finalize_reserved_output(
         self, initiative_id: str, output_id: str, content: bytes,
@@ -1813,10 +1903,7 @@ class InitiativeStore:
             directory_fd = self._subdirectory(initiative_fd, "outputs")
             descriptor = -1
             try:
-                if self._read_if_exists(
-                    evidence_fd, f"{output_id}.json", "evidence record",
-                    validate_evidence,
-                ) is not None:
+                if self._output_evidence_exists(initiative_id, evidence_fd, output_id):
                     raise StoreError("retained output is immutable after evidence publication")
                 descriptor = os.open(
                     name, os.O_WRONLY | _NONBLOCK | _NOFOLLOW | _CLOEXEC,
@@ -1838,7 +1925,7 @@ class InitiativeStore:
                 _close(descriptor)
                 _close(directory_fd)
                 _close(evidence_fd)
-        return self.config.initiatives_dir / initiative_id / "outputs" / name
+        return self.output_path(initiative_id, output_id)
 
     def read_output(self, initiative_id: str, output_id: str) -> bytes:
         """Read one private retained output with its ownership invariants checked."""

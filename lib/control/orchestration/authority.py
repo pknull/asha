@@ -119,6 +119,8 @@ def add_authority(
     auto_activate: bool = True, jj: JjAdapter | None = None,
 ) -> dict[str, Any]:
     """Create one standing authority bound to the repository's current identity."""
+    from ..registry_backend import selected_backend
+    backend = selected_backend(config)
     _text(label, "authority label", maximum=40, pattern=_LABEL)
     if not isinstance(scope_prefixes, list) or not scope_prefixes:
         raise ModelError("authority requires at least one scope prefix")
@@ -139,6 +141,15 @@ def add_authority(
         "created_at": _now(),
         "revoked_at": None,
     })
+    if backend == "sqlite":
+        from ..sqlite_auxiliary import SQLiteAuthorityStore
+        return SQLiteAuthorityStore(config).create(record)
+    from ..registry_guards import legacy_mutation_guard
+    with legacy_mutation_guard(config):
+        return _add_legacy(config, record)
+
+
+def _add_legacy(config, record):
     directory = authorities_dir(config)
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
     path = directory / f"{record['authority_id']}.json"
@@ -153,6 +164,10 @@ def add_authority(
 
 
 def list_authorities(config: Any, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+    from ..registry_backend import selected_backend
+    if selected_backend(config) == "sqlite":
+        from ..sqlite_auxiliary import SQLiteAuthorityStore
+        return SQLiteAuthorityStore(config).list(include_revoked=include_revoked)
     directory = authorities_dir(config)
     if not directory.is_dir():
         return []
@@ -169,6 +184,16 @@ def list_authorities(config: Any, *, include_revoked: bool = False) -> list[dict
 def revoke_authority(config: Any, authority_id: str) -> dict[str, Any]:
     """Mark one authority revoked; the record is retained, never deleted."""
     canonical_uuid(authority_id, "authority_id")
+    from ..registry_backend import selected_backend
+    if selected_backend(config) == "sqlite":
+        from ..sqlite_auxiliary import SQLiteAuthorityStore
+        return SQLiteAuthorityStore(config).revoke(authority_id)
+    from ..registry_guards import legacy_mutation_guard
+    with legacy_mutation_guard(config):
+        return _revoke_legacy(config, authority_id)
+
+
+def _revoke_legacy(config, authority_id):
     directory = authorities_dir(config)
     path = directory / f"{authority_id}.json"
     if not path.is_file():

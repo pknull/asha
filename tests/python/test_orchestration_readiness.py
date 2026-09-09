@@ -7,6 +7,9 @@ import uuid
 from pathlib import Path
 from unittest import mock
 
+from lib.control.database import ControlDatabase
+from lib.control.orchestration.sqlite_store import SQLiteInitiativeStore
+
 from lib.control.orchestration.actions import (
     SUPPORTED_ACTION_KINDS,
     build_action_document,
@@ -65,6 +68,54 @@ class OrchestrationReadinessTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(member["seal_id"], self.candidate["seal_id"])
         self.assertEqual(member["review_id"], self.review["review_id"])
         self.assertEqual(member["verification_id"], self.verification["verification_id"])
+
+    def sqlite_fixture(self):
+        """Load fixture records only; this is not an activation acceptance test."""
+        store = SQLiteInitiativeStore(self.config)
+        with ControlDatabase(self.config.control, create=True) as db, db.transaction(write=True) as connection:
+            root = self.config.initiatives_dir / self.initiative_id
+            for path in root.rglob("*.json"):
+                relative = path.relative_to(root)
+                directory = "initiative" if len(relative.parts) == 1 else relative.parts[0]
+                key = self.initiative_id if directory == "initiative" else path.name
+                store._registry(self.initiative_id, directory).put(connection, key, path.read_bytes())
+        return store
+
+    def test_sqlite_readiness_preserves_frozen_legacy_output_bindings(self):
+        store = self.sqlite_fixture()
+        root = self.config.initiatives_dir
+        paths = sorted(root.rglob("*"), key=lambda p: len(p.parts), reverse=True) + [root]
+        original_modes = [(p, p.stat().st_mode & 0o777) for p in paths]
+        def thaw():
+            for path, mode in reversed(original_modes):
+                path.chmod(mode)
+        self.addCleanup(thaw)
+        evidence = {p: (p.stat().st_ino, p.read_bytes()) for p in paths if p.is_file()}
+        for path in paths:
+            path.chmod(0o500 if path.is_dir() else 0o400)
+        bundle = bind_readiness(store, self.initiative_id)
+        self.assertEqual(bundle["outcome"], "compatible")
+        for path, expected in evidence.items():
+            self.assertEqual((path.stat().st_ino, path.read_bytes()), expected)
+
+    def test_sqlite_readiness_accepts_new_output_root(self):
+        self.store = self.sqlite_fixture()
+        old = self.store.read_verification(self.initiative_id, self.verification["verification_id"])
+        self.store.save_verification(self.initiative_id, {**old, "state": "stale", "outcome": None, "updated_at": now_text()},
+                                     expected_digest=record_digest(old))
+        self.verification = save_passed_verification(self, self.candidate)
+        for command in self.verification["commands"]:
+            self.assertTrue(Path(command["output_path"]).is_relative_to(self.store.artifacts.root))
+        self.assertEqual(bind_readiness(self.store, self.initiative_id)["outcome"], "compatible")
+
+    def test_readiness_refuses_record_whose_output_path_became_symlinked(self):
+        self.store = self.sqlite_fixture()
+        outputs = self.config.initiatives_dir / self.initiative_id / "outputs"
+        moved = outputs.with_name("saved-outputs")
+        outputs.rename(moved)
+        outputs.symlink_to(moved, target_is_directory=True)
+        with self.assertRaisesRegex(StoreError, "exact resolved canonical path"):
+            bind_readiness(self.store, self.initiative_id)
 
     def test_resume_binds_readiness_proven_while_paused(self) -> None:
         paused = submit_action(

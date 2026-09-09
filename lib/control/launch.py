@@ -397,6 +397,8 @@ def launch_task(
     failure_injector: Callable[[str], None] | None = None,
 ) -> dict[str, Any]:
     """Launch exactly one primary run from a prepared creation transaction."""
+    from .runtime import require_admission
+    require_admission(config)
     if not isinstance(task, dict) or "task_id" not in task:
         raise LaunchError("launch requires a task record")
     try:

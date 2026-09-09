@@ -214,7 +214,12 @@ class PruneRecordStore:
     a reused inode at the same path (a successor task's live workspace).
     """
 
+    def __new__(cls, config):
+        from .registry_backend import construct_store
+        return construct_store(cls, PruneRecordStore, config, "prunes")
+
     def __init__(self, config: ControlConfig) -> None:
+        self.config = config
         self.directory = config.tasks_dir.parent / "prunes"
 
     def path(self, task_id: str) -> Path:
@@ -240,18 +245,28 @@ class PruneRecordStore:
             value = json.loads(raw)
         except (ValueError, RecursionError) as exc:
             raise PruneError(f"prune record is malformed: {exc}") from exc
+        return self._validated_value(value, task_id)
+
+    @staticmethod
+    def _validated_value(value, task_id):
         if (not isinstance(value, dict) or value.get("contract") != PRUNE_RECORD_CONTRACT
                 or value.get("task_id") != canonical_uuid(task_id)):
             raise PruneError("prune record does not describe this task")
         return value
 
     def write(self, task_id: str, facts: dict[str, Any]) -> None:
+        from .registry_guards import legacy_mutation_guard
+        with legacy_mutation_guard(self.config):
+            self._write_legacy(task_id, facts)
+
+    def _write_legacy(self, task_id: str, facts: dict[str, Any]) -> None:
         record = {
             "contract": PRUNE_RECORD_CONTRACT,
             "task_id": canonical_uuid(task_id),
             "recorded_at": _now(),
             **facts,
         }
+        self._validated_value(record, task_id)
         raw = json.dumps(record, ensure_ascii=False, sort_keys=True).encode("utf-8") + b"\n"
         try:
             self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)

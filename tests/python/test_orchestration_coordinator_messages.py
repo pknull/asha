@@ -63,6 +63,26 @@ def actor_process(connection, config, iid, pane, seat, env):
         try:
             if command == "claim":
                 result = coordinator.claim(store, store.peek(iid), env=actor_env, tmux=tmux)
+            elif command == "managed":
+                from lib.control.session_store import SessionStore
+                with SessionStore(config.control, create=True) as sessions:
+                    session = sessions.create(cwd=str(seat), prompt="Assignment",
+                                              initiative_id=iid if kwargs.get("coordinator") else None)
+                    session = sessions.claim_owner(session["session_id"])
+                    if kwargs.get("coordinator"):
+                        actor_env.update(ASHA_MANAGED_SESSION_ID=session["session_id"],
+                                         ASHA_MANAGED_GENERATION=str(session["generation"]),
+                                         ASHA_MANAGED_STATE_DIR=str(config.control.tasks_dir.parent))
+                        result = coordinator.claim(store, store.peek(iid), env=actor_env, tmux=tmux, harness="claude")
+                    else:
+                        result = session
+            elif command == "bridge":
+                from lib.control.session_store import SessionStore
+                from lib.control.sessions import bridge_initiative
+                with SessionStore(config.control) as sessions:
+                    sid = store.current_coordinator(iid)["anchor"]["session_id"]
+                    bridge_initiative(sessions, sessions.get(sid), store)
+                    result = sessions.snapshot(sid)
             elif command == "wait":
                 result = coordinator.wait(store, store.peek(iid), env=actor_env, tmux=tmux, **kwargs)
             elif command == "release":
@@ -150,6 +170,23 @@ class MessageTests(ExecutionFixture, unittest.TestCase):
 
     def send(self, body="technical context", **kwargs):
         return self.call("%1", "send", message_id=str(uuid.uuid4()), body=body, **kwargs)
+
+    def test_chair_can_send_to_managed_coordinator_and_bridge_once(self):
+        self.call("%2", "release")
+        self.current = self.call("%2", "managed", coordinator=True)
+        sent = self.send("Continue the approved work")
+        self.assertEqual(sent["recipient"]["anchor"]["kind"], "managed-session-v1")
+        first = self.call("%2", "bridge")
+        again = self.call("%2", "bridge")
+        self.assertEqual(first["messages"], again["messages"])
+        self.assertIn("legacy-message:" + sent["message_id"], [m["delivery_key"] for m in first["messages"]])
+        self.call("%2", "receive", message_id=sent["message_id"])
+        self.call("%2", "ack", message_id=sent["message_id"], digest=sent["content_digest"])
+        self.assertEqual(messages.pending(self.store, self.initiative_id)["messages"], [])
+
+    def test_standalone_managed_owner_cannot_claim_chair_with_stripped_env(self):
+        self.call("%1", "managed", coordinator=False)
+        self.send(error="owner ancestry")
 
     @contextmanager
     def transaction_locks(self):

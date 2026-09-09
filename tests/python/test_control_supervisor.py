@@ -841,6 +841,7 @@ class SupervisorServiceTests(unittest.TestCase):
             "ExecStart=/opt/asha/bin/asha control supervisor run\n"
             "Restart=on-failure\n"
             "RestartSec=5\n"
+            "KillMode=process\n"
             "WorkingDirectory=%h\n"
             "\n"
             "[Install]\n"
