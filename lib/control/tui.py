@@ -198,6 +198,8 @@ class IntentKind(Enum):
     ROOM_OPEN = "room-open"
     ROOM_ATTACH = "room-attach"
     ROOM_CLOSE = "room-close"
+    SESSION_QUESTIONS = "session-questions"
+    CURRENT_ACTIONS = "current-actions"
 
 
 @dataclass(frozen=True)
@@ -333,6 +335,8 @@ class RefreshSnapshot:
     initiative_views_changed: bool = True
     room_rows_changed: bool = True
     delta_base: int | None = None
+    managed_summary: str | None = None
+    actions_summary: str | None = None
 
 
 def _payload_digest(value: Any) -> str:
@@ -662,6 +666,8 @@ class TuiModel:
         self.dirty = True
         self._refresh_generation = 0
         self._message: str | None = None
+        self.managed_summary: str | None = None
+        self.actions_summary: str | None = None
         self._automatic_refresh_error: str | None = None
         self._automatic_refresh_status: str | None = None
         self._automatic_refresh_warning: str | None = None
@@ -1031,6 +1037,10 @@ class TuiModel:
             return TuiIntent(IntentKind.QUIT)
         if key == "?":
             return TuiIntent(IntentKind.HELP)
+        if key == "M":
+            return TuiIntent(IntentKind.SESSION_QUESTIONS)
+        if key == "G":
+            return TuiIntent(IntentKind.CURRENT_ACTIONS)
         if key == "/":
             return TuiIntent(IntentKind.FILTER)
         if key == "!":
@@ -1568,7 +1578,6 @@ def _render_tree(model: TuiModel) -> list[str]:
     if model.help_visible:
         lines = [
             "ASHA CONTROL HELP",
-            "",
             "Keys: Up/Down select | Right/Left expand/collapse | ! only rows waiting on a human",
             "      Enter: attach a room/coordinator/worker; Right/Left opens branch rows",
             "      o open Room | n new intent | N start ad-hoc task | "
@@ -1580,6 +1589,7 @@ def _render_tree(model: TuiModel) -> list[str]:
             "      X close a Room/published worker | x context actions on a task",
             "      r reconcile | d diff | e events | a approve plan / archive task | c candidate seals",
             "      v review+verification evidence | t retained storage | p pause/resume | s stop attempt",
+            "      G global initiative actions (paged) | M managed questions and permissions",
             "      / filter | ? help | q quit",
             "",
             "Facts: claim, seal, review verdict, and verification outcome are shown separately.",
@@ -1594,7 +1604,12 @@ def _render_tree(model: TuiModel) -> list[str]:
         ]
         return [_clip(line, model.width) for line in lines[:model.height]]
     title = _tree_title(model, screen)
-    lines = [title, ""]
+    summaries = []
+    if model.actions_summary:
+        summaries.append("G actions: " + model.actions_summary)
+    if model.managed_summary:
+        summaries.append("M questions: " + model.managed_summary)
+    lines = [title, *[_clip(summary, model.width) for summary in (summaries or [""])]]
     if screen is None:
         # A bare model still shows its tasks: build a transient task-only tree.
         from .orchestration.tui_model import InitiativesScreen
@@ -1607,6 +1622,7 @@ def _render_tree(model: TuiModel) -> list[str]:
     if screen is None:
         lines.append(model.initiatives_error or "Control tree unavailable.")
     else:
+        screen.resize(max(0, model.height - max(0, len(summaries) - 1)), model.width)
         glyphs = _glyph_mode(getattr(model, "env", None))
         lines.append(_tree_header(max(0, model.width - 2)))
         visible = screen.visible_rows
@@ -1736,6 +1752,14 @@ def _bounded_head_view(
         return store.bounded_presentation_records(initiative_id, directory, budget)
 
     before_unavailable = budget.unavailable
+    # Reserve bounded reads for decisions before graph/history classes can
+    # spend the head's allowance. Neither attention class takes more than a
+    # quarter of the remaining allowance (at least one record).
+    remaining = min(budget.per_head_limit - budget.per_head.get(initiative_id, 0),
+                    budget.nested_limit - budget.nested_scanned)
+    attention_cap = max(1, min(128, remaining // 4))
+    approvals = store.bounded_presentation_records(initiative_id, "approvals", budget, max_records=attention_cap)
+    actions = store.bounded_presentation_records(initiative_id, "actions", budget, max_records=attention_cap)
     # Directory order is whatever the filesystem hands back, so anything read
     # by position here is sorted by its own retained ordinal first.
     plans = sorted(read("plans"), key=lambda item: item["revision"])
@@ -1793,20 +1817,20 @@ def _bounded_head_view(
         # operator-decision verb reads an interrupted answer's own origin
         # proof beside the journal, so the tree, the `!` filter, and
         # `asha initiative attention` classify a question identically.
-        "actions": read("actions"),
+        "actions": actions,
         "coordinator": coordinator,
         "coordinator_live": coordinator_live,
         "seals": read("seals"),
         "reviews": read("reviews"),
         "verifications": read("verifications"),
-        "approvals": read("approvals"),
+        "approvals": approvals,
         "storage": None,
         "_metadata_only": False,
         "_events_complete": events_complete,
         "_graph_complete": (
             plan_binding_complete
             and budget.unavailable == before_unavailable
-            and not budget.truncated
+            and initiative_id not in budget.incomplete_heads
         ),
     }
     loaded["_parked_ready_nodes"] = list(parked_ready_nodes(loaded, now=observed))
@@ -2399,6 +2423,19 @@ def _load_refresh_snapshot(
     except Exception as exc:  # noqa: BLE001 - degrade this branch only
         rooms = ()
         rooms_error = _safe_error(exc)
+    try:
+        from .sessions import overview
+        managed = overview(config)
+        managed_summary = managed["summary"] if managed["initialized"] else None
+    except Exception as exc:  # noqa: BLE001 - degrade this read branch only
+        managed_summary = "Managed sessions unavailable: " + _safe_error(exc)
+    try:
+        from .orchestration.current_actions import overview as actions_overview
+        from .orchestration.config import from_control
+        actions = actions_overview(from_control(config))
+        actions_summary = actions["summary"] if actions["initialized"] else None
+    except Exception as exc:  # noqa: BLE001 - retain other branches when this read fails
+        actions_summary = "Unavailable: " + _safe_error(exc)
     if cache is None:
         initiative_views_changed = True
         room_rows_changed = True
@@ -2423,6 +2460,8 @@ def _load_refresh_snapshot(
         initiative_views_changed=initiative_views_changed,
         room_rows_changed=room_rows_changed,
         delta_base=delta_base,
+        managed_summary=managed_summary,
+        actions_summary=actions_summary,
     )
 
 
@@ -2430,6 +2469,12 @@ def _apply_refresh_snapshot(
     model: TuiModel, env: Mapping[str, str], snapshot: RefreshSnapshot,
 ) -> bool:
     """Apply only changed, worker-sorted branches on the curses thread."""
+    managed_changed = (model.managed_summary != snapshot.managed_summary
+                       or model.actions_summary != snapshot.actions_summary)
+    model.managed_summary = snapshot.managed_summary
+    model.actions_summary = snapshot.actions_summary
+    if managed_changed:
+        model.dirty = True
     rows_changed = model.apply_precomputed_rows(
         snapshot.rows,
         changed_rows=snapshot.changed_rows,
@@ -2466,7 +2511,7 @@ def _apply_refresh_snapshot(
             removed_task_ids=snapshot.removed_task_ids,
             task_row_order_changed=snapshot.row_order_changed,
         )
-    return tree_changed
+    return tree_changed or managed_changed
 
 
 def init_colours(curses_module) -> bool:
@@ -3737,6 +3782,8 @@ def _modal_row_attribute(curses_module, role: str) -> int:
         return supported("A_REVERSE") | supported("A_BOLD")
     if role == "selected":
         return supported("A_BOLD") | supported("A_UNDERLINE")
+    if role == "content":
+        return 0
     return supported("A_DIM")
 
 
@@ -3765,6 +3812,61 @@ def _draw_modal_frame(stdscr, curses_module, frame: ModalFrame) -> None:
         stdscr.refresh()
     except curses_module.error:
         pass
+
+
+def _native_permission_prompt(stdscr, curses_module, request):
+    """Scrollable exact invocation; resizes and navigation never decide it."""
+    question = request.get("question")
+    if question and request["payload"].get("request", {}).get("protocol") == "codex-app-server-v2":
+        # The Codex question ends in the same full payload shown below. Keep
+        # scope notices and the prompt, render the exact invocation once.
+        question = question.rsplit("\n", 1)[0]
+    content = json.dumps({"request_id": request["request_id"], "digest": request["digest"],
+                          "question": question,
+                          "session_directory": request["cwd"], "observed_state": request["state"],
+                          "response_state": request["response_state"],
+                          "invocation": request["payload"]}, ensure_ascii=True, indent=2)
+    offset = 0
+    previous_frame = None
+    previous_size = None
+    while True:
+        height, width = stdscr.getmaxyx()
+        budget = max(1, width - 1)
+        if previous_size != (height, width):
+            # ensure_ascii above makes every displayed character one cell.
+            # Avoid scanning Unicode clusters over a large review on resize.
+            lines = [line[start:start + budget] for line in content.splitlines()
+                     for start in range(0, max(1, len(line)), budget)]
+            previous_size = (height, width)
+        available = max(1, height - 3)
+        offset = min(offset, max(0, len(lines) - available))
+        enough_space = height >= 6 and width >= 24
+        rows = [_clip("Native permission: exact invocation", budget),
+                *lines[offset:offset + available],
+                _clip(f"{offset + 1}-{min(len(lines), offset + available)}/{len(lines)} Up/Down PgUp/PgDn", budget),
+                _clip("a allow d deny Esc back" if enough_space else "Resize to review and decide", budget)]
+        roles = ("selected", *("content" for _ in lines[offset:offset + available]), "inactive", "selected")
+        frame = ModalFrame(tuple(rows[:height]), None, offset, offset + available, roles[:height])
+        if frame != previous_frame:
+            _draw_modal_frame(stdscr, curses_module, frame)
+            previous_frame = frame
+        key = _read_modal_key(stdscr, curses_module)
+        if key == 27:
+            return None
+        if enough_space and key in {"a", "d", ord("a"), ord("d")}:
+            return "allow" if key in {"a", ord("a")} else "deny"
+        if key == getattr(curses_module, "KEY_DOWN", 258):
+            offset += 1
+        elif key == getattr(curses_module, "KEY_UP", 259):
+            offset = max(0, offset - 1)
+        elif key == getattr(curses_module, "KEY_NPAGE", 338):
+            offset += available
+        elif key == getattr(curses_module, "KEY_PPAGE", 339):
+            offset = max(0, offset - available)
+        elif key == getattr(curses_module, "KEY_HOME", 262):
+            offset = 0
+        elif key == getattr(curses_module, "KEY_END", 360):
+            offset = len(lines)
 
 
 def _start_field_candidates(
@@ -4698,31 +4800,8 @@ def _coordinator_tmux():
 
 
 def _launch_coordinator_session(stdscr, curses_module, model: TuiModel, config: ControlConfig, env: Mapping[str, str]) -> str:
-    """`n` in Initiatives mode: ask for an intent, start the coordinator session, open it."""
-    from .orchestration.coordinator import CoordinatorError, launch_session
-
-    root = str(Path(env.get("ASHA_PROJECTS_ROOT") or Path.cwd()).resolve())
-    intent = _prompt_line(
-        stdscr, curses_module, model, "Intent: ",
-        title="New initiative",
-        context=(
-            f"Projects root: {root}\n"
-            "Control starts the coordinator (asha claude) in its own tmux session at this root\n"
-            "with your intent as the first message; Enter on the initiative attaches to it."
-        ),
-        maximum=2000,
-    )
-    if not intent or not intent.strip():
-        return "intent cancelled"
-    try:
-        launched = launch_session(
-            config, root=Path(root), intent=intent, tmux=_coordinator_tmux(),
-            asha_root=_tui_asha_root(env),
-        )
-    except (CoordinatorError, ValueError, HarnessError, TmuxError) as exc:
-        return f"coordinator launch refused: {_safe_error(exc)}"
-    refusal = _popup_session(stdscr, curses_module, config, env, launched["session"], "coordinator")
-    return refusal or f"coordinator session {launched['session']} started; Enter on its initiative reattaches"
+    """Collect a project-bound managed assignment in one stateful form."""
+    return _project_launch_form(stdscr, curses_module, model, config, env, managed=True)
 
 
 def _attach_coordinator(stdscr, curses_module, config: ControlConfig, env: Mapping[str, str], initiative_id: str) -> str:
@@ -4736,8 +4815,70 @@ def _attach_coordinator(stdscr, curses_module, config: ControlConfig, env: Mappi
         )
     except (CoordinatorError, TmuxError, ValueError) as exc:
         return f"attach refused: {_safe_error(exc)}"
+    if target.get('transport') == 'managed':
+        return _managed_session_view(stdscr, curses_module, config, target['session_id'])
     refusal = _popup_session(stdscr, curses_module, config, env, target["session"], "coordinator")
     return refusal or "coordinator popup closed; the session keeps running"
+
+
+def _managed_session_view(stdscr, curses_module, config, session_id):
+    """Read bounded event pages without terminal attach or changing acknowledgements."""
+    from .session_store import SessionStore
+
+    after, history, offset = 0, [], 0
+    reload = True
+    redraw = True
+    while True:
+        if reload:
+            try:
+                with SessionStore(config) as sessions:
+                    snapshot = sessions.snapshot(session_id, after=after, limit=100)
+            except (OSError, ValueError, StoreError) as exc:
+                return f'session inspection unavailable: {_safe_error(exc)}'
+            reload = False
+        if redraw:
+            state = snapshot['sessions'][0]
+            height, width = stdscr.getmaxyx()
+            body = [f"Session {session_id}", f"Project: {state['cwd']}",
+                    f"{state['harness']} · {state['state']} · {snapshot['pending_request_count']} pending requests",
+                    'Use M in Control to answer pending questions and permissions.']
+            for request in snapshot['requests']:
+                body.append(f"Pending {request['kind']}: {request['question']}")
+            for event in snapshot['events']:
+                payload = event['payload']
+                content = payload.get('text') or payload.get('message') or json.dumps(payload, ensure_ascii=False)
+                body.append(f"{event['sequence']} {event['kind']}: {content}")
+            lines = [line for text in body for line in _cell_lines(_safe_text(text), max(1, width - 1))]
+            capacity = max(0, height - 1)
+            offset = min(offset, max(0, len(lines) - max(1, capacity)))
+            stdscr.erase()
+            for y, line in enumerate(['[READING] ↑/↓ scroll  n/p events  r refresh  Esc close',
+                                      *lines[offset:offset + capacity]][:height]):
+                try:
+                    stdscr.addnstr(y, 0, _prefix_cells(line, max(0, width - 1)), max(0, width - 1))
+                except curses_module.error:
+                    pass
+            stdscr.refresh()
+            redraw = False
+        key = _read_modal_key(stdscr, curses_module)
+        if isinstance(key, str):
+            key = ord(key)
+        if key == -1:
+            continue
+        redraw = True
+        if key in {27, ord('q')}:
+            return 'session inspection closed; runtime policy is unchanged'
+        if key == getattr(curses_module, 'KEY_DOWN', -996):
+            offset += 1
+        elif key == getattr(curses_module, 'KEY_UP', -997):
+            offset = max(0, offset - 1)
+        elif key == ord('r'):
+            reload = True
+        elif key == ord('n') and not snapshot['complete']['events'] and snapshot['events']:
+            history.append(after)
+            after, offset, reload = snapshot['events'][-1]['sequence'], 0, True
+        elif key == ord('p') and history:
+            after, offset, reload = history.pop(), 0, True
 
 
 def _popup_session(stdscr, curses_module, config: ControlConfig, env: Mapping[str, str], session: str, label: str) -> str | None:
@@ -4773,12 +4914,16 @@ def _tui_asha_root(env: Mapping[str, str]) -> Path:
     return root
 
 
+def _open_room_form(stdscr, curses_module, model, config, env) -> str:
+    return _project_launch_form(stdscr, curses_module, model, config, env)
+
+
 @_cursor_editor
-def _open_room_form(
+def _project_launch_form(
     stdscr, curses_module, model: TuiModel, config: ControlConfig,
-    env: Mapping[str, str],
+    env: Mapping[str, str], *, managed: bool = False,
 ) -> str:
-    """Collect one bounded Room request and launch it detached."""
+    """Share project selection and keyboard ownership across both launch forms."""
     from .orchestration.projects import list_projects_across, resolve_roots
     from .rooms import (
         RoomError, _room_name, open_room, resolve_project,
@@ -4795,13 +4940,21 @@ def _open_room_form(
         for item in payload["projects"]
         if item.get("asha_project") and item.get("project_id")
     )
+    from .session_harness import CAPABILITIES
+    from .managed_launch import launch_managed, harness_available
+    import uuid
+
+    launch_id = str(uuid.uuid4())
+    title = 'New initiative' if managed else 'Open Room'
+    subject = 'initiative' if managed else 'room'
     harness_candidates = _bounded_modal_candidates(
         ModalCandidate(name, "installed")
         for name in sorted(HARNESSES)
-        if room_harness_available(name, env)
+        if (CAPABILITIES.get(name, {}).get("managed") and harness_available(name, env)
+            if managed else room_harness_available(name, env))
     )
     if not harness_candidates:
-        return "room open refused: no supported interactive harness is installed"
+        return f"{subject} launch refused: no supported harness is available"
 
     fields = ("Project", "Room name", "Harness", "Opening prompt")
     maximums = (4096, 120, 16, 4000)
@@ -4809,6 +4962,13 @@ def _open_room_form(
         project_candidates[0].value if project_candidates else "",
         "", harness_candidates[0].value, "",
     ]
+    if managed:
+        fields = ("Project", "Harness", "Assignment")
+        maximums = (4096, 16, 2000)
+        default_harness = next((item.value for item in harness_candidates if item.value == 'claude'), harness_candidates[0].value)
+        values = [values[0], default_harness, '']
+    harness_field = 1 if managed else 2
+    prompt_field = len(fields) - 1
     field = 0
     selected: int | None = 0 if project_candidates else None
     form_notice = ""
@@ -4817,7 +4977,7 @@ def _open_room_form(
     def candidates_for(index: int) -> tuple[ModalCandidate, ...]:
         if index == 0:
             return project_candidates
-        if index == 2:
+        if index == harness_field:
             return harness_candidates
         return ()
 
@@ -4830,7 +4990,7 @@ def _open_room_form(
                 for index in range(field) if values[index]
             )
             context_lines = [
-                f"Field {field + 1}/4  Controls: Tab next  Shift-Tab previous  "
+                f"Field {field + 1}/{len(fields)}  Controls: Tab next  Shift-Tab previous  "
                 "Enter accept/submit  Esc cancel  Up/Down candidates",
             ]
             if completed:
@@ -4838,10 +4998,11 @@ def _open_room_form(
             if form_notice:
                 context_lines.append(f"Error beside {fields[field]}: {form_notice}")
             context_lines.append(
+                "Assignments queue one managed session in the selected project." if managed else
                 "Rooms work directly in one initialized project's canonical checkout."
             )
             frame = modal_frame(
-                title="Open Room", context="\n".join(context_lines),
+                title=title, context="\n".join(context_lines),
                 label=fields[field], hint="", value=values[field],
                 candidates=candidates, selected=selected,
                 height=height, width=width,
@@ -4856,7 +5017,7 @@ def _open_room_form(
             continue
         form_notice = ""
         if key == 27:
-            return "room open cancelled"
+            return f"{subject} launch cancelled" if managed else "room open cancelled"
         if key == getattr(curses_module, "KEY_BTAB", -994):
             if field:
                 field -= 1
@@ -4874,7 +5035,7 @@ def _open_room_form(
             continue
         if key == 9 or key in {10, 13, getattr(curses_module, "KEY_ENTER", -995)}:
             if key == 9 and field == len(fields) - 1:
-                form_notice = "Tab has no next field; Enter submits the Room."
+                form_notice = f"Tab has no next field; Enter submits the {subject}."
                 model.message = form_notice
                 selected = None
                 continue
@@ -4883,7 +5044,7 @@ def _open_room_form(
                     index for index, item in enumerate(candidates)
                     if (
                         _ascii_prefix(item.value, values[field])
-                        if field == 2 else item.value.startswith(values[field])
+                        if field == harness_field else item.value.startswith(values[field])
                     )
                 ]
                 if matches:
@@ -4899,7 +5060,7 @@ def _open_room_form(
                 except RoomError as exc:
                     canonical = None
                     form_notice = _safe_error(exc)
-            elif field == 1:
+            elif not managed and field == 1:
                 if not accepted.strip():
                     canonical = None
                     form_notice = "Room name is required."
@@ -4909,11 +5070,11 @@ def _open_room_form(
                     except RoomError as exc:
                         canonical = None
                         form_notice = _safe_error(exc)
-            elif field == 2:
-                canonical = _canonical_field_value(field, accepted, candidates)
+            elif field == harness_field:
+                canonical = _canonical_field_value(2, accepted, candidates)
                 if canonical is None:
                     form_notice = "Harness must be one installed supported candidate."
-            elif field == 3 and (
+            elif field == prompt_field and (
                 not accepted.strip() or not terminal_text_is_complete(accepted)
             ):
                 canonical = None
@@ -4926,6 +5087,23 @@ def _open_room_form(
                 selected = None
                 continue
             values[field] = canonical
+            if managed and field == prompt_field:
+                try:
+                    launched = launch_managed(config, project=values[0], harness=values[1],
+                                              intent=canonical, env=env, launch_id=launch_id)
+                except (ValueError, OSError, StoreError) as exc:
+                    form_notice = _safe_error(exc)
+                    model.message = form_notice
+                    selected = None
+                    continue
+                refresh_notice = ''
+                try:
+                    _refresh_initiatives(model, env)
+                except Exception as exc:  # The assignment is already retained.
+                    refresh_notice = f'; display refresh unavailable: {_safe_error(exc)}'
+                return (f"Initiative {launched['initiative_id']} retained; session {launched['session_id']} "
+                        f"{launched['state']}; runtime {launched['admission']['mode']}. "
+                        f"{launched['supervisor']['message']}{refresh_notice}")
             field += 1
             selected = None
             continue
@@ -4941,6 +5119,9 @@ def _open_room_form(
             character = key if isinstance(key, str) else chr(key)
             logical = list(values[field])
             if _prompt_character_allowed(logical, character):
+                if managed and field == prompt_field and len((values[field] + character).encode('utf-8')) > maximums[field]:
+                    form_notice = 'Assignment limit is 2000 UTF-8 bytes.'
+                    continue
                 values[field] += character
                 selected = None
 
@@ -4999,6 +5180,38 @@ def _execute_room_intent(
         return f"Room close refused: {_safe_error(exc)}"
     _refresh_initiatives(model, env)
     return f"Room {closed['name']} closed; project files were untouched"
+
+
+def _approve_review_budget_prompt(stdscr, curses_module, model, env, initiative_store, initiative, row):
+    from .orchestration.cli import refuse_coordinator_pane
+    from .orchestration.review_budget import approve, validate_request
+    pending = [a for a in initiative_store.list_approvals_snapshot(initiative["initiative_id"])
+               if a["action_class"] == "review-budget" and a["state"] == "requested"]
+    if not pending:
+        return None
+    refuse_coordinator_pane(initiative_store, initiative["initiative_id"], env, _coordinator_tmux())
+    candidates = []
+    for item in pending:
+        approval, binding = validate_request(initiative_store, initiative["initiative_id"], item["request_id"])
+        if row.kind != "node" or binding["node_id"] == row.id:
+            candidates.append((approval, binding))
+    if len(candidates) != 1:
+        return "select the review node whose retry you want to approve"
+    approval, binding = candidates[0]
+    answer = _prompt_line(
+        stdscr, curses_module, model, "Approve one review retry [approve/N]: ",
+        title="Review retry budget", maximum=7,
+        context=(f"Initiative: {initiative['slug']}\nReview node: {binding['node_id']}\n"
+                 f"Seal: {binding['target']['seal_id']}\nCommit: {binding['target']['jj_commit_id']}\n"
+                 f"Prior review: {binding['review_id']}\nReason: {approval['rationale']}\n"
+                 "Authorizes exactly one fresh review attempt. Existing limits and prior verdicts stay recorded.\n"
+                 "Type exact approve to authorize this retry."),
+    )
+    if answer != "approve":
+        return "review retry approval cancelled"
+    approve(initiative_store, initiative["initiative_id"], approval["request_id"], actor_id="tui")
+    _refresh_initiatives(model, env)
+    return "one review retry approved" + ("; initiative remains paused until explicitly resumed" if initiative["state"] == "paused" else "")
 
 
 def _execute_initiative_intent(
@@ -5075,6 +5288,10 @@ def _execute_initiative_intent(
         return refusal or "popup closed; task resources were left untouched"
     if intent.kind is IntentKind.INIT_APPROVE:
         from .orchestration.cli import _latest_plan, approve_plan, reject_plan
+
+        budget_result = _approve_review_budget_prompt(stdscr, curses_module, model, env, initiative_store, initiative, row)
+        if budget_result is not None:
+            return budget_result
 
         # `a` performs whichever operator act this row is actually waiting for.
         # An amber row is one that cannot advance without a human; making one
@@ -5161,6 +5378,46 @@ def _execute_initiative_intent(
     return "action unavailable"
 
 
+
+def _select_managed_request(stdscr, curses_module, model, config):
+    """Page questions independently of session counts; selection never resolves one."""
+    from .session_store import SessionStore
+
+    after = None
+    while True:
+        with SessionStore(config) as sessions:
+            snapshot = sessions.current_work(kind="requests", limit=_MAX_MODAL_CANDIDATES, after=after)
+        pending = snapshot["rows"]
+        candidates = [ModalCandidate(r["request_id"], _safe_text(r["question"])[:160],
+                                    display=r["session_id"][:8]) for r in pending]
+        next_cursor = snapshot["next_cursor"]
+        more = not snapshot["complete"]
+        advancing = more and next_cursor is not None and next_cursor != after
+        if advancing:
+            candidates.append(ModalCandidate("next", "Next request page"))
+        elif more:
+            candidates.append(ModalCandidate("retry", "Retry this partial page"))
+        candidates.append(ModalCandidate("refresh", "Refresh from the beginning"))
+        selected = _prompt_line(
+            stdscr, curses_module, model, "Request: ", maximum=36,
+            title="Managed questions and permissions",
+            context=(f"{len(pending)} requests on this page; " +
+                     ("more requests may be unread" if more else "end of current requests") +
+                     ". Pages can change between reads. Enter a request ID or select one."),
+            candidates=tuple(candidates),
+        )
+        if selected == "next" and advancing:
+            after = next_cursor
+        elif selected == "retry" and more and not advancing:
+            continue
+        elif selected == "refresh":
+            after = None
+        elif selected in {"next", "retry"}:
+            continue
+        else:
+            return selected
+
+
 def _execute_intent(
     intent: TuiIntent,
     *,
@@ -5187,6 +5444,74 @@ def _execute_intent(
     if intent.kind is IntentKind.HELP:
         model.help_visible = not model.help_visible
         model.dirty = True
+        return True
+    if intent.kind is IntentKind.CURRENT_ACTIONS:
+        from .tui_action_queue import inspect_actions
+        model.message = inspect_actions(stdscr, curses_module, model, env)
+        return True
+    if intent.kind is IntentKind.SESSION_QUESTIONS:
+        from .sessions import overview, refuse_managed_operator
+        from .session_store import SessionStore
+        refuse_managed_operator(config, env)
+        current = overview(config)
+        if not current["questions"] and not current.get("permissions", 0):
+            model.message = current["summary"]
+            return True
+        selected_request = _select_managed_request(stdscr, curses_module, model, config)
+        if not selected_request:
+            model.message = "question selection cancelled"
+            return True
+        with SessionStore(config) as sessions:
+            request = sessions.get_request(selected_request)
+        if request["state"] != "pending":
+            model.message = "request is no longer pending"
+            return True
+        if request["kind"] == "native-clarification":
+            from .native_requests import NativeRequests
+            with SessionStore(config) as sessions:
+                detail = NativeRequests(sessions).get(request["request_id"])
+            answers = {}
+            for question in detail["payload"]["request"]["params"]["questions"]:
+                context = question["question"]
+                if question.get("options"):
+                    context += "\n" + "\n".join(option["label"] + ": " + option["description"]
+                                                 for option in question["options"])
+                answer = _prompt_line(stdscr, curses_module, model, "Answer: ",
+                    title="Answer Codex question", maximum=4000,
+                    context=_safe_text(context))
+                if answer is None or not answer.strip():
+                    model.message = "answer cancelled"
+                    return True
+                answers[question["id"]] = {"answers": [answer]}
+            with SessionStore(config) as sessions:
+                NativeRequests(sessions).answer_native(request["request_id"], {"answers": answers},
+                    expected_digest=detail["digest"])
+            model.managed_summary = overview(config)["summary"]
+            model.message = "native answers retained; response delivery is pending"
+            return True
+        if request["kind"] == "native-permission":
+            from .native_requests import NativeRequests
+            with SessionStore(config) as sessions:
+                detail = NativeRequests(sessions).get(request["request_id"])
+            decision = _native_permission_prompt(stdscr, curses_module, detail)
+            if decision is None:
+                model.message = "permission decision cancelled"
+                return True
+            with SessionStore(config) as sessions:
+                NativeRequests(sessions).decide(request["request_id"], decision, expected_digest=request["digest"])
+            model.managed_summary = overview(config)["summary"]
+            model.message = "native permission decision retained; response delivery is pending"
+            return True
+        answer = _prompt_line(stdscr, curses_module, model, "Answer: ",
+                              title="Answer session question", maximum=4000,
+                              context=_safe_text(request["question"]))
+        if answer is None or not answer.strip():
+            model.message = "answer cancelled"
+            return True
+        with SessionStore(config) as sessions:
+            sessions.answer(request["request_id"], answer, expected_digest=request["digest"])
+        model.managed_summary = overview(config)["summary"]
+        model.message = "answer retained; backend resumes the session when eligible"
         return True
     if intent.kind is IntentKind.TOGGLE_SCOPE:
         model.include_archived = not model.include_archived

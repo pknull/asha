@@ -90,7 +90,7 @@ def _transaction_lock_key(domain: str, identity: str) -> str:
 
 @contextmanager
 def _coordinated_transaction_lock(
-    config: ControlConfig, domain: str, identity: str,
+    config: ControlConfig, domain: str, identity: str, *, registry_root: Path | None = None,
 ) -> Iterator[None]:
     rank = _TRANSACTION_DOMAINS.get(domain)
     lock_id = _transaction_lock_key(domain, identity)
@@ -105,9 +105,11 @@ def _coordinated_transaction_lock(
             "transaction lock order inversion refused; required order is "
             "task -> source -> repository"
         )
-    managed_start = _managed_start(config.tasks_dir, ("control", "tasks"))
+    root = config.tasks_dir if registry_root is None else registry_root
+    suffix = ("control", "tasks") if registry_root is None else ("control", "registry-locks", "tasks")
+    managed_start = _managed_start(root, suffix)
     with _directory_fd(
-        config.tasks_dir, create=True, managed_start=managed_start,
+        root, create=True, managed_start=managed_start,
     ) as tasks_fd:
         if tasks_fd is None:
             raise StoreError("failed to create Control task registry")
@@ -124,6 +126,9 @@ class TransactionCoordinator:
 
     def __init__(self, config: ControlConfig):
         self.config = config
+        from .registry_backend import selected_backend
+        self.registry_root = (config.tasks_dir.parent / "registry-locks" / "tasks"
+                              if selected_backend(config) == "sqlite" else None)
 
     @staticmethod
     def lock_key(domain: str, identity: str) -> str:
@@ -144,7 +149,10 @@ class TransactionCoordinator:
         elif domain == "repository":
             if re.fullmatch(r"repo:[0-9a-f]{64}", identity, re.ASCII) is None:
                 raise StoreError("repository transaction lock requires an exact repository identity")
-        with _coordinated_transaction_lock(self.config, domain, identity):
+        from .registry_guards import migration_lock, mutation_guard
+        manager = (mutation_guard(self.config) if self.registry_root is not None
+                   else migration_lock(self.config, exclusive=False))
+        with manager, _coordinated_transaction_lock(self.config, domain, identity, registry_root=self.registry_root):
             yield
 
     def task_lock(self, task_id: str):
@@ -336,6 +344,11 @@ def _validate_open_file(fd: int, label: str, *, required_mode: int = 0o600) -> o
 
 
 def _open_existing_file(directory_fd: int, name: str, label: str) -> int:
+    """Open an ordinary private file, never a live SQLite database or sidecar.
+
+    Closing a separate ordinary fd would drop SQLite's process-wide POSIX
+    locks. ControlDatabase validates those inodes with no-follow stat instead.
+    """
     try:
         fd = os.open(
             name, os.O_RDONLY | _NONBLOCK | _NOFOLLOW | _CLOEXEC, dir_fd=directory_fd
@@ -450,6 +463,10 @@ def _registry_lock(tasks_fd: int, before_flock=None, after_flock=None) -> Iterat
 
 
 class TaskStore:
+    def __new__(cls, config, **kwargs):
+        from .registry_backend import construct_store
+        return construct_store(cls, TaskStore, config, "tasks")
+
     def __init__(
         self,
         config: ControlConfig,
@@ -634,7 +651,8 @@ class TaskStore:
             raise StoreError(f"task record exceeds {MAX_RECORD_BYTES} bytes")
         record_name = f"{task_id}.json"
 
-        with self._directories(create_state=True) as (tasks_fd, locks_fd):
+        from .registry_guards import legacy_mutation_guard
+        with legacy_mutation_guard(self.config), self._directories(create_state=True) as (tasks_fd, locks_fd):
             assert tasks_fd is not None and locks_fd is not None
             with _task_lock(tasks_fd, _transaction_lock_key("task", task_id)):
                 with self._registry_locked(tasks_fd):
@@ -761,6 +779,11 @@ class TaskStore:
             raise StoreError(f"task record nesting exceeds supported limit: {name}") from exc
         except (UnicodeError, json.JSONDecodeError) as exc:
             raise StoreError(f"invalid JSON in task record {name}: {exc}") from exc
+        return self._validated_value(value, task_id)
+
+    def _validated_value(self, value: Any, task_id: str) -> dict[str, Any]:
+        """Shared task shape, identity and path checks for file and SQLite records."""
+        name = f"{task_id}.json"
         try:
             # Reject non-text enum values before the model's hash-based
             # membership checks. Only normalize malformed input here, not
@@ -827,6 +850,18 @@ class TaskStore:
             if task is None:
                 raise StoreError(f"task not found: {task_id}")
             return task
+
+    def bounded_active_snapshots(self, budget) -> list[dict[str, Any]]:
+        # Legacy files have no state index. Preserve the enumeration budget and
+        # its incomplete evidence rather than pretending it covers all history.
+        return [row for row in self.bounded_snapshots(budget)
+                if self._active_snapshot_candidate(row)]
+
+    @staticmethod
+    def _active_snapshot_candidate(row):
+        # Failed materialization may preserve one live run for recovery.
+        return row["lifecycle"] in {"creating", "running"} or (
+            row["lifecycle"] == "failed" and any(run["state"] not in {"exited", "failed"} for run in row["runs"]))
 
     def bounded_snapshots(self, budget) -> list[dict[str, Any]]:
         """No registry lock, materialization, historical run reads, or writes."""

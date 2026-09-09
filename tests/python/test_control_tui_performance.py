@@ -1016,8 +1016,8 @@ class BoundedRetainedReadTests(ExecutionFixture, unittest.TestCase):
     def test_missing_active_plan_is_incomplete_even_when_all_reads_succeeded(self) -> None:
         budget = tui_store.PresentationBudget(deadline_seconds=30.0)
         real_read = tui_store.InitiativeStore.bounded_presentation_records
-        def omit_plan(store, iid, directory, shared):
-            return [] if directory == "plans" else real_read(store, iid, directory, shared)
+        def omit_plan(store, iid, directory, shared, **kwargs):
+            return [] if directory == "plans" else real_read(store, iid, directory, shared, **kwargs)
         with mock.patch.object(tui_store.InitiativeStore, "bounded_presentation_records", omit_plan):
             views = tui._load_initiative_views(self.env, budget=budget)
         self.assertFalse(views[0]["_graph_complete"])

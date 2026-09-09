@@ -199,7 +199,7 @@ class ActiveCoordinatorTests(ExecutionFixture, unittest.TestCase):
 
     def test_coordinator_action_set_is_exactly_the_bounded_set(self) -> None:
         self.assertEqual(COORDINATOR_ACTION_KINDS, frozenset({
-            "dispatch-node", "repair-node", "request-salvage", "stop-attempt", "pause",
+            "dispatch-node", "repair-node", "request-salvage", "request-review-budget", "stop-attempt", "pause",
             "continue-node", "request-decision", "propose-outcome", "directive",
         }))
 

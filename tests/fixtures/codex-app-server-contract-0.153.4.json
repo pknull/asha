@@ -1,0 +1,513 @@
+{
+  "codex_cli": "0.153.4",
+  "generator": "codex app-server generate-json-schema --out DIR",
+  "sha256": {
+    "ClientRequest.json": "25bc001b5dfe3b35785597b8f9ad9e5aaf7e437331fa9921f041c9e0e03fc9f3",
+    "ServerRequest.json": "31f580ad468fbd18766eb7adb12744be4e3790e3357b58bd4413c0108c4f65d0",
+    "ServerNotification.json": "b3e76cf11842f3e8b3270c05e000212b56eabafb0152fc38e8f920e2ef902991"
+  },
+  "methods": {
+    "initialize": {
+      "params_type": "InitializeParams",
+      "required": [
+        "clientInfo"
+      ],
+      "fields": [
+        "capabilities",
+        "clientInfo"
+      ]
+    },
+    "thread/start": {
+      "params_type": "ThreadStartParams",
+      "required": [],
+      "fields": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "ephemeral",
+        "model",
+        "modelProvider",
+        "personality",
+        "sandbox",
+        "serviceName",
+        "serviceTier",
+        "sessionStartSource",
+        "threadSource"
+      ]
+    },
+    "thread/resume": {
+      "params_type": "ThreadResumeParams",
+      "required": [
+        "threadId"
+      ],
+      "fields": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "baseInstructions",
+        "config",
+        "cwd",
+        "developerInstructions",
+        "excludeTurns",
+        "model",
+        "modelProvider",
+        "personality",
+        "sandbox",
+        "serviceTier",
+        "threadId"
+      ]
+    },
+    "turn/start": {
+      "params_type": "TurnStartParams",
+      "required": [
+        "input",
+        "threadId"
+      ],
+      "fields": [
+        "approvalPolicy",
+        "approvalsReviewer",
+        "clientUserMessageId",
+        "cwd",
+        "effort",
+        "input",
+        "model",
+        "outputSchema",
+        "personality",
+        "sandboxPolicy",
+        "serviceTier",
+        "serviceTierForTurn",
+        "summary",
+        "threadId",
+        "toolOutput",
+        "turnTrigger"
+      ]
+    },
+    "turn/interrupt": {
+      "params_type": "TurnInterruptParams",
+      "required": [
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/commandExecution/requestApproval": {
+      "params_type": "CommandExecutionRequestApprovalParams",
+      "required": [
+        "itemId",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "approvalId",
+        "command",
+        "commandActions",
+        "cwd",
+        "environmentId",
+        "itemId",
+        "kind",
+        "networkApprovalContext",
+        "proposedExecpolicyAmendment",
+        "proposedNetworkPolicyAmendments",
+        "reason",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/fileChange/requestApproval": {
+      "params_type": "FileChangeRequestApprovalParams",
+      "required": [
+        "itemId",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "grantRoot",
+        "itemId",
+        "reason",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/tool/requestUserInput": {
+      "params_type": "ToolRequestUserInputParams",
+      "required": [
+        "isBlocking",
+        "itemId",
+        "questions",
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "autoResolutionMs",
+        "isBlocking",
+        "itemId",
+        "questions",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/permissions/requestApproval": {
+      "params_type": "PermissionsRequestApprovalParams",
+      "required": [
+        "cwd",
+        "itemId",
+        "permissions",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "cwd",
+        "environmentId",
+        "itemId",
+        "permissions",
+        "reason",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "turn/started": {
+      "params_type": "TurnStartedNotification",
+      "required": [
+        "threadId",
+        "turn"
+      ],
+      "fields": [
+        "threadId",
+        "turn"
+      ]
+    },
+    "turn/completed": {
+      "params_type": "TurnCompletedNotification",
+      "required": [
+        "threadId",
+        "turn"
+      ],
+      "fields": [
+        "threadId",
+        "turn"
+      ]
+    },
+    "item/started": {
+      "params_type": "ItemStartedNotification",
+      "required": [
+        "item",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "item",
+        "startedAtMs",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/completed": {
+      "params_type": "ItemCompletedNotification",
+      "required": [
+        "completedAtMs",
+        "item",
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "completedAtMs",
+        "item",
+        "threadId",
+        "turnId"
+      ]
+    },
+    "item/agentMessage/delta": {
+      "params_type": "AgentMessageDeltaNotification",
+      "required": [
+        "delta",
+        "itemId",
+        "threadId",
+        "turnId"
+      ],
+      "fields": [
+        "delta",
+        "itemId",
+        "threadId",
+        "turnId"
+      ]
+    }
+  },
+  "evidence_kind": "Generated installed protocol excerpts, not native runtime acceptance",
+  "definitions": {
+    "SandboxPolicy": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "dangerFullAccess"
+              ],
+              "title": "DangerFullAccessSandboxPolicyType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "DangerFullAccessSandboxPolicy",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "networkAccess": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "readOnly"
+              ],
+              "title": "ReadOnlySandboxPolicyType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ReadOnlySandboxPolicy",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "networkAccess": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/NetworkAccess"
+                }
+              ],
+              "default": "restricted"
+            },
+            "type": {
+              "enum": [
+                "externalSandbox"
+              ],
+              "title": "ExternalSandboxSandboxPolicyType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ExternalSandboxSandboxPolicy",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "excludeSlashTmp": {
+              "default": false,
+              "type": "boolean"
+            },
+            "excludeTmpdirEnvVar": {
+              "default": false,
+              "type": "boolean"
+            },
+            "networkAccess": {
+              "default": false,
+              "type": "boolean"
+            },
+            "type": {
+              "enum": [
+                "workspaceWrite"
+              ],
+              "title": "WorkspaceWriteSandboxPolicyType",
+              "type": "string"
+            },
+            "writableRoots": {
+              "default": [],
+              "items": {
+                "$ref": "#/definitions/AbsolutePathBuf"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "WorkspaceWriteSandboxPolicy",
+          "type": "object"
+        }
+      ]
+    },
+    "ErrorNotification": {
+      "properties": {
+        "error": {
+          "$ref": "#/definitions/TurnError"
+        },
+        "threadId": {
+          "type": "string"
+        },
+        "turnId": {
+          "type": "string"
+        },
+        "willRetry": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "error",
+        "threadId",
+        "turnId",
+        "willRetry"
+      ],
+      "type": "object"
+    },
+    "FileUpdateChange": {
+      "properties": {
+        "diff": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/PatchChangeKind"
+        },
+        "path": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "diff",
+        "kind",
+        "path"
+      ],
+      "type": "object"
+    },
+    "PatchChangeKind": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "add"
+              ],
+              "title": "AddPatchChangeKindType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "AddPatchChangeKind",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "delete"
+              ],
+              "title": "DeletePatchChangeKindType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "DeletePatchChangeKind",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "move_path": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "type": {
+              "enum": [
+                "update"
+              ],
+              "title": "UpdatePatchChangeKindType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "UpdatePatchChangeKind",
+          "type": "object"
+        }
+      ]
+    },
+    "ToolRequestUserInputQuestion": {
+      "description": "EXPERIMENTAL. Represents one request_user_input question and its required options.",
+      "properties": {
+        "header": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "isOther": {
+          "default": false,
+          "type": "boolean"
+        },
+        "isSecret": {
+          "default": false,
+          "type": "boolean"
+        },
+        "options": {
+          "items": {
+            "$ref": "#/definitions/ToolRequestUserInputOption"
+          },
+          "type": [
+            "array",
+            "null"
+          ]
+        },
+        "question": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "header",
+        "id",
+        "question"
+      ],
+      "type": "object"
+    },
+    "ToolRequestUserInputOption": {
+      "description": "EXPERIMENTAL. Defines a single selectable option for request_user_input.",
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "label"
+      ],
+      "type": "object"
+    },
+    "ThreadGoalClearedNotification": {
+      "properties": {
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "threadId"
+      ],
+      "type": "object"
+    }
+  }
+}

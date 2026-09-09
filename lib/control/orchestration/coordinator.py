@@ -1,17 +1,15 @@
-"""Coordinator claims: Asha's own session binds one generation to its tmux pane.
+"""Coordinator generations bound to managed owners or legacy terminal identities.
 
-The controller never launches a coordinator. The operator's Asha session runs
-``asha initiative coordinator claim`` from inside a tmux pane; that pane's pid
-and process identity become the generation's anchor, and every later
-coordinator-actor verb proves it still runs inside that pane. A newer claim
-fences the previous live or stale generation. Operator approval verbs refuse
-the coordinator actor and the coordinator's pane so the authority split stays
-structural rather than prompt-enforced.
+Managed owners claim their assigned initiative; legacy coordinators claim from
+an anchored tmux pane. Every actor mutation verifies the current generation,
+process identity, ancestry and authority state. Operator decisions remain
+separate from coordinator authority in both transports.
 """
 
 from __future__ import annotations
 
 import copy
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Mapping
@@ -77,6 +75,9 @@ def environment_for(record: Mapping[str, Any]) -> dict[str, str]:
 
 
 def caller_anchor(env: Mapping[str, str], tmux: TmuxAdapter) -> dict[str, Any]:
+    if env.get("ASHA_MANAGED_SESSION_ID"):
+        from ..session_store import caller_anchor as managed_anchor
+        return managed_anchor(env)
     """Resolve the calling pane and prove this process descends from it."""
     pane = env.get("TMUX_PANE")
     if not pane:
@@ -125,6 +126,15 @@ def anchor_liveness(anchor: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, 
     moves do not change identity); pane id, pane pid, and the process start
     identity do.
     """
+    if anchor.get("kind") == "managed-session-v1":
+        from ..session_store import verify_anchor, process_live
+        try:
+            if not process_live(anchor["owner_pid"], anchor["process_start_identity"]):
+                return "gone", "managed owner process is gone"
+            verify_anchor(dict(anchor))
+            return "live", "managed owner live"
+        except (StoreError, OSError, ValueError) as exc:
+            return "unknown", str(exc)
     try:
         anchor_server_alive = verify_process(anchor["server_pid"], anchor["server_start_identity"])
     except HarnessError as exc:
@@ -152,6 +162,8 @@ def anchor_liveness(anchor: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, 
 
 
 def _anchor_key(anchor: Mapping[str, Any]) -> tuple[Any, ...]:
+    if anchor.get("kind") == "managed-session-v1":
+        return tuple(sorted(anchor.items()))
     return (
         anchor["server_pid"], anchor["server_start_identity"], anchor["pane_id"],
         anchor["pane_pid"], anchor["process_start_identity"],
@@ -166,12 +178,18 @@ def require_anchored_caller(
         raise CoordinatorError(
             f"coordinator generation {record['generation']} is {record['state']}"
         )
-    if env.get("TMUX_PANE") != record["anchor"]["pane_id"]:
+    managed = record["anchor"].get("kind") == "managed-session-v1"
+    if managed:
+        from ..session_store import verify_anchor
+        session = verify_anchor(record["anchor"], caller=True)
+        if session["initiative_id"] != record["initiative_id"]:
+            raise CoordinatorError("managed session is bound to a different initiative")
+    elif env.get("TMUX_PANE") != record["anchor"]["pane_id"]:
         raise CoordinatorError("caller is not inside the coordinator's anchor pane")
     state, detail = anchor_liveness(record["anchor"], tmux)
     if state != "live":
         raise CoordinatorError(detail)
-    if not caller_descends_from(record["anchor"]["pane_pid"]):
+    if not managed and not caller_descends_from(record["anchor"]["pane_pid"]):
         raise CoordinatorError("caller does not descend from the coordinator's anchor process")
     for key, field in ((ENV_INITIATIVE_ID, "initiative_id"), (ENV_COORDINATOR_ID, "coordinator_id")):
         value = env.get(key)
@@ -206,16 +224,24 @@ def refuse_coordinator_pane(
     act only as the coordinator actor and the journal never attributes a
     coordinator-pane act to the operator.
     """
-    if env.get(ENV_COORDINATOR_ID):
+    if env.get(ENV_COORDINATOR_ID) or env.get("ASHA_MANAGED_SESSION_ID"):
         raise CoordinatorError(
             "operator verbs are refused inside a coordinator session; act as the coordinator "
             "or use your own terminal"
         )
+    from ..sessions import refuse_managed_operator
+    try:
+        refuse_managed_operator(store.config.control, env)
+    except StoreError as exc:
+        raise CoordinatorError(str(exc)) from exc
     current = current_live_coordinator(store, initiative_id)
     if current is None:
         return
     pane = env.get("TMUX_PANE")
-    if pane and pane == current["anchor"]["pane_id"]:
+    anchor = current["anchor"]
+    if anchor.get("kind") == "managed-session-v1" and caller_descends_from(anchor["owner_pid"]) and verify_process(anchor["owner_pid"], anchor["process_start_identity"]):
+        raise CoordinatorError("operator verbs are refused from a managed coordinator")
+    if pane and pane == anchor.get("pane_id"):
         raise CoordinatorError(
             "operator verbs are refused from the coordinator's pane; act as the coordinator "
             "or use your own terminal"
@@ -223,6 +249,8 @@ def refuse_coordinator_pane(
 
 
 def _mark_pane(tmux: TmuxAdapter, record: Mapping[str, Any]) -> None:
+    if record["anchor"].get("kind") == "managed-session-v1":
+        return
     pane = record["anchor"]["pane_id"]
     try:
         tmux.set_pane_option(pane, PANE_COORDINATOR_OPTION, record["coordinator_id"])
@@ -235,6 +263,8 @@ def _mark_pane(tmux: TmuxAdapter, record: Mapping[str, Any]) -> None:
 
 
 def _clear_pane(tmux: TmuxAdapter, pane: str) -> None:
+    if pane is None:
+        return
     try:
         for option in (PANE_COORDINATOR_OPTION, PANE_INITIATIVE_OPTION, PANE_GENERATION_OPTION):
             tmux.set_pane_option(pane, option, "")
@@ -274,6 +304,11 @@ def claim(
     """Claim the next coordinator generation from the calling pane (idempotent per pane)."""
     initiative_id = initiative["initiative_id"]
     anchor = caller_anchor(env, tmux)
+    if anchor.get("kind") == "managed-session-v1":
+        from ..session_store import verify_anchor
+        session = verify_anchor(anchor, caller=True)
+        if session["initiative_id"] != initiative_id or anchor["state_dir"] != str(store.config.control.tasks_dir.parent):
+            raise CoordinatorError("managed coordinator cannot claim another initiative or state root")
     try:
         name = validate_harness(
             harness or env.get("ASHA_HARNESS") or store.config.default_coordinator_harness
@@ -283,6 +318,18 @@ def claim(
     with store.transaction_lock(initiative_id):
         at = _now()
         current = store.current_coordinator(initiative_id)
+        if (current is not None and current['anchor'].get('kind') == 'managed-session-v1'
+                and anchor.get('kind') != 'managed-session-v1'):
+            if current['anchor']['state_dir'] != str(store.config.control.tasks_dir.parent):
+                raise CoordinatorError('managed predecessor belongs to another Control state root')
+            from ..session_store import SessionStore
+            with SessionStore(store.config.control) as sessions:
+                sessions.require_legacy_handoff(current['anchor']['session_id'], initiative_id)
+        if (anchor.get("kind") == "managed-session-v1" and current is not None
+                and current["state"] in COORDINATOR_LIVE_STATES
+                and _anchor_key(current["anchor"]) != _anchor_key(anchor)
+                and anchor_liveness(current["anchor"], tmux)[0] != "gone"):
+            raise CoordinatorError("initiative already has a live or unverified coordinator; release it before managing a session")
         if (
             current is not None
             and current["state"] in COORDINATOR_LIVE_STATES
@@ -325,7 +372,7 @@ def claim(
                 [record["coordinator_id"]],
                 {
                     "generation": generation, "harness": name,
-                    "pane_id": anchor["pane_id"], "event_cursor": tail,
+                    "pane_id": anchor.get("pane_id"), "event_cursor": tail,
                 },
                 actor_kind="coordinator", actor_id=actor_id(record),
             )
@@ -352,7 +399,11 @@ def release_with_details(
     current = require_live_coordinator(store, initiative_id)
     selected_coordinator_id = current["coordinator_id"]
     selected_generation = current["generation"]
-    caller_is_anchor = env.get("TMUX_PANE") == current["anchor"]["pane_id"]
+    managed = current["anchor"].get("kind") == "managed-session-v1"
+    caller_is_anchor = (
+        caller_descends_from(current["anchor"]["owner_pid"]) if managed
+        else env.get("TMUX_PANE") == current["anchor"]["pane_id"]
+    )
     terminal = store.peek(initiative_id)["state"] in INITIATIVE_TERMINAL_STATES
     if caller_is_anchor or not terminal:
         require_anchored_caller(current, env, tmux)
@@ -370,8 +421,15 @@ def release_with_details(
             store.save_coordinator(
                 initiative_id, exited, expected_digest=record_digest(stopping),
             )
-        _clear_pane(tmux, current["anchor"]["pane_id"])
+        _clear_pane(tmux, current["anchor"].get("pane_id"))
         return exited, None
+
+    if managed:
+        refuse_coordinator_pane(store, initiative_id, env, tmux)
+        from ..session_store import SessionStore
+        with SessionStore(store.config.control) as sessions:
+            sessions.stop(current["anchor"]["session_id"])
+        return current, None
 
     if any(env.get(key) for key in (ENV_INITIATIVE_ID, ENV_COORDINATOR_ID, ENV_GENERATION)):
         raise CoordinatorError(
@@ -804,7 +862,7 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 COORDINATOR_LAUNCH_CONTRACT = "asha.orchestration-coordinator-launch.v1"
-COORDINATOR_SESSIONS_CONTRACT = "asha.orchestration-coordinator-sessions.v1"
+COORDINATOR_SESSIONS_CONTRACT = "asha.orchestration-coordinator-sessions.v2"
 COORDINATOR_ATTACH_CONTRACT = "asha.orchestration-coordinator-attach.v1"
 COORDINATOR_SESSION_INFIX = "coord-"
 MAX_INTENT_BYTES = 2000
@@ -888,6 +946,8 @@ def _claimed_sessions(store: InitiativeStore) -> dict[str, dict[str, Any]]:
             continue
         if record is None:
             continue
+        if record["anchor"].get("kind") == "managed-session-v1":
+            continue
         bound[record["anchor"]["session"]] = {
             "initiative_id": initiative["initiative_id"],
             "slug": initiative["slug"],
@@ -898,16 +958,37 @@ def _claimed_sessions(store: InitiativeStore) -> dict[str, dict[str, Any]]:
     return bound
 
 
-def list_coordinator_sessions(config: Any, *, store: InitiativeStore, tmux: TmuxAdapter) -> dict[str, Any]:
-    """Control-launched coordinator sessions on this server, with their claims when made."""
-    prefix = coordinator_session_name(config.session_prefix, "")
-    bound = _claimed_sessions(store)
+def list_coordinator_sessions(config: Any, *, store: InitiativeStore, tmux: TmuxAdapter,
+                              limit=100, after=None) -> dict[str, Any]:
+    """Current managed coordinators plus legacy terminal sessions."""
+    from ..database import DATABASE_NAME
+    from ..session_store import SessionStore, SessionsUninitialized
+    from ..session_activity import page
+
+    managed_page = None
+    managed_error = None
     sessions = []
-    for name in sorted(tmux.list_sessions()):
-        if not name.startswith(prefix):
-            continue
+    if os.path.lexists(config.tasks_dir.parent / DATABASE_NAME):
+        try:
+            with SessionStore(config) as managed:
+                managed_page = page(managed, limit=limit, after=after, deadline=time.monotonic() + 1.0)
+                sessions.extend({**row, 'transport': 'managed', 'session': None}
+                                for row in managed_page['rows'] if row['initiative_id'] is not None)
+        except SessionsUninitialized:
+            pass
+        except (StoreError, OSError, ValueError) as exc:
+            managed_error = str(exc)
+    prefix = coordinator_session_name(config.session_prefix, "")
+    legacy_error = None
+    try:
+        names = sorted(name for name in tmux.list_sessions() if name.startswith(prefix))
+    except TmuxError as exc:
+        names, legacy_error = [], str(exc)
+    bound = _claimed_sessions(store) if names else {}
+    for name in names:
         claim = bound.get(name)
         sessions.append({
+            'transport': 'tmux', 'session_id': None,
             "session": name,
             "initiative_id": None if claim is None else claim["initiative_id"],
             "slug": None if claim is None else claim["slug"],
@@ -915,7 +996,13 @@ def list_coordinator_sessions(config: Any, *, store: InitiativeStore, tmux: Tmux
             "generation": None if claim is None else claim["generation"],
             "state": None if claim is None else claim["state"],
         })
-    return {"contract": COORDINATOR_SESSIONS_CONTRACT, "sessions": sessions}
+    metadata = None if managed_page is None else {
+        **{k: v for k, v in managed_page.items() if k != 'rows'},
+        'scope': 'all current managed sessions, filtered to initiative-bound rows for this listing',
+        'coordinator_rows_returned': sum(row['transport'] == 'managed' for row in sessions),
+    }
+    return {"contract": COORDINATOR_SESSIONS_CONTRACT, "sessions": sessions,
+            'legacy_error': legacy_error, 'managed_error': managed_error, 'managed_page': metadata}
 
 
 def attach_target(
@@ -928,6 +1015,33 @@ def attach_target(
     record = None
     if initiative_id is not None:
         record = store.current_coordinator(initiative_id)
+        from ..session_store import SessionStore, SessionsUninitialized
+        managed_sid = None
+        if record is not None and record['anchor'].get('kind') == 'managed-session-v1':
+            if record['anchor']['state_dir'] != str(store.config.control.tasks_dir.parent):
+                raise CoordinatorError('managed coordinator belongs to another Control state root')
+            managed_sid = record['anchor']['session_id']
+        try:
+            from ..database import DATABASE_NAME
+            if not os.path.lexists(store.config.control.tasks_dir.parent / DATABASE_NAME):
+                raise SessionsUninitialized('managed session database is absent')
+            with SessionStore(store.config.control) as managed:
+                if record is None:
+                    # Intake is visible before the supervisor's first claim.
+                    with managed.db.transaction() as c:
+                        queued = c.execute("SELECT session_id FROM managed_sessions WHERE initiative_id=? "
+                                           "ORDER BY created_at DESC,session_id DESC LIMIT 1", (initiative_id,)).fetchone()
+                    managed_sid = queued[0] if queued else None
+                if managed_sid is not None:
+                    state = managed.get(managed_sid)
+                    if state['initiative_id'] != initiative_id:
+                        raise CoordinatorError('managed coordinator belongs to another initiative')
+                    return {'contract': COORDINATOR_ATTACH_CONTRACT, 'transport': 'managed',
+                            'initiative_id': initiative_id, 'session_id': managed_sid,
+                            'state': state['state'], 'session': None, 'pane_id': None}
+        except SessionsUninitialized:
+            if managed_sid is not None:
+                raise CoordinatorError('managed coordinator session state is unavailable')
         if record is None:
             raise CoordinatorError("no coordinator has claimed this initiative")
         if record["state"] not in COORDINATOR_LIVE_STATES:

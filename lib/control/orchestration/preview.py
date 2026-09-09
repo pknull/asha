@@ -82,34 +82,26 @@ class _Snapshot:
         budget = SnapshotBudget(deadline=self.deadline, limit=MAX_RECORDS)
         records = []
         size = 0
-        with self.store._initiative_directory(
-            self.iid, create_root=False, create_initiative=False,
-        ) as (_, root):
-            fd = self.store._subdirectory(root, key)
-            try:
-                for name in budget.names(fd):
-                    # Residue is ignored, never swept, but charged to the cap.
-                    if name.startswith("."):
-                        continue
-                    if not name.endswith(".json"):
-                        raise PreviewError(f"preview {key} has an unexpected filename")
-                    event_match = re.fullmatch(r"([0-9]{6})-([0-9a-f-]{36})\.json", name) if key == "events" else None
-                    if key == "events" and event_match is None:
-                        raise PreviewError("preview events has an invalid filename")
-                    identity = (model.canonical_uuid(event_match[2]) if event_match else
-                                model.validate_slug(name[:-5], "node_id") if key == "nodes"
-                                else model.canonical_uuid(name[:-5]))
-                    value = self.store._validated_read(fd, name, key, validator)
-                    if event_match and value["sequence"] != int(event_match[1]):
-                        raise PreviewError("preview event sequence binding changed")
-                    if value[field] != identity or value.get("initiative_id", self.iid) != self.iid:
-                        raise PreviewError(f"preview {key} contains foreign or changed identity")
-                    size += len(_bytes(value))
-                    if size > MAX_SNAPSHOT_BYTES:
-                        raise PreviewError("preview snapshot byte capacity exceeded")
-                    records.append(value)
-            finally:
-                os.close(fd)
+        for name, value in self.store.iter_record_snapshots(self.iid, key, validator, budget):
+            # Residue is ignored, never swept, but charged to the cap.
+            if name.startswith("."):
+                continue
+            if not name.endswith(".json"):
+                raise PreviewError(f"preview {key} has an unexpected filename")
+            event_match = re.fullmatch(r"([0-9]{6})-([0-9a-f-]{36})\.json", name) if key == "events" else None
+            if key == "events" and event_match is None:
+                raise PreviewError("preview events has an invalid filename")
+            identity = (model.canonical_uuid(event_match[2]) if event_match else
+                        model.validate_slug(name[:-5], "node_id") if key == "nodes"
+                        else model.canonical_uuid(name[:-5]))
+            if event_match and value["sequence"] != int(event_match[1]):
+                raise PreviewError("preview event sequence binding changed")
+            if value[field] != identity or value.get("initiative_id", self.iid) != self.iid:
+                raise PreviewError(f"preview {key} contains foreign or changed identity")
+            size += len(_bytes(value))
+            if size > MAX_SNAPSHOT_BYTES:
+                raise PreviewError("preview snapshot byte capacity exceeded")
+            records.append(value)
         if not budget.summary()["complete"]:
             raise PreviewError(f"preview {key} is capped or unavailable; cannot prove binding")
         if key == "events" and sorted(r["sequence"] for r in records) != list(range(1, len(records) + 1)):
@@ -296,7 +288,8 @@ def assignment_preview(config, initiative_id, node_id, *, salvage_request_id=Non
         base = scheduler._resolved_attempt_base(snapshot, iid, plan, node)
     gates = scheduler._assignment_gates(initiative, plan, node)
     _preflight_gates(snapshot, initiative, gates)
-    scheduler.validate_goal_capacity(config, initiative, plan, nodes=[node], salvage_recovery=recovery)
+    scheduler.validate_goal_capacity(config, initiative, plan, nodes=[node], salvage_recovery=recovery,
+                                     store=snapshot.store)
     attempt = {"attempt_id": PREVIEW_ATTEMPT_ID, "base": base}
     exact_base = scheduler._exact_base(snapshot, iid, node, attempt)
     repository = scheduler._node_repository(initiative, node)
@@ -309,7 +302,7 @@ def assignment_preview(config, initiative_id, node_id, *, salvage_request_id=Non
     evidence, findings = scheduler.assignment_evidence(snapshot, iid, base)
     rendered = scheduler.assignment_bytes(initiative, plan, node, attempt, exact_base,
                                           evidence, findings, salvage_recovery=recovery)
-    path = config.initiatives_dir / iid / "assignments" / f"{PREVIEW_ATTEMPT_ID}.md"
+    path = snapshot.store.assignment_path(iid, PREVIEW_ATTEMPT_ID)
     goal = scheduler._goal(initiative, node, path)
     result = {
         "contract": CONTRACT, "authority": "none; dispatch must independently revalidate",

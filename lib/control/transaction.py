@@ -92,6 +92,16 @@ class JournalError(ValueError):
     pass
 
 
+@contextmanager
+def _legacy_write_guard(config):
+    from .registry_guards import legacy_mutation_guard
+    try:
+        with legacy_mutation_guard(config):
+            yield
+    except StoreError as exc:
+        raise JournalError(str(exc)) from exc
+
+
 class _DuplicateKey(ValueError):
     pass
 
@@ -407,7 +417,8 @@ def _validate_materialization_plan(value: Any, base_commit_id: str) -> dict[str,
     return value
 
 
-def _validate_journal_v2(value: Any, *, config: ControlConfig | None = None) -> dict[str, Any]:
+def _validate_journal_v2(value: Any, *, config: ControlConfig | None = None,
+                         sqlite_artifacts: bool = False) -> dict[str, Any]:
     """Validate the compact plan/sidecar journal contract independently of v1."""
     required_fields = {
         "contract", "task_id", "invocation_id", "phase", "launch_attempted",
@@ -522,8 +533,9 @@ def _validate_journal_v2(value: Any, *, config: ControlConfig | None = None) -> 
         if Path(sidecar["path"]).name != expected_name:
             raise JournalError("materialization ownership is not bound to its task")
         if config is not None:
-            expected_path = config.tasks_dir.parent / "transactions" / expected_name
-            if sidecar["path"] != str(expected_path):
+            folders = ("transactions", "materialization-ownership") if sqlite_artifacts else ("transactions",)
+            expected_paths = {str(config.tasks_dir.parent / folder / expected_name) for folder in folders}
+            if sidecar["path"] not in expected_paths:
                 raise JournalError("materialization ownership path is outside transactions")
     maximum_removed = plan["entry_count"] + len(_JJ_PRIVATE_PATHS) + 8192
     removed = journal["removal"]["entries_removed"]
@@ -532,7 +544,8 @@ def _validate_journal_v2(value: Any, *, config: ControlConfig | None = None) -> 
     return journal
 
 
-def validate_journal(value: Any, *, config: ControlConfig | None = None) -> dict[str, Any]:
+def validate_journal(value: Any, *, config: ControlConfig | None = None,
+                     sqlite_artifacts: bool = False) -> dict[str, Any]:
     """Validate a creation journal without reinterpreting older contracts."""
     if not isinstance(value, dict):
         raise JournalError("creation journal must be an object")
@@ -540,14 +553,19 @@ def validate_journal(value: Any, *, config: ControlConfig | None = None) -> dict
     if contract == JOURNAL_V1_CONTRACT:
         return _validate_journal_v1(value, config=config)
     if contract == JOURNAL_CONTRACT:
-        return _validate_journal_v2(value, config=config)
+        return _validate_journal_v2(value, config=config, sqlite_artifacts=sqlite_artifacts)
     raise JournalError("creation journal contract is unsupported")
 
 
 class MaterializationOwnershipStore:
     """Private fixed-width inode vectors bound to a task and tree plan."""
 
+    def __new__(cls, config):
+        from .registry_backend import construct_store
+        return construct_store(cls, MaterializationOwnershipStore, config, "ownership")
+
     def __init__(self, config: ControlConfig):
+        self.config = config
         self.directory = config.tasks_dir.parent / "transactions"
         self._managed_start = _managed_start(
             self.directory, ("control", "transactions"),
@@ -559,6 +577,12 @@ class MaterializationOwnershipStore:
         except ValueError as exc:
             raise JournalError(str(exc)) from exc
         return self.directory / f"{task_id}.ownership"
+
+    def _directory(self, *, create: bool):
+        return _directory_fd(self.directory, create=create, managed_start=self._managed_start)
+
+    def _write_guard(self):
+        return _legacy_write_guard(self.config)
 
     @staticmethod
     def _raw(task_id: str, plan_digest: str, facts: list[list[int]]) -> bytes:
@@ -649,9 +673,7 @@ class MaterializationOwnershipStore:
         name = f"{canonical_uuid(task_id)}.ownership"
         temporary = f".{name}.tmp.{secrets.token_hex(8)}"
         try:
-            with _directory_fd(
-                self.directory, create=True, managed_start=self._managed_start,
-            ) as directory_fd:
+            with self._write_guard(), self._directory(create=True) as directory_fd:
                 assert directory_fd is not None
                 try:
                     existing, existing_fact = self._read_raw(directory_fd, name)
@@ -722,9 +744,7 @@ class MaterializationOwnershipStore:
             canonical_uuid(path.stem)
         except ValueError as exc:
             raise JournalError("materialization ownership sidecar task identity is invalid") from exc
-        with _directory_fd(
-            self.directory, create=False, managed_start=self._managed_start,
-        ) as directory_fd:
+        with self._directory(create=False) as directory_fd:
             if directory_fd is None:
                 raise JournalError("materialization ownership sidecar is missing")
             raw, file_fact = self._read_raw(directory_fd, path.name)
@@ -755,6 +775,10 @@ class MaterializationOwnershipStore:
 
 
 class CreationJournalStore:
+    def __new__(cls, config):
+        from .registry_backend import construct_store
+        return construct_store(cls, CreationJournalStore, config, "creation-journals")
+
     def __init__(self, config: ControlConfig):
         self.config = config
         self.transactions_dir = config.tasks_dir.parent / "transactions"
@@ -840,6 +864,137 @@ class CreationJournalStore:
         ).encode("utf-8") + b"\n"
         return hashlib.sha256(raw).hexdigest()
 
+    def _validate_change(self, current, journal, *, expected_phase=None,
+                         expected_digest=None, allow_recovery_adoption=False):
+        """Shared phase, identity and ownership rules for both storage backends."""
+        if current is None:
+            if expected_phase is not None:
+                raise JournalError("expected phase supplied for new creation journal")
+            if journal["phase"] != "intent":
+                raise JournalError("new creation journal must begin in intent phase")
+        else:
+            if expected_phase is None or current["phase"] != expected_phase:
+                raise JournalError("creation journal phase changed; reload before update")
+            if expected_digest is not None and not secrets.compare_digest(
+                self.digest(current), expected_digest,
+            ):
+                raise JournalError("creation journal digest changed; reload before adoption")
+            if (journal["phase"] != current["phase"] and
+                    journal["phase"] not in PHASE_TRANSITIONS[current["phase"]] and not (
+                        allow_recovery_adoption
+                        and current["contract"] == JOURNAL_CONTRACT
+                        and current["phase"] == "preserved"
+                        and journal["phase"] == "ready-for-launch"
+                        and journal.get("adoption", {}).get("state") == "ready-for-launch"
+                    )):
+                raise JournalError(
+                    f"illegal creation journal phase transition: "
+                    f"{current['phase']} -> {journal['phase']}"
+                )
+            immutable = [
+                "contract", "task_id", "invocation_id", "config", "repository",
+                (
+                    "expected_materialization"
+                    if journal["contract"] == JOURNAL_V1_CONTRACT
+                    else "materialization_plan"
+                ),
+            ]
+            for key in immutable:
+                if journal[key] != current[key]:
+                    raise JournalError(f"immutable creation journal field changed: {key}")
+            for key in ("path", "name"):
+                if journal["workspace"][key] != current["workspace"][key]:
+                    raise JournalError(f"immutable creation journal workspace field changed: {key}")
+            for key in ("record_path", "slug", "label"):
+                if journal["task"][key] != current["task"][key]:
+                    raise JournalError(f"immutable creation journal task field changed: {key}")
+            if (current["task"]["failure"] is not None and
+                    journal["task"]["failure"] != current["task"]["failure"]):
+                raise JournalError("planned task failure facts cannot change")
+            old_parents = current["workspace"]["created_parents"]
+            new_parents = journal["workspace"]["created_parents"]
+            if new_parents[:len(old_parents)] != old_parents:
+                raise JournalError("created parent ownership facts cannot change")
+            if current["workspace"]["root_fact"] is not None and (
+                    journal["workspace"]["root_fact"] != current["workspace"]["root_fact"]):
+                raise JournalError("workspace root ownership fact cannot change")
+            for key in (
+                "pinned_operation_id", "base_commit_id", "description",
+            ):
+                if journal["jj"][key] != current["jj"][key]:
+                    raise JournalError(f"immutable creation journal jj field changed: {key}")
+            for key in ("change_id", "working_commit_id", "last_registration"):
+                if current["jj"][key] is not None and journal["jj"][key] != current["jj"][key]:
+                    raise JournalError(f"jj ownership identity cannot change: {key}")
+            for key in (
+                "workspace_add_operation_id", "checkout_operation_id",
+            ):
+                if (
+                    current["jj"].get(key) is not None
+                    and journal["jj"].get(key) != current["jj"].get(key)
+                ):
+                    raise JournalError(
+                        f"jj operation identity cannot change: {key}"
+                    )
+            registration_transitions = {
+                "absent": {"absent", "add-intent"},
+                "add-intent": {"add-intent", "present", "absent", "unknown"},
+                "present": {"present", "forget-intent"},
+                "forget-intent": {"forget-intent", "absent-after-forget", "present", "unknown"},
+                "absent-after-forget": {"absent-after-forget"},
+                "unknown": {"unknown", "present", "absent", "absent-after-forget"},
+            }
+            if journal["jj"]["registration_state"] not in registration_transitions[
+                current["jj"]["registration_state"]
+            ]:
+                raise JournalError("jj registration state cannot move backward")
+            ownership_key = (
+                "materialized_owned"
+                if journal["contract"] == JOURNAL_V1_CONTRACT
+                else "materialization_ownership"
+            )
+            for key in (ownership_key, "recovery_owned", "planned_context"):
+                if current[key] is not None and journal[key] != current[key]:
+                    raise JournalError(f"journal ownership facts cannot change: {key}")
+            current_adoption = current.get("adoption")
+            new_adoption = journal.get("adoption")
+            if current_adoption is not None:
+                if new_adoption is None:
+                    raise JournalError("recovery adoption evidence cannot be cleared")
+                immutable_adoption = dict(current_adoption)
+                immutable_adoption.pop("state")
+                comparable = dict(new_adoption)
+                comparable.pop("state")
+                if comparable != immutable_adoption:
+                    raise JournalError("recovery adoption evidence cannot change")
+                states = [
+                    "intent", "context-provisioning", "context-provisioned",
+                    "ready-for-launch",
+                ]
+                if states.index(new_adoption["state"]) < states.index(current_adoption["state"]):
+                    raise JournalError("recovery adoption state cannot move backward")
+            elif new_adoption is not None and not (
+                allow_recovery_adoption
+                and current["contract"] == JOURNAL_CONTRACT
+                and current["phase"] == "preserved"
+            ):
+                raise JournalError("recovery adoption requires the explicit adoption seam")
+            old_context = current["context_owned"]
+            new_context = journal["context_owned"]
+            if any(new_context.get(key) != fact for key, fact in old_context.items()):
+                raise JournalError("context ownership facts cannot change")
+            if current["task"]["digest"] is not None and journal["task"]["digest"] is None:
+                raise JournalError("task record digest cannot be cleared")
+            old_removed = current["removal"]
+            new_removed = journal["removal"]
+            for key in ("entries_removed", "parents_removed"):
+                if new_removed[key] < old_removed[key]:
+                    raise JournalError("removal progress cannot move backward")
+            if old_removed["root_removed"] and not new_removed["root_removed"]:
+                raise JournalError("workspace root removal cannot move backward")
+            if current["launch_attempted"] and not journal["launch_attempted"]:
+                raise JournalError("launch_attempted cannot be cleared")
+
     def save(
         self, value: dict[str, Any], *, expected_phase: str | None = None,
         expected_digest: str | None = None, allow_recovery_adoption: bool = False,
@@ -854,7 +1009,7 @@ class CreationJournalStore:
             raise JournalError(f"creation journal exceeds {MAX_JOURNAL_BYTES} bytes")
         task_id = journal["task_id"]
         name = f"{task_id}.json"
-        with self._locked_directories(create=True) as (transactions_fd, locks_fd):
+        with _legacy_write_guard(self.config), self._locked_directories(create=True) as (transactions_fd, locks_fd):
             assert transactions_fd is not None and locks_fd is not None
             try:
                 with _task_lock(locks_fd, _transaction_lock_key("task", task_id)):
@@ -864,133 +1019,8 @@ class CreationJournalStore:
                     except JournalError as exc:
                         if "not found" not in str(exc):
                             raise
-                    if current is None:
-                        if expected_phase is not None:
-                            raise JournalError("expected phase supplied for new creation journal")
-                        if journal["phase"] != "intent":
-                            raise JournalError("new creation journal must begin in intent phase")
-                    else:
-                        if expected_phase is None or current["phase"] != expected_phase:
-                            raise JournalError("creation journal phase changed; reload before update")
-                        if expected_digest is not None and not secrets.compare_digest(
-                            self.digest(current), expected_digest,
-                        ):
-                            raise JournalError("creation journal digest changed; reload before adoption")
-                        if (journal["phase"] != current["phase"] and
-                                journal["phase"] not in PHASE_TRANSITIONS[current["phase"]] and not (
-                                    allow_recovery_adoption
-                                    and current["contract"] == JOURNAL_CONTRACT
-                                    and current["phase"] == "preserved"
-                                    and journal["phase"] == "ready-for-launch"
-                                    and journal.get("adoption", {}).get("state") == "ready-for-launch"
-                                )):
-                            raise JournalError(
-                                f"illegal creation journal phase transition: "
-                                f"{current['phase']} -> {journal['phase']}"
-                            )
-                        immutable = [
-                            "contract", "task_id", "invocation_id", "config", "repository",
-                            (
-                                "expected_materialization"
-                                if journal["contract"] == JOURNAL_V1_CONTRACT
-                                else "materialization_plan"
-                            ),
-                        ]
-                        for key in immutable:
-                            if journal[key] != current[key]:
-                                raise JournalError(f"immutable creation journal field changed: {key}")
-                        for key in ("path", "name"):
-                            if journal["workspace"][key] != current["workspace"][key]:
-                                raise JournalError(f"immutable creation journal workspace field changed: {key}")
-                        for key in ("record_path", "slug", "label"):
-                            if journal["task"][key] != current["task"][key]:
-                                raise JournalError(f"immutable creation journal task field changed: {key}")
-                        if (current["task"]["failure"] is not None and
-                                journal["task"]["failure"] != current["task"]["failure"]):
-                            raise JournalError("planned task failure facts cannot change")
-                        old_parents = current["workspace"]["created_parents"]
-                        new_parents = journal["workspace"]["created_parents"]
-                        if new_parents[:len(old_parents)] != old_parents:
-                            raise JournalError("created parent ownership facts cannot change")
-                        if current["workspace"]["root_fact"] is not None and (
-                                journal["workspace"]["root_fact"] != current["workspace"]["root_fact"]):
-                            raise JournalError("workspace root ownership fact cannot change")
-                        for key in (
-                            "pinned_operation_id", "base_commit_id", "description",
-                        ):
-                            if journal["jj"][key] != current["jj"][key]:
-                                raise JournalError(f"immutable creation journal jj field changed: {key}")
-                        for key in ("change_id", "working_commit_id", "last_registration"):
-                            if current["jj"][key] is not None and journal["jj"][key] != current["jj"][key]:
-                                raise JournalError(f"jj ownership identity cannot change: {key}")
-                        for key in (
-                            "workspace_add_operation_id", "checkout_operation_id",
-                        ):
-                            if (
-                                current["jj"].get(key) is not None
-                                and journal["jj"].get(key) != current["jj"].get(key)
-                            ):
-                                raise JournalError(
-                                    f"jj operation identity cannot change: {key}"
-                                )
-                        registration_transitions = {
-                            "absent": {"absent", "add-intent"},
-                            "add-intent": {"add-intent", "present", "absent", "unknown"},
-                            "present": {"present", "forget-intent"},
-                            "forget-intent": {"forget-intent", "absent-after-forget", "present", "unknown"},
-                            "absent-after-forget": {"absent-after-forget"},
-                            "unknown": {"unknown", "present", "absent", "absent-after-forget"},
-                        }
-                        if journal["jj"]["registration_state"] not in registration_transitions[
-                            current["jj"]["registration_state"]
-                        ]:
-                            raise JournalError("jj registration state cannot move backward")
-                        ownership_key = (
-                            "materialized_owned"
-                            if journal["contract"] == JOURNAL_V1_CONTRACT
-                            else "materialization_ownership"
-                        )
-                        for key in (ownership_key, "recovery_owned", "planned_context"):
-                            if current[key] is not None and journal[key] != current[key]:
-                                raise JournalError(f"journal ownership facts cannot change: {key}")
-                        current_adoption = current.get("adoption")
-                        new_adoption = journal.get("adoption")
-                        if current_adoption is not None:
-                            if new_adoption is None:
-                                raise JournalError("recovery adoption evidence cannot be cleared")
-                            immutable_adoption = dict(current_adoption)
-                            immutable_adoption.pop("state")
-                            comparable = dict(new_adoption)
-                            comparable.pop("state")
-                            if comparable != immutable_adoption:
-                                raise JournalError("recovery adoption evidence cannot change")
-                            states = [
-                                "intent", "context-provisioning", "context-provisioned",
-                                "ready-for-launch",
-                            ]
-                            if states.index(new_adoption["state"]) < states.index(current_adoption["state"]):
-                                raise JournalError("recovery adoption state cannot move backward")
-                        elif new_adoption is not None and not (
-                            allow_recovery_adoption
-                            and current["contract"] == JOURNAL_CONTRACT
-                            and current["phase"] == "preserved"
-                        ):
-                            raise JournalError("recovery adoption requires the explicit adoption seam")
-                        old_context = current["context_owned"]
-                        new_context = journal["context_owned"]
-                        if any(new_context.get(key) != fact for key, fact in old_context.items()):
-                            raise JournalError("context ownership facts cannot change")
-                        if current["task"]["digest"] is not None and journal["task"]["digest"] is None:
-                            raise JournalError("task record digest cannot be cleared")
-                        old_removed = current["removal"]
-                        new_removed = journal["removal"]
-                        for key in ("entries_removed", "parents_removed"):
-                            if new_removed[key] < old_removed[key]:
-                                raise JournalError("removal progress cannot move backward")
-                        if old_removed["root_removed"] and not new_removed["root_removed"]:
-                            raise JournalError("workspace root removal cannot move backward")
-                        if current["launch_attempted"] and not journal["launch_attempted"]:
-                            raise JournalError("launch_attempted cannot be cleared")
+                    self._validate_change(current, journal, expected_phase=expected_phase,
+                        expected_digest=expected_digest, allow_recovery_adoption=allow_recovery_adoption)
                     temporary = f".{name}.tmp.{secrets.token_hex(8)}"
                     fd = -1
                     try:

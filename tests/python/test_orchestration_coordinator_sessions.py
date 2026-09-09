@@ -133,7 +133,7 @@ class CoordinatorSessionTests(ExecutionFixture, unittest.TestCase):
     def test_cli_verbs_route_launch_sessions_and_attach(self) -> None:
         env = {**self.env, "ASHA_ROOT": str(self.asha_root)}
         launched, as_json = cli._coordinator_command(
-            ["launch", "--root", str(self.root), "--intent", "ship it", "--json"],
+            ["launch", "--transport", "tmux", "--root", str(self.root), "--intent", "ship it", "--json"],
             self.store, env, self.tmux, config=self.config,
         )
         self.assertTrue(as_json)

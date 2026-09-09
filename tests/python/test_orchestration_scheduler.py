@@ -176,6 +176,12 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(self.store.list_plans_snapshot(initiative["initiative_id"]), [])
         self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "draft")
 
+    def test_goal_capacity_uses_the_selected_store_artifact_path(self):
+        path = Path("/tmp") / ("x" * 180) / "00000000-0000-4000-8000-000000000000.md"
+        with mock.patch.object(self.store, "assignment_path", return_value=path):
+            with self.assertRaisesRegex(SchedulerError, "200-character"):
+                validate_goal_capacity(self.config, self.initiative(), self.plan, store=self.store)
+
     def capacity_case(self, node_type="work", *, interactive=True):
         """Find the actual public validation boundary, without template copies."""
         initiative = self.initiative()

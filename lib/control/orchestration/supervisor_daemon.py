@@ -130,6 +130,7 @@ def render_supervisor_service(
         f"ExecStart={asha_root}/bin/asha control supervisor run\n"
         "Restart=on-failure\n"
         "RestartSec=5\n"
+        "KillMode=process\n"
         "WorkingDirectory=%h\n"
         "\n"
         "[Install]\n"
@@ -685,6 +686,15 @@ def run_supervisor(
                 if first or monotonic >= next_regular or marker != last_marker:
                     last_marker = marker
                     summary = tick(dependencies)
+                    if deps is None:
+                        # Additive managed-session domain; legacy scheduling stays authoritative.
+                        from ..sessions import ensure_owners
+                        try:
+                            summary["counts"].update(ensure_owners(config.control))
+                        except (StoreError, OSError, ValueError) as exc:
+                            summary["counts"]["errors"] += 1
+                            summary["counts"]["managed_error"] = _exception_message(exc)
+                            print(f"asha supervisor: managed session delivery unavailable: {exc}", file=sys.stderr)
                     # Report before the status write: the errors this names are
                     # exactly the ones the status file cannot carry, so they must
                     # reach the journal even if that write then fails.
@@ -847,7 +857,7 @@ def stop_supervisor(config: OrchestrationConfig) -> tuple[dict[str, Any], int]:
 
 def _usage(stream=sys.stdout) -> None:
     print(
-        "Usage: asha control supervisor {run|start|stop|status} [--json]\n"
+        "Usage: asha control supervisor {run|start|stop|pause|drain|resume|status} [--json]\n"
         "       asha control supervisor {install|uninstall} [--dry-run] [--json]",
         file=stream,
     )
@@ -862,7 +872,7 @@ def supervisor_main(
         _usage(sys.stdout if args else sys.stderr)
         return 0 if args else 2
     command = args[0]
-    if command not in {"run", "start", "stop", "status", "install", "uninstall"}:
+    if command not in {"run", "start", "stop", "pause", "drain", "resume", "status", "install", "uninstall"}:
         _usage(sys.stderr)
         return 2
     tail = args[1:]
@@ -877,12 +887,25 @@ def supervisor_main(
         return 2
     try:
         config = load_config(values)
+        if command != "status":
+            from ..sessions import refuse_managed_operator
+            refuse_managed_operator(config.control, values)
+        if command in {"pause", "drain", "resume"}:
+            from ..runtime import set_admission
+            mode = {"pause": "paused", "drain": "draining", "resume": "running"}[command]
+            payload = set_admission(config.control, mode)
+            _emit(payload, json_output)
+            return 0
         if command == "run":
             return run_supervisor(config, json_output=json_output)
         if command == "start":
             payload, code = start_supervisor(config, values)
         elif command == "stop":
+            from ..runtime import set_admission
+            policy = set_admission(config.control, "stopped")
             payload, code = stop_supervisor(config)
+            payload["admission"] = policy
+            payload["message"] += "; " + policy["message"]
         elif command == "install":
             payload, code = install_supervisor_service(
                 config, values, dry_run=dry_run,
@@ -891,10 +914,12 @@ def supervisor_main(
             payload, code = uninstall_supervisor_service(values, dry_run=dry_run)
         else:
             payload, code = supervisor_status(config)
+            from ..runtime import admission
+            payload["admission"] = admission(config.control)
             service = supervisor_service_status(values)
             payload.update(service)
             if not json_output:
-                payload["message"] = f"{payload['message']}; {_service_summary(service)}"
+                payload["message"] = f"{payload['message']}; {_service_summary(service)}; {payload['admission']['message']}"
         if dry_run and not json_output:
             print(payload["message"])
         else:

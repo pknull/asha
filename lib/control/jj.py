@@ -630,6 +630,10 @@ def require_pre_enable_binding(
 class ColocationIntentStore:
     """Durable authentication for Control-owned plain-Git initialization."""
 
+    def __new__(cls, config):
+        from .registry_backend import construct_store
+        return construct_store(cls, ColocationIntentStore, config, "repository-inits")
+
     def __init__(self, config: ControlConfig):
         self._config = config
         self.directory = config.tasks_dir.parent / "repository-inits"
@@ -794,6 +798,9 @@ class ColocationIntentStore:
         if decoded is None:
             return None
         _raw, value = decoded
+        return self._validate_current_binding(root, value)
+
+    def _validate_current_binding(self, root, value):
         expected = self._binding(root, verified=value["state"] == "verified")
         for field in ("contract", "root", "root_fact", "git_binding", "jj_fact"):
             if value[field] != expected[field]:
@@ -950,10 +957,8 @@ class ColocationIntentStore:
     ) -> None:
         self._reauthenticate_verified_candidate_locked(root, expected)
 
-    def _reauthenticate_verified_candidate_locked(
-        self, root: Path, expected: ColocationIntentAssessment,
-    ) -> None:
-        root = Path(root)
+    def _reauthentication_bytes(self, expected):
+        """Build a bounded rewrite only from a verified typed assessment."""
         if (
             not isinstance(expected, ColocationIntentAssessment)
             or expected.kind not in {
@@ -985,6 +990,25 @@ class ColocationIntentStore:
         ).encode("utf-8") + b"\n"
         if len(raw) > MAX_COLOCATION_INTENT_BYTES:
             raise JjError("colocation intent exceeds its bounded size")
+        return raw
+
+    def _validate_reauthentication(self, root, current, expected):
+        if current is None:
+            raise JjError("colocation intent changed; preserved without repair")
+        current_raw, current_value = current
+        assessment = self._assessment(root, current_raw, current_value)
+        if (current_raw != expected.raw
+                or hashlib.sha256(current_raw).hexdigest() != expected.digest
+                or assessment.kind != expected.kind
+                or assessment.current_binding != expected.current_binding
+                or assessment.device_remap != expected.device_remap):
+            raise JjError("colocation intent changed; preserved without cooperative repair")
+
+    def _reauthenticate_verified_candidate_locked(
+        self, root: Path, expected: ColocationIntentAssessment,
+    ) -> None:
+        root = Path(root)
+        raw = self._reauthentication_bytes(expected)
         name = f"{self._key(root)}.json"
         temporary = f".{name}.tmp.{secrets.token_hex(8)}"
         try:
@@ -994,18 +1018,7 @@ class ColocationIntentStore:
                 if directory_fd is None:
                     raise JjError("colocation intent changed; preserved without repair")
                 current = self._read_raw_fd(directory_fd, root)
-                if current is None:
-                    raise JjError("colocation intent changed; preserved without repair")
-                current_raw, current_value = current
-                current_assessment = self._assessment(root, current_raw, current_value)
-                if (
-                    current_raw != expected.raw
-                    or hashlib.sha256(current_raw).hexdigest() != expected.digest
-                    or current_assessment.kind != expected.kind
-                    or current_assessment.current_binding != expected.current_binding
-                    or current_assessment.device_remap != expected.device_remap
-                ):
-                    raise JjError("colocation intent changed; preserved without cooperative repair")
+                self._validate_reauthentication(root, current, expected)
                 fd = -1
                 try:
                     fd = os.open(

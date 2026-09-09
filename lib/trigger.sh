@@ -3,7 +3,7 @@
 # source-scoped library: bin/asha sources it and calls asha_trigger_main.
 #
 # A trigger is a pair of user units, asha-trigger-NAME.{service,timer}, whose
-# service runs `asha initiative coordinator launch --root DIR --intent TEXT`.
+# service runs `asha initiative coordinator launch --transport tmux --root DIR --intent TEXT`.
 # A fired run stops at plan approval like every other initiative: triggers
 # schedule proposals, never unattended execution. Only units carrying the
 # managed marker are ever modified or removed.
@@ -116,7 +116,7 @@ Description=asha trigger $name: coordinator launch
 [Service]
 Type=oneshot
 Environment=\"PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin\"${asha_home_env}
-ExecStart=$asha_root/bin/asha initiative coordinator launch --root \"$project_root\" --harness \"$harness\" --intent \"$escaped_intent\"
+ExecStart=$asha_root/bin/asha initiative coordinator launch --transport tmux --root \"$project_root\" --harness \"$harness\" --intent \"$escaped_intent\"
 "
   local timer_body="[Unit]
 $ASHA_TRIGGER_MARKER

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import deque
 from datetime import datetime, timezone
 from typing import Any
 
@@ -76,12 +77,19 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
               "limits": {"rows": rows, "scanned_per_source": scanned,
                          "json_bytes": byte_limit, "seconds": seconds},
               "truncated": False, "complete": True,
+              "stale_room_count": 0, "stale_address_count": 0,
               "snapshot": "non-atomic; counts are observed lower bounds, not exact totals"}
+    candidates = {}
 
     def add(source, payload):
         counts[source] += 1
-        if len(result["rows"]) < rows:
-            result["rows"].append({"source": source, **payload})
+        if source == "rooms" and payload.get("status") in {"missing", "ended"}:
+            result["stale_room_count"] += 1
+        if payload.get("address_status") == "stale-address":
+            result["stale_address_count"] += 1
+        bucket = candidates.setdefault(source, deque())
+        if len(bucket) < rows:
+            bucket.append({**payload, "source": source})
         else:
             result["truncated"] = True
 
@@ -93,10 +101,61 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
             return False
         return True
 
+    # Managed state is independent of terminal observation. Sample it before
+    # probes so an inaccessible tmux server cannot erase pending questions.
+    from ..sessions import overview
+    managed_sources = {"sessions": "managed-sessions", "requests": "managed-requests",
+                       "deliveries": "managed-deliveries"}
+    def managed_budgets():
+        for source in managed_sources.values():
+            budgets[source] = SnapshotBudget(deadline=deadline, limit=scanned)
+            counts[source] = missing[source] = 0
+    try:
+        managed = overview(config.control, limit=scanned, deadline=deadline)
+        if managed["initialized"]:
+            managed_budgets()
+        for kind, source in managed_sources.items() if managed["initialized"] else ():
+            page = managed.get("pages", {}).get(kind)
+            if page is None:
+                missing[source] += 1
+                budgets[source].unavailable += 1
+                continue
+            for row in page["rows"]:
+                if not budgets[source].ready():
+                    break
+                budgets[source].scanned += 1
+                add(source, row)
+            if not page["complete"]:
+                budgets[source].truncated = True
+    except (OSError, ValueError, StoreError):
+        managed_budgets()
+        for source in managed_sources.values():
+            budgets[source].unavailable += 1
+
     store = InitiativeStore(config)
-    room_records = RoomStore(config.control).bounded_snapshots(budgets["rooms"])
-    task_records = TaskStore(config.control).bounded_snapshots(budgets["tasks"])
-    heads = store.bounded_snapshots(budgets["initiatives"])
+    # Read global request families independently of the bounded head sample.
+    # Keep them distinct from legacy decisions, which also carry file-backed
+    # evidence and cannot claim exhaustive coverage on a capped graph read.
+    from .sqlite_store import SQLiteInitiativeStore
+    if isinstance(store, SQLiteInitiativeStore):
+        from .current_actions import page as action_page
+        for family in ("initiatives", "approvals"):
+            source = "action-" + family
+            budgets[source] = SnapshotBudget(deadline=deadline, limit=min(scanned, 100))
+            counts[source] = missing[source] = 0
+            try:
+                action_snapshot = action_page(store, family=family, limit=min(scanned, 100), deadline=deadline)
+                budgets[source].scanned = action_snapshot["scanned"]
+                budgets[source].unavailable = action_snapshot["unavailable_records"]
+                budgets[source].truncated = action_snapshot["deadline_exceeded"] or action_snapshot["next"] is not None
+                for item in action_snapshot["rows"]:
+                    if item["disposition"] == "pending-review":
+                        add(source, item)
+            except (OSError, ValueError, StoreError):
+                budgets[source].unavailable += 1
+    room_records = RoomStore(config.control).bounded_active_snapshots(budgets["rooms"])
+    task_records = TaskStore(config.control).bounded_active_snapshots(budgets["tasks"])
+    heads = store.bounded_activity_snapshots(budgets["initiatives"])
     live_tmux = None
     try:
         source = tmux or TmuxAdapter()
@@ -170,7 +229,9 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
                                                "request_id", budgets["decisions"]):
             if not ready("decisions"):
                 break
-            if decision["state"] == "requested":
+            from .current_actions import approval_demand
+            demand = approval_demand(decision, head)
+            if demand and demand["disposition"] == "pending-review":
                 add("decisions", {"initiative_id": iid, "request_id": decision["request_id"],
                                   "state": "pending"})
         coords = store.bounded_records(iid, "coordinators", validate_coordinator,
@@ -200,13 +261,22 @@ def current_activity(config, *, tmux=None, rows=MAX_ROWS, scanned=MAX_SCANNED,
     if not budgets["initiatives"].summary()["complete"]:
         for source in ("decisions", "messages", "coordinators"):
             budgets[source].truncated = True
+    # A busy managed source must not monopolize visible rows. Source counters
+    # above include observed rows even when row/byte limits omit their details.
+    while any(candidates.values()) and len(result["rows"]) < rows:
+        for source in budgets:
+            bucket = candidates.get(source)
+            if bucket and len(result["rows"]) < rows:
+                result["rows"].append(bucket.popleft())
+    if any(candidates.values()):
+        result["truncated"] = True
     result["sources"] = {key: {**budget.summary(), "observed_count": counts[key],
                                 "count_kind": "lower-bound", "missing_sources": missing[key]} for key, budget in budgets.items()}
     result["complete"] = not result["truncated"] and all(b.summary()["complete"] for b in budgets.values())
     result = terminal_safe(result)
     # Bound the actual serialized JSON (including escaping and final newline),
     # not character counts. CLI uses precisely this serializer.
-    while len(encode_activity(result)) > byte_limit:
+    while result["rows"] and len(encode_activity(result)) > byte_limit:
         result["rows"].pop()
         result["truncated"] = True
         result["complete"] = False
@@ -235,6 +305,13 @@ def render_startup_observation(activity, *, observed_at):
     if activity is None:
         lines.append("Activity evidence unavailable; counts unknown.")
     else:
+        labels += tuple((key, label) for key, label in (
+            ("managed-sessions", "Current managed sessions"),
+            ("managed-requests", "Managed questions and permissions"),
+            ("managed-deliveries", "Unresolved managed messages"),
+            ("action-initiatives", "Global initiative decisions"),
+            ("action-approvals", "Global approval requests"),
+        ) if key in activity["sources"])
         for source, label in labels:
             facts = activity["sources"][source]
             n = facts["observed_count"]
@@ -261,10 +338,12 @@ def render_startup_observation(activity, *, observed_at):
             lines.append(f"Coordinator address evidence: {', '.join(coverage)}.")
         # Stale addresses are observed facts, not deliveries or a claim that a
         # coordinator is alive. Row caps can hide additional stale addresses.
-        stale_rooms = sum(row.get("source") == "rooms" and row.get("status") in {"missing", "ended"}
-                          for row in activity["rows"])
+        stale_rooms = activity.get("stale_room_count", sum(
+            row.get("source") == "rooms" and row.get("status") in {"missing", "ended"}
+            for row in activity["rows"]))
         lines.append(f"Stale Room records (missing/ended pane): >= {stale_rooms}; unlisted status unknown.")
-        stale = sum(row.get("address_status") == "stale-address" for row in activity["rows"])
+        stale = activity.get("stale_address_count", sum(
+            row.get("address_status") == "stale-address" for row in activity["rows"]))
         lines.append(f"Stale message addresses: >= {stale}; unlisted addresses unknown.")
         if activity["truncated"]:
             lines.append("Visible rows capped; counts remain lower bounds.")

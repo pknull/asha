@@ -42,7 +42,7 @@ if sed -n 2p "$UNITS/asha-trigger-morning.timer" | grep -q "Managed by asha trig
 else
   fail "marker missing"
 fi
-if grep -q 'ExecStart=.*coordinator launch --root "'"$WORK/repo"'" --harness "claude" --intent "triage: propose one \\"small\\" fix"' "$UNITS/asha-trigger-morning.service"; then
+if grep -q 'ExecStart=.*coordinator launch --transport tmux --root "'"$WORK/repo"'" --harness "claude" --intent "triage: propose one \\"small\\" fix"' "$UNITS/asha-trigger-morning.service"; then
   ok "ExecStart quotes root, harness, and intent"
 else
   fail "ExecStart wrong: $(grep ExecStart "$UNITS/asha-trigger-morning.service")"

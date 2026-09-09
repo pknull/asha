@@ -118,6 +118,14 @@ def load_config(env: Mapping[str, str] | None = None) -> OrchestrationConfig:
     """
     try:
         control = load_control_config(env)
+    except ConfigError as exc:
+        raise OrchestrationConfigError(str(exc)) from exc
+    return from_control(control)
+
+
+def from_control(control: ControlConfig) -> OrchestrationConfig:
+    """Parse orchestration settings while preserving an effective Control root."""
+    try:
         root = _read_json(control.config_path)
     except ConfigError as exc:
         raise OrchestrationConfigError(str(exc)) from exc

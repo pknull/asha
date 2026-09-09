@@ -170,10 +170,10 @@ class OrchestrationDoctorTests(unittest.TestCase):
                  mock.patch("lib.control.orchestration.doctor.shutil.which", return_value=None):
                 payload = run_orchestration_doctor(config)
             seam = next(probe for probe in payload["probes"] if probe["name"] == "coordinator-seam")
-            self.assertEqual(seam["outcome"], "unavailable")
+            self.assertEqual(seam["outcome"], "match")
             self.assertIn("tmux", seam["detail"])
+            self.assertIn("legacy tmux unavailable", seam["detail"])
             self.assertTrue(payload["ok"])
-            self.assertIn(seam["detail"], payload["limitations"])
             with mock.patch("lib.control.orchestration.doctor.run_control_doctor", return_value={"ok": True}), \
                  mock.patch("lib.control.orchestration.doctor.shutil.which", return_value="/usr/bin/tmux"):
                 payload = run_orchestration_doctor(config)

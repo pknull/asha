@@ -44,6 +44,10 @@ def terminal_safe(value: Any) -> Any:
 
 
 def _owned_anchor(anchor: Mapping[str, Any]) -> None:
+    if anchor.get("kind") == "managed-session-v1":
+        from ..session_store import verify_anchor
+        verify_anchor(dict(anchor))
+        return
     for pid_key, identity_key in (("pane_pid", "process_start_identity"),
                                   ("server_pid", "server_start_identity")):
         pid = anchor[pid_key]
@@ -63,9 +67,15 @@ def chair_sender(store, env, tmux) -> dict[str, Any]:
     """
     if any(env.get(key) for key in (
         coordinator.ENV_COORDINATOR_ID, coordinator.ENV_GENERATION,
+        "ASHA_MANAGED_SESSION_ID",
         "ASHA_CONTROL_MANAGED", "ASHA_CONTROL_TASK_ID", "ASHA_CONTROL_RUN_ID",
     )):
         raise coordinator.CoordinatorError("coordinator/worker cannot impersonate operator-chair")
+    from ..sessions import refuse_managed_operator
+    try:
+        refuse_managed_operator(store.config.control, env)
+    except StoreError as exc:
+        raise coordinator.CoordinatorError(str(exc)) from exc
     anchor = coordinator.caller_anchor(env, tmux)
     _owned_anchor(anchor)
     chair = Path(store.config.control.asha_home) / "chair"
@@ -114,8 +124,9 @@ def chair_sender(store, env, tmux) -> dict[str, Any]:
             "coordinator_id", roles_budget,
         ):
             other = record["anchor"]
-            if (verify_process(other["pane_pid"], other["process_start_identity"])
-                    and caller_descends_from(other["pane_pid"])):
+            owner_pid = other.get("owner_pid", other.get("pane_pid"))
+            if (verify_process(owner_pid, other["process_start_identity"])
+                    and caller_descends_from(owner_pid)):
                 raise coordinator.CoordinatorError("global coordinator ancestry refuses chair impersonation")
     for task in TaskStore(store.config.control).bounded_snapshots(tasks_budget):
         for run in task["runs"]:

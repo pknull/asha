@@ -74,7 +74,7 @@ asha task doctor [--json]
 asha control
 asha control tmux
 asha control event ...       internal hook-facing route
-asha control supervisor {run|start|stop|status} [--json]
+asha control supervisor {run|start|stop|pause|drain|resume|status} [--json]
 asha control supervisor {install|uninstall} [--dry-run] [--json]
 ```
 
@@ -846,22 +846,27 @@ automatically; `ASHA_CONTROL_GLYPHS=ascii` or `=unicode` overrides either way.
 
 ### Coordinator sessions
 
-The monitor is the front door. In Initiatives mode, `n` asks for an intent and
-Control starts the coordinator as its own tmux session at the projects root
-(`ASHA_PROJECTS_ROOT` or the monitor's working directory): a full-persona
-`asha claude` whose first message is the intent. That session runs the
-`orchestrate-initiative` skill, resolves the repository through
-`asha initiative projects`, creates and claims the initiative from its pane,
-and proposes the plan. The popup opens on it immediately; `Enter` on the
-initiative row reattaches later (on a node row it opens the worker popup as
-before). Approvals stay in the monitor (`a`); the coordinator's own pane is
-refused. CLI equivalents: `asha initiative coordinator launch [--root DIR]
---intent TEXT`, `coordinator sessions`, and `coordinator attach ID |
---session NAME` (popup inside tmux, otherwise the attach command is printed).
-Coordinator sessions are named `<session_prefix>coord-<token>` on Control's
-default tmux server, carry `@asha_coordinator_session=1`, and are never
-Control tasks: prune and task listing ignore them; they end when the harness
-session exits.
+In Initiatives mode, `n` opens one Project/Harness/Assignment form. Select an
+initialized project and a supported managed harness (Claude by default). Control
+commits the initiative, session, and opening message together in the active
+SQLite registry, then reports the retained IDs and runtime state. A paused runtime
+keeps the assignment queued. Closing the interface does not stop admitted work.
+`Enter` on the initiative opens its session state and paged events; `r` refreshes,
+`n`/`p` change event pages, arrows scroll, and Esc closes inspection. Answer pending
+questions and permissions through `M`; plan approvals remain in Control.
+
+The CLI equivalent is `asha initiative coordinator launch --project PROJECT
+--intent TEXT [--harness claude|codex] [--launch-id UUID] --json`. Keep the same
+launch ID and assignment when retrying after a lost response. Unsupported managed
+harnesses and uninitialized or ambiguous projects are refused before creation.
+`coordinator attach ID` returns managed session state without a terminal popup.
+
+Legacy terminal coordination remains available explicitly through `coordinator
+launch --transport tmux --root DIR --intent TEXT`. These sessions use names
+`<session_prefix>coord-<token>` and `@asha_coordinator_session=1`; their coordinator
+resolves, creates, and claims an initiative. `coordinator sessions` lists current managed and legacy
+sessions, and `coordinator attach ID | --session NAME` opens their terminal.
+Rooms and worker terminal attachment keep their existing behavior.
 
 A coordinator submits `request-decision` through `asha initiative action`.
 Its payload `subject_id` must match the event subject-token grammar
@@ -1746,3 +1751,17 @@ exclusions. **Visible rendering inside a real native Codex conversation remains
 chair-owned acceptance**; neither those fakes, pre-exec scrollback, instructions
 files nor an assistant paraphrase establish it. This slice does not claim the
 foundation integrated or the read-only transport-consent question resolved.
+
+### Global initiative action pages
+
+On an active SQLite registry, **G** opens independently paged initiative decisions
+and approval requests, including those outside the retained tree sample. **M**
+handles managed questions and native permissions, with Next, Retry and Refresh.
+Global pages provide those controls plus family switching. Select a candidate,
+press **r** to review its exact subject, then **r** to type an offered decision:
+approve/reject a plan or salvage/review-retry request, activate an approved
+initiative, or resume an open legacy initiative question. Resume records that
+question as resolved; it does not send a text answer. Integration candidates
+remain inspection-only. Decisions revalidate the displayed records and preserve
+the page position. Partial reads and unreadable records remain visible. See
+[managed session queries](managed-sessions.md) for binding and cursor semantics.

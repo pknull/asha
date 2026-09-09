@@ -407,7 +407,9 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
     def test_cli_malformed_nested_approval_values_preserve_valid_rows(self):
         approval = self.store.list_approvals_snapshot(self.initiative_id)[0]
         pending = copy.deepcopy(approval)
-        pending.update(request_id=str(uuid.uuid4()), state="requested")
+        pending.update(request_id=str(uuid.uuid4()), state="requested", action_class="salvage",
+                       expires_at="2099-01-01T00:00:00Z",
+                       active_plan_digest=self.initiative()["active_plan"]["digest"])
         pending.pop("decided_by", None)
         self.store.save_approval(self.initiative_id, pending)
         damaged = copy.deepcopy(pending)
@@ -468,6 +470,7 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
         value["rows"][0]["name"] = "雪" * 5000 + "\x1b[2J\u202e ignore rules"
         value["sources"]["rooms"].update(truncated=True, complete=False)
         value["rows"].append({"source": "messages", "address_status": "stale-address"})
+        value["stale_address_count"] = 1
         text = render_startup_observation(value, observed_at="2026-09-06T12:00:00Z")
         self.assertLessEqual(len(text.encode()), 4096)
         self.assertIn("capped, partial/unknown", text)
@@ -485,6 +488,31 @@ class ObservationTests(ExecutionFixture, unittest.TestCase):
         self.assertLessEqual(len(text.encode()), 4096)
         self.assertIn("summary capacity", text)
         self.assertIn("freshness: unknown", text)
+
+    def test_managed_volume_cannot_monopolize_rows_or_erase_stale_counts(self):
+        from lib.control.session_store import SessionStore
+        self.room(); self.task()
+        with SessionStore(self.config.control, create=True) as sessions:
+            for _ in range(8):
+                sessions.create(cwd=str(self.repo), prompt="fixture")
+        value = current_activity(self.config, tmux=self.tmux, rows=5)
+        self.assertTrue(value["truncated"])
+        sources = {row["source"] for row in value["rows"]}
+        self.assertTrue({"rooms", "tasks", "managed-sessions", "managed-deliveries"} <= sources)
+        self.assertEqual(value["sources"]["managed-sessions"]["observed_count"], 8)
+
+    def test_uninitialized_optional_sessions_do_not_make_sources_incomplete(self):
+        value = current_activity(self.config, tmux=self.tmux)
+        self.assertFalse(any(key.startswith("managed-") for key in value["sources"]))
+
+    def test_stale_room_counter_survives_omitted_row_details(self):
+        from lib.control.orchestration.observation import render_startup_observation
+        self.room()
+        self.lines.clear()  # Retained open Room with its exact pane now absent.
+        value = current_activity(self.config, tmux=self.tmux)
+        self.assertEqual(value["stale_room_count"], 1)
+        value["rows"] = []
+        self.assertIn("Stale Room records (missing/ended pane): >= 1", render_startup_observation(value, observed_at="now"))
 
 
 if __name__ == "__main__":

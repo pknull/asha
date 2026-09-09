@@ -114,6 +114,18 @@ def _root_probe(path: Path) -> Probe:
         return Probe("initiatives-root", "unavailable", f"initiatives root could not be inspected: {exc}")
 
 
+def _storage_probe(config: OrchestrationConfig) -> Probe:
+    """Migrated file trees are retained evidence, not the writable registry."""
+    from .current_actions import inspection_store
+
+    try:
+        if inspection_store(config) is not None:
+            return Probe("initiatives-root", "match", "initiative authority is the validated active SQLite registry")
+    except (OSError, ValueError) as exc:
+        return Probe("initiatives-root", "mismatch", f"initiative registry unavailable: {str(exc)[:400]}")
+    return _root_probe(config.initiatives_dir)
+
+
 # Advisory probes inform `limitations` but never block `ok`: `activate-initiative`
 # refuses on a false `ok`, coordinator support must not gate operator-only use,
 # and one suspect historical approval must not brick activation plane-wide.
@@ -325,7 +337,7 @@ def _approval_provenance_probe(config: OrchestrationConfig) -> Probe:
 
 
 def _coordinator_seam_probe() -> Probe:
-    """Live producers for the coordinator verbs and a callable tmux executable."""
+    """Live coordinator producers, with tmux needed only by legacy sessions."""
     try:
         from . import coordinator as coordinator_module
         from . import cli as orchestration_cli
@@ -345,13 +357,13 @@ def _coordinator_seam_probe() -> Probe:
     ]
     if missing:
         return Probe("coordinator-seam", "mismatch", f"coordinator verbs lack live producers: {', '.join(missing)}")
-    if shutil.which("tmux") is None:
-        return Probe("coordinator-seam", "unavailable", "tmux is not on PATH; coordinator claim needs a tmux pane")
-    return Probe("coordinator-seam", "match", "coordinator claim, wait, and show have live producers and tmux is present")
+    legacy = 'available' if shutil.which('tmux') else 'unavailable (tmux is not on PATH)'
+    return Probe('coordinator-seam', 'match',
+                 f'coordinator claim, wait, and show have live producers; managed sessions use structured adapters; legacy tmux {legacy}')
 
 
 def run_orchestration_doctor(
-    config: OrchestrationConfig, *, audit_records: bool = True
+    config: OrchestrationConfig, *, audit_records: bool = True, required_harnesses=None
 ) -> dict[str, Any]:
     """Probe this installation; `audit_records` also walks retained approvals.
 
@@ -362,7 +374,7 @@ def run_orchestration_doctor(
     """
     probes = [
         Probe("orchestration-config", "match", "orchestration configuration parsed and passed static safety validation"),
-        _root_probe(config.initiatives_dir),
+        _storage_probe(config),
         _contracts_probe(),
         _context_contracts_probe(),
     ]
@@ -375,7 +387,8 @@ def run_orchestration_doctor(
     except (KeyError, ValueError) as exc:
         probes.append(Probe("create-by-id", "mismatch", f"create-by-id parser seam failed: {exc}"))
     try:
-        result = run_control_doctor(config.control)
+        result = (run_control_doctor(config.control) if required_harnesses is None else
+                  run_control_doctor(config.control, required_harnesses=required_harnesses))
         probes.append(Probe(
             "control-doctor", "match" if result.get("ok") is True else "mismatch",
             "Control doctor reports ok" if result.get("ok") is True else "Control doctor reports one or more blocking probes",

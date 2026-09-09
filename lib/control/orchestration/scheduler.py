@@ -162,6 +162,8 @@ def readiness(
     result: dict[str, str] = {}
     for node_id in sorted(nodes):
         current = nodes[node_id]["state"]
+        from .review_budget import available as review_budget_available
+        review_budget = review_budget_available(store, initiative["initiative_id"], node_id) if nodes[node_id]["type"] == "review" else None
         gate_attempt_ids, pending_gate_reruns = _gate_rerun_attempt_ids(
             store, initiative["initiative_id"], node_id, attempts,
         )
@@ -181,10 +183,12 @@ def readiness(
             or dependency[node_id] != "ready"
             or (
                 not has_reservation
+                and review_budget is None
                 and len(attempts) >= _limit(initiative, plan, "max_total_tasks")
             )
             or (
                 not has_reservation
+                and review_budget is None
                 and pending_gate_reruns == 0
                 and ordinary_attempts
                 >= _limit(initiative, plan, "max_attempts_per_node")
@@ -301,11 +305,13 @@ def _dispatch_breaker(
     attempts: list[dict[str, Any]],
     *,
     has_reservation: bool,
+    review_budget: bool = False,
 ) -> tuple[str, str] | None:
     if _deadline_reached(initiative, plan):
         return "limit-reached", "initiative deadline reached"
     if (
         not has_reservation
+        and not review_budget
         and len(attempts) >= _limit(initiative, plan, "max_total_tasks")
     ):
         return "limit-reached", "initiative max_total_tasks exhausted"
@@ -877,12 +883,12 @@ def validate_goal_capacity(
     *,
     nodes: list[dict[str, Any]] | None = None,
     salvage_recovery: dict[str, Any] | None = None,
+    store: InitiativeStore | None = None,
 ) -> None:
     """Probe exact required specs plus maximum future framing before writes."""
     attempt_id = "00000000-0000-4000-8000-000000000000"
-    path = (
-        config.initiatives_dir / initiative["initiative_id"] / "assignments"
-        / f"{attempt_id}.md"
+    path = (store if store is not None else InitiativeStore(config)).assignment_path(
+        initiative["initiative_id"], attempt_id,
     )
     # Probe the real renderer with the maximum future REQUIRED framing:
     # 64-byte object IDs, 64 UUID seal inputs / review base IDs, longest base
@@ -1132,6 +1138,8 @@ def dispatch(
         salvage_dispatch_binding,
         set_action_state,
     )
+    from ..runtime import require_admission
+    require_admission(config.control)
 
     with store.transaction_lock(initiative_id):
         initiative = store.peek(initiative_id)
@@ -1142,6 +1150,8 @@ def dispatch(
             raise SchedulerError("action active plan digest is stale")
         node = store.read_node(initiative_id, node_id)
         attempts = store.list_attempts_snapshot(initiative_id)
+        from .review_budget import available as review_budget_available, consume as consume_review_budget
+        review_budget = review_budget_available(store, initiative_id, node_id) if node["type"] == "review" else None
         salvage_approval: dict[str, Any] | None = None
         salvage_base: dict[str, Any] | None = None
         salvage_recovery: dict[str, Any] | None = None
@@ -1162,7 +1172,7 @@ def dispatch(
             # consumption, probe all required text using the actual bound plan
             # and rationale, retaining the reviewed maximum future framing.
             validate_goal_capacity(
-                config, initiative, plan, nodes=[node], salvage_recovery=salvage_recovery,
+                config, initiative, plan, nodes=[node], salvage_recovery=salvage_recovery, store=store,
             )
             node_attempts = [item for item in attempts if item["node_id"] == node_id]
             allocated = [item for item in node_attempts if item["state"] == "allocated"]
@@ -1197,6 +1207,7 @@ def dispatch(
                 reserved = None
             breaker = _dispatch_breaker(
                 store, initiative, plan, attempts, has_reservation=reserved is not None,
+                review_budget=review_budget is not None,
             )
             if breaker is not None:
                 event_type, reason = breaker
@@ -1215,6 +1226,7 @@ def dispatch(
             )
             if (
                 reserved is None
+                and review_budget is None
                 and pending_gate_reruns == 0
                 and ordinary_attempts >= _limit(
                     initiative, plan, "max_attempts_per_node",
@@ -1269,10 +1281,10 @@ def dispatch(
                 at = _now()
                 attempt = validate_attempt({
                     "contract": ATTEMPT_CONTRACT,
-                    "attempt_id": str(uuid.uuid4()),
+                    "attempt_id": review_budget["attempt_id"] if review_budget else str(uuid.uuid4()),
                     "initiative_id": initiative_id,
                     "node_id": node_id,
-                    "task_id": str(uuid.uuid4()),
+                    "task_id": review_budget["task_id"] if review_budget else str(uuid.uuid4()),
                     "action_id": action["action_id"],
                     "ordinal": len(node_attempts) + 1,
                     "base": (
@@ -1293,6 +1305,8 @@ def dispatch(
                 "control_task_id": attempt["task_id"],
                 "status": "dispatching",
             })
+            if review_budget is not None:
+                outcome["review_budget_request_id"] = review_budget["approval"]["request_id"]
             if salvage_approval is not None:
                 outcome.update({
                     "salvage_request_id": salvage_approval["request_id"],
@@ -1310,6 +1324,8 @@ def dispatch(
                 attempt = bound_attempt
             if salvage_approval is not None:
                 consume_salvage_approval(store, initiative_id, salvage_approval)
+            if review_budget is not None:
+                consume_review_budget(store, initiative_id, review_budget)
         elif action["state"] == "indeterminate":
             outcome = json.loads(action["outcome"])
             if outcome.get("node_id") != node_id:
@@ -1332,7 +1348,7 @@ def dispatch(
                     raise SchedulerError("retained salvage attempt base binding changed")
                 salvage_recovery = salvage_assignment_context(salvage_approval, salvage_seal)
             validate_goal_capacity(
-                config, initiative, plan, nodes=[node], salvage_recovery=salvage_recovery,
+                config, initiative, plan, nodes=[node], salvage_recovery=salvage_recovery, store=store,
             )
             if attempt["state"] == "allocated" and attempt["action_id"] != action["action_id"]:
                 bound_attempt = copy.deepcopy(attempt)
@@ -1343,6 +1359,14 @@ def dispatch(
                 attempt = bound_attempt
             if salvage_approval is not None and salvage_approval["state"] == "approved":
                 consume_salvage_approval(store, initiative_id, salvage_approval)
+            if outcome.get("review_budget_request_id") is not None and attempt["state"] == "allocated":
+                from .review_budget import authority
+                review_budget = authority(store, initiative_id, outcome["review_budget_request_id"])
+                if (review_budget["attempt_id"] != attempt["attempt_id"]
+                        or review_budget["task_id"] != attempt["task_id"]
+                        or readiness(store, initiative).get(node_id) != "ready"):
+                    raise SchedulerError("reserved review budget is not ready for this exact task")
+                consume_review_budget(store, initiative_id, review_budget)
         else:
             raise SchedulerError("dispatch requires a validated or indeterminate action")
 
@@ -1350,10 +1374,7 @@ def dispatch(
             exact_base = _exact_base(store, initiative_id, node, attempt)
             ingestion_id = result_ingestion_id(attempt["attempt_id"])
             outbox_path = result_outbox_path(ingestion_id)
-            assignment_path = (
-                config.initiatives_dir / initiative_id / "assignments"
-                / f"{attempt['attempt_id']}.md"
-            )
+            assignment_path = store.assignment_path(initiative_id, attempt["attempt_id"])
             resolved_seals, accepted_findings = assignment_evidence(
                 store, initiative_id, attempt["base"],
             )

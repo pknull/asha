@@ -142,15 +142,16 @@ def _tmux_probe(config) -> Probe:
         )
 
 
-def _harness_probe(config) -> Probe:
-    names = ("claude", "codex", "copilot", "opencode")
+def _harness_probe(config, *, required_harnesses=None) -> Probe:
+    names = required_harnesses if required_harnesses is not None else ("claude", "codex", "copilot", "opencode")
     resolved = [name for name in names if shutil.which(name) is not None]
     missing = [name for name in names if name not in resolved]
     detail = (
         f"resolved: {', '.join(resolved) if resolved else 'none'}; "
         f"missing: {', '.join(missing) if missing else 'none'}"
     )
-    return Probe("harness", "match" if resolved else "unavailable", detail)
+    available = not missing if required_harnesses is not None else bool(resolved)
+    return Probe("harness", "match" if available else "unavailable", detail)
 
 
 def _gh_probe(config) -> Probe:
@@ -422,7 +423,7 @@ def codex_hooks_probe(home: Path, asha_home: Path, *, user_home: Path,
         return Probe("hooks", "unavailable", "Codex hook inspection refused: " + _safe_detail(exc)[:460])
 
 
-def _hooks_probe(config) -> Probe:
+def _hooks_probe(config, *, required_harnesses=None) -> Probe:
     if config is None:
         return Probe(
             "hooks", "unavailable",
@@ -435,6 +436,8 @@ def _hooks_probe(config) -> Probe:
     for name, path in (("claude", claude_path), ("codex", codex_path),
                        ("codex", codex_home / "hooks.json"),
                        ("codex", config.asha_home / "install-manifests/codex.json")):
+        if required_harnesses is not None and name not in required_harnesses:
+            continue
         try:
             path.lstat()
         except FileNotFoundError:
@@ -443,6 +446,13 @@ def _hooks_probe(config) -> Probe:
             pass
         if name not in installed:
             installed.append(name)
+    if required_harnesses is not None:
+        required_hooks = set(required_harnesses) & {"claude", "codex"}
+        absent = sorted(required_hooks - set(installed))
+        if absent:
+            return Probe("hooks", "mismatch", "required harness hook installation is absent: " + ", ".join(absent))
+        if not required_hooks:
+            return Probe("hooks", "match", "selected harnesses claim no Claude/Codex hook contract; other harness hooks are not inspected by this probe")
     if not installed:
         return Probe(
             "hooks", "match",
@@ -869,6 +879,22 @@ def _transactions_probe(config) -> Probe:
     )
 
 
+def _registry_backend_probe(config) -> Probe:
+    if config is None:
+        return Probe("registry-backend", "unavailable", "configuration was not supplied")
+    from .registry_cli import status
+    try:
+        value = status(config)
+    except (StoreError, OSError, ValueError) as exc:
+        return Probe("registry-backend", "mismatch", _safe_detail(exc))
+    if value["backend"] == "unavailable":
+        detail = value["state"] + "; " + value["next_action"]
+        if value.get("mode"):
+            detail += " will " + value["resume_effect"] + "; " + value["abort_action"] + " will " + value["abort_effect"]
+        return Probe("registry-backend", "mismatch", _safe_detail(detail))
+    return Probe("registry-backend", "match", "authoritative registries: " + value["backend"])
+
+
 def _rooms_registry_probe(config) -> Probe:
     """Authenticate durable Room records without mutating or contacting tmux."""
     if config is None:
@@ -880,7 +906,7 @@ def _rooms_registry_probe(config) -> Probe:
 
     try:
         rooms = RoomStore(config).list()
-    except (RoomError, OSError) as exc:
+    except (RoomError, StoreError, OSError) as exc:
         return Probe(
             "rooms-registry", "mismatch",
             "durable Room records could not be authenticated: " + _safe_detail(exc),
@@ -986,6 +1012,30 @@ def _supervisor_service_probe(config, *, env=None, runner=None, which=None) -> P
     return Probe("supervisor-service", outcome, detail)
 
 
+def _managed_sessions_probe(config) -> Probe:
+    if config is None:
+        return Probe("managed-sessions", "unavailable", "configuration was not supplied")
+    if not (config.tasks_dir.parent / "control.sqlite3").exists():
+        return Probe("managed-sessions", "match", "optional managed-session database not initialized; session doctor reports adapter capabilities")
+    try:
+        from .database import ControlDatabase
+        from .sessions import overview
+        from .session_ipc import capability_probe
+        with ControlDatabase(config) as database:
+            health = database.health()
+        summary = overview(config)["summary"]
+        if health["integrity"] != "ok" or health["relationships"] != "ok":
+            return Probe("managed-sessions", "mismatch", "SQLite integrity check failed")
+        ipc = capability_probe()
+        if not ipc["supported"]:
+            return Probe("managed-sessions", "mismatch", _safe_detail("managed request IPC unavailable: " + ipc["reason"]))
+        return Probe("managed-sessions", "match", _safe_detail(
+            f"SQLite {health['sqlite_version']} schema {health['schema_version']}, WAL/FULL, FTS5; {summary}"))
+    except (StoreError, OSError, ValueError) as exc:
+        return Probe("managed-sessions", "mismatch", _safe_detail(
+            f"managed state unavailable: {exc}; session init can repair empty initialization"))
+
+
 DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "python": _python_probe,
     "configuration": _configuration_probe,
@@ -999,6 +1049,8 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "default-context": _default_context_probe,
     "transactions": _transactions_probe,
     "rooms-registry": _rooms_registry_probe,
+    "registry-backend": _registry_backend_probe,
+    "managed-sessions": _managed_sessions_probe,
     "prunable": _prunable_probe,
     "harness-events": _harness_events_probe,
     "hooks": _hooks_probe,
@@ -1008,8 +1060,12 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
 
 def run_doctor(
     config, probes: Mapping[str, ProbeFunction] | None = None, *,
-    env: Mapping[str, str] | None = None, runner=None, which=None,
+    env: Mapping[str, str] | None = None, runner=None, which=None, required_harnesses=None,
 ) -> dict[str, Any]:
+    if required_harnesses is not None:
+        if (not isinstance(required_harnesses, (tuple, list)) or not required_harnesses
+                or any(name not in ("claude", "codex", "copilot", "opencode") for name in required_harnesses)):
+            raise ValueError("required harnesses must name supported execution harnesses")
     selected = DEFAULT_PROBES if probes is None else probes
     results: list[Probe] = []
     for name, probe in selected.items():
@@ -1018,6 +1074,8 @@ def run_doctor(
             raise ValueError("invalid doctor probe name")
         if probe is _supervisor_service_probe:
             result = probe(config, env=env, runner=runner, which=which)
+        elif probe in (_harness_probe, _hooks_probe) and required_harnesses is not None:
+            result = probe(config, required_harnesses=required_harnesses)
         else:
             result = probe(config)
         if not isinstance(result, Probe) or result.name != name:
