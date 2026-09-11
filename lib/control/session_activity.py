@@ -74,7 +74,7 @@ def _cursor(kind, after):
         raise StoreError("invalid current-work cursor or cursor family") from exc
 
 
-def _waiting(row, kind, policy, capacity_full=False):
+def _waiting(row, kind, policy, capacity_full=False, pending_request=False):
     state = row["state"]
     if row.get("stop_requested") or row.get("session_state") == "stopped":
         return "operator", "inspect-session", "Session stop requested or recorded; no new dispatch"
@@ -82,6 +82,8 @@ def _waiting(row, kind, policy, capacity_full=False):
         return "operator", "inspect-recovery", "Explicit recovery requires inspection of retained work"
     if kind == "requests":
         return "keeper", "answer" if row["kind"] in {"clarification", "native-clarification"} else "review-permission", "An exact request awaits a decision"
+    if pending_request:
+        return "keeper", "inspect-requests", "Session has a pending question or native permission request"
     if row.get("session_state") == "waiting-input":
         return "keeper", "inspect-requests", "Session is waiting for input"
     if state in {"running", "submitted", "consumed"} or row.get("session_state") == "running":
@@ -156,7 +158,10 @@ def _page(store, c, kind, *, limit, after, now, policy, deadline=None):
                 WHERE t.state='running' AND t.session_id=? LIMIT 1""", (row["session_id"],)).fetchone()
             row["active_turn"] = dict(active) if active else None
         retained = recovery(c, row["session_id"]) if kind == "sessions" and row["state"] in {"failed", "uncertain", "budget-exhausted"} else None
-        actor, action, reason = _waiting(row, kind, policy, capacity_full)
+        pending_request = kind != "requests" and c.execute(
+            "SELECT 1 FROM session_requests WHERE session_id=? AND state='pending' LIMIT 1",
+            (row["session_id"],)).fetchone() is not None
+        actor, action, reason = _waiting(row, kind, policy, capacity_full, pending_request)
         row.update(waiting_on=actor, next_action=action, reason=reason,
                    age_seconds=max(0, now - row["created_at"]))
         if retained:

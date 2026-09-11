@@ -822,7 +822,7 @@ class RealControlFinishPtyTests(unittest.TestCase):
             ["/usr/bin/python3", "-B", "-I", "-c",
              "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
              "runpy.run_module('control.cli',run_name='__main__')",
-             str(self.fake_root / "lib"), "control"],
+             str(self.fake_root / "lib"), "control", "--initiatives"],
             cwd=self.source, env=self.env, stdin=slave, stdout=slave, stderr=slave,
             start_new_session=True,
         )
@@ -882,7 +882,7 @@ class RealControlFinishPtyTests(unittest.TestCase):
             ["/usr/bin/python3", "-B", "-I", "-c",
              "import runpy,sys;sys.path.insert(0,sys.argv.pop(1));"
              "runpy.run_module('control.cli',run_name='__main__')",
-             str(self.fake_root / "lib"), "control"],
+             str(self.fake_root / "lib"), "control", "--initiatives"],
             cwd=self.source, env=self.env, stdin=slave, stdout=slave, stderr=slave,
             start_new_session=True,
         )

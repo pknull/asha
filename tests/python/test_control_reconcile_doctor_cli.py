@@ -591,7 +591,7 @@ class ControlCliTests(unittest.TestCase):
         rc, stdout, stderr = self.invoke(["control"])
         self.assertEqual(rc, 2)
         self.assertEqual(stdout, "")
-        self.assertIn("asha task list --json", stderr)
+        self.assertIn("asha control session list --json", stderr)
         self.assertNotIn("Traceback", stderr)
 
     def test_start_requires_a_goal(self) -> None:

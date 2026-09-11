@@ -38,6 +38,73 @@ class ManagedCoordinatorTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(coordinator.anchor_liveness(self.record["anchor"], NoTmux())[0], "live")
         coordinator.require_anchored_caller(self.record, self.actor_env, NoTmux())
 
+    def test_pending_permission_reaches_initiative_row_and_attention(self):
+        from lib.control import tui
+        from lib.control.native_requests import NativeRequests
+        from lib.control.orchestration.tui_model import initiative_demand, _head_attention
+        generation = self.session['generation']
+        turn = self.sessions.claim_turn(self.sid, generation)['turn_id']
+        self.sessions.observe(self.sid, generation, turn, 'initialized', {'native_id': 'native-test'})
+        requests = NativeRequests(self.sessions)
+        request = requests.open(self.sid, generation, turn, 'probe', {
+            'subtype': 'can_use_tool', 'tool_name': 'Bash',
+            'input': {'command': 'tmux -V'}, 'tool_use_id': 'probe-tool',
+        })
+        before = self.sessions.snapshot(self.sid)
+        view = next(v for v in tui._load_initiative_views(self.env, tmux=NoTmux())
+                    if v['initiative']['initiative_id'] == self.initiative_id)
+        demands = initiative_demand(view)
+        pending = next(d for d in demands if d['kind'] == 'managed-permission')
+        self.assertEqual(pending['request_id'], request['request_id'])
+        self.assertEqual(_head_attention(view, demands), 'tool approval (M)')
+        self.assertEqual(self.sessions.snapshot(self.sid), before)
+        target = coordinator.attach_target(self.store, tmux=NoTmux(), initiative_id=self.initiative_id)
+        self.assertEqual(target['transport'], 'managed')
+        requests.decide(request['request_id'], 'allow', expected_digest=request['digest'])
+        view = next(v for v in tui._load_initiative_views(self.env, tmux=NoTmux())
+                    if v['initiative']['initiative_id'] == self.initiative_id)
+        self.assertFalse(any(d['kind'] == 'managed-permission' for d in initiative_demand(view)))
+
+    def test_approve_key_opens_selected_initiatives_exact_tool_request(self):
+        from lib.control import tui
+        from lib.control.native_requests import NativeRequests
+        from lib.control.orchestration.tui_model import InitiativesScreen
+        generation = self.session['generation']
+        turn = self.sessions.claim_turn(self.sid, generation)['turn_id']
+        self.sessions.observe(self.sid, generation, turn, 'initialized', {'native_id': 'native-test'})
+        requests = NativeRequests(self.sessions)
+        other_sid = self.sessions.create(cwd=str(self.repo), prompt='Unrelated work')['session_id']
+        other_generation = self.sessions.claim_owner(other_sid)['generation']
+        other_turn = self.sessions.claim_turn(other_sid, other_generation)['turn_id']
+        self.sessions.observe(other_sid, other_generation, other_turn, 'initialized', {'native_id': 'other-native'})
+        unrelated = requests.open(other_sid, other_generation, other_turn, 'other-probe', {
+            'subtype': 'can_use_tool', 'tool_name': 'Bash',
+            'input': {'command': 'git status'}, 'tool_use_id': 'other-tool',
+        })
+        request = requests.open(self.sid, generation, turn, 'probe', {
+            'subtype': 'can_use_tool', 'tool_name': 'Bash',
+            'input': {'command': 'tmux -V'}, 'tool_use_id': 'probe-tool',
+        })
+        model = tui.TuiModel([])
+        model.initiatives = InitiativesScreen(tui._load_initiative_views(self.env, tmux=NoTmux()))
+        # A tool decision must leave the initiative's plan state unchanged.
+        before = self.initiative()
+        intent = model.dispatch_key('a')
+        self.assertEqual(intent.kind, tui.IntentKind.INIT_APPROVE)
+        for decision in (None, 'allow'):
+            with mock.patch('lib.control.sessions.refuse_managed_operator'), \
+                 mock.patch.object(tui, '_native_permission_prompt', return_value=decision) as prompt, \
+                 mock.patch.object(tui, '_approve_review_budget_prompt', side_effect=AssertionError('plan route')):
+                message = tui._execute_initiative_intent(intent, stdscr=None, curses_module=None,
+                    model=model, config=self.config.control, env=self.env, store=None, journals=None, jj=None)
+            self.assertEqual(prompt.call_args.args[2]['request_id'], request['request_id'])
+            self.assertEqual(prompt.call_args.args[2]['digest'], request['digest'])
+            self.assertIn('cancelled' if decision is None else 'retained', message)
+            self.assertEqual(requests.get(request['request_id'])['state'],
+                             'pending' if decision is None else 'answered')
+        self.assertEqual(self.initiative(), before)
+        self.assertEqual(requests.get(unrelated['request_id'])['state'], 'pending')
+
     def legacy_claim(self):
         from tests.python.test_orchestration_coordinator_claim import FakeTmux
         return coordinator.claim(self.store, self.initiative(), env={**self.env, 'TMUX_PANE': '%7'},

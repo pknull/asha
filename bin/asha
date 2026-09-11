@@ -160,7 +160,9 @@ exec_copilot() {
       rm -f "$worker_op_tmp"
       export COPILOT_CUSTOM_INSTRUCTIONS_DIRS="$worker_dir${COPILOT_CUSTOM_INSTRUCTIONS_DIRS:+,$COPILOT_CUSTOM_INSTRUCTIONS_DIRS}"
     else
-      rm -f "$worker_op_tmp"
+      # Clear the copy a previous launch left behind so an operator-supplied
+      # instructions dir can never resurrect a layer this launch declined.
+      rm -f "$worker_op_tmp" "$worker_op_file"
     fi
     exec "$cmd" "$@"
   fi
@@ -232,11 +234,41 @@ exec_copilot() {
   exec "$cmd" "$@"
 }
 
-# ASHA_PERSONA=0 marks a Control-managed worker launch: the harness runs from
-# its assignment brief without the identity render. Everything else (hooks,
+# ASHA_SESSION_PROFILE is the launcher's explicit statement of what this
+# session is. It outranks ASHA_PERSONA, because Control writes ASHA_PERSONA=1
+# into every session pane it owns, workers included.
+#
+#   chair   the operator's seat: identity, operational layer, chair stance
+#   room    a project conversation: identity and operational layer, stance off
+#   worker  a delegated task: the native harness alone — no identity render, no
+#           operational layer, no chair stance, and (through the hooks) none of
+#           Asha's Memory, recovery, workspace, learnings or nudge injection.
+#           Native permission settings, repository instructions and installed
+#           skills are untouched, so Asha skills stay available on demand.
+#
+# Unset — or any unrecognized value — is legacy: ASHA_PERSONA and the stance
+# config decide alone, exactly as before profiles existed.
+#
+# Validated once per launch so an unrecognized value warns exactly once, and so
+# the harness and its hooks read the same decision this launch made.
+asha_resolve_session_profile() {
+  case "${ASHA_SESSION_PROFILE:-}" in
+    chair|room|worker|"") return 0 ;;
+  esac
+  info "warn: unknown ASHA_SESSION_PROFILE '${ASHA_SESSION_PROFILE}'; using legacy session behaviour"
+  export ASHA_SESSION_PROFILE=""
+}
+
+asha_worker_profile() {
+  [[ "${ASHA_SESSION_PROFILE:-}" == worker ]]
+}
+
+# ASHA_PERSONA=0 marks a legacy Control-managed worker launch: the harness runs
+# from its assignment brief without the identity render. Everything else (hooks,
 # skills, the operational layer where file-based, Codex trust injection) is
 # unchanged. Any other value, or unset, means the full persona.
 asha_persona_enabled() {
+  if asha_worker_profile; then return 1; fi
   [[ "${ASHA_PERSONA:-1}" != "0" ]]
 }
 
@@ -246,6 +278,8 @@ asha_persona_enabled() {
 asha_orchestrator_stance_enabled() {
   local cfg stance
   [[ -z "${ASHA_COORDINATOR_LAUNCH:-}" ]] || return 1
+  # Rooms and workers are never the operator's seat, whatever the config says.
+  case "${ASHA_SESSION_PROFILE:-}" in room|worker) return 1 ;; esac
   case "${ASHA_ORCHESTRATOR_STANCE:-}" in
     0) return 1 ;;
     1) return 0 ;;
@@ -268,6 +302,11 @@ asha_orchestrator_brief_file() {
 # Returns non-zero when the merge script is missing or produced nothing.
 asha_render_operational_layer() {
   local target="$1" op_merge op_tmp
+  # Asha's operating rules are Asha's own standing instruction. A worker runs
+  # the caller's repository and harness instructions instead, so it receives
+  # neither — this is what makes the explicit profile lighter than the legacy
+  # ASHA_PERSONA=0 worker, which still carries the layer where it is file-based.
+  if asha_worker_profile; then return 1; fi
   op_merge="$IDENTITY_DIR/operational-merge.sh"
   [[ -x "$op_merge" ]] || return 1
   op_tmp="$(mktemp)"
@@ -326,7 +365,7 @@ launch() {
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
       local -a coordinator_args=()
-      if [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" || -n "${ASHA_ROOM_ID:-}" || "${ASHA_SEAT:-0}" == "1" ]]; then
+      if ! asha_worker_profile && [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" || -n "${ASHA_ROOM_ID:-}" || "${ASHA_SEAT:-0}" == "1" ]]; then
         trust_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
           || trust_root="$PWD"
         if [[ "$trust_root" =~ [[:cntrl:]] ]]; then
@@ -653,6 +692,7 @@ fi
 launch_from_chair() {
   local harness="" chair_entered=0 chair_observation
   export -n chair_entered chair_observation
+  asha_resolve_session_profile
   if is_harness "${1:-}"; then
     harness="$1"
     shift
@@ -660,12 +700,14 @@ launch_from_chair() {
   [[ -n "$harness" ]] || harness="$(default_harness)"
 
   # The seat: any wrapped no-argument launch is the chair, whichever harness
-  # holds it. Control-managed launches (coordinator sessions, workers) keep
-  # their own start directories; arguments keep the caller's cwd.
+  # holds it. Control-managed launches (coordinator sessions, rooms, workers)
+  # keep their own start directories; arguments keep the caller's cwd.
   if [[ $ASHA_FLAG_YES -eq 0 && $# -eq 0 \
         && -z "${ASHA_COORDINATOR_LAUNCH:-}"
         && -z "${ASHA_ORCHESTRATION_COORDINATOR_ID:-}"
         && "${ASHA_CONTROL_MANAGED:-0}" != "1" && -z "${ASHA_ROOM_ID:-}"
+        && "${ASHA_SESSION_PROFILE:-}" != worker
+        && "${ASHA_SESSION_PROFILE:-}" != room
         && "${ASHA_PERSONA:-1}" != "0" ]]; then
     chair_dir="$ASHA_HOME/chair"
     seat_ready=1
@@ -675,6 +717,7 @@ launch_from_chair() {
     if [[ $seat_ready -eq 1 ]] && cd -- "$chair_dir"; then
       chair_entered=1
       export ASHA_SEAT=1
+      export ASHA_SESSION_PROFILE=chair
       info "[asha] seat: $chair_dir"
     else
       unset ASHA_SEAT
@@ -682,22 +725,30 @@ launch_from_chair() {
     fi
   fi
 
-  harness_configured "$harness"; status=$?
-  [[ $status -ne 0 ]] && maybe_configure "$harness" "$status"
+  # A plain worker needs only the native executable. Optional Asha skills and
+  # hooks may already be installed; their absence must not become a launch gate.
+  if ! asha_worker_profile; then
+    harness_configured "$harness"; status=$?
+    [[ $status -ne 0 ]] && maybe_configure "$harness" "$status"
+  fi
   # Only this successful local seat decision can add a native initial PROMPT.
   # No retained labels, commands or arbitrary body become a launch instruction.
-  if [[ $chair_entered -eq 1 && "$harness" == codex ]]; then
+  if [[ $chair_entered -eq 1 ]]; then
     if ! chair_observation="$(python3 -B -c '
 import sys
 sys.path.insert(0, sys.argv[1])
-from lib.control.orchestration.observation import startup_observation
+from lib.control.hub_cli import startup_observation
 print(startup_observation(), end="")
 ' "$ASHA_ROOT" 2>/dev/null)"; then
       chair_observation='Asha current activity observation
 Observed at: unavailable; freshness: unknown.
 Activity evidence unavailable; counts unknown. Read-only observation; no execution authority.'
     fi
-    set -- "$chair_observation"
+    case "$harness" in
+      copilot) set -- --interactive "$chair_observation" ;;
+      opencode) set -- --prompt "$chair_observation" ;;
+      *) set -- "$chair_observation" ;;
+    esac
   fi
   launch "$harness" "$@"
 }

@@ -39,6 +39,16 @@ cannot observe a mixed pair during the two sequential file replacements.
 No hook, SessionEnd, OpenCode `dispose`, timer, or background process publishes
 semantic memory or invokes Git.
 
+One further explicit writer exists for Control project sessions: the graceful
+close handoff (`asha control session handoff`). It is not a lifecycle save. The
+operator's `session close` requests one final turn; the session's live model
+drafts both files from its own context and Control publishes them through the
+same validator, lock and journal, with a compare-and-swap on the digests the
+model read so a concurrent save is never overwritten. The Stop hook only
+carries that request to the model at a turn boundary; it never publishes. The
+handoff path has no Git seam and never commits or pushes. See
+`docs/session-hub.md`.
+
 At SessionStart, every initialized project reads the pair through
 `memory_v2.py startup-context`, which acquires the same publication lock and
 labels the result as background state requiring verification. The active

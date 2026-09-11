@@ -18,14 +18,14 @@ asha claude                    # the chair, held by Claude Code
 asha codex                     # the chair, held by Codex
 ```
 
-From the chair you converse: Asha launches one fenced coordinator per piece of
-work, you approve plans and activate initiatives, workers run sandboxed in
-their own jj workspaces, and integration stays your hand. See
-[Control: Rooms, tasks, and initiatives](#control-rooms-tasks-and-initiatives).
+From the chair you converse: Asha can work directly, launch an independent
+project harness, open a project Room, or return a short utility's result.
+`asha control` monitors those sessions and handles input, attachment and
+closure. Ordinary work starts without an initiative or plan approval.
+See [Project sessions](docs/session-hub.md).
 
 To work **directly in a repository** instead, pass arguments (arguments keep
-the caller's working directory), or drive the repo through a Control task or
-initiative and let the worker own the checkout:
+the caller's working directory):
 
 ```bash
 cd /path/to/repository
@@ -110,7 +110,16 @@ updates.
 
 ## Control: Rooms, tasks, and initiatives
 
-Asha Control has three surfaces over one durable state root
+The default `asha control` dashboard shows project harness sessions. Launch
+with `asha control session launch --project PROJECT --prompt ASSIGNMENT`,
+add `--profile room` for an Asha conversation, or `--transport structured`
+for a Claude/Codex utility. Enter attaches, `a` opens input, `m` sends context,
+`x` closes, and `q` leaves work running. See the
+[session guide](docs/session-hub.md) for status and delivery semantics.
+
+### Advanced staged workflows
+
+`asha control --initiatives` retains the existing workflow surfaces over the same durable state root
 (`~/.asha/state/control/`): **Rooms** — persistent persona-bearing tmux
 conversations working directly in an initialized project's checkout;
 **tasks** — one persistent local container per
@@ -130,7 +139,7 @@ progresses on its own.
 | **Rooms** | `asha room open\|list\|attach\|close` — detached, project-bound creative or exploratory sessions using Claude, Codex, Copilot, or OpenCode. Rooms create no workspace and never close for inactivity. |
 | **State store** | The only stateful thing. Write-once journals, CAS revisions, per-initiative locks. |
 | **Supervisor** | `asha control supervisor run\|start\|stop\|status` — the one long-lived controller process. Sweeps every non-terminal initiative on a clock: ingests staged worker results after terminal process evidence, reconciles, runs the result-grace path. Stateless (re-derives from the store each tick) and structurally unable to sign operator acts. |
-| **Monitor** | bare `asha control` — the interactive TUI: an expanded Rooms branch when Rooms are registered, initiative tree, workers, attention rows, and operator keys (`o` open Room, `Enter` attach, `X` close Room/worker, `a` approve/activate/archive, `n` new intent). |
+| **Advanced monitor** | `asha control --initiatives` — the initiative tree, workers, attention rows and staged workflow controls. The default session dashboard also opens it with `G`. |
 | **Coordinator** | One fenced LLM session per initiative (generation-fenced, pane-anchored). Proposes plans, dispatches within the approved envelope, asks questions. Never lifecycle authority. |
 | **Workers** | One sandboxed harness session per attempt in its own jj workspace. Stage results to a workspace outbox; the controller validates, snapshots, verifies, and publishes with provenance — workers never write the store. |
 
@@ -145,7 +154,7 @@ Command surface, at a glance:
 | `asha cockpit [DIR]` | A coordinator pane beside the Initiatives monitor. |
 | `asha trigger add\|list\|remove` | Scheduled coordinator launches (systemd user timers); fired runs wait at plan approval. |
 
-A normal run: you state an intent (chair conversation, monitor `n`, or a
+A staged workflow: you state an intent (explicit advanced chair request, advanced monitor `n`, or a
 trigger) → the coordinator proposes a plan → you approve and activate →
 workers attempt, results are ingested and sealed, review and verification
 gate the candidate → `ready-for-integration` → you land the diff yourself
@@ -157,7 +166,7 @@ and the blue edges advance whenever your user service manager is running:
 asha control supervisor install
 ```
 
-Control requires a Git repository, tmux with popup support, an installed
+The advanced task plane requires a Git repository, tmux with popup support, an installed
 harness, and an initialized project (`/session:init`). The operating contract,
 state paths, prerequisites, evidence rules, and preservation guarantees live
 in the focused guides: **[docs/control.md](docs/control.md)** (task plane and

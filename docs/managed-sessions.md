@@ -1,5 +1,12 @@
 # Managed sessions
 
+This guide covers initiative coordinators and the structured backend. Its
+Control key bindings refer to the advanced `asha control --initiatives` view.
+The default [session dashboard](session-hub.md) launches plain workers and
+Rooms without an initiative. Standalone structured utilities inherit native
+permissions, sandbox settings and subagents; initiative coordinators retain
+the constrained policy described below. Utility owners exit between turns.
+
 ## Starting work
 
 `asha initiative coordinator launch --project PROJECT --intent TEXT --json`
@@ -16,9 +23,9 @@ and event pages without changing delivery acknowledgements. For legacy terminal
 coordination, use `coordinator launch --transport tmux --root DIR --intent TEXT`.
 The scheduled trigger generator retains that explicit legacy transport.
 
-The source default and installed harness files are updated. Live registry cutover
-completed on2026-09-09; admission remains stopped. Codex/OpenCode drift checks
-pass. Final repository-wide verification and landing remain pending.
+Use `asha control registry status` and `asha control supervisor status --json`
+to inspect the current backend and runtime admission. Creating a session
+preserves paused or stopped admission rather than silently resuming it.
 
 ## Current work
 

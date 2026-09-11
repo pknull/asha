@@ -53,6 +53,8 @@ _assign(
     "active", "waiting", "starting", "stopping",
     # A ready node owes the machine a dispatch, not the operator a decision.
     "ready",
+    # A graceful close in flight is the machine's turn to deliver and collect.
+    "closing",
 )
 _assign(
     GOOD,
@@ -66,6 +68,8 @@ _assign(
     "launch-failed", "failed-no-artifact", "result-missing", "indeterminate",
     # Finalised without full success: settled, but not a success.
     "partial",
+    # A close whose memory handoff failed, was refused or never arrived.
+    "close-failed",
 )
 _assign(
     INERT,
@@ -89,6 +93,7 @@ SHORT_LABEL = {
     "completed-readonly": "read-only",
     "readonly-ready": "read-only",
     "failed-no-artifact": "no artifact",
+    "close-failed": "no handoff",
     "launch-failed": "no launch",
     "abnormal-exit": "crashed",
     "result-missing": "no result",

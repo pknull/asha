@@ -736,7 +736,7 @@ class EventCliTests(Increment4Fixture):
     def test_bare_control_degrades_without_a_tty_and_tmux_contract_is_unchanged(self) -> None:
         status, stdout, stderr = self.invoke(["control"])
         self.assertEqual((status, stdout), (2, ""))
-        self.assertIn("asha task list --json", stderr)
+        self.assertIn("asha control session list --json", stderr)
         self.assertNotIn("Traceback", stderr)
 
         status, stdout, stderr = self.invoke(["control", "tmux"])

@@ -11,6 +11,19 @@ if [[ -f "${BASH_SOURCE[0]%/*}/../../tools/project-root.sh" ]]; then
     source "${BASH_SOURCE[0]%/*}/../../tools/project-root.sh"
 fi
 
+# Is this launch an explicit worker session (ASHA_SESSION_PROFILE=worker)?
+# A worker runs the caller's repository through the native harness, so Asha's
+# own context injection — Memory publication, recovery snapshots, workspace
+# knowledge, learnings and nudges — is off. Native permissions, repository
+# instructions and installed skills are untouched.
+#
+# This gate is deliberately narrow: control-event.sh recognizes a hub session
+# by ASHA_HUB_SESSION_ID and must never consult it, or a worker would go dark
+# to the operator watching the session.
+asha_worker_session() {
+    [[ "${ASHA_SESSION_PROFILE:-}" == worker ]]
+}
+
 # Detect project directory
 # Returns project directory path on stdout, or empty string if not found
 # Always returns 0 (safe under set -e)

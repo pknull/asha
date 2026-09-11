@@ -1,8 +1,9 @@
-# Asha Control
+# Advanced Asha Control
 
-This is the current operating guide for Asha Control. The delivered proposal
-under `docs/proposals/` preserves the design history; live code and this guide
-describe the supported release.
+This guide covers the retained Room and task plane, opened with
+`asha control --initiatives`. The default session launcher and dashboard are
+described in [Project sessions](session-hub.md). The delivered proposals
+preserve the advanced workflow design history.
 
 ## Purpose and prerequisites
 
@@ -71,7 +72,7 @@ asha task prune (<task-id|exact-slug>... | --all) [--keep-workspace]
 asha task reconcile [task-id|exact-slug] [--json]
 asha task doctor [--json]
 
-asha control
+asha control --initiatives
 asha control tmux
 asha control event ...       internal hook-facing route
 asha control supervisor {run|start|stop|pause|drain|resume|status} [--json]
@@ -161,7 +162,7 @@ isolation is required.
 
 ## Terminal TUI: one control tree
 
-`asha control` opens a single tree in the current terminal: an expanded
+`asha control --initiatives` opens a single tree in the current terminal: an expanded
 **Rooms** branch when at least one durable Room record exists, the current
 initiatives (expandable to its nodes and attempts, each showing its linked
 worker's live state inline) followed by an **Unbound tasks** branch holding
@@ -772,7 +773,7 @@ report `unknown` rather than reusing a task mutation time or old positive
 state.
 
 The TUI requires stdout attached to a TTY and importable curses support whose
-`setupterm()` check succeeds. If any preflight check fails, `asha control`
+`setupterm()` check succeeds. If any preflight check fails, `asha control --initiatives`
 writes this diagnostic to stderr and exits 2 without opening a curses screen:
 
 ```text
@@ -940,7 +941,7 @@ coordinator claim; `Enter` on a node in the right pane opens the worker's
 session popup.
 
 `asha control --initiatives` remains accepted as a compatibility alias; the
-tree is the only view, so it opens the same screen as `asha control`.
+tree is the only view, so it opens the same screen as `asha control --initiatives`.
 
 ## Task and run model
 

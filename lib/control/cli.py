@@ -90,14 +90,17 @@ Usage:
 
 
 def _control_usage(stream=sys.stdout) -> None:
-    print("""asha control: terminal task supervision
+    print("""asha control: project harness launcher and monitor
 
 Run `asha control` in a terminal to open the Control TUI.
-Use `asha control --initiatives` to open it in Initiatives mode.
-Use `asha task list --json` as the non-interactive fallback.
+Use `asha control --initiatives` for advanced staged workflows.
+Use `asha control session list --json` as the non-interactive fallback.
 Use `asha control tmux` to print the optional tmux integration snippet.
-Use `asha control session {create|current|list|show|summary|send|answer|stop|resume|doctor|backup}`
-for opt-in structured managed sessions; `--help` lists each command's arguments.
+Use `asha control session launch --project PROJECT --prompt TEXT [--harness HARNESS]`
+to start a native worker; add `--profile room` for an Asha project conversation,
+or `--transport structured` for a Claude/Codex result-returning utility.
+Session commands include list, show, attach, send, close, stop, resume and doctor.
+Each command accepts --help; existing structured request commands remain available.
 Use `asha control registry {status|stage|activate|recover|rollback}` for SQLite registry cutover.
 Use `asha control supervisor {run|start|stop|pause|drain|resume|status} [--json]` for routine
 initiative progression; `install` manages its systemd user service.""", file=stream)
@@ -2023,7 +2026,7 @@ def main(argv: Sequence[str] | None = None, *, env: Mapping[str, str] | None = N
                 from .registry_cli import main as registry_main
                 return registry_main(tail[1:], env=values)
             if not tail:
-                from .tui import run_tui
+                from .session_tui import run_tui
                 return run_tui(values)
             if tail == ["--initiatives"]:
                 from .tui import run_tui

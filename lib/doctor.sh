@@ -75,7 +75,18 @@ EOF
   _asha_doctor_workspace_section "$target" || ws_rc=$?
   local imported_rc=0
   _asha_doctor_imported_skills_section || imported_rc=$?
+  _asha_doctor_session_profile_section "$target"
   [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 ]]
+}
+
+# What each harness actually does with ASHA_SESSION_PROFILE, read from the
+# capability registry rather than restated here. Never fails doctor: an
+# operator launching a worker needs to see which observations that harness
+# genuinely delivers, and which it honestly does not.
+_asha_doctor_session_profile_section() {
+  echo ""
+  echo "── Session profiles (ASHA_SESSION_PROFILE) ──"
+  _asha_doctor_capability_report session-profile "${1:-all}"
 }
 
 # Imported skills are a user-owned source plane, so repository drift checks
@@ -123,36 +134,43 @@ _asha_doctor_workspace_section() {
   # A workspace is in play (valid or broken): surface what each harness can
   # actually enforce for it (#39 acceptance criterion). Informational — the
   # support level being `partial` is documented reality, not drift.
-  _asha_doctor_workspace_capabilities "${1:-all}"
+  _asha_doctor_capability_report workspace "${1:-all}"
   return $rc
 }
 
-# Print the per-harness `workspace` capability entry (support + limitations)
-# from harnesses/capabilities.json, scoped to the doctor target. Never fails
+# Print one per-harness capability entry (support + limitations) from
+# harnesses/capabilities.json, scoped to the doctor target. Never fails
 # doctor: capability limitations are attested facts, and file validation is
 # owned by the schema tests, not this section.
-_asha_doctor_workspace_capabilities() {
-  local caps="$MARKET_ROOT/harnesses/capabilities.json" target="${1:-all}"
-  [[ -f "$caps" ]] || return 0
-  command -v python3 >/dev/null 2>&1 || return 0
-  python3 - "$caps" "$target" <<'PYEOF' 2>/dev/null || true
+_asha_doctor_capability_report() {
+  local feature="$1" target="${2:-all}"
+  local caps="$MARKET_ROOT/harnesses/capabilities.json"
+  [[ -f "$caps" ]] || {
+    echo "skipped: harnesses/capabilities.json missing — $feature matrix not shown"
+    return 0
+  }
+  command -v python3 >/dev/null 2>&1 || {
+    echo "skipped: python3 unavailable — $feature matrix not shown"
+    return 0
+  }
+  python3 - "$caps" "$target" "$feature" <<'PYEOF' 2>/dev/null || true
 import json, sys
 
-path, target = sys.argv[1], sys.argv[2]
+path, target, feature = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     with open(path, encoding="utf-8") as fh:
         data = json.load(fh)
 except (OSError, ValueError):
-    print("WARN: harnesses/capabilities.json unreadable — "
-          "workspace capability matrix not shown")
+    print(f"WARN: harnesses/capabilities.json unreadable — "
+          f"{feature} capability matrix not shown")
     sys.exit(0)
 
 harnesses = data.get("harnesses", {})
 names = list(harnesses) if target == "all" else [target]
-print("workspace capability (harnesses/capabilities.json):")
+print(f"{feature} capability (harnesses/capabilities.json):")
 for name in names:
     entry = (harnesses.get(name, {}).get("capabilities", {})
-             .get("workspace"))
+             .get(feature))
     if not isinstance(entry, dict):
         print(f"  {name}: none declared")
         continue

@@ -574,6 +574,20 @@ def initiative_demand(
     # below that reason causally over event history are told so, so that a
     # sample can never discharge a question or prove a coordinator idle.
     events_complete = view.get("_events_complete", True) is not False
+    request = view.get('managed_request')
+    if request:
+        permission = request['kind'] == 'native-permission'
+        items.append({
+            'kind': 'managed-permission' if permission else 'managed-question',
+            'request_id': request['request_id'],
+            'detail': 'Coordinator awaits tool approval' if permission else 'Coordinator awaits an answer',
+            'resolution': 'Press M in Control to inspect the exact request',
+            'certainty': 'live',
+        })
+    if view.get('managed_request_error'):
+        items.append({'kind': 'managed-request-unavailable',
+                      'detail': view['managed_request_error'],
+                      'resolution': 'Inspect managed session requests (M)', 'certainty': 'unknown'})
     # A paused initiative parks its durable node demand (pending decisions, a
     # parked coordinator); the live observations below stay listed.
     parked_initiative = _parked(view)
@@ -705,6 +719,9 @@ def _head_attention(view: dict[str, Any], demand: list[dict[str, Any]]) -> str:
     """
     kinds = {item["kind"] for item in demand}
     for kind, label in (
+        ("managed-permission", "tool approval (M)"),
+        ("managed-question", "answer (M)"),
+        ("managed-request-unavailable", "inspect session (M)"),
         ("plan-approval", "plan approval"),
         ("operator-decision", "needs input"),
         ("integration", "integrate"),
@@ -1569,9 +1586,13 @@ class InitiativesScreen:
         if coordinator:
             live = view.get("coordinator_live")
             liveness = "live" if live is True else ("unknown" if live is None else "gone")
+            anchor = coordinator.get('anchor', {})
+            location = (f"managed session {anchor.get('session_id', '?')[:8]}"
+                        if anchor.get('kind') == 'managed-session-v1'
+                        else f"pane {anchor.get('pane_id', '?')}")
             lines.append(
                 f"Coordinator: {coordinator.get('harness', '?')} generation {coordinator.get('generation', '?')} "
-                f"{coordinator.get('state', '?')} (anchor {liveness}, pane {coordinator.get('anchor', {}).get('pane_id', '?')})"
+                f"{coordinator.get('state', '?')} (anchor {liveness}, {location})"
             )
         else:
             lines.append("Coordinator: -")

@@ -61,7 +61,8 @@ def error_status(error, *, interrupted=False):
 
 class CodexProtocol:
     def __init__(self, prompt, *, cwd, native_id=None, message_id=None,
-                 open_request=None, cancel_request=None, poll_responses=None, submitted=None, actor=None):
+                 open_request=None, cancel_request=None, poll_responses=None, submitted=None, actor=None,
+                 native_settings=False):
         self.prompt = _text(prompt, "prompt", 256 * 1024)
         self.cwd = _text(cwd, "working directory", 4096)
         self.native_id = _text(native_id, "thread ID") if native_id is not None else None
@@ -69,6 +70,7 @@ class CodexProtocol:
         self.open_request, self.cancel_request = open_request, cancel_request
         self.poll_responses, self.submitted = poll_responses, submitted
         self.actor = actor
+        self.native_settings = native_settings
         self.actor_requests, self.actor_seen = {}, {}
         self.initialized = self.terminal = False
         self.input_not_submitted = True
@@ -193,6 +195,11 @@ class CodexProtocol:
             params = {"cwd": self.cwd, "approvalPolicy": "untrusted", "approvalsReviewer": "user",
                 "sandbox": "workspace-write", "config": {"sandbox_workspace_write.network_access": False,
                 "sandbox_workspace_write.writable_roots": [self.cwd]}}
+            if self.native_settings:
+                # This is a plain utility harness: let app-server resolve the
+                # user's complete native policy (sandbox, approvals, network).
+                # Omitting overrides does not select an unsandboxed mode.
+                params = {"cwd": self.cwd}
             if self.native_id is not None:
                 params["threadId"] = self.native_id
             elif self.actor is not None:
@@ -211,17 +218,23 @@ class CodexProtocol:
             # Installed SandboxPolicy defines omitted networkAccess=false and
             # writableRoots=[] (cwd is implicit). These are wire defaults,
             # not guesses about absent attestation. Reject contrary values.
-            if (result.get("cwd") != self.cwd or result.get("approvalPolicy") != "untrusted"
+            if result.get('cwd') != self.cwd:
+                raise StoreError('Codex did not retain the requested working directory')
+            if not self.native_settings and (result.get("cwd") != self.cwd or result.get("approvalPolicy") != "untrusted"
                     or result.get("approvalsReviewer") != "user" or not isinstance(sandbox, dict)
                     or sandbox.get("type") != "workspaceWrite" or sandbox.get("networkAccess", False) is not False
                     or not isinstance(sandbox.get("writableRoots", []), list)
                     or any(root != self.cwd for root in sandbox.get("writableRoots", []))):
                 raise StoreError("Codex did not retain the requested working directory and execution policy")
             self.native_id = tid
-            self.call("turn/start", {"threadId": tid, "clientUserMessageId": self.message_id,
+            params = {"threadId": tid, "clientUserMessageId": self.message_id,
                 "input": [{"type": "text", "text": self.prompt}], "cwd": self.cwd,
                 "approvalPolicy": "untrusted", "approvalsReviewer": "user",
-                "sandboxPolicy": {"type": "workspaceWrite", "writableRoots": [self.cwd], "networkAccess": False}})
+                "sandboxPolicy": {"type": "workspaceWrite", "writableRoots": [self.cwd], "networkAccess": False}}
+            if self.native_settings:
+                for key in ('approvalPolicy', 'approvalsReviewer', 'sandboxPolicy'):
+                    params.pop(key)
+            self.call('turn/start', params)
             return [("initialized", {"native_id": tid})]
         self._turn(result.get("turn"))
         return [] if self.terminal else [("progress", {"subtype": "native-input-acknowledged", "message_id": self.message_id})]

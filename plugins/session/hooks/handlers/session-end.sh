@@ -5,6 +5,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || { echo '{}'; exit 0; }
 source "$SCRIPT_DIR/common.sh" 2>/dev/null || { echo '{}'; exit 0; }
 source "$SCRIPT_DIR/harness-response.sh" 2>/dev/null || true
+# A worker session carries no Asha context; the Control session bridge in
+# control-event.sh is a separate hook entry and is unaffected by this exit.
+asha_worker_session && { echo '{}'; exit 0; }
 INPUT="$(cat 2>/dev/null || true)"
 PROJECT_DIR="$(resolve_hook_project_dir "$INPUT" 2>/dev/null || true)"
 [[ -n "$PROJECT_DIR" && -f "$PROJECT_DIR/.asha/config.json" ]] || { echo '{}'; exit 0; }
