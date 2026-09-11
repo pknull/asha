@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-09-05",
+  "reviewed": "2026-09-10",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "agent_frontmatter": {
     "tool_vocabulary": [
@@ -89,7 +89,8 @@
           "verifier": "launch-wrapper",
           "limitations": [
             "SessionStart supplies additional runtime context",
-            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)",
+            "ASHA_SESSION_PROFILE=chair|room|worker is the launcher's explicit statement and outranks ASHA_PERSONA; an absent or unrecognized value is legacy behaviour (verifier: tests/test-session-profiles.sh)"
           ]
         },
         "workspace": {
@@ -97,6 +98,29 @@
           "surface": "shared Memory v2 publication/recovery tools, bounded SessionStart workspace context, and workspace management CLI",
           "verifier": "tests:test-hooks/test-install/test-opencode + python test_memory_v2/test_recovery_state/test_workspace_*",
           "limitations": []
+        },
+        "session-profile": {
+          "support": "native",
+          "surface": "bin/asha reads ASHA_SESSION_PROFILE: chair = identity + operational SessionStart context + chair brief; room = the same without the chair brief; worker = plain `claude` with the user's own settings.json permissions, repository instructions and installed skills, and every Asha context hook silent",
+          "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
+          "limitations": [
+            "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
+            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PostToolUse, Stop and SessionEnd; permission-requested is not claimed for Claude",
+            "The observation bridge is bounded and fail-open, so a missing observation leaves activity unknown rather than gating the session"
+          ]
+        },
+        "session-close": {
+          "support": "native",
+          "surface": "session close -> queued hub message; Stop -> control-event.sh -> `session event --event turn-stopped` returns the pending close request once as a single-line block decision; the final turn acknowledges with `session handoff`",
+          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "limitations": [
+            "An idle terminal cannot be woken; attach or force-close (reported as pending-delivery)",
+            "Acknowledgement binds to Room ownership, process ancestry, generation and request ID",
+            "Publication runs through memory_v2 with a compare-and-swap; no Git seam",
+            "The Stop decision is printed before delivery is recorded; a hook killed at its 3 s Stop budget re-emits the same request at the next guard-free Stop (a Stop that follows a delivered block carries stop_hook_active and emits nothing), so an unattended worker may need another user turn or an attach",
+            "An absent, malformed or over-bound Stop payload is treated as stop_hook_active (no block); a delivery receipt confirms only its exact request and attempt",
+            "Delivery through the Stop seam requires jq in the worker's PATH; without it the guard can never be cleared and the request stays queued"
+          ]
         }
       }
     },
@@ -187,7 +211,8 @@
           "surface": "model_instructions_file",
           "verifier": "launch-wrapper",
           "limitations": [
-            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)",
+            "ASHA_SESSION_PROFILE=chair|room|worker is the launcher's explicit statement and outranks ASHA_PERSONA; an absent or unrecognized value is legacy behaviour (verifier: tests/test-session-profiles.sh)"
           ]
         },
         "workspace": {
@@ -204,6 +229,27 @@
           "verifier": "none",
           "limitations": [
             "Native Codex plugin distribution exists but Asha's direct installer does not emit it"
+          ]
+        },
+        "session-profile": {
+          "support": "native",
+          "surface": "bin/asha reads ASHA_SESSION_PROFILE: chair and room fold identity and the operational layer into model_instructions_file (chair adds the brief); worker passes no model_instructions_file at all and inherits native project trust, permissions and sandbox settings",
+          "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
+          "limitations": [
+            "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
+            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PostToolUse, PermissionRequest and Stop; Codex has no session-ended equivalent",
+            "Each rendered hook command remains subject to Codex's hash-bound interactive hook trust, and some unified_exec shell calls are not intercepted",
+            "A worker preserves native project trust; attach to its terminal if Codex asks whether to trust this project"
+          ]
+        },
+        "session-close": {
+          "support": "partial",
+          "surface": "session close -> queued hub message only; the final turn acknowledges with `session handoff`",
+          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "limitations": [
+            "Codex Stop delivery to control-event.sh is live-proven, but returning a block decision through the turn-stopped bridge is not claimed (docs/harness-enforcement.md); the close request therefore reaches the worker only when it reads `session messages`, or by attachment",
+            "Each rendered hook command remains subject to Codex's hash-bound interactive hook trust",
+            "Structured Codex acknowledges through the shell CLI descending from its owner; no native asha_control handoff operation is claimed"
           ]
         }
       }
@@ -285,7 +331,8 @@
           "surface": "COPILOT_CUSTOM_INSTRUCTIONS_DIRS",
           "verifier": "launch-wrapper",
           "limitations": [
-            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)",
+            "ASHA_SESSION_PROFILE=chair|room|worker is the launcher's explicit statement and outranks ASHA_PERSONA; an absent or unrecognized value is legacy behaviour (verifier: tests/test-session-profiles.sh)"
           ]
         },
         "workspace": {
@@ -295,6 +342,25 @@
           "limitations": [
             "workspace context uses sessionStart top-level additionalContext; raw sessionStart stdout is not used or claimed",
             "PreToolUse remains a soft deterrent; recovery callbacks are not an enforcement boundary"
+          ]
+        },
+        "session-profile": {
+          "support": "partial",
+          "surface": "bin/asha reads ASHA_SESSION_PROFILE: chair and room wire identity and the operational layer through COPILOT_CUSTOM_INSTRUCTIONS_DIRS (chair adds the brief); worker wires no Asha instructions directory and every Asha context hook is silent",
+          "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
+          "limitations": [
+            "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
+            "No Control session events are claimed: control-event.sh is not wired into Copilot's hook file, so a hub session's activity stays unknown until the worker reports explicitly",
+            "Screen scraping is deliberately not used to fill that gap"
+          ]
+        },
+        "session-close": {
+          "support": "partial",
+          "surface": "session close -> queued hub message only",
+          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "limitations": [
+            "No Stop seam: the request reaches the worker only when it reads `session messages`; attach or force-close otherwise",
+            "Reported honestly as pending-delivery; screen scraping and keystrokes are not used"
           ]
         }
       }
@@ -379,7 +445,8 @@
           "surface": "OPENCODE_CONFIG_CONTENT.instructions",
           "verifier": "launch-wrapper",
           "limitations": [
-            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)"
+            "ASHA_PERSONA=0 (set by Control for managed workers) skips the identity render; the operational layer still loads where it is file-based, and plain launches are unchanged (verifier: tests/test-worker-persona.sh)",
+            "ASHA_SESSION_PROFILE=chair|room|worker is the launcher's explicit statement and outranks ASHA_PERSONA; an absent or unrecognized value is legacy behaviour (verifier: tests/test-session-profiles.sh)"
           ]
         },
         "workspace": {
@@ -388,6 +455,25 @@
           "verifier": "tests:test-hooks/test-install/test-opencode + python test_memory_v2/test_recovery_state/test_workspace_*",
           "limitations": [
             "Runtime workspace context uses plugin system-prompt transformation"
+          ]
+        },
+        "session-profile": {
+          "support": "partial",
+          "surface": "bin/asha reads ASHA_SESSION_PROFILE: chair and room add identity and the operational layer to OPENCODE_CONFIG_CONTENT.instructions (chair adds the brief); worker adds no instructions entry and every Asha context hook is silent",
+          "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
+          "limitations": [
+            "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
+            "No Control session events are claimed: the plugins/asha.js bridge does not call control-event.sh, so a hub session's activity stays unknown until the worker reports explicitly",
+            "Screen scraping is deliberately not used to fill that gap"
+          ]
+        },
+        "session-close": {
+          "support": "partial",
+          "surface": "session close -> queued hub message only",
+          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "limitations": [
+            "No Stop seam: the request reaches the worker only when it reads `session messages`; attach or force-close otherwise",
+            "Reported honestly as pending-delivery; screen scraping and keystrokes are not used"
           ]
         }
       }

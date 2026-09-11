@@ -44,12 +44,13 @@ CAPABILITIES = {
 }
 
 
-def claude_argv(root: Path, native_id=None):
+def claude_argv(root: Path, native_id=None, *, native_settings=False):
     launcher = root / "bin" / "asha"
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
         raise StoreError("Asha launcher unavailable")
     command = [str(launcher), "claude", "-p", "--output-format", "stream-json", "--verbose",
-               "--input-format", "stream-json", "--permission-mode", "manual",
+               "--input-format", "stream-json",
+               *([] if native_settings else ["--permission-mode", "manual"]),
                "--permission-prompts", "host", "--permission-prompt-tool", "stdio"]
     if native_id:
         if not isinstance(native_id, str) or len(native_id) > 512 or native_id.startswith("-"):
@@ -297,13 +298,16 @@ class CodexTransport(JsonLineTransport):
 
     def make_protocol(self, prompt):
         from .codex_protocol import CodexProtocol
-        return CodexProtocol(prompt, cwd=str(self.cwd), actor=getattr(self, 'actor', None), **self.protocol_options())
+        return CodexProtocol(prompt, cwd=str(self.cwd), actor=getattr(self, 'actor', None),
+                             native_settings=getattr(self, 'native_settings', False), **self.protocol_options())
 
 
-def codex_argv(root: Path):
+def codex_argv(root: Path, *, native_settings=False):
     launcher = root / "bin" / "asha"
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
         raise StoreError("Asha launcher unavailable")
-    # Keep Asha's identity/operational instructions and native hooks. Native
-    # subagents are disabled; orchestration workers use Asha's tracked launch.
-    return [str(launcher), "codex", "app-server", "--listen", "stdio://", "--disable", "multi_agent"]
+    # Legacy coordinators use Asha's tracked launches. Plain utilities retain
+    # the user's native subagent settings as well as native execution policy;
+    # the worker profile controls Asha context injection in the launcher.
+    return [str(launcher), "codex", "app-server", "--listen", "stdio://",
+            *([] if native_settings else ["--disable", "multi_agent"])]

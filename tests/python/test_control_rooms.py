@@ -214,7 +214,7 @@ class RoomTests(unittest.TestCase):
         self.assertEqual(created["pane_options"][PANE_ROOM_OPTION], result["room_id"])
         self.assertEqual(created["environment"], {
             "ASHA_HOME": str(self.asha_home),
-            "ASHA_PERSONA": "1",
+            "ASHA_PERSONA": "1", "ASHA_SESSION_PROFILE": "room",
             "ASHA_ORCHESTRATOR_STANCE": "0",
             "ASHA_ROOM_ID": result["room_id"],
             "ASHA_CODEX_CMD": "codex",

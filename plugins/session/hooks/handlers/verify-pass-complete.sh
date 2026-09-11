@@ -5,6 +5,9 @@ set -uo pipefail
 SCRIPT_DIR="$(cd -P "$(dirname "$0")" >/dev/null 2>&1 && pwd)" || { echo '{}'; exit 0; }
 source "$SCRIPT_DIR/common.sh" 2>/dev/null || { echo '{}'; exit 0; }
 source "$SCRIPT_DIR/harness-response.sh" 2>/dev/null || { echo '{}'; exit 0; }
+# A worker session carries no Asha nudges; the Control session bridge in
+# control-event.sh is a separate hook entry and is unaffected by this exit.
+asha_worker_session && { echo '{}'; exit 0; }
 command -v jq >/dev/null 2>&1 || { echo '{}'; exit 0; }
 # flock(1) is Linux-only until lib/portable.sh grows a BSD fallback: no-op without it.
 command -v flock >/dev/null 2>&1 || { echo '{}'; exit 0; }

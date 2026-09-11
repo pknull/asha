@@ -334,10 +334,10 @@ else
   fail "failed seat startup exclusion"
 fi
 run_asha "$SCRATCH" claude
-if [[ $LAST_STATUS -eq 0 ]] && no_startup_prompt; then
-  ok "other harnesses retain their existing launch behavior"
+if [[ $LAST_STATUS -eq 0 ]] && startup_prompt_ok; then
+  ok "Claude chair receives the same bounded startup observation"
 else
-  fail "non-Codex startup exclusion"
+  fail "Claude chair startup observation"
 fi
 
 echo "test-seat: $PASS passed, $FAIL failed"

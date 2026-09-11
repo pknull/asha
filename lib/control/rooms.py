@@ -54,6 +54,8 @@ SCRUBBED_ROLE_ENV = (
     "ASHA_ORCHESTRATION_COORDINATOR_ID",
     "ASHA_ORCHESTRATION_COORDINATOR_GENERATION",
     "ASHA_VERIFICATION_PROCESS_V1",
+    "ASHA_MANAGED_SESSION_ID", "ASHA_MANAGED_GENERATION",
+    "ASHA_MANAGED_STATE_DIR", "ASHA_MANAGED_TURN_ID",
 )
 HARNESS_COMMAND_ENV = {
     "claude": "ASHA_CLAUDE_CMD", "codex": "ASHA_CODEX_CMD",
@@ -709,7 +711,16 @@ def open_room(
     env: Mapping[str, str], tmux: TmuxAdapter, asha_root: Path,
     executable_finder: Callable[[str], str | None] = shutil.which,
     room_id: str | None = None,
+    profile: str = "room", hub_session_id: str | None = None,
+    hub_generation: int = 1, resume_id: str | None = None,
 ) -> dict[str, Any]:
+    if profile not in {"worker", "room"}:
+        raise RoomError("invalid project session profile")
+    if resume_id is not None:
+        if not isinstance(resume_id, str) or not resume_id or resume_id.startswith('-') or len(resume_id) > 512 or not resume_id.isprintable():
+            raise RoomError('invalid native session ID')
+        if harness not in {'claude', 'codex'}:
+            raise RoomError('native resume is not verified for this harness; open a new session')
     room_name, slug = _room_name(name)
     text = _prompt(prompt)
     try:
@@ -752,6 +763,9 @@ def open_room(
             start_directory=Path(selected_project["root"]),
             environment={
                 "ASHA_HOME": str(config.asha_home), "ASHA_PERSONA": "1",
+                "ASHA_SESSION_PROFILE": profile,
+                **({"ASHA_HUB_SESSION_ID": hub_session_id,
+                    "ASHA_HUB_GENERATION": str(hub_generation)} if hub_session_id else {}),
                 "ASHA_ORCHESTRATOR_STANCE": "0", ROOM_ENV: identity,
                 command_key: harness_command,
             },
@@ -774,7 +788,20 @@ def open_room(
             argv = ["env"]
             for key in SCRUBBED_ROLE_ENV:
                 argv.extend(["-u", key])
-            argv.extend(room_tmux_argv(asha_root, selected_harness, text))
+            if not hub_session_id:
+                argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION'])
+            child = room_tmux_argv(asha_root, selected_harness, text)
+            if resume_id:
+                # The encoded prompt remains data; resume identifiers never enter shell text.
+                if not isinstance(resume_id, str) or not resume_id or resume_id.startswith('-') or len(resume_id) > 512:
+                    raise RoomError("invalid native session ID")
+                if selected_harness == 'claude':
+                    child.extend(['--resume', resume_id])
+                elif selected_harness == 'codex':
+                    child.extend(['resume', resume_id])
+                else:
+                    raise RoomError("native resume is not verified for this harness; open a new session")
+            argv.extend(child)
             crossed_respawn = True
             tmux.respawn(pane, argv)
             record["lifecycle"] = "open"

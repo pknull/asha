@@ -12,6 +12,16 @@ from lib.control.store import StoreError
 
 
 class TransportTests(unittest.TestCase):
+    def test_utility_does_not_override_native_settings_or_subagents(self):
+        from lib.control.session_harness import codex_argv
+        root = Path(__file__).resolve().parents[2]
+        claude = claude_argv(root, native_settings=True)
+        self.assertNotIn('--permission-mode', claude)
+        self.assertNotIn('bypassPermissions', claude)
+        codex = codex_argv(root, native_settings=True)
+        self.assertNotIn('multi_agent', codex)
+        self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', codex)
+
     def transport(self, script, timeout=5):
         return ClaudeTransport([sys.executable, "-c", script], cwd="/tmp", env=dict(os.environ), timeout=timeout)
 

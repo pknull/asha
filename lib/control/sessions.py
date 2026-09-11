@@ -101,7 +101,7 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
     sid, generation, turn = session["session_id"], session["generation"], message["turn_id"]
     child_env = dict(env)
     for key in list(child_env):
-        if key.startswith(("TMUX", "ASHA_CONTROL_")):
+        if key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_HUB_")) or key == 'ASHA_ROOM_ID':
             child_env.pop(key)
     child_env.update({"ASHA_MANAGED_SESSION_ID": sid,
                       "ASHA_MANAGED_GENERATION": str(generation),
@@ -109,6 +109,9 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
                       "ASHA_MANAGED_TURN_ID": turn,
                       "ASHA_PERSONA": "1",
                       "ASHA_ORCHESTRATOR_STANCE": "0"})
+    lightweight = not session['initiative_id']
+    if lightweight:
+        child_env.update(ASHA_SESSION_PROFILE='worker', ASHA_PERSONA='0')
     # The session is a managed conversation, not the user's interactive chair.
     child_env.pop("ASHA_COORDINATOR_LAUNCH", None)
     ask_instruction = (
@@ -140,6 +143,8 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
         )
         prompt = (f"You are the already-claimed coordinator for initiative {session['initiative_id']}. "
                   + coordinator_instruction + prompt)
+    else:
+        prompt = message['body'] + '\n\nIf clarification is needed, ' + ask_instruction + 'then return. Otherwise do the assignment and return the result.'
     success = False
     reason = None
     transport = None
@@ -149,12 +154,13 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
         with ExitStack() as stack:
             requests = stack.enter_context(SessionRequestServer(store.db.config, sid, generation, turn))
             if session["harness"] == "claude":
-                factory, argv = ClaudeTransport, claude_argv(root, session["native_id"])
+                factory, argv = ClaudeTransport, claude_argv(root, session["native_id"], native_settings=lightweight)
             elif session["harness"] == "codex":
-                factory, argv = CodexTransport, codex_argv(root)
+                factory, argv = CodexTransport, codex_argv(root, native_settings=lightweight)
             else:
                 raise StoreError("harness has no supported managed adapter")
             transport = (transport_factory or factory)(argv, cwd=session["cwd"], env=child_env)
+            transport.native_settings = lightweight
             if session['harness'] == 'codex':
                 from .codex_actor import CodexActor
                 transport.actor = stack.enter_context(CodexActor(store.db.config, sid, generation, turn, env=child_env))
@@ -334,6 +340,10 @@ def run_owner(config, sid, *, env=None, once=False, transport_factory=None):
                         raise
                 if once:
                     return 0
+                if not session['initiative_id'] and not message:
+                    # Utility owners are disposable between turns. Queued input
+                    # starts a new owner through the existing supervisor.
+                    return 0
                 time.sleep(0.5)
         finally:
             for signum, handler in previous.items():
@@ -369,7 +379,11 @@ def ensure_owners(config, *, env=None):
         if mode != "running":
             return {"managed_sessions": 0, "owners_started": 0, "admission": mode}
         with store.db.transaction() as c:
-            rows = [dict(r) for r in c.execute("SELECT * FROM managed_sessions WHERE state IN ('queued','idle','running','waiting-input') AND stop_requested=0 ORDER BY created_at LIMIT 100")]
+            rows = [dict(r) for r in c.execute("""SELECT * FROM managed_sessions s
+                WHERE state IN ('queued','idle','running','waiting-input') AND stop_requested=0
+                AND (initiative_id IS NOT NULL OR state='running' OR EXISTS (
+                    SELECT 1 FROM session_messages m WHERE m.session_id=s.session_id AND m.state='queued'))
+                ORDER BY created_at LIMIT 100""")]
         for session in rows:
             if session["session_id"] in _OWNER_CHILDREN:
                 continue
@@ -396,7 +410,10 @@ def ensure_owners(config, *, env=None):
 
 
 def parser():
-    p = argparse.ArgumentParser(prog="asha control session")
+    p = argparse.ArgumentParser(prog="asha control session", epilog=
+        'Project sessions: launch --project NAME --prompt TEXT [--harness H] [--profile worker|room] '
+        '[--transport terminal|structured]; list; attach ID; close ID; report --state STATE --text TEXT; '
+        'messages; ack-message ID. Each command accepts --help.')
     sub = p.add_subparsers(dest="command", required=True)
     create = sub.add_parser("create")
     create.add_argument("--cwd", required=True)
@@ -471,6 +488,15 @@ def parser():
 
 def main(argv=None, *, env=None):
     values = dict(os.environ if env is None else env)
+    from .hub_cli import dispatch
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    try:
+        routed = dispatch(arguments, env=values)
+        if routed is not None:
+            return routed
+    except (StoreError, OSError, ValueError) as exc:
+        print(f"asha control session: {exc}", file=sys.stderr)
+        return 2
     args = parser().parse_args(argv)
     try:
         config = load_config(values)

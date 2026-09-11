@@ -1587,7 +1587,7 @@ def _render_tree(model: TuiModel) -> list[str]:
             "        incomplete to call quiet, and holds back quiet and settled ones.",
             "        All retained adds them plus bounded archived head metadata.",
             "      X close a Room/published worker | x context actions on a task",
-            "      r reconcile | d diff | e events | a approve plan / archive task | c candidate seals",
+            "      r reconcile | d diff | e events | a review approval / archive task | c candidate seals",
             "      v review+verification evidence | t retained storage | p pause/resume | s stop attempt",
             "      G global initiative actions (paged) | M managed questions and permissions",
             "      / filter | ? help | q quit",
@@ -1728,6 +1728,27 @@ def _unreadable_head_view(initiative: dict[str, Any], reason: str) -> dict[str, 
     return view
 
 
+def _initiative_managed_request(config, initiative_id, coordinator):
+    """First pending request of this head's current managed coordinator only."""
+    if not coordinator or coordinator['anchor'].get('kind') != 'managed-session-v1':
+        return None
+    from .session_store import SessionStore
+    anchor = coordinator['anchor']
+    if anchor['state_dir'] != str(config.tasks_dir.parent):
+        raise ValueError('managed coordinator belongs to another Control state root')
+    with SessionStore(config) as sessions:
+        with sessions.db.transaction() as c:
+            session = c.execute('SELECT initiative_id FROM managed_sessions WHERE session_id=?',
+                                (anchor['session_id'],)).fetchone()
+            if session is None or session['initiative_id'] != initiative_id:
+                raise ValueError('managed coordinator session binding is unavailable')
+            # One indexed metadata probe; no provider payloads or history.
+            request = c.execute("""SELECT request_id,kind FROM session_requests
+                WHERE session_id=? AND state='pending' ORDER BY created_at LIMIT 1""",
+                (anchor['session_id'],)).fetchone()
+            return dict(request) if request else None
+
+
 def _bounded_head_view(
     store, initiative: dict[str, Any], budget, *, adapter, observed,
 ) -> dict[str, Any]:
@@ -1833,6 +1854,17 @@ def _bounded_head_view(
             and initiative_id not in budget.incomplete_heads
         ),
     }
+    if coordinator and coordinator['anchor'].get('kind') == 'managed-session-v1':
+        try:
+            if budget.expired():
+                raise ValueError('managed request observation deadline exceeded')
+            loaded['managed_request'] = _initiative_managed_request(
+                store.config.control, initiative_id, coordinator)
+        except Exception as exc:  # noqa: BLE001 - retain the head and qualify the missing observation
+            loaded['managed_request_error'] = _safe_error(exc)
+            budget.unavailable += 1
+            budget.note(initiative_id, 'managed requests: ' + _safe_error(exc))
+            loaded['_graph_complete'] = False
     loaded["_parked_ready_nodes"] = list(parked_ready_nodes(loaded, now=observed))
     return loaded
 
@@ -5289,6 +5321,14 @@ def _execute_initiative_intent(
     if intent.kind is IntentKind.INIT_APPROVE:
         from .orchestration.cli import _latest_plan, approve_plan, reject_plan
 
+        request = _initiative_managed_request(
+            config, row.initiative_id, initiative_store.current_coordinator(row.initiative_id))
+        if request:
+            if request['kind'] == 'native-permission':
+                return _decide_managed_permission(
+                    stdscr, curses_module, model, config, env, request['request_id'])
+            return "coordinator is waiting for an answer; press M to review the question"
+
         budget_result = _approve_review_budget_prompt(stdscr, curses_module, model, env, initiative_store, initiative, row)
         if budget_result is not None:
             return budget_result
@@ -5418,6 +5458,25 @@ def _select_managed_request(stdscr, curses_module, model, config):
             return selected
 
 
+def _decide_managed_permission(stdscr, curses_module, model, config, env, request_id):
+    """Shared exact-invocation review for the selected head's a key and global M."""
+    from .sessions import overview, refuse_managed_operator
+    from .session_store import SessionStore
+    from .native_requests import NativeRequests
+    refuse_managed_operator(config, env)
+    with SessionStore(config) as sessions:
+        detail = NativeRequests(sessions).get(request_id)
+    if detail['state'] != 'pending':
+        return "request is no longer pending"
+    decision = _native_permission_prompt(stdscr, curses_module, detail)
+    if decision is None:
+        return "permission decision cancelled"
+    with SessionStore(config) as sessions:
+        NativeRequests(sessions).decide(request_id, decision, expected_digest=detail['digest'])
+    model.managed_summary = overview(config)['summary']
+    return "native permission decision retained; response delivery is pending"
+
+
 def _execute_intent(
     intent: TuiIntent,
     *,
@@ -5457,7 +5516,7 @@ def _execute_intent(
         if not current["questions"] and not current.get("permissions", 0):
             model.message = current["summary"]
             return True
-        selected_request = _select_managed_request(stdscr, curses_module, model, config)
+        selected_request = intent.task_id or _select_managed_request(stdscr, curses_module, model, config)
         if not selected_request:
             model.message = "question selection cancelled"
             return True
@@ -5490,17 +5549,8 @@ def _execute_intent(
             model.message = "native answers retained; response delivery is pending"
             return True
         if request["kind"] == "native-permission":
-            from .native_requests import NativeRequests
-            with SessionStore(config) as sessions:
-                detail = NativeRequests(sessions).get(request["request_id"])
-            decision = _native_permission_prompt(stdscr, curses_module, detail)
-            if decision is None:
-                model.message = "permission decision cancelled"
-                return True
-            with SessionStore(config) as sessions:
-                NativeRequests(sessions).decide(request["request_id"], decision, expected_digest=request["digest"])
-            model.managed_summary = overview(config)["summary"]
-            model.message = "native permission decision retained; response delivery is pending"
+            model.message = _decide_managed_permission(
+                stdscr, curses_module, model, config, env, request['request_id'])
             return True
         answer = _prompt_line(stdscr, curses_module, model, "Answer: ",
                               title="Answer session question", maximum=4000,

@@ -1,5 +1,8 @@
 # Orchestration Core: Increments 1-7
 
+This is the optional staged workflow, available through `asha control --initiatives`.
+For ordinary harness jobs and the default dashboard, see [Project sessions](session-hub.md).
+
 Orchestration Core stores one bounded initiative and approved dependency graph
 beside Asha Control. Increment 3 adds ordered composition, independent
 exact-seal review, controller-owned verification, compatible candidate bundles,
@@ -10,7 +13,7 @@ approval stays an operator act from another terminal. Increment 5 opens the
 bounded active set to that coordinator (dispatch, repair, salvage request,
 stop, pause, continuation, decision request, outcome proposal, pending
 directive), adds CAS checkpoints, and lets Control-launched workers run without
-the persona. Increment 6 is the Initiatives mode of `asha control` (see
+the persona. Increment 6 is the Initiatives mode of `asha control --initiatives` (see
 `docs/control.md`). Increment 7 lets one initiative span a declared workspace:
 one terminal candidate, review, and verification materialization per member
 repository, one aggregate bundle. Control remains the only owner of worker jj
@@ -422,7 +425,7 @@ mechanically and the published-awaiting-exit state cannot occur. Permissions
 are bypassed deliberately — the workspace is isolated and the seal enforces
 hard scope and read-only review; a headless run cannot answer a prompt.
 Interactive assignments now state that the worker cannot end its own session
-and must ask the operator to close it (the `X` key in `asha control`).
+and must ask the operator to close it (the `X` key in `asha control --initiatives`).
 
 Dispatch preallocates the attempt UUID and Control task UUID and stores both in
 the action outcome before calling Control. It writes this immutable file first:

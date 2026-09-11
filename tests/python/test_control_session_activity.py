@@ -63,6 +63,42 @@ class SessionActivityTests(unittest.TestCase):
         self.assertEqual(row["next_action"], "inspect-runtime")
         self.assertEqual(before, self.store.snapshot(self.sid))
 
+    def test_native_permission_wait_is_visible_on_session_and_queued_delivery(self):
+        from lib.control.native_requests import NativeRequests
+        from lib.control.session_activity import summary
+        turn = self.store.claim_turn(self.sid, self.generation)
+        requests = NativeRequests(self.store)
+        self.store.observe(self.sid, self.generation, turn['turn_id'], 'initialized', {'native_id': 'native-test'})
+        request = requests.open(self.sid, self.generation, turn['turn_id'], 'provider-wait', {
+            'subtype': 'can_use_tool', 'tool_name': 'Bash',
+            'input': {'command': 'git status'}, 'tool_use_id': 'tool-wait',
+        })
+        self.store.enqueue(self.sid, 'Follow up', key='permission-follow-up')
+        before = self.store.snapshot(self.sid)
+        for kind in ('sessions', 'deliveries'):
+            row = self.store.current_work(kind=kind)['rows'][0]
+            self.assertEqual(row['waiting_on'], 'keeper')
+            self.assertEqual(row['next_action'], 'inspect-requests')
+        self.assertEqual(summary(self.store)['pages']['sessions']['rows'][0]['waiting_on'], 'keeper')
+        self.assertEqual(self.store.snapshot(self.sid), before)
+        requests.decide(request['request_id'], 'allow', expected_digest=request['digest'])
+        self.assertEqual(self.store.current_work()['rows'][0]['waiting_on'], 'agent')
+
+    def test_pending_native_request_does_not_hide_recovery_or_stop(self):
+        from lib.control.native_requests import NativeRequests
+        turn = self.store.claim_turn(self.sid, self.generation)
+        self.store.observe(self.sid, self.generation, turn['turn_id'], 'initialized', {'native_id': 'native-test'})
+        NativeRequests(self.store).open(self.sid, self.generation, turn['turn_id'], 'provider-wait', {
+            'subtype': 'can_use_tool', 'tool_name': 'Bash',
+            'input': {'command': 'git status'}, 'tool_use_id': 'tool-wait',
+        })
+        with self.store.db.transaction(write=True) as c:
+            c.execute("UPDATE managed_sessions SET state='uncertain' WHERE session_id=?", (self.sid,))
+        self.assertEqual(self.store.current_work()['rows'][0]['next_action'], 'inspect-recovery')
+        with self.store.db.transaction(write=True) as c:
+            c.execute('UPDATE managed_sessions SET stop_requested=1 WHERE session_id=?', (self.sid,))
+        self.assertEqual(self.store.current_work()['rows'][0]['next_action'], 'inspect-session')
+
     def test_invalid_cursors_and_limits_fail_cleanly(self):
         for cursor in ("bad", "[]", '{"kind":"sessions","position":[true,0,"x"]}'):
             with self.assertRaises(StoreError):

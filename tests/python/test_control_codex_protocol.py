@@ -8,6 +8,13 @@ from lib.control.store import StoreError
 
 
 class CodexProtocolTests(unittest.TestCase):
+    def test_utility_inherits_native_approval_and_sandbox_settings(self):
+        p = self.protocol(native_settings=True)
+        start, turn = self.ready(p)
+        for key in ('approvalPolicy', 'approvalsReviewer', 'sandbox', 'sandboxPolicy'):
+            self.assertNotIn(key, start['params'])
+            self.assertNotIn(key, turn['params'])
+
     def actor_request(self, p, **params):
         return p.feed({'id': 42, 'method': 'item/tool/call', 'params': {
             'threadId': 'thread-1', 'turnId': 'turn-1', 'callId': 'call-1',

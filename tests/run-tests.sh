@@ -346,6 +346,28 @@ else
 fi
 echo ""
 
+# Test Suite 24: Explicit Session Profiles
+echo -e "${BLUE}--- Test Suite 24: Session Launch Profiles ---${NC}"
+if "$SCRIPT_DIR/test-session-profiles.sh"; then
+    echo -e "${GREEN}✓ Session profile tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Session profile tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
+# Test Suite 25: Session Hub Hook Contract
+echo -e "${BLUE}--- Test Suite 25: Session Hub Hooks ---${NC}"
+if "$SCRIPT_DIR/test-session-hub-hooks.sh"; then
+    echo -e "${GREEN}✓ Session hub hook tests passed${NC}"
+    TOTAL_PASSED=$((TOTAL_PASSED + 1))
+else
+    echo -e "${RED}✗ Session hub hook tests failed${NC}"
+    TOTAL_FAILED=$((TOTAL_FAILED + 1))
+fi
+echo ""
+
 # Summary
 echo -e "${BLUE}=== Test Summary ===${NC}"
 echo -e "Passed:  ${GREEN}$TOTAL_PASSED${NC}"

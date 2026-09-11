@@ -215,8 +215,8 @@ send({'id': start['id'], 'result': {'thread': {'id': 'thread-1'},
  'sandbox': {'type': 'workspaceWrite', 'networkAccess': False, 'writableRoots': []}}})
 turn = read()
 assert turn['method'] == 'turn/start'
-assert turn['params']['approvalPolicy'] == 'untrusted'
-assert turn['params']['sandboxPolicy']['networkAccess'] is False
+assert 'approvalPolicy' not in turn['params']
+assert 'sandboxPolicy' not in turn['params']
 tid = 'native-' + turn['params']['clientUserMessageId']
 send({'id': turn['id'], 'result': {'turn': {'id': tid, 'status': 'inProgress', 'items': []}}})
 scope = {'threadId': 'thread-1', 'turnId': tid, 'itemId': 'item-1'}
@@ -249,7 +249,8 @@ assert sys.stdin.read() == ''
         operator.start()
         def transport(argv, **kwargs):
             self.assertEqual(argv[1:5], ["codex", "app-server", "--listen", "stdio://"])
-            self.assertEqual(kwargs["env"]["ASHA_PERSONA"], "1")
+            self.assertEqual(kwargs["env"]["ASHA_PERSONA"], "0")
+            self.assertEqual(kwargs["env"]["ASHA_SESSION_PROFILE"], "worker")
             return CodexTransport([sys.executable, str(server)], timeout=5, permission_timeout=5, **kwargs)
         try:
             with mock.patch("lib.control.sessions.CodexTransport", side_effect=transport):

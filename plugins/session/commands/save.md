@@ -7,8 +7,12 @@ allowed-tools: ["Bash", "Read", "Write"]
 
 # Save Session
 
-This explicit command is the **only semantic publication path**. Never call it
-from a lifecycle hook, timer, background process, or transcript parser.
+This explicit command is the **only semantic publication path** for a chair or
+Room session. Never call it from a lifecycle hook, timer, background process, or
+transcript parser. The one other explicit writer is the operator-requested close
+handoff of a Control project session (`asha control session handoff`), which
+publishes the model's own drafts through the same validator with a
+compare-and-swap and no Git seam; see `docs/session-hub.md`.
 
 ## Contract
 

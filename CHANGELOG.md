@@ -12,6 +12,31 @@ the active instruction surface loses no release detail.
 
 ### Unreleased
 
+#### Graceful project-session closure with a verified memory handoff
+
+- `asha control session close ID` now requests one final agent turn, lets the
+  current step reach a safe boundary, and terminates only after a verified
+  project-memory handoff acknowledged through `session handoff`. Publication
+  reuses the Memory v2 validator with a compare-and-swap on both digests, so a
+  concurrent save is never overwritten; an explicit `no-durable-update` also
+  satisfies the handoff. Failed, blocked, unanswered and undeliverable results
+  stay visible and never become a successful closure. `--force` (dashboard
+  `X`) terminates without claiming a save; `--wait` polls for the
+  acknowledgement. Nothing on this path commits, pushes or integrates code.
+- Delivery uses supported seams only: a queued message plus, for Claude
+  terminals, one Stop-hook block decision at the turn boundary (printed before
+  delivery is recorded, so a hook killed at its budget re-asks rather than
+  blaming the agent); a structured turn for structured utilities. Codex,
+  Copilot and OpenCode terminals are queued-only until their Stop return
+  channel is live-proven. An idle terminal is reported as unreachable rather
+  than poked with keystrokes. Acknowledgements bind to the session incarnation
+  and request ID; a resume moves the old closure record into history. A
+  close that ended without a verified save stays listed as `close-failed`
+  until the operator acknowledges it with a stop or force-close, and a
+  needs-input state during the final turn is never hidden behind the closing
+  label. Stop-hook delivery receipts bind to the exact request and attempt,
+  and an unparsed or over-bound Stop payload never permits a repeat block.
+
 #### Inline manuscript review (write 1.11.0)
 
 - Added `write-inline-review` and the versioned `asha-inline-review/v1` grammar,
