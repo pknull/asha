@@ -76,6 +76,16 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+echo "--- test 0: experience capability reporting names dormant/native limits ---"
+out="$(env -i HOME="$SANDBOX" PATH="$PATH" bash -c \
+  'source "$1/lib/doctor.sh"; _asha_doctor_session_profile_section all' _ "$REPO_ROOT" 2>&1)"
+if [[ "$out" == *"session-experience capability"* && "$out" == *"session-guidance capability"* \
+   && "$out" == *"experience-review capability"* && "$out" == *"native review gated"* ]]; then
+  ok "doctor reports dormant capture/guidance and gated native review for all targets"
+else
+  fail "doctor experience capability report missing: $out"
+fi
+
 echo "--- test 0a: optional plugin drift follows --with-canary ---"
 out="$(run --target copilot 2>&1)"; rc=$?
 if [[ $rc -eq 0 && "$out" != *"/plugins/test/"* ]]; then

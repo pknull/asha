@@ -13,11 +13,19 @@ python3 "$TOOLS/save_scope.py" resolve --scope repo --start "$PWD"
 
 For a workspace-owned handoff use `--scope workspace`. The JSON result supplies
 `plane_base`, `memory_root`, `memory_rel`, and `commit_repo`. Use `--scope none`
-semantics by resolving the repository plane but skipping Git below.
+by passing `--scope none` to the resolver and using the no-Git executor in
+`plugins/session/commands/save.md`; do not use repository/Git discovery.
 
 ## 2. Author from live context
 
-Verify current repository state, then draft two temporary files:
+Before drafting, read a coherent snapshot:
+
+```bash
+python3 "$TOOLS/memory_v2.py" read --project-dir "$PLANE_BASE" --format json
+```
+
+Retain `digests.active` and `digests.decisions` as `EXPECTED_ACTIVE` and
+`EXPECTED_DECISIONS`. Verify current repository state, then draft two temporary files:
 
 - `activeContext.md`: exactly `Objective`, `State`, `Next`, `Blockers`, at most
   4,096 UTF-8 bytes, with at most five Next items and five Blockers.
@@ -31,7 +39,8 @@ Do not read a harness transcript or derive semantic state from recovery JSON.
 python3 "$TOOLS/memory_v2.py" publish \
   --project-dir "$PLANE_BASE" \
   --active-file "$ACTIVE_DRAFT" \
-  --decisions-file "$DECISIONS_DRAFT"
+  --decisions-file "$DECISIONS_DRAFT" \
+  --expected-active "$EXPECTED_ACTIVE" --expected-decisions "$EXPECTED_DECISIONS"
 ```
 
 The validator checks both drafts before replacing either published file.

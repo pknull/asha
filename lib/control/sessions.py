@@ -98,6 +98,12 @@ def quiesce(config, env):
 
 def run_turn(store, session, message, *, env, root, transport_factory=None,
              cancelled=lambda: False):
+    from .experience_review import owned, run_review_turn
+    with store.db.transaction() as c:
+        review = owned(c, session['session_id'])
+    if review:
+        return run_review_turn(store, session, message, review, env=env, root=root,
+                               transport_factory=transport_factory, cancelled=cancelled)
     sid, generation, turn = session["session_id"], session["generation"], message["turn_id"]
     child_env = dict(env)
     for key in list(child_env):
@@ -145,9 +151,22 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
                   + coordinator_instruction + prompt)
     else:
         prompt = message['body'] + '\n\nIf clarification is needed, ' + ask_instruction + 'then return. Otherwise do the assignment and return the result.'
+    from .session_hub import Hub
+    from .session_guidance import delivery
+    guidance_hub = Hub(store.db.config, env=env)
+    guidance_manifest = None
+    guidance_row = None
+    if guidance_hub.owns(sid):
+        guidance_row = guidance_hub.get(sid)
+        rendered, guidance_manifest = delivery(guidance_hub, guidance_row, message['delivery_key'], message['body'])
+        guidance_row = guidance_hub._update(sid, expected_generation=guidance_row['generation'], current_assignment=rendered)
+        if guidance_manifest:
+            prompt = prompt.replace(message['body'], rendered, 1)
     success = False
     reason = None
     transport = None
+    from .session_experience import StructuredResult
+    result_envelope = StructuredResult(guidance_hub, guidance_row, message['turn_id']) if guidance_row else None
     try:
         from .session_ipc import SessionRequestServer
         from contextlib import ExitStack
@@ -178,7 +197,17 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
                 requests.check()
                 return cancelled() or bool(store.get(sid)["stop_requested"]) or connection_admission(store.db)["mode"] == "stopped"
             for kind, payload in transport.events(prompt, cancelled=should_stop):
+                if result_envelope:
+                    payload = result_envelope.event(kind, payload)
+                    if payload is None:
+                        continue
                 store.observe(sid, generation, turn, kind, payload)
+                if kind == 'progress' and payload.get('subtype') == 'native-input-acknowledged':
+                    from .session_hub import Hub
+                    from .session_guidance import supplied
+                    hub = Hub(store.db.config, env=env)
+                    if hub.owns(sid):
+                        supplied(hub, guidance_row or hub.get(sid), message['delivery_key'], guidance_manifest)
                 if kind in {"completed", "failed"}:
                     success = kind == "completed"
                     reason = payload.get("reason")
@@ -360,6 +389,9 @@ def ensure_owners(config, *, env=None):
         if key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_MANAGED_", "ASHA_ORCHESTRATION_")) or key == "ASHA_COORDINATOR_LAUNCH":
             values.pop(key)
     values.update(ASHA_HOME=str(config.asha_home), ASHA_CONFIG=str(config.config_path))
+    from .experience_review import reconcile
+    from .session_hub import Hub
+    reconcile(Hub(config, env=values))
     started = 0
     for sid, child in list(_OWNER_CHILDREN.items()):
         if child.poll() is not None:

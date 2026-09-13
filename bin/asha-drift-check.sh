@@ -980,9 +980,12 @@ spec = importlib.util.spec_from_file_location("save_none_doctor", path)
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 assert callable(module.publish_managed_none)
+assert 'expected_preimages' in __import__('inspect').signature(module.publish_managed_none).parameters
+import memory_v2
+assert callable(memory_v2.snapshot_digests)
 PY
 then
-  pass "managed effective-none save has an executable no-Git publication path"
+  pass "managed effective-none save has a no-Git publication path with pre-draft digest inputs"
 else
   nope "managed effective-none save executor is missing or invalid"
 fi

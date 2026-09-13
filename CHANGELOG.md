@@ -1,5 +1,17 @@
 # Changelog
 
+
+## Unreleased — session experience
+
+- Add dormant project experience policy, bounded immutable reports, independent
+  close capture, one-turn review custody and inspection/coverage commands.
+- Require pre-draft Memory digests on ordinary/scope-none publication and retain
+  committed receipts across later publications.
+- Add reviewed explicit-save dispositions with original observation provenance,
+  candidate limits and contradiction protection, plus explicitly selected active
+  guidance in worker assignments.
+- Automatic native review remains gated off; paid native acceptance is outstanding.
+
 This file preserves the release records formerly embedded in the active README
 and engineering guide. Historical entries describe the implementation at the
 time of release; they are not current operating instructions. For current

@@ -257,12 +257,19 @@ class SessionStore:
         self._event(c, sid, "message-retained", {"message_id": mid, "digest": digest(body)})
         return dict(c.execute("SELECT * FROM session_messages WHERE message_id=?", (mid,)).fetchone())
 
-    def enqueue(self, sid, body, *, key):
+    def enqueue(self, sid, body, *, key, on_retained=None):
+        from .experience_review import owned
+        with self.db.transaction() as c:
+            if owned(c, sid):
+                raise StoreError("experience review is a single-turn utility; resume/followup refused")
         with self.db.transaction(write=True) as c:
             s = self._session(c, sid)
             if s["state"] in {"stopped", "failed"} or s["stop_requested"]:
                 raise StoreError("session is stopped or failed")
-            return self._enqueue(c, sid, body, key)
+            message = self._enqueue(c, sid, body, key)
+            if on_retained:
+                on_retained(c, message)
+            return message
 
     def claim_owner(self, sid, *, pid=None):
         pid = os.getpid() if pid is None else pid
@@ -526,7 +533,11 @@ class SessionStore:
             "session_id", "state", "generation", "turns", "max_turns", "stop_requested", "recovery_revision")},
             "recovery": session.get("recovery")}, sort_keys=True))
 
-    def resume(self, sid, *, prompt, expected_digest, max_turns=None, quota_reset_override=None):
+    def resume(self, sid, *, prompt, expected_digest, max_turns=None, quota_reset_override=None, on_retained=None):
+        from .experience_review import owned
+        with self.db.transaction() as c:
+            if owned(c, sid):
+                raise StoreError("experience review is a single-turn utility; resume/followup refused")
         """Explicit new operator turn; never replay an ambiguous submission."""
         text(prompt, "recovery prompt")
         if quota_reset_override is not None:
@@ -574,6 +585,8 @@ class SessionStore:
                 self._event(c, sid, "request-cancelled", {"request_id": request["request_id"], "reason": "superseded by explicit recovery"}, request["turn_id"])
             c.execute("UPDATE managed_sessions SET state='idle',max_turns=?,updated_at=?,owner_launch_attempts=0,owner_launch_after=0,stop_requested=0 WHERE session_id=?", (budget, time.time(), sid))
             message = self._enqueue(c, sid, prompt, key)
+            if on_retained:
+                on_retained(c, message)
             recovery_receipt(c, sid, expected_digest, digest(prompt), max_turns, message_id=message["message_id"], quota_reset_override=quota_reset_override)
             resolve(c, sid, message["message_id"], quota_reset_override=quota_reset_override)
             self._event(c, sid, "operator-resumed", {"previous_state": s["state"], "max_turns": budget, "digest": expected_digest,

@@ -198,7 +198,8 @@ printf '%s\n' "$@"
 EOF
 chmod +x "$SANDBOX/bin/fake-claude"
 claude_cache="$SANDBOX/.cache/asha/claude-instructions.md"
-if claude_args="$(HOME="$SANDBOX" ASHA_CLAUDE_CMD="$SANDBOX/bin/fake-claude" \
+if claude_args="$(env -i PATH="$PATH" HOME="$SANDBOX" ASHA_HOME="$SANDBOX/.asha" \
+    ASHA_CLAUDE_CMD="$SANDBOX/bin/fake-claude" \
     ASHA_CLAUDE_INSTRUCTIONS_FILE="$claude_cache" bash "$DISPATCHER" claude PAYLOAD 2>/dev/null)" \
     && grep -q 'CLAUDE_SOUL_SENTINEL' "$claude_cache" \
     && grep -q 'CLAUDE_VOICE_SENTINEL' "$claude_cache" \

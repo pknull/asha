@@ -27,7 +27,9 @@ unpublished recovery. Candidate learnings have no SessionStart authority.
 is not a log or archive.
 
 Only explicit `/session:save` publishes either file. Draft outside `Memory/`
-and call `tools/memory_v2.py publish`; never write around the validator. The
+read `tools/memory_v2.py read --format json` before drafting and retain its coherent
+digests. Call `tools/memory_v2.py publish --expected-active DIGEST
+--expected-decisions DIGEST`; on conflict reread and merge. Never write around the validator. The
 publisher holds a project lock and uses a private recovery journal so the pair
 cannot interleave or remain partially replaced. Shipped readers use
 `memory_v2.py read --project-dir PROJECT` and acquire the same lock; direct

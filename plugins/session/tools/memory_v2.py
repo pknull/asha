@@ -339,26 +339,24 @@ def _digest_or_none(path: Path) -> str | None:
 
 
 def publish(project_dir: Path, active_context: str, decisions: str, *,
-            expected_preimages: dict[str, str | None] | None = None) -> None:
+            expected_preimages: dict[str, str | None] | None = None,
+            publication_source: str = "explicit-save") -> dict:
     """Publish the authoritative pair under a project lock and recovery journal."""
     validate_active_context(active_context)
     validate_decisions(decisions)
     root = secure_project_root(project_dir)
     _assert_persistence_enabled(root)
-    require_v2_config(root)
+    project_config = require_v2_config(root)
     active_path, decisions_path = _publication_paths(root)
     with _publication_lock(root):
         # Close the race where silence is enabled after the first check whilst
         # a publisher is waiting for the project lock.
         _assert_persistence_enabled(root)
         _recover_publication_unlocked(root)
+        current = {"active": _digest_or_none(active_path), "decisions": _digest_or_none(decisions_path)}
         if expected_preimages is not None:
-            current = {
-                "active": _digest_or_none(active_path),
-                "decisions": _digest_or_none(decisions_path),
-            }
             if current != expected_preimages:
-                raise ValueError("publication preimage changed after reviewed migration preflight")
+                raise ValueError("publication preimage changed; re-read the coherent Memory snapshot, merge the draft, and retry")
         _prepare_publication_journal_unlocked(root)
         try:
             atomic_write(active_path, active_context)
@@ -367,6 +365,23 @@ def publish(project_dir: Path, active_context: str, decisions: str, *,
             _recover_publication_unlocked(root)
             raise
         _remove_journal(root)
+        after = {"active": hashlib.sha256(active_context.encode()).hexdigest(),
+                 "decisions": hashlib.sha256(decisions.encode()).hexdigest()}
+        return {"contract": "asha.memory-publication.v1", "status": "published",
+                "publication_id": str(uuid.uuid4()), "source": publication_source, "project_id": project_config["project_id"],
+                "destination": str(root / "Memory"), "before": current, "after": after,
+                "changed": [name for name in after if current[name] != after[name]], "git_invoked": False}
+
+
+def snapshot_digests(snapshot: PublishedSnapshot) -> dict[str, str]:
+    return {"active": hashlib.sha256(snapshot.active_context).hexdigest(),
+            "decisions": hashlib.sha256(snapshot.decisions).hexdigest()}
+
+
+def expected_digest(value: str) -> str:
+    if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+        raise ValueError("pre-draft --expected-active and --expected-decisions sha256 digests required; read, merge and retry")
+    return value
 
 
 def read_published(project_dir: Path) -> tuple[str, str]:
@@ -659,6 +674,8 @@ def main(argv: list[str] | None = None) -> int:
     pub.add_argument("--project-dir", required=True, type=Path)
     pub.add_argument("--active-file", required=True, type=Path)
     pub.add_argument("--decisions-file", required=True, type=Path)
+    pub.add_argument("--expected-active", required=True)
+    pub.add_argument("--expected-decisions", required=True)
     status_cmd = sub.add_parser("status")
     status_cmd.add_argument("--project-dir", required=True, type=Path)
     read = sub.add_parser("read")
@@ -680,9 +697,10 @@ def main(argv: list[str] | None = None) -> int:
             read_published(args.project_dir)
             print("memory-v2: valid")
         elif args.command == "publish":
-            publish(args.project_dir, args.active_file.read_text(encoding="utf-8"),
-                    args.decisions_file.read_text(encoding="utf-8"))
-            print(json.dumps({"status": "published"}))
+            expected = {"active": expected_digest(args.expected_active), "decisions": expected_digest(args.expected_decisions)}
+            active = _read_regular_bytes(secure_project_root(args.active_file.parent) / args.active_file.name, ACTIVE_LIMIT, "active draft")[0].decode("utf-8")
+            decisions = _read_regular_bytes(secure_project_root(args.decisions_file.parent) / args.decisions_file.name, DECISIONS_LIMIT, "decisions draft")[0].decode("utf-8")
+            print(json.dumps(publish(args.project_dir, active, decisions, expected_preimages=expected)))
         elif args.command == "status":
             print(json.dumps(status(args.project_dir), sort_keys=True))
         elif args.command == "startup-context":
@@ -690,9 +708,11 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "recover":
             print(json.dumps({"recovered": recover_publication(args.project_dir)}))
         else:
-            active_text, decisions_text = read_published(args.project_dir)
+            snapshot = read_published_snapshot(args.project_dir)
+            active_text, decisions_text = snapshot.active_context.decode(), snapshot.decisions.decode()
             if args.format == "json":
-                print(json.dumps({"activeContext": active_text, "decisions": decisions_text}))
+                print(json.dumps({"activeContext": active_text, "decisions": decisions_text,
+                                  "digests": snapshot_digests(snapshot), "project_id": snapshot.project_id}))
             else:
                 print(active_text.rstrip() + "\n\n" + decisions_text.rstrip())
     except (OSError, ValueError) as exc:

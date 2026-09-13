@@ -1,7 +1,7 @@
 {
   "$schema": "./capabilities.schema.json",
   "schema_version": 3,
-  "reviewed": "2026-09-10",
+  "reviewed": "2026-09-12",
   "principle": "Same intent, native harness surfaces. Unsupported capabilities are named, not simulated.",
   "agent_frontmatter": {
     "tool_vocabulary": [
@@ -120,6 +120,36 @@
             "The Stop decision is printed before delivery is recorded; a hook killed at its 3 s Stop budget re-emits the same request at the next guard-free Stop (a Stop that follows a delivered block carries stop_hook_active and emits nothing), so an unattended worker may need another user turn or an attach",
             "An absent, malformed or over-bound Stop payload is treated as stop_hook_active (no block); a delivery receipt confirms only its exact request and attempt",
             "Delivery through the Stop seam requires jq in the worker's PATH; without it the guard can never be cleared and the request stays queued"
+          ]
+        },
+        "session-experience": {
+          "support": "partial",
+          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
+          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "limitations": [
+            "Default policy is off; capture, review and Memory acknowledgement are independent",
+            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
+            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+          ]
+        },
+        "session-guidance": {
+          "support": "partial",
+          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
+          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "limitations": [
+            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "Supply is not proof of use; unknown native version and outcomes remain unknown",
+            "Native delivery probes remain outstanding"
+          ]
+        },
+        "experience-review": {
+          "support": "unsupported",
+          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
+          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "limitations": [
+            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "Claude adapter specifies --bare, empty tools, strict empty MCP, no skills, no hooks; only adapter fixtures and local --help checked",
+            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
         }
       }
@@ -251,6 +281,36 @@
             "Each rendered hook command remains subject to Codex's hash-bound interactive hook trust",
             "Structured Codex acknowledges through the shell CLI descending from its owner; no native asha_control handoff operation is claimed"
           ]
+        },
+        "session-experience": {
+          "support": "partial",
+          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
+          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "limitations": [
+            "Default policy is off; capture, review and Memory acknowledgement are independent",
+            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
+            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+          ]
+        },
+        "session-guidance": {
+          "support": "partial",
+          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
+          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "limitations": [
+            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "Supply is not proof of use; unknown native version and outcomes remain unknown",
+            "Native delivery probes remain outstanding"
+          ]
+        },
+        "experience-review": {
+          "support": "unsupported",
+          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
+          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "limitations": [
+            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "No equivalent verified packet-only backend adapter; no fallback to another harness",
+            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
+          ]
         }
       }
     },
@@ -361,6 +421,36 @@
           "limitations": [
             "No Stop seam: the request reaches the worker only when it reads `session messages`; attach or force-close otherwise",
             "Reported honestly as pending-delivery; screen scraping and keystrokes are not used"
+          ]
+        },
+        "session-experience": {
+          "support": "partial",
+          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
+          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "limitations": [
+            "Default policy is off; capture, review and Memory acknowledgement are independent",
+            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
+            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+          ]
+        },
+        "session-guidance": {
+          "support": "partial",
+          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
+          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "limitations": [
+            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "Supply is not proof of use; unknown native version and outcomes remain unknown",
+            "Native delivery probes remain outstanding"
+          ]
+        },
+        "experience-review": {
+          "support": "unsupported",
+          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
+          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "limitations": [
+            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "No equivalent verified packet-only backend adapter; no fallback to another harness",
+            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
         }
       }
@@ -474,6 +564,36 @@
           "limitations": [
             "No Stop seam: the request reaches the worker only when it reads `session messages`; attach or force-close otherwise",
             "Reported honestly as pending-delivery; screen scraping and keystrokes are not used"
+          ]
+        },
+        "session-experience": {
+          "support": "partial",
+          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
+          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "limitations": [
+            "Default policy is off; capture, review and Memory acknowledgement are independent",
+            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
+            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+          ]
+        },
+        "session-guidance": {
+          "support": "partial",
+          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
+          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "limitations": [
+            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "Supply is not proof of use; unknown native version and outcomes remain unknown",
+            "Native delivery probes remain outstanding"
+          ]
+        },
+        "experience-review": {
+          "support": "unsupported",
+          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
+          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "limitations": [
+            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "No equivalent verified packet-only backend adapter; no fallback to another harness",
+            "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
         }
       }

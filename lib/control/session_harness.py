@@ -94,6 +94,7 @@ def decode_claude(value):
         yield "failed" if failed else "completed", {
             "reason": "native permission denied" if denied else value.get("subtype"),
             "summary": str(value.get("result", ""))[:16000],
+            "summary_truncated": len(str(value.get("result", ""))) > 16000,
             "native_id": value.get("session_id"), "cost_usd": value.get("total_cost_usd"),
         }
     elif kind == "system":

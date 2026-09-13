@@ -41,8 +41,11 @@ def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
                        'selected' if i == selected else 'row', _activity_tier(row['activity'])))
     if rows:
         row = rows[min(selected, len(rows) - 1)]
+        capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
+        experience = (f" · capture:{capture.get('status', 'disabled')}"
+                      f" review:{row.get('experience_review', 'none')}") if capture else ''
         result += [('', 'muted', INERT), (row.get('reason', ''), 'detail', _activity_tier(row['activity'])),
-                   (f"{row['session_id']} · {row.get('pending_messages', 0)} queued messages", 'muted', INERT)]
+                   (f"{row['session_id']} · {row.get('pending_messages', 0)} queued messages" + experience, 'muted', INERT)]
     result += [(error, 'error', BAD) for error in snapshot.get('errors', [])[:1]]
     result += [(message, 'message', None)]
     if height < 8:

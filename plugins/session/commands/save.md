@@ -23,8 +23,18 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    a valid managed Control workspace becomes effective scope `none`. Explicit
    `repo` and `workspace` bypass marker discovery and keep their existing
    ordinary-plane meaning. Explicit `none` performs no Git discovery.
-2. Read the live conversation and verify every state claim against current
+2. Set `TOOLS="$ASHA_ROOT/plugins/session/tools"`. Before drafting, run
+   `python3 "$TOOLS/memory_v2.py" read --project-dir "$PLANE_BASE" --format json`.
+   Retain both `digests.active` and `digests.decisions` as `EXPECTED_ACTIVE` and
+   `EXPECTED_DECISIONS` alongside the coherent file contents. Missing or stale
+   baselines refuse publication: re-read, merge contributions, and retry. Never
+   compute a fresh baseline to justify an already-written draft.
+   Read the live conversation and verify every state claim against current
    disk. A recovery snapshot is low-authority orientation only.
+   Inspect this project's reviewed findings with `asha control session experience
+   pending --project "$PLANE_BASE" --limit 50 --offset 0 --json`, following all
+   pages. Read selected reports through `experience show REPORT_ID` before deciding
+   whether a binding project decision belongs in this save's draft.
 3. Draft, from live model context:
    - `activeContext.md`, at most 4,096 UTF-8 bytes, with exactly the level-one
      headings `Objective`, `State`, `Next`, and `Blockers` in that order;
@@ -32,16 +42,18 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
      containing current binding decisions—not a history. Remove decisions that
      no longer bind.
    `Next` and `Blockers` each contain at most five items.
-4. Write both drafts outside `Memory/`. When effective scope is `none`, run
+4. Write both drafts outside `Memory/`. Choose an owned private scratch
+   `PUBLICATION_FILE` for the JSON receipt. When effective scope is `none`, run
    the executable managed path below. It publishes through the validator,
-   compares the exact before/after Memory bytes, resolves the local save
+   returns a receipt from the validated bytes under the publication lock, resolves the local save
    identity, and has no Git seam:
 
    ```bash
    SAVE_NONE_SCOPE=()
    if [[ "${REQUESTED_SCOPE:-}" == "none" ]]; then SAVE_NONE_SCOPE=(--scope none); fi
    python3 "$TOOLS/save_none.py" publish "${SAVE_NONE_SCOPE[@]}" --start "$PLANE_BASE" \
-     --active-file "$ACTIVE_DRAFT" --decisions-file "$DECISIONS_DRAFT" || exit
+     --active-file "$ACTIVE_DRAFT" --decisions-file "$DECISIONS_DRAFT" \
+     --expected-active "$EXPECTED_ACTIVE" --expected-decisions "$EXPECTED_DECISIONS" > "$PUBLICATION_FILE" || exit
    ```
 
    For effective `repo` or `workspace`, publish directly through the validator:
@@ -49,9 +61,11 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    ```bash
    TOOLS="$ASHA_ROOT/plugins/session/tools"
    python3 "$TOOLS/memory_v2.py" publish --project-dir "$PLANE_BASE" \
-     --active-file "$ACTIVE_DRAFT" --decisions-file "$DECISIONS_DRAFT" || exit
+     --active-file "$ACTIVE_DRAFT" --decisions-file "$DECISIONS_DRAFT" \
+     --expected-active "$EXPECTED_ACTIVE" --expected-decisions "$EXPECTED_DECISIONS" > "$PUBLICATION_FILE" || exit
    ```
 
+   A later publication is reported as superseded, not a failed earlier save.
    The validator checks both drafts before either replacement and writes by
    same-directory `fsync` + `os.replace`. Never bypass it with direct edits.
 5. Inspect and show the resulting change. For effective scope `none`, use only
@@ -60,7 +74,22 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    push. For `repo` or `workspace`, show the Git diff. Run relevant verification
    for code/config changed during the session. Correct and republish stale,
    vague, or unverifiable drafts.
-6. Propose at most three cross-project learning candidates when the evidence
+6. After successful publication, recheck this resolved project's reviewed findings
+   with `asha control session experience pending --project "$PLANE_BASE" --limit 50
+   --offset 0 --json`; continue pages while incomplete. Read each selected report's
+   original evidence with `experience show REPORT_ID`. Record deliberate dispositions
+   using `experience dispose --project "$PLANE_BASE" --decision-file FILE
+   --publication-file FILE`, passing the exact successful explicit-save receipt.
+   See `docs/session-experience.md` for strict decision fields and finding digests.
+   `reject` and `defer` are valid. Project-decision/code-test dispositions create no
+   files; include a project decision in this save's draft only when it binds.
+   Silence or policy off suppress new learning content. Missing identity, manager
+   failure or an interrupted disposition cannot claim adoption; retain intent for
+   exact reconciliation and report the learning failure separately from Memory.
+   Never turn close/review policy into save authority. Report-origin sessions count
+   as evidence sources; the saving chair still owns the three-candidate limit.
+
+   Propose at most three cross-project learning candidates when the evidence
    warrants it. Resolve the save identity from `ASHA_SESSION_ID`, then
    `CLAUDE_CODE_SESSION_ID`, then `CODEX_THREAD_ID`; Copilot may fall back to
    its current/latest validated recovery snapshot. The manager obtains the

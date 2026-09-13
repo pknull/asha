@@ -14,6 +14,7 @@ TOOLS_DIR = Path(__file__).parent.parent.parent / "plugins" / "session" / "tools
 sys.path.insert(0, str(TOOLS_DIR))
 
 import save_scope as ss  # type: ignore[reportMissingImports]  # noqa: E402
+import memory_v2
 
 
 def _git(*args, cwd=None):
@@ -278,6 +279,7 @@ class ManagedBareSaveAcceptance(ScopeFixture):
         old_decisions = "# Decisions\n\n- Old.\n"
         (managed / "Memory" / "activeContext.md").write_text(old_active, encoding="utf-8")
         (managed / "Memory" / "decisions.md").write_text(old_decisions, encoding="utf-8")
+        before = memory_v2.snapshot_digests(memory_v2.read_published_snapshot(managed))
         active = self.tmp / "active.md"
         decisions = self.tmp / "decisions.md"
         active.write_text(old_active.replace("Old", "New"), encoding="utf-8")
@@ -292,6 +294,7 @@ class ManagedBareSaveAcceptance(ScopeFixture):
         result = subprocess.run([
             sys.executable, str(command), "publish", "--start", str(managed),
             "--active-file", str(active), "--decisions-file", str(decisions),
+            "--expected-active", before['active'], "--expected-decisions", before['decisions'],
         ], capture_output=True, text=True, env={
             **os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "ASHA_SESSION_ID": "session-managed-save",
@@ -315,6 +318,7 @@ class ManagedBareSaveAcceptance(ScopeFixture):
         (project / "Memory" / "decisions.md").write_text(
             "# Decisions\n\n- Old.\n", encoding="utf-8",
         )
+        before = memory_v2.snapshot_digests(memory_v2.read_published_snapshot(project))
         active = self.tmp / "explicit-active.md"
         decisions = self.tmp / "explicit-decisions.md"
         active.write_text(old_active.replace("Old", "New"), encoding="utf-8")
@@ -330,6 +334,7 @@ class ManagedBareSaveAcceptance(ScopeFixture):
             sys.executable, str(TOOLS_DIR / "save_none.py"), "publish",
             "--scope", "none", "--start", str(project),
             "--active-file", str(active), "--decisions-file", str(decisions),
+            "--expected-active", before['active'], "--expected-decisions", before['decisions'],
         ], capture_output=True, text=True, env={
             **os.environ, "PATH": f"{fake_bin}:{os.environ['PATH']}",
             "ASHA_SESSION_ID": "session-explicit-none",
@@ -352,13 +357,14 @@ class ManagedBareSaveAcceptance(ScopeFixture):
         ResolveCases._managed_marker(self, managed)
         active = self.tmp / "no-identity-active.md"
         decisions = self.tmp / "no-identity-decisions.md"
-        active.write_text(
+        (managed / "Memory" / "activeContext.md").write_text(
             "# Objective\n\nO\n\n# State\n\nS\n\n# Next\n\n- N\n\n# Blockers\n\n- None.\n",
             encoding="utf-8",
         )
-        decisions.write_text("# Decisions\n\n- D.\n", encoding="utf-8")
-        (managed / "Memory" / "activeContext.md").write_text(active.read_text(), encoding="utf-8")
         (managed / "Memory" / "decisions.md").write_text("# Decisions\n\n- Old.\n", encoding="utf-8")
+        before = memory_v2.snapshot_digests(memory_v2.read_published_snapshot(managed))
+        active.write_text((managed / "Memory" / "activeContext.md").read_text(), encoding="utf-8")
+        decisions.write_text("# Decisions\n\n- D.\n", encoding="utf-8")
         env = {
             key: value for key, value in os.environ.items()
             if key not in {"ASHA_SESSION_ID", "CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID"}
@@ -368,6 +374,7 @@ class ManagedBareSaveAcceptance(ScopeFixture):
             sys.executable, str(TOOLS_DIR / "save_none.py"), "publish",
             "--start", str(managed), "--active-file", str(active),
             "--decisions-file", str(decisions),
+            "--expected-active", before['active'], "--expected-decisions", before['decisions'],
         ], capture_output=True, text=True, env=env)
 
         self.assertEqual(result.returncode, 0, result.stderr)

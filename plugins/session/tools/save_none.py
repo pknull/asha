@@ -20,10 +20,11 @@ import save_scope
 
 
 def _draft(path: Path, maximum: int, label: str) -> str:
-    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    path = memory_v2.secure_project_root(path.absolute().parent) / path.name
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
     try:
         metadata = os.fstat(fd)
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum:
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > maximum or metadata.st_uid != os.geteuid() or metadata.st_nlink != 1:
             raise ValueError(f"{label} is not one bounded regular file")
         chunks: list[bytes] = []
         remaining = maximum + 1
@@ -47,6 +48,7 @@ def _digest(value: bytes) -> str:
 
 def publish_managed_none(
     start: Path, active_file: Path, decisions_file: Path, *, explicit_none: bool = False,
+    expected_preimages: dict | None = None,
 ) -> dict:
     mapping, errors = save_scope.resolve_effective_plane("none" if explicit_none else None, start=start)
     if mapping is None:
@@ -54,20 +56,21 @@ def publish_managed_none(
     if mapping["scope"] != "none" or mapping["commit_repo"] is not None:
         raise ValueError("managed bare-save executor accepts only effective scope none")
     root = Path(mapping["plane_base"])
-    before = memory_v2.read_published_snapshot(root)
+    if not expected_preimages or set(expected_preimages) != {"active", "decisions"}:
+        raise ValueError("pre-draft expected digests required; re-read Memory, merge and retry")
+    for value in expected_preimages.values():
+        memory_v2.expected_digest(value)
     active = _draft(active_file, memory_v2.ACTIVE_LIMIT, "active draft")
     decisions = _draft(decisions_file, memory_v2.DECISIONS_LIMIT, "decisions draft")
-    memory_v2.publish(root, active, decisions)
-    after = memory_v2.read_published_snapshot(root)
-    if after.active_context != active.encode("utf-8") or after.decisions != decisions.encode("utf-8"):
-        raise ValueError("published Memory bytes differ from the validated drafts")
-    changed = []
-    for relative, old, new in (
-        ("Memory/activeContext.md", before.active_context, after.active_context),
-        ("Memory/decisions.md", before.decisions, after.decisions),
-    ):
-        if old != new:
-            changed.append(relative)
+    publication = memory_v2.publish(root, active, decisions, expected_preimages=expected_preimages)
+    current = None
+    verification_error = None
+    try:
+        current = memory_v2.snapshot_digests(memory_v2.read_published_snapshot(root))
+    except (OSError, ValueError):
+        verification_error = "post-publication snapshot unavailable; committed receipt retained"
+    names = {"active": "Memory/activeContext.md", "decisions": "Memory/decisions.md"}
+    changed = [names[key] for key in publication['changed']]
     try:
         session_id = save_identity.resolve(root, os.environ.get("ASHA_HARNESS", ""))
     except (OSError, ValueError):
@@ -76,14 +79,11 @@ def publish_managed_none(
         "contract": "asha.managed-none-save.v1", "scope": "none",
         "plane_base": str(root), "changed": changed, "session_id": session_id,
         "identity_status": "resolved" if session_id is not None else "skipped",
-        "before": {
-            "Memory/activeContext.md": _digest(before.active_context),
-            "Memory/decisions.md": _digest(before.decisions),
-        },
-        "after": {
-            "Memory/activeContext.md": _digest(after.active_context),
-            "Memory/decisions.md": _digest(after.decisions),
-        },
+        "before": {names[k]: v for k, v in publication['before'].items()},
+        "after": {names[k]: v for k, v in publication['after'].items()},
+        "publication": publication, "current": current,
+        "superseded": current != publication['after'] if current is not None else None,
+        "verification_error": verification_error,
         "git_invoked": False,
     }
 
@@ -96,12 +96,15 @@ def main(argv: list[str] | None = None) -> int:
     publish.add_argument("--scope", choices=("none",))
     publish.add_argument("--active-file", required=True, type=Path)
     publish.add_argument("--decisions-file", required=True, type=Path)
+    publish.add_argument("--expected-active", required=True)
+    publish.add_argument("--expected-decisions", required=True)
     args = parser.parse_args(argv)
     try:
         print(json.dumps(
             publish_managed_none(
                 args.start, args.active_file, args.decisions_file,
                 explicit_none=args.scope == "none",
+                expected_preimages={"active": args.expected_active, "decisions": args.expected_decisions},
             ),
             sort_keys=True,
         ))

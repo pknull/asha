@@ -150,6 +150,15 @@ def request_text(row: dict, closure: dict) -> str:
         lines.append(f"Project memory is unavailable ({memory['reason']}). Acknowledge with "
                      f"`asha control session handoff --request {rid} --outcome no-durable-update --detail WHY --json` "
                      f"or `--outcome blocked --detail REASON`.")
+    capture = closure.get('capture', {})
+    if capture.get('requested'):
+        lines.append("Include one bounded JSON assessment (asha.session-experience.v1, at most 16 KiB, "
+                     "three observations/four evidence items) with --experience-file FILE. Assessment is "
+                     "observations, none-observed, or insufficient-evidence. Report facts, hypotheses and "
+                     "uncertainty separately. Capture is independent of no-durable-update and never delays close. "
+                     "Use --experience-ref REPORT_ID for unchanged findings; corrections use --supersedes REPORT_ID --key NEW_UUID.")
+        if row.get('capture', {}).get('report_id'):
+            lines.append('Previously captured report receipt: ' + row['capture']['report_id'])
     lines.append("After the handoff is acknowledged, end your turn. The operator terminates the session only after that acknowledgement.")
     return "\n".join(lines)
 
@@ -277,7 +286,7 @@ def publish_handoff(project: str, active_file: str, decisions_file: str, *, expe
         raise ValueError("handoff drafts must be UTF-8") from exc
     preimages = {"active": expected.get("activeContext.md"), "decisions": expected.get("decisions.md")}
     try:
-        memory_v2.publish(root, active, decisions, expected_preimages=preimages)
+        memory_v2.publish(root, active, decisions, expected_preimages=preimages, publication_source="close")
     except ValueError as exc:
         if "preimage changed" in str(exc):
             raise ValueError("publication preimage changed: the live Memory digests differ from --expected-active/"
