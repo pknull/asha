@@ -443,9 +443,11 @@ class PublishedMemoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             memory_v2.initialize(root)
-            self.assertIsNone(memory_v2.publish(
+            receipt = memory_v2.publish(
                 root, memory_v2.ACTIVE_TEMPLATE, memory_v2.DECISIONS_TEMPLATE
-            ))
+            )
+            self.assertEqual(receipt['contract'], 'asha.memory-publication.v1')
+            self.assertNotIn('capability', receipt)
             state = root / "Work/session-state"
             self.assertFalse(any(state.glob(".learning-capability-*.json")))
 

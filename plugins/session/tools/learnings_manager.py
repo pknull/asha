@@ -15,6 +15,7 @@ import tempfile
 import shutil
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -26,13 +27,26 @@ if str(Path(__file__).resolve().parent) not in sys.path:
 from path_safety import secure_path, secure_project_root
 
 
+_SELECTED_HOME = ContextVar('learning_home', default=None)
+
+
+@contextmanager
+def at_home(home):
+    """Use an explicit Control home without changing process-global environment."""
+    token = _SELECTED_HOME.set(Path(home))
+    try:
+        yield
+    finally:
+        _SELECTED_HOME.reset(token)
+
+
 def learnings_dir() -> Path:
     """The learnings bundle root, honoring ASHA_HOME.
 
     Resolved at call time, not import time: an import-time Path.home()
     constant could not be redirected by any caller or test.
     """
-    asha_home = os.environ.get("ASHA_HOME")
+    asha_home = _SELECTED_HOME.get() or os.environ.get("ASHA_HOME")
     base = Path(asha_home) if asha_home else Path.home() / ".asha"
     return base / "learnings"
 
@@ -51,6 +65,7 @@ class Evidence:
     project_id: str
     reason: str
     kind: str = "corroborate"
+    source_provenance: dict | None = None
 
 
 @dataclass
@@ -63,6 +78,7 @@ class Learning:
     created: str = ""
     updated: str = ""
     retirement_reason: str = ""
+    applicability: dict = field(default_factory=dict)
 
 
 def _today() -> str:
@@ -190,6 +206,7 @@ def _render(learning: Learning) -> str:
         "updated": learning.updated,
         "retirement_reason": learning.retirement_reason,
         "evidence": [asdict(item) for item in learning.evidence],
+        "applicability": learning.applicability,
     }
     # JSON is a valid YAML mapping and lets the manager remain dependency-free.
     return f"---\n{json.dumps(data, ensure_ascii=False, indent=2)}\n---\n\n# {learning.id}\n\n**Trigger:** {learning.trigger}\n\n**Action:** {learning.action}\n"
@@ -207,6 +224,7 @@ def _parse(path: Path) -> Learning:
         action=str(data.get("action", "")), state=str(data.get("state", path.parent.name)),
         evidence=evidence, created=str(data.get("created", "")),
         updated=str(data.get("updated", "")), retirement_reason=str(data.get("retirement_reason", "")),
+        applicability=data.get("applicability", {}),
     )
 
 
@@ -342,13 +360,64 @@ def load(learning_id: str) -> Learning:
         return _load_unlocked(learning_id)
 
 
-def _add_evidence(learning: Learning, session_id: str, project_id: str, reason: str, kind: str) -> bool:
+def rule_version(learning: Learning) -> str:
+    return hashlib.sha256(json.dumps({"trigger": learning.trigger, "action": learning.action,
+        "applicability": learning.applicability}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _source(source, publisher_session, publisher_project):
+    if source is None:
+        return None
+    required = {"session_id", "project_id", "origin_key", "report_id", "observation_key",
+                "evidence_digest", "adopting_save_identity", "harness", "harness_version"}
+    if not isinstance(source, dict) or not required <= source.keys() or source.keys() - required - {'subject_kind'}:
+        raise ValueError("invalid source provenance")
+    source = json.loads(json.dumps(source))
+    if 'subject_kind' in source and source['subject_kind'] not in ('worker-observation', 'reviewer-report-assessment'):
+        raise ValueError("invalid source subject kind")
+    for key in ("session_id", "project_id", "report_id", "observation_key"):
+        if not isinstance(source[key], str) or not source[key].strip() or len(source[key]) > 256:
+            raise ValueError("invalid observation source identity")
+    for key in ("origin_key", "evidence_digest"):
+        if not isinstance(source[key], str) or not re.fullmatch(r"[a-f0-9]{64}", source[key]):
+            raise ValueError("invalid source digest")
+    identity = source['adopting_save_identity']
+    if (not isinstance(identity, dict) or set(identity) != {'session_id', 'project_id', 'publication_id'}
+            or identity['session_id'] != publisher_session or identity['project_id'] != publisher_project
+            or not isinstance(identity['publication_id'], str) or not identity['publication_id']):
+        raise ValueError("source must retain the explicit adopting save identity")
+    if source['harness'] not in ('claude', 'codex', 'copilot', 'opencode', None):
+        raise ValueError("invalid source harness")
+    if source['harness_version'] is not None and not isinstance(source['harness_version'], str):
+        raise ValueError("invalid source version")
+    return source
+
+
+def _publisher(item):
+    if item.source_provenance:
+        identity = item.source_provenance['adopting_save_identity']
+        return identity['session_id'], identity['project_id']
+    return item.session_id, item.project_id
+
+
+def _add_evidence(learning: Learning, session_id: str, project_id: str, reason: str, kind: str,
+                  source_provenance=None) -> bool:
     if not session_id or not project_id:
         raise ValueError("session_id and project_id are required")
-    key = (session_id, project_id)
-    if any((item.session_id, item.project_id) == key for item in learning.evidence):
-        return False
-    learning.evidence.append(Evidence(_today(), session_id, project_id, reason[:500], kind))
+    if source_provenance:
+        origin = source_provenance['origin_key']
+        if any(item.source_provenance and item.source_provenance['origin_key'] == origin
+               and (item.kind == 'contradict') == (kind == 'contradict') for item in learning.evidence):
+            return False
+        session_id, project_id = source_provenance['session_id'], source_provenance['project_id']
+    else:
+        # Contradiction from an already-positive source must not be deduplicated
+        # away. The latest contradiction still fences all earlier positives.
+        if any((item.session_id, item.project_id) == (session_id, project_id)
+               and (item.kind == 'contradict') == (kind == 'contradict')
+               and (kind != 'contradict' or item.reason == reason[:500]) for item in learning.evidence):
+            return False
+    learning.evidence.append(Evidence(_today(), session_id, project_id, reason[:500], kind, source_provenance))
     learning.updated = _today()
     return True
 
@@ -373,11 +442,12 @@ def _save_identity(project_dir: Path, session_id: str) -> tuple[str, str]:
 
 
 def propose(learning_id: str, trigger: str, action: str, *, project_dir: Path,
-            session_id: str, reason: str) -> Learning:
+            session_id: str, reason: str, source_provenance=None, applicability=None) -> Learning:
     new_trigger, new_action = trigger.strip(), action.strip()
     _assert_not_silenced(project_dir)
     with _global_lock():
         session_id, project_id = _save_identity(project_dir, session_id)
+        source_provenance = _source(source_provenance, session_id, project_id)
         try:
             learning = _load_unlocked(learning_id)
         except KeyError:
@@ -402,19 +472,24 @@ def propose(learning_id: str, trigger: str, action: str, *, project_dir: Path,
             learning.trigger = new_trigger or learning.trigger
             learning.action = new_action or learning.action
         already_recorded = any(
-            item.session_id == session_id and item.project_id == project_id
+            _publisher(item) == (session_id, project_id)
             for item in learning.evidence
         )
         if not already_recorded:
             proposed_this_session = sum(
                 1
                 for existing in _list_state_unlocked()
-                if any(item.kind == "propose" and item.session_id == session_id and
-                       item.project_id == project_id for item in existing.evidence)
+                if any(item.kind == "propose" and _publisher(item) == (session_id, project_id) for item in existing.evidence)
             )
             if proposed_this_session >= MAX_PROPOSALS_PER_SAVE:
                 raise ValueError("at most 3 learning candidates may be proposed per save")
-        _add_evidence(learning, session_id, project_id, reason, "propose")
+        if applicability is not None:
+            if learning.state == 'active' and learning.applicability != applicability:
+                raise ValueError('active applicability cannot change through a proposal')
+            if learning.applicability and learning.applicability != applicability:
+                learning.evidence = [item for item in learning.evidence if item.kind == 'contradict']
+            learning.applicability = applicability
+        _add_evidence(learning, session_id, project_id, reason, "propose", source_provenance)
         return _save_unlocked(learning)
 
 
@@ -429,16 +504,65 @@ def propose_many(proposals: Iterable[dict[str, Any]], *, project_dir: Path,
 
 
 def corroborate(learning_id: str, *, project_dir: Path, session_id: str,
-                reason: str) -> Learning:
+                reason: str, source_provenance=None) -> Learning:
     _assert_not_silenced(project_dir)
     with _global_lock():
         session_id, project_id = _save_identity(project_dir, session_id)
+        source_provenance = _source(source_provenance, session_id, project_id)
         learning = _load_unlocked(learning_id)
         if learning.state == "retired":
             raise ValueError("retired learning cannot be corroborated")
-        if _add_evidence(learning, session_id, project_id, reason, "corroborate"):
+        if _add_evidence(learning, session_id, project_id, reason, "corroborate", source_provenance):
             _save_unlocked(learning)
         return learning
+
+
+def adopt_reviewed(learning_id: str, *, project_dir: Path, session_id: str, reason: str,
+                   source_provenance: dict, operation: str, expected_version=None,
+                   trigger=None, action=None, applicability=None) -> Learning:
+    """One locked, idempotent explicit-save operation for a retained origin.
+
+    The publisher owns the three-candidate guard; the original observation owns
+    corroboration diversity. SQLite receipt recovery never restores file snapshots.
+    """
+    if operation not in {'propose', 'corroborate'}:
+        raise ValueError('invalid reviewed learning operation')
+    with _global_lock():
+        session_id, project_id = _save_identity(project_dir, session_id)
+        source = _source(source_provenance, session_id, project_id)
+        try:
+            learning = _load_unlocked(learning_id)
+        except KeyError:
+            if operation != 'propose' or expected_version is not None:
+                raise ValueError('reviewed target learning is missing')
+            if not isinstance(trigger, str) or not trigger.strip() or not isinstance(action, str) or not action.strip():
+                raise ValueError('reviewed trigger and action are required')
+            learning = Learning(learning_id, trigger.strip(), action.strip(),
+                                created=_today(), updated=_today(), applicability=applicability or {})
+        else:
+            if learning.state == 'retired':
+                raise ValueError('retired learning cannot be adopted')
+            if expected_version is not None and expected_version != rule_version(learning):
+                raise ValueError('reviewed learning version changed; inspect before retrying')
+            if operation == 'corroborate' and expected_version is None:
+                raise ValueError('corroboration requires the inspected rule version')
+            if operation == 'propose' and (trigger != learning.trigger or action != learning.action
+                                         or (applicability or {}) != learning.applicability):
+                raise ValueError('reviewed proposal cannot overwrite existing semantics; inspect or use a new id')
+        matching = [item for item in learning.evidence if item.source_provenance
+                    and item.source_provenance['origin_key'] == source['origin_key']]
+        if matching:
+            if any(item.source_provenance['evidence_digest'] != source['evidence_digest'] for item in matching):
+                raise ValueError('origin evidence changed; reconcile original observation before adoption')
+            return learning
+        if operation == 'propose' and not any(_publisher(e) == (session_id, project_id) for e in learning.evidence):
+            count = sum(any(e.kind == 'propose' and _publisher(e) == (session_id, project_id)
+                            for e in candidate.evidence) for candidate in _list_state_unlocked())
+            if count >= MAX_PROPOSALS_PER_SAVE:
+                raise ValueError('at most 3 learning candidates may be proposed per save')
+        _add_evidence(learning, session_id, project_id, reason, operation, source)
+        _assert_not_silenced(project_dir)
+        return _save_unlocked(learning)
 
 
 def activate_if_eligible(learning_id: str, *, project_dir: Path) -> bool:
@@ -462,14 +586,15 @@ def activate_if_eligible(learning_id: str, *, project_dir: Path) -> bool:
 
 
 def contradict(learning_id: str, *, project_dir: Path, session_id: str,
-               reason: str) -> Learning:
+               reason: str, source_provenance=None) -> Learning:
     _assert_not_silenced(project_dir)
     with _global_lock():
         session_id, project_id = _save_identity(project_dir, session_id)
+        source_provenance = _source(source_provenance, session_id, project_id)
         learning = _load_unlocked(learning_id)
         if learning.state == "retired":
             raise ValueError("retired learning cannot transition")
-        _add_evidence(learning, session_id, project_id, reason, "contradict")
+        _add_evidence(learning, session_id, project_id, reason, "contradict", source_provenance)
         learning.state = "candidate"
         return _save_unlocked(learning)
 

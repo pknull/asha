@@ -124,3 +124,24 @@ Use initiatives only when the Keeper requests their staged workflow. Open
 [the advanced workflow reference](references/advanced-workflows.md).
 Preserve its scoped authorities and records. Never automatically resume,
 migrate, replace or archive legacy work while launching ordinary jobs.
+
+## Optional session experience
+
+Project learning policy is initially off. Use `asha control session experience
+policy --project PROJECT --json` to inspect; explicit operator changes require the
+current `--revision` and `--mode off|capture|review`. Capture and Memory close outcomes
+are independent. Workers may add `--experience-file FILE --key UUID` to finished
+reports, or add an experience file/reference to a close handoff. Corrections use
+`--supersedes REPORT_ID --key NEW_UUID`. Never reconstruct transcripts for missing
+capture. `experience list/show/packet/pending/guidance/stats` inspect retained evidence.
+
+Launch, resume and send accept repeated `--learning ID[@DIGEST]` for selected active
+guidance only (three rules, 3 KiB). Check exclusions and delivery manifests; queued
+context is not supplied context and supplied guidance is not proof of use.
+When `session messages` returns `delivery_digest`, acknowledge that exact body
+with `session ack-message MESSAGE_ID --delivery-digest DIGEST`. Ordinary
+acknowledgements without the optional digest leave guidance supply unknown.
+Review utilities are single-turn and advisory. Native automatic review is gated off
+until the outstanding approved enforcement probe; unavailable backends remain
+unsupported. Explicit-save disposition is the only adoption path. Read
+`docs/session-experience.md` for contracts, silence, budgets and recovery.

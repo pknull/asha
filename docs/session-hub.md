@@ -175,3 +175,12 @@ automatically replayed. Existing quota and turn-budget limits still apply.
 Terminal jobs do not need the supervisor or the dashboard to keep running.
 Closing either UI is separate from stopping work. This change does not resume
 old initiatives, clear old questions, or migrate an existing registry backend.
+
+## Optional session experience
+
+[Session experience and reviewed learning](session-experience.md) documents the
+dormant project policy, bounded report/close capture, one-turn review custody,
+explicit-save dispositions, selected guidance and coverage metrics. Policy defaults
+to off; native automatic review remains gated pending separately approved probes.
+Ordinary and scope-none Memory publication require both pre-draft snapshot digests;
+close remains independent of successful capture or completed review.

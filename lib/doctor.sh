@@ -87,6 +87,11 @@ _asha_doctor_session_profile_section() {
   echo ""
   echo "── Session profiles (ASHA_SESSION_PROFILE) ──"
   _asha_doctor_capability_report session-profile "${1:-all}"
+  echo ""
+  echo "── Session experience (policy off by default; native review gated) ──"
+  _asha_doctor_capability_report session-experience "${1:-all}"
+  _asha_doctor_capability_report session-guidance "${1:-all}"
+  _asha_doctor_capability_report experience-review "${1:-all}"
 }
 
 # Imported skills are a user-owned source plane, so repository drift checks

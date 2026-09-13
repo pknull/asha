@@ -108,6 +108,9 @@ def dispatch(argv, *, env):
     verb = argv[0]
     config = load_config(env)
     hub = Hub(config, env=env)
+    if verb == 'experience':
+        from .experience_cli import dispatch as experience_dispatch
+        return experience_dispatch(hub, argv[1:])
     def is_managed(sid):
         from .session_store import SessionStore, SessionsUninitialized
         try:
@@ -129,6 +132,7 @@ def dispatch(argv, *, env):
         parser.add_argument('--profile', default='worker', choices=['worker', 'room'])
         parser.add_argument('--session-id')
         parser.add_argument('--transport', default='terminal', choices=['terminal', 'structured'])
+        parser.add_argument('--result-contract', choices=['asha.session-result.v1'])
     elif verb in {'show', 'attach', 'close', 'stop', 'resume', 'send'}:
         parser.add_argument('session_id')
         if verb in {'resume', 'send'}:
@@ -161,8 +165,17 @@ def dispatch(argv, *, env):
         parser.add_argument('--limit', type=int, default=100)
     elif verb == 'ack-message':
         parser.add_argument('message_id')
+        parser.add_argument('--delivery-digest')
     elif verb == 'list':
         parser.add_argument('--all', action='store_true')
+    if verb in {'launch', 'resume', 'send'}:
+        parser.add_argument('--learning', dest='learning_ids', action='append', default=[])
+    if verb in {'report', 'handoff'}:
+        group = parser.add_mutually_exclusive_group()
+        group.add_argument('--experience-file')
+        group.add_argument('--experience-ref')
+        parser.add_argument('--supersedes')
+        parser.add_argument('--key')
     args = parser.parse_args(argv[1:])
     try:
         if verb == 'launch':
@@ -172,7 +185,7 @@ def dispatch(argv, *, env):
         elif verb == 'show':
             result = hub.show(args.session_id)
         elif verb == 'send':
-            result = hub.send(args.session_id, args.text, key=args.key or str(uuid.uuid4()))
+            result = hub.send(args.session_id, args.text, key=args.key or str(uuid.uuid4()), learning_ids=args.learning_ids)
         elif verb in {'stop', 'close'}:
             if hub.owns(args.session_id):
                 if verb == 'close':
@@ -193,7 +206,7 @@ def dispatch(argv, *, env):
                     from .rooms import RoomStore, close_room
                     result = close_room(RoomStore(config), args.session_id, tmux=hub.tmux)
         elif verb == 'resume':
-            result = hub.resume(args.session_id, prompt=args.text, expected_digest=args.digest)
+            result = hub.resume(args.session_id, prompt=args.text, expected_digest=args.digest, learning_ids=args.learning_ids)
         elif verb == 'attach':
             if hub.owns(args.session_id):
                 result = hub.attach(args.session_id)
@@ -207,8 +220,12 @@ def dispatch(argv, *, env):
                 print(result.get('attach', 'Open asha control and press Enter on session ' + args.session_id))
                 return 0
         elif verb in {'report', 'event'}:
-            result = hub.observe(getattr(args, 'event', None), state=getattr(args, 'state', None),
-                                 body=args.text, native_id=args.native_id)
+            if verb == 'report':
+                result = hub.report(state=args.state, body=args.text, native_id=args.native_id,
+                    experience_file=args.experience_file, experience_ref=args.experience_ref,
+                    supersedes=args.supersedes, key=args.key)
+            else:
+                result = hub.observe(args.event, body=args.text, native_id=args.native_id)
             if verb == 'event':
                 # The only instruction this bridge ever carries: a pending close
                 # request, returned once as the harness's own Stop decision.
@@ -232,12 +249,13 @@ def dispatch(argv, *, env):
                 expected = {'activeContext.md': parse_digest(args.expected_active),
                             'decisions.md': parse_digest(args.expected_decisions)}
                 result = hub.handoff(args.request, outcome=args.outcome, detail=args.detail,
-                                     active_file=args.active_file, decisions_file=args.decisions_file, expected=expected)
+                                     active_file=args.active_file, decisions_file=args.decisions_file, expected=expected,
+                                     experience_file=args.experience_file, experience_ref=args.experience_ref, supersedes=args.supersedes, key=args.key)
         elif verb == 'messages':
             sid = args.session_id or hub.actor()['session_id']
             result = hub.message_page(sid, offset=args.offset, limit=args.limit)
         elif verb == 'ack-message':
-            result = hub.acknowledge(args.message_id)
+            result = hub.acknowledge(args.message_id, delivery_digest=args.delivery_digest)
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2))
         return 0
     except (ValueError, OSError, StoreError) as exc:
