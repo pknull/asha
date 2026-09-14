@@ -127,6 +127,12 @@ This reverses the earlier plan's "explicit chair selection only in v1."
 
 ### C7. Wake idle sessions for graceful close (G7)
 
+Coordinate with issue #92, which specifies a verified completion receipt that lets
+an already-finalized idle worker close without another model turn. Where #92's
+receipt exists, it supersedes C6's publication linkage and no wake is needed. C7
+covers idle sessions without a qualifying receipt. Dashboard hints for these
+states are issue #93.
+
 - When a close request targets a terminal session that is observed idle, has no
   Stop-hook channel, and supports native resume, Control stops the owned process
   and resumes the same native conversation with the close request text as the
