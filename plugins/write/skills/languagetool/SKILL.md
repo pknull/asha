@@ -10,8 +10,7 @@ license: MIT
 
 This skill provides access to your local LanguageTool server running on `localhost:8081`. LanguageTool checks grammar, style, punctuation, and offers suggestions for improving text quality.
 
-**Server Status**: Running at http://localhost:8081
-**Process**: java -jar languagetool-server.jar (PID: 8834)
+**Server**: user systemd unit `languagetool.service` (`~/.config/systemd/user/`), LanguageTool 6.6 in `~/Projects/languagetool/LanguageTool-6.6`, listening on http://localhost:8081. Do not launch `java -jar` by hand; the port is already bound by the unit.
 
 ## Quick Start
 
@@ -285,14 +284,17 @@ def generate_report(filepath):
 
 ### Server not responding
 ```bash
-# Check if server is running
-ps aux | grep languagetool
+# Check the unit
+systemctl --user status languagetool
 
 # Check port
-netstat -tlnp | grep 8081
+ss -ltnp | grep 8081
 
-# Restart server
-java -jar languagetool-server.jar --port 8081
+# Restart the unit
+systemctl --user restart languagetool
+
+# Logs
+journalctl --user -u languagetool -n 50
 ```
 
 ### Connection errors
