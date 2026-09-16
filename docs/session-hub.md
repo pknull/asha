@@ -59,6 +59,12 @@ pane. Attach to provide interactive input, or let the worker read
 `session messages` and acknowledge processed context with `session ack-message
 MESSAGE_ID`. Pages expose completeness and a continuation offset.
 
+Worker launch, resume and send automatically supply up to three compatible active
+learnings (3 KiB), ordered by project scope, harness scope, source-session evidence
+count and rule ID. Repeated `--learning ID` selects explicitly; `--no-learning`
+supplies none. Rooms keep their existing context behavior. Queued guidance becomes
+supplied only through the existing delivery acknowledgement; supply is not use.
+
 Structured utilities retain messages for eligible turn boundaries and expose
 native permission/clarification requests through Control. They inherit the
 harness's permission settings; Asha does not choose an automatic bypass.
@@ -77,6 +83,12 @@ the hub session's generation. Environment labels alone cannot establish
 reporter identity. Native hooks bound reporting time and fail open when the
 hub is unavailable. An explicit report is retained across the report command's
 own completion hooks.
+
+With effective experience policy enabled, a finished report without an assessment
+returns one bounded assessment request and controller key. Follow up with
+`report --state finished --experience-file FILE --key KEY`; it preserves result
+text and deduplicates retries. An unanswered request followed by exit records
+`missing` / `exited-before-capture`. Structured and review utilities are excluded.
 
 ## Recovery and operation
 
@@ -116,8 +128,8 @@ Delivery is honest about each seam:
 | Session | Delivery | Idle agent |
 | --- | --- | --- |
 | Terminal Claude | Queued message, and once as the harness's own Stop-hook block decision when the current turn ends | Cannot be woken; attach and hand it the request, or force-close |
-| Terminal Codex | Queued message only: Codex Stop delivery is live-proven, but its return channel for a block decision is not claimed until a live probe lands (`docs/harness-enforcement.md`) | Attach, or force-close |
-| Terminal Copilot/OpenCode | Queued message only (no Stop seam) | Attach, or force-close |
+| Terminal Codex | Queued while working; observed idle sessions with a native conversation ID use owned stop and native resume with the close request | Same conversation continues; unknown activity/missing ID/resume failure requires attach |
+| Terminal Copilot/OpenCode | Queued message only (no Stop seam or supported native resume) | `unanswered`, attachment required |
 | Structured Claude/Codex | The request becomes the next structured turn | Same path; the turn is scheduled by the supervisor |
 
 The Stop decision is printed before delivery is recorded, so a hook killed at
@@ -148,6 +160,21 @@ as if that guard were set, never as permission to block again, and the bridge
 itself relays no block while the guard holds. Delivery is confirmed against
 the exact request, attempt and incarnation the decision was emitted for, so a
 late receipt for an earlier request cannot mark its replacement delivered.
+
+The idle continuation keeps one close request ID across the new generation. Only
+a recent native idle observation and verified owned process permit the wake;
+an explicit `finished` report alone is insufficient. Working sessions are not
+stopped. Failure leaves the request unanswered with `attachment_required` and
+actionable guidance for the dashboard. These are fixture-tested seams, without a
+paid native acceptance claim. No pane input or screen reads are used.
+
+For a Room with a controller-retained explicit save in its current generation
+after its latest assignment, close omits the experience assessment and records
+`disabled` / `explicit-save-published`. A new assignment invalidates the omission.
+This linkage does not authorize termination. [Issue #92](https://github.com/pknull/asha/issues/92)
+owns verified completion readiness; `_close_once` marks its integration point
+before any final-turn wake. [Issue #93](https://github.com/pknull/asha/issues/93)
+owns the broader dashboard hints and ended-session grouping.
 Legacy Rooms and
 non-hub managed sessions have no handoff seam: `close` refuses without
 `--force`. A verified publication whose follow-up verification read is refused
@@ -178,9 +205,9 @@ old initiatives, clear old questions, or migrate an existing registry backend.
 
 ## Optional session experience
 
-[Session experience and reviewed learning](session-experience.md) documents the
-dormant project policy, bounded report/close capture, one-turn review custody,
-explicit-save dispositions, selected guidance and coverage metrics. Policy defaults
-to off; native automatic review remains gated pending separately approved probes.
+[Session experience and reviewed learning](session-experience.md) documents user
+defaults and project overrides, bounded report/close capture, save-time advisory
+reviews, explicit-save dispositions, automatic guidance and coverage metrics.
+Policy defaults to off; native automatic review remains gated pending separately approved probes.
 Ordinary and scope-none Memory publication require both pre-draft snapshot digests;
 close remains independent of successful capture or completed review.

@@ -342,7 +342,7 @@ PYEOF
 # Native Codex execution-policy rules
 # ---------------------------------------------------------------------------
 
-codex_install_rules() {
+codex_render_rules() {
   local content user_home rules_template
   rules_template="$(mktemp)" || return $?
   cat > "$rules_template" <<'EOF'
@@ -352,6 +352,38 @@ codex_install_rules() {
 # richer policy engine remains hook-based, but current Codex shell execution can
 # bypass PreToolUse. Rules operate at approval/sandbox boundaries and use prefix
 # matching only, so they are deliberately narrower than policy-guard.sh.
+
+# The read-only policy form rejects --mode/--clear; allowing the bare policy
+# prefix would also approve writes. Save-review/disposition/report stay native.
+prefix_rule(
+    pattern = ["asha", "control", "session", "experience", "policy", "--read-only"],
+    decision = "allow",
+    justification = "Inspect effective experience policy without mutation.",
+)
+
+prefix_rule(
+    pattern = ["asha", "control", "session", "experience", "pending"],
+    decision = "allow",
+    justification = "Inspect reviewed experience findings.",
+)
+
+prefix_rule(
+    pattern = ["asha", "control", "session", "experience", "show"],
+    decision = "allow",
+    justification = "Inspect one retained experience report.",
+)
+
+prefix_rule(
+    pattern = ["asha", "control", "session", "experience", "unreviewed"],
+    decision = "allow",
+    justification = "Inspect selected reports remaining for explicit-save review.",
+)
+
+prefix_rule(
+    pattern = ["asha", "control", "session", "experience", "packet"],
+    decision = "allow",
+    justification = "Inspect one frozen advisory review packet.",
+)
 
 prefix_rule(
     pattern = ["find", "/home"],
@@ -452,6 +484,12 @@ EOF
     content="${content//__ASHA_USER_HOME__/$user_home}"
   fi
 
+  printf '%s\n' "$content"
+}
+
+codex_install_rules() {
+  local content
+  content="$(codex_render_rules)" || return $?
   if [[ $DRY_RUN -eq 1 ]]; then
     say "  WRITE [codex-rules]  $CODEX_RULES_FILE"
     return 0

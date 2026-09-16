@@ -1,5 +1,8 @@
 # Session experience capture and reviewed learning
 
+Amended by [automatic defaults and a working loop](2026-09-13--session-experience-defaults.md)
+(C1–C8). Where the documents conflict, that amendment takes precedence.
+
 Status: worker-ready implementation plan, not implementation or deployment.
 Prepared 2026-09-12 against `bd56dc6` and the live working copy. Revalidate the
 base and relevant sources before implementation. Preserve concurrent edits,

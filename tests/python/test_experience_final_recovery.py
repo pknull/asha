@@ -14,7 +14,7 @@ class FinalRecoveryReview(fixtures.GuidanceReview):
         with mock.patch.object(SessionStore, '_create_in_transaction', side_effect=StoreError('fixture creation failed')):
             with self.assertRaises(StoreError):
                 self.launch(session_id=sid, transport='structured', learning_ids=['review-rule'])
-        self.hub.resume(sid, prompt='Continue without selecting old guidance')
+        self.hub.resume(sid, prompt='Continue without selecting old guidance', learning_ids=[])
         with SessionStore(self.config) as store, store.db.transaction() as c:
             queued = dict(c.execute("SELECT * FROM session_messages WHERE session_id=? AND delivery_key='opening'", (sid,)).fetchone())
         rendered, manifest = guidance.delivery(self.hub, self.hub.get(sid), queued['delivery_key'], queued['body'])

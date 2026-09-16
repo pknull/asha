@@ -88,6 +88,16 @@ def _python_probe(config) -> Probe:
     return Probe("python", "mismatch", "Python 3.11 or newer is required")
 
 
+def _experience_configuration_probe(config, *, env=None) -> Probe:
+    from .orchestration.projects import experience_default
+    values = dict(os.environ if env is None else env)
+    if config is not None:
+        values['HOME'] = str(config.home)
+    mode, source, error = experience_default(values)
+    return Probe('session-experience', 'mismatch' if error else 'match', error or
+                 f"Session experience default: {mode} ({source}); native automatic review remains gated")
+
+
 def _configuration_probe(config) -> Probe:
     if config is None:
         return Probe("configuration", "unavailable", "configuration was not supplied to the pure probe")
@@ -1039,6 +1049,7 @@ def _managed_sessions_probe(config) -> Probe:
 DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "python": _python_probe,
     "configuration": _configuration_probe,
+    "session-experience": _experience_configuration_probe,
     "migration": _migration_probe,
     "supervisor-service": _supervisor_service_probe,
     "tmux": _tmux_probe,
@@ -1072,7 +1083,9 @@ def run_doctor(
         if (not isinstance(name, str) or
                 re.fullmatch(r"[a-z][a-z0-9-]{0,31}", name) is None):
             raise ValueError("invalid doctor probe name")
-        if probe is _supervisor_service_probe:
+        if probe is _experience_configuration_probe:
+            result = probe(config, env=env)
+        elif probe is _supervisor_service_probe:
             result = probe(config, env=env, runner=runner, which=which)
         elif probe in (_harness_probe, _hooks_probe) and required_harnesses is not None:
             result = probe(config, required_harnesses=required_harnesses)

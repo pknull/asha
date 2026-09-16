@@ -14,7 +14,9 @@ class SilenceAck(fixtures.GuidanceReview):
         with self.acting_as(sid):
             result = self.hub.acknowledge(message['message_id'], delivery_digest=emitted.get('delivery_digest'))
         self.assertEqual('acknowledged', result['state'])
-        self.assertNotEqual('supplied', self.hub.show(sid)['guidance'][0]['status'])
+        retained = next(item for item in self.hub.show(sid)['guidance']
+                        if item['delivery_key'] == message['delivery_key'])
+        self.assertNotEqual('supplied', retained['status'])
 
 if __name__ == '__main__':
     result = unittest.TextTestRunner(verbosity=2).run(unittest.TestSuite([

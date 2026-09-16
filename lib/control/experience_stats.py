@@ -17,7 +17,7 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
                        'policy_revision': policy_revision, 'harness': harness, 'model': model},
               'capture': {'requested_closes': 0, 'assessment_receipts': 0, 'states': {}, 'closure_states': {}},
               'completions': {'explicit_reports': 0, 'assessment_receipts': 0, 'states': {}},
-              'reviews': {}, 'yield': {'completed_reviews': 0, 'supported_actionable_findings': 0, 'destinations': {}, 'routine_sample_actionable': 0},
+              'reviewers': {}, 'save_review_skips': {}, 'reviews': {}, 'yield': {'completed_reviews': 0, 'supported_actionable_findings': 0, 'destinations': {}, 'routine_sample_actionable': 0},
               'adoption': {'states': {}, 'decisions': {}, 'adopted_origins': 0},
               'guidance': {'selected': 0, 'supplied': 0, 'queued': 0, 'excluded': 0,
                            'assignment_use_unknown': 0, 'feedback_cohorts': 0,
@@ -72,7 +72,7 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
             result['completions']['assessment_receipts'] += bool(item['report_id'])
         result['completions'].update(explicit_reports=sum(completion_states.values()), states=dict(completion_states))
         reviews = c.execute('SELECT r.* FROM hub_experience_reviews r JOIN hub_experiences e USING(report_id) WHERE e.project_id=?', (project_id,)).fetchall()
-        statuses = Counter(); destinations = Counter()
+        statuses = Counter(); destinations = Counter(); reviewers = Counter()
         for row in reviews:
             if row['report_id'] not in report_ids or policy_revision is not None and row['policy_revision'] != policy_revision:
                 continue
@@ -86,6 +86,7 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
                 result['cost']['elapsed_seconds'] += max(0, row['finished_at'] - row['reserved_at'])
             if row['result']:
                 output = json.loads(row['result']); result['storage_bytes'] += len(row['result'].encode())
+                reviewers[output.get('reviewer') or 'native-automatic'] += 1
                 cost = output.get('cost_usd')
                 if isinstance(cost, (int, float)) and not isinstance(cost, bool):
                     result['cost']['known_dollars'] += cost
@@ -98,6 +99,10 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
             elif row['reserved_at'] is not None:
                 result['cost']['unknown_usage_reviews'] += 1
         result['reviews'] = dict(statuses)
+        result['reviewers'] = dict(reviewers)
+        if c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_experience_save_reviews'").fetchone():
+            skips = c.execute("SELECT reason,report_id FROM hub_experience_save_reviews WHERE project_id=? AND status='skipped'", (project_id,)).fetchall()
+            result['save_review_skips'] = dict(Counter(r['reason'] for r in skips if r['report_id'] in report_ids))
         result['yield'].update(completed_reviews=statuses['completed'], supported_actionable_findings=sum(destinations.values()), destinations=dict(destinations))
         dispositions = c.execute('SELECT * FROM hub_experience_dispositions WHERE project_id=? AND created_at>=? AND created_at<=?', (project_id, since, until)).fetchall()
         states = Counter(); decisions = Counter(); origins = set()

@@ -1,28 +1,52 @@
 # Session experience and reviewed learning
 
-Experience policy defaults to `off` for every project. This release ships the
-capture, review, explicit-save disposition, guidance and inspection paths dormant.
+Experience policy defaults to `off` unless the user config supplies a default or
+the project has an explicit override. No configuration is enabled by installation.
+Worker guidance selects compatible active rules automatically; experience capture
+and save review run only when policy enables them.
 The native review release gate is also off: Claude's packet-only adapter has
 fixture coverage; its paid native tool-refusal probe remains outstanding. Codex,
 Copilot and OpenCode automatic reviewers are unsupported. A policy change cannot
 bypass this gate. No installer enables policy or starts a session.
 
-## Deliberate project policy
+## User defaults and project policy
+
+The optional user config `~/.asha/config.json` (or `ASHA_CONFIG`) accepts
+`"session_experience": {"default_mode": "off"|"capture"|"review"}`. Missing or
+invalid values resolve to off; `asha doctor` reports invalid values. Resolution is
+project override, then user default, then builtin off. Reads return `source` as
+`project`, `default`, or `builtin`, plus mode and revision; they do not migrate state.
 
 ```bash
 asha control session experience policy --project PROJECT --json
-asha control session experience policy --project PROJECT --mode capture --revision 0 --json
-asha control session experience policy --project PROJECT --mode review --revision 1 --json
+asha control session experience policy --read-only --project PROJECT --json
+asha control session experience policy --project PROJECT --mode capture --json
+asha control session experience policy --project PROJECT --mode capture --revision INSPECTED_REVISION --json
+asha control session experience policy --project PROJECT --mode review --revision INSPECTED_REVISION --json
+asha control session experience policy --project PROJECT --clear --json
 ```
 
-The operator supplies the revision just inspected. Policy lives in private Control
-SQLite under the stable project ID. `capture` requests a final assessment at
-graceful close; `review` additionally selects bounded review utilities. Changing
+Without `--revision`, read-and-set is one write transaction. With it, supply the
+opaque revision just inspected for compare-and-set. `--clear` deletes the override
+and follows the user default; a retained counter prevents old revision reuse.
+Default revisions fingerprint that counter and mode without writing during reads;
+returning external config to the same mode in the same counter epoch has the same
+fingerprint. Policy mutations remain chair/Keeper-only. Policy lives in private
+Control SQLite under the stable project ID. `capture` requests an assessment at
+completion and graceful close; `review` additionally selects bounded review utilities. Changing
 policy never replays history. Disabling review cancels only owned learning-review
 utilities. `Work/markers/silence` suppresses new learning content, review and
 adoption; existing data and ordinary close remain available.
 
 ## Reports and close
+
+Enabled terminal worker briefs describe the assessment contract. A finished report
+without an assessment returns a bounded `experience_request` with a controller-issued
+key and exact follow-up command. Attach using that key; the original task result
+is preserved and identical retries return the same receipt. A new assignment gets
+a new request. If the process exits first, capture stays missing with reason
+`exited-before-capture`; no report is inferred. Structured/review utilities do not
+receive these completion prompts.
 
 ```bash
 asha control session report --state finished --text 'Result' --experience-file /absolute/report.json --key UUID
@@ -72,7 +96,19 @@ optional capture does not invalidate a valid Memory acknowledgement. Capture occ
 before Memory CAS and survives a later publication conflict. Review never delays
 close; terminal close works without a supervisor. Claude uses its existing Stop
 return channel; Codex, Copilot and OpenCode use the existing queued message seam.
-No idle terminal is poked or scraped.
+No terminal is typed into or scraped. An observed idle Codex session with a captured
+native ID can continue its same conversation for close; unknown activity, missing
+native IDs, unsupported harnesses or resume failures require attachment.
+
+Explicit saves inside verified terminal hub sessions gain controller-derived
+`hub_session_id` and `hub_generation`. Control retains the exact publication receipt.
+A Room generation that saved after its latest assignment is not asked for another
+close assessment: capture is disabled with reason `explicit-save-published`.
+Further assignments or a new generation invalidate this omission. Publication
+alone does not authorize termination; [issue #92](https://github.com/pknull/asha/issues/92)
+owns the future verified completion receipt. The marked close seam will consume
+that receipt before requesting a final turn. Attachment guidance is exposed for
+[issue #93](https://github.com/pknull/asha/issues/93)'s dashboard hints.
 
 For structured utilities only, launch can explicitly select
 `--result-contract asha.session-result.v1`. Its retained result is then
@@ -138,6 +174,7 @@ asha control session experience packet REPORT_UUID --json
 asha control session experience pending --project PROJECT --limit 50 --offset 0 --json
 asha control session experience guidance --project PROJECT --limit 50 --offset 0 --json
 asha control session experience stats --project PROJECT --json
+asha control session experience unreviewed --project PROJECT --limit 50 --offset 0 --json
 ```
 
 Pages include total/completeness/next offset. Reads launch nothing. The report view
@@ -149,6 +186,31 @@ attempt. `packet` supplies the exact frozen input and packet digest for inspecti
 For an explicit chair advisory review, `--result-file FILE` records one
 frozen result without running a utility or claiming native enforcement.
 Manual review requires capture or review policy; policy off and silence suppress it.
+
+After explicit publication, the saving chair or verified terminal Room reviews up
+to five selected unreviewed reports, oldest first, through `experience packet ID`.
+Record the existing reviewer-result contract with `experience review --project
+PROJECT --report ID --result-file FILE --publication-file RECEIPT`. The receipt
+binds a retry-safe five-report budget; excess remains for the next save. These
+results are labelled `advisory-save-review` in stats, pending findings and adopted
+provenance; they do not open the native gate. Native review custody takes precedence.
+The unreviewed read supplies `selection_reason` and `skip_reason`; a report from
+the saving session's own lineage is skipped before reading its packet. Record it
+with `review --report ID --skip-own-lineage --project PROJECT --publication-file
+RECEIPT`. Resumes and retained native identity remain the same source lineage.
+
+Rooms may review/dispose only in their own project; disposal requires an exact
+controller-retained explicit-save publication from their current generation.
+Workers, structured utilities, managed actors/coordinators and worker ancestry
+remain refused, and own-lineage findings cannot be adopted. A Room uses its verified
+hub identity for the save candidate limit. Chair advisory review without a save
+receipt retains its existing `operator-advisory` label.
+
+The save procedure checks silence and performs one `policy --read-only` gate.
+Off skips subsequent experience reads and mutations. Installed Codex rules allow
+the read-only policy form, pending/show and unreviewed/packet; mutation flags are
+incompatible with the read-only policy form. Review, dispose and report keep native
+approval. No live rules or policy are changed by this source implementation.
 
 At an explicit save, first read coherent Memory digests before drafting. Ordinary
 `memory_v2.py publish` and scope-none `save_none.py publish` require
@@ -183,13 +245,17 @@ of causal independence or effectiveness.
 ## Selected guidance and measurement
 
 Launch, resume and send accept repeated `--learning ID` or `--learning ID@DIGEST`.
-Only selected active compatible rules are eligible: at most three rules and 3 KiB.
+Workers with no `--learning` automatically select active compatible rules. Order is
+project scope, harness scope, distinct source-session evidence count descending,
+then rule ID; unscoped rules are compatible. An explicit `--learning` disables
+automatic selection; `--no-learning` supplies none. Rooms retain their existing
+context behavior. Only active compatible rules are eligible: at most three rules and 3 KiB.
 Candidate/retired/stale/incompatible selections are excluded with reasons. Unknown
 runtime versions are flagged rather than inferred; exact-version applicability
 remains unknown when the native version is unknown. Plain workers receive no
 blanket persona, Memory, or learning bundle.
 
-Manifests retain selection, supplied version/digest, exclusions, runtime unknowns,
+Manifests retain `selection: automatic|explicit|none`, supplied version/digest, exclusions, runtime unknowns,
 generation and delivery state. Queued messages are not supplied until their native
 read/acknowledgement seam establishes delivery. Supply is not use or improvement.
 Terminal `session messages` retains up to eight bounded emitted-body receipts and

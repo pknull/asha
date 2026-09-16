@@ -76,7 +76,21 @@ EOF
   local imported_rc=0
   _asha_doctor_imported_skills_section || imported_rc=$?
   _asha_doctor_session_profile_section "$target"
-  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 ]]
+  local experience_rc=0
+  _asha_doctor_experience_configuration || experience_rc=$?
+  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $experience_rc -eq 0 ]]
+}
+
+# The public doctor validates the same user-config default Control resolves.
+_asha_doctor_experience_configuration() {
+  python3 - "$MARKET_ROOT" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+from lib.control.orchestration.projects import experience_default
+mode, source, error = experience_default()
+print(('FAIL  ' + error) if error else f'PASS  Session experience default: {mode} ({source}); native review gated')
+raise SystemExit(1 if error else 0)
+PYEOF
 }
 
 # What each harness actually does with ASHA_SESSION_PROFILE, read from the
@@ -88,7 +102,7 @@ _asha_doctor_session_profile_section() {
   echo "── Session profiles (ASHA_SESSION_PROFILE) ──"
   _asha_doctor_capability_report session-profile "${1:-all}"
   echo ""
-  echo "── Session experience (policy off by default; native review gated) ──"
+  echo "── Session experience (user default/project override; builtin off; native review gated) ──"
   _asha_doctor_capability_report session-experience "${1:-all}"
   _asha_doctor_capability_report session-guidance "${1:-all}"
   _asha_doctor_capability_report experience-review "${1:-all}"
