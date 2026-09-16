@@ -250,6 +250,35 @@ class OrchestrationReadinessTests(ExecutionFixture, unittest.TestCase):
         restored = unarchive_initiative(self.store, self.initiative_id)
         self.assertEqual(restored["state"], "partial")
 
+    def test_archive_releases_workspaces_only_after_retaining_the_outcome(self):
+        finalize_initiative(self.store, self.initiative_id, "partial", "Retain result.")
+        calls = []
+
+        def release(store, initiative):
+            self.assertEqual(store.peek(self.initiative_id)["state"], "archived")
+            self.assertEqual(store.list_events_snapshot(self.initiative_id)[-1]["payload"]["to"], "archived")
+            calls.append(initiative["initiative_id"])
+            return []
+
+        with mock.patch("lib.control.orchestration.readiness.release_workspaces", create=True,
+                        side_effect=release):
+            archive_initiative(self.store, self.initiative_id)
+            archive_initiative(self.store, self.initiative_id)
+        self.assertEqual(calls, [self.initiative_id, self.initiative_id])
+
+    def test_archive_release_failure_remains_retryable_by_action_reconciliation(self):
+        finalize_initiative(self.store, self.initiative_id, "partial", "Retain result.")
+        document = build_action_document(self.initiative(), "archive", {})
+        with mock.patch('lib.control.orchestration.readiness.release_workspaces',
+                        side_effect=ValueError('workspace identity changed')):
+            action = submit_action(self.store, self.initiative_id, document)
+        self.assertEqual(action['state'], 'indeterminate')
+        self.assertEqual(self.initiative()['state'], 'archived')
+        with mock.patch('lib.control.orchestration.readiness.release_workspaces', return_value=[]) as release:
+            recovered = reconcile_actions(self.store, self.initiative_id)
+        self.assertEqual(recovered['actions'][0]['state'], 'completed')
+        release.assert_called_once()
+
     def test_second_archive_cycle_recovers_its_own_missing_event(self) -> None:
         finalize_initiative(
             self.store, self.initiative_id, "partial", "Retain partial result.",

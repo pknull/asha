@@ -1215,30 +1215,14 @@ run state before it may survive.
 
 ### Pane title and exit detection
 
-Exit classification currently reads the pane title alongside `pane_dead` and
-`pane_dead_status`. The title is controller-set (`asha:<harness>:<role>`,
-composed at launch) but it is a mutable terminal attribute: a worker whose
-output contains bytes the terminal reads as an OSC title-set escape (a
-directory listing has done it) overwrites its own title with paths and
-control characters. The restricted-value check then rejects the title, and
-because the title is one field in the tmux format read, that one bad field
-fails the whole read and voids both tmux and process evidence. Reconciliation
-returns `unknown` instead of `exited`, and a completed, published result is
-never ingested (see `docs/orchestration.md`, "Readiness, live tracking, and
-breakers"). `pane_dead` and `pane_dead_status` remain correct throughout.
-
-Recovery is a raw tmux write, so it is the operator's act, not a Control
-verb:
-
-```text
-tmux -L default select-pane -t <pane-id> -T asha:<harness>:<role>
-```
-
-The next supervisor tick reads the exit and ingests. Restoring titles by hand
-does not stop the next worker from doing the same thing mid-run; the durable
-fix is to classify exit from `pane_dead`/`pane_dead_status` before validating
-the title and never let title validation void process evidence
-([#90](https://github.com/pknull/asha/issues/90)).
+Exit classification reads `pane_dead`, `pane_dead_status`, and `pane_dead_signal`
+with the recorded pane/session ownership and process facts. Neither direct
+pane reads nor bulk inventories fetch the pane title; `PaneFacts.title` remains
+an empty compatibility field. Control sets a restricted title at launch for
+display, but terminal output can replace it with arbitrary bytes. A long title,
+control character, delimiter, or invalid UTF-8 therefore cannot invalidate
+supervision evidence or strand a staged result. No title restoration is needed.
+Ownership conflicts and malformed process/exit facts still refuse classification.
 
 ### Socket reaping
 
@@ -1518,7 +1502,18 @@ A controller materialization registers no Control task or run, starts no tmux
 session or harness, and receives no task context marker. Success returns only
 `workspace_name`, `workspace_path`, `change_id`, and `working_commit_id`.
 Failure preserves the journal and any ambiguous materialization for inspection.
-There is no materialization deletion route.
+After an initiative's archive outcome and inventory are durable, Control forgets
+its authenticated task and materialization jj registrations through each source
+repository. Materialization cleanup verifies the private creation journal and
+exact live change/commit identity; task cleanup also requires the bound terminal
+attempt, owned workspace root/marker, and terminal process evidence. A reused
+name, uncertain process, or changed identity refuses cleanup. Run
+`asha initiative reconcile ID` to finish an interrupted archive release after
+resolving its refusal. Workspace directories, journals, seals, and
+verification evidence remain available; there is no materialization deletion route.
+`asha task doctor` reports `stale-workspaces` as an advisory warning for `asha-*`
+registrations without a live owner. It never forgets registrations. Operator
+workspaces and other initiatives' registrations are not archive cleanup targets.
 
 Task creation and controller materialization inspect the selected Git tree
 with one bounded metadata read. Verification streams workspace files through
@@ -1550,7 +1545,7 @@ process only. It does not kill the tmux session, archive the task, or touch jj.
 
 ### Pruning archived tasks
 
-Archive preserves everything, so `asha task prune` is the only route that
+Task archive preserves everything, so `asha task prune` is the only route that
 reclaims what an archived task leaves behind: its dead tmux session, its jj
 workspace registration, and its workspace directory. The task record is not
 modified and stays archived; described or non-empty jj changes remain in the

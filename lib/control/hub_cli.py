@@ -80,10 +80,13 @@ def overview(config, *, env=None, tmux=None, include_closed=False):
             errors.append('Managed session observation is incomplete')
     except (ValueError, OSError) as exc:
         errors.append('Managed sessions: ' + str(exc))
+    from .session_presentation import present
+    rows = [present(row) for row in rows]
+    rows.sort(key=lambda row: {'current': 0, 'ended': 1, 'history': 2}[row['group']])
     complete = page['complete'] and not errors
     failed_closes = sum(bool((r.get('closure') or {}).get('needs_attention')) for r in rows)
     return {'contract': 'asha.hub-sessions.v1', 'rows': rows, 'complete': complete,
-            'errors': errors, 'summary': f"{len(rows)} sessions; {sum(r['activity'] == 'needs-input' for r in rows)} need input"
+            'errors': errors, 'summary': f"{sum(r['group'] == 'current' for r in rows)} current; {sum(r['group'] == 'ended' for r in rows)} ended; {sum(r['activity'] == 'needs-input' and r['group'] == 'current' for r in rows)} need input"
             + (f"; {failed_closes} closes need attention" if failed_closes else '') + (' (partial observation)' if not complete else '')}
 
 

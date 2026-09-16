@@ -1046,6 +1046,47 @@ def _managed_sessions_probe(config) -> Probe:
             f"managed state unavailable: {exc}; session init can repair empty initialization"))
 
 
+def _stale_workspaces_probe(config) -> Probe:
+    """Advisory only: a name is never deletion authority."""
+    if config is None:
+        return Probe('stale-workspaces', 'unavailable', 'Configuration was not supplied for workspace ownership inspection')
+    from .orchestration.config import from_control
+    from .orchestration.model import INITIATIVE_TERMINAL_STATES
+    from .orchestration.store import InitiativeStore
+    from .orchestration.workspace_cleanup import materialization_candidates
+    from .prepare import plan_materialization
+
+    try:
+        adapter = JjAdapter()
+        source = adapter.discover_root(Path.cwd())
+        registered = {name for name in adapter.workspace_identities(source) if name.startswith('asha-')}
+        if not registered:
+            return Probe('stale-workspaces', 'match', 'No retained asha-* jj workspace registrations')
+        initiatives = InitiativeStore(from_control(config))
+        live = set()
+        ended_tasks = set()
+        for head in initiatives.list_initiatives():
+            if head['state'] in INITIATIVE_TERMINAL_STATES:
+                ended_tasks.update(link['control_task_id'] for link in
+                                  initiatives.list_links_snapshot(head['initiative_id']))
+                continue
+            for root, name in materialization_candidates(initiatives, head):
+                if root == source:
+                    live.add(plan_materialization(config, root, name, jj=adapter)['workspace_name'])
+        for task in TaskStore(config).list():
+            if (task['repository']['root'] == str(source) and task['task_id'] not in ended_tasks
+                    and task['lifecycle'] not in {'archived', 'ended', 'failed'}):
+                live.add(task['jj']['workspace_name'])
+        stale = sorted(registered - live)
+        if stale:
+            return Probe('stale-workspaces', 'mismatch', _safe_detail(
+                f'{len(stale)} asha-* workspace(s) without a live owner: ' + ', '.join(stale[:5])
+                + '; inspect ownership; reconcile interrupted archives to retry release'))
+        return Probe('stale-workspaces', 'match', 'Control workspace registrations have live owners')
+    except (OSError, ValueError, JjError, StoreError) as exc:
+        return Probe('stale-workspaces', 'unavailable', _safe_detail(f'Workspace ownership unavailable: {exc}'))
+
+
 DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "python": _python_probe,
     "configuration": _configuration_probe,
@@ -1063,6 +1104,7 @@ DEFAULT_PROBES: Mapping[str, ProbeFunction] = {
     "registry-backend": _registry_backend_probe,
     "managed-sessions": _managed_sessions_probe,
     "prunable": _prunable_probe,
+    "stale-workspaces": _stale_workspaces_probe,
     "harness-events": _harness_events_probe,
     "hooks": _hooks_probe,
     "tui": _tui_probe,
@@ -1101,7 +1143,7 @@ def run_doctor(
     blocking = [
         result for result in results
         if (result.outcome != "match" and
-            result.name not in {"gh", "supervisor-service"} and
+            result.name not in {"gh", "supervisor-service", "stale-workspaces"} and
             not (result.name in {"repository", "default-context"} and
                  result.outcome == "unavailable"))
     ]

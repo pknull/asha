@@ -14,6 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import load_config
 from .hub_cli import overview
 from .session_hub import Hub
+from .session_presentation import memory_label, present
 from .tmux import TmuxAdapter
 from .tui_style import BAD, GOOD, INERT, MACHINE, WAITING, tier_for
 
@@ -28,23 +29,35 @@ def _activity_tier(activity):
 
 def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
     from .tui import _clip
-    rows = snapshot.get('rows', [])
+    rows = [present(row) for row in snapshot.get('rows', [])]
     result = [('ASHA CONTROL — Sessions', 'heading', None),
               (snapshot.get('summary', 'Reading sessions…'), 'summary',
                WAITING if any(row['activity'] in {'needs-input', 'waiting-input'} for row in rows) else None),
-              ('   STATUS        PROJECT / SESSION                         HARNESS', 'heading', None)]
+              ('   NEXT STEP                       PROJECT / SESSION                 HARNESS', 'heading', None)]
     help_lines = textwrap.wrap('Enter attach | a input | m send | n job | o Room | x close (handoff) | X force-close | s stop | r resume | M input list | A history | G workflows | q quit', width=max(1, width))
     space = max(0, height - 7 - bool(snapshot.get('errors')) - len(help_lines))
-    start = max(0, selected - space + 1)
-    for i, row in enumerate(rows[start:start + space], start):
-        result.append((f"{'>' if i == selected else ' '} {row['activity']:<13} {row['project_name']} / {row['name']}  [{row['harness']}]",
+    # Reserve a group heading as well as a selected row when scrolling.
+    start = max(0, selected - max(1, space - 2) + 1)
+    previous_group = None
+    for i, row in enumerate(rows[start:], start):
+        heading = row['group'] != previous_group and row['group'] != 'current'
+        needed = 1 + bool(heading)
+        if space < needed:
+            break
+        if heading:
+            result.append(('Ended sessions' if row['group'] == 'ended' else 'Retained history', 'heading', INERT))
+        previous_group = row['group']
+        space -= needed
+        result.append((f"{'>' if i == selected else ' '} {row['next_step']:<32} {row['project_name']} / {row['name']}  [{row['harness']}]",
                        'selected' if i == selected else 'row', _activity_tier(row['activity'])))
     if rows:
         row = rows[min(selected, len(rows) - 1)]
         capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
         experience = (f" · capture:{capture.get('status', 'disabled')}"
                       f" review:{row.get('experience_review', 'none')}") if capture else ''
-        result += [('', 'muted', INERT), (row.get('reason', ''), 'detail', _activity_tier(row['activity'])),
+        saved = memory_label(row)
+        detail = (saved + ' · ' if saved else '') + row.get('reason', '')
+        result += [('', 'muted', INERT), (detail, 'detail', _activity_tier(row['activity'])),
                    (f"{row['session_id']} · {row.get('pending_messages', 0)} queued messages" + experience, 'muted', INERT)]
     result += [(error, 'error', BAD) for error in snapshot.get('errors', [])[:1]]
     result += [(message, 'message', None)]
@@ -80,7 +93,7 @@ def _paint(screen, snapshot, *, selected=0, coloured=False, message=''):
             if role in {'row', 'selected'} and limit > 2:
                 # Keep the status foreground even on the reverse-video selection.
                 # The fixed prefix/status are ASCII; project names may be wide.
-                stop = min(len(line), 2 + max(13, len(line[2:].split(' ', 1)[0])))
+                stop = min(len(line), 34)
                 screen.addnstr(y, 2, line[2:stop], stop - 2,
                                _attribute(curses, tier, coloured))
         except curses.error:
@@ -230,7 +243,7 @@ def _loop(screen, config, env):
                         else:
                             message = 'Enter attaches to this legacy Room to provide input directly'
                 elif row and key in (ord('x'), ord('X'), ord('s')):
-                    label = {ord('x'): 'Close (request handoff) ', ord('X'): 'Force-close (no memory save) ', ord('s'): 'Stop '}[key]
+                    label = {ord('x'): 'Close (request handoff) ', ord('X'): 'Force-close (no new handoff) ', ord('s'): 'Stop '}[key]
                     if prompt('Type yes: ', label + row['name']) == 'yes':
                         refuse_managed_operator(config, env)
                         if hub.owns(row['session_id']):
@@ -238,8 +251,8 @@ def _loop(screen, config, env):
                                 closed = hub.close(row['session_id'])
                                 message = (closed.get('closure') or {}).get('guidance') or 'Session closed'
                             else:
-                                hub.stop(row['session_id'], close=key == ord('X'))
-                                message = 'Session stopped; history retained; no memory handoff claimed'
+                                stopped = hub.stop(row['session_id'], close=key == ord('X'))
+                                message = 'Session stopped; history retained; ' + (memory_label(stopped) or 'no memory handoff claimed')
                         elif key == ord('x'):
                             message = 'No handoff seam for a legacy Room or managed session; X force-closes, s stops'
                         elif row['transport'] == 'room':

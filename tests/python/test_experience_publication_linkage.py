@@ -28,6 +28,7 @@ class PublicationLinkage(ClosureFixture):
         self.assertEqual(receipt['hub_session_id'], self.sid)
         self.assertEqual(receipt['hub_generation'], 1)
         verify_publication(self.hub, self.hub.get(self.sid), receipt)
+        self.assertIsNotNone(self.hub.show(self.sid)['memory_saved_at'])
         closed = self.hub.close(self.sid)
         self.assertEqual(closed['closure']['capture']['status'], 'disabled')
         self.assertEqual(closed['closure']['capture']['reason'], 'explicit-save-published')
@@ -42,6 +43,7 @@ class PublicationLinkage(ClosureFixture):
         from lib.control.session_publication import verify_publication
         receipt = self.publish()
         self.hub.send(self.sid, 'Another assignment', key='next', learning_ids=[])
+        self.assertIsNone(self.hub.show(self.sid)['memory_saved_at'])
         verify_publication(self.hub, self.hub.get(self.sid), receipt)
         closing = self.hub.close(self.sid)
         self.assertTrue(closing['closure']['capture']['requested'])
@@ -51,6 +53,7 @@ class PublicationLinkage(ClosureFixture):
         receipt = self.publish()
         self.hub.stop(self.sid)
         self.hub.resume(self.sid, prompt='Continue', learning_ids=[])
+        self.assertIsNone(self.hub.show(self.sid)['memory_saved_at'])
         with self.assertRaises(StoreError):
             verify_publication(self.hub, self.hub.get(self.sid), receipt)
         self.assertTrue(self.hub.close(self.sid)['closure']['capture']['requested'])

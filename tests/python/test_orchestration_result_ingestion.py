@@ -269,6 +269,24 @@ class ResultIngestionTests(ExecutionFixture, unittest.TestCase):
             verifier=self.verifier,
         )
 
+    def test_corrupted_title_does_not_strand_a_staged_result(self):
+        from tests.python.test_control_title_evidence import TitleEvidenceTests
+        from lib.control import tmux as tmux_module
+        self.stage()
+        _, tmux = TitleEvidenceTests().adapter('Qtemplates/' * 100 + '\n\t\x1b', task=self.task)
+        adapters = LiveAdapters(tmux=tmux, jj=self.jj)
+        adapters.jj = lambda task: Evidence('jj', 'match', 'exact workspace')
+        adapters.event = lambda task, run: Evidence('event', 'missing', 'no hook')
+        with mock.patch('lib.control.orchestration.ingestion.verify_controller_snapshot', side_effect=self.verifier):
+            # Inject the old wire format: the guard must discriminate the bug.
+            with mock.patch.object(tmux_module, '_PANE_FORMAT', tmux_module._PANE_FORMAT + '#{pane_title}'):
+                self.assertEqual(ingest_pending_results(self.store, self.initiative_id,
+                    adapters_factory=lambda task: adapters), [])
+            result = ingest_pending_results(self.store, self.initiative_id,
+                adapters_factory=lambda task: adapters)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0]['phase'], 'completed')
+
     def install_foreign_mismatched_ingestion(
         self, *, task_id: str | None = None,
     ) -> dict[str, str]:

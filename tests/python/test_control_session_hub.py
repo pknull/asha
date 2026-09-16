@@ -55,6 +55,35 @@ class SessionHubTests(unittest.TestCase):
         self.assertEqual(observed['activity'], 'unknown')
         self.assertEqual(self.tmux.killed, [])
 
+    def test_finished_process_exit_is_distinct_from_unreported_exit(self):
+        row = self.launch()
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(row['session_id'])):
+            self.hub.observe(None, state='finished', body='Memory saved and work landed')
+        self.tmux.sessions.clear()
+        ended = self.hub.show(row['session_id'])
+        self.assertEqual(ended['process_state'], 'ended')
+        self.assertEqual(ended['next_step'], 'Done: close record')
+        self.assertEqual(ended['group'], 'ended')
+        self.assertIsNone(ended['memory_saved_at'], 'worker prose cannot manufacture a save receipt')
+        self.hub._update(row['session_id'], activity='exited', activity_source='hook',
+                         assignment_epoch='new-assignment')
+        unreported = self.hub.show(row['session_id'])
+        self.assertEqual(unreported['next_step'], 'Ended unreported: check work')
+
+    def test_dashboard_save_uses_current_receipt_and_force_close_keeps_it_visible(self):
+        from lib.control.session_publication import record_publication
+        row = self.launch(profile='room')
+        receipt = dict(publication_id=str(uuid.uuid4()), source='explicit-save', status='published',
+                       project_id=row['project_id'], hub_session_id=row['session_id'], hub_generation=row['generation'])
+        record_publication(self.hub, row, receipt)
+        shown = self.hub.show(row['session_id'])
+        self.assertIsNotNone(shown['memory_saved_at'])
+        closed = self.hub.close(row['session_id'], force=True)
+        self.assertIn('Memory saved', closed['reason'])
+        self.assertNotIn('no project-memory handoff was claimed', closed['reason'])
+        self.hub._update(row['session_id'], assignment_epoch='later-assignment')
+        self.assertIsNone(self.hub.show(row['session_id'])['memory_saved_at'])
+
     def test_close_missing_session_preserves_record_and_messages(self):
         row = self.launch()
         self.hub.send(row['session_id'], 'Retain me', key='one')
