@@ -83,3 +83,21 @@ def saved_current_assignment(hub, row):
         return c.execute('SELECT 1 FROM hub_memory_publications WHERE session_id=? AND generation=? '
                          'AND project_id=? AND assignment_epoch=? LIMIT 1',
                          (row['session_id'], row['generation'], row['project_id'], assignment_epoch(row))).fetchone() is not None
+
+
+def latest_saved_at(hub, row):
+    """Presentation evidence only; never a readiness or termination decision."""
+    with hub.database() as db, db.transaction() as c:
+        if not _available(c):
+            return None
+        saved = c.execute('SELECT published_at,receipt FROM hub_memory_publications WHERE session_id=? AND generation=? '
+                          'AND project_id=? AND assignment_epoch=? ORDER BY published_at DESC LIMIT 1',
+                          (row['session_id'], row['generation'], row['project_id'], assignment_epoch(row))).fetchone()
+    if saved:
+        receipt = json.loads(saved['receipt'])
+        if (receipt.get('source') == 'explicit-save' and receipt.get('status') == 'published'
+                and receipt.get('hub_session_id') == row['session_id']
+                and receipt.get('hub_generation') == row['generation']
+                and receipt.get('project_id') == row['project_id']):
+            return saved['published_at']
+    return None

@@ -45,7 +45,15 @@ def parse_search_payload(payload: Any) -> list[dict[str, Any]]:
     if not isinstance(records, list):
         suffix = f": {payload.get('error')}" if payload.get("error") else ""
         raise ValidationError(f"Skills.sh response has no skills[] array{suffix}")
-    return [_parse_search_record(item, index) for index, item in enumerate(records)]
+    candidates = []
+    for index, item in enumerate(records):
+        # Discovery also indexes non-GitHub providers. They cannot satisfy the
+        # pinned-repository import contract, but must not poison other results.
+        if (isinstance(item, Mapping) and isinstance(item.get("source"), str)
+                and item["source"] and not SOURCE_RE.fullmatch(item["source"])):
+            continue
+        candidates.append(_parse_search_record(item, index))
+    return candidates
 
 
 def _parse_search_record(item: Any, index: int) -> dict[str, Any]:

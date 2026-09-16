@@ -192,7 +192,7 @@ def guidance_for(row: dict, closure: dict) -> str:
     if state == "forced":
         handoff = closure.get("handoff") or {}
         if handoff.get("outcome") in ACKNOWLEDGED:
-            return "Force-closed after a verified handoff (" + handoff["outcome"] + ")"
+            return "Force-closed after a " + _verification_word(closure) + " handoff (" + handoff["outcome"] + ")"
         return "Force-closed; no project-memory handoff was claimed"
     if state == "completed":
         outcome = (closure.get("handoff") or {}).get("outcome")

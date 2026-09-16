@@ -45,6 +45,9 @@ an adapter or harness link; it never emits an over-limit mounted skill.
 - `https://www.skills.sh/api/search?q=<query>` supplies discovery metadata
   (`id`, `skillId`, `name`, `installs`, and `source`). It does not supply skill
   content or approval.
+- Discovery skips entries whose source is not an `owner/repo` pair (including
+  non-GitHub providers). Remaining candidates retain their response order;
+  inspection and import still require a valid repository and immutable commit.
 - Public GitHub API responses resolve the named upstream repository to a
   40-hex commit and enumerate its tree.
 - Raw repository bytes are fetched only at that immutable commit. Inspection

@@ -42,6 +42,30 @@ class DoctorOkFixture(unittest.TestCase):
 
 
 class DoctorVerdictTests(DoctorOkFixture):
+    def test_stale_workspace_probe_without_config_is_unavailable(self):
+        adapter = mock.Mock()
+        adapter.workspace_identities.return_value = {"asha-old": ("a", "b")}
+        with mock.patch("lib.control.doctor.JjAdapter", return_value=adapter):
+            result = run_doctor(None, probes={"stale-workspaces": DEFAULT_PROBES["stale-workspaces"]})
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["probes"][0]["outcome"], "unavailable")
+        adapter.discover_root.assert_not_called()
+
+    def test_stale_workspace_probe_flags_unowned_control_names_without_mutating(self):
+        adapter = mock.Mock()
+        adapter.discover_root.return_value = self.root
+        adapter.workspace_identities.return_value = {
+            "default": ("a", "b"), "operator-work": ("c", "d"),
+            "asha-materialization-old": ("e", "f"),
+        }
+        with mock.patch("lib.control.doctor.JjAdapter", return_value=adapter):
+            result = run_doctor(self.config, probes={"stale-workspaces": DEFAULT_PROBES["stale-workspaces"]})
+        self.assertTrue(result["ok"], "stale workspace warnings are advisory")
+        self.assertEqual(result["probes"][0]["outcome"], "mismatch")
+        self.assertIn("asha-materialization-old", result["probes"][0]["detail"])
+        self.assertNotIn("operator-work", result["probes"][0]["detail"])
+        adapter.forget_workspace.assert_not_called()
+
     def test_runtime_hooks_check_only_plan_harnesses_but_default_doctor_checks_all(self):
         claude = self.home / ".claude"
         codex = self.home / ".codex"

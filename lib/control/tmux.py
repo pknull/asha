@@ -48,7 +48,10 @@ _POPUP_CHILD_EXEC = (
 )
 _PANE_FORMAT = (
     "#{pane_id}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}\t"
-    "#{pane_dead_signal}\t#{session_name}\t#{window_name}\t#{pane_title}"
+    # Keep the final compatibility field empty. Terminal output can change the
+    # title to arbitrary bytes, including delimiters and invalid UTF-8; do not
+    # fetch it into the supervision record at all.
+    "#{pane_dead_signal}\t#{session_name}\t#{window_name}\t"
 )
 _INVENTORY_SESSION_OPTIONS = (
     "@asha_managed", "@asha_task_id", "@asha_room_session_id",
@@ -849,7 +852,6 @@ class TmuxAdapter:
         pane = _validate_pane_id(pane_id)
         name = _validate_session_name(session)
         window_name = _validate_window_name(window)
-        safe_title = _validate_restricted_value(title)
         pane_pid = cls._parse_optional_integer(raw_pid, positive=True)
         if raw_dead not in {"0", "1"}:
             raise TmuxError("tmux returned invalid pane dead state")
@@ -863,7 +865,7 @@ class TmuxAdapter:
             dead_signal=dead_signal,
             session=name,
             window=window_name,
-            title=safe_title,
+            title="",  # Compatibility only; a title is never ownership or exit evidence.
         )
 
     @staticmethod

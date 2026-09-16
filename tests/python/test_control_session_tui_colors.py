@@ -103,9 +103,9 @@ class SessionColourTests(unittest.TestCase):
         for state, tier in expected.items():
             with self.subTest(state=state):
                 screen = self.paint(snapshot(state))
-                status = [w for w in screen.writes if w[0] == 3 and w[1] == 2]
+                status = [w for w in screen.writes if w[1] == 2]
                 self.assertEqual(len(status), 1)
-                self.assertEqual(status[0][2].strip(), state)
+                self.assertEqual(status[0][2].strip(), session_tui.present(snapshot(state)['rows'][0])['next_step'])
                 self.assertEqual(status[0][3], tui._attribute(FakeCurses, tier, True))
 
     def test_selection_background_does_not_reverse_status_colour(self):

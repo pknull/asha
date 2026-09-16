@@ -53,6 +53,19 @@ native turn is not a completed assignment. An explicit finished report or
 successful structured utility yields `finished`. Completed structured utilities
 leave the current list; their results remain under `show ID` and `list --all`.
 
+The dashboard derives a next step from these facts: `Done: close` for a finished
+live session, `Done: close record` after its process exits, and `Ended unreported:
+check work` for an exit without a current finished report. Idle Rooms say
+`Waiting for you`; idle workers say `Stopped mid-task?`. Input requests direct
+you to the terminal or Control, and an idle undelivered close says `Close needs
+attach`. Ended sessions occupy a separate group below current sessions until
+closed. Raw activity, lifecycle, and observed process state remain in JSON.
+
+`Memory saved HH:MM UTC` requires a controller-retained explicit-save receipt
+for this generation and assignment, or a verified handoff in this generation.
+Worker result text does not establish a save or code landing. Force-close keeps
+an existing save receipt visible; it does not publish another save.
+
 Terminal messages sent with `session send ID --text TEXT --key UUID` remain
 queued until read. They cannot wake an idle harness and are never typed into a
 pane. Attach to provide interactive input, or let the worker read
@@ -173,8 +186,8 @@ after its latest assignment, close omits the experience assessment and records
 `disabled` / `explicit-save-published`. A new assignment invalidates the omission.
 This linkage does not authorize termination. [Issue #92](https://github.com/pknull/asha/issues/92)
 owns verified completion readiness; `_close_once` marks its integration point
-before any final-turn wake. [Issue #93](https://github.com/pknull/asha/issues/93)
-owns the broader dashboard hints and ended-session grouping.
+before any final-turn wake. Dashboard hints and ended-session grouping are
+presentation only and do not grant completion or termination authority.
 Legacy Rooms and
 non-hub managed sessions have no handoff seam: `close` refuses without
 `--force`. A verified publication whose follow-up verification read is refused

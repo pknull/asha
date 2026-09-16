@@ -115,6 +115,24 @@ def inspection_fixture(
 
 
 class SearchTests(unittest.TestCase):
+    def test_search_skips_non_repository_sources_and_keeps_candidate_order(self):
+        records = [
+            {"id": f"{source}/demo", "source": source, "skillId": "demo",
+             "name": "Demo", "installs": 1}
+            for source in ("first/repo", "smithery.ai", "skills.volces.com", "last/repo")
+        ]
+        self.assertEqual(
+            find_skills.parse_search_payload({"skills": records}),
+            [records[0], records[3]],
+        )
+        self.assertEqual(find_skills.parse_search_payload({"skills": records[1:3]}), [])
+
+    def test_non_repository_source_still_refuses_inspection_before_network(self):
+        client = FakeClient()
+        with self.assertRaisesRegex(find_skills.ValidationError, "owner/repo"):
+            find_skills.inspect_candidate("smithery.ai", "demo", client=client)
+        self.assertEqual(client.calls, [])
+
     def test_search_uses_public_json_route_and_parses_records(self):
         url = "https://www.skills.sh/api/search?q=postgres+review"
         client = FakeClient(

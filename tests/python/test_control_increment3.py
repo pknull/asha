@@ -459,7 +459,7 @@ class TmuxAdapterTests(unittest.TestCase):
         signalled = adapter.pane_facts("%7")
 
         self.assertEqual(live, PaneFacts("%7", 1234, False, None, None,
-                                         "asha-task", "work", "Primary"))
+                                         "asha-task", "work", ""))
         self.assertTrue(exited.dead)
         self.assertEqual(exited.pane_pid, 1234)
         self.assertEqual(exited.dead_status, 17)

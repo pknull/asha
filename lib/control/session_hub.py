@@ -255,7 +255,7 @@ class Hub:
             from .session_output import project
             if not self._has_structured_record(sid):
                 row.update(activity=row['lifecycle'], pending_messages=0, capabilities={'resume': True})
-                self._present_closure(row)
+                self._present_session(row)
                 return row
             with SessionStore(self.config) as sessions:
                 state = sessions.get(sid)
@@ -290,14 +290,17 @@ class Hub:
                 row['reason'] = row['runtime_warning']
             row['capabilities'] = {'attach': 'conversation-view', 'send': 'turn-boundary', 'permissions': 'native',
                                    'close': 'final-structured-turn'}
-            self._present_closure(row)
+            self._present_session(row)
             return row
         if row['lifecycle'] in {'closed', 'stopped'}:
             row['activity'] = row['lifecycle']
+            row['process_state'] = 'ended'
         else:
+            row['process_state'] = 'unknown'
             try:
                 room = RoomStore(self.config).read(row['room_id'])
                 state, detail = _owned_state(room, self.tmux)
+                row['process_state'] = 'ended' if state in {'missing', 'ended'} else 'live' if state == 'open' else 'unknown'
                 if state in {'missing', 'ended'}:
                     row['activity'] = 'finished' if row['activity'] == 'finished' else 'exited'
                     row['reason'] = detail
@@ -312,8 +315,28 @@ class Hub:
         row['capabilities'] = {'attach': 'native-terminal', 'send': 'queued-until-read',
                                'permissions': 'native', 'resume': row['harness'] in {'claude', 'codex'},
                                'close': 'stop-hook-final-turn' if row['harness'] in closure.STOP_HOOK_HARNESSES else 'queued-request-only'}
-        self._present_closure(row)
+        self._present_session(row)
         return row
+
+    def _present_session(self, row):
+        from .session_presentation import memory_label, present
+        from .session_publication import latest_saved_at
+        row['memory_saved_at'] = latest_saved_at(self, row)
+        record = row.get('closure') or {}
+        handoff = record.get('handoff') or {}
+        if (record.get('generation') == row['generation']
+                and handoff.get('generation') == row['generation']
+                and handoff.get('outcome') == 'published' and handoff.get('verified') is True
+                and handoff.get('digests')):
+            row['memory_saved_at'] = max(row['memory_saved_at'] or 0, handoff['acknowledged_at'])
+        self._present_closure(row)
+        if (record.get('generation') == row['generation'] and record.get('state') == 'forced'
+                and row['memory_saved_at'] is not None):
+            guidance = ((row['closure']['guidance'] + '; ') if handoff.get('outcome') in closure.ACKNOWLEDGED
+                        else 'Force-closed; ') + memory_label(row)
+            row['closure'] = dict(row['closure'], guidance=guidance)
+            row['reason'] = guidance
+        row.update(present(row))
 
     def _present_closure(self, row):
         """Read-only view: refresh structured delivery facts, attach guidance, surface the state."""
@@ -930,6 +953,11 @@ class Hub:
             changes.update(native_activity=activity, native_observed_at=changes['observed_at'])
         if event == 'prompt-submitted':
             changes['assignment_epoch'] = str(uuid.uuid4())
+        if not event and activity == 'finished':
+            changes['completion_report'] = dict(generation=row['generation'],
+                assignment_epoch=row.get('assignment_epoch'), reported_at=changes['observed_at'])
+        elif not event:
+            changes['completion_report'] = None
         if event == 'permission-requested':
             changes['question'] = None
         if native_id:

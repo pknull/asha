@@ -999,6 +999,74 @@ class RealJjPreparationTests(unittest.TestCase):
         self.assertIn(materialized["workspace_name"], after_workspaces)
         self.assertTrue(path.is_dir(), "controller materialization must be retained")
 
+    def test_materialization_release_forgets_registration_and_preserves_evidence(self):
+        from lib.control import workspace_cleanup
+        base = subprocess.check_output(["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True).strip()
+        item = prepare_materialization(self.config, self.source, base, "release-one")
+        before = JjAdapter().workspace_identities(self.source)
+        path = Path(item["workspace_path"])
+        (path / "evidence.txt").write_text("retained evidence")
+        for _ in range(2):
+            workspace_cleanup.release_materialization(self.config, self.source, "release-one")
+        after = JjAdapter().workspace_identities(self.source)
+        self.assertEqual(after, {k: v for k, v in before.items() if k != item["workspace_name"]})
+        self.assertEqual((path / "evidence.txt").read_text(), "retained evidence")
+
+    def test_materialization_release_refuses_reused_workspace_registration(self):
+        from lib.control import workspace_cleanup
+        base = subprocess.check_output(["git", "-C", str(self.source), "rev-parse", "HEAD"], text=True).strip()
+        item = prepare_materialization(self.config, self.source, base, "release-reused")
+        adapter = JjAdapter()
+        adapter.forget_workspace(self.source, item["workspace_name"])
+        adapter.add_workspace(self.source, self.root / "operator", item["workspace_name"],
+                              base, "operator work", adapter.pin_operation(self.source))
+        before = adapter.workspace_identities(self.source)
+        with self.assertRaisesRegex(ValueError, "identity"):
+            workspace_cleanup.release_materialization(self.config, self.source, "release-reused")
+        self.assertEqual(adapter.workspace_identities(self.source), before)
+
+    def test_archive_releases_only_its_terminal_task_and_materialization(self):
+        from types import SimpleNamespace
+        from tests.python.test_control_config_model import task_record
+        from lib.control.orchestration.links import control_task_identity_digest
+        from lib.control.orchestration.workspace_cleanup import release_workspaces
+        task = prepare_task_workspace(self.config, self.request('archive-owned'))
+        tasks = TaskStore(self.config)
+        original = copy.deepcopy(task)
+        task['runs'] = task_record()['runs']
+        task['runs'][0]['evidence_at'] = task['updated_at']
+        task['lifecycle'] = 'running'
+        tasks.save(task, expected_digest=task_digest(original))
+        initiative_id = str(uuid.uuid4())
+        head = {'initiative_id': initiative_id, 'state': 'archived', 'scope': {'repository': {
+            'root': str(self.source), 'control_repository_id': task['repository']['identity'],
+        }}}
+        store = mock.Mock(config=SimpleNamespace(control=self.config))
+        store.list_attempts_snapshot.return_value = [{'attempt_id': 'attempt', 'state': 'sealed-success'}]
+        store.list_links_snapshot.return_value = [{'attempt_id': 'attempt', 'control_task_id': task['task_id'],
+            'control_task_identity_digest': control_task_identity_digest(task)}]
+        store.list_result_ingestions_snapshot.return_value = []
+        adapter = JjAdapter()
+        base = task['jj']['base_commit_id']
+        materialized = prepare_materialization(self.config, self.source, base, f'verify-{initiative_id}-12345678')
+        adapter.add_workspace(self.source, self.root / 'operator', 'operator-work', base,
+                              'operator work', adapter.pin_operation(self.source))
+        before = adapter.workspace_identities(self.source)
+        with mock.patch('lib.control.orchestration.workspace_cleanup.reconcile_task',
+                        return_value={'runs': [{'state': 'working', 'blocker': None}]}):
+            with self.assertRaisesRegex(ValueError, 'process evidence'):
+                release_workspaces(store, head)
+        self.assertEqual(adapter.workspace_identities(self.source), before)
+        with mock.patch('lib.control.orchestration.workspace_cleanup.reconcile_task',
+                        return_value={'runs': [{'state': 'exited', 'blocker': None}]}):
+            release_workspaces(store, head)
+            release_workspaces(store, head)
+        after = adapter.workspace_identities(self.source)
+        removed = {task['jj']['workspace_name'], materialized['workspace_name']}
+        self.assertEqual(after, {k: v for k, v in before.items() if k not in removed})
+        self.assertTrue(Path(task['jj']['workspace_path']).is_dir())
+        self.assertTrue(Path(materialized['workspace_path']).is_dir())
+
     def test_ready_materialization_is_adopted_on_identical_retry(self) -> None:
         base = subprocess.run(
             ["git", "-C", str(self.source), "rev-parse", "HEAD"],

@@ -721,11 +721,10 @@ path applies.
 
 `unknown` is not terminal. It neither ingests a staged result nor fails the
 attempt, and a staged candidate is exempt from `result-missing` grace, so an
-attempt can sit in `awaiting-exit` indefinitely. The known cause is a
-corrupted pane title (see `docs/control.md`, "Pane title and exit
-detection"): restore the title Control set and the next tick classifies the
-exit and ingests. `asha task ingest <task-id>` is available as a fallback but
-has the same `exited`/`failed` requirement, so it does not bypass the restore.
+attempt can sit in `awaiting-exit` while its ownership or process evidence is
+unavailable. Pane titles are excluded from supervision reads, so a corrupted
+title cannot cause this stall. `asha task ingest <task-id>` remains available
+as a fallback with the same owned `exited`/`failed` requirement.
 
 Three related signals are rendered for the operator:
 
@@ -1097,7 +1096,12 @@ explicitly routes those nodes through ordinary operator `cancel-node` actions,
 reports their IDs, and then retries finalization.
 
 `archive` changes a terminal outcome to `archived` and records a retained
-inventory without deleting records, evidence, tasks, or workspaces.
+inventory without deleting records, evidence, tasks, or workspace directories.
+After that evidence is durable it forgets the initiative's authenticated task
+and controller-materialization jj registrations. Live or uncertain processes,
+reused registrations, or missing ownership proof refuse release; `reconcile`
+retries the interrupted archive action after inspection. Operator workspaces are never targets. Doctor warns
+about stale `asha-*` registrations without automatically cleaning them.
 `unarchive` restores the terminal outcome recorded by the latest archive event.
 Reclaiming worker and review workspaces is Control's job: once their attempts
 are terminal, archive the Control tasks and run `asha task prune` (see

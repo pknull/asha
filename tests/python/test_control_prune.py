@@ -1127,7 +1127,11 @@ class LinkedAttemptBindingTests(ExecutionFixture, unittest.TestCase):
         self.store.save_initiative(partial, expected_digest=record_digest(current))
         self.assertIn(task["task_id"], orchestration_bindings(self.env))
 
-        archive_initiative(self.store, self.initiative_id, source_state="partial")
+        # This binding fixture has no Control registry/workspace. Registration
+        # release has its own real-jj coverage; it must not erase seal bindings.
+        with mock.patch("lib.control.orchestration.readiness.release_workspaces") as release:
+            archive_initiative(self.store, self.initiative_id, source_state="partial")
+        release.assert_called_once_with(self.store, self.initiative())
         self.assertEqual(self.initiative()["state"], "archived")
         self.assertIn(task["task_id"], orchestration_bindings(self.env))
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .workspace_cleanup import release_workspaces
+
 import copy
 import hashlib
 import json
@@ -651,7 +653,7 @@ def archive_initiative(
     store: InitiativeStore, initiative_id: str, *, source_state: str | None = None,
     action_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Archive a terminal outcome while retaining every record and workspace."""
+    """Retain the terminal evidence, then release owned jj registrations."""
     initiative = store.peek(initiative_id)
     if initiative["state"] == "archived":
         matching = [
@@ -664,6 +666,7 @@ def archive_initiative(
             inventory = matching[-1]["payload"].get("retained_inventory")
             if not isinstance(inventory, dict):
                 raise ReadinessError("archive event lacks its retained inventory")
+            release_workspaces(store, initiative)
             return initiative, inventory
         if source_state not in {
             "ready-for-integration", "integrated", "partial", "failed", "cancelled",
@@ -676,6 +679,7 @@ def archive_initiative(
             {"from": source_state, "to": "archived", "retained_inventory": inventory},
             actor_kind="operator", actor_id="cli",
         )
+        release_workspaces(store, store.peek(initiative_id))
         return store.peek(initiative_id), inventory
     if initiative["state"] not in INITIATIVE_TERMINAL_STATES - {"archived"}:
         raise ReadinessError("only a terminal initiative outcome may be archived")
@@ -695,6 +699,7 @@ def archive_initiative(
         {"from": source_state, "to": "archived", "retained_inventory": inventory},
         actor_kind="operator", actor_id="cli",
     )
+    release_workspaces(store, store.peek(initiative_id))
     return store.peek(initiative_id), inventory
 
 
