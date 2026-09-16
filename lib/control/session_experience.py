@@ -29,6 +29,8 @@ ASSESSMENT_KEY = '@report-assessment'
 SCHEMA = (
     '''CREATE TABLE IF NOT EXISTS hub_experience_policies (
        project_id TEXT PRIMARY KEY, project TEXT NOT NULL, mode TEXT NOT NULL, revision INTEGER NOT NULL)''',
+    '''CREATE TABLE IF NOT EXISTS hub_experience_policy_epochs (
+       project_id TEXT PRIMARY KEY, highwater INTEGER NOT NULL)''',
     '''CREATE TABLE IF NOT EXISTS hub_experiences (
        report_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES hub_sessions(session_id),
        generation INTEGER NOT NULL, project_id TEXT NOT NULL, source TEXT NOT NULL, delivery_key TEXT NOT NULL,
@@ -43,6 +45,10 @@ SCHEMA = (
        reason TEXT NOT NULL, status TEXT NOT NULL, utility_id TEXT UNIQUE,
        created_at REAL NOT NULL, reserved_at REAL, finished_at REAL, packet_digest TEXT, result TEXT,
        UNIQUE(report_id,policy_revision,attempt))''',
+    '''CREATE TABLE IF NOT EXISTS hub_experience_save_reviews (
+       project_id TEXT NOT NULL, publication_id TEXT NOT NULL, report_id TEXT NOT NULL REFERENCES hub_experiences(report_id),
+       save_session_id TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, created_at REAL NOT NULL,
+       PRIMARY KEY(project_id,publication_id,report_id))''',
     'CREATE INDEX IF NOT EXISTS hub_experience_review_queue ON hub_experience_reviews(status,created_at,review_id)',
     '''CREATE TABLE IF NOT EXISTS hub_experience_dispositions (
        disposition_id TEXT PRIMARY KEY, review_id TEXT NOT NULL REFERENCES hub_experience_reviews(review_id),
@@ -296,6 +302,9 @@ class Experiences:
         env = self.hub.env
         if env.get('ASHA_HUB_SESSION_ID') or env.get('ASHA_SESSION_PROFILE') == 'worker':
             raise StoreError('executing workers cannot perform experience operator actions')
+        self._refuse_worker_ancestry()
+
+    def _refuse_worker_ancestry(self):
         # Terminal workers cannot escape by dropping environment labels.
         if self.hub.initialized():
             from .harness import caller_descends_from
@@ -313,30 +322,107 @@ class Experiences:
                     if pid and caller_descends_from(pid, require_complete=True):
                         raise StoreError('worker ancestry refuses experience operator actions')
 
+    def saving_actor(self, project_id, *, required=False, project=None):
+        """Chair native identity is a save heuristic, subordinate to operator proof."""
+        if self.hub.env.get('ASHA_SESSION_PROFILE') == 'worker':
+            raise StoreError('executing workers cannot perform experience save actions')
+        if self.hub.env.get('ASHA_HUB_SESSION_ID'):
+            from .sessions import refuse_managed_operator
+            refuse_managed_operator(self.hub.config, self.hub.env)
+            actor = self.hub.actor()
+            if actor['transport'] != 'terminal' or actor['profile'] != 'room':
+                raise StoreError('experience saving authority requires a terminal Room')
+            if actor['project_id'] != project_id:
+                raise StoreError('Room experience authority is scoped to its own project')
+            self._refuse_worker_ancestry()
+            return {'session_id': actor['session_id'], 'hub_actor': actor}
+        self.operator()
+        import save_identity
+        identity = next((self.hub.env[name].strip() for name in save_identity.ENV_SEAMS
+                         if self.hub.env.get(name, '').strip() not in {'', 'unknown'}), None)
+        if required and identity is None and project is not None:
+            identity = save_identity.resolve(Path(project), self.hub.env.get('ASHA_HARNESS', ''))
+        if required and identity is None:
+            raise StoreError('native explicit-save session identity unavailable')
+        return {'session_id': identity, 'hub_actor': None}
+
+    def own_lineage(self, report, saver):
+        source = self.hub.get(report['session_id'])
+        actor = saver.get('hub_actor') or {}
+        identities = {value for value in (saver.get('session_id'), actor.get('session_id'), actor.get('native_id')) if value}
+        envelope = report['envelope']
+        envelope = json.loads(envelope) if isinstance(envelope, str) else envelope
+        return bool(identities.intersection({source['session_id'], source.get('native_id'), envelope.get('native_session_id')}))
+
+    def default_policy(self, pid, *, epoch=0):
+        from .orchestration.projects import experience_default
+        mode, source, _ = experience_default(self.hub.env)
+        # Nonpositive fingerprints cannot collide with new project overrides.
+        # User config is external, read-only state: returning to a previous mode
+        # within the same persisted epoch deliberately restores its fingerprint.
+        revision = -(epoch * 3 + {'off': 0, 'capture': 1, 'review': 2}[mode])
+        return {'project_id': pid, 'mode': mode, 'revision': revision, 'source': source}
+
     @staticmethod
-    def policy_in(c, pid):
+    def policy_epoch(c, pid):
+        """Retained high-water, with read-only discovery for pre-amendment stores."""
+        tables = {row[0] for row in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if 'hub_experience_policy_epochs' in tables:
+            saved = c.execute('SELECT highwater FROM hub_experience_policy_epochs WHERE project_id=?', (pid,)).fetchone()
+            if saved:
+                return saved[0]
+        # Initialize from surviving history only on the next authorized policy
+        # mutation. Reads never create an epoch row or migrate an old database.
+        epoch = 0
+        for table, column in (('hub_experience_policies', 'revision'),
+                              ('hub_experiences', 'policy_revision'),
+                              ('hub_experience_captures', 'policy_revision')):
+            if table in tables:
+                maximum = c.execute(f'SELECT MAX({column}) FROM {table} WHERE project_id=?', (pid,)).fetchone()[0]
+                epoch = max(epoch, maximum or 0)
+        if {'hub_experiences', 'hub_experience_reviews'} <= tables:
+            maximum = c.execute('SELECT MAX(r.policy_revision) FROM hub_experience_reviews r '
+                                'JOIN hub_experiences e USING(report_id) WHERE e.project_id=?', (pid,)).fetchone()[0]
+            epoch = max(epoch, maximum or 0)
+        return epoch
+
+    def policy_in(self, c, pid):
         row = c.execute('SELECT * FROM hub_experience_policies WHERE project_id=?', (pid,)).fetchone()
-        return dict(row) if row else {'project_id': pid, 'mode': 'off', 'revision': 0}
+        return dict(row, source='project') if row else self.default_policy(pid, epoch=self.policy_epoch(c, pid))
 
     def policy(self, pid):
         if not self.available():
-            return {'project_id': pid, 'mode': 'off', 'revision': 0}
+            return self.default_policy(pid)
         with self.hub.database() as db, db.transaction() as c:
             return self.policy_in(c, pid)
 
-    def set_policy(self, project, mode, *, expected_revision):
+    def clear_policy(self, project, *, expected_revision=None):
+        return self.set_policy(project, None, expected_revision=expected_revision, clear=True)
+
+    def set_policy(self, project, mode, *, expected_revision=None, clear=False):
         self.operator()
-        enum(mode, {'off', 'capture', 'review'})
+        if not clear:
+            enum(mode, {'off', 'capture', 'review'})
         from .rooms import resolve_project
         selected = resolve_project(project, env=self.hub.env)
         self.hub.initialize()
         with mutation_guard(self.hub.config), self.hub.database() as db, db.transaction(write=True) as c:
             old = self.policy_in(c, selected['project_id'])
-            if old['revision'] != expected_revision:
+            if expected_revision is not None and old['revision'] != expected_revision:
                 raise StoreError('policy revision changed; inspect before retrying')
-            revision = old['revision'] + (old['mode'] != mode)
-            c.execute('INSERT OR REPLACE INTO hub_experience_policies VALUES(?,?,?,?)',
-                      (selected['project_id'], selected['root'], mode, revision))
+            epoch = max(self.policy_epoch(c, selected['project_id']), old['revision'], 0)
+            if clear:
+                epoch += old['source'] == 'project'
+                c.execute('DELETE FROM hub_experience_policies WHERE project_id=?', (selected['project_id'],))
+                mode = self.default_policy(selected['project_id'], epoch=epoch)['mode']
+            else:
+                changed = old['mode'] != mode or old['source'] != 'project' or old['revision'] <= 0
+                revision = epoch + 1 if changed else old['revision']
+                epoch = max(epoch, revision)
+                c.execute('INSERT OR REPLACE INTO hub_experience_policies VALUES(?,?,?,?)',
+                          (selected['project_id'], selected['root'], mode, revision))
+            c.execute('INSERT OR REPLACE INTO hub_experience_policy_epochs VALUES(?,?)',
+                      (selected['project_id'], epoch))
             if mode != 'review':
                 # Only owned learning utilities are cancelled, never hub workers.
                 owned = c.execute("SELECT v.utility_id FROM hub_experience_reviews v JOIN hub_experiences e USING(report_id) WHERE e.project_id=? AND v.status IN ('selected','reserved','running','budget-deferred')", (selected['project_id'],)).fetchall()
@@ -347,8 +433,56 @@ class Experiences:
                 c.execute("UPDATE hub_experience_reviews SET status='policy-deferred' WHERE report_id IN (SELECT report_id FROM hub_experiences WHERE project_id=?) AND status IN ('selected','reserved','running','budget-deferred')", (selected['project_id'],))
         return self.policy(selected['project_id'])
 
+    def completion_enabled(self, row):
+        return (row['transport'] == 'terminal' and row.get('purpose') != 'experience-review'
+                and self.policy(row['project_id'])['mode'] != 'off' and not silenced(row['project']))
+
+    @staticmethod
+    def completion_text(key=None):
+        command = 'asha control session report --state finished --experience-file FILE'
+        command += ' --key ' + (key or 'UUID')
+        return ('Provide one bounded UTF-8 JSON assessment with contract="asha.session-experience.v1": '
+                'assessment observations|none-observed|insufficient-evidence, outcome succeeded|partial|failed|unknown, '
+                'summary, observations (at most three), evidence (at most four); at most 16 KiB. '
+                'Observations require key, kind, observed, evidence_ids and uncertainty; evidence is an '
+                'agent-attestation with id/kind/text or a project-file with id/kind/path/sha256. '
+                'Keep facts, hypotheses and uncertainty separate. Submit with `' + command + '`. '
+                'Capture is advisory and independent of task completion.')
+
+    def reconcile_completion(self, row, *, observed_exit=False):
+        """Record unanswered completion on verified exit, never infer report content."""
+        request = row.get('experience_request') or {}
+        if (row['transport'] != 'terminal' or request.get('generation') != row['generation']
+                or request.get('status') != 'pending'):
+            return row
+        if not observed_exit:
+            from .rooms import RoomStore, _owned_state
+            room = RoomStore(self.hub.config).read(row['room_id'])
+            if _owned_state(room, self.hub.tmux)[0] not in {'ended', 'missing'}:
+                return row
+        with mutation_guard(self.hub.config), self.hub.database() as db, db.transaction(write=True) as c:
+            current = self.current(c, row)
+            fresh = current.get('experience_request') or {}
+            if fresh.get('key') != request['key'] or fresh.get('status') != 'pending':
+                return current
+            c.execute("UPDATE hub_experience_captures SET reason='exited-before-capture' "
+                      "WHERE session_id=? AND generation=? AND source='completion' AND delivery_key=? "
+                      "AND status='missing' AND report_id IS NULL", (row['session_id'], row['generation'], request['key']))
+            capture = c.execute("SELECT status,report_id,reason FROM hub_experience_captures "
+                      "WHERE session_id=? AND generation=? AND source='completion' AND delivery_key=?",
+                      (row['session_id'], row['generation'], request['key'])).fetchone()
+            if capture and capture['reason'] == 'exited-before-capture':
+                current['capture'] = dict(capture)
+                current['experience_request'] = dict(fresh, status='missing', reason='exited-before-capture')
+                self.hub._save(c, current)
+            return current
+
     def close_capture(self, row, request_id):
         policy = self.policy(row['project_id'])
+        from .session_publication import saved_current_assignment
+        if saved_current_assignment(self.hub, row):
+            return {'status': 'disabled', 'requested': False, 'reason': 'explicit-save-published',
+                    'policy_revision': policy['revision'], 'report_id': None}
         requested = policy['mode'] != 'off' and not silenced(row['project']) and row.get('purpose') != 'experience-review'
         return {'status': 'missing' if requested else 'disabled', 'requested': requested,
                 'policy_revision': policy['revision'], 'report_id': None}
@@ -389,7 +523,11 @@ class Experiences:
         self.hub.initialize()  # Additive migration on an authorized mutation, never on reads.
         policy = self.policy(row['project_id'])
         disabled = policy['mode'] == 'off' or silenced(row['project']) or row.get('purpose') == 'experience-review'
+        saved = source == 'close' and row.get('closure', {}).get('capture', {}).get('reason') == 'explicit-save-published'
+        disabled = disabled or saved
         receipt = {'status': 'disabled' if disabled else 'missing', 'report_id': None}
+        if saved:
+            receipt['reason'] = 'explicit-save-published'
         value = body_digest = None
         try:
             string(key, 256)
@@ -476,6 +614,7 @@ class Experiences:
             raise ValueError('feedback claims unsupplied guidance version')
         rid = str(uuid.uuid4())
         envelope = {'harness': row['harness'], 'harness_version': None, 'model': None, 'model_version': None,
+                    'native_session_id': row.get('native_id'),
                     'version_provenance': 'unknown', 'supplied_guidance': [{'id': r[0], 'version': r[1]} for r in versions[:64]],
                     'supplied_guidance_count': len(versions), 'supplied_guidance_complete': len(versions) <= 64,
                     'evidence_digest': sha(canonical(value['evidence']))}

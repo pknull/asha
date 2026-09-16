@@ -36,6 +36,12 @@ between turns and completed utilities leave the default list. Their results
 remain available with `list --all` and `show ID`. Terminal workers also support
 Copilot and OpenCode.
 
+Worker launch, resume and send automatically select compatible active learnings
+when no `--learning` is supplied: project scope, harness scope, source-session
+evidence count descending, then rule ID; at most three rules and 3 KiB.
+Repeated `--learning ID` selects explicitly; `--no-learning` supplies none.
+Rooms retain their existing context. Supply does not establish use or benefit.
+
 Retain the returned ID. For a lost-response launch retry, reuse
 `--session-id UUID` and the original arguments. Never create a replacement
 conversation just to deliver an answer. An interrupted launch is retained for
@@ -86,6 +92,12 @@ or a completed structured utility. Silence proves none of these. Read results
 before conveying them as conclusions. Message pages expose `complete` and
 `next_offset`; use `messages --offset N` to read subsequent pages.
 
+When effective experience policy is enabled, a finished report without an
+assessment returns a bounded request and controller `--key`. Follow up with
+`report --state finished --experience-file FILE --key KEY` to attach capture
+without replacing the task result. Identical retries reuse the receipt.
+An unanswered request followed by exit records `exited-before-capture`.
+
 ## Close, stop and resume
 
 `session stop ID` stops the owned process now and retains history. `session
@@ -93,13 +105,34 @@ close ID` is graceful: it asks the session for one final turn and terminates
 only after a verified project-memory handoff (`closure.state` becomes
 `acknowledged`, then `completed`). Re-run `close`, or use `close ID --wait 120`,
 to terminate after the acknowledgement. `close ID --force` terminates now and
-records that no memory save was claimed. An idle terminal cannot be woken by
-the request: offer attachment, or a force-close, and say so. Report
+records that no memory save was claimed. An observed idle Codex terminal with a
+captured native ID can be stopped and resumed in the same conversation with the
+close request. The request ID survives the new generation. Working sessions are
+not stopped. Unknown activity, missing native IDs, unsupported resume and failed
+resume leave `unanswered` with attachment required. Claude retains its Stop-hook
+channel; an already idle Claude session still needs attachment. Report
 `unanswered`, `handoff-failed`, `undeliverable` and `unavailable` states as
 what they are; none of them is a completed save. The handoff never commits or
 pushes; landing code remains a separate explicit decision. Dashboard `q` only
 exits the UI; it does not stop workers or the supervisor. `M` filters input
 requests; `A` includes retained history.
+
+Rooms that explicitly saved after their latest assignment in the same generation
+omit the close experience assessment (`explicit-save-published`). Control verifies
+and retains publication linkage; this is not termination authority. Issue #92 owns
+the future verified completion receipt and has a marked seam before idle wake;
+issue #93 owns the broader dashboard hints. Do not infer either receipt from prose.
+
+Experience policy resolves project override, user `session_experience.default_mode`
+in `~/.asha/config.json`, then builtin off. `experience policy --read-only --project
+PROJECT --json` inspects mode/source/revision; `--mode MODE` changes it in one
+transaction, optional `--revision` uses compare-and-set, and `--clear` follows the
+default again. Policy mutations remain chair/Keeper-only. No config opens the
+native review release gate. Explicit save reviews at most five selected unreviewed
+reports after publication, excludes its own lineage and records advisory-save-review
+results before disposition. Verified Rooms can review/dispose only their own
+project, with a retained explicit-save receipt for disposal. Follow the save skill;
+skip experience reads when off or silenced. Writes retain native approvals.
 
 `session resume ID --text CONTINUATION` preserves a terminal session's hub
 identity. Claude/Codex reuse a captured native conversation ID when available;
@@ -125,19 +158,17 @@ Use initiatives only when the Keeper requests their staged workflow. Open
 Preserve its scoped authorities and records. Never automatically resume,
 migrate, replace or archive legacy work while launching ordinary jobs.
 
-## Optional session experience
+## Session experience evidence
 
-Project learning policy is initially off. Use `asha control session experience
-policy --project PROJECT --json` to inspect; explicit operator changes require the
-current `--revision` and `--mode off|capture|review`. Capture and Memory close outcomes
-are independent. Workers may add `--experience-file FILE --key UUID` to finished
-reports, or add an experience file/reference to a close handoff. Corrections use
-`--supersedes REPORT_ID --key NEW_UUID`. Never reconstruct transcripts for missing
-capture. `experience list/show/packet/pending/guidance/stats` inspect retained evidence.
-
-Launch, resume and send accept repeated `--learning ID[@DIGEST]` for selected active
-guidance only (three rules, 3 KiB). Check exclusions and delivery manifests; queued
-context is not supplied context and supplied guidance is not proof of use.
+Capture and Memory close outcomes are independent. Workers may add
+`--experience-file FILE --key UUID` to finished reports, or add an experience
+file/reference to a close handoff. Corrections use `--supersedes REPORT_ID --key
+NEW_UUID`. Never reconstruct transcripts for missing capture.
+`experience list/show/packet/pending/unreviewed/guidance/stats` inspect retained
+evidence. Guidance is selected automatically unless `--learning ID[@DIGEST]` or
+`--no-learning` overrides selection, within the three-rule and 3 KiB limits.
+Check exclusions and delivery manifests; queued context is not supplied context
+and supplied guidance is not proof of use.
 When `session messages` returns `delivery_digest`, acknowledge that exact body
 with `session ack-message MESSAGE_ID --delivery-digest DIGEST`. Ordinary
 acknowledgements without the optional digest leave guidance supply unknown.

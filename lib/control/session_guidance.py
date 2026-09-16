@@ -1,4 +1,4 @@
-"""Explicit, bounded active-learning selections at native assignment seams."""
+"""Bounded active-learning selections at native assignment seams."""
 from __future__ import annotations
 import json
 import time
@@ -11,9 +11,26 @@ from .registry_guards import mutation_guard
 def resolve(hub, row, selections):
     import learnings_manager as lm
     from .session_experience import Experiences
-    if not isinstance(selections, list) or len(selections) > 20:
+    automatic = selections is None and row['profile'] == 'worker'
+    selection = 'automatic' if automatic else 'explicit' if selections else 'none'
+    if automatic:
+        if silenced(row['project']):
+            selections = []
+        else:
+            with lm.at_home(hub.config.asha_home):
+                active = lm.list_state('active')
+            def order(rule):
+                scope = rule.applicability
+                sources = {e.session_id for e in rule.evidence if e.session_id not in {'', 'unknown'}}
+                return (not bool(scope.get('project_ids')), not bool(scope.get('harnesses')), -len(sources), rule.id)
+            selections = [rule.id for rule in sorted(active, key=order)
+                          if (not rule.applicability.get('project_ids') or row['project_id'] in rule.applicability['project_ids'])
+                          and (not rule.applicability.get('harnesses') or row['harness'] in rule.applicability['harnesses'])]
+    elif selections is None:
+        selections = []
+    if not isinstance(selections, list) or (not automatic and len(selections) > 20):
         raise StoreError('at most 20 explicit selections may be inspected; at most three supplied')
-    manifest = {'selected': selections, 'supplied': [], 'excluded': [], 'harness': row['harness'],
+    manifest = {'selection': selection, 'selected': selections, 'supplied': [], 'excluded': [], 'harness': row['harness'],
                 'policy_revision': Experiences(hub).policy(row['project_id'])['revision'],
                 'harness_version': None, 'model': None, 'version_provenance': 'unknown'}
     block = ''
@@ -53,7 +70,7 @@ def resolve(hub, row, selections):
                 except ValueError:
                     reason = 'private-content-omitted'
                 else:
-                    candidate = '\nExplicitly selected active guidance (scope limits apply):\n' + canonical([*manifest['supplied'], rule])
+                    candidate = '\nSelected active guidance (scope limits apply):\n' + canonical([*manifest['supplied'], rule])
                     if len(candidate.encode()) > 3 * 1024:
                         reason = 'byte-limit'
                     else:
@@ -73,11 +90,14 @@ def retain_in(c, row, key, manifest, *, status='queued'):
                     (row['session_id'], row['generation'], key)).fetchone()
     if old:
         prior = json.loads(old['manifest'])
-        if prior['selected'] != manifest['selected'] or prior.get('assignment_digest') != manifest.get('assignment_digest'):
+        if (prior['selected'] != manifest['selected'] or prior.get('selection', 'explicit') != manifest.get('selection', 'explicit')
+                or prior.get('assignment_digest') != manifest.get('assignment_digest')):
             raise StoreError('guidance delivery key already binds another manifest')
         return dict(old)
-    if not manifest['selected'] or silenced(row['project']):
+    if silenced(row['project']):
         return None
+    if not manifest['selected']:
+        status = 'none'
     c.execute('INSERT INTO hub_guidance_exposures VALUES(?,?,?,?,?,?,?,?)',
               (str(uuid.uuid4()), row['session_id'], row['generation'], key, row['project_id'], status,
                canonical(manifest), time.time()))
@@ -85,7 +105,7 @@ def retain_in(c, row, key, manifest, *, status='queued'):
 
 
 def retain(hub, row, key, manifest, *, status='queued'):
-    if not manifest['selected'] or silenced(row['project']):
+    if silenced(row['project']):
         return None
     hub.initialize()
     with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
@@ -123,6 +143,7 @@ def delivery(hub, row, key, body):
     pins = [rule['id'] + '@' + rule['version'] for rule in old['supplied']]
     block, current = resolve(hub, row, pins)
     current['selected'] = old['selected']
+    current['selection'] = old.get('selection', 'explicit' if old['selected'] else 'none')
     current['excluded'] = old['excluded'] + current['excluded']
     current.update(base_digest=sha(base), assignment_digest=old.get('assignment_digest'),
                    planned_block=block, delivery_digest=sha(base + block))

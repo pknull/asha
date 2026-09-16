@@ -684,6 +684,13 @@ if [[ "$TARGET" == "codex" || "$TARGET" == "all" ]]; then
     nope "Codex hook installation absent; no expected commands or ownership evidence"
   else
     # No dangling asha symlinks under Codex scan dirs
+    expected_rules="$(source "$ASHA/harnesses/codex.sh"; codex_render_rules)"
+    rules_rc=$?
+    if [[ $rules_rc -eq 0 && -f "$CODEX/rules/asha.rules" && "$(cat "$CODEX/rules/asha.rules")" == "$expected_rules" ]]; then
+      pass "Codex execution rules match the source renderer"
+    else
+      nope "Codex execution rules missing or drifted; rerun the authorized Codex installer"
+    fi
     check_dangling "$CODEX" codex skills:1 agents:1 prompts:1
     check_skill_links "$CODEX" codex
 

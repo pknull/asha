@@ -189,7 +189,7 @@ class TerminalClosureTests(ClosureFixture):
         self.assertEqual(record['delivery']['channel'], 'queued-message')
         with self.acting_as(sid):
             self.assertIsNone(self.hub.stop_decision(self.hub.observe('turn-stopped')))
-        self.assertEqual(self.hub.show(sid)['closure']['state'], 'pending-delivery')
+        self.assertEqual(self.hub.show(sid)['closure']['state'], 'unanswered')
 
     def test_resume_moves_an_old_closure_record_into_history(self):
         row = self.launch()
@@ -669,7 +669,7 @@ class TerminalClosureTests(ClosureFixture):
         self.assertIn('Stop', record['guidance'])
         with self.acting_as(sid):
             self.assertIsNone(self.hub.stop_decision(self.hub.observe('turn-stopped')))
-        self.assertEqual(self.hub.show(sid)['closure']['state'], 'pending-delivery')
+        self.assertEqual(self.hub.show(sid)['closure']['state'], 'unanswered')
 
     def test_wait_finalizes_after_the_acknowledgement_arrives(self):
         row = self.launch()

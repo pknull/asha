@@ -169,7 +169,9 @@ def dispatch(argv, *, env):
     elif verb == 'list':
         parser.add_argument('--all', action='store_true')
     if verb in {'launch', 'resume', 'send'}:
-        parser.add_argument('--learning', dest='learning_ids', action='append', default=[])
+        learning = parser.add_mutually_exclusive_group()
+        learning.add_argument('--learning', dest='learning_ids', action='append', default=None)
+        learning.add_argument('--no-learning', dest='learning_ids', action='store_const', const=[])
     if verb in {'report', 'handoff'}:
         group = parser.add_mutually_exclusive_group()
         group.add_argument('--experience-file')

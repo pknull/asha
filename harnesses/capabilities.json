@@ -124,30 +124,30 @@
         },
         "session-experience": {
           "support": "partial",
-          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
-          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
+          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
-            "Default policy is off; capture, review and Memory acknowledgement are independent",
-            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
-            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
+            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
         "session-guidance": {
           "support": "partial",
-          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
-          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
           "limitations": [
-            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
           ]
         },
         "experience-review": {
           "support": "unsupported",
-          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
-          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
+          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
           "limitations": [
-            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "Claude adapter specifies --bare, empty tools, strict empty MCP, no skills, no hooks; only adapter fixtures and local --help checked",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
@@ -274,40 +274,40 @@
         },
         "session-close": {
           "support": "partial",
-          "surface": "session close -> queued hub message only; the final turn acknowledges with `session handoff`",
-          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "surface": "Queued while working; recent observed idle + captured native ID uses owned native conversation resume with one close request",
+          "verifier": "python test_session_idle_close/test_control_session_closure; tests:test-session-hub-hooks",
           "limitations": [
-            "Codex Stop delivery to control-event.sh is live-proven, but returning a block decision through the turn-stopped bridge is not claimed (docs/harness-enforcement.md); the close request therefore reaches the worker only when it reads `session messages`, or by attachment",
-            "Each rendered hook command remains subject to Codex's hash-bound interactive hook trust",
-            "Structured Codex acknowledges through the shell CLI descending from its owner; no native asha_control handoff operation is claimed"
+            "Unknown activity, missing native ID or failed resume requires attachment; finished report alone is not idle evidence",
+            "No proven Stop block return channel, pane typing or screen reads; fixture evidence is not a paid native probe",
+            "Issue #92 verified completion receipt seam precedes wake; C6 explicit-save linkage alone cannot authorize termination"
           ]
         },
         "session-experience": {
           "support": "partial",
-          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
-          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
+          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
-            "Default policy is off; capture, review and Memory acknowledgement are independent",
-            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
-            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
+            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
         "session-guidance": {
           "support": "partial",
-          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
-          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
           "limitations": [
-            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
           ]
         },
         "experience-review": {
           "support": "unsupported",
-          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
-          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
+          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
           "limitations": [
-            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "No equivalent verified packet-only backend adapter; no fallback to another harness",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
@@ -419,36 +419,36 @@
           "surface": "session close -> queued hub message only",
           "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
           "limitations": [
-            "No Stop seam: the request reaches the worker only when it reads `session messages`; attach or force-close otherwise",
-            "Reported honestly as pending-delivery; screen scraping and keystrokes are not used"
+            "No Stop seam or supported native resume; idle/unknown activity leaves unanswered with attachment required",
+            "Working sessions keep the queued request; screen scraping and keystrokes are not used"
           ]
         },
         "session-experience": {
           "support": "partial",
-          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
-          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
+          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
-            "Default policy is off; capture, review and Memory acknowledgement are independent",
-            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
-            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
+            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
         "session-guidance": {
           "support": "partial",
-          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
-          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
           "limitations": [
-            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
           ]
         },
         "experience-review": {
           "support": "unsupported",
-          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
-          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
+          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
           "limitations": [
-            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "No equivalent verified packet-only backend adapter; no fallback to another harness",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]
@@ -562,36 +562,36 @@
           "surface": "session close -> queued hub message only",
           "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
           "limitations": [
-            "No Stop seam: the request reaches the worker only when it reads `session messages`; attach or force-close otherwise",
-            "Reported honestly as pending-delivery; screen scraping and keystrokes are not used"
+            "No Stop seam or supported native resume; idle/unknown activity leaves unanswered with attachment required",
+            "Working sessions keep the queued request; screen scraping and keystrokes are not used"
           ]
         },
         "session-experience": {
           "support": "partial",
-          "surface": "Control session report/handoff --experience-file or --experience-ref; private project policy and paginated receipts",
-          "verifier": "python test_control_session_experience/test_control_experience_regressions; tests:test-session-hub-hooks/test-install",
+          "surface": "User default/project override; bounded completion request and report/handoff capture; verified explicit-save linkage",
+          "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
-            "Default policy is off; capture, review and Memory acknowledgement are independent",
-            "Terminal close uses the existing session-close seam; no simulated keystrokes or idle wakeup",
-            "Native inference probes for this extension remain outstanding; fixture seams are not native enforcement proof"
+            "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
+            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
         "session-guidance": {
           "support": "partial",
-          "surface": "Explicit --learning ID[@VERSION] on session launch/send/resume; native assignment and queued-message acknowledgement",
-          "verifier": "python test_experience_end_to_end/test_experience_guidance_regressions/test_experience_release",
+          "surface": "Automatic active compatible worker guidance on launch/send/resume; --learning selects explicitly and --no-learning supplies none",
+          "verifier": "python test_experience_automatic_guidance/test_experience_guidance_regressions/test_experience_release",
           "limitations": [
-            "At most three active applicable rules and 3 KiB; no blanket worker context",
+            "At most three rules and 3 KiB; project scope, harness scope, distinct source-session count then ID; Rooms unchanged",
             "Supply is not proof of use; unknown native version and outcomes remain unknown",
             "Native delivery probes remain outstanding"
           ]
         },
         "experience-review": {
           "support": "unsupported",
-          "surface": "Controller-owned one-turn packet review through existing structured session custody; explicit chair review remains available",
-          "verifier": "python test_control_experience_review/test_experience_review_regressions/test_experience_cli",
+          "surface": "Native automatic review remains gated; explicit-save advisory review by chair or verified project Room, at most five reports per publication",
+          "verifier": "python test_experience_defaults/test_control_experience_review/test_experience_review_regressions",
           "limitations": [
-            "Automatic native execution is gated off until an approved tool-refusal probe passes",
+            "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "No equivalent verified packet-only backend adapter; no fallback to another harness",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
           ]

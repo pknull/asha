@@ -370,9 +370,11 @@ def _source(source, publisher_session, publisher_project):
         return None
     required = {"session_id", "project_id", "origin_key", "report_id", "observation_key",
                 "evidence_digest", "adopting_save_identity", "harness", "harness_version"}
-    if not isinstance(source, dict) or not required <= source.keys() or source.keys() - required - {'subject_kind'}:
+    if not isinstance(source, dict) or not required <= source.keys() or source.keys() - required - {'subject_kind', 'reviewer'}:
         raise ValueError("invalid source provenance")
     source = json.loads(json.dumps(source))
+    if 'reviewer' in source and source['reviewer'] not in ('advisory-save-review', 'operator-advisory', 'native-automatic'):
+        raise ValueError('invalid source reviewer')
     if 'subject_kind' in source and source['subject_kind'] not in ('worker-observation', 'reviewer-report-assessment'):
         raise ValueError("invalid source subject kind")
     for key in ("session_id", "project_id", "report_id", "observation_key"):

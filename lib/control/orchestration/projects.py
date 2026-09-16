@@ -194,23 +194,32 @@ ROOT_ENV = "ASHA_PROJECTS_ROOT"
 MAX_ROOTS = 8
 
 
-def configured_roots(env: Mapping[str, str] | None = None) -> list[str]:
-    """`project_roots` from the user's cross-project config, or an empty list.
-
-    `~/.asha/config.json` is where user-owned, cross-project facts already live
-    — `bin/asha` reads `default_harness` from it on every bare launch — so a
-    list of the directories someone keeps work in belongs there too. Unreadable
-    or malformed config is not an error: the caller falls back to the ordinary
-    single-root behaviour.
-    """
+def load_user_config(env: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """Read the existing cross-project user config without writing or migrating."""
     values = os.environ if env is None else env
     home = values.get("HOME") or str(Path.home())
     path = Path(values.get(USER_CONFIG_ENV) or Path(home) / ".asha" / "config.json")
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return []
-    roots = config.get("project_roots") if isinstance(config, dict) else None
+        return {}
+    return config if isinstance(config, dict) else {}
+
+
+def experience_default(env: Mapping[str, str] | None = None) -> tuple[str, str, str | None]:
+    config = load_user_config(env)
+    if "session_experience" not in config:
+        return "off", "builtin", None
+    value = config["session_experience"]
+    mode = value.get("default_mode") if isinstance(value, dict) else None
+    if isinstance(mode, str) and mode in {"off", "capture", "review"}:
+        return mode, "default", None
+    return "off", "builtin", "session_experience.default_mode must be off, capture or review; builtin off applies"
+
+
+def configured_roots(env: Mapping[str, str] | None = None) -> list[str]:
+    """Bounded project roots from the shared, read-only user-config loader."""
+    roots = load_user_config(env).get("project_roots")
     if not isinstance(roots, list):
         return []
     cleaned: list[str] = []

@@ -57,6 +57,16 @@ class Hub:
             with _registry_lock(fd):
                 yield
 
+    @contextmanager
+    def _observation_lock(self, sid):
+        """Serialize observed activity with the brief automatic-stop boundary."""
+        from .store import _directory_fd, _managed_start, _registry_lock
+        root = self.config.tasks_dir.parent / 'hub-observation-locks' / identifier(sid)
+        with mutation_guard(self.config), _directory_fd(root, create=True,
+                managed_start=_managed_start(root, ('control', 'hub-observation-locks', sid))) as fd:
+            with _registry_lock(fd):
+                yield
+
     def initialized(self):
         if not (self.config.tasks_dir.parent / DATABASE_NAME).exists():
             return False
@@ -66,7 +76,8 @@ class Hub:
     def initialize(self):
         with mutation_guard(self.config), self.database(create=True) as db, db.transaction(write=True) as c:
             from .session_experience import SCHEMA as EXPERIENCE_SCHEMA
-            for statement in (*SCHEMA, *EXPERIENCE_SCHEMA):
+            from .session_publication import SCHEMA as PUBLICATION_SCHEMA
+            for statement in (*SCHEMA, *EXPERIENCE_SCHEMA, *PUBLICATION_SCHEMA):
                 c.execute(statement)
             if EXPERIENCE_SCHEMA and 'close_request_id' not in {r[1] for r in c.execute('PRAGMA table_info(hub_experience_captures)')}:
                 c.execute('ALTER TABLE hub_experience_captures ADD COLUMN close_request_id TEXT')
@@ -111,7 +122,7 @@ class Hub:
             if transport != 'structured' or result_contract != 'asha.session-result.v1':
                 raise StoreError('explicit result contract requires structured execution')
             spec['result_contract'] = result_contract
-        if learning_ids:
+        if learning_ids is not None:
             spec['learning_ids'] = learning_ids
         self.initialize()
         with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
@@ -135,10 +146,11 @@ class Hub:
                 return self.show(sid)
             return self._start(current, prompt)
 
-    def _start(self, row, prompt):
+    def _start(self, row, prompt, *, closing=False):
         from . import session_guidance as guidance
-        row = self._update(row['session_id'], expected_generation=row['generation'], current_assignment=prompt)
-        block, manifest = guidance.resolve(self, row, row.get('learning_ids', []))
+        row = self._update(row['session_id'], expected_generation=row['generation'], current_assignment=prompt,
+                           assignment_epoch=str(uuid.uuid4()))
+        block, manifest = guidance.resolve(self, row, row.get('learning_ids'))
         key = 'opening' if row['generation'] == 1 or row['transport'] == 'structured' else 'resume:' + str(row['generation'])
         guidance.retain(self, row, key, guidance.planned(manifest, prompt, block))
         prompt = text(prompt + block, 'assignment with selected guidance')
@@ -149,6 +161,9 @@ class Hub:
             brief += ('\n\nOptional session tools: `asha control session report --state needs-input --text "question"` '
                       'or `--state finished --text "result"`; `asha control session messages` reads queued context. '
                       'Work normally using this repository and your native harness. No initiative or per-turn report is required.')
+            from .session_experience import Experiences
+            if Experiences(self).completion_enabled(row):
+                brief += '\n\n' + Experiences.completion_text()
         try:
             # Friendly labels may repeat. Rooms retain every incarnation.
             room_name = f"session-{row['session_id']}-{row['generation']}"
@@ -160,7 +175,7 @@ class Hub:
         except BaseException as exc:
             self._update(row['session_id'], lifecycle='interrupted', reason=str(exc)[:1000])
             raise
-        self._update(row['session_id'], lifecycle='open')
+        self._update(row['session_id'], lifecycle='closing' if closing else 'open')
         guidance.supplied(self, row, key)
         return self.show(row['session_id'])
 
@@ -313,7 +328,7 @@ class Hub:
         record = dict(record, guidance=closure.guidance_for(row, record))
         state = record['state']
         row['closure'] = record
-        if row['lifecycle'] == 'closing':
+        if row['lifecycle'] in {'closing', 'interrupted'}:
             failing = state in closure.RETRYABLE_STATES or state == 'undeliverable'
             phase = 'Closing' + (f' ({state})' if failing else '')
             if row['activity'] == 'needs-input':
@@ -504,7 +519,13 @@ class Hub:
         record = row.get('closure')
         observed = record   # the record as read; a hook may move it while the tmux probe runs
         current = record and record['generation'] == row['generation'] and record['state'] not in closure.TERMINAL_STATES
+        # Issue #92 integration seam: a future verified completion receipt is
+        # revalidated/consumed here before requesting or waking a final turn.
+        # C6 publication linkage alone never authorizes termination.
         if not self._live(row):
+            from .session_experience import Experiences
+            if row['lifecycle'] in ACTIVE_LIFECYCLES:
+                row = Experiences(self).reconcile_completion(row)
             # Nothing can be asked. Retain whatever the request reached, never a success.
             if current and record['state'] in {'delivered', 'pending-delivery'}:
                 record = closure.transition(record, 'undeliverable', last_error='the harness is no longer live')
@@ -522,6 +543,17 @@ class Hub:
             record = self._deliver(row, self._new_closure(row))
         elif record['state'] in closure.RETRYABLE_STATES or record['state'] == 'undeliverable':
             record = self._deliver(row, closure.rearm(record))
+        elif (row['transport'] == 'terminal' and record['state'] == 'pending-delivery'
+              and record['delivery'].get('channel') == 'queued-message'):
+            record = self._continue_idle_close(row, record)
+        if record['generation'] != row['generation']:
+            # Internal close continuation changed incarnation, retaining request
+            # identity. Its actor may already have acknowledged during startup.
+            row = self.get(sid)
+            record = row['closure']
+            observed = record
+            if row['lifecycle'] == 'interrupted':
+                return self.show(sid)
         if record['state'] == 'acknowledged':
             return self._stop(row, close=True, closure_record=closure.transition(record, 'completed'))
         if record['state'] == 'undeliverable':
@@ -553,17 +585,39 @@ class Hub:
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
+            experiences = Experiences(self)
             capture = None
+            request = row.get('experience_request') or {}
+            if (request.get('generation') != row['generation']
+                    or request.get('assignment_epoch') != row.get('assignment_epoch')):
+                request = {}
+            attachment = bool(experience_file or experience_ref)
+            followup = attachment and request.get('key') == key
             if state == 'finished':
-                capture = Experiences(self).optional_capture(row, source='completion', key=key or str(uuid.uuid4()),
-                    experience_file=experience_file, experience_ref=experience_ref, supersedes=supersedes)
+                if not attachment and experiences.completion_enabled(row):
+                    if not request:
+                        issued = str(uuid.uuid4())
+                        request = {'key': issued, 'generation': row['generation'], 'status': 'pending',
+                                   'assignment_epoch': row.get('assignment_epoch'),
+                                   'text': experiences.completion_text(issued)}
+                    key = request['key']
+                capture = experiences.optional_capture(row, source='completion', key=key or str(uuid.uuid4()),
+                    experience_file=experience_file, experience_ref=experience_ref, supersedes=supersedes,
+                    requested=bool(request))
+                if followup and capture.get('report_id'):
+                    request = dict(request, status='answered')
+            # Issued-key attachments amend capture, never the original task result.
+            reported_body = None if followup else body
             if row['transport'] == 'structured':
                 result = self._update(row['session_id'], expected_generation=row['generation'],
-                                      result=text(body, 'report', 16000), activity=state)
+                                      result=text(reported_body, 'report', 16000), activity=state)
             else:
-                result = self.observe(None, state=state, body=body, native_id=native_id)
+                result = self.observe(None, state=state, body=reported_body, native_id=native_id)
             if capture is not None:
-                result = self._update(row['session_id'], expected_generation=row['generation'], capture=capture)
+                changes = {'capture': capture}
+                if request:
+                    changes['experience_request'] = request
+                result = self._update(row['session_id'], expected_generation=row['generation'], **changes)
             return result
 
     def _deliver(self, row, record):
@@ -595,8 +649,72 @@ class Hub:
         channel = 'stop-hook' if row['harness'] in closure.STOP_HOOK_HARNESSES else 'queued-message'
         detail = ('delivered as the Stop decision when the current turn ends, or when the worker reads messages'
                   if channel == 'stop-hook' else 'queued until the worker reads messages; no Stop seam on this harness')
-        return closure.transition(record, 'pending-delivery', delivery=dict(record['delivery'], channel=channel,
-                                  detail=detail, message_id=mid))
+        record = closure.transition(record, 'pending-delivery', delivery=dict(record['delivery'], channel=channel,
+                                    detail=detail, message_id=mid))
+        if channel == 'queued-message':
+            return self._continue_idle_close(row, record)
+        return record
+
+    def _continue_idle_close(self, row, record):
+        """C7: wake only an observed idle owned conversation, never type into a pane."""
+        row = self.get(row['session_id'])  # A hook may have observed new work during the ownership probe.
+        current = row.get('closure')
+        if current and current['request_id'] == record['request_id'] and current.get('handoff'):
+            return current
+        activity = row.get('native_activity', row['activity'])
+        at = row.get('native_observed_at', row.get('observed_at'))
+        recent = at is not None and 0 <= time.time() - at <= 300
+        if recent and (activity == 'working' or row['activity'] == 'needs-input'):
+            return record
+        if (not recent or activity != 'idle' or row['harness'] not in {'claude', 'codex'} or not row.get('native_id')):
+            return closure.transition(record, 'unanswered', attachment_required=True,
+                last_error='no proven Stop channel; idle native resume unavailable or activity unknown; attachment required')
+        sid = row['session_id']
+        self._update(sid, expected_generation=row['generation'], lifecycle='closing', closure=record)
+        # Observe uses this same short lock. No database transaction spans the
+        # Room operation: SQLite-backed Room custody needs its own writer.
+        with self._observation_lock(sid):
+            fresh = self.get(sid)
+            latest = fresh.get('closure')
+            if latest and latest.get('handoff'):
+                return latest
+            observed_at = fresh.get('native_observed_at', fresh.get('observed_at'))
+            idle = fresh.get('native_activity', fresh['activity']) == 'idle'
+            if (fresh['generation'] != row['generation'] or fresh['lifecycle'] != 'closing'
+                    or not idle or fresh['activity'] == 'needs-input' or observed_at is None
+                    or not 0 <= time.time() - observed_at <= 300):
+                return latest or record
+            close_room(RoomStore(self.config), fresh['room_id'], tmux=self.tmux)
+            self._update(sid, expected_generation=row['generation'], lifecycle='stopped')
+        generation = row['generation'] + 1
+        record = dict(record, generation=generation, attachment_required=False,
+                      continued_from_generation=row['generation'],
+                      delivery=dict(record['delivery'], channel='native-resume',
+                                    detail='continuing the same native conversation for close'))
+        next_row = self._update(sid, lifecycle='starting', generation=generation, closure=record,
+            room_id=str(uuid.uuid4()), room_history=row.get('room_history', []) + [row['room_id']],
+            activity='unknown', observed_at=None, native_activity='unknown', native_observed_at=None,
+            question=None, learning_ids=[], experience_request=None, capture={})
+        try:
+            self._start(next_row, closure.request_text(next_row, record), closing=True)
+        except (OSError, ValueError) as exc:
+            record = closure.transition(record, 'unanswered', attachment_required=True,
+                                        last_error='native close resume failed: ' + str(exc)[:500])
+            # A failure before Room creation has no live attach target. Preserve
+            # interrupted recovery so stop/force-close can dismiss its intent.
+            self._update(sid, lifecycle='interrupted', closure=record)
+            return record
+        def delivered(current, latest):
+            if (current and current['request_id'] == record['request_id'] and current['generation'] == generation
+                    and current['state'] == 'pending-delivery'):
+                return closure.mark_delivered(current, 'native-resume',
+                    detail='close request supplied as native conversation continuation', message_id=record['delivery']['message_id'])
+            return current
+        latest = self._update(sid, expected_generation=generation, closure_fn=delivered)
+        with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
+            c.execute("UPDATE hub_messages SET state='acknowledged' WHERE message_id=? AND state='queued'",
+                      (record['delivery']['message_id'],))
+        return latest['closure']
 
     def stop_decision(self, row, *, stop_hook_active=False):
         """Stop-hook seam: the pending close request as the harness's own block decision.
@@ -666,7 +784,7 @@ class Hub:
             from .session_store import SessionStore
             if not self._has_structured_record(sid):
                 row = self._update(sid, lifecycle='starting', generation=row['generation'] + 1,
-                                   learning_ids=learning_ids or [], capture={}, closure=None,
+                                   learning_ids=learning_ids, capture={}, closure=None,
                                    closure_history=row.get('closure_history', []) +
                                    ([row['closure']] if row.get('closure') else []))
                 return self._start(row, row['prompt'] + '\nContinuation:\n' + prompt)
@@ -675,7 +793,7 @@ class Hub:
             from . import session_guidance as guidance
             self.initialize()
             next_row = dict(row, generation=row['generation'] + 1)
-            block, manifest = guidance.resolve(self, next_row, learning_ids or [])
+            block, manifest = guidance.resolve(self, next_row, learning_ids)
             manifest = guidance.planned(manifest, prompt, block)
             def retained(c, message):
                 current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()[0])
@@ -705,7 +823,8 @@ class Hub:
         row = self._update(sid, lifecycle='starting', room_id=str(uuid.uuid4()),
                            room_history=row.get('room_history', []) + [row['room_id']],
                            closure=None, closure_history=row.get('closure_history', []) + ([row['closure']] if row.get('closure') else []),
-                           generation=row['generation'] + 1, activity='unknown', observed_at=None, learning_ids=learning_ids or [],
+                           generation=row['generation'] + 1, activity='unknown', observed_at=None, learning_ids=learning_ids,
+                           native_activity='unknown', native_observed_at=None,
                            question=None, reason='Resuming native conversation' if row['native_id'] else 'Starting with explicit continuation context; native resume ID unavailable')
         return self._start(row, text(prompt, 'continuation'))
 
@@ -719,8 +838,21 @@ class Hub:
                 raise StoreError('session is closed')
             body, key = text(body, 'message'), text(key, 'delivery key', 256)
             self.initialize()
-            block, manifest = guidance.resolve(self, row, learning_ids or [])
-            manifest = guidance.planned(manifest, body, block)
+            with self.database() as db, db.transaction() as c:
+                frozen = c.execute('SELECT manifest FROM hub_guidance_exposures WHERE session_id=? AND generation=? AND delivery_key=?',
+                                   (sid, row['generation'], key)).fetchone()
+            if frozen:
+                manifest = json.loads(frozen[0])
+                selection = ('automatic' if learning_ids is None and row['profile'] == 'worker'
+                             else 'explicit' if learning_ids else 'none')
+                if (manifest.get('selection', 'explicit' if manifest['selected'] else 'none') != selection
+                        or (selection == 'explicit' and manifest['selected'] != learning_ids)
+                        or manifest.get('base_digest') != digest(body)):
+                    raise StoreError('delivery key already has different content or guidance')
+                block = manifest.get('planned_block', '')
+            else:
+                block, manifest = guidance.resolve(self, row, learning_ids)
+                manifest = guidance.planned(manifest, body, block)
             if row['transport'] == 'structured':
                 from .session_store import SessionStore
                 with SessionStore(self.config) as sessions:
@@ -738,6 +870,9 @@ class Hub:
                 mid = str(uuid.uuid4())
                 c.execute('INSERT INTO hub_messages VALUES(?,?,?,?,?,?,?)',
                           (mid, sid, key, body, digest(body), 'queued', time.time()))
+                current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()[0])
+                current['assignment_epoch'] = str(uuid.uuid4())
+                self._save(c, current)
                 guidance.retain_in(c, row, key, manifest)
                 return dict(c.execute('SELECT * FROM hub_messages WHERE message_id=?', (mid,)).fetchone())
 
@@ -791,6 +926,10 @@ class Hub:
             raise StoreError('invalid session observation')
         changes = dict(activity=activity, activity_source='hook' if event else 'report',
                        observed_at=time.time(), reason=event or 'Reported by worker')
+        if event:
+            changes.update(native_activity=activity, native_observed_at=changes['observed_at'])
+        if event == 'prompt-submitted':
+            changes['assignment_epoch'] = str(uuid.uuid4())
         if event == 'permission-requested':
             changes['question'] = None
         if native_id:
@@ -815,13 +954,16 @@ class Hub:
                            activity_source=row.get('activity_source', 'report'))
         closure_fn = None
         if event == 'session-ended':
+            from .session_experience import Experiences
+            Experiences(self).reconcile_completion(row, observed_exit=True)
             def closure_fn(record, current):
                 if (current['lifecycle'] == 'closing' and record and record['generation'] == current['generation']
                         and record['state'] in {'pending-delivery', 'delivered'}):
                     return closure.transition(record, 'undeliverable',
                                               last_error='the harness exited before answering the close request')
                 return record
-        return self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn, **changes)
+        with self._observation_lock(row['session_id']):
+            return self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn, **changes)
 
     def acknowledge(self, mid, *, delivery_digest=None):
         row = self.actor()

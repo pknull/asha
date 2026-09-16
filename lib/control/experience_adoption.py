@@ -24,7 +24,7 @@ def pending(hub, project_id, *, offset=0, limit=50):
                    WHERE e.project_id=? AND r.status='completed'
                    AND NOT EXISTS (SELECT 1 FROM hub_experiences newer WHERE newer.supersedes=e.report_id)"""
         rows = c.execute('SELECT r.review_id,r.report_id,e.digest AS report_digest,f.value AS finding, '
-                         'e.body AS report_body,e.envelope AS report_envelope,e.project_id ' + query +
+                         "e.body AS report_body,e.envelope AS report_envelope,e.project_id, json_extract(r.result,'$.reviewer') AS reviewer " + query +
                          " ORDER BY r.created_at,r.review_id,f.key LIMIT ? OFFSET ?", (project_id, limit, offset)).fetchall()
         total = c.execute('SELECT COUNT(*) ' + query, (project_id,)).fetchone()[0]
         result = []
@@ -53,7 +53,7 @@ def _complete(hub, disposition_id, receipt, project):
         value = json.loads(row['payload'])
         if row['state'] == 'completed':
             return {'disposition_id': disposition_id, 'state': 'completed', **value['receipt']}
-        if Experiences.policy_in(c, row['project_id'])['mode'] == 'off':
+        if Experiences(hub).policy_in(c, row['project_id'])['mode'] == 'off':
             raise StoreError('learning disposition deferred by policy off; intent retained')
         value['receipt'] = receipt
         c.execute("UPDATE hub_experience_dispositions SET state='completed',payload=? WHERE disposition_id=?",
@@ -61,28 +61,7 @@ def _complete(hub, disposition_id, receipt, project):
     return {'disposition_id': disposition_id, 'state': 'completed', **receipt}
 
 
-def dispose(hub, project, decision, publication, *, save_session_id):
-    """Publication is the saving agent's validated receipt, never a new credential.
-
-    Operator ancestry and project plane remain authoritative. This operation is
-    deliberately invoked by the explicit save procedure; it never publishes Memory.
-    """
-    import learnings_manager as lm
-    experiences = Experiences(hub); experiences.operator()
-    from .rooms import resolve_project
-    selected = resolve_project(project, env=hub.env)
-    root, pid = Path(selected['root']), selected['project_id']
-    if silenced(root) or experiences.policy(pid)['mode'] == 'off':
-        raise StoreError('learning adoption is disabled by silence or policy off')
-    string(save_session_id, 256)
-    if save_session_id == 'unknown':
-        raise StoreError('explicit save identity is unavailable')
-    shape(decision, ('review_id', 'observation_key', 'finding_digest', 'save_key', 'disposition', 'reason'),
-          ('rule_id', 'rule_version', 'trigger', 'action'))
-    enum(decision['disposition'], DISPOSITIONS)
-    for key in ('review_id', 'observation_key', 'save_key', 'reason'):
-        string(decision[key], 1000)
-    validate_digest(decision['finding_digest']); safe_content(decision)
+def validate_publication(publication, pid):
     if (not isinstance(publication, dict) or publication.get('contract') != 'asha.memory-publication.v1'
             or publication.get('status') != 'published' or publication.get('source') != 'explicit-save'
             or publication.get('project_id') != pid):
@@ -95,6 +74,38 @@ def dispose(hub, project, decision, publication, *, save_session_id):
             raise ValueError()
     except (KeyError, TypeError, ValueError) as exc:
         raise StoreError('invalid publication receipt') from exc
+
+
+def dispose(hub, project, decision, publication, *, save_session_id):
+    """Publication is the saving agent's validated receipt, never a new credential.
+
+    Operator ancestry and project plane remain authoritative. This operation is
+    deliberately invoked by the explicit save procedure; it never publishes Memory.
+    """
+    import learnings_manager as lm
+    experiences = Experiences(hub)
+    from .rooms import resolve_project
+    selected = resolve_project(project, env=hub.env)
+    root, pid = Path(selected['root']), selected['project_id']
+    saver = experiences.saving_actor(pid)
+    actor = saver['hub_actor']
+    if actor:
+        from .session_publication import verify_publication
+        verify_publication(hub, actor, publication)
+        if save_session_id != saver['session_id']:
+            raise StoreError('Room explicit-save identity must match the verified actor')
+    if silenced(root) or experiences.policy(pid)['mode'] == 'off':
+        raise StoreError('learning adoption is disabled by silence or policy off')
+    string(save_session_id, 256)
+    if save_session_id == 'unknown':
+        raise StoreError('explicit save identity is unavailable')
+    shape(decision, ('review_id', 'observation_key', 'finding_digest', 'save_key', 'disposition', 'reason'),
+          ('rule_id', 'rule_version', 'trigger', 'action'))
+    enum(decision['disposition'], DISPOSITIONS)
+    for key in ('review_id', 'observation_key', 'save_key', 'reason'):
+        string(decision[key], 1000)
+    validate_digest(decision['finding_digest']); safe_content(decision)
+    validate_publication(publication, pid)
     publisher = {'session_id': save_session_id, 'project_id': pid, 'publication_id': publication['publication_id']}
     with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
         if silenced(root) or experiences.policy_in(c, pid)['mode'] == 'off':
@@ -102,6 +113,10 @@ def dispose(hub, project, decision, publication, *, save_session_id):
         review = c.execute("SELECT r.*,e.project_id,e.origin_report_id,e.session_id,e.body,e.envelope FROM hub_experience_reviews r JOIN hub_experiences e USING(report_id) WHERE review_id=?", (decision['review_id'],)).fetchone()
         if not review or review['project_id'] != pid or review['status'] != 'completed':
             raise StoreError('reviewed finding is unavailable in this project plane')
+        if experiences.own_lineage(review, dict(saver, session_id=saver['session_id'] or save_session_id)):
+            raise StoreError('own session lineage cannot dispose its source findings')
+        if actor:
+            experiences.current(c, actor)
         if c.execute('SELECT 1 FROM hub_experiences WHERE supersedes=?', (review['report_id'],)).fetchone():
             raise StoreError('superseded review cannot authorize adoption')
         findings = json.loads(review['result'])['review']['findings']
@@ -120,6 +135,9 @@ def dispose(hub, project, decision, publication, *, save_session_id):
             'report_id': review['report_id'], 'observation_key': finding['key'],
             'evidence_digest': envelope['evidence_digest'], 'adopting_save_identity': publisher,
             'harness': envelope['harness'], 'harness_version': envelope['harness_version']}
+        reviewer = json.loads(review['result']).get('reviewer')
+        if reviewer:
+            source['reviewer'] = reviewer
         if subject['subject_kind'] == 'reviewer-report-assessment':
             source['subject_kind'] = subject['subject_kind']
         intent = dict(decision, source=source, publication_id=publication['publication_id'])
@@ -127,8 +145,16 @@ def dispose(hub, project, decision, publication, *, save_session_id):
                         (decision['review_id'], finding['key'], decision['save_key'])).fetchone()
         if old:
             prior = json.loads(old['payload'])
-            if {k: v for k, v in prior.items() if k != 'receipt'} != intent:
+            frozen_intent = {k: v for k, v in prior.items() if k != 'receipt'}
+            comparable_intent = intent
+            if isinstance(prior.get('source'), dict) and 'reviewer' not in prior['source']:
+                # Pre-amendment receipts froze provenance before reviewer labels
+                # existed. Omission alone is compatible; never rewrite history or
+                # relax equality for a present label or any other intent field.
+                comparable_intent = dict(intent, source={k: v for k, v in source.items() if k != 'reviewer'})
+            if frozen_intent != comparable_intent:
                 raise StoreError('disposition key already binds different intent')
+            source = prior['source']  # Interrupted manager replay keeps the original provenance too.
             if old['state'] == 'completed':
                 return {'disposition_id': old['disposition_id'], 'state': 'completed', **prior['receipt']}
             did = old['disposition_id']

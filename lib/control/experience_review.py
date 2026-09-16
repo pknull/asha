@@ -61,7 +61,12 @@ def packet(hub, review_id):
     from .session_experience import review_subjects
     with hub.database() as db, db.transaction() as c:
         review = _review(c, review_id)
-    report = Experiences(hub).show(review['report_id'])
+    return packet_for_report(hub, review['report_id'])
+
+
+def packet_for_report(hub, report_id):
+    from .session_experience import review_subjects
+    report = Experiences(hub).show(report_id)
     task = report['envelope'].get('assignment')  # Never substitute a newer mutable session assignment.
     # Assignment can exceed the packet budget. Refuse it rather than silently
     # truncating a claim/evidence record into apparent validity.
@@ -120,6 +125,38 @@ def decode_result(raw, report, expected_packet):
         raise ValueError('review omitted an observation')
     safe_content(result)
     return result
+
+
+def unreviewed(hub, project_id, *, offset=0, limit=50):
+    """Paginated selection at current revision; reads create no review or save state."""
+    if type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 100:
+        raise StoreError('invalid unreviewed page')
+    experiences = Experiences(hub)
+    policy = experiences.policy(project_id)
+    rows = []
+    total = 0
+    if experiences.available() and policy['mode'] != 'off':
+        saver = experiences.saving_actor(project_id)
+        with hub.database() as db, db.transaction() as c:
+            reports = c.execute("""SELECT e.* FROM hub_experiences e WHERE project_id=?
+                AND NOT EXISTS (SELECT 1 FROM hub_experiences n WHERE n.supersedes=e.report_id)
+                AND NOT EXISTS (SELECT 1 FROM hub_experience_reviews r WHERE r.report_id=e.report_id
+                    AND r.policy_revision=? AND (r.status='completed' OR r.utility_id IS NOT NULL))
+                ORDER BY e.created_at,e.report_id""", (project_id, policy['revision']))
+            for report in reports:
+                if silenced(hub.get(report['session_id'])['project']):
+                    continue
+                status, reason = experiences.selection(json.loads(report['body']), report['report_id'], policy['revision'])
+                if status != 'selected':
+                    continue
+                if offset <= total < offset + limit:
+                    rows.append({'report_id': report['report_id'], 'session_id': report['session_id'],
+                                 'created_at': report['created_at'], 'selection_reason': reason,
+                                 'skip_reason': 'own-session-lineage' if experiences.own_lineage(report, saver) else None})
+                total += 1
+    end = offset + len(rows)
+    return {'rows': rows, 'total': total, 'complete': end >= total,
+            'next_offset': end if end < total else None, 'policy_revision': policy['revision']}
 
 
 def reserve(hub, review_id):
@@ -187,6 +224,10 @@ def reconcile(hub):
     experiences = Experiences(hub)
     if not experiences.available():
         return {'reviews_inspected': 0}
+    with hub.database() as db, db.transaction() as c:
+        completions = [json.loads(r[0]) for r in c.execute("SELECT payload FROM hub_sessions WHERE lifecycle IN ('starting','open','closing') AND json_extract(payload,'$.experience_request.status')='pending' LIMIT 100")]
+    for session in completions:
+        experiences.reconcile_completion(session)
     with hub.database() as db, db.transaction() as c:
         rows = [dict(r) for r in c.execute("SELECT * FROM hub_experience_reviews WHERE status IN ('selected','budget-deferred','reserved','running') ORDER BY created_at,review_id LIMIT 100")]
     for row in rows:

@@ -21,9 +21,9 @@ class GuidanceReview(ClosureFixture):
         lm.save(lm.Learning('review-rule', 'Before publishing', ACTION, state='active'), project_dir=self.project)
 
     def test_rejected_message_cannot_become_a_guidance_supply_receipt(self):
-        sid = self.launch()['session_id']
+        sid = self.launch(learning_ids=[])['session_id']
         key = str(uuid.uuid4())
-        original = self.hub.send(sid, 'Continue the original work', key=key)
+        original = self.hub.send(sid, 'Continue the original work', key=key, learning_ids=[])
         with self.assertRaises(StoreError):
             self.hub.send(sid, 'Continue the original work', key=key, learning_ids=['review-rule'])
         with self.acting_as(sid):

@@ -165,6 +165,8 @@ def request_text(row: dict, closure: dict) -> str:
 
 def guidance_for(row: dict, closure: dict) -> str:
     state = closure["state"]
+    if closure.get('attachment_required'):
+        return 'Close needs attachment: attach and hand the agent the retained close request, or force-close. ' + str(closure.get('last_error') or '')
     if state == "pending-delivery":
         if row["transport"] == "structured":
             return "Close request queued as the next structured turn; re-run close after it completes"

@@ -10,10 +10,21 @@ from lib.control.store import StoreError
 
 class ExistingDatabase(ClosureFixture):
     def test_legacy_finished_report_with_existing_schema(self):
-        with mock.patch('lib.control.session_experience.SCHEMA', ()):
+        # Historical launches predate guidance manifests. Reproduce that setup
+        # without asking today's launch path to write a deliberately absent table.
+        with mock.patch('lib.control.session_experience.SCHEMA', ()), \
+             mock.patch('lib.control.session_guidance.retain'):
             row = self.launch()
+        with self.hub.database() as db, db.transaction() as c:
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertNotIn('hub_experiences', tables)
+        self.assertNotIn('hub_guidance_exposures', tables)
         with self.acting_as(row['session_id']):
             self.assertEqual(self.hub.report(state='finished', body='Done')['activity'], 'finished')
+        with self.hub.database() as db, db.transaction() as c:
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        self.assertIn('hub_experiences', tables)
+        self.assertIn('hub_guidance_exposures', tables)
 
 
 class ReceiptReview(ExperienceFixture):

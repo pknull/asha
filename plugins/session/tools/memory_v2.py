@@ -348,6 +348,13 @@ def publish(project_dir: Path, active_context: str, decisions: str, *,
     _assert_persistence_enabled(root)
     project_config = require_v2_config(root)
     active_path, decisions_path = _publication_paths(root)
+    actor = None
+    if publication_source == 'explicit-save' and os.environ.get('ASHA_HUB_SESSION_ID'):
+        repository = str(Path(__file__).resolve().parents[3])
+        if repository not in sys.path:
+            sys.path.insert(0, repository)
+        from lib.control.session_publication import publication_actor
+        actor = publication_actor(root)
     with _publication_lock(root):
         # Close the race where silence is enabled after the first check whilst
         # a publisher is waiting for the project lock.
@@ -367,10 +374,22 @@ def publish(project_dir: Path, active_context: str, decisions: str, *,
         _remove_journal(root)
         after = {"active": hashlib.sha256(active_context.encode()).hexdigest(),
                  "decisions": hashlib.sha256(decisions.encode()).hexdigest()}
-        return {"contract": "asha.memory-publication.v1", "status": "published",
+        receipt = {"contract": "asha.memory-publication.v1", "status": "published",
                 "publication_id": str(uuid.uuid4()), "source": publication_source, "project_id": project_config["project_id"],
                 "destination": str(root / "Memory"), "before": current, "after": after,
                 "changed": [name for name in after if current[name] != after[name]], "git_invoked": False}
+    if actor:
+        hub, verified = actor
+        receipt.update(hub_session_id=verified['session_id'], hub_generation=verified['generation'])
+        from lib.control.session_publication import record_publication
+        try:
+            record_publication(hub, verified, receipt)
+        except (OSError, ValueError):
+            # The Memory transaction already succeeded. Keep that receipt even
+            # if Control cannot retain linkage; it grants no Room adoption or
+            # duplicate-assessment suppression in that case.
+            receipt['hub_publication_status'] = 'unavailable'
+    return receipt
 
 
 def snapshot_digests(snapshot: PublishedSnapshot) -> dict[str, str]:
