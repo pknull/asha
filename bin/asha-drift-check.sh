@@ -1047,6 +1047,16 @@ elif [[ -f "$PWD/.asha/config.json" ]]; then
     "$PWD/.asha/config.json" >/dev/null 2>&1 \
     && pass "current project has stable Memory v2 project_id" \
     || nope "current project config lacks memory_version=2 or project_id (run /session:init)"
+  # Reuse workspace policy, including private component Memory. Install --fix
+  # does not authorize workspace repair; that remains workspace doctor --fix.
+  if [[ -f "$PWD/.asha/workspace-init.json" ]]; then
+    if workspace_report="$(python3 "$ASHA/plugins/session/tools/workspace_init.py" doctor --root "$PWD" 2>&1)"; then
+      pass "current workspace doctor validates configured memory visibility and managed ignores"
+    else
+      nope "current workspace needs repair (run asha workspace doctor --fix)"
+      printf '%s\n' "$workspace_report"
+    fi
+  fi
   current_decisions="$PWD/Memory/decisions.md"
   if [[ -f "$current_decisions" ]]; then
     decisions_measurement="$(python3 - "$memory_tool" "$current_decisions" <<'PY' 2>/dev/null || true

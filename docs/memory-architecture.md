@@ -132,6 +132,49 @@ SessionStart handler suppresses the workspace publication body only at the
 root, preventing accidental duplicate injection without hiding either plane
 from a child session.
 
+### Workspace Git visibility
+
+Workspace init and `asha workspace doctor --fix` read the optional top-level
+`memory_visibility` in the selected project's `.asha/config.json`. Merge it into
+the existing config, preserving the project identity and other settings:
+
+```json
+{
+  "initialized": true,
+  "memory_version": 2,
+  "project_id": "existing-project-id",
+  "memory_visibility": "private"
+}
+```
+
+Omitted or `"tracked"` preserves the current managed rules: operational Markdown,
+canonical knowledge and workspace metadata remain trackable. `"private"` instead
+ignores the entire operational, shared and personal roots (normally `Memory/`,
+`knowledge/`, `memory-local/`), all of `Work/`, and `.asha/workspace*.json`. The
+private managed block contains no re-inclusion rules. Existing narrow recovery
+and migration ignores remain present. Unknown values fail before init or repair
+writes; repair also refuses an unreadable or missing project config.
+
+Set this independently in each private component repository; workspace repair
+does not read an umbrella's setting or modify child repositories. Leave it absent
+or `"tracked"` in the umbrella. Apply an existing workspace's policy with:
+
+```bash
+asha workspace doctor --root . --fix
+asha workspace doctor --root .
+```
+
+Doctor detects stale managed blocks and later negations, and repair reasserts the
+selected policy at the end of `.gitignore`. The installation drift check delegates
+initialized workspace checks to this same doctor; even with `--fix`, it reports
+workspace drift without repairing project files.
+
+This setting controls workspace ignore generation, not Memory publication or save
+scope. `/session:init` preserves the config; it does not generate the workspace
+block. Git ignores do not untrack already committed files or erase history. Any
+index/history cleanup is a separate authorized step. Use a no-Git publication
+path for private Memory; this setting does not change Git save behavior.
+
 ## Harness seams
 
 - Claude reads `hooks.json` directly and receives context in native

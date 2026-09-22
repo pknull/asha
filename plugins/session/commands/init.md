@@ -26,6 +26,15 @@ Work/session-state/                  # ignored unpublished recovery snapshots
 .gitignore                           # managed Memory + Control private rules
 ```
 
+For repositories that also use workspace init/repair, the optional project config
+setting `"memory_visibility": "private"` keeps the workspace's `Memory/`, `Work/`,
+`knowledge/`, `memory-local/` and `.asha/workspace*.json` ignored. Preserve existing
+config keys and the project identity when adding it. `/session:init` preserves
+this setting; apply its workspace rules with `asha workspace init` or, for an
+existing workspace, `asha workspace doctor --root . --fix`. Omitted or `"tracked"`
+retains the existing trackable workspace publications. This setting neither
+untracks existing files nor changes save scope; Git cleanup is a separate step.
+
 Initialization preserves an existing `project_id`, existing published v2
 files, and all legacy material. If either published path contains a legacy or
 invalid v2 handoff, initialization fails before changing the config and routes

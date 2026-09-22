@@ -326,13 +326,42 @@ def _tracked_operational_entries(root: str) -> tuple[str, ...]:
 
 
 def _ignore_entries(personal_root: str, operational_root: str = "Memory",
-                    shared_root: str = "knowledge") -> tuple[str, ...]:
+                    shared_root: str = "knowledge", *,
+                    memory_visibility: str = "tracked") -> tuple[str, ...]:
+    if memory_visibility == "private":
+        return (
+            f"{personal_root.rstrip('/')}/",
+            *(entry for entry in IGNORE_ENTRIES[1:] if not entry.startswith("!")),
+            f"{operational_root.rstrip('/')}/",
+            "Work/",
+            f"{shared_root.rstrip('/')}/",
+            ".asha/workspace*.json",
+        )
     return (
         f"{personal_root.rstrip('/')}/",
         *IGNORE_ENTRIES[1:],
         *_tracked_operational_entries(operational_root),
         *_tracked_tree_entries(shared_root),
     )
+
+
+def _load_project_config(root: Path, *, required: bool = False
+                         ) -> tuple[Optional[dict[str, Any]], Optional[dict[str, Any]]]:
+    """Read privacy policy before planning writes; never guess past bad config."""
+    rel = ".asha/config.json"
+    path = _generated_target(root, rel)
+    if path is None:
+        return None, _issue("path_escape", "project config path escapes workspace", path=rel)
+    config: dict[str, Any] = {}
+    if required or path.exists():
+        loaded, why = wk._read_json(path)
+        if why or loaded is None:
+            return None, _issue("config_invalid", f"project config is unavailable or invalid: {why}", path=rel)
+        config = loaded
+    if config.get("memory_visibility", "tracked") not in ("tracked", "private"):
+        return None, _issue("memory_visibility_invalid",
+                            'memory_visibility must be "tracked" or "private"', path=rel)
+    return config, None
 
 
 def _merge_ignore(existing: bytes, entries: Iterable[str] = IGNORE_ENTRIES) -> bytes:
@@ -472,6 +501,11 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
             path="Work/markers/silence",
         )]
         return report
+    config, config_error = _load_project_config(resolved)
+    if config_error:
+        report["errors"] = [config_error]
+        return report
+    assert config is not None
     if discover:
         discovery = discover_repositories(resolved, max_depth=discover_depth)
         report["proposals"] = discovery["proposals"]
@@ -746,6 +780,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
         manifest["memory"]["personal_root"],
         manifest["memory"]["operational_root"],
         manifest["memory"]["shared_root"],
+        memory_visibility=config.get("memory_visibility", "tracked"),
     )
     try:
         ignore_bytes = _merge_ignore(gitignore.read_bytes() if gitignore.exists() else b"", ignore_entries)
@@ -758,16 +793,7 @@ def initialize_workspace(*, root: Path | str, workspace_name: Optional[str] = No
     # Workspace roots are also Memory v2 publication planes. Give the plane a
     # stable identity without tracking its user-local config file.
     config_path = _generated_target(resolved, ".asha/config.json")
-    if config_path is None:
-        report["errors"] = [_issue("path_escape", "project config path escapes workspace", path=".asha/config.json")]
-        return report
-    config: dict[str, Any] = {}
-    if config_path.exists():
-        loaded, why = wk._read_json(config_path)
-        if why or loaded is None:
-            report["errors"] = [_issue("config_invalid", f"existing project config is invalid: {why}", path=".asha/config.json")]
-            return report
-        config = loaded
+    assert config_path is not None
     if "project_id" in config:
         project_id = config["project_id"]
         if not isinstance(project_id, str) or not project_id.strip():
@@ -885,13 +911,10 @@ def _doctor_once(root: Path) -> dict[str, Any]:
         report["errors"].append(metadata_error or _issue("ownership_missing", "workspace init ownership metadata is missing", path=OWNERSHIP_PATH.as_posix()))
         return report
 
-    config_path = _generated_target(root, ".asha/config.json")
-    config = None
-    if config_path is not None and config_path.is_file():
-        config, config_why = wk._read_json(config_path)
-    else:
-        config_why = "missing"
-    if config_why or config is None \
+    config, config_error = _load_project_config(root, required=True)
+    if config_error:
+        report["errors"].append(config_error)
+    if config is None \
             or config.get("memory_version") != 2 \
             or not isinstance(config.get("project_id"), str) \
             or not config["project_id"].strip():
@@ -912,7 +935,23 @@ def _doctor_once(root: Path) -> dict[str, Any]:
 
     ignore_path = _generated_target(root, ".gitignore")
     try:
-        ignore_lines = ignore_path.read_text(encoding="utf-8").splitlines() if ignore_path else []
+        ignore_bytes = ignore_path.read_bytes() if ignore_path else b""
+        ignore_lines = ignore_bytes.decode("utf-8").splitlines()
+        if config is not None:
+            visibility = config.get("memory_visibility", "tracked")
+            report["memory_visibility"] = visibility
+            entries = _ignore_entries(
+                manifest["memory"]["personal_root"],
+                manifest["memory"]["operational_root"],
+                manifest["memory"]["shared_root"],
+                memory_visibility=visibility,
+            )
+            if _merge_ignore(ignore_bytes, entries) != ignore_bytes:
+                report["errors"].append(_issue(
+                    "managed_ignore_drift",
+                    f"workspace ignore block differs from {visibility} policy; run workspace doctor --fix",
+                    path=".gitignore",
+                ))
     except (OSError, UnicodeDecodeError):
         ignore_lines = []
     recovery_ignored = "/Work/session-state/" in ignore_lines
@@ -1031,6 +1070,10 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
     metadata, metadata_error = _load_metadata(root)
     if errors or manifest is None or metadata_error or metadata is None:
         return False, [], _issue("fix_unavailable", "doctor fix requires a valid manifest and ownership metadata")
+    config, config_error = _load_project_config(root, required=True)
+    if config_error:
+        return False, [], config_error
+    assert config is not None
     desired = {
         "AGENTS.md": _agents_template(manifest["workspace_name"], manifest),
         "CLAUDE.md": _claude_template(),
@@ -1099,6 +1142,7 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
         manifest["memory"]["personal_root"],
         manifest["memory"]["operational_root"],
         manifest["memory"]["shared_root"],
+        memory_visibility=config.get("memory_visibility", "tracked"),
     )
     try:
         ignore = _merge_ignore(gitignore.read_bytes() if gitignore.exists() else b"", ignore_entries)
@@ -1107,7 +1151,10 @@ def _doctor_fix(root: Path, report: dict[str, Any]) -> tuple[bool, list[str], Op
     if not gitignore.exists() or gitignore.read_bytes() != ignore:
         write_set[gitignore] = ignore
         fixed.append(".gitignore")
-    if write_set:
+    managed = metadata.setdefault("managed", {})
+    policy_changed = managed.get("gitignore_block") != list(ignore_entries)
+    managed["gitignore_block"] = list(ignore_entries)
+    if write_set or policy_changed:
         metadata_path = root / OWNERSHIP_PATH
         write_set[metadata_path] = _json_bytes(metadata)
         fixed.append(OWNERSHIP_PATH.as_posix())

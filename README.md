@@ -376,6 +376,16 @@ asha workspace init --root . --name example --repo child-a --repo child-b
 asha workspace doctor --root .
 ```
 
+For a component repository whose local workspace state must stay private, merge
+`"memory_visibility": "private"` into that project's `.asha/config.json` before
+workspace init or repair. Then run `asha workspace doctor --root . --fix` for an
+existing workspace. This ignores `Memory/`, `Work/`, `knowledge/`, `memory-local/`
+and `.asha/workspace*.json`; repair keeps them ignored. Omit the setting (or use
+`"tracked"`) in the umbrella and ordinary projects to retain current behavior.
+The setting is local to that project, does not propagate to children, and does
+not untrack existing files or remove Git history. See
+[workspace visibility](docs/memory-architecture.md#workspace-git-visibility).
+
 Then choose the launch point by ownership:
 
 ```bash
