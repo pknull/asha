@@ -101,6 +101,7 @@ _asha_doctor_session_profile_section() {
   echo ""
   echo "── Session profiles (ASHA_SESSION_PROFILE) ──"
   _asha_doctor_capability_report session-profile "${1:-all}"
+  _asha_doctor_capability_report project-memory "${1:-all}"
   echo ""
   echo "── Session experience (user default/project override; builtin off; native review gated) ──"
   _asha_doctor_capability_report session-experience "${1:-all}"

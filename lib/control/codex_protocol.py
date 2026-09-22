@@ -409,6 +409,11 @@ class CodexProtocol:
                 # approval requiring omitted/evicted bytes remains unavailable.
             if kind in {"commandExecution", "fileChange", "mcpToolCall"}:
                 detail = {"tool_id": iid, "name": kind}
+                from .session_completion import tool_metadata
+                detail.update(tool_metadata('Bash' if kind == 'commandExecution' else kind,
+                                            {'command': item.get('command')}, iid))
+                detail['completion_token'] = iid
+                detail['status'] = 'completed' if method == 'item/completed' else 'inProgress'
                 if item.get("status") is not None:
                     detail["status"] = _text(item["status"], "tool status", 128)
                 if kind == "commandExecution" and method == "item/completed":

@@ -9,7 +9,7 @@ allowed-tools: ["Bash", "Read", "Write"]
 
 This explicit command is the **only semantic publication path** for a chair or
 Room session. Never call it from a lifecycle hook, timer, background process, or
-transcript parser. The one other explicit writer is the operator-requested close
+transcript parser. The other explicit writer is the project-worker completion or operator-requested close
 handoff of a Control project session (`asha control session handoff`), which
 publishes the model's own drafts through the same validator with a
 compare-and-swap and no Git seam; see `docs/session-hub.md`.
@@ -171,6 +171,22 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    ```bash
    python3 "$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"
    ```
+
+## Control completion receipt
+
+A verified Control worker or Room gets a separate `completion` result from the
+publisher (under `publication` on scope none). Confirm `status=ready`; a successful
+Memory transaction with blocked receipt retention is not completion. New tools or
+work invalidate readiness. After the authorized save steps above, if the receipt is blocked/ineligible or other tools
+ran after publication, re-read and verify the pair, then make the final tool call
+`asha control session handoff --outcome no-durable-update --detail 'Save verified with no further durable changes' --json` (include current `--request ID --attempt N` if
+closing). Use no-update only when true. Otherwise publish the merged drafts through
+handoff. Then only report finished as a standalone command and end the turn.
+
+Silence, failed saves, denied permissions or scope restrictions require a blocked
+handoff and an honest needs-input report. Never use a no-update attestation to hide
+an unsaved durable change. This receipt does not authorize the Git steps above when
+the user's assignment withholds commit/push authority.
 
 ## Hard exclusions
 

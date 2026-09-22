@@ -30,14 +30,20 @@ def present(row):
         hint = 'Answer in Control' if row.get('transport') == 'structured' else 'Answer in terminal (attach)'
     elif record.get('attachment_required') or (
             record.get('state') == 'pending-delivery' and row.get('transport') != 'structured'
-            and row.get('native_activity', activity) == 'idle'):
+            and row.get('native_activity', activity) == 'idle'
+            and row.get('completion_readiness', {}).get('status') != 'ready'):
         hint = 'Close needs attach'
     elif activity == 'close-failed' or record.get('state') in {'unanswered', 'handoff-failed'}:
         hint = 'Close failed: retry or attach'
     elif activity == 'closing':
-        hint = 'Closing: await handoff'
+        hint = ('Finalized, closing' if row.get('completion_readiness', {}).get('status') == 'ready'
+                else 'Closing: await handoff')
+    elif row.get('completion_readiness', {}).get('status') == 'ready':
+        hint = 'Finalized: close'
     elif finished:
-        hint = 'Done: close' if process == 'live' or row.get('transport') == 'structured' else 'Done reported: inspect session'
+        hint = ('Result ready: needs handoff' if (row.get('transport') == 'structured' or 'completion_readiness' in row)
+                and row.get('completion_readiness', {}).get('status') != 'ready'
+                else 'Done: close' if process == 'live' else 'Done reported: inspect session')
     elif activity == 'idle':
         hint = 'Waiting for you' if row.get('profile') == 'room' else 'Stopped mid-task?'
     else:

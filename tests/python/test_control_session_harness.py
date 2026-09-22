@@ -12,6 +12,19 @@ from lib.control.store import StoreError
 
 
 class TransportTests(unittest.TestCase):
+    def test_native_tool_boundaries_classify_finalization_and_composed_work(self):
+        command = 'asha control session handoff --outcome no-durable-update --detail Reviewed --json'
+        for shell, expected in ((command, 'finalizer'), (command + '; touch later', 'work'), ('pwd', 'work')):
+            start = list(decode_claude(dict(type='assistant', message=dict(content=[
+                dict(type='tool_use', id='native-tool', name='Bash', input=dict(command=shell))]))))
+            end = list(decode_claude(dict(type='user', message=dict(content=[
+                dict(type='tool_result', tool_use_id='native-tool', content='x' * 10000)]))))
+            self.assertEqual(start[0][0], 'tool')
+            self.assertEqual(start[0][1]['completion_kind'], expected)
+            self.assertEqual(start[0][1]['completion_token'], end[0][1]['tool_id'])
+            self.assertEqual(end[0][1]['status'], 'completed')
+            self.assertNotIn('content', end[0][1])
+
     def test_utility_does_not_override_native_settings_or_subagents(self):
         from lib.control.session_harness import codex_argv
         root = Path(__file__).resolve().parents[2]

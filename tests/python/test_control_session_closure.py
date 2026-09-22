@@ -5,6 +5,7 @@ import subprocess
 import threading
 import time
 import unittest
+from contextlib import contextmanager
 from unittest import mock
 
 from lib.control.config import load_config
@@ -49,8 +50,20 @@ class ClosureFixture(unittest.TestCase):
         values.update(changes)
         return self.hub.launch(**values)
 
+    @contextmanager
     def acting_as(self, sid):
-        return mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid))
+        # Scripted native boundary fixture. This is not native delivery proof.
+        handoff = self.hub.handoff
+        def finalized(*args, **kwargs):
+            token = str(__import__('uuid').uuid4())
+            self.hub.observe('tool-started', tool_kind='finalizer', tool_token=token)
+            try:
+                return handoff(*args, **kwargs)
+            finally:
+                self.hub.observe('tool-completed', tool_kind='finalizer', tool_token=token)
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), \
+                mock.patch.object(self.hub, 'handoff', side_effect=finalized):
+            yield
 
     def drafts(self, active=ACTIVE, decisions=DECISIONS):
         active_file, decisions_file = self.root / 'active.draft', self.root / 'decisions.draft'
@@ -160,6 +173,8 @@ class TerminalClosureTests(ClosureFixture):
         self.assertEqual(record['handoff']['digests'], self.digests())
         self.assertEqual(record['handoff']['destination'], str(self.memory))
         self.assertEqual(self.tmux.killed, [], 'termination waits for the operator')
+        with self.acting_as(sid):
+            self.hub.observe('turn-stopped')
         closed = self.hub.close(sid)
         self.assertEqual(closed['lifecycle'], 'closed')
         self.assertEqual(closed['closure']['state'], 'completed')
@@ -500,6 +515,8 @@ class TerminalClosureTests(ClosureFixture):
         record = self.hub.show(sid)['closure']
         self.assertEqual(record['state'], 'acknowledged')
         self.assertFalse(record['memory']['saved'])
+        with self.acting_as(sid):
+            self.hub.observe('turn-stopped')
         closed = self.hub.close(sid)
         self.assertEqual(closed['closure']['state'], 'completed')
         self.assertIn('no-durable-update', closed['closure']['guidance'])
@@ -681,7 +698,10 @@ class TerminalClosureTests(ClosureFixture):
         def acknowledge():
             time.sleep(0.3)
             with mock.patch.object(worker, 'actor', side_effect=lambda: worker.get(sid)):
+                worker.observe('tool-started', tool_kind='finalizer', tool_token='wait-finalizer')
                 worker.handoff(rid, outcome='no-durable-update', detail='nothing durable')
+                worker.observe('tool-completed', tool_kind='finalizer', tool_token='wait-finalizer')
+                worker.observe('turn-stopped')
         thread = threading.Thread(target=acknowledge)
         thread.start()
         try:
@@ -787,10 +807,16 @@ class StructuredClosureTests(ClosureFixture):
         self.assertEqual(turn['delivery_key'], 'close:' + record['request_id'])
         self.assertEqual(self.hub.show(sid)['closure']['state'], 'delivered')
         worker = self.worker_hub(sid)
+        worker.env['ASHA_MANAGED_TURN_ID'] = turn['turn_id']
+        with SessionStore(self.config) as sessions:
+            sessions.observe(sid, session['generation'], turn['turn_id'], 'tool',
+                             dict(tool_id='handoff', completion_kind='finalizer', status='inProgress'))
         with mock.patch.object(worker, 'structured_actor', return_value=(worker.get(sid), turn['delivery_key'])):
             result = worker.handoff(record['request_id'], outcome='no-durable-update', detail='utility only read')
         self.assertEqual(result['closure_state'], 'acknowledged')
         with SessionStore(self.config) as sessions:
+            sessions.observe(sid, session['generation'], turn['turn_id'], 'tool',
+                             dict(tool_id='handoff', completion_kind='finalizer', status='completed'))
             sessions.finish(sid, session['generation'], turn['turn_id'], success=True)
         self.release_owner(sid)
         closed = self.hub.close(sid)

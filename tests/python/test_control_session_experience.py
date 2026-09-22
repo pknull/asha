@@ -33,6 +33,9 @@ class ExperienceFixture(ClosureFixture):
         self.sid = self.row['session_id']
         self.pid = self.row['project_id']
         self.experience.set_policy(str(self.project), 'capture', expected_revision=0)
+        if self.row['transport'] == 'terminal':
+            with self.acting_as(self.sid):
+                self.hub.handoff(None, outcome='no-durable-update', detail='Experience fixture read-only task')
 
     def file(self, value=None):
         path = self.project / 'report.json'
@@ -41,6 +44,7 @@ class ExperienceFixture(ClosureFixture):
 
     def capture(self, value=None, **kw):
         with self.acting_as(self.sid):
+            self.hub.handoff(None, outcome='no-durable-update', detail='Experience fixture read-only task')
             return self.hub.report(state='finished', body='Done', experience_file=self.file(value),
                                    key=kw.pop('key', str(uuid.uuid4())), **kw)['capture']
 
@@ -119,6 +123,7 @@ class ExperienceContracts(ExperienceFixture):
         with self.acting_as(self.sid):
             result = self.hub.handoff(closing['request_id'], outcome='no-durable-update', detail='Nothing binding',
                                       experience_file=str(path))
+            self.hub.observe('turn-stopped')
         self.assertEqual(result['capture']['status'], 'invalid')
         self.assertEqual(result['closure_state'], 'acknowledged')
         self.assertEqual(self.hub.close(self.sid)['closure']['state'], 'completed')
@@ -180,7 +185,10 @@ class ExperienceContracts(ExperienceFixture):
         self.experience.set_policy(str(self.project), 'capture', expected_revision=2)
         marker = self.project / 'Work/markers/silence'; marker.parent.mkdir(parents=True, exist_ok=True); marker.touch()
         with mock.patch('lib.control.session_experience.read_report', side_effect=AssertionError('read during silence')):
-            self.assertEqual(self.capture()['status'], 'disabled')
+            with self.assertRaisesRegex(StoreError, 'silence'):
+                self.capture()
+            self.assertEqual(self.experience.optional_capture(self.hub.get(self.sid), source='completion',
+                key=str(uuid.uuid4()), experience_file=self.file())['status'], 'disabled')
         self.assertEqual(self.experience.page(self.pid)['rows'], [])
 
     def test_worker_cannot_change_policy(self):

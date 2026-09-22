@@ -50,9 +50,9 @@ receive these completion prompts.
 
 ```bash
 asha control session report --state finished --text 'Result' --experience-file /absolute/report.json --key UUID
-asha control session handoff --request REQUEST --outcome no-durable-update --detail 'No binding change' --experience-file /absolute/report.json
-asha control session handoff --request REQUEST --outcome no-durable-update --detail 'Same findings' --experience-ref REPORT_UUID
-asha control session handoff --request REQUEST --outcome no-durable-update --detail 'Correction' --experience-file /absolute/correction.json --supersedes REPORT_UUID --key NEW_UUID
+asha control session handoff --request REQUEST --attempt N --outcome no-durable-update --detail 'No binding change' --experience-file /absolute/report.json
+asha control session handoff --request REQUEST --attempt N --outcome no-durable-update --detail 'Same findings' --experience-ref REPORT_UUID
+asha control session handoff --request REQUEST --attempt N --outcome no-durable-update --detail 'Correction' --experience-file /absolute/correction.json --supersedes REPORT_UUID --key NEW_UUID
 ```
 
 `--experience-ref` and `--experience-file` are alternatives. Both report and
@@ -104,11 +104,12 @@ Explicit saves inside verified terminal hub sessions gain controller-derived
 `hub_session_id` and `hub_generation`. Control retains the exact publication receipt.
 A Room generation that saved after its latest assignment is not asked for another
 close assessment: capture is disabled with reason `explicit-save-published`.
-Further assignments or a new generation invalidate this omission. Publication
-alone does not authorize termination; [issue #92](https://github.com/pknull/asha/issues/92)
-owns the future verified completion receipt. The marked close seam will consume
-that receipt before requesting a final turn. Attachment guidance is exposed for
-[issue #93](https://github.com/pknull/asha/issues/93)'s dashboard hints.
+Further assignments or a new generation invalidate this omission. Successful explicit saves also produce a separate verified completion receipt for
+issue #92. Close consumes it only after rechecking the current turn, project
+identity and Memory digests at an observed idle boundary. A failed or superseded
+completion receipt does not erase evidence that publication succeeded. See
+[completion and closure](session-hub.md#completion-before-close) for the support
+matrix and attachment guidance.
 
 For structured utilities only, launch can explicitly select
 `--result-contract asha.session-result.v1`. Its retained result is then

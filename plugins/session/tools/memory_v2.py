@@ -342,19 +342,24 @@ def publish(project_dir: Path, active_context: str, decisions: str, *,
             expected_preimages: dict[str, str | None] | None = None,
             publication_source: str = "explicit-save") -> dict:
     """Publish the authoritative pair under a project lock and recovery journal."""
-    validate_active_context(active_context)
-    validate_decisions(decisions)
     root = secure_project_root(project_dir)
-    _assert_persistence_enabled(root)
-    project_config = require_v2_config(root)
-    active_path, decisions_path = _publication_paths(root)
     actor = None
-    if publication_source == 'explicit-save' and os.environ.get('ASHA_HUB_SESSION_ID'):
+    if publication_source == 'explicit-save' and (os.environ.get('ASHA_HUB_SESSION_ID') or os.environ.get('ASHA_MANAGED_SESSION_ID')):
         repository = str(Path(__file__).resolve().parents[3])
         if repository not in sys.path:
             sys.path.insert(0, repository)
         from lib.control.session_publication import publication_actor
         actor = publication_actor(root)
+        if actor:
+            hub, verified = actor
+            from lib.control.session_completion import invalidate, _scope
+            invalidate(hub, verified, 'save in progress; completion requires a successful publication')
+            _scope(verified)
+    _assert_persistence_enabled(root)
+    project_config = require_v2_config(root)
+    active_path, decisions_path = _publication_paths(root)
+    validate_active_context(active_context)
+    validate_decisions(decisions)
     with _publication_lock(root):
         # Close the race where silence is enabled after the first check whilst
         # a publisher is waiting for the project lock.
@@ -383,12 +388,13 @@ def publish(project_dir: Path, active_context: str, decisions: str, *,
         receipt.update(hub_session_id=verified['session_id'], hub_generation=verified['generation'])
         from lib.control.session_publication import record_publication
         try:
-            record_publication(hub, verified, receipt)
-        except (OSError, ValueError):
+            receipt['completion'] = record_publication(hub, verified, receipt)
+        except (OSError, ValueError) as exc:
             # The Memory transaction already succeeded. Keep that receipt even
             # if Control cannot retain linkage; it grants no Room adoption or
             # duplicate-assessment suppression in that case.
             receipt['hub_publication_status'] = 'unavailable'
+            receipt['completion'] = {'status': 'blocked', 'detail': str(exc)[:1000]}
     return receipt
 
 

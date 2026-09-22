@@ -118,10 +118,20 @@ exits the UI; it does not stop workers or the supervisor. `M` filters input
 requests; `A` includes retained history.
 
 Rooms that explicitly saved after their latest assignment in the same generation
-omit the close experience assessment (`explicit-save-published`). Control verifies
-and retains publication linkage; this is not termination authority. Issue #92 owns
-the future verified completion receipt and has a marked seam before idle wake;
-issue #93 owns the broader dashboard hints. Do not infer either receipt from prose.
+omit the close experience assessment (`explicit-save-published`). Control retains publication evidence and a separate completion receipt. A current
+receipt plus a verified idle boundary lets normal close terminate without another
+model turn. Missing/stale receipts require a fresh project-memory handoff; an idle
+Claude or unsupported terminal says needs attach. Codex's existing idle continuation
+is a fallback only when no qualifying receipt exists. Treat `completion_readiness`
+and `closure.guidance` as evidence; never infer readiness from prose.
+
+Worker assignments include the project-memory startup/completion contract across
+harnesses without chair context. `report --state finished` requires a current
+receipt from a save or `handoff --outcome no-durable-update --detail WHY`. Publication
+blockers use `handoff --outcome blocked`; silence or scope refusal is not a no-update
+attestation. Copilot/OpenCode lack the native idle bridge and require attachment
+for terminal closure even with a receipt. Structured paths bind to their managed
+turn; native delivery and permissions remain separately qualified.
 
 Experience policy resolves project override, user `session_experience.default_mode`
 in `~/.asha/config.json`, then builtin off. `experience policy --read-only --project

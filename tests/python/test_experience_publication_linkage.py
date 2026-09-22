@@ -60,8 +60,10 @@ class PublicationLinkage(ClosureFixture):
 
     def test_new_native_assignment_needs_a_new_completion_capture_key(self):
         with self.acting_as(self.sid):
+            self.hub.handoff(None, outcome='no-durable-update', detail='First read-only task')
             first = self.hub.report(state='finished', body='First result')
             self.hub.observe('prompt-submitted')
+            self.hub.handoff(None, outcome='no-durable-update', detail='Second read-only task')
             second = self.hub.report(state='finished', body='Second result')
         self.assertNotEqual(first['experience_request']['key'], second['experience_request']['key'])
         self.assertEqual(second['result'], 'Second result')

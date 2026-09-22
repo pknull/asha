@@ -1,4 +1,5 @@
 import unittest
+import os
 import json
 import shutil
 import sys
@@ -71,11 +72,11 @@ class SessionHubTests(unittest.TestCase):
         self.assertEqual(unreported['next_step'], 'Ended unreported: check work')
 
     def test_dashboard_save_uses_current_receipt_and_force_close_keeps_it_visible(self):
-        from lib.control.session_publication import record_publication
+        from lib.control.session_closure import memory_v2
         row = self.launch(profile='room')
-        receipt = dict(publication_id=str(uuid.uuid4()), source='explicit-save', status='published',
-                       project_id=row['project_id'], hub_session_id=row['session_id'], hub_generation=row['generation'])
-        record_publication(self.hub, row, receipt)
+        with mock.patch.dict(os.environ, {'ASHA_HUB_SESSION_ID': row['session_id']}), mock.patch(
+                'lib.control.session_publication.publication_actor', return_value=(self.hub, row)):
+            memory_v2.publish(self.project, memory_v2.ACTIVE_TEMPLATE, memory_v2.DECISIONS_TEMPLATE)
         shown = self.hub.show(row['session_id'])
         self.assertIsNotNone(shown['memory_saved_at'])
         closed = self.hub.close(row['session_id'], force=True)

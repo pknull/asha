@@ -87,7 +87,17 @@ def decode_claude(value):
                 for start in range(0, len(content), 16000):
                     yield "text", {"text": content[start:start + 16000]}
             elif item.get("type") == "tool_use":
-                yield "tool", {"tool_id": item.get("id"), "name": item.get("name")}
+                from .session_completion import tool_metadata
+                detail = {"tool_id": item.get("id"), "name": item.get("name")}
+                detail.update(tool_metadata(item.get('name'), item.get('input'), item.get('id')))
+                # Structured streams use the native tool id for result matching.
+                detail['completion_token'] = item.get('id') or 'unknown'
+                yield "tool", detail
+    elif kind == 'user':
+        message = value.get('message') or {}
+        for item in message.get('content', []) if isinstance(message, dict) else []:
+            if isinstance(item, dict) and item.get('type') == 'tool_result':
+                yield 'tool', dict(tool_id=item.get('tool_use_id'), name='tool_result', status='completed')
     elif kind == "result":
         denied = value.get("permission_denials") or []
         failed = bool(value.get("is_error")) or value.get("subtype") != "success" or bool(denied) or observation is not None

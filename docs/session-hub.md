@@ -114,17 +114,17 @@ exit, without guessing that the assignment succeeded.
 
 ## Graceful close and the memory handoff
 
-A normal close records one bound request (`closure.request_id`, tied to the
+Without a qualifying completion receipt, normal close records one bound request (`closure.request_id`, tied to the
 session's incarnation `generation`) and moves the session to lifecycle
 `closing`. The request text asks the agent to bring the current step to a safe
 boundary, then acknowledge with one of:
 
 ```bash
 asha control session handoff --read --json                       # live destination facts
-asha control session handoff --request ID --active-file A --decisions-file D \
+asha control session handoff --request ID --attempt N --active-file A --decisions-file D \
     --expected-active DIGEST --expected-decisions DIGEST --json   # publish
-asha control session handoff --request ID --outcome no-durable-update --detail WHY --json
-asha control session handoff --request ID --outcome blocked --detail REASON --json
+asha control session handoff --request ID --attempt N --outcome no-durable-update --detail WHY --json
+asha control session handoff --request ID --attempt N --outcome blocked --detail REASON --json
 ```
 
 Publication runs through the shared Memory v2 validator with a compare-and-swap
@@ -184,19 +184,77 @@ paid native acceptance claim. No pane input or screen reads are used.
 For a Room with a controller-retained explicit save in its current generation
 after its latest assignment, close omits the experience assessment and records
 `disabled` / `explicit-save-published`. A new assignment invalidates the omission.
-This linkage does not authorize termination. [Issue #92](https://github.com/pknull/asha/issues/92)
-owns verified completion readiness; `_close_once` marks its integration point
-before any final-turn wake. Dashboard hints and ended-session grouping are
-presentation only and do not grant completion or termination authority.
-Legacy Rooms and
-non-hub managed sessions have no handoff seam: `close` refuses without
-`--force`. A verified publication whose follow-up verification read is refused
-by another publisher's in-flight journal is still recorded as published, with
-`verified: false` and the reason. Acknowledgements are verified by Room ownership and process
-ancestry (terminal) or the managed-session anchor plus the running close turn
-(structured); a stale generation or request is refused. Workers omit Asha's
-automatic memory routines, so this final-turn request is the only memory work
-a worker performs, and only on the operator's explicit close.
+Publication linkage still proves only the save. The separate completion receipt
+below supplies termination authority. Legacy Rooms and non-hub managed sessions
+have no handoff seam: `close` refuses without `--force`. A publication whose
+follow-up read is refused remains a historical successful publication; unavailable
+or changed current Memory cannot authorize completion. The actor is verified by
+Room ownership and process ancestry (terminal), or the managed-session anchor and
+running turn (structured). Workers read project Memory at startup and finalize
+before explicit completion, through the project-memory skill; automatic chair
+context and transcript processing remain excluded.
+
+## Completion before close
+
+A successful explicit `memory_v2.py publish` (including `save_none.py`) inside a
+verified hub actor with a sole observed standalone finalizer returns
+`completion.status=ready` with a controller-produced
+`asha.session-completion.v1` receipt. The no-Git handoff can also finalize before a
+close request exists:
+
+```bash
+asha control session handoff --read --json
+asha control session handoff --outcome no-durable-update --detail 'Reviewed with no durable change' --json
+asha control session handoff --active-file A --decisions-file D --expected-active SHA --expected-decisions SHA --json
+asha control session report --state finished --text 'Verified result' --json
+```
+
+Finish other tools before handoff. Use one shell command with literal arguments,
+without shell composition, expansion or redirection. The matching native tool-end
+event must arrive before a finished report is accepted; `ready` in the command
+response alone does not prove that boundary. A standalone finished report preserves readiness;
+subsequent work requires a new handoff. Saves can publish successfully while
+completion retention fails; inspect both statuses. `blocked`/`failed` never satisfy
+completion. An unavailable, silenced, mismatched or unauthorized Memory plane must
+be reported as blocked, not no-durable-update. No handoff commits or pushes.
+Explicit session-save retains only its separately authorized Git behavior.
+
+Receipts live in the existing Control record, not a new Memory store. They bind
+project ID, hub session and generation, assignment/work epochs, structured turn
+and owner generation where applicable, both publication digests, and close request
+and attempt when responding to close. New prompts, queued work, tools and resume
+invalidate readiness. Close checks current Memory under its publication lock and
+serializes terminal observations through the owned stop boundary. Concurrent saves
+use the existing pre-draft CAS; a superseded save remains historical publication
+evidence but cannot close the session. The controller never accepts a submitted
+JSON receipt as authority.
+
+`finish -> save -> native Stop -> close` consumes a qualifying receipt without
+attachment, wake, a model turn, or force-close. `Finalized: close` and `Finalized,
+closing` describe verified readiness; stale or missing evidence remains visible.
+An idle undeliverable request says `Close needs attach`. A close already pending
+requires `--request ID --attempt N` from the delivered request, not an old selector.
+If Stop was not observed and the last native activity is over 300 seconds old,
+both queued and acknowledged closes require attachment. A verified idle boundary
+remains valid without further work; an idle receipt does not expire merely with age.
+
+| Harness | Startup/completion instruction and skill | Receipt production | Close finalized idle session | Evidence/limits |
+| --- | --- | --- | --- | --- |
+| Claude terminal | Yes, worker and Room assignment | Explicit save / no-update / draft handoff | Yes, observed Stop or proven ended process | Controller/hook fixtures; native finish-save-idle probe not run |
+| Codex terminal | Yes | Same, subject to native sandbox approval | Yes, observed Stop or proven ended process | Controller/hook fixtures; PreToolUse does not cover every unified_exec/tool path; native probe not run |
+| Copilot terminal | Yes | Memory publication supported; completion blocked without tool bridge | Needs attach; verified finished report unsupported | No native Control tool/idle bridge; fixtures assert refusal |
+| OpenCode terminal | Yes | Memory publication supported; completion blocked without tool bridge | Needs attach; verified finished report unsupported | No native Control tool/idle bridge; fixtures assert refusal |
+| Claude structured | Yes, each hub turn | Verified managed CLI/save | After exact successful turn, with no queued work | Separate controller fixtures; native permissions can block the CLI |
+| Codex structured | Yes, each hub turn | Verified managed CLI/save where native sandbox permits | Same controller contract | Separate fixtures; no out-of-sandbox publication proxy; native delivery not proven |
+| Copilot/OpenCode structured | Unsupported | Unsupported | Unsupported | No managed transport |
+
+Hooks remain bounded and fail-open telemetry, not a complete enforcement boundary.
+No classifier grants native execution approval. Tool payload reads are bounded to
+256 KiB and retain only classification and opaque identity. Missing, malformed or
+oversized callbacks block finalization. A new prompt after an observed idle boundary
+clears abandoned tool tracking and invalidates old receipts; finalize anew. A new
+structured turn or terminal incarnation also resets tracking. Do not treat scripted
+fixture results as native-model proof.
 
 `session resume ID --text CONTINUATION` retains the hub ID and starts another
 owned terminal incarnation. Claude/Codex resume the native conversation when
