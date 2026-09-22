@@ -11,6 +11,9 @@
   candidate limits and contradiction protection, plus explicitly selected active
   guidance in worker assignments.
 - Automatic native review remains gated off; paid native acceptance is outstanding.
+- Doctor no longer audits the Asha home as a project when run from `$HOME`
+  (scheduled units without `WorkingDirectory`), and resolves PATH entries before
+  the `~/.local/bin` check.
 
 This file preserves the release records formerly embedded in the active README
 and engineering guide. Historical entries describe the implementation at the
