@@ -6,8 +6,8 @@
 #   2. a Control-managed task (ASHA_CONTROL_MANAGED=1) -> `asha control event`
 #
 # The hub path is deliberately the thinner of the two: session identity and
-# generation are inherited environment, nothing but the event name and an
-# available native session ID is forwarded, no tool payload is retained, the
+# generation are inherited environment. Event name, optional native session ID,
+# tool classification and opaque boundary token are forwarded; no body is retained. The
 # bridge is bounded (under a second on keystroke-facing events, a few seconds
 # at the Stop turn boundary), and the answer is a harmless empty object — with
 # one named exception. On Stop only, a pending graceful close request is
@@ -25,6 +25,7 @@ set -uo pipefail
 case "${1:-}" in
   SessionStart)      CONTROL_EVENT="session-start" ;;
   UserPromptSubmit)  CONTROL_EVENT="prompt-submitted" ;;
+  PreToolUse)        CONTROL_EVENT="tool-started" ;;
   PostToolUse)       CONTROL_EVENT="tool-completed" ;;
   PermissionRequest) CONTROL_EVENT="permission-requested" ;;
   Stop)              CONTROL_EVENT="turn-stopped" ;;
@@ -33,6 +34,11 @@ case "${1:-}" in
 esac
 
 HUB_SESSION="${ASHA_HUB_SESSION_ID:-}"
+# Tool-start telemetry is only a hub completion seam, not a legacy task event.
+if [[ "$CONTROL_EVENT" == "tool-started" && -z "$HUB_SESSION" ]]; then
+  echo '{}'
+  exit 0
+fi
 if [[ -z "$HUB_SESSION" && "${ASHA_CONTROL_MANAGED:-}" != "1" ]]; then
   echo '{}'
   exit 0
@@ -54,11 +60,13 @@ HUB_STOP_SECONDS=3
 
 # Never retain or forward payload bodies. A truncated or malformed object
 # simply yields no optional session/exit facts and the controller remains open.
-# A Stop payload carries the harness's last assistant message, so the hub Stop
-# path reads a larger, still bounded, amount: the stop_hook_active guard must
-# not be lost to truncation.
+# Stop and tool results carry potentially large text. Read a bounded 256 KiB
+# for those events so ordinary output does not hide boundary identity. Oversized
+# or failed callbacks remain unverified until a new turn after observed idle.
 HUB_READ_CHARS=4096
-[[ -z "$HUB_SESSION" || "$CONTROL_EVENT" != "turn-stopped" ]] || HUB_READ_CHARS=262144
+if [[ -n "$HUB_SESSION" && ( "$CONTROL_EVENT" == "turn-stopped" || "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed" ) ]]; then
+  HUB_READ_CHARS=262144
+fi
 INPUT=""
 if [[ -n "$HUB_SESSION" ]]; then
   # Bounded in both axes: bash's own `read` fetches a pipe one byte at a time
@@ -81,6 +89,17 @@ else
 fi
 INPUT_TRUNCATED=""
 [[ "$(printf '%s' "$INPUT" | wc -c)" -lt "$HUB_READ_CHARS" ]] || INPUT_TRUNCATED=1
+TOOL_KIND="work"
+TOOL_TOKEN="unknown"
+if [[ "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed" ]]; then
+  if [[ -z "$INPUT_TRUNCATED" ]]; then
+    CLASSIFIER="$(dirname -- "${BASH_SOURCE[0]}")/../../tools/completion_event.py"
+    CLASSIFICATION="$(printf '%s' "$INPUT" | python3 "$CLASSIFIER" 2>/dev/null || true)"
+    read -r TOOL_KIND TOOL_TOKEN <<< "$CLASSIFICATION"
+    TOOL_KIND="${TOOL_KIND:-work}"
+    TOOL_TOKEN="${TOOL_TOKEN:-unknown}"
+  fi
+fi
 SESSION_ID=""
 EXIT_STATUS=""
 STOP_HOOK_ACTIVE=""
@@ -129,6 +148,9 @@ if [[ -n "$HUB_SESSION" ]]; then
   HUB_RESPONSE=""
   if [[ -n "$ASHA_CMD" ]] && command -v timeout >/dev/null 2>&1; then
     HUB_ARGS=(control session event --event "$CONTROL_EVENT")
+    if [[ "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed" ]]; then
+      HUB_ARGS+=(--tool-kind "$TOOL_KIND" --tool-token "$TOOL_TOKEN")
+    fi
     [[ -z "$SESSION_ID" ]] || HUB_ARGS+=(--native-id "$SESSION_ID")
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
     HUB_RESPONSE="$(

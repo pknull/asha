@@ -1,6 +1,27 @@
 # Changelog
 
 
+## Unreleased — private component Memory
+
+- Workspace init and doctor repair honor project-local `memory_visibility: "private"`
+  in `.asha/config.json`, keeping Memory, Work, knowledge, local memory and workspace
+  metadata ignored. Omitted or `"tracked"` retains the existing tracked Memory behavior.
+- Doctor detects managed ignore drift; invalid privacy settings fail before repair.
+  This changes ignore rules only: already tracked files and Git history require a
+  separately authorized cleanup.
+
+## Unreleased — project-memory completion (#92)
+
+- Add the project-memory skill and compact startup/completion contract to hub
+  assignments, without chair context or another memory store.
+- Successful explicit saves and no-durable-update handoffs issue completion
+  receipts bound to actor, turn and Memory digests. Explicit finished reports
+  require a current receipt; further work and superseding Memory invalidate it.
+- Normal close consumes a current receipt at a verified idle boundary without
+  another model turn. Missing/stale receipts retain actionable attachment guidance.
+- Preserve CAS publication, native permissions and no-Git handoff behavior; document
+  separate terminal/structured fixture evidence and unsupported native seams.
+
 ## Unreleased — session experience
 
 - Add dormant project experience policy, bounded immutable reports, independent

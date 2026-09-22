@@ -185,18 +185,34 @@ else
 fi
 
 BRIDGED=1
-for pair in "UserPromptSubmit prompt-submitted" "PostToolUse tool-completed" \
+for pair in "UserPromptSubmit prompt-submitted" "PreToolUse tool-started" "PostToolUse tool-completed" \
             "PermissionRequest permission-requested" "Stop turn-stopped" \
             "SessionEnd session-ended"; do
   read -r NATIVE_NAME SESSION_EVENT <<<"$pair"
   # A parsed object without a session id: Stop then carries no guard flag either.
   run_control "$NATIVE_NAME" '{}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_GENERATION=1 >/dev/null
-  [[ "$(captured)" == "control session event --event $SESSION_EVENT" ]] || BRIDGED=0
+  TOOL_ARGS=""
+  [[ "$NATIVE_NAME" != PreToolUse && "$NATIVE_NAME" != PostToolUse ]] || TOOL_ARGS=" --tool-kind work --tool-token unknown"
+  [[ "$(captured)" == "control session event --event $SESSION_EVENT$TOOL_ARGS" ]] || BRIDGED=0
 done
 if [[ $BRIDGED -eq 1 ]]; then
   ok "every native hook name maps to its session event without a native id"
 else
   fail "every native hook name maps to its session event without a native id ($(captured))"
+fi
+
+LARGE_TOOL="$(python3 - <<'PY'
+import json
+print(json.dumps(dict(tool_name='Bash', tool_use_id='final-42', tool_input=dict(command=
+    'asha control session handoff --outcome no-durable-update --detail Reviewed --json'), tool_response='x' * 60000)))
+PY
+)"
+run_control PostToolUse "$LARGE_TOOL" ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+if [[ "$(captured)" == "control session event --event tool-completed --tool-kind finalizer --tool-token "* \
+   && "$(captured)" != *unknown* && "$(captured)" != *Reviewed* ]]; then
+  ok "large tool output preserves boundary metadata without retaining command or output"
+else
+  fail "large tool output preserves boundary metadata ($(captured))"
 fi
 
 OUT="$(run_control Nonsense '' ASHA_HUB_SESSION_ID="$HUB_ID")"
@@ -314,7 +330,7 @@ if [[ "$OUT" == '{}' ]]; then
   ok "an absent or malformed Stop payload is treated as the guard being set"
 fi
 run_control PostToolUse '{"session_id":"native-abc","stop_hook_active":true}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
-if [[ "$(captured)" == "control session event --event tool-completed --native-id native-abc" ]]; then
+if [[ "$(captured)" == "control session event --event tool-completed --tool-kind work --tool-token unknown --native-id native-abc" ]]; then
   ok "stop_hook_active is read only at the Stop boundary"
 else
   fail "stop_hook_active is read only at the Stop boundary ($(captured))"

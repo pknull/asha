@@ -1070,7 +1070,7 @@ class Increment4DoctorTests(Increment4Fixture):
         codex.mkdir()
         claude_hooks = {}
         for event in (
-            "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
+            "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd",
         ):
             claude_hooks[event] = [{
                 "hooks": [{"type": "command", "command": f"{handler} {event}"}],

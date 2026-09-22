@@ -130,6 +130,7 @@ def message_key(closure: dict) -> str:
 def request_text(row: dict, closure: dict) -> str:
     """The final-turn instruction. Delivered verbatim; contains no secrets."""
     rid, memory = closure["request_id"], closure["memory"]
+    selector = rid + ' --attempt ' + str(closure.get('attempts', 1))
     lines = [f"{CLOSE_REQUEST_TOKEN} {rid} for session {row['session_id']} (generation {row['generation']}).",
              "Bring the current step to a safe boundary, then leave a verified project-memory handoff before this session ends. "
              "Do not start new work, and do not commit, push or integrate code as part of this handoff."]
@@ -141,15 +142,15 @@ def request_text(row: dict, closure: dict) -> str:
                      "2. If this session produced durable project knowledge, draft activeContext.md (exactly the level-one headings "
                      "Objective, State, Next, Blockers; at most 4096 bytes; at most five Next and five Blockers items) and "
                      "decisions.md (heading Decisions; current binding decisions only) outside Memory/ as absolute, symlink-free "
-                     "paths you own, verify every claim against disk, then publish: `asha control session handoff --request " + rid +
+                     "paths you own, verify every claim against disk, then publish: `asha control session handoff --request " + selector +
                      " --active-file ACTIVE --decisions-file DECISIONS --expected-active DIGEST --expected-decisions DIGEST --json`. "
                      "If it reports a changed preimage, re-read, merge and retry. "
-                     "3. If nothing durable changed: `asha control session handoff --request " + rid + " --outcome no-durable-update --detail WHY --json`. "
+                     "3. If nothing durable changed: `asha control session handoff --request " + selector + " --outcome no-durable-update --detail WHY --json`. "
                      "4. If publication is impossible: `--outcome blocked --detail REASON`.")
     else:
-        lines.append(f"Project memory is unavailable ({memory['reason']}). Acknowledge with "
-                     f"`asha control session handoff --request {rid} --outcome no-durable-update --detail WHY --json` "
-                     f"or `--outcome blocked --detail REASON`.")
+        lines.append(f"Project memory is unavailable ({memory['reason']}). Report the blocker with "
+                     f"`asha control session handoff --request {selector} --outcome blocked --detail REASON --json`. "
+                     "Unavailable memory cannot authorize a no-durable-update completion.")
     capture = closure.get('capture', {})
     if capture.get('requested'):
         lines.append("Include one bounded JSON assessment (asha.session-experience.v1, at most 16 KiB, "
@@ -163,9 +164,14 @@ def request_text(row: dict, closure: dict) -> str:
     return "\n".join(lines)
 
 
+def recent_native_observation(row: dict) -> bool:
+    stamp = row.get('native_observed_at', row.get('observed_at'))
+    return stamp is not None and 0 <= time.time() - stamp <= 300
+
+
 def guidance_for(row: dict, closure: dict) -> str:
     state = closure["state"]
-    if closure.get('attachment_required'):
+    if closure.get('attachment_required') and state not in {'completed', 'forced', 'handoff-failed'}:
         return 'Close needs attachment: attach and hand the agent the retained close request, or force-close. ' + str(closure.get('last_error') or '')
     if state == "pending-delivery":
         if row["transport"] == "structured":
@@ -269,7 +275,7 @@ def record_handoff(closure: dict, row: dict, outcome: str, detail: str, *, publi
                        verification_error=publication.get("verification_error"))
         memory["saved"] = True
     state = "acknowledged" if outcome in ACKNOWLEDGED else "handoff-failed"
-    return transition(closure, state, handoff=handoff, memory=memory, last_error=None)
+    return transition(closure, state, handoff=handoff, memory=memory, last_error=None, attachment_required=False)
 
 
 def publish_handoff(project: str, active_file: str, decisions_file: str, *, expected: dict) -> dict:
@@ -288,7 +294,7 @@ def publish_handoff(project: str, active_file: str, decisions_file: str, *, expe
         raise ValueError("handoff drafts must be UTF-8") from exc
     preimages = {"active": expected.get("activeContext.md"), "decisions": expected.get("decisions.md")}
     try:
-        memory_v2.publish(root, active, decisions, expected_preimages=preimages, publication_source="close")
+        receipt = memory_v2.publish(root, active, decisions, expected_preimages=preimages, publication_source="close")
     except ValueError as exc:
         if "preimage changed" in str(exc):
             raise ValueError("publication preimage changed: the live Memory digests differ from --expected-active/"
@@ -301,6 +307,7 @@ def publish_handoff(project: str, active_file: str, decisions_file: str, *, expe
     digests = {"activeContext.md": _digest(active_raw), "decisions.md": _digest(decisions_raw)}
     changed = [name for name in MEMORY_FILES if digests[name] != expected.get(name)]
     result = {"destination": str(root / "Memory"), "digests": digests, "changed": changed,
+              "publication": receipt,
               "current": None, "superseded": None, "verified": False, "verification_error": None,
               "git_invoked": False}
     try:

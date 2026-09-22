@@ -162,6 +162,8 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
         guidance_row = guidance_hub._update(sid, expected_generation=guidance_row['generation'], current_assignment=rendered)
         if guidance_manifest:
             prompt = prompt.replace(message['body'], rendered, 1)
+        from .session_completion import WORKER_INSTRUCTION
+        prompt += '\n\n' + WORKER_INSTRUCTION
     success = False
     reason = None
     transport = None

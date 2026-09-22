@@ -30,6 +30,7 @@ class IdleClose(ClosureFixture):
         self.assertEqual(len(self.tmux.killed), 1, 'repeated close must not launch another continuation')
         with self.acting_as(row['session_id']):
             self.hub.handoff(record['request_id'], outcome='no-durable-update', detail='No durable change')
+            self.hub.observe('turn-stopped')
         self.assertEqual(self.hub.show(row['session_id'])['closure']['state'], 'acknowledged')
         self.assertEqual(self.hub.close(row['session_id'])['closure']['state'], 'completed')
 
@@ -44,14 +45,16 @@ class IdleClose(ClosureFixture):
     def test_finished_report_is_not_idle_until_a_native_stop_is_observed(self):
         row = self.launch(harness='codex')
         with self.acting_as(row['session_id']):
+            self.hub.handoff(None, outcome='no-durable-update', detail='Reviewed')
             self.hub.report(state='finished', body='Done', native_id='conversation')
         first = self.hub.close(row['session_id'])
         self.assertEqual(self.tmux.killed, [])
-        self.assertTrue(first['closure']['attachment_required'])
+        self.assertEqual(first['closure']['state'], 'pending-delivery')
+        self.assertFalse(first['closure'].get('attachment_required'))
         with self.acting_as(row['session_id']):
             self.hub.observe('turn-stopped')
         resumed = self.hub.close(row['session_id'])
-        self.assertEqual(resumed['closure']['delivery']['channel'], 'native-resume')
+        self.assertEqual(resumed['closure']['delivery']['channel'], 'completion-receipt')
         self.assertEqual(resumed['closure']['request_id'], first['closure']['request_id'])
 
     def test_unknown_stale_and_unsupported_idle_need_attachment(self):

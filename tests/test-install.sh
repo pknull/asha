@@ -283,6 +283,21 @@ fi
 [[ -f "$SANDBOX/.codex/rules/asha.rules" ]] \
   && ok "Codex native rules file exists" \
   || fail "Codex native rules file exists"
+for skill_home in "$SANDBOX/.claude" "$SANDBOX/.codex" "$SANDBOX/.copilot" "$SANDBOX/.config/opencode"; do
+  if [[ -f "$skill_home/skills/session-project-memory/SKILL.md" ]] \
+      && [[ "$(readlink -f "$skill_home/skills/session-project-memory")" == "$REPO_ROOT/plugins/session/skills/project-memory" ]]; then
+    ok "project-memory uses the source skill in $skill_home"
+  else
+    fail "project-memory skill missing or detached from source in $skill_home"
+  fi
+done
+for hook_file in "$SANDBOX/.claude/settings.json" "$SANDBOX/.codex/hooks.json"; do
+  if grep -Fq 'control-event.sh PreToolUse' "$hook_file"; then
+    ok "completion invalidation PreToolUse registered in $hook_file"
+  else
+    fail "completion invalidation PreToolUse missing in $hook_file"
+  fi
+done
 if grep -Fq "control-event.sh PermissionRequest" "$SANDBOX/.codex/hooks.json" \
     && grep -Fq "control-event.sh Stop" "$SANDBOX/.codex/hooks.json" \
     && grep -Fq "verify-pass-complete.sh" "$SANDBOX/.codex/hooks.json"; then

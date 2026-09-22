@@ -29,7 +29,7 @@ SCHEMA = (
     "CREATE TABLE IF NOT EXISTS hub_messages (message_id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES hub_sessions(session_id), delivery_key TEXT NOT NULL, body TEXT NOT NULL, digest TEXT NOT NULL, state TEXT NOT NULL, created_at REAL NOT NULL, UNIQUE(session_id,delivery_key))",
     "CREATE INDEX IF NOT EXISTS hub_session_messages ON hub_messages(session_id,created_at,message_id)",
 )
-EVENTS = {'session-start': 'idle', 'prompt-submitted': 'working',
+EVENTS = {'session-start': 'idle', 'prompt-submitted': 'working', 'tool-started': 'working',
           'tool-completed': 'working', 'permission-requested': 'needs-input',
           'turn-stopped': 'idle', 'session-ended': 'exited'}
 # A session that is closing gracefully still owns its process; its reporter,
@@ -149,13 +149,15 @@ class Hub:
     def _start(self, row, prompt, *, closing=False):
         from . import session_guidance as guidance
         row = self._update(row['session_id'], expected_generation=row['generation'], current_assignment=prompt,
-                           assignment_epoch=str(uuid.uuid4()))
+                           assignment_epoch=str(uuid.uuid4()), active_tools={})
         block, manifest = guidance.resolve(self, row, row.get('learning_ids'))
         key = 'opening' if row['generation'] == 1 or row['transport'] == 'structured' else 'resume:' + str(row['generation'])
         guidance.retain(self, row, key, guidance.planned(manifest, prompt, block))
         prompt = text(prompt + block, 'assignment with selected guidance')
         if row['transport'] == 'structured':
             return self._start_structured(row, prompt)
+        from .session_completion import WORKER_INSTRUCTION
+        prompt += '\n\n' + WORKER_INSTRUCTION
         brief = prompt
         if row['profile'] == 'worker':
             brief += ('\n\nOptional session tools: `asha control session report --state needs-input --text "question"` '
@@ -217,7 +219,7 @@ class Hub:
         self._update(sid, runtime_warning=warning)
         return {'admission': mode, 'dispatch_warning': warning}
 
-    def _update(self, sid, *, expected_generation=None, closure_fn=None, **changes):
+    def _update(self, sid, *, expected_generation=None, closure_fn=None, validate_fn=None, **changes):
         """Merge changes into the freshly read row inside one write transaction.
 
         ``closure_fn(record, row)`` computes the closure transition against the
@@ -231,6 +233,8 @@ class Hub:
             row = json.loads(found[0])
             if expected_generation is not None and (row['generation'] != expected_generation or row['lifecycle'] not in ACTIVE_LIFECYCLES):
                 raise StoreError('stale or inactive session reporter')
+            if validate_fn is not None:
+                validate_fn(c, row)
             row.update(changes)
             if closure_fn is not None:
                 row['closure'] = closure_fn(row.get('closure'), row)
@@ -322,6 +326,9 @@ class Hub:
         from .session_presentation import memory_label, present
         from .session_publication import latest_saved_at
         row['memory_saved_at'] = latest_saved_at(self, row)
+        from .session_completion import view
+        if row['lifecycle'] not in {'closed', 'stopped'}:
+            row['completion_readiness'] = view(self, row)
         record = row.get('closure') or {}
         handoff = record.get('handoff') or {}
         if (record.get('generation') == row['generation']
@@ -348,6 +355,16 @@ class Hub:
             return
         if row['transport'] == 'structured' and self._has_structured_record(row['session_id']):
             record = self._structured_delivery(row, record)
+        if (row['transport'] == 'terminal' and row.get('process_state') != 'ended'
+                and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
+                and not closure.recent_native_observation(row)):
+            from .session_completion import check
+            try:
+                # A proven idle boundary remains valid without periodic callbacks.
+                check(self, row, idle=True)
+            except (OSError, ValueError):
+                record = dict(record, attachment_required=True,
+                    last_error='native activity is unknown or stale; no verified idle boundary, needs attach')
         record = dict(record, guidance=closure.guidance_for(row, record))
         state = record['state']
         row['closure'] = record
@@ -526,13 +543,16 @@ class Hub:
             if state == 'acknowledged':
                 with self._action_lock(sid):
                     result = self._close_once(sid)
+                if result['lifecycle'] == 'closing':
+                    time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
                 continue
             if state not in {'pending-delivery', 'delivered'}:
                 break
             # A queued-only channel is satisfied only when the worker reads messages; poll it gently.
             interval = 0.5 if result['closure']['delivery'].get('channel') in {'stop-hook', 'structured-turn'} else 2.0
             time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
-            result = self.show(sid)
+            with self._action_lock(sid):
+                result = self._close_once(sid)
         return result
 
     def _close_once(self, sid):
@@ -542,10 +562,12 @@ class Hub:
         record = row.get('closure')
         observed = record   # the record as read; a hook may move it while the tmux probe runs
         current = record and record['generation'] == row['generation'] and record['state'] not in closure.TERMINAL_STATES
-        # Issue #92 integration seam: a future verified completion receipt is
-        # revalidated/consumed here before requesting or waking a final turn.
-        # C6 publication linkage alone never authorizes termination.
-        if not self._live(row):
+        live = self._live(row)
+        from .session_completion import close_finalized
+        finalized = close_finalized(self, row, ended=not live)
+        if finalized is not None:
+            return finalized
+        if not live:
             from .session_experience import Experiences
             if row['lifecycle'] in ACTIVE_LIFECYCLES:
                 row = Experiences(self).reconcile_completion(row)
@@ -553,8 +575,8 @@ class Hub:
             if current and record['state'] in {'delivered', 'pending-delivery'}:
                 record = closure.transition(record, 'undeliverable', last_error='the harness is no longer live')
             elif current and record['state'] == 'acknowledged':
-                # The agent acknowledged and then ended its own process: the normal ending.
-                record = closure.transition(record, 'completed')
+                record = closure.transition(record, 'handoff-failed',
+                    last_error='completion receipt missing or stale; inspect Memory and handoff')
             elif not record or record['generation'] != row['generation']:
                 record = closure.transition(self._new_closure(row), 'unavailable')
             return self._stop(row, close=True, closure_record=record)
@@ -578,7 +600,17 @@ class Hub:
             if row['lifecycle'] == 'interrupted':
                 return self.show(sid)
         if record['state'] == 'acknowledged':
-            return self._stop(row, close=True, closure_record=closure.transition(record, 'completed'))
+            from .session_completion import check, CompletionPending
+            try:
+                check(self, self.get(sid))
+            except CompletionPending:
+                pass
+            except (ValueError, OSError) as exc:
+                record = closure.transition(record, 'handoff-failed', last_error=str(exc), attachment_required=True)
+        if (row['transport'] == 'terminal' and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
+                and not closure.recent_native_observation(self.get(sid))):
+            record = closure.transition(record, record['state'], attachment_required=True,
+                last_error='native activity is unknown or stale; no verified idle boundary, needs attach')
         if record['state'] == 'undeliverable':
             # The queue refused the request: there is no agent left to ask.
             return self._stop(row, close=True, closure_record=record)
@@ -608,6 +640,12 @@ class Hub:
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
+            if state == 'finished':
+                from .session_completion import check
+                try:
+                    check(self, row)
+                except (ValueError, OSError) as exc:
+                    raise StoreError('verified project-memory handoff required: ' + str(exc)) from exc
             experiences = Experiences(self)
             capture = None
             request = row.get('experience_request') or {}
@@ -631,11 +669,25 @@ class Hub:
                     request = dict(request, status='answered')
             # Issued-key attachments amend capture, never the original task result.
             reported_body = None if followup else body
-            if row['transport'] == 'structured':
-                result = self._update(row['session_id'], expected_generation=row['generation'],
-                                      result=text(reported_body, 'report', 16000), activity=state)
-            else:
-                result = self.observe(None, state=state, body=reported_body, native_id=native_id)
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                validate = None
+                if state == 'finished':
+                    from .session_completion import binding, snapshot
+                    stack.enter_context(self._observation_lock(row['session_id']))
+                    digests = stack.enter_context(snapshot(row))
+                    def validate(c, current):
+                        if binding(current) != binding(row):
+                            raise StoreError('work changed during completion reporting; finalize again')
+                        check(self, current, digests=digests, connection=c)
+                if row['transport'] == 'structured':
+                    result = self._update(row['session_id'], expected_generation=row['generation'], validate_fn=validate,
+                                          result=text(reported_body, 'report', 16000), activity=state)
+                elif state == 'finished':
+                    result = self._observe(self.get(row['session_id']), None, state=state, body=reported_body,
+                        native_id=native_id, tool_kind='report', tool_token='unknown', validate_fn=validate)
+                else:
+                    result = self.observe(None, state=state, body=reported_body, native_id=native_id)
             if capture is not None:
                 changes = {'capture': capture}
                 if request:
@@ -676,6 +728,9 @@ class Hub:
                                     detail=detail, message_id=mid))
         if channel == 'queued-message':
             return self._continue_idle_close(row, record)
+        if row.get('native_activity', row['activity']) != 'working' or not closure.recent_native_observation(row):
+            record = dict(record, attachment_required=True,
+                          last_error='idle or unknown terminal cannot be woken by a Stop request; needs attach')
         return record
 
     def _continue_idle_close(self, row, record):
@@ -756,6 +811,12 @@ class Hub:
             record = row.get('closure')
             if row['lifecycle'] != 'closing' or not record or record['generation'] != row['generation']:
                 return None
+            from .session_completion import check
+            try:
+                check(self, row, idle=True)
+                return None  # An explicit save already finalized this turn.
+            except (ValueError, OSError):
+                pass
             if record['state'] == 'pending-delivery' and row['harness'] in closure.STOP_HOOK_HARNESSES and not stop_hook_active:
                 # stop_hook_active means this Stop already follows a hook block; never chain blocks.
                 return closure.StopDecision(closure.request_text(row, record), receipt=closure.receipt_for(record))
@@ -942,8 +1003,16 @@ class Hub:
             raise StoreError('reporter is not part of this session')
         return row
 
-    def observe(self, event, *, native_id=None, state=None, body=None):
-        row = self.actor()
+    def observe(self, event, *, native_id=None, state=None, body=None, tool_kind='work', tool_token='unknown'):
+        actor = self.actor()
+        with self._observation_lock(actor['session_id']):
+            row = self.get(actor['session_id'])
+            if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
+                raise StoreError('stale or inactive session reporter')
+            return self._observe(row, event, native_id=native_id, state=state, body=body,
+                                 tool_kind=tool_kind, tool_token=tool_token)
+
+    def _observe(self, row, event, *, native_id, state, body, tool_kind, tool_token, validate_fn=None):
         activity = EVENTS.get(event) if event else state
         if activity not in {'idle', 'working', 'needs-input', 'finished', 'exited'}:
             raise StoreError('invalid session observation')
@@ -953,6 +1022,21 @@ class Hub:
             changes.update(native_activity=activity, native_observed_at=changes['observed_at'])
         if event == 'prompt-submitted':
             changes['assignment_epoch'] = str(uuid.uuid4())
+            if row.get('native_activity') in {'idle', 'exited'}:
+                # A new turn after an observed stop recovers dropped/failed tool
+                # callbacks. It never revives the prior turn's completion.
+                changes['active_tools'] = {}
+        if event == 'prompt-submitted' or (not event and state == 'working'):
+            changes['work_epoch'] = str(uuid.uuid4())
+            changes['completion_report'] = None
+        if event in {'tool-started', 'tool-completed'}:
+            from .session_completion import observe_tool
+            if tool_kind not in {'work', 'report', 'finalizer'} or not isinstance(tool_token, str) or len(tool_token) > 128:
+                raise StoreError('invalid tool completion metadata')
+            observed = observe_tool(dict(row), event, tool_kind, tool_token)
+            for field in ('active_tools', 'work_epoch', 'completion_report', 'completion'):
+                if field in observed:
+                    changes[field] = observed[field]
         if not event and activity == 'finished':
             changes['completion_report'] = dict(generation=row['generation'],
                 assignment_epoch=row.get('assignment_epoch'), reported_at=changes['observed_at'])
@@ -990,8 +1074,8 @@ class Hub:
                     return closure.transition(record, 'undeliverable',
                                               last_error='the harness exited before answering the close request')
                 return record
-        with self._observation_lock(row['session_id']):
-            return self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn, **changes)
+        return self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn,
+                            validate_fn=validate_fn, **changes)
 
     def acknowledge(self, mid, *, delivery_digest=None):
         row = self.actor()
@@ -1036,11 +1120,11 @@ class Hub:
             raise StoreError('handoff must come from the running close turn')
         return row, turn['delivery_key']
 
-    def _handoff_actor(self):
+    def _handoff_actor(self, request_id=None):
         if self.env.get('ASHA_MANAGED_SESSION_ID'):
             row, key = self.structured_actor()
             record = row.get('closure')
-            if not record or key != closure.message_key(record):
+            if request_id and (not record or key != closure.message_key(record)):
                 raise StoreError('this turn did not receive the current close request')
             return row
         return self.actor()
@@ -1052,20 +1136,31 @@ class Hub:
         memory = closure.memory_destination(row['project'])
         return {'session_id': row['session_id'], 'generation': row['generation'],
                 'request_id': record['request_id'] if record else None,
+                'attempt': record.get('attempts', 1) if record else None,
                 'closure_state': record['state'] if record else None, 'memory': memory,
                 'paths': {name: (memory['destination'] + '/' + name) if memory['destination'] else None
                           for name in closure.MEMORY_FILES}}
 
-    def handoff(self, request_id, *, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None,
+    def handoff(self, request_id, *, attempt=None, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None,
                 experience_file=None, experience_ref=None, supersedes=None, key=None):
-        """Acknowledge a close request. A published outcome is verified by publishing here."""
-        request_id = identifier(request_id)
-        actor = self._handoff_actor()
+        """Finalize current work, optionally acknowledging a bound close request."""
+        request_id = identifier(request_id) if request_id else None
+        actor = self._handoff_actor(request_id)
         with self._action_lock(actor['session_id']):
             row = self.get(actor['session_id'])
-            if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
+            from .session_completion import binding
+            if binding(row) != binding(actor) or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
+            if request_id is None:
+                if any((experience_file, experience_ref, supersedes, key)):
+                    raise StoreError('completion experience belongs on session report --state finished')
+                if row.get('closure') and row['closure']['state'] not in closure.TERMINAL_STATES:
+                    raise StoreError('a close request is pending; handoff must name its --request')
+                return self._finalize(row, outcome=outcome, detail=detail, active_file=active_file,
+                                      decisions_file=decisions_file, expected=expected)
             closure.validate_handoff_request(row.get('closure'), row, request_id)
+            if attempt is not None and attempt != row['closure'].get('attempts', 1):
+                raise StoreError('stale close delivery attempt')
             from .session_experience import Experiences
             capture = None
             if not any((experience_file, experience_ref, supersedes, key)):
@@ -1076,13 +1171,51 @@ class Hub:
                     experience_file=experience_file, experience_ref=experience_ref, supersedes=supersedes)
             row = self._update(row['session_id'], expected_generation=row['generation'],
                 closure_fn=lambda record, current: dict(record, capture={**record.get('capture', {}), **capture}))
+            if binding(row) != binding(actor):
+                raise StoreError('work changed during handoff; finalize the current turn')
             return self._handoff(row, request_id, outcome=outcome, detail=detail, active_file=active_file,
                                  decisions_file=decisions_file, expected=expected)
+
+    def _finalize(self, row, *, outcome, detail, active_file, decisions_file, expected):
+        from .session_completion import issue, invalidate
+        invalidate(self, row, 'handoff in progress')
+        publication = None
+        try:
+            if active_file or decisions_file:
+                if outcome not in {None, 'published'} or not (active_file and decisions_file):
+                    raise StoreError('publication requires both draft files and no other outcome')
+                # Scope/identity/silence are checked before any write.
+                from .session_completion import snapshot
+                with snapshot(row):
+                    pass
+                publication = closure.publish_handoff(row['project'], active_file, decisions_file,
+                                                       expected=expected or {})['publication']
+                outcome = 'published'
+                detail = detail or 'Published verified project memory'
+            if outcome not in closure.OUTCOMES or (outcome == 'published' and not publication):
+                raise StoreError('an explicit outcome or both draft files are required')
+            detail = text(detail, 'handoff detail', 4000)
+            if outcome in closure.ACKNOWLEDGED:
+                receipt = issue(self, row, outcome=outcome, detail=detail, publication=publication)
+            else:
+                receipt = dict(status=outcome, detail=detail)
+                self._update(row['session_id'], completion=receipt)
+        except (ValueError, OSError) as exc:
+            self._update(row['session_id'], completion=dict(status='blocked', detail=str(exc)[:1000]))
+            raise StoreError('handoff refused: ' + str(exc)) from exc
+        return dict(session_id=row['session_id'], outcome=outcome, completion=receipt, git_invoked=False)
 
     def _handoff(self, row, request_id, *, outcome, detail, active_file, decisions_file, expected):
         record = row.get('closure')
         closure.validate_handoff_request(record, row, request_id)
         publication = None
+        if active_file or decisions_file or outcome == 'no-durable-update':
+            from .session_completion import snapshot
+            try:
+                with snapshot(row):
+                    pass
+            except (ValueError, OSError) as exc:
+                raise StoreError('project memory is unavailable: ' + str(exc)) from exc
         if active_file or decisions_file:
             if outcome not in {None, 'published'} or not (active_file and decisions_file):
                 raise StoreError('publication requires both draft files and no other outcome')
@@ -1101,8 +1234,22 @@ class Hub:
             raise StoreError('an outcome or both draft files are required')
         detail = text(detail, 'handoff detail', 4000)
         updated = closure.record_handoff(record, row, outcome, detail, publication=publication)
+        from .session_completion import issue
+        if outcome in closure.ACKNOWLEDGED:
+            try:
+                completion = issue(self, row, outcome=outcome, detail=detail,
+                    publication=publication and publication['publication'], request=closure.receipt_for(record))
+                if completion['status'] != 'ready':
+                    updated = closure.transition(updated, 'handoff-failed', last_error=completion['detail'])
+            except (ValueError, OSError) as exc:
+                completion = dict(status='blocked', detail=str(exc))
+                updated = closure.transition(updated, 'handoff-failed', last_error=str(exc))
+        else:
+            completion = dict(status=outcome, detail=detail)
+        self._update(row['session_id'], completion=completion)
         self._update(row['session_id'], expected_generation=row['generation'], closure=updated)
         return {'session_id': row['session_id'], 'request_id': request_id, 'outcome': outcome,
                 'closure_state': updated['state'], 'memory': updated['memory'], 'handoff': updated['handoff'],
+                'completion': completion,
                 'capture': updated.get('capture', {'status': 'disabled', 'report_id': None}),
                 'git_invoked': False}

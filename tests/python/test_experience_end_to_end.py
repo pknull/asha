@@ -95,6 +95,7 @@ class ExperienceJourney(ExperienceFixture):
         outcome['guidance_feedback'] = [{'id':'compare-save', 'version':lm.rule_version(lm.load('compare-save')),
             'use':'applied', 'evidence_ids':['check'], 'target_failure':'not-observed'}]
         with self.acting_as(later['session_id']):
+            self.hub.handoff(None, outcome='no-durable-update', detail='Fixture verification complete')
             later_result = self.hub.report(state='finished', body='Fixture outcome reported',
                 experience_file=self.file(outcome), key=str(uuid.uuid4()))
         stats = self.experience.stats(self.pid)

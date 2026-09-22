@@ -105,7 +105,7 @@
           "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
           "limitations": [
             "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
-            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PostToolUse, Stop and SessionEnd; permission-requested is not claimed for Claude",
+            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop and SessionEnd; permission-requested is not claimed for Claude",
             "The observation bridge is bounded and fail-open, so a missing observation leaves activity unknown rather than gating the session"
           ]
         },
@@ -114,7 +114,7 @@
           "surface": "session close -> queued hub message; Stop -> control-event.sh -> `session event --event turn-stopped` returns the pending close request once as a single-line block decision; the final turn acknowledges with `session handoff`",
           "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
           "limitations": [
-            "An idle terminal cannot be woken; attach or force-close (reported as pending-delivery)",
+            "A current completion receipt plus observed idle closes without another turn; idle without a receipt needs attach",
             "Acknowledgement binds to Room ownership, process ancestry, generation and request ID",
             "Publication runs through memory_v2 with a compare-and-swap; no Git seam",
             "The Stop decision is printed before delivery is recorded; a hook killed at its 3 s Stop budget re-emits the same request at the next guard-free Stop (a Stop that follows a delivered block carries stop_hook_active and emits nothing), so an unattended worker may need another user turn or an attach",
@@ -128,7 +128,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -150,6 +150,17 @@
             "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "Claude adapter specifies --bare, empty tools, strict empty MCP, no skills, no hooks; only adapter fixtures and local --help checked",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
+          ]
+        },
+        "project-memory": {
+          "support": "partial",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
+          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "limitations": [
+            "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
+            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "No Git publication, transcript extraction, chair context, or native permission bypass",
+            "Terminal close requires an observed Stop; structured close requires the exact completed turn and no queued work; native permissions may block handoff CLI"
           ]
         }
       }
@@ -267,7 +278,7 @@
           "verifier": "tests:test-session-profiles + tests:test-session-hub-hooks",
           "limitations": [
             "Installed Asha skills, commands and agents stay discoverable in a worker; only the automatic context injection is removed",
-            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PostToolUse, PermissionRequest and Stop; Codex has no session-ended equivalent",
+            "Hub session activity is observed through control-event.sh on SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PermissionRequest and Stop; Codex has no session-ended equivalent",
             "Each rendered hook command remains subject to Codex's hash-bound interactive hook trust, and some unified_exec shell calls are not intercepted",
             "A worker preserves native project trust; attach to its terminal if Codex asks whether to trust this project"
           ]
@@ -288,7 +299,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -310,6 +321,18 @@
             "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "No equivalent verified packet-only backend adapter; no fallback to another harness",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
+          ]
+        },
+        "project-memory": {
+          "support": "partial",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
+          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "limitations": [
+            "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
+            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "No Git publication, transcript extraction, chair context, or native permission bypass",
+            "Terminal close requires an observed Stop; structured close requires the exact completed turn and no queued work; native permissions may block handoff CLI",
+            "PreToolUse unified_exec/tool coverage remains incomplete; callbacks are telemetry, not a complete enforcement boundary"
           ]
         }
       }
@@ -429,7 +452,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -451,6 +474,17 @@
             "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "No equivalent verified packet-only backend adapter; no fallback to another harness",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
+          ]
+        },
+        "project-memory": {
+          "support": "partial",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
+          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "limitations": [
+            "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
+            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "No Git publication, transcript extraction, chair context, or native permission bypass",
+            "Memory publication supported; completion receipts and finished reporting blocked without native Control tool/idle bridge; needs attach; structured transport unsupported"
           ]
         }
       }
@@ -572,7 +606,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; Room publication linkage is not issue #92 completion authority",
+            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -594,6 +628,17 @@
             "Automatic native execution is gated off; advisory-save-review skips own lineage and preserves native custody precedence",
             "No equivalent verified packet-only backend adapter; no fallback to another harness",
             "No publication authority, automatic permission approval, recursive review or native token-cap claim"
+          ]
+        },
+        "project-memory": {
+          "support": "partial",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
+          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "limitations": [
+            "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
+            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "No Git publication, transcript extraction, chair context, or native permission bypass",
+            "Memory publication supported; completion receipts and finished reporting blocked without native Control tool/idle bridge; needs attach; structured transport unsupported"
           ]
         }
       }

@@ -1,9 +1,4 @@
-"""Controller linkage for explicit Memory saves, separate from close authority.
-
-Issue #92 owns verified completion readiness and its invalidation/revalidation.
-These publication records may be consumed by that design; they do not authorize
-termination. C7 must still obtain a handoff without a qualifying #92 receipt.
-"""
+"""Controller linkage for explicit Memory saves; completion revalidates separately."""
 from __future__ import annotations
 
 import json
@@ -29,14 +24,14 @@ def assignment_epoch(row):
 
 def publication_actor(project_dir):
     """Verify before publication; environment labels select, never prove, identity."""
-    if not os.environ.get('ASHA_HUB_SESSION_ID'):
+    if not (os.environ.get('ASHA_HUB_SESSION_ID') or os.environ.get('ASHA_MANAGED_SESSION_ID')):
         return None
     from .config import load_config
     from .session_hub import Hub
     hub = Hub(load_config(os.environ), env=os.environ)
-    actor = hub.actor()
-    if actor['transport'] != 'terminal' or Path(actor['project']).resolve() != Path(project_dir).resolve():
-        raise StoreError('publication actor is outside this terminal project plane')
+    actor = hub.structured_actor()[0] if os.environ.get('ASHA_MANAGED_SESSION_ID') else hub.actor()
+    if Path(actor['project']).resolve() != Path(project_dir).resolve():
+        raise StoreError('publication actor is outside this project plane')
     return hub, actor
 
 
@@ -54,6 +49,12 @@ def record_publication(hub, actor, receipt):
         c.execute('INSERT INTO hub_memory_publications VALUES(?,?,?,?,?,?,?)',
                   (receipt['publication_id'], actor['session_id'], actor['generation'], actor['project_id'],
                    assignment_epoch(actor), time.time(), canonical(receipt)))
+    from .session_completion import issue
+    from .session_closure import receipt_for, TERMINAL_STATES
+    close = actor.get('closure')
+    request = receipt_for(close) if close and close['state'] not in TERMINAL_STATES else None
+    return issue(hub, actor, outcome='published', detail='Explicit save published Memory v2',
+                 publication=receipt, request=request)
 
 
 def _available(c):
@@ -68,7 +69,8 @@ def verify_publication(hub, actor, publication):
         saved = c.execute('SELECT * FROM hub_memory_publications WHERE publication_id=?',
                           (publication.get('publication_id'),)).fetchone() if _available(c) else None
     if (not saved or saved['session_id'] != actor['session_id'] or saved['generation'] != actor['generation']
-            or saved['project_id'] != actor['project_id'] or saved['receipt'] != canonical(publication)):
+            or saved['project_id'] != actor['project_id']
+            or saved['receipt'] != canonical({k: v for k, v in publication.items() if k != 'completion'})):
         raise StoreError('verified explicit-save publication receipt required for this Room generation')
     return dict(saved)
 

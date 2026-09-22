@@ -72,7 +72,7 @@ class DoctorVerdictTests(DoctorOkFixture):
         claude.mkdir()
         codex.mkdir()
         handler = Path(__file__).resolve().parents[2] / "plugins/session/hooks/handlers/control-event.sh"
-        events = ("SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd")
+        events = ("SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd")
         (claude / "settings.json").write_text(json.dumps({"hooks": {
             event: [{"hooks": [{"type": "command", "command": f"{handler} {event}"}]}] for event in events}}))
         (codex / "config.toml").write_text("broken = [")
@@ -238,7 +238,7 @@ class DoctorSupportedConfigurationTests(DoctorOkFixture):
                 "hooks": [{"type": "command", "command": f"{handler} {event}"}],
             }]
             for event in (
-                "SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "SessionEnd",
+                "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd",
             )
         }
         claude_home = self.home / ".claude"

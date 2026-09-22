@@ -8,6 +8,21 @@ from lib.control.store import StoreError
 
 
 class CodexProtocolTests(unittest.TestCase):
+    def test_native_tool_boundaries_classify_finalization_and_composed_work(self):
+        command = 'asha control session handoff --outcome no-durable-update --detail Reviewed --json'
+        for shell, expected in ((command, 'finalizer'), (command + '; touch later', 'work'), ('pwd', 'work')):
+            p = self.protocol()
+            self.ready(p)
+            item = dict(id='native-tool', type='commandExecution', command=shell)
+            start = self.notify(p, 'item/started', item=item)
+            end = self.notify(p, 'item/completed', item=dict(item, exitCode=0))
+            self.assertEqual(start[0][0], 'tool')
+            self.assertEqual(start[0][1]['completion_kind'], expected)
+            self.assertEqual(end[0][1]['completion_kind'], expected)
+            self.assertEqual(start[0][1]['completion_token'], end[0][1]['completion_token'])
+            self.assertEqual(start[0][1]['status'], 'inProgress')
+            self.assertEqual(end[0][1]['status'], 'completed')
+
     def test_utility_inherits_native_approval_and_sandbox_settings(self):
         p = self.protocol(native_settings=True)
         start, turn = self.ready(p)

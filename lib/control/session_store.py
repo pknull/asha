@@ -328,6 +328,13 @@ class SessionStore:
             c.execute("INSERT INTO session_turns(turn_id,session_id,message_id,generation,state,started_at) VALUES(?,?,?,?,'running',?)", (turn, sid, msg["message_id"], generation, time.time()))
             c.execute("UPDATE session_messages SET state='submitted',turn_id=? WHERE message_id=?", (turn, msg["message_id"]))
             c.execute("UPDATE managed_sessions SET state='running',turns=turns+1,updated_at=? WHERE session_id=?", (time.time(), sid))
+            if c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_sessions'").fetchone():
+                found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
+                if found:
+                    current = json.loads(found[0])
+                    current.update(active_tools={}, work_epoch=str(uuid.uuid4()))
+                    from .session_hub import Hub
+                    Hub._save(c, current)
             self._event(c, sid, "turn-reserved", {"message_id": msg["message_id"]}, turn)
             return {**dict(msg), "turn_id": turn}
 
@@ -379,6 +386,18 @@ class SessionStore:
             if kind in {"completed", "failed"}:
                 from .provider_recovery import observe_terminal
                 observe_terminal(c, sid, turn, kind)
+            if kind == 'tool' and c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_sessions'").fetchone():
+                found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
+                if found:
+                    current = json.loads(found[0])
+                    from .session_completion import observe_tool
+                    event = 'tool-completed' if payload.get('status') in {'completed', 'failed', 'cancelled', 'declined'} else 'tool-started'
+                    token = payload.get('completion_token') or payload.get('tool_id') or 'unknown'
+                    # Claude tool results carry identity only; the start froze kind.
+                    tool_kind = payload.get('completion_kind') or (current.get('active_tools') or {}).get(token, 'work')
+                    observe_tool(current, event, tool_kind, token)
+                    from .session_hub import Hub
+                    Hub._save(c, current)
             self._event(c, sid, kind, payload, turn)
 
     def finish(self, sid, generation, turn, *, success, reason=None, input_not_submitted=False):

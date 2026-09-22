@@ -16,6 +16,11 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "*",
+        "_asha_harnesses": ["claude", "codex"],
+        "hooks": [{"type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/hooks/handlers/control-event.sh PreToolUse"}]
+      },
+      {
         "matcher": "Read|Edit|Write|MultiEdit",
         "hooks": [
           {

@@ -149,6 +149,7 @@ def dispatch(argv, *, env):
             parser.add_argument('--wait', type=int, default=0, metavar='SECONDS', help='poll for the handoff acknowledgement before terminating')
     elif verb == 'handoff':
         parser.add_argument('--request', metavar='REQUEST_ID')
+        parser.add_argument('--attempt', type=int)
         parser.add_argument('--read', action='store_true', help='print live memory destination facts for this session')
         parser.add_argument('--outcome', choices=['no-durable-update', 'failed', 'blocked'])
         parser.add_argument('--detail')
@@ -160,6 +161,8 @@ def dispatch(argv, *, env):
         parser.add_argument('--event' if verb == 'event' else '--state', required=True)
         if verb == 'event':
             parser.add_argument('--stop-hook-active', action='store_true')
+            parser.add_argument('--tool-kind', choices=['work', 'report', 'finalizer'], default='work')
+            parser.add_argument('--tool-token', default='unknown')
         parser.add_argument('--native-id')
         parser.add_argument('--text')
     elif verb == 'messages':
@@ -230,7 +233,8 @@ def dispatch(argv, *, env):
                     experience_file=args.experience_file, experience_ref=args.experience_ref,
                     supersedes=args.supersedes, key=args.key)
             else:
-                result = hub.observe(args.event, body=args.text, native_id=args.native_id)
+                result = hub.observe(args.event, body=args.text, native_id=args.native_id,
+                                     tool_kind=args.tool_kind, tool_token=args.tool_token)
             if verb == 'event':
                 # The only instruction this bridge ever carries: a pending close
                 # request, returned once as the harness's own Stop decision.
@@ -248,12 +252,14 @@ def dispatch(argv, *, env):
             if args.read:
                 result = hub.handoff_read()
             else:
-                if not args.request:
-                    parser.error('--request REQUEST_ID is required unless --read is given')
+                if args.request and args.attempt is None:
+                    parser.error('--request requires --attempt from the delivered close request')
+                if not args.request and args.attempt is not None:
+                    parser.error('--attempt requires --request')
                 from .session_closure import parse_digest
                 expected = {'activeContext.md': parse_digest(args.expected_active),
                             'decisions.md': parse_digest(args.expected_decisions)}
-                result = hub.handoff(args.request, outcome=args.outcome, detail=args.detail,
+                result = hub.handoff(args.request, attempt=args.attempt, outcome=args.outcome, detail=args.detail,
                                      active_file=args.active_file, decisions_file=args.decisions_file, expected=expected,
                                      experience_file=args.experience_file, experience_ref=args.experience_ref, supersedes=args.supersedes, key=args.key)
         elif verb == 'messages':
