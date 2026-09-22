@@ -389,11 +389,15 @@ class MemoryVisibilityCases(InitFixture):
         block = lines[lines.index(wi.IGNORE_BEGIN) + 1:lines.index(wi.IGNORE_END)]
         for entry in ("Memory/", "Work/", f"{shared}/", f"{personal}/", ".asha/workspace*.json"):
             self.assertIn(entry, block)
-        self.assertFalse(any(line.startswith("!") for line in block), block)
+        # The only negations private mode keeps are the ones that expose the
+        # project contract; the workspace manifests stay ignored.
+        self.assertEqual(
+            ["!.asha/", "!.asha/config.json"],
+            [line for line in block if line.startswith("!")], block)
         for rel in (
             "Memory/activeContext.md", "Memory/decisions.md", "Memory/events/private.jsonl",
             "Work/notes.md", "Work/session-state/private.json", f"{shared}/README.md",
-            f"{personal}/notes.md", ".asha/config.json", ".asha/workspace.json",
+            f"{personal}/notes.md", ".asha/workspace.json",
             ".asha/workspace-init.json", ".asha/workspace-extra.json",
         ):
             probe = subprocess.run(
@@ -401,6 +405,10 @@ class MemoryVisibilityCases(InitFixture):
                 capture_output=True,
             )
             self.assertEqual(0, probe.returncode, rel)
+        self.assertEqual(1, subprocess.run(
+            ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", ".asha/config.json"],
+            capture_output=True,
+        ).returncode, ".asha/config.json must stay visible in private mode")
 
     def test_default_and_explicit_tracked_modes_keep_current_rules(self):
         self.assertTrue(self.initialize()["ok"])
