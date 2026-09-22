@@ -239,6 +239,38 @@ else
   fail "doctor warns non-fatally on oversized decisions.md with migration guidance (rc=$rc)"
 fi
 
+# A scheduled run without WorkingDirectory starts in $HOME, where the Asha home
+# ~/.asha/config.json is global configuration, not an uninitialized project.
+SEEDED_HOME_CONFIG=0
+if [[ ! -f "$SANDBOX/.asha/config.json" ]]; then
+  mkdir -p "$SANDBOX/.asha"
+  printf '{"default_harness":"claude"}\n' > "$SANDBOX/.asha/config.json"
+  SEEDED_HOME_CONFIG=1
+fi
+out="$(cd "$SANDBOX" && run --target copilot 2>&1)"; rc=$?
+if [[ $rc -eq 0 ]] \
+    && ! grep -q 'config lacks memory_version=2 or project_id' <<<"$out" \
+    && ! grep -q 'does not declare /Work/session-state/ ignored' <<<"$out" \
+    && grep -q 'INFO  current directory holds the Asha home' <<<"$out"; then
+  ok "doctor run from \$HOME does not audit the Asha home as a project"
+else
+  fail "doctor run from \$HOME does not audit the Asha home as a project (rc=$rc; $(grep FAIL <<<"$out" | head -3))"
+fi
+[[ $SEEDED_HOME_CONFIG -eq 1 ]] && rm -f "$SANDBOX/.asha/config.json"
+
+# ~/.local/bin reached through a non-canonical spelling is still on PATH.
+mkdir -p "$SANDBOX/.local/bin" "$SANDBOX/.local/share"
+out="$(env -i HOME="$SANDBOX" PATH="$SANDBOX/.local/share/../bin:$PATH" USER="${USER:-test}" \
+  bash "$REPO_ROOT/bin/asha-drift-check.sh" --target copilot 2>&1 || true)"
+! grep -q '\.local/bin not in PATH' <<<"$out" \
+  && ok "doctor resolves PATH entries before the ~/.local/bin check" \
+  || fail "doctor resolves PATH entries before the ~/.local/bin check"
+out="$(env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" \
+  bash "$REPO_ROOT/bin/asha-drift-check.sh" --target copilot 2>&1 || true)"
+grep -q 'WARN  ~/.local/bin not in PATH' <<<"$out" \
+  && ok "doctor still warns when ~/.local/bin is absent from PATH" \
+  || fail "doctor still warns when ~/.local/bin is absent from PATH"
+
 # ---------------------------------------------------------------------------
 echo "--- test 1a: current source defeats matching stale ownership ledgers ---"
 assert_command_skill_source_freshness() { # target skill_md

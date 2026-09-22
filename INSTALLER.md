@@ -316,7 +316,12 @@ Checks (paraphrased):
 - **OpenCode:** no dangling skills; generated-artifact manifest matches; plugin carries policy/session/dispose hooks; CLI version satisfies the stable-v1 floor
 
 Optionally schedule it via a systemd user timer or cron; append output to a
-log of your choice (e.g. `drift-check.log`).
+log of your choice (e.g. `drift-check.log`). The current-project Memory v2
+checks audit the working directory, so set the unit's `WorkingDirectory=` (or
+`cd` in the cron line) to an initialized project. Run from the directory that
+holds the Asha home (usually `$HOME`), the doctor skips them with an INFO line.
+The `~/.local/bin` PATH check resolves each entry, so non-canonical spellings
+such as `~/.local/share/../bin` count.
 
 ## Backups
 

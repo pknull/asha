@@ -1036,7 +1036,13 @@ else
   nope "hook registry is invalid or retains an automatic semantic save"
 fi
 
-if [[ -f "$PWD/.asha/config.json" ]]; then
+# The Asha home also holds a config.json; a run from its parent (usually $HOME,
+# e.g. a scheduled unit without WorkingDirectory) is not a project.
+current_asha_dir="$(resolve_path "$PWD/.asha" 2>/dev/null || true)"
+asha_home_dir="$(resolve_path "${ASHA_HOME:-$HOME/.asha}" 2>/dev/null || true)"
+if [[ -d "$PWD/.asha" && -n "$current_asha_dir" && "$current_asha_dir" == "$asha_home_dir" ]]; then
+  info_line "current directory holds the Asha home, not a project; project_id/ignore checks skipped"
+elif [[ -f "$PWD/.asha/config.json" ]]; then
   jq -e '.memory_version == 2 and (.project_id | type == "string" and test("\\S"))' \
     "$PWD/.asha/config.json" >/dev/null 2>&1 \
     && pass "current project has stable Memory v2 project_id" \
@@ -1117,10 +1123,20 @@ elif [[ -e "$user_bin" ]]; then
 else
   warn "asha dispatcher not installed at $HOME_LABEL/.local/bin/asha (optional; ./install.sh --bin all)"
 fi
-case ":$PATH:" in
-  *":$HOME/.local/bin:"*) ;;
-  *) warn "$HOME_LABEL/.local/bin not in PATH" ;;
-esac
+# Compare resolved entries: ~/.local/share/../bin or a symlinked spelling is
+# still ~/.local/bin to the shell.
+user_bin_dir="$(resolve_path "$HOME/.local/bin" 2>/dev/null || true)"
+user_bin_on_path=0
+IFS=: read -r -a path_entries <<<"$PATH"
+for path_entry in ${path_entries[@]+"${path_entries[@]}"}; do
+  if [[ "$path_entry" == "$HOME/.local/bin" ]] \
+      || [[ -n "$user_bin_dir" && -n "$path_entry" \
+            && "$(resolve_path "$path_entry" 2>/dev/null || true)" == "$user_bin_dir" ]]; then
+    user_bin_on_path=1
+    break
+  fi
+done
+[[ $user_bin_on_path -eq 1 ]] || warn "$HOME_LABEL/.local/bin not in PATH"
 
 # Repo identity file is a hard requirement of identity-merge.sh. The installer
 # provisions the compact ~/.asha identity triplet when any file is absent.
