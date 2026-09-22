@@ -186,6 +186,42 @@ out="$(run --target copilot --fix 2>&1 || true)"
   && ok "doctor --fix reconciles retired hook beside current recovery artifact" \
   || fail "doctor --fix reconciles retired hook beside current recovery artifact"
 
+VISIBILITY_PROJECT="$SANDBOX/visibility-project"
+mkdir -p "$VISIBILITY_PROJECT"
+git -C "$VISIBILITY_PROJECT" init -q
+python3 "$REPO_ROOT/plugins/session/tools/workspace_init.py" init \
+  --root "$VISIBILITY_PROJECT" --name visibility-test --json >/dev/null
+out="$(cd "$VISIBILITY_PROJECT" && run --target copilot 2>&1)"; rc=$?
+if [[ $rc -eq 0 && "$out" == *"current workspace doctor validates configured memory visibility"* ]]; then
+  ok "drift accepts default tracked workspace policy"
+else
+  fail "drift accepts default tracked workspace policy (rc=$rc)"
+fi
+python3 - "$VISIBILITY_PROJECT/.asha/config.json" <<'PY'
+import json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+config = json.loads(path.read_text())
+config['memory_visibility'] = 'private'
+path.write_text(json.dumps(config) + '\n')
+PY
+cp "$VISIBILITY_PROJECT/.gitignore" "$SANDBOX/visibility-ignore-before"
+out="$(cd "$VISIBILITY_PROJECT" && run --target copilot --fix 2>&1)"; rc=$?
+if [[ $rc -eq 1 && "$out" == *"managed_ignore_drift"* ]] \
+    && cmp -s "$SANDBOX/visibility-ignore-before" "$VISIBILITY_PROJECT/.gitignore"; then
+  ok "drift --fix flags private policy mismatch without mutating workspace rules"
+else
+  fail "drift --fix flags private policy mismatch without mutating workspace rules (rc=$rc)"
+fi
+python3 "$REPO_ROOT/plugins/session/tools/workspace_init.py" doctor \
+  --root "$VISIBILITY_PROJECT" --fix --json >/dev/null
+out="$(cd "$VISIBILITY_PROJECT" && run --target copilot 2>&1)"; rc=$?
+if [[ $rc -eq 0 && "$out" == *"current workspace doctor validates configured memory visibility"* ]] \
+    && git -C "$VISIBILITY_PROJECT" check-ignore --no-index -q Memory/activeContext.md; then
+  ok "drift accepts repaired private workspace policy"
+else
+  fail "drift accepts repaired private workspace policy (rc=$rc)"
+fi
+
 IGNORE_PROJECT="$SANDBOX/ignore-project"
 mkdir -p "$IGNORE_PROJECT/.asha"
 printf '{"initialized":true,"memory_version":2,"project_id":"ignore-test"}\n' > "$IGNORE_PROJECT/.asha/config.json"

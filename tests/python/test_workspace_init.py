@@ -369,6 +369,168 @@ class BootstrapCases(InitFixture):
             self.assertEqual(text.splitlines().count(entry), 1)
 
 
+class MemoryVisibilityCases(InitFixture):
+    def setUp(self):
+        super().setUp()
+        self.parent_git()
+
+    def configure(self, visibility):
+        path = self.ws / ".asha/config.json"
+        path.parent.mkdir(exist_ok=True)
+        config = json.loads(path.read_text()) if path.exists() else {}
+        config["memory_visibility"] = visibility
+        path.write_text(json.dumps(config) + "\n", encoding="utf-8")
+
+    def initialize(self, **kwargs):
+        return self.init(repositories=[], no_git=False, **kwargs)
+
+    def assert_private(self, shared="knowledge", personal="memory-local"):
+        lines = (self.ws / ".gitignore").read_text().splitlines()
+        block = lines[lines.index(wi.IGNORE_BEGIN) + 1:lines.index(wi.IGNORE_END)]
+        for entry in ("Memory/", "Work/", f"{shared}/", f"{personal}/", ".asha/workspace*.json"):
+            self.assertIn(entry, block)
+        self.assertFalse(any(line.startswith("!") for line in block), block)
+        for rel in (
+            "Memory/activeContext.md", "Memory/decisions.md", "Memory/events/private.jsonl",
+            "Work/notes.md", "Work/session-state/private.json", f"{shared}/README.md",
+            f"{personal}/notes.md", ".asha/config.json", ".asha/workspace.json",
+            ".asha/workspace-init.json", ".asha/workspace-extra.json",
+        ):
+            probe = subprocess.run(
+                ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", rel],
+                capture_output=True,
+            )
+            self.assertEqual(0, probe.returncode, rel)
+
+    def test_default_and_explicit_tracked_modes_keep_current_rules(self):
+        self.assertTrue(self.initialize()["ok"])
+        before = (self.ws / ".gitignore").read_bytes()
+        self.configure("tracked")
+        self.assertTrue(self.initialize()["ok"])
+        self.assertEqual(before, (self.ws / ".gitignore").read_bytes())
+        for rel in ("Memory/activeContext.md", "Memory/decisions.md", "knowledge/README.md",
+                    ".asha/workspace.json", ".asha/workspace-init.json"):
+            self.assertEqual(1, subprocess.run(
+                ["git", "-C", str(self.ws), "check-ignore", "--no-index", "-q", rel],
+                capture_output=True,
+            ).returncode, rel)
+        self.assertTrue(wi.doctor_workspace(self.ws)["ok"])
+
+    def test_private_init_and_rerun_keep_all_local_state_ignored(self):
+        self.configure("private")
+        (self.ws / ".gitignore").write_text("*.swp\n!Memory/\n!knowledge/\n")
+        self.assertTrue(self.initialize()["ok"])
+        self.assert_private()
+        before = self.generated_snapshot()
+        self.assertEqual([], self.initialize()["changed"])
+        self.assertEqual(before, self.generated_snapshot())
+        self.assertTrue(wi.doctor_workspace(self.ws)["ok"])
+
+    def test_private_config_applies_only_to_selected_workspace(self):
+        self.configure("private")
+        child = self.repo("component")
+        report = self.init(repositories=["component"], no_git=False)
+        self.assertTrue(report["ok"], report)
+        self.assertEqual("", _git("status", "--porcelain", cwd=child))
+        self.assertFalse((child / ".asha").exists())
+
+    def test_repair_replaces_tracked_block_without_reintroducing_negations(self):
+        self.assertTrue(self.initialize()["ok"])
+        publications = {p: (self.ws / "Memory" / p).read_bytes()
+                        for p in ("activeContext.md", "decisions.md")}
+        self.configure("private")
+        report = wi.doctor_workspace(self.ws)
+        self.assertIn("managed_ignore_drift", {item["code"] for item in report["errors"]})
+        fixed = wi.doctor_workspace(self.ws, fix=True)
+        self.assertTrue(fixed["ok"], fixed)
+        self.assert_private()
+        metadata = json.loads((self.ws / wi.OWNERSHIP_PATH).read_text())
+        self.assertIn("Memory/", metadata["managed"]["gitignore_block"])
+        self.assertNotIn("!Memory/", metadata["managed"]["gitignore_block"])
+        before = self.generated_snapshot()
+        again = wi.doctor_workspace(self.ws, fix=True)
+        self.assertTrue(again["ok"], again)
+        self.assertFalse(again["fixed"])
+        self.assertEqual(before, self.generated_snapshot())
+        for filename, content in publications.items():
+            self.assertEqual(content, (self.ws / "Memory" / filename).read_bytes())
+
+    def test_doctor_detects_and_repairs_later_private_negations(self):
+        self.configure("private")
+        self.assertTrue(self.initialize()["ok"])
+        ignore = self.ws / ".gitignore"
+        ignore.write_text(ignore.read_text() + "!Memory/\n!Memory/*.md\n!Work/\n!knowledge/\n")
+        self.assertFalse(wi.doctor_workspace(self.ws)["ok"])
+        fixed = wi.doctor_workspace(self.ws, fix=True)
+        self.assertTrue(fixed["ok"], fixed)
+        self.assert_private()
+
+    def test_private_no_git_doctor_checks_managed_block(self):
+        self.configure("private")
+        self.assertTrue(self.init(repositories=[])["ok"])
+        ignore = self.ws / ".gitignore"
+        ignore.write_text(ignore.read_text().replace("Memory/\n", "!Memory/\n!Memory/*.md\n"))
+        self.assertFalse(wi.doctor_workspace(self.ws)["ok"])
+        self.assertTrue(wi.doctor_workspace(self.ws, fix=True)["ok"])
+        self.assert_private()
+
+    def test_invalid_visibility_refuses_init_without_writes(self):
+        for value in ("privte", "PRIVATE", "", None, [], True):
+            with self.subTest(value=value):
+                self.configure(value)
+                before = self.generated_snapshot()
+                report = self.initialize()
+                self.assertFalse(report["ok"], report)
+                self.assertIn("memory_visibility_invalid", {e["code"] for e in report["errors"]})
+                self.assertEqual(before, self.generated_snapshot())
+
+    def test_private_custom_roots_and_explicit_return_to_tracked(self):
+        self.assertTrue(self.initialize()["ok"])
+        manifest_path = self.ws / wi.MANIFEST_PATH
+        manifest = json.loads(manifest_path.read_text())
+        manifest["memory"].update(shared_root="docs/kb", personal_root="private/notes")
+        manifest_path.write_text(json.dumps(manifest))
+        self.configure("private")
+        self.assertTrue(self.initialize(force=True)["ok"])
+        self.assert_private(shared="docs/kb", personal="private/notes")
+        self.assertTrue(wi.doctor_workspace(self.ws, fix=True)["ok"])
+        self.configure("tracked")
+        fixed = wi.doctor_workspace(self.ws, fix=True)
+        self.assertTrue(fixed["ok"], fixed)
+        lines = (self.ws / ".gitignore").read_text().splitlines()
+        self.assertIn("!Memory/*.md", lines)
+        self.assertIn("!docs/kb/**", lines)
+        self.assertIn("!.asha/workspace.json", lines)
+
+    def test_private_workspace_without_git_has_idempotent_repair(self):
+        self.ws = self.home / "without-git"
+        self.ws.mkdir()
+        self.configure("private")
+        self.assertTrue(self.init(repositories=[])["ok"])
+        self.assertTrue(wi.doctor_workspace(self.ws)["ok"])
+        before = self.generated_snapshot()
+        fixed = wi.doctor_workspace(self.ws, fix=True)
+        self.assertTrue(fixed["ok"], fixed)
+        self.assertEqual("configured-no-git", fixed["private_ignore"])
+        self.assertEqual(before, self.generated_snapshot())
+
+    def test_invalid_or_missing_config_refuses_repair_without_writes(self):
+        self.configure("private")
+        self.assertTrue(self.initialize()["ok"])
+        path = self.ws / ".asha/config.json"
+        for content in ('{"memory_visibility":"privte"}', '{broken', None):
+            with self.subTest(content=content):
+                if content is None:
+                    path.unlink()
+                else:
+                    path.write_text(content)
+                before = self.generated_snapshot()
+                report = wi.doctor_workspace(self.ws, fix=True)
+                self.assertFalse(report["ok"], report)
+                self.assertFalse(report["fixed"])
+                self.assertEqual(before, self.generated_snapshot())
+
+
 class DiscoveryCases(InitFixture):
     def test_discovery_is_bounded_contained_and_redacts_remote_credentials(self):
         self.repo("frontend", remote="https://token:supersecret@example.com/org/front.git")
