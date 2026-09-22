@@ -3,6 +3,8 @@
 
 ## Unreleased — private component Memory
 
+- Private mode keeps `!.asha/` and `!.asha/config.json` so the project contract stays
+  visible; only the workspace-manifest negations are dropped.
 - Workspace init and doctor repair honor project-local `memory_visibility: "private"`
   in `.asha/config.json`, keeping Memory, Work, knowledge, local memory and workspace
   metadata ignored. Omitted or `"tracked"` retains the existing tracked Memory behavior.

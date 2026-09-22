@@ -329,9 +329,18 @@ def _ignore_entries(personal_root: str, operational_root: str = "Memory",
                     shared_root: str = "knowledge", *,
                     memory_visibility: str = "tracked") -> tuple[str, ...]:
     if memory_visibility == "private":
+        # Keep the project contract (.asha/config.json) visible; drop only the
+        # workspace-manifest negations so the manifests stay private.
+        base: list[str] = []
+        for entry in IGNORE_ENTRIES[1:]:
+            if entry in ("!.asha/workspace.json", "!.asha/workspace-init.json"):
+                continue
+            base.append(entry)
+            if entry == ".asha/*":
+                base.append("!.asha/config.json")
         return (
             f"{personal_root.rstrip('/')}/",
-            *(entry for entry in IGNORE_ENTRIES[1:] if not entry.startswith("!")),
+            *base,
             f"{operational_root.rstrip('/')}/",
             "Work/",
             f"{shared_root.rstrip('/')}/",
