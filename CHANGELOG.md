@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased — idle close and send delivery (#96)
+
+- Experimental, **off by default** (`control.idle_delivery: true` in the Asha
+  config enables it; open QA findings in `docs/session-hub.md`): graceful close
+  reaches an idle Claude/Codex terminal session without attachment:
+  at a verified idle Stop, with no open tool, exact Room ownership, no attached
+  client and a captured input line proven empty, Control types the retained close
+  request (one line, bound to request ID and attempt) into the owned pane.
+  Delivery is fenced to the observed idle boundary without holding any lock that
+  native hook reports wait on. Each Room pane carries two exact counters: an
+  attach generation (`@asha_attach_gen`, bumped by session hooks on every attach
+  or switch-in, so a same-second attach-type-detach cycle refuses) and an event
+  sequence (`@asha_event_seq`, bumped by `control-event.sh` before it reports and
+  recorded by the hub from that pane only). Control types only while the recorded
+  sequence equals the pane's, so a report still running or killed at the hook
+  budget refuses; tmux re-checks both counters, ownership, detachment, mode and
+  an unlinked window when pasting and when pressing Enter, hook integrity is
+  re-verified before each, and paste to Enter must fit in 1.5 seconds. Enter
+  follows only when the whole input region, between Claude's width-matched
+  unindented borders or down to Codex's styled footer, holds exactly the pasted
+  text (display wraps only; Claude paste placeholders refuse). Rooms without the
+  fence, or with missing, non-canonical or exhausted counters, refuse as
+  `unfenced`. The
+  Codex classifier checks continuation lines and the empty-composer footer hint
+  and parses extended-colour SGR as units (native 0.157 captures as fixtures).
+  Typed refusals (`attached`, `mode`, `ownership`, `unfenced`, `occupied`,
+  `stale`, `partial`, `error`) keep `Close needs attach` and never restart the
+  Room; the Codex
+  native-resume fallback kills only a detached, non-mode pane. A re-armed close
+  request requires its explicit `--attempt`. Copilot/OpenCode are never typed into.
+- With that setting on, `session send` to such an idle session types a one-line
+  pointer to the retained message; it always reports `delivery: injected` or
+  `queued-until-read` with the reason (`disabled` by default).
+- Finalizer classification accepts shell metacharacters inside quotes, so a prose
+  `--detail "... (publication X); ..."` handoff is recognised as standalone.
+- Claude `PostToolUseFailure` ends a tool start; a native Stop drops unmatched starts
+  and ends a sole matched finalizer. Doctor expects the new Claude hook; reinstall
+  the Claude target to register it.
+- A `handoff-failed` status names Control's refused completion evidence instead of
+  blaming a valid `no-durable-update`; the close request asks for the handoff as the
+  only command in its own tool call.
+- Room ownership format conditions no longer carry a stray closing brace.
 ## Unreleased — exited Room finalization (#97)
 
 - tmux 3.4 answers `display-message` for a vanished pane id with exit 0 and empty

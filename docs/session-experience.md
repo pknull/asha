@@ -96,9 +96,14 @@ optional capture does not invalidate a valid Memory acknowledgement. Capture occ
 before Memory CAS and survives a later publication conflict. Review never delays
 close; terminal close works without a supervisor. Claude uses its existing Stop
 return channel; Codex, Copilot and OpenCode use the existing queued message seam.
-No terminal is typed into or scraped. An observed idle Codex session with a captured
-native ID can continue its same conversation for close; unknown activity, missing
-native IDs, unsupported harnesses or resume failures require attachment.
+Capture itself never types into or scrapes a terminal. The close request may be
+typed into a detached, idle Claude/Codex pane with a proven-empty input line
+(docs/session-hub.md, "Typing at an idle boundary"); an observed idle Codex session
+with a captured native ID can otherwise continue its same conversation for close,
+but only when no input line was visible or no idle boundary held, and only by
+killing a detached pane. An attached, occupied, partial, stale or ownership
+refusal, unknown activity, missing native IDs, unsupported harnesses or resume
+failures require attachment.
 
 Explicit saves inside verified terminal hub sessions gain controller-derived
 `hub_session_id` and `hub_generation`. Control retains the exact publication receipt.

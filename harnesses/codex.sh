@@ -23,7 +23,8 @@
 # model_instructions_file=...` so plain codex and asha-codex share ~/.codex/.
 #
 # Plugins skipped entirely (Claude-only): none currently
-# Hook events Codex doesn't support: SessionEnd, Setup (warned & dropped)
+# Hook events Codex doesn't support: SessionEnd, PostToolUseFailure, Setup (dropped;
+# warned only when a dropped group was meant for Codex)
 
 CODEX_HOME="$(asha_harness_home codex)"
 CODEX_CONFIG_FILE="$CODEX_HOME/config.toml"
@@ -38,7 +39,7 @@ CODEX_LEGACY_PROMPTS_DIR="$CODEX_HOME/prompts"
 CODEX_LEGACY_OVERLAY_HOME="$HOME/.codex-asha"
 
 # Events Codex supports in current hook docs. Unsupported Claude events are
-# warned and dropped during translation.
+# dropped during translation, with a warning when a group targets Codex.
 _CODEX_EVENTS=(SessionStart PreToolUse PermissionRequest PostToolUse PreCompact PostCompact UserPromptSubmit Stop SubagentStart SubagentStop)
 _CODEX_SKIP_PLUGINS=()  # no Claude-only plugins currently shipped
 
@@ -534,7 +535,12 @@ out = []
 dropped = []
 for event, groups in events.items():
     if event not in CODEX_EVENTS:
-        dropped.append(event); continue
+        # Warn only for groups that were meant for Codex; Claude-only groups
+        # (for example PostToolUseFailure) are not a translation loss.
+        if any(isinstance(g, dict) and "codex" in (g.get("_asha_harnesses") or ["codex"])
+               for g in (groups if isinstance(groups, list) else [])):
+            dropped.append(event)
+        continue
     if not isinstance(groups, list): continue
     for grp in groups:
         harnesses = grp.get("_asha_harnesses")

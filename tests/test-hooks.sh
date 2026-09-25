@@ -591,6 +591,9 @@ PermissionRequest permission-requested
 Stop turn-stopped
 SessionEnd session-ended
 EOF
+jq -e '.hooks.PostToolUseFailure[] | select(._asha_harnesses == ["claude"])
+    | any(.hooks[]?; (.command // "") | endswith("control-event.sh PostToolUseFailure"))' "$HOOKS" >/dev/null 2>&1 \
+  || CONTROL_REACHABLE=0
 [[ $CONTROL_REACHABLE -eq 1 ]] \
   && ok "Control event handler is reachable from every registered native event" \
   || fail "Control event handler is reachable from every registered native event"

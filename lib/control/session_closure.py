@@ -54,6 +54,9 @@ RETRYABLE_STATES = {"unanswered", "handoff-failed"}
 # on the default page until the operator acknowledges it.
 ATTENTION_STATES = {"unanswered", "handoff-failed", "undeliverable", "unavailable"}
 MESSAGE_KEY_PREFIX = "close:"
+# Issue #96: the close request typed into an owned, detached, idle terminal pane
+# whose input line was proven empty (Claude and Codex only).
+INJECTION_CHANNEL = "pane-injection"
 # The Stop bridge (control-event.sh) passes a block decision through only when
 # its reason carries this token; keep the two in step.
 CLOSE_REQUEST_TOKEN = "Asha Control close request"
@@ -138,6 +141,8 @@ def request_text(row: dict, closure: dict) -> str:
         baseline = memory["baseline"] or {}
         lines.append(f"Destination: {memory['destination']} (current digests: activeContext "
                      f"{baseline.get('activeContext.md') or 'none'}, decisions {baseline.get('decisions.md') or 'none'}).")
+        lines.append("Run the handoff command as the only command in its own tool call, after every other tool has finished, "
+                     "and do not chain it with other commands.")
         lines.append("1. Re-read both published files; `asha control session handoff --read --json` prints the live digests. "
                      "2. If this session produced durable project knowledge, draft activeContext.md (exactly the level-one headings "
                      "Objective, State, Next, Blockers; at most 4096 bytes; at most five Next and five Blockers items) and "
@@ -166,10 +171,20 @@ def request_text(row: dict, closure: dict) -> str:
 
 def recent_native_observation(row: dict) -> bool:
     stamp = row.get('native_observed_at', row.get('observed_at'))
-    return stamp is not None and 0 <= time.time() - stamp <= 300
+    if stamp is not None and 0 <= time.time() - stamp <= 300:
+        return True
+    record = row.get('closure') or {}
+    return record.get('generation') == row.get('generation') and recent_injection(record)
 
 
-def guidance_for(row: dict, closure: dict) -> str:
+def recent_injection(record: dict) -> bool:
+    """A request typed into a verified idle pane is fresh delivery evidence (#96)."""
+    delivery = (record or {}).get('delivery') or {}
+    at = delivery.get('delivered_at')
+    return delivery.get('channel') == INJECTION_CHANNEL and at is not None and 0 <= time.time() - at <= 300
+
+
+def guidance_for(row: dict, closure: dict, *, idle_delivery: bool = False) -> str:
     state = closure["state"]
     if closure.get('attachment_required') and state not in {'completed', 'forced', 'handoff-failed'}:
         return 'Close needs attachment: attach and hand the agent the retained close request, or force-close. ' + str(closure.get('last_error') or '')
@@ -177,11 +192,14 @@ def guidance_for(row: dict, closure: dict) -> str:
         if row["transport"] == "structured":
             return "Close request queued as the next structured turn; re-run close after it completes"
         if row["harness"] in STOP_HOOK_HARNESSES:
-            return ("Close request queued; it reaches the agent when its current turn stops, or when it reads messages. "
-                    "An idle terminal cannot be woken: attach and hand it the request, or force-close")
+            typed = "or typed into its pane at a verified idle boundary; " if idle_delivery else ""
+            return ("Close request queued; it reaches the agent when its current turn stops, when it reads messages, "
+                    + typed + "otherwise attach and hand it the request, or force-close")
         return ("Close request queued; this harness has no proven Stop return channel, so it reaches the agent only when "
                 "it reads messages: attach and hand it the request, or force-close")
     if state == "delivered":
+        if (closure.get("delivery") or {}).get("channel") == INJECTION_CHANNEL:
+            return "Close request typed into the idle session; waiting for its handoff acknowledgement"
         return "Close request delivered; waiting for the session's handoff acknowledgement"
     if state == "acknowledged":
         return "Handoff " + _verification_word(closure) + "; re-run close (or close --wait) to terminate the session"
@@ -189,6 +207,10 @@ def guidance_for(row: dict, closure: dict) -> str:
         return "The agent's turn ended without a handoff; re-run close to ask again, or force-close"
     if state == "handoff-failed":
         outcome = (closure.get("handoff") or {}).get("outcome", "failed")
+        if outcome in ACKNOWLEDGED and closure.get("last_error"):
+            # The agent answered correctly; Control refused its completion evidence.
+            return (f"Handoff answered {outcome}, but Control refused the completion receipt: "
+                    f"{closure['last_error']}. Re-run close to retry, or force-close")
         return f"Handoff reported {outcome}; project memory was not saved. Re-run close to retry, or force-close"
     if state == "undeliverable":
         return ("Close request could not be delivered (" + str(closure.get("last_error") or "the harness is no longer live")
@@ -239,8 +261,10 @@ def transition(closure: dict, state: str, **changes) -> dict:
 
 
 def mark_delivered(closure: dict, channel: str, *, detail: str, message_id=None) -> dict:
+    # Delivery answers an earlier "needs attach" for this attempt.
     return transition(closure, "delivered", delivery={"channel": channel, "detail": detail,
-                      "message_id": message_id, "delivered_at": time.time()})
+                      "message_id": message_id, "delivered_at": time.time()},
+                      attachment_required=False, input_refusal=None)
 
 
 def rearm(closure: dict) -> dict:
@@ -343,8 +367,8 @@ def parse_digest(value):
     return value
 
 
-__all__ = ["ACKNOWLEDGED", "ATTENTION_STATES", "CLOSE_REQUEST_TOKEN", "MEMORY_FILES", "MESSAGE_KEY_PREFIX",
+__all__ = ["ACKNOWLEDGED", "ATTENTION_STATES", "CLOSE_REQUEST_TOKEN", "INJECTION_CHANNEL", "MEMORY_FILES", "MESSAGE_KEY_PREFIX",
            "OUTCOMES", "RETRYABLE_STATES", "STOP_HOOK_HARNESSES", "TERMINAL_STATES", "StopDecision",
            "guidance_for", "mark_delivered", "memory_destination", "message_key", "new_closure",
-           "parse_digest", "publish_handoff", "rearm", "receipt_for", "record_handoff", "request_text",
+           "parse_digest", "publish_handoff", "rearm", "receipt_for", "recent_injection", "record_handoff", "request_text",
            "transition", "validate_handoff_request"]

@@ -521,7 +521,13 @@ event_count="$(asha_hook_event_count)"
 [[ "$hook_count" -ge 7 ]] \
   && ok "at least 7 asha-tagged hook entries registered ($hook_count)" \
   || fail "at least 7 asha-tagged hook entries registered (got $hook_count)"
-assert_eq "asha hooks span all six registered events" "6" "$event_count"
+assert_eq "asha hooks span all seven registered events" "7" "$event_count"
+jq -e '.hooks.PostToolUseFailure[]?.hooks[]?
+    | select((.source // "") | startswith("asha:"))
+    | select((.command // "") | endswith("control-event.sh PostToolUseFailure"))' \
+    "$SANDBOX/.claude/settings.json" >/dev/null \
+  && ok "Claude failed-tool callbacks reach the Control bridge" \
+  || fail "Claude failed-tool callbacks reach the Control bridge"
 
 # ---------------------------------------------------------------------------
 # Test 3: a Codex failure does not abort Claude, Copilot, or OpenCode

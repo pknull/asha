@@ -31,7 +31,7 @@ from .store import (
     StoreError, _CLOEXEC, _NOFOLLOW, _directory_fd, _managed_start,
     _open_existing_file, _registry_lock,
 )
-from .tmux import TmuxAdapter, TmuxError
+from .tmux import RoomInputRefused, TmuxAdapter, TmuxError
 from .orchestration.projects import display_name, list_projects_across, resolve_roots
 
 
@@ -754,6 +754,7 @@ def open_room(
         "prompt_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
     }
     crossed_respawn = False
+    idle_fence = getattr(config, "idle_delivery", False) is True
     with store.transaction(create=True):
         store.create(record)  # durable intent precedes the first tmux mutation
         expected_digest = store.digest(record)
@@ -767,6 +768,9 @@ def open_room(
                 **({"ASHA_HUB_SESSION_ID": hub_session_id,
                     "ASHA_HUB_GENERATION": str(hub_generation)} if hub_session_id else {}),
                 "ASHA_ORCHESTRATOR_STANCE": "0", ROOM_ENV: identity,
+                # The idle-typing fence (#96) exists only when opted in; an
+                # explicit "0" overrides any server-global marker.
+                "ASHA_ROOM_INPUT_FENCE": "1" if idle_fence else "0",
                 command_key: harness_command,
             },
             holder_argv=["sleep", "3600"],
@@ -776,6 +780,7 @@ def open_room(
                 PANE_PROJECT_OPTION: _project_marker(selected_project["project_id"]),
             },
             pane_title=f"asha:room:{slug}:{selected_harness}",
+            attach_fence=idle_fence,
             )
             record["tmux"]["pane_id"] = pane
             record["tmux"]["session_id"] = tmux.session_id(pane)
@@ -790,6 +795,10 @@ def open_room(
                 argv.extend(["-u", key])
             if not hub_session_id:
                 argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION'])
+            if not idle_fence:
+                # A marker inherited from the tmux server's global environment must not
+                # switch on the delivery-only hook work (#96) in a default Room.
+                argv.extend(['-u', 'ASHA_ROOM_INPUT_FENCE'])
             child = room_tmux_argv(asha_root, selected_harness, text)
             if resume_id:
                 # The encoded prompt remains data; resume identifiers never enter shell text.
@@ -952,7 +961,11 @@ def attach_room(store: RoomStore, selector: str, *, tmux: TmuxAdapter) -> dict[s
     )}
 
 
-def close_room(store: RoomStore, selector: str, *, tmux: TmuxAdapter) -> dict[str, Any]:
+def close_room(
+    store: RoomStore, selector: str, *, tmux: TmuxAdapter, detached_only: bool = False,
+) -> dict[str, Any]:
+    """Close one owned Room. ``detached_only`` (automatic fallbacks) refuses,
+    with ``RoomInputRefused``, while a client is attached or the pane is in a mode."""
     with store.transaction(create=False):
         record = store.resolve(selector)
         expected_digest = store.digest(record)
@@ -989,7 +1002,12 @@ def close_room(store: RoomStore, selector: str, *, tmux: TmuxAdapter) -> dict[st
         already = record["lifecycle"] == "ended" and state == "missing"
         if state in {"open", "ended"}:
             try:
-                tmux.kill_owned_room(**_action_identity(record))
+                tmux.kill_owned_room(
+                    **_action_identity(record),
+                    **({"detached_only": True} if detached_only else {}),
+                )
+            except RoomInputRefused:
+                raise
             except TmuxError as exc:
                 changed_state, changed_detail = _owned_state(record, tmux)
                 if changed_state != "missing":

@@ -6,7 +6,9 @@ import os
 import re
 import shlex
 import sys
+import time
 import unicodedata
+import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,13 +68,89 @@ _INVENTORY_FORMAT = "\t".join((
     *tuple(f"#{{{option}}}" for option in _INVENTORY_SESSION_OPTIONS),
     *tuple(f"#{{{option}}}" for option in _INVENTORY_PANE_OPTIONS),
 ))
+# Idle-input injection (#96): bounded screen read and one submitted line.
+_INPUT_SCREEN_LINES = 80
+_INPUT_TEXT_LIMIT = 8192
+_INPUT_SUBMIT_DELAY = 0.3
+_INPUT_DEADLINE = 5
+# Paste to Enter must fit well inside the native hooks' own budgets, so a
+# native event reported meanwhile is still being recorded, not long gone.
+_INPUT_BUDGET = 1.5
+# Unlike _ROOM_REFUSAL, never run-shell here: a failing run-shell leaves the
+# target pane in view-mode, in front of whoever attaches next.
+_INPUT_REFUSAL = "display-message -p ASHA_ROOM_OWNERSHIP_REFUSED"
 _ROOM_REFUSAL = (
     'display-message -p ASHA_ROOM_OWNERSHIP_REFUSED ; run-shell "exit 66"'
 )
+# Room input fence (#96). Two exact counters live as options of the owned
+# pane itself, the most specific tmux scope, so no window, session or global
+# value can stand in for them:
+# - the attach generation, bumped by the Room session's hooks on every client
+#   attach or switch-in (session_last_attached has one-second resolution);
+# - the event sequence, bumped by control-event.sh before each native event is
+#   reported, so an event whose report is pending or was lost stays visible.
+ATTACH_GENERATION_OPTION = "@asha_attach_gen"
+EVENT_SEQUENCE_OPTION = "@asha_event_seq"
+# Canonical ASCII integers only, below a bound that tmux arithmetic (double
+# precision) still counts exactly. Reaching it refuses instead of freezing.
+FENCE_LIMIT = 1_000_000_000
+_FENCE_VALUE = re.compile(r"0|[1-9][0-9]*", re.ASCII)
+_ATTACH_HOOKS = ("client-attached", "client-session-changed")
+
+
+def _attach_hook_command(pane: str) -> str:
+    return (f"set-option -p -t {pane} -F {ATTACH_GENERATION_OPTION} "
+            f"'#{{e|+:#{{{ATTACH_GENERATION_OPTION}}},1}}'")
+
+
+def _attach_hook_shown(pane: str) -> frozenset[str]:
+    """How ``show-hooks`` may render the installed command (tmux re-quotes it)."""
+    increment = f'"#{{e|+:#{{{ATTACH_GENERATION_OPTION}}},1}}"'
+    return frozenset({
+        f'set-option -Fp -t "{pane}" {ATTACH_GENERATION_OPTION} {increment}',
+        f'set-option -pF -t "{pane}" {ATTACH_GENERATION_OPTION} {increment}',
+    })
+
+
+def _fence_value(value: str) -> tuple[str | None, str]:
+    """``(value, "")`` for a usable counter, else ``(None, why)``."""
+    if not isinstance(value, str) or _FENCE_VALUE.fullmatch(value) is None:
+        return None, "is missing or not a canonical integer"
+    if len(value) > 18 or int(value) >= FENCE_LIMIT:
+        return None, "is exhausted (at its safe bound)"
+    return value, ""
 
 
 class TmuxError(ValueError):
     """A tmux precondition, invocation, or identity check failed."""
+
+
+# Why an owned-pane action refused a person-sensitive step (#96). ``partial``
+# means text was pasted but not submitted; every other category typed nothing.
+# ``unfenced`` means the Room's fence counters or hooks are missing, invalid
+# or exhausted: typing cannot be guarded. ``stale`` means a native event began
+# (its sequence moved) after the probe; nothing was typed.
+ROOM_INPUT_REFUSALS = frozenset({"attached", "mode", "ownership", "partial", "stale", "unfenced"})
+
+
+class RoomInputRefused(TmuxError):
+    """An owned-pane input or detached-only kill refused; ``category`` says why."""
+
+    def __init__(self, category: str, message: str) -> None:
+        if category not in ROOM_INPUT_REFUSALS:
+            raise ValueError(f"unknown room input refusal: {category}")
+        super().__init__(message)
+        self.category = category
+
+
+@dataclass(frozen=True)
+class RoomInputFacts:
+    """A detached pane's screen with the fence counters it was read under."""
+
+    attached: int
+    attach_generation: str
+    event_sequence: str
+    screen: list[str]
 
 
 @dataclass(frozen=True)
@@ -758,7 +836,7 @@ class TmuxAdapter:
             f"#{{&&:#{{==:#{{pane_id}},{pane}}},"
             f"#{{&&:#{{==:#{{@asha_room_session_id}},{room_id}}},"
             f"#{{&&:#{{==:#{{@asha_room_id}},{room_id}}},"
-            f"#{{==:#{{@asha_room_project_id}},{project_marker}}}}}}}}}}}}}"
+            f"#{{==:#{{@asha_room_project_id}},{project_marker}}}}}}}}}}}"
         )
         return pane, session, condition
 
@@ -779,23 +857,263 @@ class TmuxAdapter:
 
     def kill_owned_room(
         self, *, room_id: str, project_marker: str,
-        pane_id: str, session_id: str,
+        pane_id: str, session_id: str, detached_only: bool = False,
     ) -> None:
-        """Atomically revalidate immutable Room identity and kill only that session."""
+        """Atomically revalidate immutable Room identity and kill only that session.
+
+        ``detached_only`` adds "no client attached, pane not in a mode" to the
+        same tmux condition: an automatic fallback never kills a Room a person
+        is using. That refusal raises ``RoomInputRefused``.
+        """
         pane, session, condition = self._room_condition(
             room_id=room_id, project_marker=project_marker,
             pane_id=pane_id, session_id=session_id,
         )
+        if detached_only:
+            condition = self._detached(condition, None)
         returncode, stdout, stderr = self._run_status([
             "if-shell", "-F", "-t", pane, condition,
             f"display-message -p ASHA_ROOM_OWNED ; kill-session -t {session}",
-            _ROOM_REFUSAL,
+            _INPUT_REFUSAL if detached_only else _ROOM_REFUSAL,
         ])
         if returncode == 0 and stdout == b"ASHA_ROOM_OWNED\n":
             return
         if returncode == 66 or b"ASHA_ROOM_OWNERSHIP_REFUSED" in stdout:
+            if detached_only:
+                category = self._refusal_category(pane, None)
+                raise RoomInputRefused(
+                    category, f"room kill refused ({category}): a client is attached, the pane is "
+                    "in a tmux mode or ownership changed; no session was killed",
+                )
             raise TmuxError("room ownership changed; no session was killed")
         self._raise_failure(returncode, stderr)
+
+    @staticmethod
+    def _detached(
+        condition: str, attach_generation: str | None = None, event_sequence: str | None = None,
+    ) -> str:
+        """``condition`` plus detached, not in a mode, window not linked into another
+        session (a client there would see the pane without attaching), and
+        (optionally) unchanged fence counters. The counters are pane options of
+        the target pane, so the format reads exactly them."""
+        fence = "#{&&:#{==:#{pane_in_mode},0},#{==:#{window_linked},0}}"
+        for option, value in ((ATTACH_GENERATION_OPTION, attach_generation),
+                              (EVENT_SEQUENCE_OPTION, event_sequence)):
+            if value is not None:
+                fence = f"#{{&&:{fence},#{{==:#{{{option}}},{value}}}}}"
+        return f"#{{&&:{condition},#{{&&:#{{==:#{{session_attached}},0}},{fence}}}}}"
+
+    def _input_state(self, pane: str) -> dict[str, str]:
+        """Attachment, mode and the pane-local fence counters, read in one tmux command.
+
+        ``attached`` is the session's client count, or ``linked`` when the
+        pane's window is also linked into another session. Counters come from
+        ``show-options -p`` (the pane's own values, never inherited), each
+        framed by a marker line because an unset option prints nothing.
+        """
+        output = self._run([
+            "display-message", "-p", "-t", pane,
+            "#{pane_id}\t#{session_id}\t#{session_attached}\t#{pane_in_mode}\t#{window_linked}",
+            ";", "display-message", "-p", "ASHA_FENCE_GENERATION",
+            ";", "show-options", "-q", "-p", "-v", "-t", pane, ATTACH_GENERATION_OPTION,
+            ";", "display-message", "-p", "ASHA_FENCE_SEQUENCE",
+            ";", "show-options", "-q", "-p", "-v", "-t", pane, EVENT_SEQUENCE_OPTION,
+            ";", "display-message", "-p", "ASHA_FENCE_END",
+        ], deadline_seconds=_INPUT_DEADLINE)
+        lines = output.split("\n")
+        if not lines or not lines[0] or lines[0].startswith("\t"):
+            raise TmuxError(f"can't find pane: {pane}")
+        fields = lines[0].split("\t")
+        try:
+            start, middle, end = (lines.index(marker) for marker in (
+                "ASHA_FENCE_GENERATION", "ASHA_FENCE_SEQUENCE", "ASHA_FENCE_END"))
+        except ValueError:
+            raise TmuxError("tmux returned malformed pane input facts") from None
+        generation, sequence = lines[start + 1:middle], lines[middle + 1:end]
+        if (len(fields) != 5 or fields[0] != pane or not fields[2].isascii() or not fields[2].isdigit()
+                or fields[3] not in {"0", "1"} or fields[4] not in {"0", "1"}
+                or start != 1 or len(generation) > 1 or len(sequence) > 1 or lines[end + 1:] not in ([], [""])):
+            raise TmuxError("tmux returned malformed pane input facts")
+        return {
+            "session": _validate_session_id(fields[1]),
+            "attached": "linked" if fields[4] == "1" else fields[2],
+            "in_mode": fields[3],
+            "generation": generation[0] if generation else "",
+            "sequence": sequence[0] if sequence else "",
+        }
+
+    def _refusal_category(
+        self, pane: str, attach_generation: str | None, event_sequence: str | None = None,
+    ) -> str:
+        """Name why a guarded pane action refused; anything unproven is ``ownership``."""
+        try:
+            state = self._input_state(pane)
+        except TmuxError:
+            return "ownership"
+        if state["attached"] != "0":
+            return "attached"
+        if attach_generation is not None and _fence_value(state["generation"])[0] is None:
+            return "unfenced"
+        if attach_generation is not None and state["generation"] != attach_generation:
+            return "attached"
+        if state["in_mode"] != "0":
+            return "mode"
+        if event_sequence is not None and state["sequence"] != event_sequence:
+            return "stale"
+        return "ownership"
+
+    def _fence_problem(self, pane: str, session: str, state: dict[str, str]) -> str | None:
+        """Why this pane's fence cannot guard typing, or None when it can."""
+        for name, key in (("attach generation", "generation"), ("event sequence", "sequence")):
+            value, why = _fence_value(state[key])
+            if value is None:
+                return f"room {name} {why}"
+        expected = _attach_hook_shown(pane)
+        for hook in _ATTACH_HOOKS:
+            returncode, stdout, _stderr = self._run_status(
+                ["show-hooks", "-t", session, hook], deadline_seconds=_INPUT_DEADLINE)
+            lines = stdout.decode("utf-8", "replace").splitlines()
+            if (returncode != 0 or len(lines) != 1 or not lines[0].startswith(f"{hook}[0] ")
+                    or lines[0][len(hook) + 4:] not in expected):
+                return "room attach hooks are missing or changed"
+        return None
+
+    def _require_fence(self, pane: str, stage: str) -> None:
+        """Re-verify hooks and counters immediately before a guarded command."""
+        state = self._input_state(pane)
+        category, problem = None, None
+        if state["attached"] != "0":
+            category, problem = "attached", "a client is attached or the window is linked elsewhere"
+        elif state["in_mode"] != "0":
+            category, problem = "mode", "the pane is in a tmux mode"
+        else:
+            category, problem = "unfenced", self._fence_problem(pane, state["session"], state)
+        if problem:
+            raise RoomInputRefused(
+                category if stage == "nothing was typed" else "partial",
+                f"room input refused ({problem}); {stage}",
+            )
+
+    def room_input_facts(
+        self, pane_id: str, *, deadline_seconds: float = 5,
+    ) -> RoomInputFacts:
+        """Attached-client count, fence counters and visible screen (with SGR) of a pane.
+
+        Read-only. Callers verify Room ownership first; the injection itself
+        re-checks ownership, detachment and both counters inside tmux. A Room
+        whose counters are missing, non-canonical or exhausted, or whose attach
+        hooks are not exactly the installed ones, refuses ``unfenced``.
+        """
+        pane = _validate_pane_id(pane_id)
+        state = self._input_state(pane)
+        if state["in_mode"] != "0":
+            raise RoomInputRefused("mode", "room pane is in a tmux mode; nothing was typed")
+        if state["attached"] == "linked":
+            raise RoomInputRefused(
+                "attached", "room window is linked into another session; nothing was typed",
+            )
+        problem = self._fence_problem(pane, state["session"], state)
+        if problem:
+            raise RoomInputRefused("unfenced", problem + "; nothing was typed")
+        screen = self._run(
+            ["capture-pane", "-p", "-e", "-t", pane],
+            deadline_seconds=min(deadline_seconds, _INPUT_DEADLINE),
+        ).splitlines()
+        return RoomInputFacts(
+            int(state["attached"]), state["generation"], state["sequence"],
+            [raw[:2000] for raw in screen[-_INPUT_SCREEN_LINES:]],
+        )
+
+    def inject_owned_room_input(
+        self, *, room_id: str, project_marker: str, pane_id: str,
+        session_id: str, text: str, attach_generation: str, event_sequence: str,
+        confirm: Callable[[list[str]], str | None],
+        ready: Callable[[], str | None] | None = None,
+    ) -> None:
+        """Type one line into an owned, detached pane and submit it.
+
+        Ownership, ``session_attached == 0``, "not in a tmux mode", an unlinked
+        window, and unchanged pane counters (attach generation and native event
+        sequence, read with the screen) are evaluated by tmux in the same
+        command that pastes, and again in the one that presses Enter: any
+        attach, even an attach-type-detach cycle within one second, or any
+        native event that began, refuses. Hook integrity and counter validity
+        are re-verified immediately before each of those commands, and
+        ``ready`` (the caller's own state check) runs right before the paste.
+        Between paste and Enter, ``confirm`` receives the captured screen and
+        returns a refusal reason unless the input holds exactly the pasted
+        text. The whole operation must finish within ``_INPUT_BUDGET``
+        seconds or Enter is withheld. The text travels as a tmux buffer (argv
+        data, never a command string), pasted bracketed when requested.
+        Refusals raise ``RoomInputRefused``; ``partial`` leaves text unsubmitted.
+        """
+        started = time.monotonic()
+        pane, _session, condition = self._room_condition(
+            room_id=room_id, project_marker=project_marker,
+            pane_id=pane_id, session_id=session_id,
+        )
+        if (not isinstance(text, str) or not text or len(text) > _INPUT_TEXT_LIMIT
+                or not text.isprintable()):
+            raise TmuxError("room input text must be one printable line")
+        for name, value in (("attach generation", attach_generation), ("event sequence", event_sequence)):
+            if _fence_value(value)[0] is None:
+                raise RoomInputRefused("unfenced", f"room {name} is invalid; nothing was typed")
+        guarded = self._detached(condition, attach_generation, event_sequence)
+        self._require_fence(pane, "nothing was typed")
+        reason = ready() if ready is not None else None
+        if reason:
+            raise RoomInputRefused("stale", "room input refused: " + reason + "; nothing was typed")
+        buffer = "asha-input-" + uuid.uuid4().hex[:16]
+        # Every command is short-bounded; the caller holds no lock across them.
+        self._run(["set-buffer", "-b", buffer, "--", text], deadline_seconds=_INPUT_DEADLINE)
+        try:
+            returncode, stdout, stderr = self._run_status([
+                "if-shell", "-F", "-t", pane, guarded,
+                f"display-message -p ASHA_ROOM_OWNED ; "
+                f"paste-buffer -p -d -b {buffer} -t {pane}",
+                _INPUT_REFUSAL,
+            ], deadline_seconds=_INPUT_DEADLINE)
+        finally:
+            self._run_status(["delete-buffer", "-b", buffer], deadline_seconds=_INPUT_DEADLINE)
+        if not (returncode == 0 and stdout == b"ASHA_ROOM_OWNED\n"):
+            if b"ASHA_ROOM_OWNERSHIP_REFUSED" in stdout:
+                category = self._refusal_category(pane, attach_generation, event_sequence)
+                raise RoomInputRefused(
+                    category, f"room input refused ({category}); nothing was typed",
+                )
+            self._raise_failure(returncode, stderr)
+        # Let the harness consume the paste, then prove the input line holds
+        # exactly this text before anything is submitted.
+        time.sleep(_INPUT_SUBMIT_DELAY)
+        try:
+            screen = self._run(["capture-pane", "-p", "-e", "-t", pane],
+                               deadline_seconds=_INPUT_DEADLINE).splitlines()
+            reason = confirm([raw[:2000] for raw in screen[-_INPUT_SCREEN_LINES:]])
+            if not reason:
+                self._require_fence(pane, "typed but not submitted")
+        except RoomInputRefused:
+            raise
+        except (OSError, ValueError) as exc:
+            reason = str(exc)[:200] or type(exc).__name__
+        if not reason and time.monotonic() - started > _INPUT_BUDGET:
+            reason = f"delivery took longer than {_INPUT_BUDGET} seconds"
+        if reason:
+            raise RoomInputRefused(
+                "partial", "room input typed but not submitted: " + reason
+                + "; the text remains in the input line",
+            )
+        returncode, stdout, stderr = self._run_status([
+            "if-shell", "-F", "-t", pane, guarded,
+            f"display-message -p ASHA_ROOM_OWNED ; send-keys -t {pane} Enter",
+            _INPUT_REFUSAL,
+        ], deadline_seconds=_INPUT_DEADLINE)
+        if returncode == 0 and stdout == b"ASHA_ROOM_OWNED\n":
+            return
+        raise RoomInputRefused(
+            "partial", "room input typed but not submitted: a client attached (or attached "
+            "and detached), a native event began, the pane entered a mode or ownership "
+            "changed; the text remains in the input line",
+        )
 
     def window_pane_facts(
         self, session: str, window: str, *, deadline_seconds: float = 60,
@@ -894,7 +1212,15 @@ class TmuxAdapter:
         session_options: Mapping[str, str],
         pane_options: Mapping[str, str],
         pane_title: str,
+        attach_fence: bool = False,
     ) -> str:
+        """Create a detached session; ``attach_fence`` installs the Room input fence.
+
+        The fence (pane-local attach generation and event sequence, plus the
+        session hooks that bump the generation) is installed right after the
+        pane exists. Session hooks shadow same-named global hooks for this
+        session only.
+        """
         session = _validate_session_name(session)
         window = _validate_window_name(window)
         directory = _validate_start_directory(start_directory)
@@ -922,8 +1248,18 @@ class TmuxAdapter:
         for key, value in pane_option_items:
             args.extend([";", "set-option", "-p", "-t", pane_target, key, value])
         args.extend([";", "select-pane", "-t", pane_target, "-T", title])
-        created_pane = self._one_line(self._run(args), "created pane id")
-        return _validate_pane_id(created_pane)
+        created_pane = _validate_pane_id(self._one_line(self._run(args), "created pane id"))
+        if attach_fence:
+            # Hooks name the exact pane, which exists only now. Attaches before
+            # this point precede any fence read and so cannot hide from it.
+            fence = [
+                "set-option", "-p", "-t", created_pane, ATTACH_GENERATION_OPTION, "0",
+                ";", "set-option", "-p", "-t", created_pane, EVENT_SEQUENCE_OPTION, "0",
+            ]
+            for hook in _ATTACH_HOOKS:
+                fence.extend([";", "set-hook", "-t", session_target, hook, _attach_hook_command(created_pane)])
+            self._run(fence)
+        return created_pane
 
     def set_result_staging_token(self, session: str, token: str) -> None:
         """Set the private session token over stdin so it never enters argv."""

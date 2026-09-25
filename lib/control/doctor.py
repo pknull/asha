@@ -469,7 +469,8 @@ def _hooks_probe(config, *, required_harnesses=None) -> Probe:
             "no installed Claude or Codex configuration requires Control hook inspection",
         )
     expected_claude = {
-        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd",
+        "SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+        "Stop", "SessionEnd",
     }
     codex_probe = None
     missing: list[str] = []

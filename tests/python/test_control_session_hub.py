@@ -45,7 +45,12 @@ class SessionHubTests(unittest.TestCase):
         row = self.launch()
         message = self.hub.send(row['session_id'], 'Keep the clock', key='followup')
         self.assertEqual(message['state'], 'queued')
-        self.assertEqual(self.hub.send(row['session_id'], 'Keep the clock', key='followup'), message)
+        # delivery/delivery_detail describe each call; the retained message is identical.
+        retained = lambda value: {k: v for k, v in value.items() if not k.startswith('delivery')}
+        again = self.hub.send(row['session_id'], 'Keep the clock', key='followup')
+        self.assertEqual(retained(again), retained(message))
+        self.assertEqual(message['delivery'], 'queued-until-read')
+        self.assertEqual(again['delivery'], 'retained')
         with self.assertRaises(StoreError):
             self.hub.send(row['session_id'], 'Different', key='followup')
         self.assertEqual(len(self.tmux.respawned), 1)

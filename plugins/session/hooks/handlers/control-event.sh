@@ -27,6 +27,9 @@ case "${1:-}" in
   UserPromptSubmit)  CONTROL_EVENT="prompt-submitted" ;;
   PreToolUse)        CONTROL_EVENT="tool-started" ;;
   PostToolUse)       CONTROL_EVENT="tool-completed" ;;
+  # Claude reports a failed tool here instead of PostToolUse; either way the
+  # start has ended, and an unmatched start would block a later sole handoff.
+  PostToolUseFailure) CONTROL_EVENT="tool-completed" ;;
   PermissionRequest) CONTROL_EVENT="permission-requested" ;;
   Stop)              CONTROL_EVENT="turn-stopped" ;;
   SessionEnd)        CONTROL_EVENT="session-ended" ;;
@@ -42,6 +45,26 @@ fi
 if [[ -z "$HUB_SESSION" && "${ASHA_CONTROL_MANAGED:-}" != "1" ]]; then
   echo '{}'
   exit 0
+fi
+
+# Before anything else, make this native event visible to Control's idle-pane
+# typing (#96): bump the Room pane's own event sequence. Control types into an
+# idle pane only while the sequence equals the one the hub last recorded, and
+# tmux re-checks it when pasting and pressing Enter, so an event whose report
+# is slow or is killed at the budget below still stops the typing. One bounded
+# tmux call; any failure just omits --sequence, which makes the hub treat the
+# sequence as unknown and refuse to type until a sequenced event lands.
+# Only Rooms created with Control's experimental idle typing (control.idle_delivery)
+# carry the fence; everywhere else this costs nothing.
+HUB_SEQUENCE=""
+if [[ -n "$HUB_SESSION" && "${ASHA_ROOM_INPUT_FENCE:-}" == "1" && -n "${TMUX:-}" && "${TMUX_PANE:-}" =~ ^%[0-9]+$ ]] \
+    && command -v tmux >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
+  HUB_SEQUENCE="$(
+    timeout --signal=KILL 0.2 tmux set-option -p -t "$TMUX_PANE" -F @asha_event_seq \
+      '#{e|+:#{@asha_event_seq},1}' ';' show-options -p -v -t "$TMUX_PANE" @asha_event_seq \
+      2>/dev/null || true
+  )"
+  [[ "$HUB_SEQUENCE" =~ ^[1-9][0-9]{0,8}$ ]] || HUB_SEQUENCE=""
 fi
 
 # A hub session sits in front of the operator's own keystrokes, so its share of
@@ -153,6 +176,7 @@ if [[ -n "$HUB_SESSION" ]]; then
     fi
     [[ -z "$SESSION_ID" ]] || HUB_ARGS+=(--native-id "$SESSION_ID")
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
+    [[ -z "$HUB_SEQUENCE" ]] || HUB_ARGS+=(--sequence "$HUB_SEQUENCE" --sequence-pane "$TMUX_PANE")
     HUB_RESPONSE="$(
       timeout --signal=TERM --kill-after=0.1 "$HUB_CONTROLLER_SECONDS" \
         "$ASHA_CMD" "${HUB_ARGS[@]}" 2>/dev/null || true

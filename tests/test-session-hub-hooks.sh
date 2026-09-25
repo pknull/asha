@@ -186,13 +186,14 @@ fi
 
 BRIDGED=1
 for pair in "UserPromptSubmit prompt-submitted" "PreToolUse tool-started" "PostToolUse tool-completed" \
+            "PostToolUseFailure tool-completed" \
             "PermissionRequest permission-requested" "Stop turn-stopped" \
             "SessionEnd session-ended"; do
   read -r NATIVE_NAME SESSION_EVENT <<<"$pair"
   # A parsed object without a session id: Stop then carries no guard flag either.
   run_control "$NATIVE_NAME" '{}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_GENERATION=1 >/dev/null
   TOOL_ARGS=""
-  [[ "$NATIVE_NAME" != PreToolUse && "$NATIVE_NAME" != PostToolUse ]] || TOOL_ARGS=" --tool-kind work --tool-token unknown"
+  [[ "$NATIVE_NAME" != PreToolUse && "$NATIVE_NAME" != PostToolUse* ]] || TOOL_ARGS=" --tool-kind work --tool-token unknown"
   [[ "$(captured)" == "control session event --event $SESSION_EVENT$TOOL_ARGS" ]] || BRIDGED=0
 done
 if [[ $BRIDGED -eq 1 ]]; then
@@ -207,7 +208,15 @@ print(json.dumps(dict(tool_name='Bash', tool_use_id='final-42', tool_input=dict(
     'asha control session handoff --outcome no-durable-update --detail Reviewed --json'), tool_response='x' * 60000)))
 PY
 )"
+# A failed tool (Claude PostToolUseFailure) ends its start exactly like a success (#96).
+run_control PostToolUseFailure "$LARGE_TOOL" ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+FAILED_CAPTURE="$(captured)"
 run_control PostToolUse "$LARGE_TOOL" ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+if [[ "$FAILED_CAPTURE" == "$(captured)" ]]; then
+  ok "failed tool callback carries the same boundary token as a successful one"
+else
+  fail "failed tool callback carries the same boundary token ($FAILED_CAPTURE vs $(captured))"
+fi
 if [[ "$(captured)" == "control session event --event tool-completed --tool-kind finalizer --tool-token "* \
    && "$(captured)" != *unknown* && "$(captured)" != *Reviewed* ]]; then
   ok "large tool output preserves boundary metadata without retaining command or output"

@@ -9,12 +9,44 @@ import sys
 ROOT = Path(__file__).resolve().parents[3]
 
 
+# Outside quotes these make the line more than one plain argv (operators,
+# redirection, subshells, expansion, globbing, comments). Inside double quotes
+# the shell still expands $, backquote and backslash. Single quotes are literal.
+_UNQUOTED_SHELL = set(';&|<>()$`\\*?[]{}#')
+_DOUBLE_QUOTED_SHELL = set('$`\\')
+
+
+def plain_argv(command):
+    """True when the shell would run exactly ``shlex.split(command)``.
+
+    Prose such as ``--detail "published (id); unchanged"`` stays one argument;
+    anything that composes, redirects or expands is not a plain command.
+    """
+    if any(c in command for c in '\n\r'):
+        return False
+    quote = None
+    for c in command:
+        if quote == "'":
+            if c == "'":
+                quote = None
+        elif quote == '"':
+            if c == '"':
+                quote = None
+            elif c in _DOUBLE_QUOTED_SHELL:
+                return False
+        elif c in ('"', "'"):
+            quote = c
+        elif c in _UNQUOTED_SHELL:
+            return False
+    return quote is None
+
+
 def command_kind(payload):
     if not isinstance(payload, dict) or payload.get('tool_name') != 'Bash':
         return 'work'
     value = payload.get('tool_input')
     command = value.get('command') if isinstance(value, dict) else None
-    if not isinstance(command, str) or any(c in command for c in '\n\r$`;&|<>()\\'):
+    if not isinstance(command, str) or not plain_argv(command):
         return 'work'
     try:
         argv = shlex.split(command)

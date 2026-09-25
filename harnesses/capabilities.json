@@ -77,7 +77,7 @@
         },
         "control-status": {
           "support": "partial",
-          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; Stop -> turn-stopped; SessionEnd -> session-ended",
+          "surface": "SessionStart -> session-start; UserPromptSubmit -> prompt-submitted; PostToolUse -> tool-completed; PostToolUseFailure -> tool-completed; Stop -> turn-stopped; SessionEnd -> session-ended",
           "verifier": "task doctor:harness-events + task doctor:hooks",
           "limitations": [
             "permission-requested is not claimed; Notification is multi-purpose and its payload is unverified"
