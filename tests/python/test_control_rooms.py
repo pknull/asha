@@ -31,10 +31,30 @@ from lib.control.rooms import (
     open_room,
     room_launch_argv,
 )
-from lib.control.tmux import PaneFacts, TmuxError
+from lib.control.tmux import PaneFacts, RoomInputFacts, RoomInputRefused, TmuxError
 from lib.control.tmux import TmuxAdapter
 from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control import cli, tui
+
+
+def _typed_into(line: str, typed: str) -> str:
+    """A fake composer line after a paste: the marker followed by the text."""
+    for marker in ("❯", "›"):
+        if marker in line:
+            return line[:line.index(marker) + 1] + " " + typed
+    return line
+
+
+# Codex hides its empty-composer hint once the composer holds text; the status
+# line (styled, like the native capture) is the composer's lower boundary.
+_CODEX_TYPED_FOOTER = ["", "  \x1b[38;5;223mGPT-6-Astra xhigh\x1b[39m · ~/Code"]
+
+
+def _after_paste(screen: list[str], typed: str) -> list[str]:
+    for index, line in enumerate(screen):
+        if "›" in line:
+            return [*screen[:index], _typed_into(line, typed), *_CODEX_TYPED_FOOTER]
+    return [_typed_into(line, typed) for line in screen]
 
 
 class FakeTmux:
@@ -53,6 +73,22 @@ class FakeTmux:
         self.respawn_exception: BaseException | None = None
         self.session_identity = "$7"
         self.replace_before_owned_action = False
+        # Idle-input injection (#96): no screen means the input line is unproven.
+        self.attached = 0
+        # tmux attach generation (@asha_attach_gen); None: no fence installed.
+        self.attach_generation: str | None = "0"
+        # Pane event sequence (@asha_event_seq) that the native hook bumps.
+        self.event_sequence: str | None = "0"
+        self.screen: list[str] = []
+        self.injected: list[tuple[str, str]] = []
+        # Two-phase delivery: pasted text, then a guarded Enter. Hooks let a
+        # test interleave a client attach, new work or a draft at each seam.
+        self.pasted: list[tuple[str, str]] = []
+        self.before_paste = None
+        self.after_paste = None
+        self.before_enter = None
+        self.before_kill = None
+        self.paste_prefix = ""
 
     executable = "tmux"
     socket = None
@@ -95,7 +131,11 @@ class FakeTmux:
             "display-message -p ASHA_ROOM_REFUSED ; run-shell \"exit 66\"",
         ]
 
-    def kill_owned_room(self, **identity) -> None:
+    def kill_owned_room(self, *, detached_only: bool = False, **identity) -> None:
+        if self.before_kill is not None:
+            self.before_kill()
+        if detached_only and self.attached:
+            raise RoomInputRefused("attached", "a client is attached; no session was killed")
         if self.replace_before_owned_action:
             session = next(iter(self.sessions))
             self.session_options[(session, SESSION_ROOM_OPTION)] = "foreign"
@@ -110,6 +150,59 @@ class FakeTmux:
             raise TmuxError("room ownership changed; no session was killed")
         self.killed.append(identity["session_id"])
         self.sessions.clear()
+
+    def room_input_facts(self, pane_id: str) -> RoomInputFacts:
+        if pane_id != self.pane_id or not self.sessions:
+            raise TmuxError("missing pane")
+        if self.attach_generation is None:
+            raise RoomInputRefused("unfenced", "no attach generation fence; nothing was typed")
+        return RoomInputFacts(self.attached, self.attach_generation, self.event_sequence, list(self.screen))
+
+    def _owns(self, identity) -> bool:
+        session = next(iter(self.sessions), None)
+        return (
+            identity["session_id"] == self.session_identity
+            and identity["pane_id"] == self.pane_id
+            and session is not None
+            and self.session_options.get((session, SESSION_ROOM_OPTION))
+            == identity["room_id"]
+        )
+
+    def _guard(self, identity, attach_generation, event_sequence, stage) -> None:
+        if not self._owns(identity):
+            raise RoomInputRefused("ownership", f"room ownership changed; {stage}")
+        if self.attached or self.attach_generation != attach_generation:
+            raise RoomInputRefused("attached", f"a client attached; {stage}")
+        if self.event_sequence != event_sequence:
+            raise RoomInputRefused("stale", f"a native event began; {stage}")
+
+    def inject_owned_room_input(
+        self, *, text: str, attach_generation: str, event_sequence: str, confirm,
+        ready=None, **identity,
+    ) -> None:
+        if self.before_paste is not None:
+            self.before_paste()
+        reason = ready() if ready is not None else None
+        if reason:
+            raise RoomInputRefused("stale", "nothing was typed: " + reason)
+        self._guard(identity, attach_generation, event_sequence, "nothing was typed")
+        before = list(self.screen)
+        self.pasted.append((identity["pane_id"], text))
+        typed = self.paste_prefix + text
+        self.screen = _after_paste(before, typed)
+        if self.after_paste is not None:
+            self.after_paste()
+        reason = confirm(list(self.screen))
+        if reason:
+            raise RoomInputRefused("partial", "typed but not submitted: " + reason)
+        if self.before_enter is not None:
+            self.before_enter()
+        try:
+            self._guard(identity, attach_generation, event_sequence, "typed but not submitted")
+        except RoomInputRefused as exc:
+            raise RoomInputRefused("partial", str(exc)) from exc
+        self.screen = before
+        self.injected.append((identity["pane_id"], text))
 
     def session_option(self, session: str, option: str) -> str | None:
         if session == self.session_identity:
@@ -217,10 +310,13 @@ class RoomTests(unittest.TestCase):
             "ASHA_PERSONA": "1", "ASHA_SESSION_PROFILE": "room",
             "ASHA_ORCHESTRATOR_STANCE": "0",
             "ASHA_ROOM_ID": result["room_id"],
+            # Idle typing (#96) is off by default: "0" overrides a global marker.
+            "ASHA_ROOM_INPUT_FENCE": "0",
             "ASHA_CODEX_CMD": "codex",
         })
         argv = self.tmux.respawned[0][1]
         for key in {
+            "ASHA_ROOM_INPUT_FENCE",
             "ASHA_SEAT", "ASHA_COORDINATOR_LAUNCH", "ASHA_CONTROL_MANAGED",
             "ASHA_CONTROL_TASK_ID", "ASHA_CONTROL_RUN_ID",
             "ASHA_CONTROL_STATE_DIR", "ASHA_CONTROL_RESULT_TOKEN",
@@ -861,6 +957,406 @@ class RoomTests(unittest.TestCase):
                 adapter.session_id("%9")
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_input_injection_types_one_line_only_into_the_owned_pane(self) -> None:
+        socket = f"asha-room-input-{uuid.uuid4().hex[:12]}"
+        self.enterContext(TmuxSocketReaper(socket))
+        adapter = TmuxAdapter(socket=socket, config_file=Path("/dev/null"))
+        returncode, _stdout, _stderr = adapter._run_status([
+            "list-commands", "new-session",
+        ])
+        if returncode != 0:
+            self.skipTest(
+                "isolated tmux sockets are unavailable in this execution sandbox"
+            )
+        probe = self.root / "typed.txt"
+        room_id = "66666666-1111-4111-8111-111111111111"
+        project_marker = hashlib.sha256(b"novel-project").hexdigest()
+        pane = adapter.create_task_session(
+            session="asha-room-input", window="room", start_directory=self.project,
+            environment={},
+            holder_argv=["sh", "-c", f"IFS= read -r line; printf '%s' \"$line\" > '{probe}'; sleep 30"],
+            session_options={SESSION_ROOM_OPTION: room_id},
+            pane_options={PANE_ROOM_OPTION: room_id, "@asha_room_project_id": project_marker},
+            pane_title="asha:room:input", attach_fence=True,
+        )
+        session_id = adapter.session_id(pane)
+        facts = adapter.room_input_facts(pane)
+        self.assertEqual(facts.attached, 0)
+        self.assertIsInstance(facts.screen, list)
+        identity = dict(room_id=room_id, project_marker=project_marker, pane_id=pane, session_id=session_id)
+        text = "Asha Control close request (x); $HOME `y` -- stays one line"
+        seen: list[list[str]] = []
+        def accept(screen):
+            seen.append(screen)
+            return None
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(
+                **dict(identity, room_id="77777777-1111-4111-8111-111111111111"),
+                text=text, attach_generation=facts.attach_generation, event_sequence=facts.event_sequence, confirm=accept,
+            )
+        self.assertEqual(refused.exception.category, "ownership")
+        # A moved attach fence refuses before anything is typed.
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(
+                **identity, text=text, attach_generation="999", event_sequence=facts.event_sequence, confirm=accept,
+            )
+        self.assertEqual(refused.exception.category, "attached")
+        time.sleep(0.2)
+        self.assertFalse(probe.exists(), "a refused injection must type nothing")
+        self.assertEqual(seen, [])
+        # A refusal must not leave the pane in view-mode for the next viewer.
+        self.assertEqual(adapter.room_input_facts(pane).attached, 0)
+        # A pane in a tmux mode refuses reads, paste and a detached-only kill.
+        adapter._run(["copy-mode", "-t", pane])
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.room_input_facts(pane)
+        self.assertEqual(refused.exception.category, "mode")
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.kill_owned_room(**identity, detached_only=True)
+        self.assertEqual(refused.exception.category, "mode")
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(
+                **identity, text=text, attach_generation=facts.attach_generation, event_sequence=facts.event_sequence, confirm=accept,
+            )
+        self.assertEqual(refused.exception.category, "mode")
+        adapter._run(["send-keys", "-t", pane, "-X", "cancel"])
+        with self.assertRaisesRegex(TmuxError, "one printable line"):
+            adapter.inject_owned_room_input(
+                **identity, text="two\nlines", attach_generation=facts.attach_generation, event_sequence=facts.event_sequence, confirm=accept,
+            )
+        # A failed confirmation between paste and Enter leaves the text unsubmitted.
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(
+                **identity, text="held back", attach_generation=facts.attach_generation, event_sequence=facts.event_sequence,
+                confirm=lambda screen: "the input line holds more than the typed text",
+            )
+        self.assertEqual(refused.exception.category, "partial")
+        time.sleep(0.2)
+        self.assertFalse(probe.exists(), "an unconfirmed paste must not be submitted")
+        adapter._run(["send-keys", "-t", pane, "C-u"])
+        adapter.inject_owned_room_input(
+            **identity, text=text, attach_generation=facts.attach_generation, event_sequence=facts.event_sequence, confirm=accept,
+        )
+        self.assertEqual(len(seen), 1)
+        deadline = time.monotonic() + 3
+        while not probe.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        self.assertEqual(probe.read_text(), text)
+        buffers = adapter._run(["list-buffers", "-F", "#{buffer_name}"])
+        self.assertNotIn("asha-input-", buffers)
+        # With no client and no mode, the detached-only kill proceeds.
+        adapter.kill_owned_room(**identity, detached_only=True)
+        self.assertFalse(adapter.has_session("asha-room-input"))
+
+    def _real_fenced_room(self, *, fence: bool = True):
+        """An owned real-tmux Room pane running a tiny raw composer (not a harness)."""
+        socket = f"asha-room-fence-{uuid.uuid4().hex[:12]}"
+        self.enterContext(TmuxSocketReaper(socket))
+        adapter = TmuxAdapter(socket=socket, config_file=Path("/dev/null"))
+        returncode, _stdout, _stderr = adapter._run_status(["list-commands", "new-session"])
+        if returncode != 0:
+            self.skipTest("isolated tmux sockets are unavailable in this execution sandbox")
+        receiver, received = self.root / "composer.py", self.root / "submitted.json"
+        receiver.write_text(
+            "import json, os, sys, tty\n"
+            "from pathlib import Path\n"
+            "tty.setraw(0)\n"
+            "line = ''\n"
+            "def draw():\n"
+            "    rule = '\u2500' * 40\n"
+            "    os.write(1, ('\\x1b[2J\\x1b[H' + rule + '\\r\\n\u276f ' + line + '\\r\\n' + rule + '\\r\\n').encode())\n"
+            "draw()\n"
+            "while True:\n"
+            "    char = os.read(0, 1).decode()\n"
+            "    if char in '\\r\\n':\n"
+            "        Path(sys.argv[1]).write_text(json.dumps(line))\n"
+            "        line = ''\n"
+            "    elif char != '\\x1b' and char.isprintable():\n"
+            "        line += char\n"
+            "    draw()\n",
+            encoding="utf-8",
+        )
+        room_id = str(uuid.uuid4())
+        marker = hashlib.sha256(b"fence-project").hexdigest()
+        name = "asha-room-fence"
+        pane = adapter.create_task_session(
+            session=name, window="room", start_directory=self.project, environment={},
+            holder_argv=[sys.executable, str(receiver), str(received)],
+            session_options={SESSION_ROOM_OPTION: room_id},
+            pane_options={PANE_ROOM_OPTION: room_id, "@asha_room_project_id": marker},
+            pane_title="asha:room:fence", attach_fence=fence,
+        )
+        identity = dict(room_id=room_id, project_marker=marker, pane_id=pane,
+                        session_id=adapter.session_id(pane))
+        clients: list = []
+
+        def cleanup():
+            for process, master in clients:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=2)
+                os.close(master)
+        self.addCleanup(cleanup)
+
+        def cycle(draft: str | None = None) -> None:
+            """A real PTY client attaches, optionally types, and detaches."""
+            import pty
+            master, slave = pty.openpty()
+            process = subprocess.Popen(
+                [adapter.executable, *adapter._socket_args(), "attach-session", "-t", name],
+                stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+                env=dict(os.environ, TERM="xterm-256color"),
+            )
+            os.close(slave)
+            clients.append((process, master))
+            deadline = time.monotonic() + 3
+            while adapter._run(["display-message", "-p", "-t", pane, "#{session_attached}"]).strip() == "0":
+                self.assertIsNone(process.poll(), "tmux client failed to attach")
+                self.assertLess(time.monotonic(), deadline, "tmux client attach timed out")
+                time.sleep(0.002)
+            if draft:
+                adapter._run(["send-keys", "-t", pane, "-l", "--", draft])
+            adapter._run(["detach-client", "-s", name])
+            process.wait(timeout=3)
+
+        def wait_screen() -> list[str]:
+            deadline = time.monotonic() + 3
+            while True:
+                screen = adapter.room_input_facts(pane).screen
+                if any("\u276f" in line for line in screen) or time.monotonic() > deadline:
+                    return screen
+                time.sleep(0.02)
+
+        return adapter, identity, cycle, wait_screen, received
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_same_second_attach_cycle_after_confirmation_is_never_submitted(self) -> None:
+        # QA2 #96 finding 2: session_last_attached has one-second resolution.
+        from lib.control.pane_input import composer_holds, input_line_state
+        adapter, identity, cycle, wait_screen, received = self._real_fenced_room()
+        time.sleep(1.02 - time.time() % 1)  # keep both attachments inside one second
+        cycle()
+        self.assertEqual(input_line_state("claude", wait_screen())[0], "empty")
+        facts = adapter.room_input_facts(identity["pane_id"])
+        before = adapter._run(["display-message", "-p", "-t", identity["pane_id"], "#{session_last_attached}"])
+
+        def confirm(screen):
+            self.assertTrue(composer_holds("claude", screen, "CLOSE"), screen)
+            cycle("DRAFT")
+            after = adapter._run(["display-message", "-p", "-t", identity["pane_id"], "#{session_last_attached}"])
+            self.assertEqual(after, before, "both attachments must share one timestamp")
+            return None
+
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE",
+                                            attach_generation=facts.attach_generation, event_sequence=facts.event_sequence, confirm=confirm)
+        self.assertEqual(refused.exception.category, "partial")
+        time.sleep(0.3)
+        self.assertFalse(received.exists(), "an attach cycle after confirmation must block Enter")
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_same_second_attach_cycle_before_paste_refuses_the_paste(self) -> None:
+        adapter, identity, cycle, wait_screen, received = self._real_fenced_room()
+        time.sleep(1.02 - time.time() % 1)
+        cycle()
+        wait_screen()
+        facts = adapter.room_input_facts(identity["pane_id"])
+        cycle("DRAFT")
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE",
+                                            attach_generation=facts.attach_generation, event_sequence=facts.event_sequence,
+                                            confirm=lambda screen: None)
+        self.assertEqual(refused.exception.category, "attached")
+        screen = "\n".join(adapter.room_input_facts(identity["pane_id"]).screen)
+        self.assertNotIn("CLOSE", screen)
+        self.assertFalse(received.exists())
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_room_window_linked_into_another_session_is_never_typed_into(self) -> None:
+        # A client of the other session sees and types into the pane without attaching.
+        adapter, identity, _cycle, wait_screen, received = self._real_fenced_room()
+        wait_screen()
+        facts = adapter.room_input_facts(identity["pane_id"])
+        adapter._run(["new-session", "-d", "-s", "asha-room-viewer", "--", "sleep", "30"])
+        adapter._run(["link-window", "-s", "asha-room-fence:room", "-t", "asha-room-viewer:"])
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.room_input_facts(identity["pane_id"])
+        self.assertEqual(refused.exception.category, "attached")
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE",
+                                            attach_generation=facts.attach_generation, event_sequence=facts.event_sequence,
+                                            confirm=lambda screen: None)
+        self.assertEqual(refused.exception.category, "attached")
+        with self.assertRaises(RoomInputRefused):
+            adapter.kill_owned_room(**identity, detached_only=True)
+        self.assertTrue(adapter.has_session("asha-room-fence"))
+        self.assertFalse(received.exists())
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_room_without_an_attach_generation_is_never_typed_into(self) -> None:
+        adapter, identity, _cycle, _wait, received = self._real_fenced_room(fence=False)
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.room_input_facts(identity["pane_id"])
+        self.assertEqual(refused.exception.category, "unfenced")
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE", attach_generation="0", event_sequence="0",
+                                            confirm=lambda screen: None)
+        self.assertEqual(refused.exception.category, "unfenced")
+        self.assertFalse(received.exists())
+
+    # QA3 #96 finding 3: the fence counters are exact pane-local integers.
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_non_canonical_or_unsafe_fence_values_refuse(self) -> None:
+        from lib.control.tmux import ATTACH_GENERATION_OPTION, EVENT_SEQUENCE_OPTION
+        adapter, identity, _cycle, wait_screen, _received = self._real_fenced_room()
+        wait_screen()
+        pane = identity["pane_id"]
+        for option in (ATTACH_GENERATION_OPTION, EVENT_SEQUENCE_OPTION):
+            for value in ("-1", "bogus", "1.0", "01", "\uff11\uff12", " 1", "9007199254740992", "1000000000"):
+                with self.subTest(option=option, value=value):
+                    adapter._run(["set-option", "-p", "-t", pane, option, value])
+                    with self.assertRaises(RoomInputRefused) as refused:
+                        adapter.room_input_facts(pane)
+                    self.assertEqual(refused.exception.category, "unfenced")
+            adapter._run(["set-option", "-p", "-t", pane, option, "7"])
+        self.assertEqual(adapter.room_input_facts(pane).attach_generation, "7")
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_generation_at_its_bound_refuses_instead_of_freezing(self) -> None:
+        from lib.control.pane_input import composer_holds
+        from lib.control.tmux import ATTACH_GENERATION_OPTION
+        adapter, identity, cycle, wait_screen, received = self._real_fenced_room()
+        wait_screen()
+        pane = identity["pane_id"]
+        adapter._run(["set-option", "-p", "-t", pane, ATTACH_GENERATION_OPTION, "999999998"])
+        facts = adapter.room_input_facts(pane)
+
+        def confirm(screen):
+            self.assertTrue(composer_holds("claude", screen, "CLOSE"), screen)
+            cycle("DRAFT")  # two hook runs: 999999998 -> 1000000000, past the bound
+            return None
+
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE", attach_generation=facts.attach_generation,
+                                            event_sequence=facts.event_sequence, confirm=confirm)
+        self.assertEqual(refused.exception.category, "partial")
+        time.sleep(0.3)
+        self.assertFalse(received.exists())
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.room_input_facts(pane)
+        self.assertEqual(refused.exception.category, "unfenced")
+        self.assertIn("exhausted", str(refused.exception))
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_inherited_or_reset_counters_never_hide_an_attach(self) -> None:
+        from lib.control.pane_input import composer_holds
+        from lib.control.tmux import ATTACH_GENERATION_OPTION
+        adapter, identity, cycle, wait_screen, received = self._real_fenced_room()
+        wait_screen()
+        pane, session = identity["pane_id"], identity["session_id"]
+        # A session/window value never stands in for the owned pane's own counter.
+        adapter._run(["set-option", "-p", "-u", "-t", pane, ATTACH_GENERATION_OPTION])
+        adapter._run(["set-option", "-t", session, ATTACH_GENERATION_OPTION, "0"])
+        adapter._run(["set-option", "-w", "-t", pane, ATTACH_GENERATION_OPTION, "0"])
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.room_input_facts(pane)
+        self.assertEqual(refused.exception.category, "unfenced")
+        # QA3 pane-shadow: resetting the pane counter before the read is still counted.
+        adapter._run(["set-option", "-p", "-t", pane, ATTACH_GENERATION_OPTION, "0"])
+        facts = adapter.room_input_facts(pane)
+
+        def confirm(screen):
+            self.assertTrue(composer_holds("claude", screen, "CLOSE"), screen)
+            cycle("DRAFT")
+            return None
+
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE", attach_generation=facts.attach_generation,
+                                            event_sequence=facts.event_sequence, confirm=confirm)
+        self.assertEqual(refused.exception.category, "partial")
+        time.sleep(0.3)
+        self.assertFalse(received.exists())
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_hooks_removed_after_confirmation_block_enter(self) -> None:
+        from lib.control.pane_input import composer_holds
+        adapter, identity, cycle, wait_screen, received = self._real_fenced_room()
+        wait_screen()
+        facts = adapter.room_input_facts(identity["pane_id"])
+
+        def confirm(screen):
+            self.assertTrue(composer_holds("claude", screen, "CLOSE"), screen)
+            for hook in ("client-attached", "client-session-changed"):
+                adapter._run(["set-hook", "-u", "-t", identity["session_id"], hook])
+            cycle("DRAFT")  # no hook ran: the generation did not move
+            return None
+
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE", attach_generation=facts.attach_generation,
+                                            event_sequence=facts.event_sequence, confirm=confirm)
+        self.assertEqual(refused.exception.category, "partial")
+        time.sleep(0.3)
+        self.assertFalse(received.exists())
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_native_event_during_delivery_refuses_paste_and_enter(self) -> None:
+        from lib.control.tmux import EVENT_SEQUENCE_OPTION
+        adapter, identity, _cycle, wait_screen, received = self._real_fenced_room()
+        wait_screen()
+        pane = identity["pane_id"]
+        bump = ["set-option", "-p", "-t", pane, "-F", EVENT_SEQUENCE_OPTION,
+                "#{e|+:#{" + EVENT_SEQUENCE_OPTION + "},1}"]
+        facts = adapter.room_input_facts(pane)
+        adapter._run(bump)
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE", attach_generation=facts.attach_generation,
+                                            event_sequence=facts.event_sequence, confirm=lambda screen: None)
+        self.assertEqual(refused.exception.category, "stale")
+        self.assertNotIn("CLOSE", "\n".join(adapter.room_input_facts(pane).screen))
+        facts = adapter.room_input_facts(pane)
+
+        def confirm(screen):
+            adapter._run(bump)
+            return None
+
+        with self.assertRaises(RoomInputRefused) as refused:
+            adapter.inject_owned_room_input(**identity, text="CLOSE", attach_generation=facts.attach_generation,
+                                            event_sequence=facts.event_sequence, confirm=confirm)
+        self.assertEqual(refused.exception.category, "partial")
+        time.sleep(0.3)
+        self.assertFalse(received.exists())
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_control_event_hook_bumps_the_pane_sequence_before_reporting(self) -> None:
+        adapter, identity, _cycle, wait_screen, _received = self._real_fenced_room()
+        wait_screen()
+        pane = identity["pane_id"]
+        socket_path, server_pid = adapter._run(
+            ["display-message", "-p", "-t", pane, "#{socket_path}\t#{pid}"]).strip().split("\t")
+        launcher_root = self.root / "event-launcher"
+        (launcher_root / "bin").mkdir(parents=True)
+        argv_file = self.root / "event-argv"
+        (launcher_root / "bin/asha").write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + str(argv_file) + "'\necho '{}'\n", encoding="utf-8")
+        (launcher_root / "bin/asha").chmod(0o700)
+        hook = Path("plugins/session/hooks/handlers/control-event.sh").resolve()
+        env = dict(os.environ, ASHA_ROOT=str(launcher_root), ASHA_HUB_SESSION_ID=str(uuid.uuid4()),
+                   TMUX=f"{socket_path},{server_pid},0", TMUX_PANE=pane)
+        # Without the Room's opt-in marker the hook makes no tmux call at all.
+        subprocess.run(["bash", str(hook), "PreToolUse"], input=b"{}", env=env, capture_output=True, timeout=5)
+        self.assertNotIn("--sequence", argv_file.read_text().split("\n"))
+        self.assertEqual(adapter.room_input_facts(pane).event_sequence, "0")
+        env["ASHA_ROOM_INPUT_FENCE"] = "1"
+        for expected in ("1", "2"):
+            result = subprocess.run(["bash", str(hook), "PreToolUse"], input=b"{}", env=env,
+                                    capture_output=True, timeout=5)
+            self.assertEqual(result.stdout.decode().strip(), "{}")
+            argv = argv_file.read_text().split("\n")
+            self.assertEqual(argv[argv.index("--sequence") + 1], expected)
+            self.assertEqual(argv[argv.index("--sequence-pane") + 1], pane)
+            self.assertEqual(adapter.room_input_facts(pane).event_sequence, expected)
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
     def test_real_tmux_exited_room_with_vanished_pane_closes(self) -> None:
         launcher_root = self.root / "sleep-launcher"
         (launcher_root / "bin").mkdir(parents=True)
@@ -891,6 +1387,64 @@ class RoomTests(unittest.TestCase):
         self.assertTrue(adapter.has_session("sentinel"), "unrelated session must survive")
         again = close_room(RoomStore(self.config), opened["room_id"], tmux=adapter)
         self.assertTrue(again["already_closed"])
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_default_room_ignores_a_server_global_input_fence_marker(self) -> None:
+        """QA5 inherited-server-flag: idle typing is off, so nothing may bump the pane."""
+        launcher_root = self.root / "fence-probe-launcher"
+        (launcher_root / "bin").mkdir(parents=True)
+        probe = self.root / "fence-probe.json"
+        (launcher_root / "bin/asha").write_text(
+            f"#!{sys.executable}\n"
+            "import json, os, pathlib, time\n"
+            f"pathlib.Path({str(probe)!r}).write_text(json.dumps(dict(os.environ)))\n"
+            "time.sleep(30)\n",
+            encoding="utf-8",
+        )
+        (launcher_root / "bin/asha").chmod(0o700)
+        socket = f"asha-room-fence-env-{uuid.uuid4().hex[:12]}"
+        self.enterContext(TmuxSocketReaper(socket))
+        adapter = TmuxAdapter(socket=socket, config_file=Path("/dev/null"))
+        returncode, _stdout, _stderr = adapter._run_status(["new-session", "-d", "-s", "keeper", "--", "sleep", "60"])
+        if returncode != 0:
+            self.skipTest("isolated tmux sockets are unavailable in this execution sandbox")
+        adapter._run(["set-environment", "-g", "ASHA_ROOM_INPUT_FENCE", "1"])
+        self.assertFalse(getattr(self.config, "idle_delivery", False))
+        opened = self._open(tmux=adapter, asha_root=launcher_root, name="Default Room",
+                            room_id="44444444-1111-4111-8111-111111111111")
+        deadline = time.monotonic() + 3
+        while not probe.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        child = json.loads(probe.read_text())
+        self.assertNotIn("ASHA_ROOM_INPUT_FENCE", child)
+        pane = RoomStore(self.config).read(opened["room_id"])["tmux"]["pane_id"]
+        options = adapter._run(["show-options", "-p", "-t", pane])
+        self.assertNotIn("@asha_event_seq", options)
+        self.assertNotIn("@asha_attach_gen", options)
+        # A real hook callback under the child's own environment stays inert.
+        recorder_root = self.root / "fence-recorder"
+        (recorder_root / "bin").mkdir(parents=True)
+        argv_file = self.root / "fence-recorder-argv"
+        (recorder_root / "bin/asha").write_text(
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + str(argv_file) + "'\necho '{}'\n", encoding="utf-8")
+        (recorder_root / "bin/asha").chmod(0o700)
+        socket_path, server_pid = adapter._run(
+            ["display-message", "-p", "-t", pane, "#{socket_path}\t#{pid}"]).strip().split("\t")
+        hook_env = dict(child, ASHA_ROOT=str(recorder_root), ASHA_HUB_SESSION_ID=str(uuid.uuid4()),
+                        TMUX=f"{socket_path},{server_pid},0", TMUX_PANE=pane,
+                        PATH=os.environ.get("PATH", "/usr/bin:/bin"))
+        hook = Path("plugins/session/hooks/handlers/control-event.sh").resolve()
+        result = subprocess.run(["bash", str(hook), "PreToolUse"], input=b"{}", env=hook_env,
+                                capture_output=True, timeout=5)
+        self.assertEqual(result.stdout.decode().strip(), "{}")
+        self.assertNotIn("--sequence", argv_file.read_text().split("\n"))
+        self.assertEqual(adapter._run(["show-options", "-p", "-t", pane]), options)
+        # Only an exact "1" marker would count; anything else stays inert too.
+        for marker in ("0", "1 ", "true"):
+            subprocess.run(["bash", str(hook), "PreToolUse"], input=b"{}", timeout=5, capture_output=True,
+                           env=dict(hook_env, ASHA_ROOM_INPUT_FENCE=marker))
+            self.assertEqual(adapter._run(["show-options", "-p", "-t", pane]), options)
+        close_room(RoomStore(self.config), opened["room_id"], tmux=adapter)
 
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
     def test_real_tmux_child_scrubs_inherited_roles_and_starts_in_project(self) -> None:

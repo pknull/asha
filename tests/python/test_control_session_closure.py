@@ -61,7 +61,16 @@ class ClosureFixture(unittest.TestCase):
                 return handoff(*args, **kwargs)
             finally:
                 self.hub.observe('tool-completed', tool_kind='finalizer', tool_token=token)
+        observe = self.hub.observe
+        def sequenced(event, **kwargs):
+            # Like control-event.sh: bump the pane's event sequence, then report it.
+            if 'sequence' not in kwargs and getattr(self.tmux, 'event_sequence', None) is not None:
+                self.tmux.event_sequence = str(int(self.tmux.event_sequence) + 1)
+                kwargs['sequence'] = int(self.tmux.event_sequence)
+                kwargs.setdefault('sequence_pane', self.tmux.pane_id)
+            return observe(event, **kwargs)
         with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), \
+                mock.patch.object(self.hub, 'observe', side_effect=sequenced), \
                 mock.patch.object(self.hub, 'handoff', side_effect=finalized):
             yield
 
@@ -111,7 +120,9 @@ class TerminalClosureTests(ClosureFixture):
         shown = self.hub.show(row['session_id'])
         self.assertEqual(shown['closure']['state'], 'pending-delivery')
         self.assertEqual(shown['activity'], 'closing')
-        self.assertIn('cannot be woken', shown['closure']['guidance'])
+        # No proven empty input line (the fake pane shows nothing): never typed into.
+        self.assertEqual(self.tmux.injected, [])
+        self.assertIn('did not submit the close request', shown['closure']['guidance'])
 
     def test_busy_worker_receives_the_request_at_its_stop_boundary_once(self):
         row = self.launch()

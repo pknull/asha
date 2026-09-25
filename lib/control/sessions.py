@@ -107,7 +107,7 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
     sid, generation, turn = session["session_id"], session["generation"], message["turn_id"]
     child_env = dict(env)
     for key in list(child_env):
-        if key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_HUB_")) or key == 'ASHA_ROOM_ID':
+        if key.startswith(("TMUX", "ASHA_CONTROL_", "ASHA_HUB_")) or key in {'ASHA_ROOM_ID', 'ASHA_ROOM_INPUT_FENCE'}:
             child_env.pop(key)
     child_env.update({"ASHA_MANAGED_SESSION_ID": sid,
                       "ASHA_MANAGED_GENERATION": str(generation),

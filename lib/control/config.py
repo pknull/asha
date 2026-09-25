@@ -63,6 +63,8 @@ class ControlConfig:
     session_prefix: str
     event_staleness_seconds: int
     workspace_trust: str
+    # Experimental idle-pane typing for close/send (#96); off unless opted in.
+    idle_delivery: bool = False
 
 
 def _absolute(value: str, name: str, *, home: Path, allow_tilde: bool = True) -> Path:
@@ -554,7 +556,7 @@ def load_config(
         raise ConfigError("control must be an object")
     supported_control = {
         "workspace_root", "default_harness", "tmux", "event_staleness_seconds",
-        "workspace_trust",
+        "workspace_trust", "idle_delivery",
     }
     unknown_control = set(control) - supported_control
     if unknown_control:
@@ -632,6 +634,10 @@ def load_config(
     if not 1 <= raw_staleness <= 86400:
         raise ConfigError("control.event_staleness_seconds must be from 1 through 86400")
 
+    idle_delivery = control.get("idle_delivery", False)
+    if not isinstance(idle_delivery, bool):
+        raise ConfigError("control.idle_delivery must be true or false")
+
     workspace_trust = control.get("workspace_trust", "inherit")
     if workspace_trust not in TRUST_MODES:
         raise ConfigError(
@@ -661,4 +667,5 @@ def load_config(
         session_prefix=session_prefix,
         event_staleness_seconds=raw_staleness,
         workspace_trust=workspace_trust,
+        idle_delivery=idle_delivery,
     )

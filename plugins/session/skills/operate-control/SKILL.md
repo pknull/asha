@@ -61,8 +61,11 @@ it on Enter. Never use screen text to decide permissions or type into native
 prompts through tmux. The human can use the attached harness.
 
 Terminal messages remain **queued** until the worker reads them; reading is not
-acknowledgement. They cannot wake an idle native harness. Say when attachment
-is needed. Structured messages are retained for an eligible turn boundary;
+acknowledgement. Only when the experimental `control.idle_delivery` setting is on
+(default off) does Control type a one-line pointer into an idle, detached
+Claude/Codex pane (`delivery: injected`); otherwise the result says
+`queued-until-read` and why.
+Never type into a pane yourself. Say when attachment is needed. Structured messages are retained for an eligible turn boundary;
 do not promise mid-turn steering or consumption. Reuse a message key and
 identical body when retrying a send.
 
@@ -110,7 +113,10 @@ captured native ID can be stopped and resumed in the same conversation with the
 close request. The request ID survives the new generation. Working sessions are
 not stopped. Unknown activity, missing native IDs, unsupported resume and failed
 resume leave `unanswered` with attachment required. Claude retains its Stop-hook
-channel; an already idle Claude session still needs attachment. Report
+channel; an already idle Claude session needs attachment unless the
+experimental `control.idle_delivery` setting is on (default off), in which case
+Control may type the close request into an idle, detached pane and any refusal
+still needs attachment. Report
 `unanswered`, `handoff-failed`, `undeliverable` and `unavailable` states as
 what they are; none of them is a completed save. The handoff never commits or
 pushes; landing code remains a separate explicit decision. Dashboard `q` only
@@ -121,7 +127,7 @@ Rooms that explicitly saved after their latest assignment in the same generation
 omit the close experience assessment (`explicit-save-published`). Control retains publication evidence and a separate completion receipt. A current
 receipt plus a verified idle boundary lets normal close terminate without another
 model turn. Missing/stale receipts require a fresh project-memory handoff; an idle
-Claude or unsupported terminal says needs attach. Codex's existing idle continuation
+pane that refuses typing, or an unsupported terminal, says needs attach. Codex's existing idle continuation
 is a fallback only when no qualifying receipt exists. Treat `completion_readiness`
 and `closure.guidance` as evidence; never infer readiness from prose.
 

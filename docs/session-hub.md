@@ -66,11 +66,17 @@ for this generation and assignment, or a verified handoff in this generation.
 Worker result text does not establish a save or code landing. Force-close keeps
 an existing save receipt visible; it does not publish another save.
 
-Terminal messages sent with `session send ID --text TEXT --key UUID` remain
-queued until read. They cannot wake an idle harness and are never typed into a
-pane. Attach to provide interactive input, or let the worker read
-`session messages` and acknowledge processed context with `session ack-message
-MESSAGE_ID`. Pages expose completeness and a continuation offset.
+Terminal messages sent with `session send ID --text TEXT --key UUID` are
+retained until read. Only with the experimental `control.idle_delivery` setting
+on (default off), when a Claude or Codex terminal session is at a verified idle
+boundary (see "Typing at an idle boundary" below), Control also types one
+line into its pane naming the message ID and the `session messages` /
+`session ack-message MESSAGE_ID` commands; the message body itself is never
+typed. The result's `delivery` field says `injected` or `queued-until-read`,
+with the refusal reason in `delivery_detail`. Otherwise attach to provide
+interactive input, or let the worker read `session messages` and acknowledge
+processed context with `session ack-message MESSAGE_ID`. Pages expose
+completeness and a continuation offset.
 
 Worker launch, resume and send automatically supply up to three compatible active
 learnings (3 KiB), ordered by project scope, harness scope, source-session evidence
@@ -140,8 +146,8 @@ Delivery is honest about each seam:
 
 | Session | Delivery | Idle agent |
 | --- | --- | --- |
-| Terminal Claude | Queued message, and once as the harness's own Stop-hook block decision when the current turn ends | Cannot be woken; attach and hand it the request, or force-close |
-| Terminal Codex | Queued while working; observed idle sessions with a native conversation ID use owned stop and native resume with the close request | Same conversation continues; unknown activity/missing ID/resume failure requires attach |
+| Terminal Claude | Queued message, and once as the harness's own Stop-hook block decision when the current turn ends | Typed into the owned pane at a verified idle boundary (`pane-injection`); an attached pane or unproven input line needs attach |
+| Terminal Codex | Queued while working; typed into the owned pane at a verified idle boundary | Typed as for Claude. An attached pane or typed input needs attach; an unrecognised screen falls back to owned stop and native resume with the close request (recent idle and a native conversation ID required) |
 | Terminal Copilot/OpenCode | Queued message only (no Stop seam or supported native resume) | `unanswered`, attachment required |
 | Structured Claude/Codex | The request becomes the next structured turn | Same path; the turn is scheduled by the supervisor |
 
@@ -174,12 +180,158 @@ itself relays no block while the guard holds. Delivery is confirmed against
 the exact request, attempt and incarnation the decision was emitted for, so a
 late receipt for an earlier request cannot mark its replacement delivered.
 
-The idle continuation keeps one close request ID across the new generation. Only
-a recent native idle observation and verified owned process permit the wake;
-an explicit `finished` report alone is insufficient. Working sessions are not
-stopped. Failure leaves the request unanswered with `attachment_required` and
-actionable guidance for the dashboard. These are fixture-tested seams, without a
-paid native acceptance claim. No pane input or screen reads are used.
+The Codex native-resume continuation keeps one close request ID across the new
+generation. Only a recent native idle observation and verified owned process
+permit the wake; an explicit `finished` report alone is insufficient. Working
+sessions are not stopped. Failure leaves the request unanswered with
+`attachment_required` and actionable guidance for the dashboard.
+
+### Typing at an idle boundary (experimental, off by default)
+
+Issue #96: an ongoing Room is idle whenever its user stops talking to it, so a
+close that waited for a Stop would always need a keystroke. Control can type the
+request into the idle pane, but this is **experimental and disabled by
+default**. It is enabled only by the Control setting `idle_delivery` in the Asha
+config (`~/.asha/config.json`, or `ASHA_CONFIG`):
+
+```json
+{"control": {"idle_delivery": true}}
+```
+
+With the default (`false`), Control never reads or types into a pane for close
+or send: an idle Claude close stays `pending-delivery` on its Stop-hook channel
+with `input_refusal: disabled` and the dashboard shows `Close needs attach`; an
+observed idle Codex terminal keeps its native-resume close continuation (below);
+`session send` answers `queued-until-read`. New Rooms get no input fence: no pane
+counters and no attach hooks, and the `ASHA_ROOM_INPUT_FENCE` marker is set to
+`0` in the Room session and unset for the harness process, so a marker left in
+the tmux server's global environment cannot switch it on. The native hook
+bridge makes its tmux call only for an exact `1`. Pending-close guidance
+mentions typing only while the setting is on. Rooms created while the setting was off
+refuse typing as `unfenced` if it is later turned on.
+
+It stays off because the fourth adversarial review of #96
+(`Work/reports/qa4-issue-96.md`) left these findings open:
+
+- **P1:** an older Stop report that lands after a newer working or tool-start
+  report restores `idle` (and clears newer open tools) while the hub keeps the
+  newer event sequence, so a delivery can be authorised against out-of-order
+  state. The recorded maximum sequence does not prove event order or that every
+  earlier report landed.
+- **P2:** the 1.5-second limit is checked before the final Enter command, which
+  has its own five-second deadline; a delayed tmux server can execute Enter
+  later than the stated bound.
+- **P2 (conditional):** a native event whose hook cannot bump the pane counter
+  (no `TMUX_PANE`, or a denied tmux socket) after the last hub read does not
+  stop an Enter already past confirmation; the missing-pane case refuses only
+  deliveries that start after the unsequenced report.
+- Screen-check limits remain: a hard newline where a display wrap could fall
+  reads as that wrap, and Codex's `[Pasted Content N chars]` binds only length.
+
+The native Claude/Codex idle close probes have not been run either. The rest of
+this section describes the mechanism when the setting is on.
+
+When enabled, Control may type one line into a terminal pane it owns only when
+every fact holds:
+
+- the harness is Claude or Codex (Copilot/OpenCode are never typed into);
+- the last native event is an observed idle Stop, the session is not waiting for
+  input, and no native tool start is still open;
+- exact Room ownership verifies, the pane is not in a tmux mode, and no client is
+  attached to its session;
+- a capture of the visible screen proves the input line empty: Claude's `❯` line
+  between its two rules with nothing after the marker (placeholders count as
+  text; vim NORMAL/VISUAL mode refuses), or Codex's `›` composer holding at most
+  a dim placeholder, with no continuation line and the footer's `? for shortcuts`
+  hint that Codex shows only while the composer is empty (native 0.157 captures;
+  extended-colour SGR parameters are parsed as units, never read as dim);
+- the Room carries its input fence (below) with valid counters and hooks;
+- the hub row, read again after those probes, still shows the same idle
+  boundary (generation, activity, native observation and work/assignment epochs)
+  with no open tool, and it has recorded the pane's current event sequence.
+
+Rooms are created with an input fence: two counters stored as options of the
+owned pane itself (`show-options -p`), the most specific tmux scope, so no
+window, session or global value can stand in for them. Each must be a canonical
+ASCII integer below 1,000,000,000, where tmux arithmetic still counts exactly;
+a missing, non-canonical or exhausted counter refuses as `unfenced`, never
+wraps or freezes.
+
+- The attach generation `@asha_attach_gen` is incremented by the Room session's
+  `client-attached` and `client-session-changed` hooks, which name the owned
+  pane. Any client attaching to or switching into the Room moves it, so an
+  attach-type-detach cycle is seen even within one second
+  (`session_last_attached` has one-second resolution and is not used).
+- The event sequence `@asha_event_seq` is incremented by the native hook bridge
+  (`control-event.sh`) with one bounded tmux call before it reports the event,
+  and the report carries the new value and the pane it bumped. The hub accepts
+  it only for the Room's own pane and records the highest value reported for
+  that pane (a new Room pane starts over); a report without one (tmux
+  unavailable, or a hook environment without the Room pane) makes it unknown. Delivery requires the recorded sequence to
+  equal the pane's, so an event whose report is still running, or was killed at
+  the bridge's time budget, refuses as `stale` until a later sequenced report
+  lands. Delivery holds no lock that reports wait on.
+
+The counters are read with the screen. tmux then requires exact ownership, no
+attached client, no tmux mode, a Room window not linked into another session
+(whose clients would see the pane without attaching) and both counters unchanged
+in the command that pastes (bracketed when the harness asked for it) and again
+in the command that presses Enter: an attach or a native event that began in
+between refuses. Immediately before each of those two commands Control also
+re-reads the counters and requires both attach hooks to be exactly the installed
+commands, and it re-reads the hub row right before the paste and before Enter.
+Paste to Enter must fit in 1.5 seconds, or Enter is withheld (`partial`). A
+Room created before this fence refuses as `unfenced` and needs attach.
+
+What this does not cover: a harness that begins work without running its hook
+bridge (the sequence cannot move); hook environments without the Room pane
+(`TMUX_PANE`), which leave every Codex/Claude delivery refused as `stale`; a
+change to hooks or counters made through direct tmux server access in the
+instant between Control's re-check and the guarded command; and processes that
+drive the tmux server directly (for example `send-keys` from another client).
+Room session hooks shadow global tmux hooks of the same names for that session
+only.
+
+Before Enter, Control captures the screen again and requires the whole input
+region to hold exactly the pasted text. For Claude the region is the box between
+its borders: the top border is the unindented rule directly above the `❯` line,
+the bottom border is the next unindented rule of the same width, and any other
+unindented rule between them is ambiguous and refuses (typed draft lines are
+indented, so a rule inside a draft is content, never a border). For Codex it is
+the composer from the `›` line to one blank line followed by a single block of
+one to three footer lines that each set SGR colour or attributes (typed composer
+text never does; a bare reset does not count) and are not paste placeholders;
+any other layout, including a blank line inside a draft, an unstyled trailing
+block or a missing footer, refuses. Every line of the region must be part of the
+text: the prompt line is the marker and one space, each continuation line the
+two-space indent, and only the single space at a display wrap may be missing or
+begin the next line. No other whitespace is normalised (tmux captures carry no
+blanks at a line end). Limits of this screen check: without wrap metadata a
+hard newline exactly where a display wrap could fall reads as that wrap; a
+Claude paste placeholder (`[Pasted text #N ...]`) cannot be bound to this paste
+and refuses, leaving the request unsubmitted in the input line (`partial`);
+Codex's `[Pasted Content N chars]` is accepted only as the whole composer and
+only with the typed length, which binds the length, not the content. A screen
+read cannot prove the composer at the instant of the keypress; the counters
+checked by tmux in the Enter command are what close that gap.
+
+The typed close request is the exact retained request, flattened to one line
+and bound to its request ID and `--attempt N`. A delivered attempt is never
+typed twice; after `unanswered`, the next `close` re-arms and types the next
+attempt, and a re-armed request accepts only a handoff naming that attempt.
+Refusals are typed and recorded as `input_refusal`: `disabled` (the setting
+is off; nothing is read or typed), `attached`, `mode`,
+`ownership`, `unfenced`, `occupied`, `stale` (new or unrecorded native
+activity), `partial` (typed but not submitted; the text stays in the input line)
+or `error`. Each leaves the request pending with
+`attachment_required` and never restarts the Room. Only `disabled`,
+`ineligible` (no idle boundary, open tool) and `unknown` (no input line
+visible) leave the Codex
+native-resume fallback available, and that fallback kills the Room only through
+a tmux condition that also requires no attached client and no mode. A typed
+request counts as fresh native evidence for 300 seconds. No other pane input or
+screen read is used. These are fixture- and tmux-tested seams; the native
+Claude/Codex idle close probes in #96 have not been run.
 
 For a Room with a controller-retained explicit save in its current generation
 after its latest assignment, close omits the experience assessment and records
@@ -232,7 +384,7 @@ JSON receipt as authority.
 `finish -> save -> native Stop -> close` consumes a qualifying receipt without
 attachment, wake, a model turn, or force-close. `Finalized: close` and `Finalized,
 closing` describe verified readiness; stale or missing evidence remains visible.
-An idle undeliverable request says `Close needs attach`. A close already pending
+An idle request that cannot be typed (see above) says `Close needs attach`. A close already pending
 requires `--request ID --attempt N` from the delivered request, not an old selector.
 If Stop was not observed and the last native activity is over 300 seconds old,
 both queued and acknowledged closes require attachment. A verified idle boundary
@@ -250,9 +402,16 @@ remains valid without further work; an idle receipt does not expire merely with 
 
 Hooks remain bounded and fail-open telemetry, not a complete enforcement boundary.
 No classifier grants native execution approval. Tool payload reads are bounded to
-256 KiB and retain only classification and opaque identity. Missing, malformed or
-oversized callbacks block finalization. A new prompt after an observed idle boundary
-clears abandoned tool tracking and invalidates old receipts; finalize anew. A new
+256 KiB and retain only classification and opaque identity. A finalizer is one
+plain argv: shell metacharacters are allowed inside quotes (single quotes fully
+literal; double quotes without `$`, backquote or backslash) and refused outside
+them. Claude's `PostToolUseFailure` ends a start exactly like `PostToolUse`.
+A native Stop ends every tool of its turn: unmatched starts are dropped then, and
+a sole matched finalizer whose end callback was lost counts as ended. Missing,
+malformed or oversized callbacks otherwise block finalization. A new prompt after
+an observed idle boundary clears abandoned tool tracking and invalidates old
+receipts; finalize anew. A `handoff-failed` status names the refused completion
+evidence when the agent's own outcome was a valid acknowledgement. A new
 structured turn or terminal incarnation also resets tracking. Do not treat scripted
 fixture results as native-model proof.
 

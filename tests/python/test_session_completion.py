@@ -496,6 +496,20 @@ class CompletionCommandTests(unittest.TestCase):
                 self.assertFalse(report_tool('Bash', {'command': command}))
         self.assertFalse(report_tool('mcp__arbitrary', {'command': allowed}))
 
+    def test_finalizer_accepts_shell_metacharacters_inside_quotes(self):
+        # Issue #96: prose details such as "(publication 80bf40f5)" were
+        # classified as work, so a correct handoff could never be sole.
+        from completion_event import command_kind
+        base = 'asha control session handoff --request R --attempt 2 --outcome no-durable-update --json --detail '
+        for detail in ('"Published earlier (publication 80bf40f5); unchanged & verified."',
+                       "'Costs $5 | uses `x` > y (literal)'", '"a*b? [c] {d} #e ~f !"'):
+            with self.subTest(detail=detail):
+                self.assertEqual(command_kind(dict(tool_name='Bash', tool_input=dict(command=base + detail))), 'finalizer')
+        for detail in ('"$(touch x)"', '"`touch x`"', '"${HOME}"', '"a\\"b"', "'open", 'x #comment',
+                       'a*', '{a,b}', '(x)'):
+            with self.subTest(detail=detail):
+                self.assertEqual(command_kind(dict(tool_name='Bash', tool_input=dict(command=base + detail))), 'work')
+
     def test_finalizer_rejects_trailing_shell_work(self):
         from completion_event import command_kind
         command = 'asha control session handoff --outcome no-durable-update --detail Reviewed --json'

@@ -70,6 +70,21 @@ def observe_tool(row, event, kind, token):
     return row
 
 
+def observe_stop(row):
+    """A native Stop ends every tool of its turn.
+
+    A sole matched finalizer whose end callback was lost is ended; any other
+    start without an end (failed, denied or interrupted) is stale and dropped.
+    """
+    tools = dict(row.get('active_tools') or {})
+    receipt = row.get('completion') or {}
+    if (len(tools) == 1 and set(tools.values()) == {'finalizer'} and receipt.get('tool_token') in tools
+            and all(receipt.get(k) == v for k, v in binding(row).items())):
+        row['completion'] = dict(receipt, tool_finished=True)
+    row['active_tools'] = {}
+    return row
+
+
 WORKER_INSTRUCTION = (
     'Project-memory contract: before work, use the project-memory skill to read this project\'s '
     'Memory v2 through the existing reader and verify relevant claims against live sources. '
@@ -157,7 +172,9 @@ def issue(hub, actor, *, outcome, detail, publication=None, request=None):
                            request=request, finalized_at=time.time(), destination=str(Path(row['project']) / 'Memory'))
             receipt.update(tool_token=tool_token, tool_finished=False)
             if tool_token is None:
-                receipt.update(status='blocked', detail='No sole observed standalone finalizer tool; finish tools and retry through a supported native bridge, or needs attach')
+                receipt.update(status='blocked', detail='No sole observed standalone finalizer tool: the handoff must run '
+                               'as the only command in its own tool call, after every other tool finished, through the '
+                               'Claude/Codex native tool bridge; retry the handoff that way, or attach')
             current['completion'] = receipt
             hub._save(c, current)
             return receipt
