@@ -174,14 +174,19 @@ def run_turn(store, session, message, *, env, root, transport_factory=None,
         from contextlib import ExitStack
         with ExitStack() as stack:
             requests = stack.enter_context(SessionRequestServer(store.db.config, sid, generation, turn))
+            # Hub launch-time selection (#95), re-applied on every turn and resume.
+            from .session_selection import requested
+            selection = requested((guidance_row or {}).get('spec'))
             if session["harness"] == "claude":
-                factory, argv = ClaudeTransport, claude_argv(root, session["native_id"], native_settings=lightweight)
+                factory, argv = ClaudeTransport, claude_argv(root, session["native_id"], native_settings=lightweight,
+                                                             selection=selection)
             elif session["harness"] == "codex":
                 factory, argv = CodexTransport, codex_argv(root, native_settings=lightweight)
             else:
                 raise StoreError("harness has no supported managed adapter")
             transport = (transport_factory or factory)(argv, cwd=session["cwd"], env=child_env)
             transport.native_settings = lightweight
+            transport.selection = selection
             if session['harness'] == 'codex':
                 from .codex_actor import CodexActor
                 transport.actor = stack.enter_context(CodexActor(store.db.config, sid, generation, turn, env=child_env))

@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — launch-time model and effort (#95)
+
+- `asha control session launch --model/--effort` (and the dashboard launch form)
+  pass native flags for all four terminal harnesses and the Claude/Codex
+  structured seams. Omitted values pass nothing; invalid or unsupported values
+  (OpenCode effort, or a value the tmux transport cannot carry such as a model
+  ending in `;`) are refused before any record, pane or process exists; the
+  complete Room respawn argv is validated first.
+- Requested values join the session spec and are re-applied on every resume.
+- Session rows, experience envelopes and guidance manifests record
+  `{requested, effective, provenance}` for model and effort; Claude `system/init`
+  and Codex thread responses report effective values and `model/rerouted` updates
+  them. A Codex turn effort override stays requested-only: the thread response
+  predates it and reports only the thread default. `experience stats --model`
+  now matches real models (it previously skipped every session) and attributes
+  each close, report and completion to the selection retained with it (close
+  snapshot, report envelope), never to the session's later model; the live
+  selection appears separately as `current_sessions`.
 ## Unreleased — idle close and send delivery (#96)
 
 - Experimental, **off by default** (`control.idle_delivery: true` in the Asha

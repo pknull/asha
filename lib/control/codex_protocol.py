@@ -62,7 +62,7 @@ def error_status(error, *, interrupted=False):
 class CodexProtocol:
     def __init__(self, prompt, *, cwd, native_id=None, message_id=None,
                  open_request=None, cancel_request=None, poll_responses=None, submitted=None, actor=None,
-                 native_settings=False):
+                 native_settings=False, model=None, effort=None):
         self.prompt = _text(prompt, "prompt", 256 * 1024)
         self.cwd = _text(cwd, "working directory", 4096)
         self.native_id = _text(native_id, "thread ID") if native_id is not None else None
@@ -71,6 +71,9 @@ class CodexProtocol:
         self.poll_responses, self.submitted = poll_responses, submitted
         self.actor = actor
         self.native_settings = native_settings
+        # Requested only (#95); omitted leaves the user's native config in charge.
+        self.model = _text(model, "model", 256) if model is not None else None
+        self.effort = _text(effort, "effort", 64) if effort is not None else None
         self.actor_requests, self.actor_seen = {}, {}
         self.initialized = self.terminal = False
         self.input_not_submitted = True
@@ -200,6 +203,8 @@ class CodexProtocol:
                 # user's complete native policy (sandbox, approvals, network).
                 # Omitting overrides does not select an unsandboxed mode.
                 params = {"cwd": self.cwd}
+            if self.model is not None:
+                params["model"] = self.model
             if self.native_id is not None:
                 params["threadId"] = self.native_id
             elif self.actor is not None:
@@ -234,8 +239,20 @@ class CodexProtocol:
             if self.native_settings:
                 for key in ('approvalPolicy', 'approvalsReviewer', 'sandboxPolicy'):
                     params.pop(key)
+            if self.effort is not None:
+                params["effort"] = self.effort
             self.call('turn/start', params)
-            return [("initialized", {"native_id": tid})]
+            initialized = {"native_id": tid}
+            # Effective values as the app-server resolved them (#95). The thread
+            # response predates a turn/start effort override, so its effort is
+            # only the thread default: with an override it attests nothing and
+            # the effort stays requested-only.
+            reported = (("model", "model"),) if self.effort is not None else (("model", "model"), ("effort", "reasoningEffort"))
+            for field, key in reported:
+                value = result.get(key)
+                if isinstance(value, str) and value and len(value.encode()) <= 256:
+                    initialized[field] = value
+            return [("initialized", initialized)]
         self._turn(result.get("turn"))
         return [] if self.terminal else [("progress", {"subtype": "native-input-acknowledged", "message_id": self.message_id})]
 
@@ -351,6 +368,14 @@ class CodexProtocol:
             # Codex0.153.4 emits this on resume before turn/start responds.
             # It clears native thread metadata, not an Asha turn or goal.
             self._scope(params, turn=False)
+            return []
+        if method == "model/rerouted" and self.native_id is not None:
+            self._scope(params, turn=False)
+            to_model = params.get("toModel")
+            if isinstance(to_model, str) and to_model and len(to_model.encode()) <= 256:
+                return [("progress", {"subtype": "model-rerouted", "model": to_model,
+                                      "from_model": str(params.get("fromModel", ""))[:256],
+                                      "reason": str(params.get("reason", ""))[:256]})]
             return []
         if method in METADATA_METHODS:
             if self.native_id is not None and "threadId" in params:

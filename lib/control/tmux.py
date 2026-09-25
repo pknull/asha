@@ -423,6 +423,11 @@ def _validate_argv(value: Any) -> list[str]:
     return list(value)
 
 
+def validate_command_argv(value: Any) -> list[str]:
+    """The argv rule ``respawn`` applies, for callers that must refuse before any pane exists."""
+    return _validate_argv(value)
+
+
 def _validate_popup_dimension(value: Any) -> str:
     if not isinstance(value, str) or _PERCENT.fullmatch(value) is None:
         raise TmuxError("tmux popup dimension is invalid")

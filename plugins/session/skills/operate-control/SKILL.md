@@ -28,6 +28,11 @@ asha control session launch --project PROJECT --prompt TOPIC --harness codex --p
 asha control session launch --project PROJECT --prompt QUESTION --harness claude --transport structured --json
 ```
 
+Add `--model MODEL` and/or `--effort LEVEL` only when the Keeper or the task
+calls for a tier; omitted means the harness default. Never pick, escalate or
+retry with another model on your own. `show` reports the requested and effective
+values with their provenance (docs/session-hub.md, "Model and effort").
+
 The default **worker** omits Asha's persona, operational injection and automatic
 memory work, preserving native permissions, project instructions and installed
 skill discovery. **Room** is an interactive Asha project conversation.

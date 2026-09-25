@@ -44,7 +44,7 @@ CAPABILITIES = {
 }
 
 
-def claude_argv(root: Path, native_id=None, *, native_settings=False):
+def claude_argv(root: Path, native_id=None, *, native_settings=False, selection=None):
     launcher = root / "bin" / "asha"
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
         raise StoreError("Asha launcher unavailable")
@@ -52,6 +52,8 @@ def claude_argv(root: Path, native_id=None, *, native_settings=False):
                "--input-format", "stream-json",
                *([] if native_settings else ["--permission-mode", "manual"]),
                "--permission-prompts", "host", "--permission-prompt-tool", "stdio"]
+    from .session_selection import terminal_flags
+    command += terminal_flags("claude", selection)  # the same --model/--effort flags (#95)
     if native_id:
         if not isinstance(native_id, str) or len(native_id) > 512 or native_id.startswith("-"):
             raise StoreError("invalid native session ID")
@@ -68,7 +70,11 @@ def decode_claude(value):
     if observation is not None:
         yield "provider-status", observation
     if kind == "system" and value.get("subtype") == "init":
-        yield "initialized", {"native_id": value.get("session_id")}
+        initialized = {"native_id": value.get("session_id")}
+        # The effective model, when the stream states it (#95). Effort is not reported.
+        if isinstance(value.get("model"), str) and value["model"]:
+            initialized["model"] = value["model"]
+        yield "initialized", initialized
     elif kind == "assistant":
         if observation is not None:
             # Error-envelope bodies are diagnostic text, not model work. Keep
@@ -309,8 +315,10 @@ class CodexTransport(JsonLineTransport):
 
     def make_protocol(self, prompt):
         from .codex_protocol import CodexProtocol
+        selection = getattr(self, 'selection', None) or {}
         return CodexProtocol(prompt, cwd=str(self.cwd), actor=getattr(self, 'actor', None),
-                             native_settings=getattr(self, 'native_settings', False), **self.protocol_options())
+                             native_settings=getattr(self, 'native_settings', False),
+                             model=selection.get('model'), effort=selection.get('effort'), **self.protocol_options())
 
 
 def codex_argv(root: Path, *, native_settings=False):

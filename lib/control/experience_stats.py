@@ -3,7 +3,16 @@ from __future__ import annotations
 import json
 from collections import Counter
 from .session_experience import Experiences
+from .session_selection import evidence as selection_evidence, known_model
 from .store import StoreError
+
+
+def _attributed(item, row):
+    """``(model, provenance)`` from retained evidence, else the session's request, else unknown."""
+    if isinstance(item, dict) and (item.get('effective') or item.get('requested')):
+        return item.get('effective') or item.get('requested'), item.get('provenance') or 'unknown'
+    asked = ((row or {}).get('spec') or {}).get('model')
+    return (asked, 'requested') if asked else ('unknown', 'unknown')
 
 
 def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness=None, model=None):
@@ -28,6 +37,10 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
               'cost': {'launches': 0, 'reservations': 0, 'unknown_launches': 0, 'elapsed_seconds': 0, 'tokens': None, 'dollars': None, 'known_dollars': 0,
                        'unknown_usage_reviews': 0}, 'storage_bytes': 0,
               'time_basis': 'Report creation cohort; closes by request time, completions by receipt time, exposures by assignment time. Review/disposition counts use that report cohort.',
+              'models': {}, 'current_sessions': {},
+              'model_basis': ('models: closes, reports and completion captures by the selection evidence retained with each '
+                              '(close request snapshot, report envelope); without it, the session\'s requested model or unknown, '
+                              'never a later report. current_sessions: the live rows\' current selection, not history.'),
               'interpretation': 'Coverage of submitted observations only; supply is not use, and silence is not success.'}
     if not Experiences(hub).available():
         return result
@@ -36,27 +49,53 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
         rows = c.execute("SELECT payload FROM hub_sessions WHERE json_extract(payload,'$.project_id')=?", (project_id,)).fetchall()
         selected_sessions = {}
         capture_states = Counter(); closure_states = Counter()
+        models = {}
+        current = {}
+
+        def attribute(item, row, kind):
+            """Count one event under the model evidence retained with it (#95)."""
+            name, provenance = _attributed(item, row)
+            if model is not None and name != model:
+                return False
+            entry = models.setdefault(name, {'closes': 0, 'reports': 0, 'completions': 0, 'provenance': Counter()})
+            entry[kind] += 1
+            entry['provenance'][provenance] += 1
+            return True
+
         for stored in rows:
             row = json.loads(stored[0])
-            if harness and row['harness'] != harness or model not in (None, 'unknown'):
+            if harness and row['harness'] != harness:
                 continue
             selected_sessions[row['session_id']] = row
+            known = known_model(row) or 'unknown'
+            if model is None or known == model:
+                entry = current.setdefault(known, {'sessions': 0, 'provenance': Counter()})
+                entry['sessions'] += 1
+                entry['provenance'][selection_evidence(row)['model']['provenance']] += 1
             for close in [*row.get('closure_history', []), row.get('closure')]:
                 if not close or not since <= close['requested_at'] <= until:
                     continue
                 capture = close.get('capture', {'status': 'disabled', 'requested': False, 'policy_revision': 0})
                 if policy_revision is not None and capture.get('policy_revision') != policy_revision:
                     continue
+                if not attribute((close.get('selection') or {}).get('model'), row, 'closes'):
+                    continue
                 capture_states[capture['status']] += 1; closure_states[close['state']] += 1
                 if capture.get('requested'):
                     result['capture']['requested_closes'] += 1
                     result['capture']['assessment_receipts'] += bool(capture.get('report_id'))
+        result['current_sessions'] = {name: {'sessions': entry['sessions'], 'provenance': dict(entry['provenance'])}
+                                      for name, entry in sorted(current.items())}
         result['capture'].update(states=dict(capture_states), closure_states=dict(closure_states))
         reports = c.execute('SELECT * FROM hub_experiences WHERE project_id=? AND created_at>=? AND created_at<=? ORDER BY created_at,report_id', (project_id, since, until)).fetchall()
         report_ids = set()
+        envelopes = {}
         feedback = {}
         for item in reports:
             if item['session_id'] not in selected_sessions or policy_revision is not None and item['policy_revision'] != policy_revision:
+                continue
+            envelopes[item['report_id']] = envelope = json.loads(item['envelope'])
+            if not attribute(envelope.get('model'), selected_sessions[item['session_id']], 'reports'):
                 continue
             report_ids.add(item['report_id'])
             result['storage_bytes'] += len(item['body'].encode()) + len(item['envelope'].encode())
@@ -67,6 +106,14 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
         completion_states = Counter()
         for item in completions:
             if item['session_id'] not in selected_sessions or policy_revision is not None and item['policy_revision'] != policy_revision:
+                continue
+            # A capture with a report carries that report's envelope; one without
+            # falls back to the session's immutable request, never a later report.
+            envelope = envelopes.get(item['report_id']) if item['report_id'] else None
+            if envelope is None and item['report_id']:
+                stored = c.execute('SELECT envelope FROM hub_experiences WHERE report_id=?', (item['report_id'],)).fetchone()
+                envelope = json.loads(stored[0]) if stored else None
+            if not attribute((envelope or {}).get('model'), selected_sessions[item['session_id']], 'completions'):
                 continue
             completion_states[item['status']] += 1
             result['completions']['assessment_receipts'] += bool(item['report_id'])
@@ -128,6 +175,8 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
             manifest = json.loads(row['manifest'])
             if policy_revision is not None and manifest.get('policy_revision') != policy_revision:
                 continue
+            if model is not None and _attributed(manifest.get('model'), selected_sessions[row['session_id']])[0] != model:
+                continue
             result['guidance']['selected'] += len(manifest['selected'])
             result['guidance']['excluded'] += len(manifest['excluded'])
             result['guidance']['supplied' if row['status'] == 'supplied' else 'queued'] += len(manifest['supplied'])
@@ -140,4 +189,6 @@ def stats(hub, project_id, *, since=0, until=None, policy_revision=None, harness
             result['guidance']['reported_use'][item.get('use', 'unknown')] += 1
             failure = item.get('target_failure', 'unknown')
             result['recurrence'][failure] += 1
+    result['models'] = {name: dict(entry, provenance=dict(entry['provenance']))
+                        for name, entry in sorted(models.items())}
     return result

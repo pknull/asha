@@ -613,7 +613,11 @@ class Experiences:
         if any((g['id'], g['version']) not in supplied for g in value.get('guidance_feedback', [])):
             raise ValueError('feedback claims unsupplied guidance version')
         rid = str(uuid.uuid4())
-        envelope = {'harness': row['harness'], 'harness_version': None, 'model': None, 'model_version': None,
+        from .session_selection import evidence as selection_evidence
+        selection = selection_evidence(row)
+        # Requested/effective/provenance (#95); unreported stays explicitly unknown.
+        envelope = {'harness': row['harness'], 'harness_version': None, 'model': selection['model'],
+                    'effort': selection['effort'], 'model_version': None,
                     'native_session_id': row.get('native_id'),
                     'version_provenance': 'unknown', 'supplied_guidance': [{'id': r[0], 'version': r[1]} for r in versions[:64]],
                     'supplied_guidance_count': len(versions), 'supplied_guidance_complete': len(versions) <= 64,
