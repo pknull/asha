@@ -136,6 +136,8 @@ def dispatch(argv, *, env):
         parser.add_argument('--session-id')
         parser.add_argument('--transport', default='terminal', choices=['terminal', 'structured'])
         parser.add_argument('--result-contract', choices=['asha.session-result.v1'])
+        parser.add_argument('--model', help='native model for this session; omitted means the harness default')
+        parser.add_argument('--effort', help='native reasoning effort; omitted means the harness default')
     elif verb in {'show', 'attach', 'close', 'stop', 'resume', 'send'}:
         parser.add_argument('session_id')
         if verb in {'resume', 'send'}:

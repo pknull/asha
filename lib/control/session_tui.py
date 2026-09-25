@@ -17,7 +17,13 @@ from .session_hub import Hub
 from .session_presentation import memory_label, present
 from .tmux import TmuxAdapter
 from .tui_style import BAD, GOOD, INERT, MACHINE, WAITING, tier_for
+from .session_selection import label as selection_label
 
+
+
+def launch_selection(model_text, effort_text):
+    """Optional launch fields (#95): a blank answer means the harness default."""
+    return {'model': (model_text or '').strip() or None, 'effort': (effort_text or '').strip() or None}
 
 def _activity_tier(activity):
     # Session activity names differ from the advanced workflow state names.
@@ -48,7 +54,9 @@ def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
             result.append(('Ended sessions' if row['group'] == 'ended' else 'Retained history', 'heading', INERT))
         previous_group = row['group']
         space -= needed
-        result.append((f"{'>' if i == selected else ' '} {row['next_step']:<32} {row['project_name']} / {row['name']}  [{row['harness']}]",
+        chosen = selection_label(row, compact=True)
+        result.append((f"{'>' if i == selected else ' '} {row['next_step']:<32} {row['project_name']} / {row['name']}"
+                       f"  [{row['harness']}{' ' + chosen if chosen else ''}]",
                        'selected' if i == selected else 'row', _activity_tier(row['activity'])))
     if rows:
         row = rows[min(selected, len(rows) - 1)]
@@ -57,8 +65,10 @@ def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
                       f" review:{row.get('experience_review', 'none')}") if capture else ''
         saved = memory_label(row)
         detail = (saved + ' · ' if saved else '') + row.get('reason', '')
+        chosen = selection_label(row)
         result += [('', 'muted', INERT), (detail, 'detail', _activity_tier(row['activity'])),
-                   (f"{row['session_id']} · {row.get('pending_messages', 0)} queued messages" + experience, 'muted', INERT)]
+                   (f"{row['session_id']} · {row.get('pending_messages', 0)} queued messages" + experience
+                    + (' · ' + chosen if chosen else ''), 'muted', INERT)]
     result += [(error, 'error', BAD) for error in snapshot.get('errors', [])[:1]]
     result += [(message, 'message', None)]
     if height < 8:
@@ -189,8 +199,15 @@ def _loop(screen, config, env):
                     assignment = prompt('Assignment: ' if key == ord('n') else 'Topic: ', 'New session') if project else None
                     if assignment:
                         harness = prompt('Harness [claude]: ', 'claude / codex / copilot / opencode')
+                        chosen = None
                         if harness is not None:
-                            created = hub.launch(project=project, prompt=assignment, harness=harness.strip() or 'claude', profile='room' if key == ord('o') else 'worker')
+                            model_text = prompt('Model [default]: ', 'Optional native model; blank keeps the harness default')
+                            effort_text = prompt('Effort [default]: ', 'Optional reasoning effort; blank keeps the harness default') \
+                                if model_text is not None else None
+                            chosen = launch_selection(model_text, effort_text) if effort_text is not None else None
+                        if chosen is not None:
+                            created = hub.launch(project=project, prompt=assignment, harness=harness.strip() or 'claude',
+                                                 profile='room' if key == ord('o') else 'worker', **chosen)
                             message = 'Started ' + created['name']
                 elif key == ord('G'):
                     curses.def_prog_mode()

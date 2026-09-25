@@ -25,6 +25,43 @@ in that checkout, without a jj workspace requirement. The project's own
 instructions and the user's native permission settings apply. A worker can
 create its own worktree when its assignment calls for one.
 
+### Model and effort
+
+`--model MODEL` and `--effort LEVEL` choose the native model and reasoning effort
+for one session at launch (Dashboard `n`/`o` asks for both; blank means the
+harness default). Asha never picks, routes or escalates a model itself; omitted
+values pass nothing, so argv and app-server parameters stay exactly as before.
+Values are validated before any record, pane or process exists: a model is one
+printable argument without whitespace or a leading `-` (at most 256 bytes;
+OpenCode needs `provider/model`), and the complete Room respawn argv must pass
+the tmux transport check (no argument may be `;` or end with `;`); Claude effort is `low|medium|high|xhigh|max`,
+Copilot adds `none|minimal`, Codex effort is model-dependent and checked by shape
+only, and OpenCode's interactive TUI has no effort flag, so `--effort` is refused
+there. The requested values join the session spec: relaunching the same
+`--session-id` with a different selection is refused, and every resume passes
+the same flags again.
+
+| Harness | Terminal flags (before the prompt) | Structured seam | Reported back |
+| --- | --- | --- | --- |
+| Claude | `--model M --effort E` | same flags on `-p` stream-json | `system/init` model; effort not reported |
+| Codex | `-m M -c model_reasoning_effort="E"` (after `resume ID` on resume) | `thread/start`/`thread/resume` model, `turn/start` effort | thread response `model`; its `reasoningEffort` only when no turn effort was requested (it is the thread default); `model/rerouted` updates the model |
+| Copilot | `--model M --effort E` | none | none |
+| OpenCode | `-m provider/model` | none | none |
+
+Session rows (`show`, `list`) and experience envelopes carry
+`selection.model`/`selection.effort` (envelopes: `model`/`effort`) as
+`{requested, effective, provenance}`. Provenance is `reported` when the native
+stream stated the value, `requested` when Asha passed a flag that nothing
+reported back (all terminal sessions), and `unknown` when neither applies. A
+reroute or fallback is recorded, never refused. `experience stats --model X`
+attributes each event to the selection retained with it: a close to the
+snapshot taken when it was requested, a report (and its completion capture) to
+its envelope, a guidance exposure to its manifest. The effective model counts
+when reported, the requested one otherwise; an event with no retained evidence
+uses the session's requested model or `unknown`, never a later report. `models`
+is that per-event breakdown with provenance; `current_sessions` separately
+lists the live rows' current selection.
+
 Plain workers do not trigger Asha's first-run configuration. Existing native
 skills and hooks remain available; a harness without the Asha hooks can still
 run its assignment, with activity shown as unknown until explicitly reported.

@@ -398,6 +398,20 @@ class SessionStore:
                     observe_tool(current, event, tool_kind, token)
                     from .session_hub import Hub
                     Hub._save(c, current)
+            rerouted = kind == 'progress' and payload.get('subtype') == 'model-rerouted'
+            if ((kind == 'initialized' and ('model' in payload or 'effort' in payload)) or rerouted) \
+                    and c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_sessions'").fetchone():
+                found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
+                if found:
+                    # Evidence of what actually ran (#95); a mismatch is recorded, never refused.
+                    from .session_selection import record_reported
+                    current = json.loads(found[0])
+                    reported = {'model': payload.get('model'), 'effort': payload.get('effort')}
+                    current = record_reported(current, reported, source=self._session(c, sid)['harness'] + (
+                        '-reroute' if rerouted else '-init'),
+                        reroute=dict(from_model=payload.get('from_model'), reason=payload.get('reason')) if rerouted else None)
+                    from .session_hub import Hub
+                    Hub._save(c, current)
             self._event(c, sid, kind, payload, turn)
 
     def finish(self, sid, generation, turn, *, success, reason=None, input_not_submitted=False):

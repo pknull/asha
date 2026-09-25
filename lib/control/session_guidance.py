@@ -6,6 +6,7 @@ import uuid
 from .session_experience import canonical, sha, safe_content, string, silenced
 from .store import StoreError
 from .registry_guards import mutation_guard
+from .session_selection import evidence as selection_evidence
 
 
 def resolve(hub, row, selections):
@@ -32,7 +33,7 @@ def resolve(hub, row, selections):
         raise StoreError('at most 20 explicit selections may be inspected; at most three supplied')
     manifest = {'selection': selection, 'selected': selections, 'supplied': [], 'excluded': [], 'harness': row['harness'],
                 'policy_revision': Experiences(hub).policy(row['project_id'])['revision'],
-                'harness_version': None, 'model': None, 'version_provenance': 'unknown'}
+                'harness_version': None, 'version_provenance': 'unknown', **selection_evidence(row)}
     block = ''
     seen = set()
     for selected in selections:

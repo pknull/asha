@@ -31,7 +31,7 @@ from .store import (
     StoreError, _CLOEXEC, _NOFOLLOW, _directory_fd, _managed_start,
     _open_existing_file, _registry_lock,
 )
-from .tmux import RoomInputRefused, TmuxAdapter, TmuxError
+from .tmux import RoomInputRefused, TmuxAdapter, TmuxError, validate_command_argv
 from .orchestration.projects import display_name, list_projects_across, resolve_roots
 
 
@@ -153,31 +153,57 @@ def _prompt(value: Any) -> str:
     return value
 
 
-def room_launch_argv(asha_root: Path, harness: str, prompt: str) -> list[str]:
-    """Exact full-persona interactive argv for each supported harness."""
+def room_launch_argv(
+    asha_root: Path, harness: str, prompt: str, *,
+    selection: Mapping[str, str] | None = None, resume_id: str | None = None,
+) -> list[str]:
+    """Exact full-persona interactive argv for each supported harness.
+
+    Model/effort flags (#95) and a native resume precede the prompt, which
+    stays the final argument. Omitted selection adds nothing.
+    """
     try:
         selected = validate_harness(harness)
     except HarnessError as exc:
         raise RoomError(str(exc)) from exc
     text = _prompt(prompt)
+    from .session_selection import terminal_flags
+    flags = terminal_flags(selected, selection)
     root = Path(asha_root)
     if not root.is_absolute() or root.resolve() != root:
         raise RoomError("Asha root must be an exact canonical absolute path")
     launcher = root / "bin" / "asha"
     if not launcher.is_file() or not os.access(launcher, os.X_OK):
         raise RoomError("Asha launcher is missing or not executable")
+    resume: list[str] = []
+    if resume_id is not None:
+        if (not isinstance(resume_id, str) or not resume_id or resume_id.startswith('-')
+                or len(resume_id) > 512 or not resume_id.isprintable()):
+            raise RoomError("invalid native session ID")
+        if selected == 'claude':
+            resume = ['--resume', resume_id]
+        elif selected == 'codex':
+            # `codex resume ID` takes its own -m/-c options after the ID.
+            resume = ['resume', resume_id]
+        else:
+            raise RoomError("native resume is not verified for this harness; open a new session")
     tail = {
-        "claude": [text],
-        "codex": [text],
-        "copilot": ["--interactive", text],
-        "opencode": ["--prompt", text],
+        "claude": [*flags, *resume, text],
+        "codex": [*resume, *flags, text],
+        "copilot": [*flags, "--interactive", text],
+        "opencode": [*flags, "--prompt", text],
     }[selected]
     return [str(launcher), selected, *tail]
 
 
-def room_tmux_argv(asha_root: Path, harness: str, prompt: str) -> list[str]:
+def room_tmux_argv(
+    asha_root: Path, harness: str, prompt: str, *,
+    selection: Mapping[str, str] | None = None, resume_id: str | None = None,
+) -> list[str]:
     """Transport a prompt through tmux without exposing its grammar to tmux."""
-    logical = room_launch_argv(asha_root, harness, prompt)
+    logical = room_launch_argv(
+        asha_root, harness, prompt, selection=selection, resume_id=resume_id,
+    )
     encoded = base64.b64encode(logical[-1].encode("utf-8")).decode("ascii")
     return [
         sys.executable, "-I", "-S", "-c", _ROOM_CHILD_EXEC,
@@ -706,6 +732,41 @@ def _result(
     }
 
 
+def room_respawn_argv(
+    asha_root: Path, harness: str, prompt: str, *, hub_session: bool,
+    selection: Mapping[str, str] | None = None, resume_id: str | None = None,
+    idle_fence: bool = False,
+) -> list[str]:
+    """The complete argv respawned into a Room pane, validated as tmux argv data.
+
+    Built and checked before any Room record or pane exists (#95), so a value
+    the transport cannot carry is refused as local validation, never after a
+    pane was created.
+    """
+    argv = ["env"]
+    for key in SCRUBBED_ROLE_ENV:
+        argv.extend(["-u", key])
+    if not hub_session:
+        argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION'])
+    if not idle_fence:
+        # A marker inherited from the tmux server's global environment must not
+        # switch on the delivery-only hook work (#96) in a default Room.
+        argv.extend(['-u', 'ASHA_ROOM_INPUT_FENCE'])
+    # The encoded prompt remains data; resume identifiers and model
+    # selection travel as exact argv entries, never shell text.
+    argv.extend(room_tmux_argv(
+        asha_root, harness, prompt, selection=selection, resume_id=resume_id or None,
+    ))
+    try:
+        return validate_command_argv(argv)
+    except TmuxError as exc:
+        values = " ".join(f"{k}={v!r}" for k, v in (selection or {}).items())
+        raise RoomError(
+            "the harness command cannot be transported to tmux"
+            + (f" (selection {values}; a model or effort may not be ';' or end with ';')" if values else "")
+        ) from exc
+
+
 def open_room(
     *, name: str, project: str, harness: str, prompt: str, config: Any,
     env: Mapping[str, str], tmux: TmuxAdapter, asha_root: Path,
@@ -713,6 +774,7 @@ def open_room(
     room_id: str | None = None,
     profile: str = "room", hub_session_id: str | None = None,
     hub_generation: int = 1, resume_id: str | None = None,
+    selection: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     if profile not in {"worker", "room"}:
         raise RoomError("invalid project session profile")
@@ -727,6 +789,11 @@ def open_room(
         selected_harness = validate_harness(harness)
     except HarnessError as exc:
         raise RoomError(str(exc)) from exc
+    idle_fence = getattr(config, "idle_delivery", False) is True
+    argv = room_respawn_argv(
+        asha_root, selected_harness, text, hub_session=bool(hub_session_id),
+        selection=selection, resume_id=resume_id, idle_fence=idle_fence,
+    )
     command_key, harness_command = room_harness_command(selected_harness, env)
     if executable_finder(harness_command) is None:
         raise RoomError(
@@ -754,7 +821,6 @@ def open_room(
         "prompt_digest": hashlib.sha256(text.encode("utf-8")).hexdigest(),
     }
     crossed_respawn = False
-    idle_fence = getattr(config, "idle_delivery", False) is True
     with store.transaction(create=True):
         store.create(record)  # durable intent precedes the first tmux mutation
         expected_digest = store.digest(record)
@@ -790,27 +856,6 @@ def open_room(
             state, detail = _owned_state(record, tmux)
             if state not in {"open", "ended"}:
                 raise RoomError(f"new room ownership could not be verified: {detail}")
-            argv = ["env"]
-            for key in SCRUBBED_ROLE_ENV:
-                argv.extend(["-u", key])
-            if not hub_session_id:
-                argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION'])
-            if not idle_fence:
-                # A marker inherited from the tmux server's global environment must not
-                # switch on the delivery-only hook work (#96) in a default Room.
-                argv.extend(['-u', 'ASHA_ROOM_INPUT_FENCE'])
-            child = room_tmux_argv(asha_root, selected_harness, text)
-            if resume_id:
-                # The encoded prompt remains data; resume identifiers never enter shell text.
-                if not isinstance(resume_id, str) or not resume_id or resume_id.startswith('-') or len(resume_id) > 512:
-                    raise RoomError("invalid native session ID")
-                if selected_harness == 'claude':
-                    child.extend(['--resume', resume_id])
-                elif selected_harness == 'codex':
-                    child.extend(['resume', resume_id])
-                else:
-                    raise RoomError("native resume is not verified for this harness; open a new session")
-            argv.extend(child)
             crossed_respawn = True
             tmux.respawn(pane, argv)
             record["lifecycle"] = "open"

@@ -17,6 +17,7 @@ from .database import ControlDatabase, DATABASE_NAME
 from .registry_guards import mutation_guard
 from .rooms import (RoomStore, _action_identity, _owned_state, open_room, close_room, attach_room,
                     resolve_project)
+from .session_selection import evidence as selection_evidence, requested
 from .session_store import identifier, text, digest
 from .store import StoreError
 from .tmux import FENCE_LIMIT, RoomInputRefused, TmuxAdapter
@@ -118,7 +119,8 @@ class Hub:
         with self.database() as db, db.transaction() as c:
             return c.execute('SELECT 1 FROM hub_sessions WHERE session_id=?', (sid,)).fetchone() is not None
 
-    def launch(self, *, project, prompt, name=None, harness='claude', profile='worker', session_id=None, transport='terminal', learning_ids=None, result_contract=None):
+    def launch(self, *, project, prompt, name=None, harness='claude', profile='worker', session_id=None, transport='terminal', learning_ids=None, result_contract=None,
+               model=None, effort=None):
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
         selected = resolve_project(project, env=self.env)
@@ -131,9 +133,23 @@ class Hub:
             raise StoreError('structured execution is supported only for Claude and Codex')
         if transport == 'structured' and profile != 'worker':
             raise StoreError('Rooms use interactive terminal sessions')
+        from .session_selection import normalize
+        # Refused before any record, pane or process exists (#95), including
+        # values the tmux transport could not carry into the Room pane.
+        selection = normalize(harness, transport, model=model, effort=effort)
+        if transport == 'terminal':
+            from .rooms import RoomError, room_respawn_argv
+            try:
+                room_respawn_argv(Path(__file__).resolve().parents[2], harness, prompt,
+                                  hub_session=True, selection=selection)
+            except RoomError as exc:
+                raise StoreError(str(exc)) from exc
         sid = identifier(session_id) if session_id else str(uuid.uuid4())
         spec = dict(project=selected['root'], prompt=prompt, harness=harness, profile=profile,
                     name=text(name, 'session name', 256) if name is not None else ' '.join(prompt.split())[:64], transport=transport)
+        # Only requested values enter the spec, so an omitted selection keeps
+        # the idempotency key and every native argv exactly as before.
+        spec.update(selection)
         if result_contract:
             if transport != 'structured' or result_contract != 'asha.session-result.v1':
                 raise StoreError('explicit result contract requires structured execution')
@@ -189,7 +205,8 @@ class Hub:
                       config=self.config, env=self.env, tmux=self.tmux,
                       asha_root=Path(__file__).resolve().parents[2], room_id=row['room_id'],
                       profile=row['profile'], hub_session_id=row['session_id'],
-                      hub_generation=row['generation'], resume_id=row.get('native_id'))
+                      hub_generation=row['generation'], resume_id=row.get('native_id'),
+                      selection=requested(row.get('spec')))
         except BaseException as exc:
             self._update(row['session_id'], lifecycle='interrupted', reason=str(exc)[:1000])
             raise
@@ -340,6 +357,7 @@ class Hub:
 
     def _present_session(self, row):
         from .session_presentation import memory_label, present
+        row['selection'] = selection_evidence(row)
         from .session_publication import latest_saved_at
         row['memory_saved_at'] = latest_saved_at(self, row)
         from .session_completion import view
@@ -646,6 +664,9 @@ class Hub:
     def _new_closure(self, row):
         from .session_experience import Experiences
         record = closure.new_closure(row)
+        # The selection this request was made under; statistics attribute the
+        # close to it even after a later resume or reroute (#95).
+        record['selection'] = selection_evidence(row)
         record['capture'] = Experiences(self).close_capture(row, record['request_id'])
         return record
 
