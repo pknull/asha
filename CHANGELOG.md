@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased — exited Room finalization (#97)
+
+- tmux 3.4 answers `display-message` for a vanished pane id with exit 0 and empty
+  fields. The adapter now reports that as `can't find pane`, so an exited Room
+  whose pane is gone reads `missing` and `session close`/`stop` finalize it with
+  history retained. Real tmux failures still read `unavailable`.
 
 ## Unreleased — private component Memory
 
