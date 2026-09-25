@@ -735,13 +735,12 @@ class TmuxAdapter:
     ) -> str:
         """Return tmux's server-scoped immutable session identifier."""
         pane = _validate_pane_id(pane_id)
-        value = self._one_line(
-            self._run([
-                "display-message", "-p", "-t", pane, "#{session_id}",
-            ], deadline_seconds=deadline_seconds),
-            "session id",
-        )
-        return _validate_session_id(value)
+        output = self._run([
+            "display-message", "-p", "-t", pane, "#{session_id}",
+        ], deadline_seconds=deadline_seconds)
+        if output in {"", "\n"}:
+            raise TmuxError(f"can't find pane: {pane}")
+        return _validate_session_id(self._one_line(output, "session id"))
 
     @staticmethod
     def _room_condition(
@@ -830,6 +829,10 @@ class TmuxAdapter:
         if len(fields) != 8:
             raise TmuxError("tmux returned malformed pane facts")
         returned_pane, raw_pid, raw_dead, raw_status, raw_signal, session, window, title = fields
+        if expected_pane is not None and not any(fields):
+            # tmux answers an unknown pane id with exit 0 and empty fields.
+            # That is evidence the exact pane is gone, not a malformed id.
+            raise TmuxError(f"can't find pane: {expected_pane}")
         if expected_pane is not None and _validate_pane_id(returned_pane) != expected_pane:
             raise TmuxError("tmux returned a different pane identity")
         return self._parse_pane_fields(

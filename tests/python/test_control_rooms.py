@@ -849,6 +849,49 @@ class RoomTests(unittest.TestCase):
             if adapter.has_session(session):
                 adapter.kill_session(session)
 
+    def test_vanished_pane_facts_report_missing_pane_not_invalid_id(self) -> None:
+        # tmux 3.4 answers display-message for an unknown pane id with exit 0
+        # and empty fields; that is evidence of absence, not a malformed id.
+        adapter = TmuxAdapter(socket="asha-unused", config_file=Path("/dev/null"))
+        with unittest.mock.patch.object(adapter, "_run", return_value="\t" * 7 + "\n"):
+            with self.assertRaisesRegex(TmuxError, "can't find pane: %9"):
+                adapter.pane_facts("%9")
+        with unittest.mock.patch.object(adapter, "_run", return_value="\n"):
+            with self.assertRaisesRegex(TmuxError, "can't find pane: %9"):
+                adapter.session_id("%9")
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
+    def test_real_tmux_exited_room_with_vanished_pane_closes(self) -> None:
+        launcher_root = self.root / "sleep-launcher"
+        (launcher_root / "bin").mkdir(parents=True)
+        launcher = launcher_root / "bin/asha"
+        launcher.write_text("#!/bin/sh\nexec sleep 30\n", encoding="utf-8")
+        launcher.chmod(0o700)
+        socket = f"asha-room-gone-{uuid.uuid4().hex[:12]}"
+        self.enterContext(TmuxSocketReaper(socket))
+        adapter = TmuxAdapter(socket=socket, config_file=Path("/dev/null"))
+        returncode, _stdout, _stderr = adapter._run_status([
+            "list-commands", "new-session",
+        ])
+        if returncode != 0:
+            self.skipTest(
+                "isolated tmux sockets are unavailable in this execution sandbox"
+            )
+        # A sentinel keeps the tmux server reachable after the Room is gone.
+        adapter._run(["new-session", "-d", "-s", "sentinel", "sleep", "30"])
+        opened = self._open(
+            tmux=adapter, asha_root=launcher_root, name="Gone Room",
+            room_id="55555555-1111-4111-8111-111111111111",
+        )
+        adapter.kill_session(opened["session"])
+        listed = list_rooms(RoomStore(self.config), tmux=adapter)["rooms"]
+        self.assertEqual(listed[0]["state"], "missing")
+        closed = close_room(RoomStore(self.config), opened["room_id"], tmux=adapter)
+        self.assertEqual(closed["state"], "ended")
+        self.assertTrue(adapter.has_session("sentinel"), "unrelated session must survive")
+        again = close_room(RoomStore(self.config), opened["room_id"], tmux=adapter)
+        self.assertTrue(again["already_closed"])
+
     @unittest.skipUnless(shutil.which("tmux"), "tmux is required")
     def test_real_tmux_child_scrubs_inherited_roles_and_starts_in_project(self) -> None:
         launcher_root = self.root / "probe-launcher"
