@@ -6,7 +6,7 @@ set -uo pipefail
 # A hub worker running this suite from inside its own session would otherwise
 # leak its profile and session identity into every handler under test.
 unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME ASHA_SESSION_PROFILE \
-      ASHA_HUB_SESSION_ID ASHA_HUB_GENERATION ASHA_ROOM_ID 2>/dev/null || true
+      ASHA_HUB_SESSION_ID ASHA_HUB_GENERATION ASHA_HUB_EVENT_ORDER ASHA_ROOM_ID 2>/dev/null || true
 
 REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HANDLERS="$REPO_ROOT/plugins/session/hooks/handlers"

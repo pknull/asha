@@ -171,6 +171,11 @@ def issue(hub, actor, *, outcome, detail, publication=None, request=None):
                            publication_id=publication and publication['publication_id'],
                            request=request, finalized_at=time.time(), destination=str(Path(row['project']) / 'Memory'))
             receipt.update(tool_token=tool_token, tool_finished=False)
+            from .session_order import state as order_state
+            ordered = order_state(current)
+            # Work numbered after this is unaccounted-for or invalidating, even if
+            # its report arrives late and is otherwise ignored (#101 QA8 F2).
+            receipt['order_applied'] = ordered['applied'] or None
             if tool_token is None:
                 receipt.update(status='blocked', detail='No sole observed standalone finalizer tool: the handoff must run '
                                'as the only command in its own tool call, after every other tool finished, through the '
@@ -184,11 +189,9 @@ def check(hub, row, *, digests=None, idle=False, connection=None):
     receipt = row.get('completion') or {}
     if receipt.get('status') != 'ready' or receipt.get('contract') != CONTRACT:
         raise StoreError('verified project-memory handoff required; run session handoff before reporting finished')
-    if any(receipt.get(k) != v for k, v in binding(row).items()):
-        raise StoreError('stale project-memory handoff: further work or a new incarnation began')
-    request = receipt.get('request')
-    if request and (not row.get('closure') or request != closure.receipt_for(row['closure'])):
-        raise StoreError('stale project-memory handoff: close request or attempt changed')
+    unbound = _unbound_reason(row, receipt)
+    if unbound:
+        raise StoreError('stale project-memory handoff: ' + unbound)
     if digests is None:
         root = _scope(row)
         current = closure.memory_v2.snapshot_digests(closure.memory_v2.read_published_snapshot(root))
@@ -236,47 +239,167 @@ def check(hub, row, *, digests=None, idle=False, connection=None):
     return receipt
 
 
-def view(hub, row):
+# Harnesses whose native hooks report turn boundaries to Control.
+NATIVE_IDLE_HARNESSES = {'claude', 'codex'}
+
+
+def no_handoff_unsupported(row):
+    """Why this session can never close without a turn here, or None (a permanent refusal)."""
+    if row.get('transport') != 'terminal':
+        return ('close --no-handoff applies to terminal sessions; a structured session closes through its managed '
+                'turn (close) or --force')
+    if row.get('harness') not in NATIVE_IDLE_HARNESSES:
+        return (f"{row.get('harness')} has no native idle bridge in Control, so no idle boundary can be verified; "
+                'attach, or --force')
+    return None
+
+
+def no_handoff_refusal(row):
+    """Why this terminal row's stored facts are not a native idle boundary now, or None (#101).
+
+    Ordering (whether those facts are the newest) is ``session_order.kill_refusal``.
+    """
+    native = row.get('native_activity')
+    if row.get('activity') == 'needs-input' or native == 'needs-input':
+        return ('the session is waiting for input (a native question or permission prompt); answer it in the '
+                'terminal, or --force')
+    if native == 'working' and row.get('background_tasks'):
+        return (f"the session is working: its turn ended with {row['background_tasks']} background task(s) still "
+                'running (#99); wait for the wake-up turn to stop, or --force')
+    if native == 'working' or row.get('activity') == 'working' or row.get('active_tools'):
+        return 'the session is working (a turn or tool is in progress); wait for it to stop, or --force'
+    if native not in {'idle', 'exited'} or row.get('native_observed_at') is None:
+        return ('no verified native idle boundary has been observed (activity unknown); attach to check the '
+                'terminal, or --force')
+    return None
+
+
+def no_handoff_eligibility(row, counters):
+    """The one predicate behind both `close --no-handoff` and the dashboard's offer of it.
+
+    ``counters`` is the incarnation's event counter and attempt log; the command
+    reads them under the counter lock it then holds through the kill.
+    """
+    from .session_order import kill_refusal
+    return no_handoff_unsupported(row) or no_handoff_refusal(row) or kill_refusal(row, counters)
+
+
+def _ready(receipt):
+    return receipt.get('status') == 'ready' and receipt.get('contract') == CONTRACT
+
+
+def _unbound_reason(row, receipt):
+    """Why a ready receipt no longer describes this row's work, or None."""
+    if any(receipt.get(k) != v for k, v in binding(row).items()):
+        return 'further work or a new incarnation began'
+    request = receipt.get('request')
+    if request and (not row.get('closure') or request != closure.receipt_for(row['closure'])):
+        return 'close request or attempt changed'
+    return None
+
+
+def mark_stale(row):
+    """Stamp, once per receipt, the first write at which it stopped matching the row's work.
+
+    Runs on every hub row save. Memory-side staleness is not a row write; the
+    view dates it from the published files instead.
+    """
+    receipt = row.get('completion') or {}
+    if not _ready(receipt) or (row.get('completion_stale') or {}).get('receipt_id') == receipt.get('receipt_id'):
+        return row
+    reason = _unbound_reason(row, receipt)
+    if reason:
+        row['completion_stale'] = dict(receipt_id=receipt.get('receipt_id'), at=time.time(), reason=reason)
+    return row
+
+
+def _memory_changed_at(row, receipt):
+    """When the published Memory last changed after this receipt, if that is knowable."""
     try:
-        receipt = check(hub, row)
-        return dict(status='ready', receipt_id=receipt['receipt_id'])
-    except (OSError, ValueError) as exc:
-        return dict(status='stale' if row.get('completion', {}).get('status') == 'ready' else 'missing',
+        root = closure.secure_project_root(Path(row['project']))
+        stamps = [closure.secure_path(root, name).stat().st_mtime
+                  for name in ('Memory/activeContext.md', 'Memory/decisions.md', 'Work/markers/silence')
+                  if closure.secure_path(root, name).exists()]
+    except (OSError, ValueError):
+        return None
+    later = [stamp for stamp in stamps if stamp >= receipt.get('finalized_at', float('inf'))]
+    return max(later) if later else None
+
+
+def view(hub, row):
+    """Readiness plus the operator-facing receipt state: current, stale (since when) or none."""
+    receipt = row.get('completion') or {}
+    facts = dict(finalized_at=receipt.get('finalized_at') if _ready(receipt) else None, stale_since=None)
+    try:
+        found = check(hub, row)
+        from . import session_order
+        if row['transport'] == 'terminal':
+            unaccounted = session_order.receipt_unaccounted(
+                row, found, session_order.read_counters(hub.config, row, wait=0.05))
+            if unaccounted:
+                return dict(facts, status='stale', receipt='stale', receipt_id=found['receipt_id'],
+                            stale_since=None, reason='receipt not provably current: ' + unaccounted)
+        return dict(facts, status='ready', receipt='current', receipt_id=found['receipt_id'])
+    except CompletionPending as exc:
+        # Valid and bound to this work; only its finalizer's end is still due.
+        return dict(facts, status='stale', receipt='current', receipt_id=receipt.get('receipt_id'),
                     reason=str(exc))
+    except (OSError, ValueError) as exc:
+        if not _ready(receipt):
+            return dict(facts, status='missing', receipt='none', reason=str(exc))
+        stale = row.get('completion_stale') or {}
+        since = stale.get('at') if stale.get('receipt_id') == receipt.get('receipt_id') else None
+        if since is None and 'Memory' in str(exc):
+            since = _memory_changed_at(row, receipt)
+        return dict(facts, status='stale', receipt='stale', receipt_id=receipt.get('receipt_id'),
+                    stale_since=since, reason=str(exc))
 
 
 def close_finalized(hub, row, *, ended=False):
     """Return a closed row only after revalidation at the owned stop boundary."""
     if not row.get('completion'):
         return None
+    from contextlib import nullcontext
+    from . import session_order
     with hub._observation_lock(row['session_id']):
         current = hub.get(row['session_id'])
         stopping = False
+        live_terminal = current['transport'] == 'terminal' and not ended
         try:
-            with snapshot(current) as digests:
-                with hub.database() as db, db.transaction(write=True) as c:
-                    current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?',
-                                                   (row['session_id'],)).fetchone()[0])
-                    receipt = check(hub, current, digests=digests,
-                                    idle=current['transport'] == 'structured' or not ended, connection=c)
-                    if current['transport'] == 'structured':
-                        # Fence enqueue/claim_turn before releasing the writer. The
-                        # ordinary stop path handles provider cleanup afterwards.
-                        c.execute('UPDATE managed_sessions SET stop_requested=1 WHERE session_id=?',
-                                  (current['session_id'],))
-                record = current.get('closure')
-                if not record or record['generation'] != current['generation']:
-                    record = closure.new_closure(current)
-                record = closure.transition(record, 'completed', attachment_required=False,
-                    delivery=dict(channel='completion-receipt', detail='Finalized, closing',
-                                  message_id=None, delivered_at=time.time()),
-                    completion_receipt=receipt['receipt_id'],
-                    memory=dict(record['memory'], saved=receipt['outcome'] == 'published'),
-                    handoff=dict(outcome=receipt['outcome'], detail=receipt['detail'], verified=True,
-                                 generation=current['generation'], acknowledged_at=receipt['finalized_at'],
-                                 destination=receipt['destination'], digests=receipt['digests']))
-                stopping = True
-                return hub._stop(current, close=True, closure_record=record)
+            with (session_order.allocation(hub.config, current) if live_terminal else nullcontext()) as counters:
+                with snapshot(current) as digests:
+                    with hub.database() as db, db.transaction(write=True) as c:
+                        current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?',
+                                                       (row['session_id'],)).fetchone()[0])
+                        receipt = check(hub, current, digests=digests,
+                                        idle=current['transport'] == 'structured' or not ended, connection=c)
+                        if live_terminal:
+                            # One invariant for every turnless kill (#101 QA8), held
+                            # with the counter lock through the stop below.
+                            refused = (session_order.kill_refusal(current, counters)
+                                       or session_order.receipt_unaccounted(current, receipt, counters))
+                            if refused:
+                                raise CompletionPending('receipt close waits: ' + refused)
+                        if current['transport'] == 'structured':
+                            # Fence enqueue/claim_turn before releasing the writer. The
+                            # ordinary stop path handles provider cleanup afterwards.
+                            c.execute('UPDATE managed_sessions SET stop_requested=1 WHERE session_id=?',
+                                      (current['session_id'],))
+                    record = current.get('closure')
+                    if not record or record['generation'] != current['generation']:
+                        record = closure.new_closure(current)
+                    record = closure.transition(record, 'completed', attachment_required=False,
+                        delivery=dict(channel='completion-receipt', detail='Finalized, closing',
+                                      message_id=None, delivered_at=time.time()),
+                        completion_receipt=receipt['receipt_id'],
+                        memory=dict(record['memory'], saved=receipt['outcome'] == 'published'),
+                        handoff=dict(outcome=receipt['outcome'], detail=receipt['detail'], verified=True,
+                                     generation=current['generation'], acknowledged_at=receipt['finalized_at'],
+                                     destination=receipt['destination'], digests=receipt['digests']))
+                    stopping = True
+                    # A graceful close never kills a terminal a person is attached to
+                    # (QA7): tmux refuses the kill itself; the receipt stays for a retry.
+                    return hub._stop(current, close=True, closure_record=record, detached_only=True)
         except (OSError, ValueError) as exc:
             if stopping:
                 raise

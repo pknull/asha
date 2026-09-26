@@ -13,7 +13,7 @@ set -uo pipefail
 
 # Sandbox hermeticity: an operator shell exporting these must not leak in.
 unset ASHA_HOME XDG_STATE_HOME XDG_DATA_HOME ASHA_SESSION_PROFILE \
-      ASHA_HUB_SESSION_ID ASHA_HUB_GENERATION ASHA_CONTROL_MANAGED 2>/dev/null || true
+      ASHA_HUB_SESSION_ID ASHA_HUB_GENERATION ASHA_HUB_EVENT_ORDER ASHA_CONTROL_MANAGED 2>/dev/null || true
 
 REPO_ROOT="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 HANDLERS="$REPO_ROOT/plugins/session/hooks/handlers"
@@ -495,6 +495,83 @@ if [[ "$OUT" == "$BLOCK" ]]; then
   ok "a managed task still passes through a valid single-line block decision"
 else
   fail "a managed task still passes through a valid single-line block decision ($OUT)"
+fi
+
+echo "--- hub event order (#101) ---"
+ORDER_DIR="$WORK/order"; mkdir -m 0700 "$ORDER_DIR"
+ORDER_FILE="$ORDER_DIR/1"; printf '0\n' > "$ORDER_FILE"; chmod 0600 "$ORDER_FILE"
+ATTEMPTS="$ORDER_FILE.attempts"; : > "$ATTEMPTS"; chmod 0600 "$ATTEMPTS"
+attempts() { wc -c < "$ATTEMPTS" | tr -d ' '; }
+run_control UserPromptSubmit '{"session_id":"native-ord"}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
+FIRST="$(captured)"
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
+SECOND="$(captured)"
+if [[ "$FIRST" == "control session event --event prompt-submitted --native-id native-ord --order 1 --attempts 1" \
+   && "$SECOND" == "control session event --event turn-stopped --native-id native-ord --order 2 --attempts 2" \
+   && "$(cat "$ORDER_FILE")" == "2" && "$(wc -c < "$ORDER_FILE")" -eq 2 && "$(attempts)" == "2" ]]; then
+  ok "each hub event records an attempt, then takes the next order from its private counter, with no tmux"
+else
+  fail "each hub event takes the next order ($FIRST | $SECOND | $(od -c "$ORDER_FILE" | head -2))"
+fi
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+[[ "$(captured)" != *--order* ]] && ok "without a counter no order is forwarded (the hub treats it as unsequenced)" \
+  || fail "without a counter no order is forwarded ($(captured))"
+ln -s "$ORDER_FILE" "$ORDER_DIR/link"
+: > "$ORDER_DIR/link.attempts"; chmod 0600 "$ORDER_DIR/link.attempts"
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_DIR/link" >/dev/null
+[[ "$(captured)" != *--order* && "$(cat "$ORDER_FILE")" == "2" ]] && ok "a symlinked counter is refused and left untouched" \
+  || fail "a symlinked counter is refused ($(captured))"
+for bad in '' 'x' '-3' '0999999999' $'4\ngarbage'; do
+  printf '%s\n' "$bad" > "$ORDER_FILE"
+  run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
+  if [[ "$(captured)" == *--order* || "$(cat "$ORDER_FILE")" != "$bad" ]]; then
+    fail "unreadable counter content '$bad' is never reset or forwarded ($(captured))"
+  fi
+done
+ok "unreadable counter content is never reset or forwarded"
+printf '5\n' > "$ORDER_FILE"; chmod 0666 "$ORDER_FILE"
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
+[[ "$(captured)" != *--order* && "$(cat "$ORDER_FILE")" == "5" ]] && ok "a counter readable or writable by others is refused" \
+  || fail "a counter readable or writable by others is refused ($(captured))"
+chmod 0600 "$ORDER_FILE"
+printf '5\n' > "$ORDER_FILE"
+exec {HELD}<>"$ORDER_FILE"; flock "$HELD"
+BEFORE="$(attempts)"
+START_NS=$(date +%s%N)
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
+ELAPSED_MS=$(( ($(date +%s%N) - START_NS) / 1000000 ))
+exec {HELD}>&-
+[[ "$(captured)" != *--order* && "$(captured)" != *--attempts* && "$(cat "$ORDER_FILE")" == "5" && $ELAPSED_MS -lt 1500 ]] \
+  && ok "a held counter lock is waited on only briefly, then the event goes unordered" \
+  || fail "a held counter lock is bounded (${ELAPSED_MS}ms, $(captured))"
+# Two bytes: the attempt, and one after the failed allocation, past any concurrent Stop's count (QA10).
+[[ "$(attempts)" == "$((BEFORE + 2))" ]] && ok "a hook that cannot take a number leaves its attempt and its failure" \
+  || fail "a hook that cannot take a number leaves its attempt and its failure ($BEFORE -> $(attempts))"
+BEFORE="$(attempts)"; chmod 0644 "$ATTEMPTS"
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
+[[ "$(captured)" != *--order* && "$(attempts)" == "$BEFORE" && "$(cat "$ORDER_FILE")" == "5" ]] \
+  && ok "a non-private attempt log is refused: no attempt, no number" \
+  || fail "a non-private attempt log is refused ($(captured); $BEFORE -> $(attempts))"
+chmod 0600 "$ATTEMPTS"
+FULL="$ORDER_DIR/full"; printf '0\n' > "$FULL"; chmod 0600 "$FULL"
+truncate -s 4194304 "$FULL.attempts"; chmod 0600 "$FULL.attempts"
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$FULL" >/dev/null
+[[ "$(captured)" != *--order* && "$(wc -c < "$FULL.attempts" | tr -d ' ')" == "4194304" && "$(cat "$FULL")" == "0" ]] \
+  && ok "a full attempt log stops growing and nothing is numbered" \
+  || fail "a full attempt log stops growing ($(captured))"
+printf '0\n' > "$ORDER_FILE"; : > "$ATTEMPTS"
+for i in $(seq 1 12); do
+  ( printf '%s' '{"session_id":"native-ord"}' | env ASHA_ROOT="$FAKE_ROOT" CONTROL_CAPTURE="$WORK/par.$i" \
+      ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" "$CONTROL_HANDLER" UserPromptSubmit >/dev/null 2>&1 ) &
+done
+wait
+ORDERS="$(cat "$WORK"/par.* 2>/dev/null | sed -n 's/.*--order \([0-9]*\).*/\1/p' | sort -n | tr '\n' ' ')"
+LAST_ATTEMPTS="$(cat "$WORK"/par.* 2>/dev/null | sed -n 's/.*--order 12 --attempts \([0-9]*\).*/\1/p')"
+if [[ "$ORDERS" == "1 2 3 4 5 6 7 8 9 10 11 12 " && "$(cat "$ORDER_FILE")" == "12" \
+      && "$(attempts)" == "12" && "$LAST_ATTEMPTS" == "12" ]]; then
+  ok "concurrent hooks take distinct, gap-free orders under the lock"
+else
+  fail "concurrent hooks take distinct orders ($ORDERS; counter $(cat "$ORDER_FILE"))"
 fi
 
 OUT="$(run_control Stop '' ASHA_SESSION_PROFILE=worker)"

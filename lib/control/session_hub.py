@@ -18,6 +18,8 @@ from .registry_guards import mutation_guard
 from .rooms import (RoomStore, _action_identity, _owned_state, open_room, close_room, attach_room,
                     resolve_project)
 from .session_selection import evidence as selection_evidence, requested
+from .session_completion import no_handoff_eligibility, no_handoff_refusal, no_handoff_unsupported
+from . import session_order
 from .session_store import identifier, text, digest
 from .store import StoreError
 from .tmux import FENCE_LIMIT, RoomInputRefused, TmuxAdapter
@@ -50,6 +52,15 @@ def waiting_on_background(row):
 # hooks and handoff remain valid until the close terminates it.
 ACTIVE_LIFECYCLES = {'starting', 'open', 'closing'}
 CLOSE_WAIT_LIMIT = 600
+NO_HANDOFF_DISABLED = ('close --no-handoff is experimental and off by default: a hook still between its '
+                       'attempt and its number can be covered by an older Stop (#103). Enable it with '
+                       '{"control": {"no_handoff_close": true}} in the Asha config, or attach, or --force')
+
+
+def no_handoff_enabled(config):
+    return getattr(config, 'no_handoff_close', False) is True
+
+
 # Idle-input refusals (#96) after which an automatic native-resume restart may
 # still run: nothing showed a person or a draft at the pane. ``disabled`` (the
 # default: idle typing is off) keeps the pre-#96 Codex native-resume close.
@@ -194,6 +205,8 @@ class Hub:
 
     @staticmethod
     def _save(c, row):
+        from .session_completion import mark_stale
+        mark_stale(row)
         row['updated_at'] = time.time()
         c.execute('INSERT INTO hub_sessions VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET lifecycle=excluded.lifecycle,updated_at=excluded.updated_at,payload=excluded.payload',
                   (row['session_id'], row['lifecycle'], row['updated_at'], json.dumps(row)))
@@ -294,12 +307,13 @@ class Hub:
         try:
             # Friendly labels may repeat. Rooms retain every incarnation.
             room_name = f"session-{row['session_id']}-{row['generation']}"
+            order_file = session_order.create_counter(self.config, row['session_id'], row['generation'])
             open_room(name=room_name, project=row['project'], harness=row['harness'], prompt=brief,
                       config=self.config, env=self.env, tmux=self.tmux,
                       asha_root=Path(__file__).resolve().parents[2], room_id=row['room_id'],
                       profile=row['profile'], hub_session_id=row['session_id'],
                       hub_generation=row['generation'], resume_id=row.get('native_id'),
-                      selection=requested(row.get('spec')))
+                      selection=requested(row.get('spec')), hub_event_order=order_file)
         except BaseException as exc:
             self._update(row['session_id'], lifecycle='interrupted', reason=str(exc)[:1000])
             raise
@@ -369,6 +383,16 @@ class Hub:
 
     def show(self, sid):
         row = self.get(sid)
+        if row['lifecycle'] in ACTIVE_LIFECYCLES and not no_handoff_enabled(self.config):
+            # Off by default (#103): never offered, so the dashboard says attach.
+            row['no_handoff'] = dict(eligible=False, reason=NO_HANDOFF_DISABLED)
+        elif row['lifecycle'] in ACTIVE_LIFECYCLES:
+            # The same predicate `close --no-handoff` applies, over the stored
+            # facts, before presentation rewrites activity (QA7 P2).
+            counters = (session_order.read_counters(self.config, row, wait=0.05)
+                        if row['transport'] == 'terminal' else None)
+            reason = no_handoff_eligibility(row, counters)
+            row['no_handoff'] = dict(eligible=reason is None, reason=reason)
         capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
         if capture.get('report_id'):
             with self.database() as db, db.transaction() as c:
@@ -631,7 +655,7 @@ class Hub:
             return False
         return state == 'open'
 
-    def _stop(self, row, *, close, closure_record=None, dismiss=False):
+    def _stop(self, row, *, close, closure_record=None, dismiss=False, detached_only=False):
         """Terminate the owned process; record the closure outcome honestly."""
         sid = row['session_id']
         if row['transport'] == 'structured':
@@ -649,7 +673,8 @@ class Hub:
                 if self.tmux.has_session(session):
                     raise StoreError('launch ownership is uncertain; inspect the retained session')
             else:
-                close_room(rooms, row['room_id'], tmux=self.tmux)
+                # ``detached_only`` makes tmux itself refuse while a client is attached.
+                close_room(rooms, row['room_id'], tmux=self.tmux, detached_only=detached_only)
         changes = dict(lifecycle='closed' if close else 'stopped')
         if closure_record is not None:
             attention = (closure_record['state'] in closure.ATTENTION_STATES and not closure_record['memory'].get('saved')
@@ -659,32 +684,40 @@ class Hub:
         self._update(sid, **changes)
         return self.show(sid)
 
-    def close(self, sid, *, force=False, wait=0):
+    def close(self, sid, *, force=False, wait=0, no_handoff=False):
         """Graceful close: request a final handoff turn; terminate only after a verified acknowledgement.
 
         Repeated calls are idempotent: one request per incarnation, no duplicate
         messages. ``wait`` polls for the acknowledgement (bounded) before the
         final termination. ``force`` terminates now and records that no
-        memory save was claimed.
+        memory save was claimed. ``no_handoff`` asks for no turn: a current
+        receipt still completes; otherwise the session stops at a verified
+        native idle boundary as ``closed-no-save-claimed`` (#101).
         """
         if type(wait) is not int or not 0 <= wait <= CLOSE_WAIT_LIMIT:
             raise StoreError(f'wait must be 0..{CLOSE_WAIT_LIMIT} seconds')
+        if no_handoff and not no_handoff_enabled(self.config):
+            raise StoreError(NO_HANDOFF_DISABLED)
+        if force and no_handoff:
+            raise StoreError('--force terminates now; --no-handoff waits for an idle boundary: choose one')
+        if no_handoff:
+            from .sessions import refuse_managed_operator
+            refuse_managed_operator(self.config, self.env)
+            return self._close_without_handoff(sid, wait)
         if force:
             if wait:
                 raise StoreError('--force terminates now; it cannot be combined with --wait')
             return self.stop(sid, close=True)
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
-        with self._action_lock(sid):
-            result = self._close_once(sid)
         deadline = time.monotonic() + wait
+        result = self._close_step(sid, deadline)
         while result['lifecycle'] == 'closing' and time.monotonic() < deadline:
             state = result['closure']['state']
             if result['activity'] == 'needs-input':
                 break
             if state == 'acknowledged':
-                with self._action_lock(sid):
-                    result = self._close_once(sid)
+                result = self._close_step(sid, deadline)
                 if result['lifecycle'] == 'closing':
                     time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
                 continue
@@ -693,9 +726,21 @@ class Hub:
             # A queued-only channel is satisfied only when the worker reads messages; poll it gently.
             interval = 0.5 if result['closure']['delivery'].get('channel') in {'stop-hook', 'structured-turn'} else 2.0
             time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
-            with self._action_lock(sid):
-                result = self._close_once(sid)
+            result = self._close_step(sid, deadline)
         return result
+
+    def _close_step(self, sid, deadline):
+        """One close attempt. A client attached at the receipt close's kill is a
+        transient refusal: poll until ``deadline``, then refuse, keeping the receipt."""
+        while True:
+            try:
+                with self._action_lock(sid):
+                    return self._close_once(sid)
+            except RoomInputRefused as exc:
+                if time.monotonic() >= deadline:
+                    raise StoreError(f'close refused: the terminal is in use ({exc}); nothing was stopped and the '
+                                     'completion receipt is kept. Detach, then re-run close, or --force') from exc
+                time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
 
     def _close_once(self, sid):
         row = self.get(sid)
@@ -767,6 +812,84 @@ class Hub:
         self._update(sid, lifecycle='closing',
                      closure_fn=lambda current, _row: record if current == observed else current)
         return self.show(sid)
+
+    def _close_without_handoff(self, sid, wait):
+        """Poll (bounded by ``wait``) until the session can stop without a turn; refuse with the last reason."""
+        deadline = time.monotonic() + wait
+        while True:
+            with self._action_lock(sid):
+                result, reason = self._close_without_handoff_once(sid)
+            if result is not None:
+                return result
+            if time.monotonic() >= deadline:
+                raise StoreError('close --no-handoff refused: ' + reason)
+            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+
+    def _close_without_handoff_once(self, sid):
+        """Return (closed row, None), or (None, transient reason). Permanent refusals raise."""
+        row = self.get(sid)
+        if row['lifecycle'] == 'closed':
+            return self.show(sid), None
+        live = self._live(row)
+        from .session_completion import close_finalized
+        try:
+            finalized = close_finalized(self, row, ended=not live)
+        except RoomInputRefused as exc:
+            return None, (f'the terminal is in use ({exc}); nothing was stopped and the completion receipt is kept. '
+                          'Detach first, or --force')
+        if finalized is not None:
+            # A current receipt still closes as completed, without a turn.
+            return finalized, None
+        unsupported = no_handoff_unsupported(row)
+        if unsupported:
+            raise StoreError('close --no-handoff refused: ' + unsupported)
+        if not live:
+            # Nothing is running that could lose work; say so rather than wait.
+            if row['lifecycle'] in ACTIVE_LIFECYCLES:
+                from .session_experience import Experiences
+                row = Experiences(self).reconcile_completion(row)
+            return self._stop(row, close=True, closure_record=self._no_handoff_record(
+                row, 'the harness was no longer live')), None
+        with self._observation_lock(sid):
+            # Hooks write under this lock: a prompt that landed during the
+            # liveness probe is seen here, and one arriving now waits for the stop.
+            current = self.get(sid)
+            if current['generation'] != row['generation'] or current['lifecycle'] not in ACTIVE_LIFECYCLES:
+                return None, 'the session changed while closing; retry'
+            reason = no_handoff_refusal(current)
+            if reason:
+                return None, reason
+            # The counter lock is held through the kill: no hook of this
+            # incarnation can take a number between this check and the stop.
+            with session_order.allocation(self.config, current) as counters:
+                reason = session_order.kill_refusal(current, counters)
+                if reason:
+                    return None, reason
+                with self.database() as db, db.transaction() as c:
+                    unread = c.execute("SELECT COUNT(*) FROM hub_messages WHERE session_id=? AND state='queued'",
+                                       (sid,)).fetchone()[0]
+                record = self._no_handoff_record(current, 'stopped at a verified native idle boundary'
+                                                 + (f'; {unread} queued message(s) left unread' if unread else ''))
+                try:
+                    return self._stop(current, close=True, closure_record=record, detached_only=True), None
+                except RoomInputRefused as exc:
+                    return None, (f'the terminal is in use ({exc}); nothing was stopped. Detach first, or attach '
+                                  'and finish there, or --force')
+
+    def _no_handoff_record(self, row, detail):
+        record = row.get('closure')
+        if not record or record['generation'] != row['generation'] or record['state'] in closure.TERMINAL_STATES:
+            history = row.get('closure_history', [])
+            if record and record not in history:
+                # Kept once, even when a refused attempt is retried.
+                self._update(row['session_id'], closure_history=history + [record])
+            # No turn is requested, so no experience capture is requested either.
+            record = closure.new_closure(row)
+            record['selection'] = selection_evidence(row)
+        # A handoff an earlier attempt verified stays as evidence; this close claims none.
+        return closure.transition(record, closure.NO_HANDOFF_STATE, attachment_required=False,
+                                  delivery=dict(channel='no-handoff', detail=detail, message_id=None,
+                                                delivered_at=None))
 
     def _new_closure(self, row):
         from .session_experience import Experiences
@@ -990,6 +1113,11 @@ class Hub:
         if (not recent or activity != 'idle' or row['harness'] not in {'claude', 'codex'} or not row.get('native_id')):
             return closure.transition(record, 'unanswered', attachment_required=True,
                 last_error='no proven Stop channel; idle native resume unavailable or activity unknown; attachment required')
+        unordered = session_order.kill_refusal(row, session_order.read_counters(self.config, row))
+        if unordered:
+            # The restart kills the process: the same invariant as every turnless kill.
+            return closure.transition(record, 'unanswered', attachment_required=True,
+                last_error=f'idle native resume refused: {unordered}; attachment required')
         sid = row['session_id']
         self._update(sid, expected_generation=row['generation'], lifecycle='closing', closure=record)
         # Observe uses this same short lock. No database transaction spans the
@@ -1006,8 +1134,11 @@ class Hub:
                     or not 0 <= time.time() - observed_at <= 300):
                 return latest or record
             try:
-                # Never kill a Room a person attached to after the probes.
-                close_room(RoomStore(self.config), fresh['room_id'], tmux=self.tmux, detached_only=True)
+                with session_order.allocation(self.config, fresh) as counters:
+                    if session_order.kill_refusal(fresh, counters):
+                        return latest or record
+                    # Never kill a Room a person attached to after the probes.
+                    close_room(RoomStore(self.config), fresh['room_id'], tmux=self.tmux, detached_only=True)
             except RoomInputRefused as exc:
                 refused = dict(record, attachment_required=True, input_refusal=exc.category,
                                last_error='Control did not restart the session for close: ' + str(exc)[:300] + '; needs attach')
@@ -1265,7 +1396,10 @@ class Hub:
         return row
 
     def observe(self, event, *, native_id=None, state=None, body=None, tool_kind='work', tool_token='unknown',
-                sequence=None, sequence_pane=None, cwd=None, background_tasks=None):
+                sequence=None, sequence_pane=None, cwd=None, background_tasks=None, order=None, attempts=None):
+        session_order.validate(order, attempts)
+        if order is not None and not event:
+            raise StoreError('event order is hook evidence; worker reports do not carry it')
         actor = self.actor()
         if cwd is not None and not event:
             raise StoreError('cwd is hook evidence; worker reports do not carry it')
@@ -1284,16 +1418,32 @@ class Hub:
                 raise StoreError('stale or inactive session reporter')
             return self._observe(row, event, native_id=native_id, state=state, body=body,
                                  tool_kind=tool_kind, tool_token=tool_token, sequence=sequence,
-                                 sequence_pane=sequence_pane, cwd=cwd, background_tasks=background_tasks)
+                                 sequence_pane=sequence_pane, cwd=cwd, background_tasks=background_tasks,
+                                 order=order, attempts=attempts)
 
     def _observe(self, row, event, *, native_id, state, body, tool_kind, tool_token, validate_fn=None,
-                 sequence=None, sequence_pane=None, cwd=None, background_tasks=None):
+                 sequence=None, sequence_pane=None, cwd=None, background_tasks=None, order=None, attempts=None):
         activity = EVENTS.get(event) if event else state
         if activity not in {'idle', 'working', 'needs-input', 'finished', 'exited'}:
             raise StoreError('invalid session observation')
         if background_tasks is not None and (event != 'turn-stopped' or type(background_tasks) is not int
                                              or not 0 <= background_tasks < BACKGROUND_TASK_LIMIT):
             raise StoreError('invalid background task count')
+        ordered = {}
+        if event:
+            # An older or repeated hook report must not undo newer work (#101).
+            # An unsequenced one records the counter it arrived after (QA8 F3).
+            disposition, ordered = session_order.observe(
+                row, event, order, attempts=attempts,
+                allocated=lambda: session_order.read_allocated(self.config, row))
+            if disposition == 'ignored':
+                if session_order.ignored_work(row, event, order, tool_kind):
+                    # Late work after a receipt still invalidates it (QA8 F2).
+                    ordered.update(work_epoch=str(uuid.uuid4()), completion_report=None)
+                result = self._update(row['session_id'], expected_generation=row['generation'],
+                                      validate_fn=validate_fn, **ordered)
+                result['observation'] = 'ignored'
+                return result
         # #99: Claude's Stop payload lists background work (shells, Monitors,
         # agents) still running or pending. Such a turn ended, but the session
         # waits for that work to wake it: it is not an idle boundary.
@@ -1387,8 +1537,13 @@ class Hub:
                     return closure.transition(record, 'undeliverable',
                                               last_error='the harness exited before answering the close request')
                 return record
-        return self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn,
-                            validate_fn=validate_fn, **changes)
+        changes.update(ordered)
+        result = self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn,
+                              validate_fn=validate_fn, **changes)
+        if event:
+            # The CLI gives an ignored Stop no delivery effects (QA8 F4).
+            result['observation'] = 'applied'
+        return result
 
     def acknowledge(self, mid, *, delivery_digest=None):
         row = self.actor()

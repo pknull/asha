@@ -134,7 +134,13 @@ receipt plus a verified idle boundary lets normal close terminate without anothe
 model turn. Missing/stale receipts require a fresh project-memory handoff; an idle
 pane that refuses typing, or an unsupported terminal, says needs attach. Codex's existing idle continuation
 is a fallback only when no qualifying receipt exists. Treat `completion_readiness`
-and `closure.guidance` as evidence; never infer readiness from prose.
+(`receipt`: current, stale with `stale_since`, or none) and `closure.guidance` as
+evidence; never infer readiness from prose. `close ID --no-handoff` is
+experimental and refused unless the Control setting `no_handoff_close` is true
+(#103); when enabled it stops an idle
+Claude/Codex terminal without a turn as `closed-no-save-claimed`. It claims no
+save, refuses while the session works, waits for input or has a client attached,
+and still completes normally on a current receipt.
 
 Worker assignments include the project-memory startup/completion contract across
 harnesses without chair context. `report --state finished` requires a current

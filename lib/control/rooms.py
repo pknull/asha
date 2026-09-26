@@ -751,7 +751,7 @@ def room_respawn_argv(
     for key in SCRUBBED_ROLE_ENV:
         argv.extend(["-u", key])
     if not hub_session:
-        argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION'])
+        argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION', '-u', 'ASHA_HUB_EVENT_ORDER'])
     if not idle_fence:
         # A marker inherited from the tmux server's global environment must not
         # switch on the delivery-only hook work (#96) in a default Room.
@@ -779,6 +779,7 @@ def open_room(
     profile: str = "room", hub_session_id: str | None = None,
     hub_generation: int = 1, resume_id: str | None = None,
     selection: Mapping[str, str] | None = None,
+    hub_event_order: str | None = None,
 ) -> dict[str, Any]:
     if profile not in {"worker", "room"}:
         raise RoomError("invalid project session profile")
@@ -837,6 +838,8 @@ def open_room(
                 "ASHA_SESSION_PROFILE": profile,
                 **({"ASHA_HUB_SESSION_ID": hub_session_id,
                     "ASHA_HUB_GENERATION": str(hub_generation)} if hub_session_id else {}),
+                # This incarnation's hook event counter (#101), private hub state.
+                **({"ASHA_HUB_EVENT_ORDER": hub_event_order} if hub_session_id and hub_event_order else {}),
                 "ASHA_ORCHESTRATOR_STANCE": "0", ROOM_ENV: identity,
                 # The idle-typing fence (#96) exists only when opted in; an
                 # explicit "0" overrides any server-global marker.

@@ -13,8 +13,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .config import load_config
 from .hub_cli import overview
-from .session_hub import Hub
-from .session_presentation import memory_label, present
+from .session_hub import Hub, no_handoff_enabled
+from .session_presentation import memory_label, present, receipt_label
 from .tmux import TmuxAdapter
 from .tui_style import BAD, GOOD, INERT, MACHINE, WAITING, tier_for
 from .session_selection import label as selection_label
@@ -40,7 +40,9 @@ def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
               (snapshot.get('summary', 'Reading sessions…'), 'summary',
                WAITING if any(row['activity'] in {'needs-input', 'waiting-input'} for row in rows) else None),
               ('   NEXT STEP                       PROJECT / SESSION                 HARNESS', 'heading', None)]
-    help_lines = textwrap.wrap('Enter attach | a input | m send | n job | o Room | x close (handoff) | X force-close | s stop | r resume | M input list | A history | G workflows | q quit', width=max(1, width))
+    turnless = ' c close (no handoff) |' if snapshot.get('no_handoff_close') else ''
+    help_lines = textwrap.wrap('Enter attach | a input | m send | n job | o Room | x close (handoff) |' + turnless
+                               + ' X force-close | s stop | r resume | M input list | A history | G workflows | q quit', width=max(1, width))
     space = max(0, height - 7 - bool(snapshot.get('errors')) - len(help_lines))
     # Reserve a group heading as well as a selected row when scrolling.
     start = max(0, selected - max(1, space - 2) + 1)
@@ -66,8 +68,10 @@ def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
         saved = memory_label(row)
         detail = (saved + ' · ' if saved else '') + row.get('reason', '')
         chosen = selection_label(row)
+        receipt = receipt_label(row)
         result += [('', 'muted', INERT), (detail, 'detail', _activity_tier(row['activity'])),
-                   (f"{row['session_id']} · {row.get('pending_messages', 0)} queued messages" + experience
+                   (f"{row['session_id']} · {(receipt + ' · ') if receipt else ''}"
+                    f"{row.get('pending_messages', 0)} queued messages" + experience
                     + (' · ' + chosen if chosen else ''), 'muted', INERT)]
     result += [(error, 'error', BAD) for error in snapshot.get('errors', [])[:1]]
     result += [(message, 'message', None)]
@@ -149,7 +153,7 @@ def _loop(screen, config, env):
     model = tui.TuiModel([])
     model.coloured = tui.init_colours(curses)
     hub = Hub(config, env=env)
-    snapshot = {'rows': []}
+    snapshot = {'rows': [], 'no_handoff_close': no_handoff_enabled(config)}
     selected, next_refresh, message = 0, 0.0, ''
     include_closed, input_only = False, False
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='asha-session-view')
@@ -176,6 +180,7 @@ def _loop(screen, config, env):
                 current_id = snapshot['rows'][selected]['session_id'] if snapshot['rows'] else None
                 try:
                     snapshot = future.result()
+                    snapshot['no_handoff_close'] = no_handoff_enabled(config)
                     if input_only:
                         snapshot['rows'] = [r for r in snapshot['rows'] if r['activity'] == 'needs-input']
                         snapshot['summary'] += ' (input filter)'
@@ -259,18 +264,21 @@ def _loop(screen, config, env):
                             message = 'Message retained for the next eligible turn'
                         else:
                             message = 'Enter attaches to this legacy Room to provide input directly'
-                elif row and key in (ord('x'), ord('X'), ord('s')):
-                    label = {ord('x'): 'Close (request handoff) ', ord('X'): 'Force-close (no new handoff) ', ord('s'): 'Stop '}[key]
+                elif row and key == ord('c') and not no_handoff_enabled(config):
+                    message = 'Close at idle (no handoff) is off: control.no_handoff_close, #103; x requests a handoff'
+                elif row and key in (ord('x'), ord('c'), ord('X'), ord('s')):
+                    label = {ord('x'): 'Close (request handoff) ', ord('c'): 'Close at idle (no handoff, no save claimed) ',
+                             ord('X'): 'Force-close (no new handoff) ', ord('s'): 'Stop '}[key]
                     if prompt('Type yes: ', label + row['name']) == 'yes':
                         refuse_managed_operator(config, env)
                         if hub.owns(row['session_id']):
-                            if key == ord('x'):
-                                closed = hub.close(row['session_id'])
+                            if key in (ord('x'), ord('c')):
+                                closed = hub.close(row['session_id'], no_handoff=key == ord('c'))
                                 message = (closed.get('closure') or {}).get('guidance') or 'Session closed'
                             else:
                                 stopped = hub.stop(row['session_id'], close=key == ord('X'))
                                 message = 'Session stopped; history retained; ' + (memory_label(stopped) or 'no memory handoff claimed')
-                        elif key == ord('x'):
+                        elif key in (ord('x'), ord('c')):
                             message = 'No handoff seam for a legacy Room or managed session; X force-closes, s stops'
                         elif row['transport'] == 'room':
                             close_room(RoomStore(config), row['room_id'], tmux=hub.tmux)

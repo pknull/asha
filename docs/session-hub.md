@@ -264,7 +264,8 @@ worker may need another user turn or an attach. The seam needs `jq` in the
 worker's PATH; without it the request stays queued. `closure.state` shows `pending-delivery`, `delivered`, `acknowledged`,
 `unanswered` (the turn ended without a handoff), `handoff-failed`,
 `undeliverable` (the harness exited first), `unavailable` (no live agent to
-ask), `forced`, or `completed`. Re-running `close` is idempotent: it reuses
+ask), `forced`, `closed-no-save-claimed` (`close --no-handoff`, see below), or
+`completed`. Re-running `close` is idempotent: it reuses
 the request, re-asks after `unanswered`/`handoff-failed` with a fresh queued
 copy, and terminates only once the state is `acknowledged`. `close --wait N`
 polls for that acknowledgement first and returns early when the session needs
@@ -494,6 +495,171 @@ requires `--request ID --attempt N` from the delivered request, not an old selec
 If Stop was not observed and the last native activity is over 300 seconds old,
 both queued and acknowledged closes require attachment. A verified idle boundary
 remains valid without further work; an idle receipt does not expire merely with age.
+
+Receipt state is shown per session so the operator can see in advance whether a
+close needs a turn (#101). `session list/show --json` add, under
+`completion_readiness`, `receipt` (`current`, `stale` or `none`), `finalized_at`,
+and `stale_since`: the first hub write at which the receipt stopped matching the
+session's work (new prompt, tool, queued message, resume or changed close
+request), or, when only published Memory changed, the later of the Memory files'
+and the silence marker's modification times. The time is `null` when neither is
+known. A receipt whose finalizer tool end has not yet arrived is `current`. The
+dashboard's detail line reads `receipt current`, `receipt stale since HH:MM UTC`
+or `no receipt`.
+
+### Closing an idle session without a handoff turn
+
+**Experimental and off by default (#103).** `close --no-handoff` is enabled
+only by the Control setting `no_handoff_close` in the Asha config:
+
+```json
+{"control": {"no_handoff_close": true}}
+```
+
+The reason is QA11's Q11-F1: a hook that has appended its attempt byte but has
+not yet taken a number, or not yet recorded that it failed to, is counted by an
+older Stop's size sample. A close made while that hook is still in flight
+accepts the boundary and kills the terminal, so its work is lost unseen (see
+invariant 4 below). With the setting off (the default), `close --no-handoff`
+refuses with a message naming the setting and #103, kills nothing, and changes
+nothing; `session show/list --json` report `no_handoff.eligible: false` with that
+reason; the dashboard neither lists `c` nor suggests it. Plain `close`, the
+receipt close, `--force` and the Codex idle native-resume close are unaffected
+by the setting. With it on, the behaviour below applies.
+
+`close ID --no-handoff` (dashboard `c`) asks for no final turn. A current receipt
+still closes as `completed` through `completion-receipt`, exactly as `close`.
+Otherwise a terminal Claude or Codex session stops only at a verified native idle
+boundary: the last native event is a Stop (or session start) with no open tool,
+no outstanding background work (#99), no pending native question or permission,
+and no worker `needs-input` report. It closes as `closed-no-save-claimed` with
+delivery channel `no-handoff`. That state is distinct from `completed` (a
+verified receipt) and `forced` (no boundary). It never claims a Memory save and
+never needs attention. It queues no message, types nothing and resumes nothing;
+any earlier verified handoff stays in the record as evidence only.
+
+The boundary is re-read under the session's observation lock after the tmux
+liveness probe, so a prompt that lands meanwhile refuses the close. The kill
+is conditional inside tmux on no client being attached, so a person at the pane
+(with a possible composer draft) refuses it too. A working session, a pending
+question, an attached client, an unobserved session and an unproven event order
+(below) are refused with the reason, and nothing is stopped. `--wait N` polls up
+to N seconds for the boundary, then refuses with the last reason. `--force`
+cannot be combined with it. Structured sessions, Copilot and OpenCode (which have
+no native idle bridge) refuse. A harness that is no longer live closes with the
+same honest state. A turn whose start hook never fired at all remains invisible
+to it, as it is to the receipt close. `session show/list --json` report
+`no_handoff: {eligible, reason}`, computed by the same predicate the command
+applies, over the stored facts and the incarnation's event counter. With the setting on, when a pending close finds an
+eligible boundary without a receipt, the next step reads `Close: attach or
+--no-handoff` instead of only `Close needs attach`.
+
+Every graceful close that terminates a live terminal, including the receipt path
+of a plain `close`, uses the same tmux-conditional kill. An attached client
+refuses it, the receipt is kept, and `--wait` treats the refusal as transient.
+Before #101, a current receipt killed an attached session.
+
+### Native event order and the turnless-termination invariant
+
+Hook reports are independent processes and can arrive out of order, late,
+twice, or never. Each hub incarnation gets a private counter file
+(`hub-event-order/<session>/<generation>` under Control state, 0600 in 0700
+directories, passed to the Room as `ASHA_HUB_EVENT_ORDER`). `control-event.sh`
+takes the next number from it under `flock` when the hook starts, with no tmux
+call, and forwards it as `--order`. The hook refuses a counter that is a symlink,
+another user's, readable or writable by others, or not exactly one canonical
+number; it then reports unsequenced. Unsequenced reports therefore arise only
+from failures (lock timeout, bad or missing counter, a Room launched before this
+change). The hub creates the counter and refuses to reuse an invalid existing one.
+
+Before taking a number, every hook appends one byte to the incarnation's
+attempt log (`<counter>.attempts`, created empty and 0600 beside the counter):
+`O_APPEND`, no lock, so a hook that then times out on the counter lock, or whose
+report is killed at the controller budget or lost, still leaves evidence. A
+numbered report also forwards the log's size as `--attempts`, read under the
+counter lock before the number is taken: appends are unlocked, so a size read
+after the increment could count a later hook whose number and report were then
+lost. A hook that gets no number appends a second byte, so a hook already
+counted by a concurrent Stop still moves the size past that Stop's count. The
+hook refuses a non-private or symlinked log (no attempt, no number) and stops
+appending at 4 MiB (a soft bound: concurrent hooks may overshoot it by a few
+bytes).
+
+A full attempt log refuses every turnless close for the rest of that
+generation: no later Stop, prompt, `/clear` or fresh handoff resets it, and the
+log is never rotated. Recover by starting a new generation or forcing the
+close: `asha control session stop ID` then `asha control session resume ID`
+(the new generation gets an empty counter and log; a pending graceful close
+must be resolved first), or `asha control session close ID --force`, which makes
+no save claim. Attaching and exiting there also ends the session.
+
+The hub applies an event's activity, tool and background effects only when its
+order is newer than the last applied one. A late or duplicate report is kept in
+a bounded `observation_log` without those effects, and the CLI gives an ignored
+Stop no close-request decision or delivery confirmation. Numbers skipped by a
+newer report are kept in `event_order.missing` until their reports arrive.
+
+One invariant governs every termination without a turn: the receipt close
+(plain `close` or `--no-handoff`), `close --no-handoff`, and the Codex idle
+native-resume close. The kill is authorized only while the counter's `flock` is
+held, inside the session's observation lock, through the stop itself, and only
+when all of the following hold:
+
+1. The counter's allocated value equals the applied order. A hook that took a
+   number but has not reported, whether slow, killed or lost, refuses the kill.
+   No hook can take a number during the kill; one that tries reports unsequenced
+   to a session that is gone.
+2. The last applied event is a Stop, with no open tool, outstanding background
+   task, pending question, or explicit `working` report.
+3. No unsequenced or out-of-order evidence stands. An unsequenced, late,
+   duplicate or gapped report sets `event_order.barrier` to the counter's value
+   when it arrived. Only an applied Stop numbered above the barrier clears it,
+   because only that Stop is known to have been allocated after the evidence. A
+   new generation also clears it. An already-allocated Stop never clears newer
+   unordered work. If the counter cannot be read when the evidence arrives (a
+   lock timeout, most often), `event_order.barrier_pending` is set instead; the
+   next report that reads the counter fixes the barrier at its value then, so a
+   later turn's Stop recovers within the same generation.
+4. Every hook that started is accounted for: the attempt log's size now equals
+   the size the last applied Stop reported. Hooks that appended before that Stop
+   took its number are covered by it, as in 3; any hook appending after it,
+   numbered or not, refuses the kill until the next Stop. A Stop that could not
+   report the size refuses too.
+
+**Known gap (Q11-F1, #103): invariant 4 is not fully proven.** The Stop counts
+bytes, and a hook's first byte is written before that hook takes its number.
+A hook still between that append and its allocation, or between a failed
+allocation and its failure byte, is therefore covered by an older Stop, and a
+close made in that window kills the terminal while the hook's work is
+unreported. The window is small (a hook's own scheduling between two
+consecutive steps) but real, and it is reproducible with scheduling gates. It is
+why `close --no-handoff` is off by default. **The receipt close path (plain
+`close` with a current receipt, and `--no-handoff` when enabled) shares this
+window.** It
+checks the same invariant. Sampling before the number (QA10) reduced the window
+but did not close it. The receipt close is still strictly safer than before
+#101, which applied none of these checks.
+
+A completion receipt records the applied order at issue (`order_applied`). It
+is current only while no report numbered after that order is missing or still
+in flight. At most 64 missing numbers are kept (the newest); the highest number
+dropped is kept as `event_order.missing_dropped`, which refuses only receipts
+issued before it. Work numbered after it invalidates the receipt even when its report
+arrives late and is otherwise ignored. Work here means a prompt, a tool start,
+or a tool end other than the finalizer's; report-tool events are not work. The
+finalizer's own end, report-tool events and the closing Stop necessarily follow
+the receipt and do not invalidate it.
+
+Availability costs are deliberate. A missing or corrupt counter, or a Room
+launched before this change, refuses turnless closes until the session is
+resumed (a new generation gets a fresh counter and attempt log). Out-of-order
+evidence, or a hook that started without a number, refuses them until the next
+turn's Stop. `close` then asks for a handoff turn; attach or
+`--force` remain available. This is always on and independent of
+`control.idle_delivery`; the typing fence's pane sequence is unchanged.
+Allocation order approximates native order: two hooks that start within the
+same instant can still take numbers in the opposite order to their native
+events, and no Control-side sequence can detect that.
 
 | Harness | Startup/completion instruction and skill | Receipt production | Close finalized idle session | Evidence/limits |
 | --- | --- | --- | --- | --- |

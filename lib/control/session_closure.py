@@ -12,7 +12,7 @@ Closure record (``row['closure']``)::
     generation     hub incarnation the request was issued to
     state          pending-delivery | delivered | acknowledged | completed |
                    unanswered | handoff-failed | undeliverable | unavailable |
-                   forced
+                   forced | closed-no-save-claimed
     delivery       {channel, detail, message_id, delivered_at}
     memory         {available, destination, reason, baseline}
     handoff        None or {outcome, detail, acknowledged_at, generation,
@@ -48,7 +48,10 @@ ACKNOWLEDGED = {"published", "no-durable-update"}
 # decision back to the model (docs/harness-enforcement.md). Codex delivery is
 # live-proven but its return channel is not claimed; a live probe may add it.
 STOP_HOOK_HARNESSES = {"claude"}
-TERMINAL_STATES = {"completed", "forced", "unavailable", "undeliverable"}
+# Issue #101: the operator closed an idle session without asking for a turn.
+# Distinct from "completed" (a verified receipt) and "forced" (no boundary).
+NO_HANDOFF_STATE = "closed-no-save-claimed"
+TERMINAL_STATES = {"completed", "forced", "unavailable", "undeliverable", NO_HANDOFF_STATE}
 RETRYABLE_STATES = {"unanswered", "handoff-failed"}
 # Terminated without a verified save through no explicit operator choice: kept
 # on the default page until the operator acknowledges it.
@@ -186,7 +189,7 @@ def recent_injection(record: dict) -> bool:
 
 def guidance_for(row: dict, closure: dict, *, idle_delivery: bool = False) -> str:
     state = closure["state"]
-    if closure.get('attachment_required') and state not in {'completed', 'forced', 'handoff-failed'}:
+    if closure.get('attachment_required') and state not in {'completed', 'forced', 'handoff-failed', NO_HANDOFF_STATE}:
         return 'Close needs attachment: attach and hand the agent the retained close request, or force-close. ' + str(closure.get('last_error') or '')
     if state == "pending-delivery":
         if row["transport"] == "structured":
@@ -222,6 +225,9 @@ def guidance_for(row: dict, closure: dict, *, idle_delivery: bool = False) -> st
         if handoff.get("outcome") in ACKNOWLEDGED:
             return "Force-closed after a " + _verification_word(closure) + " handoff (" + handoff["outcome"] + ")"
         return "Force-closed; no project-memory handoff was claimed"
+    if state == NO_HANDOFF_STATE:
+        return ("Closed at a native idle boundary without a handoff turn (--no-handoff); "
+                "no project-memory save was claimed by this close")
     if state == "completed":
         outcome = (closure.get("handoff") or {}).get("outcome")
         return "Closed after a " + _verification_word(closure) + " handoff (" + str(outcome) + ")"
@@ -368,6 +374,7 @@ def parse_digest(value):
 
 
 __all__ = ["ACKNOWLEDGED", "ATTENTION_STATES", "CLOSE_REQUEST_TOKEN", "INJECTION_CHANNEL", "MEMORY_FILES", "MESSAGE_KEY_PREFIX",
+           "NO_HANDOFF_STATE",
            "OUTCOMES", "RETRYABLE_STATES", "STOP_HOOK_HARNESSES", "TERMINAL_STATES", "StopDecision",
            "guidance_for", "mark_delivered", "memory_destination", "message_key", "new_closure",
            "parse_digest", "publish_handoff", "rearm", "receipt_for", "recent_injection", "record_handoff", "request_text",

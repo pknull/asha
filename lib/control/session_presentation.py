@@ -9,6 +9,21 @@ def memory_label(row):
     return 'Memory saved ' + datetime.fromtimestamp(stamp, timezone.utc).strftime('%H:%M UTC')
 
 
+def receipt_label(row):
+    """The completion-receipt state: whether a close would need a turn at all."""
+    readiness = row.get('completion_readiness')
+    if not readiness:
+        return ''
+    state = readiness.get('receipt')
+    if state == 'current':
+        return 'receipt current'
+    if state == 'stale':
+        since = readiness.get('stale_since')
+        return 'receipt stale' + (' since ' + datetime.fromtimestamp(since, timezone.utc).strftime('%H:%M UTC')
+                                  if since is not None else '')
+    return 'no receipt'
+
+
 def present(row):
     activity = row.get('activity', 'unknown')
     process = row.get('process_state', 'unknown')
@@ -32,7 +47,13 @@ def present(row):
             record.get('state') == 'pending-delivery' and row.get('transport') != 'structured'
             and row.get('native_activity', activity) == 'idle'
             and row.get('completion_readiness', {}).get('status') != 'ready'):
-        hint = 'Close needs attach'
+        # #101: at a verified native idle boundary the operator may also close
+        # without a turn; anywhere else attachment is the only graceful path.
+        # A client or pane mode that refused typing refuses that stop as well.
+        # The hub computes ``no_handoff`` with the command's own predicate.
+        hint = ('Close: attach or --no-handoff' if (row.get('no_handoff') or {}).get('eligible')
+                and record.get('input_refusal') not in {'attached', 'mode'}
+                else 'Close needs attach')
     elif activity == 'close-failed' or record.get('state') in {'unanswered', 'handoff-failed'}:
         hint = 'Close failed: retry or attach'
     elif activity == 'closing' and record.get('waiting_on_background'):

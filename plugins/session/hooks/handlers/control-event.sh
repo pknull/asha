@@ -49,6 +49,76 @@ if [[ -z "$HUB_SESSION" && "${ASHA_CONTROL_MANAGED:-}" != "1" ]]; then
   exit 0
 fi
 
+# First, take this event's place in the session's order (#101). Hooks run as
+# independent processes and their reports can arrive out of order; the hub
+# applies an event only when its number is newer than the last one applied, so
+# an older Stop can never erase newer work. The counter is this incarnation's
+# own private file (ASHA_HUB_EVENT_ORDER, created 0600 by the hub, content a
+# decimal number), incremented under flock. No tmux is involved, and it does
+# not depend on the idle-typing setting. Any failure (no file, a symlink,
+# another owner, unreadable content, lock not taken within 0.2s) omits --order;
+# the hub then treats the order as uncertain and refuses a turnless close.
+# Unreadable content is never reset, because restarting the count would make
+# every later event look old.
+#
+# Before taking a number the hook appends one byte to the incarnation's attempt
+# log ($ASHA_HUB_EVENT_ORDER.attempts, created 0600 by the hub): O_APPEND, no
+# lock, so a hook that then times out on the counter lock, or whose report is
+# lost, still leaves evidence the hub checks before any turnless kill (QA9).
+# A numbered report carries the log's size read under the counter lock BEFORE
+# the number is taken (QA10): appends are unlocked, so a size read after the
+# increment could count a later hook whose number and report were then lost.
+# A hook that gets no number appends a second byte, so one that was already
+# counted by a concurrent Stop still moves the size past that Stop's count. Past
+# HUB_ATTEMPT_LIMIT bytes (lib/control/session_order.py ATTEMPT_LIMIT) nothing
+# is appended or allocated, and the hub refuses turnless kills until resume.
+HUB_ORDER=""
+HUB_ATTEMPTS=""
+HUB_ATTEMPT_LIMIT=4194304
+hub_private_file() {
+  local file="$1"
+  [[ "$file" == /* && -f "$file" && ! -L "$file" && -O "$file" ]] || return 1
+  # Private to this user only (the hub creates it 0600).
+  [[ "$(stat -c %a -- "$file" 2>/dev/null)" =~ ^[0-7]?[0-7]00$ ]]
+}
+hub_attempt() {
+  local file="$1.attempts" size
+  hub_private_file "$file" || return 1
+  size="$(stat -c %s -- "$file" 2>/dev/null)" || return 1
+  [[ "$size" =~ ^[0-9]+$ ]] && (( size < HUB_ATTEMPT_LIMIT )) || return 1
+  printf '.' 2>/dev/null >>"$file"
+}
+hub_order_next() {
+  local file="$1" fd content value attempts
+  hub_private_file "$file" || return 1
+  exec {fd}<>"$file" 2>/dev/null || return 1
+  if ! flock -w 0.2 "$fd" 2>/dev/null; then exec {fd}>&-; return 1; fi
+  # The whole file must be one canonical number and an optional newline.
+  IFS= read -r -d '' -N 16 content <&"$fd" || true
+  value="${content%$'\n'}"
+  if [[ "${#content}" -gt 10 || ! "$value" =~ ^(0|[1-9][0-9]{0,8})$ ]] || (( value >= 999999999 )); then
+    exec {fd}>&-; return 1
+  fi
+  # Still under the lock and before taking a number: every hook counted here
+  # appended before this number, and any append after it exceeds the count.
+  attempts="$(stat -c %s -- "$file.attempts" 2>/dev/null)" || attempts=""
+  value=$((value + 1))
+  # Rewrite the same inode from offset 0 while the lock is held; the read left
+  # this descriptor's offset past the old value, so reopen it through /proc.
+  # Without /proc the write fails and the event is simply unordered.
+  if ! printf '%s\n' "$value" 2>/dev/null >"/proc/self/fd/$fd"; then
+    exec {fd}>&-; return 1
+  fi
+  exec {fd}>&-
+  printf '%s %s' "$value" "$attempts"
+}
+if [[ -n "$HUB_SESSION" && -n "${ASHA_HUB_EVENT_ORDER:-}" ]] && command -v flock >/dev/null 2>&1 \
+    && hub_attempt "$ASHA_HUB_EVENT_ORDER"; then
+  read -r HUB_ORDER HUB_ATTEMPTS <<<"$(hub_order_next "$ASHA_HUB_EVENT_ORDER" || true)"
+  [[ "$HUB_ORDER" =~ ^[1-9][0-9]{0,8}$ ]] || { HUB_ORDER=""; printf '.' 2>/dev/null >>"$ASHA_HUB_EVENT_ORDER.attempts"; }
+  [[ -n "$HUB_ORDER" && "$HUB_ATTEMPTS" =~ ^[1-9][0-9]{0,7}$ ]] || HUB_ATTEMPTS=""
+fi
+
 # Before anything else, make this native event visible to Control's idle-pane
 # typing (#96): bump the Room pane's own event sequence. Control types into an
 # idle pane only while the sequence equals the one the hub last recorded, and
@@ -218,6 +288,8 @@ if [[ -n "$HUB_SESSION" ]]; then
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
     [[ -z "$BACKGROUND_TASKS" ]] || HUB_ARGS+=(--background-tasks "$BACKGROUND_TASKS")
     [[ -z "$HUB_SEQUENCE" ]] || HUB_ARGS+=(--sequence "$HUB_SEQUENCE" --sequence-pane "$TMUX_PANE")
+    [[ -z "$HUB_ORDER" ]] || HUB_ARGS+=(--order "$HUB_ORDER")
+    [[ -z "$HUB_ATTEMPTS" ]] || HUB_ARGS+=(--attempts "$HUB_ATTEMPTS")
     HUB_RESPONSE="$(
       timeout --signal=TERM --kill-after=0.1 "$HUB_CONTROLLER_SECONDS" \
         "$ASHA_CMD" "${HUB_ARGS[@]}" 2>/dev/null || true
