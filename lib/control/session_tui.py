@@ -8,12 +8,13 @@ import signal
 import sys
 import time
 import uuid
-import textwrap
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 
 from .config import load_config
 from .hub_cli import overview
-from .session_hub import Hub, no_handoff_enabled
+from .session_hub import Hub, listed, no_handoff_enabled
+from . import session_view
 from .session_presentation import memory_label, present, receipt_label
 from .tmux import TmuxAdapter
 from .tui_style import BAD, GOOD, INERT, MACHINE, WAITING, tier_for
@@ -33,19 +34,115 @@ def _activity_tier(activity):
     }.get(activity, tier_for(activity))
 
 
-def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
+# Footer keys by priority; lower-priority keys drop first on a narrow terminal.
+_TAIL = '? keys  q quit'
+
+
+def footer(row, *, width, no_handoff_close=False):
+    """One state-aware line: the keys that matter for the selected row (#102)."""
+    if row is None:
+        keys = ['n job', 'o Room', 'A history', 'G workflows']
+    else:
+        step, group = row.get('next_step', ''), row.get('group', 'current')
+        answer = ['a answer'] if row.get('activity') in {'needs-input', 'permission-requested', 'waiting-input'} \
+            and row.get('transport') == 'structured' else []
+        if group == 'history':
+            keys = ['r resume', 'Enter view', 'A history']
+        elif step.startswith('Close failed'):
+            keys = ['x retry close', 'X force-close', 'Enter attach']
+        elif group == 'ended':
+            keys = ['x close', 'r resume', 'X force-close', 'Enter attach']
+        else:
+            keys = answer + ['Enter attach', 'm send', 'x close', 's stop']
+        if no_handoff_close and (row.get('no_handoff') or {}).get('eligible'):
+            keys.insert(1, 'c close (no handoff)')
+    from .tui import _cell_width
+    while keys and _cell_width('  '.join(keys + [_TAIL])) > width:
+        keys.pop()
+    return '  '.join(keys + [_TAIL])
+
+
+def key_sheet(*, no_handoff_close=False):
+    """Every binding, labelled as the footer labels it."""
+    entries = [('Up/Down', 'select a session'),
+               ('Enter attach', 'open the terminal or structured conversation'),
+               ('a answer', 'answer the pending input request'),
+               ('m send', 'queue a message for the session'),
+               ('x close', 'close, requesting a memory handoff'),
+               *([('c close (no handoff)', 'close at a verified native idle; no save claimed')]
+                 if no_handoff_close else []),
+               ('X force-close', 'close without a new handoff'),
+               ('s stop', 'stop the session; history is retained'),
+               ('r resume', 'resume with a continuation'),
+               ('n job', 'start a project job'), ('o Room', 'open a project Room'),
+               ('M input filter', 'show only sessions that need input'),
+               ('A history', 'include retained history'),
+               ('G workflows', 'advanced initiatives view'),
+               ('? keys', 'this sheet'), ('q quit', 'leave; sessions keep running')]
+    return ['Keys (any key returns)'] + [f'  {key:<22}{text}' for key, text in entries]
+
+
+def _sheet_page(height):
+    """Entries per page when the sheet needs a heading and a position line."""
+    return max(1, height - 2)
+
+
+def sheet_offset(offset, *, height, no_handoff_close=False):
+    """Clamp a key-sheet scroll offset for this height; 0 when the sheet fits."""
+    entries = len(key_sheet(no_handoff_close=no_handoff_close)) - 1
+    if entries + 1 <= height:
+        return 0
+    return max(0, min(offset, entries - _sheet_page(height)))
+
+
+def _sheet_lines(height, offset, *, no_handoff_close):
+    """The key sheet, paged on a short terminal so every binding stays reachable."""
+    sheet = key_sheet(no_handoff_close=no_handoff_close)
+    if len(sheet) <= height:
+        return sheet
+    entries = sheet[1:]
+    first = sheet_offset(offset, height=height, no_handoff_close=no_handoff_close)
+    page = entries[first:first + _sheet_page(height)]
+    return (['Keys (Up/Down scroll; other keys return)', *page,
+             f'  {first + 1}-{first + len(page)} of {len(entries)} · Up/Down for more'])
+
+
+def _utc(stamp, pattern):
+    return datetime.fromtimestamp(stamp, timezone.utc).strftime(pattern)
+
+
+def _row_marks(row):
+    """Receipt (#101) and staleness facts shown on the session row itself."""
+    marks = []
+    receipt = (row.get('completion_readiness') or {}).get('receipt')
+    if receipt in {'current', 'stale'}:
+        marks.append(receipt_label(row))
+    if row.get('stale_since') is not None:
+        marks.append('stale since ' + _utc(row['stale_since'], '%H:%M:%S UTC'))
+    return ''.join('  ' + mark for mark in marks)
+
+
+def _render_lines(snapshot, *, selected=0, width=100, height=30, message='', anchor=None, keys=False, sheet=0):
     from .tui import _clip
-    rows = [present(row) for row in snapshot.get('rows', [])]
+    if height < 8:
+        return [(_clip(line, width), 'heading' if i == 0 else 'muted', None)
+                for i, line in enumerate(['ASHA CONTROL', 'Enlarge terminal', 'q quit'][:height])]
+    rows = [row if 'next_step' in row and 'group' in row else present(row) for row in snapshot.get('rows', [])]
+    enabled = bool(snapshot.get('no_handoff_close'))
+    if keys:
+        sheet = [(line, 'heading' if i == 0 else 'muted', None if i == 0 else INERT)
+                 for i, line in enumerate(_sheet_lines(height, sheet, no_handoff_close=enabled))]
+        return [(_clip(line, width), role, tier) for line, role, tier in sheet[:height]]
     result = [('ASHA CONTROL — Sessions', 'heading', None),
               (snapshot.get('summary', 'Reading sessions…'), 'summary',
                WAITING if any(row['activity'] in {'needs-input', 'waiting-input'} for row in rows) else None),
               ('   NEXT STEP                       PROJECT / SESSION                 HARNESS', 'heading', None)]
-    turnless = ' c close (no handoff) |' if snapshot.get('no_handoff_close') else ''
-    help_lines = textwrap.wrap('Enter attach | a input | m send | n job | o Room | x close (handoff) |' + turnless
-                               + ' X force-close | s stop | r resume | M input list | A history | G workflows | q quit', width=max(1, width))
-    space = max(0, height - 7 - bool(snapshot.get('errors')) - len(help_lines))
-    # Reserve a group heading as well as a selected row when scrolling.
-    start = max(0, selected - max(1, space - 2) + 1)
+    selected = min(selected, len(rows) - 1) if rows else 0
+    space = max(0, height - 8 - bool(snapshot.get('errors')))
+    # Hold the selected row's screen line across refreshes (#102); headings
+    # are lines too, so one appearing above the row scrolls rather than pushes.
+    start = session_view.viewport_start(rows, selected, space - 1 if anchor is None else anchor, space) \
+        if rows else 0
     previous_group = None
     for i, row in enumerate(rows[start:], start):
         heading = row['group'] != previous_group and row['group'] != 'current'
@@ -58,10 +155,11 @@ def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
         space -= needed
         chosen = selection_label(row, compact=True)
         result.append((f"{'>' if i == selected else ' '} {row['next_step']:<32} {row['project_name']} / {row['name']}"
-                       f"  [{row['harness']}{' ' + chosen if chosen else ''}]",
+                       f"  [{row['harness']}{' ' + chosen if chosen else ''}]{_row_marks(row)}",
                        'selected' if i == selected else 'row', _activity_tier(row['activity'])))
-    if rows:
-        row = rows[min(selected, len(rows) - 1)]
+    current = rows[selected] if rows else None
+    if current:
+        row = current
         capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
         experience = (f" · capture:{capture.get('status', 'disabled')}"
                       f" review:{row.get('experience_review', 'none')}") if capture else ''
@@ -75,25 +173,24 @@ def _render_lines(snapshot, *, selected=0, width=100, height=30, message=''):
                     + (' · ' + chosen if chosen else ''), 'muted', INERT)]
     result += [(error, 'error', BAD) for error in snapshot.get('errors', [])[:1]]
     result += [(message, 'message', None)]
-    if height < 8:
-        return [(_clip(line, width), 'heading' if i == 0 else 'muted', None)
-                for i, line in enumerate(['ASHA CONTROL', 'Enlarge terminal', 'q quit'][:height])]
-    result = result[:max(0, height - len(help_lines))] + [(line, 'muted', INERT) for line in help_lines]
-    return [(_clip(str(line), width), role, tier) for line, role, tier in result[:height]]
+    result = result[:height - 1] + [(footer(current, width=width, no_handoff_close=enabled), 'muted', INERT)]
+    return [(_clip(str(line), width), role, tier) for line, role, tier in result]
 
 
-def lines(snapshot, *, selected=0, width=100, height=30, message=''):
+def lines(snapshot, *, selected=0, width=100, height=30, message='', anchor=None, keys=False, sheet=0):
     return [line for line, _, _ in _render_lines(
-        snapshot, selected=selected, width=width, height=height, message=message)]
+        snapshot, selected=selected, width=width, height=height, message=message, anchor=anchor, keys=keys,
+        sheet=sheet)]
 
 
-def _paint(screen, snapshot, *, selected=0, coloured=False, message=''):
+def _paint(screen, snapshot, *, selected=0, coloured=False, message='', anchor=None, keys=False, sheet=0):
     from .tui import _attribute, _cell_width, _prefix_cells
     height, width = screen.getmaxyx()
     limit = max(0, width - 1)
     screen.erase()
     for y, (line, role, tier) in enumerate(_render_lines(
-            snapshot, selected=selected, width=limit, height=height, message=message)):
+            snapshot, selected=selected, width=limit, height=height, message=message, anchor=anchor, keys=keys,
+            sheet=sheet)):
         # addnstr limits characters, not terminal cells. Keep wide names in bounds.
         if _cell_width(line) > limit:
             line = _prefix_cells(line, max(0, limit - 1)) + ('…' if limit else '')
@@ -153,11 +250,41 @@ def _loop(screen, config, env):
     model = tui.TuiModel([])
     model.coloured = tui.init_colours(curses)
     hub = Hub(config, env=env)
-    snapshot = {'rows': [], 'no_handoff_close': no_handoff_enabled(config)}
-    selected, next_refresh, message = 0, 0.0, ''
-    include_closed, input_only = False, False
+    # The view is retained across refreshes (#102): rows keep their stable
+    # order, selection is an identity and an incomplete page marks rows stale.
+    view = session_view.ViewModel()
+    page = {'summary': 'Reading sessions…', 'errors': []}
+    # ``sheet`` is the key sheet's scroll offset while it is shown, else None.
+    next_refresh, message, sheet, started = 0.0, '', None, 0.0
+    include_closed = False
     pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='asha-session-view')
     future = None
+
+    def display():
+        summary = page.get('summary', 'Reading sessions…')
+        summary += ' (input filter)' if view.input_only else ''
+        summary += f'; {len(view.stale)} stale' if view.stale else ''
+        return {'rows': session_view.display_rows(view), 'summary': summary,
+                'errors': page.get('errors', []), 'no_handoff_close': no_handoff_enabled(config)}
+
+    def capacity():
+        return max(1, screen.getmaxyx()[0] - 10)
+
+    def refresh_row(sid, transport):
+        """Re-read only the acted-on row; the regular tick observes the rest."""
+        nonlocal view, next_refresh
+        try:
+            if transport == 'terminal' or hub.owns(sid):
+                shown = hub.show(sid)
+                # The active query decides membership; a close while history is
+                # off removes the row rather than painting it as history.
+                view = session_view.merge_row(view, shown, observed_at=time.time(),
+                                              member=listed(shown, include_closed=include_closed))
+                return
+        except (ValueError, OSError, KeyError):
+            pass
+        # Legacy Rooms and unowned structured sessions have no single-row read.
+        next_refresh = 0
 
     def prompt(label, title):
         h, w = screen.getmaxyx()
@@ -175,29 +302,38 @@ def _loop(screen, config, env):
     try:
         while True:
             if future is None and time.monotonic() >= next_refresh:
+                started = time.time()
                 future = pool.submit(overview, config, env=env, include_closed=include_closed)
             if future is not None and future.done():
-                current_id = snapshot['rows'][selected]['session_id'] if snapshot['rows'] else None
                 try:
-                    snapshot = future.result()
-                    snapshot['no_handoff_close'] = no_handoff_enabled(config)
-                    if input_only:
-                        snapshot['rows'] = [r for r in snapshot['rows'] if r['activity'] == 'needs-input']
-                        snapshot['summary'] += ' (input filter)'
-                    selected = next((i for i, r in enumerate(snapshot['rows']) if r['session_id'] == current_id), 0)
+                    page = future.result()
+                    view = session_view.merge(view, page['rows'], observed_at=started,
+                                              complete=bool(page.get('complete')))
                 except Exception as exc:
                     message = 'Status unavailable: ' + str(exc)
+                    view = session_view.merge(view, [], observed_at=started, complete=False)
                 future, next_refresh = None, time.monotonic() + 2
-            _paint(screen, snapshot, selected=selected, coloured=model.coloured, message=message)
+            _paint(screen, display(), selected=session_view.selected_index(view), coloured=model.coloured,
+                   message=message, anchor=view.anchor, keys=sheet is not None, sheet=sheet or 0)
             key = screen.getch()
-            rows = snapshot['rows']
-            row = rows[selected] if rows else None
+            if sheet is not None:
+                if key in (curses.KEY_DOWN, curses.KEY_UP):
+                    sheet = sheet_offset(sheet + (1 if key == curses.KEY_DOWN else -1),
+                                         height=screen.getmaxyx()[0], no_handoff_close=no_handoff_enabled(config))
+                elif key != -1:
+                    sheet = None
+                continue
+            row = session_view.display_rows(view)[session_view.selected_index(view)] if view.order else None
             if key == ord('q'):
                 return 0
-            if key == curses.KEY_DOWN and rows:
-                selected = min(len(rows) - 1, selected + 1)
+            if key == ord('?'):
+                sheet = 0
+            elif key == curses.KEY_DOWN:
+                view = session_view.move(view, 1, visible=capacity())
             elif key == curses.KEY_UP:
-                selected = max(0, selected - 1)
+                view = session_view.move(view, -1, visible=capacity())
+            acted = row if row and key in (10, 13, curses.KEY_ENTER, ord('a'), ord('m'), ord('x'), ord('c'),
+                                           ord('X'), ord('s'), ord('r')) else None
             try:
                 if key in (ord('n'), ord('o')):
                     project = prompt('Project: ', 'Launch project session')
@@ -214,6 +350,7 @@ def _loop(screen, config, env):
                             created = hub.launch(project=project, prompt=assignment, harness=harness.strip() or 'claude',
                                                  profile='room' if key == ord('o') else 'worker', **chosen)
                             message = 'Started ' + created['name']
+                            refresh_row(created['session_id'], 'terminal')
                 elif key == ord('G'):
                     curses.def_prog_mode()
                     curses.endwin()
@@ -224,11 +361,14 @@ def _loop(screen, config, env):
                         model.coloured = tui.init_colours(curses)
                         screen.timeout(200)
                         tui._repaint_after_suspend(screen)
+                        next_refresh = 0
                 elif key == ord('M'):
-                    input_only = not input_only
-                    message = 'Showing input requests' if input_only else 'Showing all sessions'
+                    view = session_view.with_changes(view, input_only=not view.input_only)
+                    message = 'Showing input requests' if view.input_only else 'Showing all sessions'
                 elif key == ord('A'):
+                    # A different query, so this is the one key that re-reads the page.
                     include_closed = not include_closed
+                    next_refresh = 0
                     message = 'Including retained history' if include_closed else 'Showing current sessions'
                 elif row and key in (10, 13, curses.KEY_ENTER):
                     message = attach(row) or ''
@@ -308,9 +448,9 @@ def _loop(screen, config, env):
                                 message = 'Continuation queued; prior uncertain input will not be replayed'
                         else:
                             message = 'Open a new Room with continuation context'
-                if key != -1:
-                    next_refresh = 0
             except (ValueError, OSError) as exc:
                 message = str(exc)
+            if acted:
+                refresh_row(acted['session_id'], acted.get('transport'))
     finally:
         pool.shutdown(wait=False, cancel_futures=True)

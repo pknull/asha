@@ -71,7 +71,24 @@ opens a structured conversation. `a` handles the selected input request;
 terminal requests open the native harness. `n` starts a job, `o` a Room,
 `m` sends context, `s` stops, `x` closes gracefully, `X` force-closes, and `r` resumes. `M` filters input
 requests, `A` includes history, and `G` opens legacy workflows. `q` exits the
-dashboard and leaves work running. Help wraps to fit the terminal.
+dashboard and leaves work running. The footer is one line naming the keys that
+matter for the selected row; `?` opens the full key sheet, which Up/Down pages
+through on a terminal too short to show it whole.
+
+The dashboard keeps its rows between refreshes (#102). It orders them itself by
+group (current, ended, history), then rows needing input, approval or a failed
+close, then project, then creation time; activity never reorders the list, and
+the selection follows its session. When the selected session leaves, the nearest
+surviving row in the previous order is selected (the following one on a tie).
+The selected row keeps its screen line, group headings included.
+`session list --json` keeps the hub's
+recency order. A row missing from an incomplete observation stays, marked
+`stale since HH:MM:SS UTC`, until a complete page shows it has gone. Keys do not
+re-read the whole list: an action re-reads only its own row (a legacy Room or a
+structured session the hub does not own waits for the next refresh), and `A`
+re-reads because it changes the query. The re-read row obeys the same query as
+the list: closing a session while history is off removes it, and a page that
+started before the close cannot bring it back.
 
 The backend retains session identity and message records in SQLite. Terminal
 ownership uses the existing verified Room/tmux adapter. There is no Redis
@@ -505,7 +522,7 @@ request), or, when only published Memory changed, the later of the Memory files'
 and the silence marker's modification times. The time is `null` when neither is
 known. A receipt whose finalizer tool end has not yet arrived is `current`. The
 dashboard's detail line reads `receipt current`, `receipt stale since HH:MM UTC`
-or `no receipt`.
+or `no receipt`; a current or stale receipt is also shown on the session's row.
 
 ### Closing an idle session without a handoff turn
 
