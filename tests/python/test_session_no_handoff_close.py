@@ -668,8 +668,11 @@ class DefaultOffTests(ClosureFixture):
         self.assertEqual(self.hub.close(sid)['next_step'], 'Close needs attach')
         rendered = '\n'.join(session_tui.lines({'rows': [self.hub.show(sid)], 'no_handoff_close': False}, width=200))
         self.assertNotIn('c close (no handoff)', rendered)
+        # #102: the full binding list lives in the ? key sheet, gated the same way.
+        self.assertNotIn('c close (no handoff)',
+                         '\n'.join(session_tui.lines({'rows': [], 'no_handoff_close': False}, width=200, keys=True)))
         self.assertIn('c close (no handoff)',
-                      '\n'.join(session_tui.lines({'rows': [], 'no_handoff_close': True}, width=200)))
+                      '\n'.join(session_tui.lines({'rows': [], 'no_handoff_close': True}, width=200, keys=True)))
 
     def test_enabling_restores_the_turnless_close(self):
         for harness in ('claude', 'codex'):

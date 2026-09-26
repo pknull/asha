@@ -159,6 +159,21 @@ def _idle_fence(row):
             row.get('native_observed_at'), row.get('work_epoch'), row.get('assignment_epoch'))
 
 
+def listed(row, *, include_closed):
+    """Whether ``Hub.list`` puts this shown row on its page (#102).
+
+    The SQL filter and this predicate agree: a closed session stays listed only
+    while its failed close needs attention, and a finished structured worker
+    leaves the default page. The dashboard applies it to single-row refreshes.
+    """
+    if include_closed:
+        return True
+    if row.get('lifecycle') == 'closed' and not (row.get('closure') or {}).get('attention'):
+        return False
+    return not (row.get('transport') == 'structured' and row.get('profile') == 'worker'
+                and row.get('activity') == 'finished')
+
+
 class Hub:
     def __init__(self, config, *, env=None, tmux=None):
         self.config = config
@@ -599,9 +614,7 @@ class Hub:
                 row = self.get(record[0])
                 row.update(activity='unknown', reason=str(exc), pending_messages=0)
                 rows.append(row)
-        if not include_closed:
-            rows = [r for r in rows if not (r['transport'] == 'structured' and r['profile'] == 'worker' and r['activity'] == 'finished')]
-        return {'rows': rows, 'complete': complete}
+        return {'rows': [r for r in rows if listed(r, include_closed=include_closed)], 'complete': complete}
 
     def attach(self, sid):
         row = self.get(sid)
