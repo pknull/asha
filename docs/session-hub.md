@@ -28,8 +28,8 @@ create its own worktree when its assignment calls for one.
 ### Model and effort
 
 `--model MODEL` and `--effort LEVEL` choose the native model and reasoning effort
-for one session at launch (Dashboard `n`/`o` asks for both; blank means the
-harness default). Asha never picks, routes or escalates a model itself; omitted
+for one session at launch (the dashboard's `n`/`o` launch form has optional Model
+and Effort fields; blank means the harness default). Asha never picks, routes or escalates a model itself; omitted
 values pass nothing, so argv and app-server parameters stay exactly as before.
 Values are validated before any record, pane or process exists: a model is one
 printable argument without whitespace or a leading `-` (at most 256 bytes;
@@ -67,20 +67,83 @@ skills and hooks remain available; a harness without the Asha hooks can still
 run its assignment, with activity shown as unknown until explicitly reported.
 
 `asha control` opens the session dashboard. Enter attaches to a terminal or
-opens a structured conversation. `a` handles the selected input request;
-terminal requests open the native harness. `n` starts a job, `o` a Room,
-`m` sends context, `s` stops, `x` closes gracefully, `X` force-closes, and `r` resumes. `M` filters input
-requests, `A` includes history, and `G` opens legacy workflows. `q` exits the
-dashboard and leaves work running. The footer is one line naming the keys that
-matter for the selected row; `?` opens the full key sheet, which Up/Down pages
-through on a terminal too short to show it whole.
+opens a structured conversation; it is offered only where the hub would accept
+it, so a closed or stopped terminal session offers `r` resume instead, and an
+ended legacy Room offers no attach. `a` handles the selected input request;
+terminal requests open the native harness. `n` starts a job and `o` a Room
+through the project launch form (Project, Harness, Assignment or Topic, then
+optional Model and Effort); `m` sends context, `s` stops, `x` closes gracefully,
+`X` force-closes, and `r` resumes. `M` filters input requests, `A` includes
+history, and `G` opens legacy workflows. `q` exits the dashboard and leaves work
+running. The footer is one line naming the keys that matter for the selected
+row; `?` opens the full key sheet, which Up/Down pages through on a terminal too
+short to show it whole. A resize while the sheet is open keeps it open at its
+place, clamped to the new height.
+
+Layout (#102 phase 2). The first line names the view and its grouping; the
+second is the observation summary, or an attention banner (`▲ 1 needs input
+◆ 1 approval — press ! to jump`) while a session that needs you is scrolled off
+screen or inside a folded group. `!` selects the next such session, unfolding
+its group. From 120 columns the list shares the screen with a side panel
+showing the selected session's identity, next step, reason and facts; `Space`
+hides or shows it. Narrower, the list takes the full width with a short detail
+under it, and `Space` swaps to a full-width detail of the selected row (`Esc`
+or `Space` returns). Each row shows a state glyph (`● working`, `▲ needs
+input`, `◆ approval`, `✓ finished`, `… closing`, `○ idle`, `✗ failed`, `· ended`,
+`? unknown`; ASCII `* ! # + ~ o x . ?` when the locale is not UTF-8), the
+session name, the harness (from 60 columns), the next step and the time since it
+last changed. That time never reorders rows. The model and effort selection is
+shown in the detail and side panel, not on the row. A line under the row carries
+receipt, close-request (time, attempt, state), background-task and staleness
+facts when there are any. Names are clipped by terminal cells, so wide or
+combining project names cannot overrun a column. The selected row is always on
+screen: on a short terminal the narrow detail lends the list lines, and the
+selected row's group heading, then its fact line, give way before the row does.
+
+Rows are grouped by project by default; `g` switches to grouping by state
+(`Needs you`, `Working`, `Closing`, `Ready to close`, `Idle`), which follows the
+presented next step, so a row's words and its group agree. Project names that
+differ only in case form one group, titled by one spelling chosen from all its
+rows, so the heading reads the same whether or not its finished rows are folded;
+a row spelled otherwise names its project. Ended and retained history rows have their
+own groups after the others and name their project. Left folds the selected
+row's group to one heading that shows its count and how many of its sessions
+need you; Right, or Enter on the heading, unfolds it. Row actions do nothing on
+a folded heading.
+
+When the list is taller than the screen, the dashboard folds automatically:
+History, then Ended, then each group's finished rows (ready to close) into one
+`… N more` line, from the bottom up, until it fits. Rows that are working or
+need you are never folded, nor is the group holding the selected row; when a
+refresh or an action moves the selected row into an automatically folded group
+(it finished, stopped or left for history), that fold opens and the selection
+stays on the row. Automatic folds are recomputed on every paint, so a taller
+terminal opens them again; Right or Enter opens one for good (opening a whole
+project group also keeps its finished rows open), and a group folded with Left
+stays folded, hiding even the selected row.
+
+The terminal title shows `N awaiting input · asha control` (input requests plus
+approvals). Outside tmux it is on for terminals known to take a title escape
+(xterm-compatible, VTE, kitty, foot, alacritty and similar, or a terminfo OSC
+status line). Inside tmux the terminal must still qualify, and the title is off
+unless `set-titles` is on for the dashboard's own tmux session (the effective
+value, so a session override beats the global one; unreadable means off),
+because the escape renames the dashboard's pane. That session is the one tmux
+session holding the dashboard's pane (`TMUX_PANE`); when the pane is in several
+sessions, as grouped sessions and linked windows make it, or its session cannot
+be found, the title is off. It is always off in a Control-managed
+session, whose pane title is Control's own evidence, and with
+`ASHA_CONTROL_TITLE=0`. On exit the previous title is restored (the pane's
+previous title inside tmux, the xterm title stack elsewhere). The `c` offer
+comes only from the hub's own no-handoff verdict for that row, never from the
+dashboard reading presented activity.
 
 The dashboard keeps its rows between refreshes (#102). It orders them itself by
-group (current, ended, history), then rows needing input, approval or a failed
-close, then project, then creation time; activity never reorders the list, and
-the selection follows its session. When the selected session leaves, the nearest
+group (current, ended, history), then by project (or by state section with
+`g`), then rows needing input, approval or a failed close, then creation time;
+activity never reorders the list, and the selection follows its session. When the selected session leaves, the nearest
 surviving row in the previous order is selected (the following one on a tie).
-The selected row keeps its screen line, group headings included.
+The selected row keeps its screen line, group headings and fact lines included.
 `session list --json` keeps the hub's
 recency order. A row missing from an incomplete observation stays, marked
 `stale since HH:MM:SS UTC`, until a complete page shows it has gone. Keys do not
@@ -522,7 +585,8 @@ request), or, when only published Memory changed, the later of the Memory files'
 and the silence marker's modification times. The time is `null` when neither is
 known. A receipt whose finalizer tool end has not yet arrived is `current`. The
 dashboard's detail line reads `receipt current`, `receipt stale since HH:MM UTC`
-or `no receipt`; a current or stale receipt is also shown on the session's row.
+or `no receipt`; a current or stale receipt is also shown on the line under the
+session's row.
 
 ### Closing an idle session without a handoff turn
 

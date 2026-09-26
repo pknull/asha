@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased — session dashboard layout and grouping (#102 phase 2)
+
+- `asha control` groups sessions by project (default) or, with `g`, by state
+  (Needs you, Working, Closing, Ready to close, Idle), with Ended and History
+  after. Groups fold (Left) and unfold (Right or Enter on the heading).
+- From 120 columns the list shares the screen with a side panel for the
+  selected session; narrower, `Space` shows a full-width detail. Rows carry a
+  state glyph (ASCII fallback), harness, next step and time since the last
+  change, with receipt, close, background and staleness facts on a line under
+  the row. Text clips by terminal cells.
+- An attention banner and `!` reach sessions that need you when they are off
+  screen or folded. The terminal title shows `N awaiting input` outside tmux,
+  and inside tmux only when `set-titles` is on for the dashboard's own tmux
+  session and the terminal takes a title (`ASHA_CONTROL_TITLE=0` opts out); a
+  pane shared by grouped sessions or a linked window gets no title.
+- A list taller than the screen folds History, then Ended, then finished rows
+  into `… N more`; working and attention rows never fold, and explicit folds
+  and unfolds win (opening a project keeps its finished rows open). The
+  selected row stays on screen at every height and through refreshes.
+- Case-equivalent project names form one group. Enter is offered only where
+  the hub would accept the attach (not on closed or stopped terminals).
+- `n`/`o` use the project launch form with optional Model and Effort fields.
+- A resize keeps the paged key sheet open at its clamped place (QA13 Q13-F1).
+
 ## Unreleased — receipt state and close without a handoff turn (#101)
 
 - `session list/show --json` report each session's completion receipt under

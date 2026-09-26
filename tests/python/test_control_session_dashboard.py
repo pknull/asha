@@ -150,15 +150,18 @@ class RowMarkerTests(unittest.TestCase):
         rows = [row('cur', completion_readiness={'receipt': 'current', 'status': 'ready'}),
                 row('old', completion_readiness={'receipt': 'stale', 'status': 'stale', 'stale_since': 3600.0}),
                 row('none', completion_readiness={'receipt': 'none', 'status': 'missing'})]
-        rendered = session_tui.lines({'rows': rows}, width=160, height=30)
-        by_name = {name: next(line for line in rendered if ' / Job ' + name in line) for name in ('cur', 'old', 'none')}
-        self.assertIn('receipt current', by_name['cur'])
-        self.assertIn('receipt stale since 01:00 UTC', by_name['old'])
-        self.assertNotIn('receipt', by_name['none'])
+        # Phase 2: the facts sit on the line under their row (list column only).
+        rendered = [line.split('│')[0] for line in session_tui.lines({'rows': rows}, width=160, height=30)]
+        at = {name: next(i for i, line in enumerate(rendered) if 'Job ' + name in line) for name in ('cur', 'old', 'none')}
+        self.assertIn('receipt current', rendered[at['cur'] + 1])
+        self.assertIn('receipt stale since 01:00 UTC', rendered[at['old'] + 1])
+        self.assertNotIn('receipt', rendered[at['none'] + 1])
+        self.assertNotIn('receipt', rendered[at['none']])
 
     def test_stale_rows_are_labelled(self):
-        rendered = session_tui.lines({'rows': [row(stale_since=3661.0)]}, width=160, height=30)
-        self.assertTrue(any('stale since 01:01:01 UTC' in line and ' / Job one' in line for line in rendered))
+        rendered = session_tui.lines({'rows': [row(stale_since=3661.0)]}, width=100, height=30)
+        at = next(i for i, line in enumerate(rendered) if 'Job one' in line)
+        self.assertIn('stale since 01:01:01 UTC', rendered[at + 1])
 
 
 class Screen:

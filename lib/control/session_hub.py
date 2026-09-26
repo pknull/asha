@@ -159,6 +159,22 @@ def _idle_fence(row):
             row.get('native_observed_at'), row.get('work_epoch'), row.get('assignment_epoch'))
 
 
+def attach_refusal(row):
+    """Why attaching to this row would be refused, or None: one predicate for the command and the view.
+
+    ``Hub.attach`` enforces it for terminal sessions; the dashboard offers Enter
+    only where it is None (Q14-F5). A structured row always opens its
+    conversation. A legacy Room row carries the overview's observation, which
+    reads an ended or missing Room as ``exited``; ``attach_room`` re-checks live.
+    """
+    transport = row.get('transport')
+    if transport == 'terminal' and row.get('lifecycle') in {'closed', 'stopped'}:
+        return 'session is closed or stopped; resume it first'
+    if transport == 'room' and (row.get('lifecycle') == 'ended' or row.get('activity') == 'exited'):
+        return 'Room has ended; open a new Room with continuation context'
+    return None
+
+
 def listed(row, *, include_closed):
     """Whether ``Hub.list`` puts this shown row on its page (#102).
 
@@ -620,8 +636,9 @@ class Hub:
         row = self.get(sid)
         if row['transport'] == 'structured':
             return {'transport': 'structured', 'session_id': sid}
-        if row['lifecycle'] in {'closed', 'stopped'}:
-            raise StoreError('session is closed or stopped; resume it first')
+        refusal = attach_refusal(row)
+        if refusal:
+            raise StoreError(refusal)
         return attach_room(RoomStore(self.config), row['room_id'], tmux=self.tmux)
 
     def stop(self, sid, *, close=False):

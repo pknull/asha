@@ -79,3 +79,29 @@ def present(row):
                 'blocked': 'Blocked: inspect', 'uncertain': 'Uncertain: inspect',
                 'budget-exhausted': 'Budget exhausted: inspect'}.get(activity, 'Inspect session')
     return dict(row, next_step=hint, group=group)
+
+
+def _clock(stamp, pattern='%H:%M UTC'):
+    return datetime.fromtimestamp(stamp, timezone.utc).strftime(pattern)
+
+
+def row_facts(row):
+    """Short facts for the line under a dashboard row (#102): receipt, close, background, staleness.
+
+    Only fields the hub already presented are read; nothing here derives eligibility.
+    """
+    facts = []
+    if (row.get('completion_readiness') or {}).get('receipt') in {'current', 'stale'}:
+        facts.append(receipt_label(row))
+    record = row.get('closure') or {}
+    from .session_closure import TERMINAL_STATES
+    if record.get('generation') == row.get('generation') and not record.get('stale') \
+            and record.get('state') and record['state'] not in TERMINAL_STATES:
+        if record.get('requested_at') is not None:
+            facts.append('close requested ' + _clock(record['requested_at']))
+        facts += ['attempt ' + str(record.get('attempts', 1)), record['state']]
+    if row.get('background_tasks'):
+        facts.append(f"{row['background_tasks']} background tasks")
+    if row.get('stale_since') is not None:
+        facts.append('stale since ' + _clock(row['stale_since'], '%H:%M:%S UTC'))
+    return facts

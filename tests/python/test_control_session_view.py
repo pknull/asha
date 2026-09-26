@@ -141,7 +141,8 @@ class SelectionTests(unittest.TestCase):
         model = merge(model, rows, observed_at=2.0, complete=True)
         self.assertEqual(model.anchor, 2)
         model = move(model, -100, visible=4)
-        self.assertEqual((model.anchor, session_view.selected_index(model)), (0, 0))
+        # The project heading holds line 0, so the first row sits on line 1.
+        self.assertEqual((model.anchor, session_view.selected_index(model)), (1, 0))
 
     def test_input_filter_keeps_selection_on_a_visible_row(self):
         rows = [row('a'), row('b', activity='needs-input')]
@@ -251,23 +252,24 @@ class ScreenLineTests(unittest.TestCase):
         return out
 
     def test_line_offset_counts_group_headings(self):
+        # Phase 2: every section has a heading, the current project's included.
         rows = [session_view.present(r) for r in self.rows([(2, 'current'), (2, 'ended'), (2, 'history')])]
-        self.assertEqual([session_view.line_offset(rows, 0, i) for i in range(6)], [0, 1, 3, 4, 6, 7])
+        self.assertEqual([session_view.line_offset(rows, 0, i) for i in range(6)], [1, 2, 4, 5, 7, 8])
         # A list starting inside a group repeats that group's heading.
         self.assertEqual(session_view.line_offset(rows, 3, 3), 1)
 
     def test_viewport_start_places_the_row_on_its_anchor_line(self):
         rows = [session_view.present(r) for r in self.rows([(8, 'current'), (8, 'ended')])]
-        self.assertEqual(session_view.viewport_start(rows, 7, 7, 16), 0)
+        self.assertEqual(session_view.viewport_start(rows, 7, 8, 16), 0)
         rows[7] = session_view.present(dict(rows[7], activity='exited', process_state='ended'))
         rows = session_view.order(rows)
-        start = session_view.viewport_start(rows, 7, 7, 16)
-        self.assertEqual((start, session_view.line_offset(rows, start, 7)), (1, 7))
+        start = session_view.viewport_start(rows, 7, 8, 16)
+        self.assertEqual((start, session_view.line_offset(rows, start, 7)), (1, 8))
 
     def test_move_tracks_the_anchor_in_lines(self):
         rows = self.rows([(2, 'current'), (4, 'ended')])
         model = merge(ViewModel(), rows, observed_at=1.0, complete=True)
         model = move(model, 3, visible=10)
-        # Two current rows, the Ended heading, then r02 and r03.
-        self.assertEqual(model.anchor, 4)
+        # The project heading, two current rows, the Ended heading, then r02 and r03.
+        self.assertEqual(model.anchor, 5)
         self.assertEqual(move(model, 30, visible=5).anchor, 4)

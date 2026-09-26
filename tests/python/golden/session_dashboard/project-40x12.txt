@@ -1,0 +1,12 @@
+ASHA CONTROL · Sessions       by project
+7 current; 1 ended; 1 need input
+▼ asha                                 5
+> ◆ lint-sweep     Answer in termi…   1m
+  ▲ docs-room      Answer in Contr…   3m
+  ● issue-102      Working            4s
+  … 1 more                              
+
+Run make lint in /home/pknull/Code/asha
+00000000-0001 · 0 queued messages
+
+Enter attach  m send  ? keys  q quit

@@ -1,0 +1,12 @@
+ASHA CONTROL · Sessions         by state
+7 current; 1 ended; 1 need input
+▼ Needs you                            2
+> ◆ asha/lint-sw…  Answer in termi…   1m
+  ▲ asha/docs-ro…  Answer in Contr…   3m
+▼ Working                              4
+  ● asha/issue-1…  Working            4s
+
+Run make lint in /home/pknull/Code/asha
+00000000-0001 · 0 queued messages
+
+Enter attach  m send  ? keys  q quit

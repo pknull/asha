@@ -1,0 +1,40 @@
+ASHA CONTROL · Sessions                                                                                                           by project
+7 current; 1 ended; 1 need input
+▼ asha                                                               5│ asha / lint-sweep · codex · worker
+> ◆ lint-sweep             codex    Answer in terminal (attach)     1m│ ◆ Answer in terminal (attach)
+  ▲ docs-room              claude   Answer in Control               3m│ Run make lint in /home/pknull/Code/asha
+  ● issue-102              claude   Working                         4s│
+  ✓ close-audit            claude   Finalized: close                9m│ session 00000000-0001
+    receipt current                                                   │ 0 queued messages
+  … wrap-up                claude   Closing: await handoff          1m│
+    close requested 13:45 UTC · attempt 1 · delivered                 │
+▼ servitor                                                           2│
+  ● refactor-io            codex    Working: background tasks      12s│
+    2 background tasks                                                │
+  ? smoke-3                claude   Hooks not reporting: attach     6m│
+▼ 測試プロジェクト                                                   1│
+  ● 幅広い名前のセッショ…  claude   Working                         1d│
+▼ Ended                                                              1│
+  · servitor/old-worker    codex    Ended unreported: check work   22m│
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+                                                                      │
+
+Enter attach  m send  x close  s stop  ? keys  q quit

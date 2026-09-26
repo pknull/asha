@@ -75,6 +75,7 @@ class SessionColourTests(unittest.TestCase):
             with self.subTest(enabled=enabled):
                 screen = MagicMock()
                 screen.getch.return_value = ord('q')
+                screen.getmaxyx.return_value = (24, 100)   # paint fits the list to the screen (§5.6)
                 pool = MagicMock()
                 pool.submit.return_value.done.return_value = True
                 pool.submit.return_value.result.return_value = snapshot('working')
@@ -103,10 +104,13 @@ class SessionColourTests(unittest.TestCase):
         for state, tier in expected.items():
             with self.subTest(state=state):
                 screen = self.paint(snapshot(state))
-                status = [w for w in screen.writes if w[1] == 2]
-                self.assertEqual(len(status), 1)
-                self.assertEqual(status[0][2].strip(), session_tui.present(snapshot(state)['rows'][0])['next_step'])
-                self.assertEqual(status[0][3], tui._attribute(FakeCurses, tier, True))
+                step = session_tui.present(snapshot(state)['rows'][0])['next_step']
+                # The glyph (x=2) and the next-step words carry the tier colour.
+                status = [w for w in screen.writes if w[1] == 2 or w[2].strip() == step]
+                self.assertEqual(len(status), 2)
+                self.assertEqual(status[1][2].strip(), step)
+                for write in status:
+                    self.assertEqual(write[3], tui._attribute(FakeCurses, tier, True))
 
     def test_selection_background_does_not_reverse_status_colour(self):
         screen = self.paint(snapshot('working', 'needs-input'), selected=1)
@@ -134,8 +138,16 @@ class SessionColourTests(unittest.TestCase):
         allowed = FakeCurses.A_BOLD | FakeCurses.A_REVERSE
         self.assertTrue(all(not (attr & ~allowed) for _, _, _, attr in screen.writes))
         self.assertTrue(any(attr & FakeCurses.A_REVERSE for _, _, _, attr in screen.writes))
-        plain = [text for _, x, text, _ in screen.writes if x == 0]
-        self.assertEqual(plain, session_tui.lines(data, width=99, height=24))
+        lines = {}
+        for y, x, text, _ in screen.writes:
+            lines.setdefault(y, []).append((x, text))
+        painted = []
+        for y in range(24):
+            line, at = '', 0
+            for x, text in sorted(lines.get(y, [])):
+                line, at = line + ' ' * (x - at) + text, x + tui._cell_width(text)
+            painted.append(line)
+        self.assertEqual(painted, session_tui.lines(data, width=99, height=24))
 
     def test_tiny_resized_and_unicode_views_keep_safe_text_and_bounds(self):
         data = snapshot(*(['working', 'needs-input'] * 40))

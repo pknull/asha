@@ -40,9 +40,9 @@ class NextStepRenderingTests(unittest.TestCase):
         ended = self.row(session_id='two', activity='exited', process_state='ended')
         lines = session_tui.lines({'rows': [live, ended]}, width=110)
         text = '\n'.join(lines)
-        self.assertIn('Ended sessions', text)
-        self.assertLess(text.index('Working'), text.index('Ended sessions'))
-        self.assertLess(text.index('Ended sessions'), text.index('Ended unreported'))
+        self.assertIn('▼ Ended', text)
+        self.assertLess(text.index('Working'), text.index('▼ Ended'))
+        self.assertLess(text.index('▼ Ended'), text.index('Ended unreported'))
 
     def test_save_label_requires_publication_evidence_not_a_status_or_result(self):
         row = self.row(activity='finished', result='Saved and pushed', memory_saved_at=0)
