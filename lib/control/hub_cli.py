@@ -149,6 +149,9 @@ def dispatch(argv, *, env):
         if verb == 'close':
             parser.add_argument('--force', action='store_true', help='terminate now; no memory handoff is requested or claimed')
             parser.add_argument('--wait', type=int, default=0, metavar='SECONDS', help='poll for the handoff acknowledgement before terminating')
+            parser.add_argument('--no-handoff', action='store_true',
+                                help='experimental, off unless control.no_handoff_close is true (#103): ask for no final turn; '
+                                     'stop at a verified native idle boundary; no memory save is claimed')
     elif verb == 'handoff':
         parser.add_argument('--request', metavar='REQUEST_ID')
         parser.add_argument('--attempt', type=int)
@@ -170,6 +173,10 @@ def dispatch(argv, *, env):
             parser.add_argument('--background-tasks', type=int,
                                 help='background tasks the native Stop reported still running (#99)')
             parser.add_argument('--sequence-pane', help='tmux pane whose event sequence was bumped')
+            parser.add_argument('--order', type=int,
+                                help="this session's event order the native hook took at its start (#101)")
+            parser.add_argument('--attempts', type=int,
+                                help='attempt log size the native hook read with its order (#101)')
         parser.add_argument('--native-id')
         parser.add_argument('--text')
     elif verb == 'messages':
@@ -204,7 +211,7 @@ def dispatch(argv, *, env):
         elif verb in {'stop', 'close'}:
             if hub.owns(args.session_id):
                 if verb == 'close':
-                    result = hub.close(args.session_id, force=args.force, wait=args.wait)
+                    result = hub.close(args.session_id, force=args.force, wait=args.wait, no_handoff=args.no_handoff)
                 else:
                     result = hub.stop(args.session_id)
             else:
@@ -242,11 +249,14 @@ def dispatch(argv, *, env):
             else:
                 result = hub.observe(args.event, body=args.text, native_id=args.native_id,
                                      tool_kind=args.tool_kind, tool_token=args.tool_token, sequence=args.sequence,
-                                     sequence_pane=args.sequence_pane, cwd=args.cwd, background_tasks=args.background_tasks)
+                                     sequence_pane=args.sequence_pane, cwd=args.cwd, background_tasks=args.background_tasks,
+                                     order=args.order, attempts=args.attempts)
             if verb == 'event':
                 # The only instruction this bridge ever carries: a pending close
                 # request, returned once as the harness's own Stop decision.
-                decision = hub.stop_decision(result, stop_hook_active=args.stop_hook_active) if args.event == 'turn-stopped' else None
+                # An ignored (late or duplicate) Stop has no delivery effects (#101 QA8 F4).
+                decision = (hub.stop_decision(result, stop_hook_active=args.stop_hook_active)
+                            if args.event == 'turn-stopped' and result.get('observation') != 'ignored' else None)
                 print(json.dumps(decision, ensure_ascii=True) if decision else '{}', flush=True)
                 if decision:
                     # The line above is the whole answer; a failed confirmation only

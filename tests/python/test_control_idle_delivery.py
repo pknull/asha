@@ -559,6 +559,7 @@ class IdleDeliveryDisabledByDefaultTests(ClosureFixture):
         self.assertEqual(result['closure']['delivery']['channel'], 'stop-hook')
         self.assertTrue(result['closure']['attachment_required'])
         self.assertEqual(result['closure']['input_refusal'], 'disabled')
+        # #101/#103: the turnless close is off by default, so only attach is offered.
         self.assertEqual(result['next_step'], 'Close needs attach')
         self.assertEqual((self.tmux.pasted, self.tmux.injected), ([], []))
         # A repeated close still types nothing.

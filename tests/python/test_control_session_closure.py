@@ -45,6 +45,17 @@ class ClosureFixture(unittest.TestCase):
         (self.memory / 'activeContext.md').write_text("# Objective\nStart\n\n# State\nNew\n\n# Next\n- Begin\n\n# Blockers\n- None\n")
         (self.memory / 'decisions.md').write_text("# Decisions\n\n- None.\n")
 
+    def configure_control(self, **control):
+        """Write the Asha config's control object and rebuild the hub from it."""
+        self.asha_home.mkdir(parents=True, exist_ok=True)
+        self.asha_home.chmod(0o700)
+        path = self.asha_home / 'config.json'
+        path.write_text(json.dumps({'control': control}))
+        path.chmod(0o600)
+        self.config = load_config(self.env)
+        from lib.control.session_hub import Hub
+        self.hub = Hub(self.config, env=self.env, tmux=self.tmux)
+
     def launch(self, **changes):
         values = dict(project=str(self.project), prompt='Trim the games', name='Termart cleanup', harness='claude')
         values.update(changes)
@@ -61,17 +72,52 @@ class ClosureFixture(unittest.TestCase):
                 return handoff(*args, **kwargs)
             finally:
                 self.hub.observe('tool-completed', tool_kind='finalizer', tool_token=token)
-        observe = self.hub.observe
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), \
+                self.ordered_hooks(sid), \
+                mock.patch.object(self.hub, 'handoff', side_effect=finalized):
+            yield
+
+    @contextmanager
+    def ordered_hooks(self, sid, hub=None):
+        """Report ``hub.observe`` hook events the way control-event.sh numbers them."""
+        hub = hub or self.hub
+        observe = hub.observe
         def sequenced(event, **kwargs):
+            # Like control-event.sh (#101): take the next number from this
+            # incarnation's real counter file at hook start. An explicit order
+            # models a number allocated elsewhere (the counter keeps the maximum);
+            # order=None reports an unsequenced event and allocates nothing.
+            # Every hook first appends one byte to the attempt log (QA9); a
+            # numbered report carries the log's size.
+            from lib.control import session_order
+            generation = hub.get(sid)['generation']
+            path = session_order.counter_path(self.config, sid, generation)
+            attempts = session_order.attempts_path(self.config, sid, generation)
+            content = path.read_text() if event and path.exists() else None
+            if event and attempts.exists():
+                with attempts.open('ab') as log:
+                    log.write(b'.')
+            if content is not None and not __import__('re').fullmatch(r'(0|[1-9][0-9]{0,8})\n?', content):
+                kwargs.pop('order', None)                  # unreadable: the hook reports unsequenced
+            elif content is not None:
+                allocated = int(content)
+                if 'order' not in kwargs:
+                    kwargs['order'] = allocated + 1
+                elif kwargs['order'] is None:
+                    del kwargs['order']
+                if type(kwargs.get('order')) is int and 0 < kwargs['order'] < session_order.ORDER_LIMIT:
+                    path.write_text(f"{max(allocated, kwargs['order'])}\n")
+                    if attempts.exists() and 'attempts' not in kwargs:
+                        kwargs['attempts'] = attempts.stat().st_size
+            elif 'order' in kwargs and kwargs['order'] is None:
+                del kwargs['order']
             # Like control-event.sh: bump the pane's event sequence, then report it.
             if 'sequence' not in kwargs and getattr(self.tmux, 'event_sequence', None) is not None:
                 self.tmux.event_sequence = str(int(self.tmux.event_sequence) + 1)
                 kwargs['sequence'] = int(self.tmux.event_sequence)
                 kwargs.setdefault('sequence_pane', self.tmux.pane_id)
             return observe(event, **kwargs)
-        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), \
-                mock.patch.object(self.hub, 'observe', side_effect=sequenced), \
-                mock.patch.object(self.hub, 'handoff', side_effect=finalized):
+        with mock.patch.object(hub, 'observe', side_effect=sequenced):
             yield
 
     def drafts(self, active=ACTIVE, decisions=DECISIONS):
@@ -747,7 +793,8 @@ class TerminalClosureTests(ClosureFixture):
         worker = Hub(self.config, env=self.env, tmux=self.tmux)
         def acknowledge():
             time.sleep(0.3)
-            with mock.patch.object(worker, 'actor', side_effect=lambda: worker.get(sid)):
+            with mock.patch.object(worker, 'actor', side_effect=lambda: worker.get(sid)), \
+                    self.ordered_hooks(sid, worker):
                 worker.observe('tool-started', tool_kind='finalizer', tool_token='wait-finalizer')
                 worker.handoff(rid, outcome='no-durable-update', detail='nothing durable')
                 worker.observe('tool-completed', tool_kind='finalizer', tool_token='wait-finalizer')

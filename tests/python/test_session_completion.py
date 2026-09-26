@@ -14,14 +14,14 @@ class CompletionTests(ClosureFixture):
     def save(self, sid):
         import memory_v2
         token = str(uuid.uuid4())
-        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
             self.hub.observe('tool-started', tool_kind='finalizer', tool_token=token)
         row = self.hub.get(sid)
         before = memory_v2.snapshot_digests(memory_v2.read_published_snapshot(self.project))
         with mock.patch.dict(os.environ, {'ASHA_HUB_SESSION_ID': sid}), mock.patch(
                 'lib.control.session_publication.publication_actor', return_value=(self.hub, row)):
             result = memory_v2.publish(self.project, ACTIVE, DECISIONS, expected_preimages=before)
-        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
             self.hub.observe('tool-completed', tool_kind='finalizer', tool_token=token)
         return result
 
@@ -101,6 +101,7 @@ class CompletionTests(ClosureFixture):
             self.hub.observe('turn-stopped')
         result = self.hub.close(sid)
         self.assertTrue(result['closure']['attachment_required'])
+        # #101/#103: the turnless close is off by default, so only attach is offered.
         self.assertEqual(result['next_step'], 'Close needs attach')
 
     def test_failed_save_cannot_reuse_previous_receipt(self):
@@ -225,7 +226,7 @@ class CompletionTests(ClosureFixture):
     def test_close_poll_preserves_acknowledgment_awaiting_tool_end(self):
         sid = self.launch()['session_id']
         record = self.hub.close(sid)['closure']
-        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
             self.hub.observe('tool-started', tool_kind='finalizer', tool_token='final')
             self.hub.handoff(record['request_id'], attempt=1, outcome='no-durable-update', detail='Reviewed')
             self.assertEqual(self.hub.close(sid)['closure']['state'], 'acknowledged')
@@ -307,7 +308,7 @@ class CompletionTests(ClosureFixture):
     def test_missing_failed_or_oversized_callback_recovers_only_after_new_idle_turn(self):
         for callback in (None, 'unknown'):
             sid = self.launch()['session_id']
-            with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+            with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
                 self.hub.observe('tool-started', tool_kind='work', tool_token='lost')
                 if callback:
                     self.hub.observe('tool-completed', tool_kind='work', tool_token=callback)
@@ -329,7 +330,7 @@ class CompletionTests(ClosureFixture):
         from pathlib import Path
         sid = self.launch()['session_id']
         active, decisions = self.drafts()
-        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
             self.hub.observe('tool-started', tool_kind='finalizer', tool_token='none-save')
             with mock.patch.dict(os.environ, {'ASHA_HUB_SESSION_ID': sid}), mock.patch(
                     'lib.control.session_publication.publication_actor', return_value=(self.hub, self.hub.get(sid))):

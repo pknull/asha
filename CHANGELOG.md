@@ -1,5 +1,54 @@
 # Changelog
 
+## Unreleased — receipt state and close without a handoff turn (#101)
+
+- `session list/show --json` report each session's completion receipt under
+  `completion_readiness.receipt` (`current`, `stale` or `none`) with
+  `finalized_at` and `stale_since`. The hub stamps the first write at which a
+  ready receipt stops matching the session's work, and a Memory-only change is
+  dated from the published files. The dashboard detail line shows `receipt
+  current`, `receipt stale since HH:MM UTC` or `no receipt`.
+- Experimental, off by default: `control.no_handoff_close` (#103). With the
+  default the command refuses, naming the setting, and the dashboard does not
+  offer it. The reason is QA11 Q11-F1: a hook between its attempt byte and its
+  number can be covered by an older Stop. The receipt close checks the same
+  invariant and shares this window, reduced but not closed. When enabled:
+  `asha control session close ID --no-handoff` (dashboard `c`): a current receipt
+  still closes as `completed`. Otherwise an idle Claude/Codex terminal stops at a
+  verified native idle boundary (no open tool, no outstanding background work, no
+  pending question, no attached client) as `closed-no-save-claimed`, distinct
+  from `completed` and `forced`, never claiming a Memory save. A working,
+  questioned, attached or unobserved session is refused with the reason and left
+  running; `--wait N` polls for the boundary. Structured sessions, Copilot and
+  OpenCode refuse. A pending close at such a boundary now suggests
+  `Close: attach or --no-handoff`. The offer uses the command's own predicate
+  (`no_handoff` in `session show/list --json`). Idle-pane typing
+  (`control.idle_delivery`) is unchanged.
+- Native event order is always on. `control-event.sh` takes a per-incarnation
+  order from a private flock'd counter (`ASHA_HUB_EVENT_ORDER`, no tmux), and
+  the hub applies a hook's effects only when its order is newer than the last
+  applied one. Late and duplicate reports are logged without effect, and an
+  ignored Stop gets no close-request decision. One invariant now governs every
+  turnless termination (receipt close, `--no-handoff`, Codex idle resume). It
+  is checked under the counter lock held through the kill: every allocated
+  number has been applied, the last is a Stop, and no unsequenced or
+  out-of-order evidence stands without a later-allocated Stop. Receipts record
+  their order, and late work after them still invalidates them (QA7, QA8).
+  The attempt-log size a numbered report carries is read before its number is
+  taken, and a hook that gets no number appends a second byte (QA10 F1). A full
+  attempt log's refusal names its recovery: stop then resume, or `--force`
+  (QA10 F2).
+- Every hook appends one byte to a private per-incarnation attempt log before
+  taking a number, and numbered reports carry the log's size. A turnless kill
+  also requires the log to be unchanged since the last Stop, so a hook that
+  timed out on the counter lock and then lost its report no longer goes unseen
+  (QA9 F1). A counter read that times out leaves the barrier pending until the
+  next readable report instead of permanently (QA9 F2); dropped missing-report
+  entries only refuse receipts issued before them (QA9 F3); a forged huge order
+  no longer materializes its whole gap (QA9 H1).
+- Fix (#92): a graceful close with a current receipt no longer kills a terminal
+  that has a client attached. The kill is tmux-conditional, the receipt is kept,
+  and `--wait` retries.
 ## Unreleased — launch-time model and effort (#95)
 
 - `asha control session launch --model/--effort` (and the dashboard launch form)
