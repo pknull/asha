@@ -17,7 +17,7 @@ from pathlib import Path
 from unittest import mock
 
 from lib.control.config import load_config
-from lib.control.socket_reaper import TmuxSocketReaper
+from lib.control.socket_reaper import TmuxSocketReaper, tmux_socket_path
 from lib.control.store import TaskStore
 from lib.control.transaction import CreationJournalStore
 from lib.control.orchestration.actions import build_action_document, submit_action
@@ -747,6 +747,8 @@ class RealControlFinishPtyTests(unittest.TestCase):
             "PATH": str(self.fake_root / "bin") + os.pathsep + self.env["PATH"],
         })
         self.socket = f"asha-finish-{os.getpid()}-{time.time_ns()}"
+        # Registered before the reaper, so it runs after the reaper's teardown (#98).
+        self.addCleanup(self._assert_no_server_outlives_the_test)
         self.enterContext(TmuxSocketReaper(self.socket, environ=self.env))
         capability = subprocess.run(
             ["tmux", "-L", self.socket, "-f", "/dev/null",
@@ -760,16 +762,30 @@ class RealControlFinishPtyTests(unittest.TestCase):
              "-s", "anchor", "/bin/sleep", "120"],
             check=True, env=self.env,
         )
-        server_pid = subprocess.run(
+        server_pid, socket_path = subprocess.run(
             ["tmux", "-L", self.socket, "-f", "/dev/null", "display-message",
-             "-p", "#{pid}"], capture_output=True, text=True, check=True,
-        ).stdout.strip()
-        socket_path = f"/tmp/tmux-{os.getuid()}/{self.socket}"
+             "-p", "#{pid}\t#{socket_path}"], capture_output=True, text=True, check=True,
+            env=self.env,
+        ).stdout.strip().split("\t")
+        # The server's own socket path, which the reaper also resolves from
+        # TMUX_TMPDIR; a hard-coded /tmp path started a second, unreaped server (#98).
+        self.assertEqual(Path(socket_path), tmux_socket_path(self.socket, environ=self.env))
         self.env.update({
             "TMUX": f"{socket_path},{server_pid},0",
         })
         self.config = load_config(self.env)
         self.tasks = TaskStore(self.config)
+
+    def _assert_no_server_outlives_the_test(self):
+        # Issue #98: check the reaper's directory and the default one, where a
+        # TMUX value that disagreed with TMUX_TMPDIR used to start a second server.
+        for path in {tmux_socket_path(self.socket, environ=self.env),
+                     tmux_socket_path(self.socket, environ={})}:
+            alive = subprocess.run(
+                ["tmux", "-S", str(path), "-f", "/dev/null", "list-sessions"],
+                capture_output=True, check=False, env=self.env,
+            ).returncode == 0
+            self.assertFalse(alive, f"isolated tmux server outlived its test: {path}")
 
     def _git_semantics(self):
         head = subprocess.run(
