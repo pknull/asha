@@ -331,6 +331,25 @@ if [[ "$(captured)" == "control session event --event turn-stopped --native-id n
 else
   fail "stop_hook_active is forwarded so the hub never chains a second block ($(captured))"
 fi
+run_control Stop '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":[{"id":"b1","type":"local_bash","status":"running","description":"suite"},{"id":"m1","type":"monitor_mcp","status":"running","description":"watch"}]}' \
+  ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+if [[ "$(captured)" == "control session event --event turn-stopped --native-id native-bg --background-tasks 2" ]]; then
+  ok "Stop forwards the count of outstanding background tasks (#99)"
+else
+  fail "Stop forwards the count of outstanding background tasks ($(captured))"
+fi
+NO_COUNT_OK=1
+for payload in '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":[]}' \
+    '{"session_id":"native-bg","stop_hook_active":false,"background_tasks":"many"}' \
+    '{"session_id":"native-bg","stop_hook_active":false}'; do
+  run_control Stop "$payload" ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+  [[ "$(captured)" == "control session event --event turn-stopped --native-id native-bg" ]] \
+    || { NO_COUNT_OK=0; fail "no background evidence forwards no count (${payload:50:40} -> $(captured))"; }
+done
+[[ $NO_COUNT_OK -eq 0 ]] || ok "an empty, malformed or absent background_tasks forwards no count"
+run_control PostToolUse '{"session_id":"native-bg","background_tasks":[{"id":"b1"}]}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+[[ "$(captured)" != *--background-tasks* ]] && ok "background_tasks is read only at the Stop boundary" \
+  || fail "background_tasks is read only at the Stop boundary ($(captured))"
 run_control Stop '{"session_id":"native-abc","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
 if [[ "$(captured)" == "control session event --event turn-stopped --native-id native-abc" ]]; then
   ok "a whole, parsed Stop payload with the guard off is forwarded without the flag"

@@ -35,11 +35,15 @@ def present(row):
         hint = 'Close needs attach'
     elif activity == 'close-failed' or record.get('state') in {'unanswered', 'handoff-failed'}:
         hint = 'Close failed: retry or attach'
+    elif activity == 'closing' and record.get('waiting_on_background'):
+        hint = 'Closing: background tasks running'
     elif activity == 'closing':
         hint = ('Finalized, closing' if row.get('completion_readiness', {}).get('status') == 'ready'
                 else 'Closing: await handoff')
     elif row.get('completion_readiness', {}).get('status') == 'ready':
         hint = 'Finalized: close'
+    elif activity == 'working' and row.get('background_tasks'):
+        hint = 'Working: background tasks'
     elif finished:
         hint = ('Result ready: needs handoff' if (row.get('transport') == 'structured' or 'completion_readiness' in row)
                 and row.get('completion_readiness', {}).get('status') != 'ready'

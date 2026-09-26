@@ -42,6 +42,23 @@ class IdleCloseDeliveryTests(IdleDeliveryEnabled):
             self.hub.observe('prompt-submitted', native_id='native-' + sid[:8])
             self.hub.observe('turn-stopped')
 
+    def test_background_work_outstanding_is_never_typed_into(self):
+        # #99: the pane looks idle while a background shell or Monitor runs;
+        # the Stop payload says otherwise, so neither close nor send types.
+        sid = self.launch()['session_id']
+        self.tmux.screen = list(CLAUDE_IDLE)
+        with self.acting_as(sid):
+            self.hub.observe('prompt-submitted', native_id='native-' + sid[:8])
+            self.hub.observe('turn-stopped', background_tasks=1)
+        outcome, reason = self.hub._idle_input(self.hub.get(sid), 'hello')
+        self.assertEqual((outcome, reason), ('ineligible', 'no observed idle turn boundary'))
+        record = self.hub.close(sid)['closure']
+        self.assertEqual(record['state'], 'pending-delivery')
+        self.assertEqual(self.tmux.injected, [])
+        sent = self.hub.send(sid, 'Keep going', key='bg')
+        self.assertEqual(sent['state'], 'queued')
+        self.assertEqual(self.tmux.injected, [])
+
     def test_idle_claude_close_is_typed_into_the_owned_pane_bound_to_its_request(self):
         sid = self.launch()['session_id']
         self.idle(sid)

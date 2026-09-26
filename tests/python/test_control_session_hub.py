@@ -106,8 +106,10 @@ class SessionHubTests(unittest.TestCase):
 
     def test_stop_keeps_history_and_resume_keeps_session_identity(self):
         row = self.launch()
+        self.hub._update(row['session_id'], background_tasks=3)
         self.hub.stop(row['session_id'])
         resumed = self.hub.resume(row['session_id'], prompt='Continue with my followup')
+        self.assertIsNone(self.hub.get(row['session_id']).get('background_tasks'))
         self.assertEqual(resumed['session_id'], row['session_id'])
         self.assertEqual(resumed['generation'], 2)
         self.assertNotEqual(resumed['room_id'], row['room_id'])
@@ -160,6 +162,44 @@ class SessionHubTests(unittest.TestCase):
             self.assertEqual(self.hub.show(row['session_id'])['activity'], 'working')
             self.hub.observe('turn-stopped')
             self.assertEqual(self.hub.show(row['session_id'])['activity'], 'idle')
+
+    def test_stop_with_background_work_outstanding_is_not_idle(self):
+        row = self.launch()
+        sid = row['session_id']
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+            self.hub.observe('prompt-submitted')
+            self.hub.observe('turn-stopped', background_tasks=2)
+            waiting = self.hub.show(sid)
+            self.assertEqual((waiting['activity'], waiting['native_activity']), ('working', 'working'))
+            self.assertEqual(waiting['background_tasks'], 2)
+            self.assertIn('2 background task(s)', waiting['reason'])
+            self.assertEqual(waiting['next_step'], 'Working: background tasks')
+            # A long suite outlives the five-minute staleness rule: the Stop
+            # payload proved a wake-up is still owed, so it is not demoted,
+            # up to a bound: an unproven wake-up cannot hold the row forever.
+            from lib.control.session_hub import BACKGROUND_WAIT_SECONDS
+            self.hub._update(sid, observed_at=time.time() - 3600, native_observed_at=time.time() - 3600)
+            self.assertEqual(self.hub.show(sid)['activity'], 'working')
+            late = time.time() - BACKGROUND_WAIT_SECONDS - 60
+            self.hub._update(sid, observed_at=late, native_observed_at=late)
+            self.assertEqual(self.hub.show(sid)['activity'], 'unknown')
+            # A worker report is fresher evidence and drops the stale count.
+            self.hub.observe(None, state='working', body='Still testing')
+            self.assertIsNone(self.hub.get(sid).get('background_tasks'))
+            self.hub.observe('turn-stopped', background_tasks=2)
+            # The wake-up turn's own Stop with nothing outstanding is idle.
+            self.hub.observe('tool-started', tool_token='t1')
+            self.assertIsNone(self.hub.get(sid).get('background_tasks'))
+            self.hub.observe('tool-completed', tool_token='t1')
+            self.hub.observe('turn-stopped', background_tasks=0)
+            idle = self.hub.show(sid)
+            self.assertEqual(idle['activity'], 'idle')
+            self.assertIsNone(idle.get('background_tasks'))
+            self.hub.observe('turn-stopped', background_tasks=1)
+            self.hub.observe('session-ended')
+            self.assertEqual(self.hub.get(sid)['activity'], 'exited')
+            with self.assertRaises(StoreError):
+                self.hub.observe('turn-stopped', background_tasks=-1)
 
     def test_explicit_input_state_without_text_survives_its_own_hooks(self):
         row = self.launch()
