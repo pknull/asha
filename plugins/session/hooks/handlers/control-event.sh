@@ -7,7 +7,9 @@
 #
 # The hub path is deliberately the thinner of the two: session identity and
 # generation are inherited environment. Event name, optional native session ID,
-# tool classification and opaque boundary token are forwarded; no body is retained. The
+# the native cwd, tool classification and opaque boundary token are forwarded,
+# plus a clipped one-line request summary on PermissionRequest; no other body
+# is retained. The
 # bridge is bounded (under a second on keystroke-facing events, a few seconds
 # at the Stop turn boundary), and the answer is a harmless empty object — with
 # one named exception. On Stop only, a pending graceful close request is
@@ -87,7 +89,7 @@ HUB_STOP_SECONDS=3
 # for those events so ordinary output does not hide boundary identity. Oversized
 # or failed callbacks remain unverified until a new turn after observed idle.
 HUB_READ_CHARS=4096
-if [[ -n "$HUB_SESSION" && ( "$CONTROL_EVENT" == "turn-stopped" || "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed" ) ]]; then
+if [[ -n "$HUB_SESSION" && ( "$CONTROL_EVENT" == "turn-stopped" || "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed" || "$CONTROL_EVENT" == "permission-requested" ) ]]; then
   HUB_READ_CHARS=262144
 fi
 INPUT=""
@@ -124,12 +126,36 @@ if [[ "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed"
   fi
 fi
 SESSION_ID=""
+HOOK_CWD=""
 EXIT_STATUS=""
 STOP_HOOK_ACTIVE=""
 if command -v jq >/dev/null 2>&1 && [[ -n "$INPUT" ]]; then
-  SESSION_ID="$(printf '%s' "$INPUT" | jq -r '
-    .session_id // .sessionId // .sessionID // empty
-    | select(type == "string")' 2>/dev/null || true)"
+  # One jq, two lines: the native session ID, then the native thread's own
+  # cwd (#100). Hook identity is inherited environment, which a shared harness
+  # process can carry from another session, so the hub refuses a different
+  # conversation reporting from outside the session's project. A value holding
+  # a newline is dropped rather than split.
+  { IFS= read -r SESSION_ID; IFS= read -r HOOK_CWD; } < <(printf '%s' "$INPUT" | jq -r '
+    def line: if type == "string" and (contains("\n") | not) then . else "" end;
+    ((.session_id // .sessionId // .sessionID // "") | line),
+    ((.cwd // "") | line | select(startswith("/")) // "")' 2>/dev/null || true)
+  [[ -n "$HUB_SESSION" && ${#HOOK_CWD} -le 4096 ]] || HOOK_CWD=""
+fi
+# A PermissionRequest names what it asks for; Control shows that summary as the
+# session's question (answering stays in the terminal: #100 scope, #101). One
+# line, control characters blanked, clipped to 300 characters. Only a payload
+# read whole with a string tool_name yields one.
+PERMISSION_TEXT=""
+if [[ -n "$HUB_SESSION" && "$CONTROL_EVENT" == "permission-requested" && -z "$INPUT_TRUNCATED" && -n "$INPUT" ]] \
+    && command -v jq >/dev/null 2>&1; then
+  PERMISSION_TEXT="$(printf '%s' "$INPUT" | jq -r '
+    select(type == "object" and (.tool_name | type) == "string")
+    | ("Permission requested: " + .tool_name
+       + (if (.tool_input | type) == "object" then
+            ": " + ((.tool_input.command // .tool_input.file_path // .tool_input.url
+                     // .tool_input.description // .tool_input) | if type == "string" then . else tojson end)
+          else "" end))
+    | gsub("[\u0000-\u001f\u007f]"; " ") | .[0:300]' 2>/dev/null || true)"
 fi
 # The harness's own guard against chained Stop blocks. Only a payload that was
 # read whole and parsed as an object can prove the guard is off; an absent,
@@ -175,6 +201,8 @@ if [[ -n "$HUB_SESSION" ]]; then
       HUB_ARGS+=(--tool-kind "$TOOL_KIND" --tool-token "$TOOL_TOKEN")
     fi
     [[ -z "$SESSION_ID" ]] || HUB_ARGS+=(--native-id "$SESSION_ID")
+    [[ -z "$HOOK_CWD" ]] || HUB_ARGS+=(--cwd "$HOOK_CWD")
+    [[ -z "$PERMISSION_TEXT" ]] || HUB_ARGS+=(--text "$PERMISSION_TEXT")
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
     [[ -z "$HUB_SEQUENCE" ]] || HUB_ARGS+=(--sequence "$HUB_SEQUENCE" --sequence-pane "$TMUX_PANE")
     HUB_RESPONSE="$(

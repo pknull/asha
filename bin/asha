@@ -365,6 +365,12 @@ launch() {
       local operational_applies=0 brief_applies=0
       local -a trust_args=()
       local -a coordinator_args=()
+      # Every TUI launch runs without Codex's shared app-server daemon, whose
+      # hooks would report under another session's identity (#100).
+      # shellcheck source=../lib/codex-launch.sh
+      source "$ASHA_ROOT/lib/codex-launch.sh"
+      asha_codex_launch_args "$executable" "$@"
+      set -- "${ASHA_CODEX_LAUNCH_ARGS[@]}"
       if ! asha_worker_profile && [[ "${ASHA_CONTROL_MANAGED:-0}" == "1" || -n "${ASHA_COORDINATOR_LAUNCH:-}" || -n "${ASHA_ROOM_ID:-}" || "${ASHA_SEAT:-0}" == "1" ]]; then
         trust_root="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)" \
           || trust_root="$PWD"

@@ -184,12 +184,16 @@ def room_launch_argv(
             resume = ['--resume', resume_id]
         elif selected == 'codex':
             # `codex resume ID` takes its own -m/-c options after the ID.
-            resume = ['resume', resume_id]
+            resume = ['resume', '--no-daemon', resume_id]
         else:
             raise RoomError("native resume is not verified for this harness; open a new session")
     tail = {
         "claude": [*flags, *resume, text],
-        "codex": [*resume, *flags, text],
+        # Codex 0.157's shared app-server daemon runs hooks with the frozen
+        # environment of whichever process spawned it, so they would report
+        # under another session's identity (#100). bin/asha drops the flag
+        # for a Codex too old to know it.
+        "codex": [*(resume or ['--no-daemon']), *flags, text],
         "copilot": [*flags, "--interactive", text],
         "opencode": [*flags, "--prompt", text],
     }[selected]

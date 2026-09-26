@@ -44,6 +44,8 @@ def present(row):
         hint = ('Result ready: needs handoff' if (row.get('transport') == 'structured' or 'completion_readiness' in row)
                 and row.get('completion_readiness', {}).get('status') != 'ready'
                 else 'Done: close' if process == 'live' else 'Done reported: inspect session')
+    elif activity == 'unknown' and row.get('telemetry') == 'hooks-not-reporting':
+        hint = 'Hooks not reporting: attach'
     elif activity == 'idle':
         hint = 'Waiting for you' if row.get('profile') == 'room' else 'Stopped mid-task?'
     else:

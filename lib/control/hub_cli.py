@@ -166,6 +166,7 @@ def dispatch(argv, *, env):
             parser.add_argument('--tool-kind', choices=['work', 'report', 'finalizer'], default='work')
             parser.add_argument('--tool-token', default='unknown')
             parser.add_argument('--sequence', type=int, help='pane event sequence the native hook bumped')
+            parser.add_argument('--cwd', help="native hook payload cwd; refused outside the session's project")
             parser.add_argument('--sequence-pane', help='tmux pane whose event sequence was bumped')
         parser.add_argument('--native-id')
         parser.add_argument('--text')
@@ -239,7 +240,7 @@ def dispatch(argv, *, env):
             else:
                 result = hub.observe(args.event, body=args.text, native_id=args.native_id,
                                      tool_kind=args.tool_kind, tool_token=args.tool_token, sequence=args.sequence,
-                                     sequence_pane=args.sequence_pane)
+                                     sequence_pane=args.sequence_pane, cwd=args.cwd)
             if verb == 'event':
                 # The only instruction this bridge ever carries: a pending close
                 # request, returned once as the harness's own Stop decision.
@@ -276,6 +277,8 @@ def dispatch(argv, *, env):
         return 0
     except (ValueError, OSError, StoreError) as exc:
         if verb == 'event':
+            from .session_hub import record_rejection
+            record_rejection(config, env, event=args.event, native_id=args.native_id, error=exc, cwd=args.cwd)
             print('{}')
             return 0
         print('asha control session: ' + str(exc), file=sys.stderr)

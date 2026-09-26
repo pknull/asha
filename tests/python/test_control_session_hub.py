@@ -1,3 +1,5 @@
+import contextlib
+import io
 import unittest
 import os
 import json
@@ -180,6 +182,133 @@ class SessionHubTests(unittest.TestCase):
         self.hub.env.update(ASHA_HUB_SESSION_ID=row['session_id'], ASHA_HUB_GENERATION='1')
         with mock.patch('lib.control.harness.caller_descends_from', return_value=False), self.assertRaises(StoreError):
             self.hub.observe(None, state='finished', body='Spoofed')
+
+    def test_first_native_conversation_binds_the_generation(self):
+        # A hook run by a shared Codex daemon, or any other conversation under
+        # the same pane, inherits this session's identity (#100). The first
+        # native conversation of a generation binds it; ordinary events from a
+        # different conversation are refused whatever their cwd.
+        row = self.launch()
+        sid = row['session_id']
+        project = self.project.resolve()
+        (project / 'sub').mkdir(exist_ok=True)
+        outside = self.root / 'elsewhere'
+        outside.mkdir(exist_ok=True)
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+            self.hub.observe('prompt-submitted', native_id='thread-own', cwd=str(project))
+            for event, cwd in (('turn-stopped', str(project)), ('tool-started', None),
+                               ('permission-requested', str(project / 'sub')), ('tool-completed', str(outside))):
+                with self.subTest(event=event, cwd=cwd), \
+                        self.assertRaisesRegex(StoreError, 'another native conversation'):
+                    self.hub.observe(event, native_id='thread-foreign', cwd=cwd)
+            current = self.hub.get(sid)
+            self.assertEqual((current['activity'], current['native_id']), ('working', 'thread-own'))
+            # The bound conversation may report from anywhere (Claude's hook
+            # cwd follows Bash cd and EnterWorktree), or without an ID at all.
+            self.hub.observe('tool-started', native_id='thread-own', cwd=str(outside), tool_token='t')
+            self.hub.observe('tool-completed', native_id='thread-own', cwd=str(outside), tool_token='t')
+            self.hub.observe('turn-stopped', cwd='relative/ignored')
+            self.assertEqual(self.hub.get(sid)['activity'], 'idle')
+            # An explicit new conversation (/clear, /new) rebinds inside the
+            # project; a foreign SessionStart from another project does not.
+            with self.assertRaisesRegex(StoreError, 'outside this session'):
+                self.hub.observe('session-start', native_id='thread-far', cwd=str(outside))
+            self.hub.observe('session-start', native_id='thread-next', cwd=str(project / 'sub'))
+            with self.assertRaisesRegex(StoreError, 'another native conversation'):
+                self.hub.observe('turn-stopped', native_id='thread-own')
+            self.hub.observe('turn-stopped', native_id='thread-next')
+            self.assertEqual(self.hub.get(sid)['native_id'], 'thread-next')
+            with self.assertRaises(StoreError):
+                self.hub.observe(None, state='working', cwd=str(outside))
+        # Resume is a new generation: its first conversation binds afresh.
+        self.hub.stop(sid)
+        self.hub.resume(sid, prompt='Continue')
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
+            self.hub.observe('prompt-submitted', native_id='thread-resumed')
+            self.assertEqual(self.hub.get(sid)['native_id'], 'thread-resumed')
+            with self.assertRaisesRegex(StoreError, 'another native conversation'):
+                self.hub.observe('turn-stopped', native_id='thread-next')
+
+    def test_unbound_generation_refuses_a_foreign_first_event_from_outside(self):
+        row = self.launch()
+        outside = self.root / 'elsewhere'
+        outside.mkdir(exist_ok=True)
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(row['session_id'])):
+            with self.assertRaisesRegex(StoreError, 'outside this session'):
+                self.hub.observe('turn-stopped', native_id='thread-foreign', cwd=str(outside))
+            self.assertIsNone(self.hub.get(row['session_id'])['native_id'])
+            self.hub.observe('session-start', native_id='thread-own', cwd=str(self.project.resolve()))
+            self.assertEqual(self.hub.get(row['session_id'])['native_binding'],
+                             {'generation': 1, 'native_id': 'thread-own'})
+
+    def test_permission_request_shows_needs_input_with_its_request_text(self):
+        # Answering a terminal approval through Control is out of scope (#101);
+        # the request must still be visible in Control, not only in the pane.
+        row = self.launch()
+        text = 'Permission requested: Bash: make clean'
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(row['session_id'])):
+            self.hub.observe('prompt-submitted', native_id='thread-own')
+            self.hub.observe('permission-requested', native_id='thread-own', body=text)
+        shown = self.hub.show(row['session_id'])
+        self.assertEqual(shown['activity'], 'needs-input')
+        self.assertEqual(shown['question'], text)
+        self.assertIn('make clean', shown['reason'])
+        self.assertEqual(shown['next_step'], 'Answer in terminal (attach)')
+
+    def test_terminal_session_without_hook_evidence_is_labelled_hooks_not_reporting(self):
+        from lib.control import session_hub
+        row = self.launch()
+        fresh = self.hub.show(row['session_id'])
+        self.assertEqual(fresh['activity'], 'unknown')
+        self.assertNotEqual(fresh.get('telemetry'), 'hooks-not-reporting')
+        self.assertIsNotNone(self.hub.get(row['session_id'])['launched_at'])
+        self.hub._update(row['session_id'], launched_at=time.time() - session_hub.HOOK_SILENCE_SECONDS - 5)
+        silent = self.hub.show(row['session_id'])
+        self.assertEqual(silent['activity'], 'unknown')
+        self.assertEqual(silent['telemetry'], 'hooks-not-reporting')
+        self.assertIn('Hooks not reporting', silent['reason'])
+        self.assertEqual(silent['next_step'], 'Hooks not reporting: attach')
+        # A worker report is not hook evidence; one native event is.
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(row['session_id'])):
+            self.hub.observe(None, state='working', body='Started')
+            self.assertEqual(self.hub.show(row['session_id'])['telemetry'], 'hooks-not-reporting')
+            self.hub.observe('prompt-submitted')
+        observed = self.hub.show(row['session_id'])
+        self.assertEqual(observed['activity'], 'working')
+        self.assertIsNone(observed.get('telemetry'))
+
+    def test_harnesses_without_a_hook_bridge_are_never_labelled_hooks_not_reporting(self):
+        from lib.control import session_hub
+        row = self.launch()
+        for harness in ('copilot', 'opencode'):
+            with self.subTest(harness=harness):
+                self.hub._update(row['session_id'], harness=harness,
+                                 launched_at=time.time() - session_hub.HOOK_SILENCE_SECONDS - 5)
+                shown = self.hub.show(row['session_id'])
+                self.assertIsNone(shown.get('telemetry'))
+                self.assertNotEqual(shown['next_step'], 'Hooks not reporting: attach')
+
+    def test_rejected_hook_event_is_logged_to_a_bounded_local_diagnostic(self):
+        from lib.control import hub_cli, session_hub
+        row = self.launch()
+        env = dict(self.env, ASHA_HUB_SESSION_ID=row['session_id'], ASHA_HUB_GENERATION='7')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = hub_cli.dispatch(['event', '--event', 'turn-stopped', '--native-id', 'thread-x',
+                                     '--cwd', '/elsewhere/project'], env=env)
+        self.assertEqual((code, out.getvalue().strip()), (0, '{}'))
+        log = session_hub.rejection_log_path(self.config)
+        self.assertEqual(log.stat().st_mode & 0o777, 0o600)
+        entry = json.loads(log.read_text().splitlines()[-1])
+        self.assertEqual((entry['event'], entry['session_id'], entry['generation'], entry['native_id']),
+                         ('turn-stopped', row['session_id'], '7', 'thread-x'))
+        self.assertIn('stale or inactive session reporter', entry['error'])
+        self.assertEqual(entry['cwd'], '/elsewhere/project')
+        for _ in range(3000):
+            session_hub.record_rejection(self.config, env, event='tool-started', native_id='n' * 200,
+                                         error='x' * 2000, cwd='/' + 'c' * 900)
+        self.assertLessEqual(log.stat().st_size, session_hub.REJECTION_LOG_BYTES)
+        self.assertTrue(all(json.loads(line)['event'] for line in log.read_text().splitlines()))
 
     def test_message_count_and_page_do_not_hide_more_than_100_queued(self):
         row = self.launch()

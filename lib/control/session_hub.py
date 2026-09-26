@@ -43,6 +43,86 @@ CLOSE_WAIT_LIMIT = 600
 # Every other refusal (attached, mode, ownership, occupied, stale, partial,
 # error) keeps the Room and asks for attach.
 RESTARTABLE_REFUSALS = frozenset({'disabled', 'ineligible', 'unknown'})
+# A live terminal session with no native hook event this long after launch is
+# labelled "hooks not reporting" instead of plain unknown (#100): SessionStart
+# fires within seconds of a healthy launch.
+HOOK_SILENCE_SECONDS = 90
+# Only these harnesses have a native hook bridge into the hub; Copilot and
+# OpenCode sessions report explicitly and are never "hooks not reporting".
+HOOK_REPORTING_HARNESSES = frozenset({'claude', 'codex'})
+# Rejected hook events are kept, not discarded, in a small local diagnostic.
+REJECTION_LOG_NAME = 'hub-rejected-events.jsonl'
+REJECTION_LOG_BYTES = 64 * 1024
+
+
+def rejection_log_path(config):
+    return config.tasks_dir.parent / REJECTION_LOG_NAME
+
+
+def _outside_project(row, cwd):
+    """True only for a usable absolute cwd that resolves outside the session's project."""
+    if (not isinstance(cwd, str) or not cwd.startswith('/') or len(cwd) > 4096 or not cwd.isprintable()):
+        return False
+    project = os.path.realpath(row['project'])
+    return os.path.commonpath([project, os.path.realpath(cwd)]) != project
+
+
+def native_binding(row, event, native_id, cwd):
+    """The generation's bound native conversation after this hook event (#100).
+
+    Hook identity is inherited environment, which a shared harness process (or
+    any other conversation under the same pane) can carry. The first native
+    conversation of a generation binds it; resume is a new generation and binds
+    afresh. Ordinary events from a different conversation are refused whatever
+    their cwd. Only SessionStart (/clear, /new) rebinds, and only from inside the
+    project. The bound conversation may report from anywhere, because Claude's
+    hook cwd follows Bash ``cd`` and EnterWorktree. Returns the new binding, or
+    None when nothing changes.
+    """
+    binding = row.get('native_binding') or {}
+    bound = binding.get('native_id') if binding.get('generation') == row['generation'] else None
+    if not native_id or native_id == bound:
+        return None
+    if bound is not None and event != 'session-start':
+        raise StoreError('hook event names another native conversation than this session bound')
+    if _outside_project(row, cwd):
+        raise StoreError("hook cwd is outside this session's project and names another conversation")
+    return dict(generation=row['generation'], native_id=native_id)
+
+
+def record_rejection(config, env, *, event, native_id, error, cwd=None):
+    """Append one refused hook event; keep the newest half once over budget. Never raises."""
+    clip = lambda value, limit: str(value)[:limit] if value is not None else None
+    entry = dict(at=time.time(), event=clip(event, 64), session_id=clip(env.get('ASHA_HUB_SESSION_ID'), 64),
+                 generation=clip(env.get('ASHA_HUB_GENERATION'), 16), native_id=clip(native_id, 128),
+                 cwd=clip(cwd, 512),
+                 pid=os.getpid(), ppid=os.getppid(), error=clip(error, 300))
+    line = json.dumps(entry, ensure_ascii=True) + '\n'
+    path = rejection_log_path(config)
+    try:
+        import fcntl
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(path, os.O_RDWR | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'r+', encoding='utf-8', errors='replace') as handle:
+            # One writer at a time, so a trim never drops a concurrent append,
+            # and the trim rewrites in place: a killed hook leaves no debris.
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            os.fchmod(handle.fileno(), 0o600)
+            handle.write(line)
+            handle.flush()
+            if os.fstat(handle.fileno()).st_size > REJECTION_LOG_BYTES:
+                handle.seek(0)
+                tail, total = [], 0
+                for item in reversed(handle.read().splitlines(keepends=True)):
+                    total += len(item.encode('utf-8'))
+                    if total > REJECTION_LOG_BYTES // 2:
+                        break
+                    tail.append(item)
+                handle.seek(0)
+                handle.truncate()
+                handle.writelines(reversed(tail))
+    except (OSError, ValueError):
+        pass
 
 
 def _open_tools(row):
@@ -210,7 +290,7 @@ class Hub:
         except BaseException as exc:
             self._update(row['session_id'], lifecycle='interrupted', reason=str(exc)[:1000])
             raise
-        self._update(row['session_id'], lifecycle='closing' if closing else 'open')
+        self._update(row['session_id'], lifecycle='closing' if closing else 'open', launched_at=time.time())
         guidance.supplied(self, row, key)
         return self.show(row['session_id'])
 
@@ -345,6 +425,14 @@ class Hub:
                     row.update(activity='unknown', reason=detail)
                 elif row['observed_at'] and time.time() - row['observed_at'] > 300 and row['activity'] == 'working':
                     row.update(activity='unknown', reason='No recent observation; the harness may still be working')
+                if (state == 'open' and row['harness'] in HOOK_REPORTING_HARNESSES and not row.get('native_observed_at')
+                        and row.get('launched_at') and time.time() - row['launched_at'] > HOOK_SILENCE_SECONDS):
+                    # Worker reports are not hook evidence; without a single
+                    # native event the dashboard cannot see turns or prompts.
+                    row['telemetry'] = 'hooks-not-reporting'
+                    if row['activity'] == 'unknown':
+                        row['reason'] = (f'Hooks not reporting: no native event {HOOK_SILENCE_SECONDS}s after launch; '
+                                         'attach to check the terminal, then run asha doctor')
             except (ValueError, OSError) as exc:
                 row.update(activity='unknown', reason=str(exc)[:1000])
         with self.database() as db, db.transaction() as c:
@@ -1156,8 +1244,10 @@ class Hub:
         return row
 
     def observe(self, event, *, native_id=None, state=None, body=None, tool_kind='work', tool_token='unknown',
-                sequence=None, sequence_pane=None):
+                sequence=None, sequence_pane=None, cwd=None):
         actor = self.actor()
+        if cwd is not None and not event:
+            raise StoreError('cwd is hook evidence; worker reports do not carry it')
         if sequence is not None:
             # Only a bump of this Room's own pane counts; any other pane's
             # counter could coincide with ours and hide an event.
@@ -1173,10 +1263,10 @@ class Hub:
                 raise StoreError('stale or inactive session reporter')
             return self._observe(row, event, native_id=native_id, state=state, body=body,
                                  tool_kind=tool_kind, tool_token=tool_token, sequence=sequence,
-                                 sequence_pane=sequence_pane)
+                                 sequence_pane=sequence_pane, cwd=cwd)
 
     def _observe(self, row, event, *, native_id, state, body, tool_kind, tool_token, validate_fn=None,
-                 sequence=None, sequence_pane=None):
+                 sequence=None, sequence_pane=None, cwd=None):
         activity = EVENTS.get(event) if event else state
         if activity not in {'idle', 'working', 'needs-input', 'finished', 'exited'}:
             raise StoreError('invalid session observation')
@@ -1231,6 +1321,10 @@ class Hub:
             native_id = text(native_id, 'native session ID', 512)
             if native_id.startswith('-') or not native_id.isprintable():
                 raise StoreError('invalid native session ID')
+            if event:
+                binding = native_binding(row, event, native_id, cwd)
+                if binding:
+                    changes['native_binding'] = binding
             changes['native_id'] = native_id
         if body:
             changes['reason'] = text(body, 'report', 16000)
