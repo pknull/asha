@@ -124,6 +124,45 @@ class TerminalClosureTests(ClosureFixture):
         self.assertEqual(self.tmux.injected, [])
         self.assertIn('did not submit the close request', shown['closure']['guidance'])
 
+    def test_stop_with_background_work_outstanding_is_not_an_idle_close_boundary(self):
+        # #99: a Stop block only continues the turn, so the request is still
+        # delivered there; but a delivered request is not called unanswered
+        # while the agent waits on its own background job.
+        row = self.launch()
+        sid = row['session_id']
+        with self.acting_as(sid):
+            self.hub.observe('prompt-submitted')
+            self.hub.close(sid)
+            waiting = self.hub.observe('turn-stopped', background_tasks=1)
+            decision = self.hub.stop_decision(waiting)
+            self.assertEqual(decision['decision'], 'block')
+            self.hub.confirm_delivery(waiting, decision.receipt)
+            self.assertIsNone(self.hub.stop_decision(self.hub.observe('turn-stopped', background_tasks=2)))
+            self.assertEqual(self.hub.show(sid)['closure']['state'], 'delivered')
+            self.assertIsNone(self.hub.stop_decision(self.hub.observe('turn-stopped')))
+        self.assertEqual(self.hub.show(sid)['closure']['state'], 'unanswered')
+
+    def test_finalized_handoff_waits_on_background_work_then_closes(self):
+        row = self.launch()
+        sid = row['session_id']
+        rid = self.hub.close(sid)['closure']['request_id']
+        with self.acting_as(sid):
+            self.hub.handoff(rid, outcome='no-durable-update', detail='Only read the code')
+            self.hub.observe('turn-stopped', background_tasks=1)
+        waiting = self.hub.close(sid)
+        self.assertEqual(waiting['closure']['state'], 'acknowledged')
+        self.assertEqual(waiting['next_step'], 'Closing: background tasks running')
+        self.assertFalse(waiting['closure'].get('attachment_required'))
+        self.assertEqual(self.tmux.killed, [])
+        # Past the five-minute window the wait is still named, not "needs attach".
+        self.hub._update(sid, native_observed_at=time.time() - 900, observed_at=time.time() - 900)
+        shown = self.hub.show(sid)
+        self.assertFalse(shown['closure'].get('attachment_required'))
+        self.assertEqual(shown['closure']['waiting_on_background'], 1)
+        with self.acting_as(sid):
+            self.hub.observe('turn-stopped')
+        self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
+
     def test_busy_worker_receives_the_request_at_its_stop_boundary_once(self):
         row = self.launch()
         sid = row['session_id']

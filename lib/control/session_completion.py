@@ -225,6 +225,9 @@ def check(hub, row, *, digests=None, idle=False, connection=None):
     if idle and tools:
         raise CompletionPending('handoff finalized; waiting for completion report tool to end')
     if row['transport'] == 'terminal' and idle:
+        if row.get('background_tasks') and row.get('native_activity') == 'working':
+            # #99: the turn ended with the agent's own background work still running.
+            raise CompletionPending(f"handoff finalized; waiting on {row['background_tasks']} background task(s) to end")
         # Copilot/OpenCode currently have no native Control activity bridge.
         stamp = row.get('native_observed_at')
         if (row['harness'] not in {'claude', 'codex'} or row.get('native_activity') not in {'idle', 'exited'}

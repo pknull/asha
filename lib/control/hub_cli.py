@@ -167,6 +167,8 @@ def dispatch(argv, *, env):
             parser.add_argument('--tool-token', default='unknown')
             parser.add_argument('--sequence', type=int, help='pane event sequence the native hook bumped')
             parser.add_argument('--cwd', help="native hook payload cwd; refused outside the session's project")
+            parser.add_argument('--background-tasks', type=int,
+                                help='background tasks the native Stop reported still running (#99)')
             parser.add_argument('--sequence-pane', help='tmux pane whose event sequence was bumped')
         parser.add_argument('--native-id')
         parser.add_argument('--text')
@@ -240,7 +242,7 @@ def dispatch(argv, *, env):
             else:
                 result = hub.observe(args.event, body=args.text, native_id=args.native_id,
                                      tool_kind=args.tool_kind, tool_token=args.tool_token, sequence=args.sequence,
-                                     sequence_pane=args.sequence_pane, cwd=args.cwd)
+                                     sequence_pane=args.sequence_pane, cwd=args.cwd, background_tasks=args.background_tasks)
             if verb == 'event':
                 # The only instruction this bridge ever carries: a pending close
                 # request, returned once as the harness's own Stop decision.

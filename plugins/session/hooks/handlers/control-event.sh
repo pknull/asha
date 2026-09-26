@@ -169,6 +169,18 @@ if [[ -n "$HUB_SESSION" && "$CONTROL_EVENT" == "turn-stopped" ]]; then
     STOP_HOOK_ACTIVE=""
   fi
 fi
+# Claude's Stop lists background work (shells, Monitors, agents) still running
+# or pending; such a turn ended but is not idle (#99). Only a payload read
+# whole and parsed can prove it; anything else forwards no count, which keeps
+# the plain Stop meaning. The count alone is forwarded, never the entries.
+BACKGROUND_TASKS=""
+if [[ -n "$HUB_SESSION" && "$CONTROL_EVENT" == "turn-stopped" && -z "$INPUT_TRUNCATED" && -n "$INPUT" ]] \
+    && command -v jq >/dev/null 2>&1; then
+  BACKGROUND_TASKS="$(printf '%s' "$INPUT" | jq -r '
+    select(type == "object" and (.background_tasks | type) == "array")
+    | .background_tasks | length' 2>/dev/null || true)"
+  [[ "$BACKGROUND_TASKS" =~ ^[1-9][0-9]{0,3}$ ]] || BACKGROUND_TASKS=""
+fi
 if command -v jq >/dev/null 2>&1 && [[ -n "$INPUT" ]]; then
   # The hub records lifecycle from the event name alone; the exit status is a
   # managed-task fact and is not worth a second jq in the latency-bound path.
@@ -204,6 +216,7 @@ if [[ -n "$HUB_SESSION" ]]; then
     [[ -z "$HOOK_CWD" ]] || HUB_ARGS+=(--cwd "$HOOK_CWD")
     [[ -z "$PERMISSION_TEXT" ]] || HUB_ARGS+=(--text "$PERMISSION_TEXT")
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
+    [[ -z "$BACKGROUND_TASKS" ]] || HUB_ARGS+=(--background-tasks "$BACKGROUND_TASKS")
     [[ -z "$HUB_SEQUENCE" ]] || HUB_ARGS+=(--sequence "$HUB_SEQUENCE" --sequence-pane "$TMUX_PANE")
     HUB_RESPONSE="$(
       timeout --signal=TERM --kill-after=0.1 "$HUB_CONTROLLER_SECONDS" \

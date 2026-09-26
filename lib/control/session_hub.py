@@ -33,6 +33,19 @@ SCHEMA = (
 EVENTS = {'session-start': 'idle', 'prompt-submitted': 'working', 'tool-started': 'working',
           'tool-completed': 'working', 'permission-requested': 'needs-input',
           'turn-stopped': 'idle', 'session-ended': 'exited'}
+# Upper bound on the background task count a Stop may report (#99). A Stop
+# that listed outstanding background work proved a wake-up is owed, so the
+# five-minute staleness rules (dashboard demotion, close "needs attach") wait
+# up to BACKGROUND_WAIT_SECONDS for the next native event instead.
+BACKGROUND_TASK_LIMIT = 10000
+BACKGROUND_WAIT_SECONDS = 4 * 3600
+
+
+def waiting_on_background(row):
+    """The last native Stop listed background work, and it is not too old to trust."""
+    stamp = row.get('native_observed_at')
+    return (bool(row.get('background_tasks')) and stamp is not None
+            and 0 <= time.time() - stamp <= BACKGROUND_WAIT_SECONDS)
 # A session that is closing gracefully still owns its process; its reporter,
 # hooks and handoff remain valid until the close terminates it.
 ACTIVE_LIFECYCLES = {'starting', 'open', 'closing'}
@@ -423,7 +436,7 @@ class Hub:
                     row['reason'] = detail
                 elif state != 'open':
                     row.update(activity='unknown', reason=detail)
-                elif row['observed_at'] and time.time() - row['observed_at'] > 300 and row['activity'] == 'working':
+                elif row['observed_at'] and time.time() - row['observed_at'] > 300 and row['activity'] == 'working' and not waiting_on_background(row):
                     row.update(activity='unknown', reason='No recent observation; the harness may still be working')
                 if (state == 'open' and row['harness'] in HOOK_REPORTING_HARNESSES and not row.get('native_observed_at')
                         and row.get('launched_at') and time.time() - row['launched_at'] > HOOK_SILENCE_SECONDS):
@@ -478,6 +491,12 @@ class Hub:
         if row['transport'] == 'structured' and self._has_structured_record(row['session_id']):
             record = self._structured_delivery(row, record)
         if (row['transport'] == 'terminal' and row.get('process_state') != 'ended'
+                and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
+                and waiting_on_background(row)):
+            # #99: the agent's turn ended while its own background work runs;
+            # the close waits for the Stop after the wake-up, not for attach.
+            record = dict(record, waiting_on_background=row['background_tasks'])
+        elif (row['transport'] == 'terminal' and row.get('process_state') != 'ended'
                 and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
                 and not closure.recent_native_observation(row)):
             from .session_completion import check
@@ -736,7 +755,7 @@ class Hub:
                 record = closure.transition(record, 'handoff-failed', last_error=str(exc), attachment_required=True)
         if (row['transport'] == 'terminal' and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
                 and not record.get('attachment_required') and not closure.recent_injection(record)
-                and not closure.recent_native_observation(self.get(sid))):
+                and not closure.recent_native_observation(self.get(sid)) and not waiting_on_background(self.get(sid))):
             record = closure.transition(record, record['state'], attachment_required=True,
                 last_error='native activity is unknown or stale; no verified idle boundary, needs attach')
         if record['state'] == 'undeliverable':
@@ -1003,7 +1022,7 @@ class Hub:
         next_row = self._update(sid, lifecycle='starting', generation=generation, closure=record,
             room_id=str(uuid.uuid4()), room_history=row.get('room_history', []) + [row['room_id']],
             activity='unknown', observed_at=None, native_activity='unknown', native_observed_at=None, event_sequence=None,
-            question=None, learning_ids=[], experience_request=None, capture={})
+            background_tasks=None, question=None, learning_ids=[], experience_request=None, capture={})
         try:
             self._start(next_row, closure.request_text(next_row, record), closing=True)
         except (OSError, ValueError) as exc:
@@ -1051,7 +1070,9 @@ class Hub:
             if record['state'] == 'pending-delivery' and row['harness'] in closure.STOP_HOOK_HARNESSES and not stop_hook_active:
                 # stop_hook_active means this Stop already follows a hook block; never chain blocks.
                 return closure.StopDecision(closure.request_text(row, record), receipt=closure.receipt_for(record))
-            if record['state'] == 'delivered' and not record.get('handoff'):
+            if record['state'] == 'delivered' and not record.get('handoff') and not row.get('background_tasks'):
+                # #99: a turn that ended waiting on its own background work has
+                # not declined the request; the Stop after the wake-up decides.
                 self._update(row['session_id'], expected_generation=row['generation'],
                              closure_fn=lambda current, _row: closure.transition(current, 'unanswered')
                              if current and current['state'] == 'delivered' and not current.get('handoff') else current)
@@ -1139,7 +1160,7 @@ class Hub:
                            room_history=row.get('room_history', []) + [row['room_id']],
                            closure=None, closure_history=row.get('closure_history', []) + ([row['closure']] if row.get('closure') else []),
                            generation=row['generation'] + 1, activity='unknown', observed_at=None, learning_ids=learning_ids,
-                           native_activity='unknown', native_observed_at=None, event_sequence=None,
+                           native_activity='unknown', native_observed_at=None, event_sequence=None, background_tasks=None,
                            question=None, reason='Resuming native conversation' if row['native_id'] else 'Starting with explicit continuation context; native resume ID unavailable')
         return self._start(row, text(prompt, 'continuation'))
 
@@ -1244,7 +1265,7 @@ class Hub:
         return row
 
     def observe(self, event, *, native_id=None, state=None, body=None, tool_kind='work', tool_token='unknown',
-                sequence=None, sequence_pane=None, cwd=None):
+                sequence=None, sequence_pane=None, cwd=None, background_tasks=None):
         actor = self.actor()
         if cwd is not None and not event:
             raise StoreError('cwd is hook evidence; worker reports do not carry it')
@@ -1263,17 +1284,29 @@ class Hub:
                 raise StoreError('stale or inactive session reporter')
             return self._observe(row, event, native_id=native_id, state=state, body=body,
                                  tool_kind=tool_kind, tool_token=tool_token, sequence=sequence,
-                                 sequence_pane=sequence_pane, cwd=cwd)
+                                 sequence_pane=sequence_pane, cwd=cwd, background_tasks=background_tasks)
 
     def _observe(self, row, event, *, native_id, state, body, tool_kind, tool_token, validate_fn=None,
-                 sequence=None, sequence_pane=None, cwd=None):
+                 sequence=None, sequence_pane=None, cwd=None, background_tasks=None):
         activity = EVENTS.get(event) if event else state
         if activity not in {'idle', 'working', 'needs-input', 'finished', 'exited'}:
             raise StoreError('invalid session observation')
+        if background_tasks is not None and (event != 'turn-stopped' or type(background_tasks) is not int
+                                             or not 0 <= background_tasks < BACKGROUND_TASK_LIMIT):
+            raise StoreError('invalid background task count')
+        # #99: Claude's Stop payload lists background work (shells, Monitors,
+        # agents) still running or pending. Such a turn ended, but the session
+        # waits for that work to wake it: it is not an idle boundary.
+        outstanding = background_tasks if event == 'turn-stopped' and background_tasks else None
+        if outstanding:
+            activity = 'working'
         changes = dict(activity=activity, activity_source='hook' if event else 'report',
                        observed_at=time.time(), reason=event or 'Reported by worker')
         if event:
-            changes.update(native_activity=activity, native_observed_at=changes['observed_at'])
+            changes.update(native_activity=activity, native_observed_at=changes['observed_at'],
+                           background_tasks=outstanding)
+            if outstanding:
+                changes['reason'] = f'Turn ended; waiting on {outstanding} background task(s)'
             # The pane event sequence the native hook reported (#96). An event
             # without one leaves the sequence unknown, which refuses typing
             # until a sequenced event lands; a lower late one never rewinds it.
@@ -1310,6 +1343,9 @@ class Hub:
             for field in ('active_tools', 'work_epoch', 'completion_report', 'completion'):
                 if field in observed:
                     changes[field] = observed[field]
+        if not event:
+            # A worker report is fresher than the last Stop's background list.
+            changes['background_tasks'] = None
         if not event and activity == 'finished':
             changes['completion_report'] = dict(generation=row['generation'],
                 assignment_epoch=row.get('assignment_epoch'), reported_at=changes['observed_at'])

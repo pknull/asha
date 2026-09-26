@@ -138,6 +138,34 @@ you to the terminal or Control, and an idle undelivered close says `Close needs
 attach`. Ended sessions occupy a separate group below current sessions until
 closed. Raw activity, lifecycle, and observed process state remain in JSON.
 
+A Claude turn can end while its own background work is still running: a
+`run_in_background` shell, a Monitor, a background agent. Claude's Stop payload
+lists that work in `background_tasks` (running or pending, backgrounded; an
+empty array when nothing is in flight; verified on Claude Code 2.1.283). The
+hook bridge forwards only the count, and the hub records such a Stop as
+`working` with `background_tasks: N`, reason `Turn ended; waiting on N
+background task(s)` and next step `Working: background tasks` (#99). It is not
+an idle boundary: idle-pane typing refuses it, a delivered close request is not
+marked unanswered there, a finalized handoff does not close the session while
+that work runs (`Closing: background tasks running`, not `Close needs attach`),
+and the five-minute staleness rules wait instead. A pending Stop-hook close
+request is still emitted at such a Stop, because a Stop block only continues
+the turn and never interrupts the background job. The next hook event or worker
+report clears the count; the Stop that follows the wake-up decides idle. The
+wait is bounded: four hours after that Stop with no newer native event, the
+usual staleness rules apply again (the row reads `unknown`, and a pending close
+needs attach or force-close).
+Limits: only Claude reports this (Codex, Copilot and OpenCode Stops carry no
+such field, so their turn end stays idle); a truncated or unparsed Stop payload
+forwards no count and reads as the plain idle Stop; a process detached from a
+foreground command (`cmd &`, `nohup`) is not Claude background work and is not
+seen; if Claude exits without waking, process exit ends the session as usual.
+A session that keeps a long-lived Monitor or server running never reaches a
+quiet Stop, so its finalized close waits until that work ends, the bound
+passes, or the operator force-closes. The wake-up Stop itself has not been
+probed natively; the headless probe showed the field on the turn-ending Stop
+only.
+
 `Memory saved HH:MM UTC` requires a controller-retained explicit-save receipt
 for this generation and assignment, or a verified handoff in this generation.
 Worker result text does not establish a save or code landing. Force-close keeps
