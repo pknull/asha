@@ -8,12 +8,26 @@ Every function returns a new model; none mutates its input.
 from dataclasses import dataclass, field, replace
 from types import MappingProxyType
 
-from .session_presentation import present
+from .session_presentation import present, row_facts
 
 GROUP_RANK = {'current': 0, 'ended': 1, 'history': 2}
 ATTENTION = frozenset({'needs-input', 'permission-requested', 'waiting-input', 'close-failed'})
 WORKING = frozenset({'working', 'running', 'queued', 'starting', 'closing'})
 GROUPINGS = ('project', 'state')
+# Phase 2 sections (#102). State sections follow the presented next step.
+STATE_SECTIONS = (('state:needs', 'Needs you'), ('state:working', 'Working'), ('state:closing', 'Closing'),
+                  ('state:ready', 'Ready to close'), ('state:idle', 'Idle'))
+TAIL_SECTIONS = (('ended', 'Ended'), ('history', 'History'))
+_SECTION_RANK = {key: rank for rank, (key, _) in enumerate(STATE_SECTIONS + TAIL_SECTIONS)}
+_NEEDS_STEPS = ('Answer', 'Close needs attach', 'Close: attach', 'Close failed', 'Blocked', 'Uncertain',
+                'Failed', 'Budget exhausted')
+_READY_STEPS = ('Finalized: close', 'Done: close', 'Result ready', 'Done reported')
+# A folded section is one selectable heading in ``order``; session ids are never prefixed so.
+TOKEN = 'section:'
+# A section's finished rows fold to one `… N more` row (§5.6) under this key prefix.
+FINISHED = 'finished:'
+# §5.6: a short list folds these whole sections first, in this order, then finished rows.
+TAIL_FOLDS = ('history', 'ended')
 
 _EMPTY = MappingProxyType({})
 
@@ -29,6 +43,9 @@ class ViewModel:
     stale: MappingProxyType = _EMPTY     # session_id -> when it was last observed
     seen: MappingProxyType = field(default=_EMPTY)  # session_id -> observation time of the retained row
     excluded: MappingProxyType = _EMPTY  # session_id -> when an action proved it left the active query
+    folded: frozenset = frozenset()      # fold keys the operator folded
+    unfolded: frozenset = frozenset()    # fold keys the operator opened; automatic folding leaves them
+    auto: frozenset = frozenset()        # fold keys the height policy applied (§5.6); see ``fit``
 
 
 def attention_rank(row):
@@ -36,17 +53,50 @@ def attention_rank(row):
     return 0 if row.get('activity') in ATTENTION or row.get('next_step', '').startswith('Close failed') else 1
 
 
-def _state_rank(row):
-    return 0 if attention_rank(row) == 0 else 1 if row.get('activity') in WORKING else 2
+def state_section(row):
+    """The state section for a presented current row; the next step decides it."""
+    step = row.get('next_step', '')
+    if attention_rank(row) == 0 or step.startswith(_NEEDS_STEPS):
+        return 'state:needs'
+    if step.startswith(('Closing', 'Finalized, closing')):
+        return 'state:closing'
+    if step.startswith(_READY_STEPS):
+        return 'state:ready'
+    if row.get('activity') in WORKING or step.startswith(('Working', 'Queued', 'Starting', 'Hooks not reporting')):
+        return 'state:working'
+    return 'state:idle'
+
+
+def section_of(row, grouping='project'):
+    """(key, title) of the section a presented row is listed under."""
+    group = row.get('group')
+    for key, title in TAIL_SECTIONS:
+        if group == key:
+            return key, title
+    if grouping == 'state':
+        key = state_section(row)
+        return key, dict(STATE_SECTIONS)[key]
+    # Case-equivalent names are one section, as they sort together (Q14-F4).
+    name = str(row.get('project_name') or '')
+    return 'project:' + name.casefold(), name or '(no project)'
+
+
+def _titles(rows, grouping):
+    """One title per section whatever its members' spelling: the least exact name, so it is stable."""
+    titles = {}
+    for row in rows:
+        key, title = section_of(row, grouping)
+        titles[key] = min(titles.get(key, title), title)
+    return titles
 
 
 def sort_key(row, grouping='project'):
     created = row.get('created_at')
-    return (GROUP_RANK.get(row.get('group'), len(GROUP_RANK)),
-            attention_rank(row) if grouping == 'project' else _state_rank(row),
-            str(row.get('project_name') or '').casefold(),
-            created is None, created if isinstance(created, (int, float)) else 0,
-            str(row.get('session_id')))
+    project = str(row.get('project_name') or '').casefold()
+    tail = (created is None, created if isinstance(created, (int, float)) else 0, str(row.get('session_id')))
+    if grouping == 'state':
+        return (_SECTION_RANK[section_of(row, 'state')[0]], project) + tail
+    return (GROUP_RANK.get(row.get('group'), len(GROUP_RANK)), project, attention_rank(row)) + tail
 
 
 def order(rows, grouping='project'):
@@ -75,14 +125,57 @@ def select_after_merge(previous_order, new_order, selected_id):
     return new_order[0]
 
 
-def _visible(rows, model):
+def _listed(rows, model):
+    """Rows passing the input filter, in display order, folded or not."""
     chosen = [row for row in rows.values() if not model.input_only or row.get('activity') in ATTENTION]
-    return tuple(row['session_id'] for row in order(chosen, model.grouping))
+    return order(chosen, model.grouping)
+
+
+def finished(row):
+    """A current row that is done and only waits to be closed: the first rows §5.6 compacts."""
+    return row.get('group') == 'current' and state_section(row) == 'state:ready'
+
+
+def _parent(key):
+    return key[len(FINISHED):] if key.startswith(FINISHED) else key
+
+
+def in_unit(row, key, grouping):
+    """Whether fold key ``key`` (a section, or a section's finished rows) holds the row."""
+    return section_of(row, grouping)[0] == _parent(key) and (not key.startswith(FINISHED) or finished(row))
+
+
+def _unit(row, grouping, folds):
+    """The fold key hiding this row, or None when it is shown."""
+    key = section_of(row, grouping)[0]
+    if key in folds:
+        return key
+    return FINISHED + key if FINISHED + key in folds and finished(row) else None
+
+
+def _visible(rows, model):
+    visible, folds = [], model.folded | model.auto
+    for row in _listed(rows, model):
+        unit = _unit(row, model.grouping, folds)
+        if unit is None:
+            visible.append(row['session_id'])
+        elif TOKEN + unit not in visible:
+            visible.append(TOKEN + unit)
+    return tuple(visible)
 
 
 def _rebuild(model, **changes):
-    """Recompute visible order and selection; the anchor is kept deliberately."""
+    """Recompute visible order and selection; the anchor is kept deliberately.
+
+    An automatic fold never hides the selected row: one that would, say after
+    the row finished or ended into it, is released (Q15-F2); ``fit`` then
+    leaves it open. Only the operator's own folds hide a selected row.
+    """
     updated = replace(model, **changes)
+    chosen = updated.rows.get(updated.selected_id)
+    if chosen is not None and updated.auto:
+        updated = replace(updated, auto=frozenset(key for key in updated.auto
+                                                  if not in_unit(chosen, key, updated.grouping)))
     visible = _visible(updated.rows, updated)
     # An empty view (say, a filter nothing matches) keeps the identity to return to.
     selected = select_after_merge(model.order, visible, updated.selected_id) if visible else updated.selected_id
@@ -143,32 +236,150 @@ def selected_index(model):
     return model.order.index(model.selected_id) if model.selected_id in model.order else 0
 
 
+def fold(model, *, fold):
+    """Fold (or unfold) the selected row's section; the heading keeps the selection."""
+    if not model.order:
+        return model
+    selected = model.selected_id if model.selected_id in model.order else model.order[0]
+    key = selected[len(TOKEN):] if selected.startswith(TOKEN) else section_of(model.rows[selected], model.grouping)[0]
+    if fold:
+        # Left folds the whole section, from a row or from its `… N more` line.
+        key = _parent(key)
+        return _rebuild(replace(model, selected_id=TOKEN + key), folded=model.folded | {key},
+                        unfolded=model.unfolded - {key, FINISHED + key}, auto=model.auto - {key})
+    return _open(model, key)
+
+
+def _open(model, key):
+    """Unfold ``key`` as the operator's choice, selecting the first row it hid."""
+    opened = _rebuild(model, folded=model.folded - {key}, auto=model.auto - {key},
+                      unfolded=model.unfolded | {key})
+    first = next((sid for sid in opened.order
+                  if sid in opened.rows and in_unit(opened.rows[sid], key, opened.grouping)), None)
+    return replace(opened, selected_id=first or opened.selected_id)
+
+
+def _is_attention(row):
+    return attention_rank(row) == 0
+
+
+def attention_counts(model):
+    rows = [row for row in model.rows.values() if row.get('group') != 'history']
+    return {'input': sum(row.get('activity') in {'needs-input', 'waiting-input'} for row in rows),
+            'approval': sum(row.get('activity') == 'permission-requested' for row in rows)}
+
+
+def jump_attention(model):
+    """Select the next row that needs the operator, unfolding its section (`!`)."""
+    listed = [row for row in _listed(model.rows, model) if _is_attention(row)]
+    if not listed:
+        return model
+    ids = [row['session_id'] for row in _listed(model.rows, model)]
+    here = model.selected_id
+    if here in ids:
+        position = ids.index(here)
+    elif here in model.order:  # a folded heading: start from the first row it hides
+        key = here[len(TOKEN):]
+        position = next((i for i, sid in enumerate(ids)
+                         if in_unit(model.rows[sid], key, model.grouping)), -1) - 1
+    else:
+        position = -1
+    target = next((row for row in listed if ids.index(row['session_id']) > position), listed[0])
+    key = section_of(target, model.grouping)[0]
+    return _rebuild(replace(model, selected_id=target['session_id']), folded=model.folded - {key},
+                    auto=model.auto - {key}, unfolded=model.unfolded | {key})
+
+
+def list_lines(model):
+    """Screen lines the whole list takes: headings, rows and fact sub-lines."""
+    rows = display_rows(model)
+    return sum(_heading(rows, i, 0) + row_height(rows[i]) for i in range(len(rows)))
+
+
+def _candidates(model):
+    """Automatic fold keys in §5.6's order: History, Ended, then finished rows from the bottom up.
+
+    Never a unit holding an attention row, the selected row, or one the
+    operator folded or opened; working and attention rows are never folded.
+    """
+    listed = _listed(model.rows, model)
+    selected = model.rows.get(model.selected_id)
+    keys = [key for key in TAIL_FOLDS
+            if any(section_of(row, model.grouping)[0] == key for row in listed)
+            and not any(_is_attention(row) for row in listed if section_of(row, model.grouping)[0] == key)]
+    sections = []
+    for row in listed:
+        key = section_of(row, model.grouping)[0]
+        if finished(row) and FINISHED + key not in sections:
+            sections.append(FINISHED + key)
+    # Opening a whole section opens its finished rows too (Q15-F3).
+    return [key for key in keys + sections[::-1]
+            if key not in model.folded | model.unfolded and _parent(key) not in model.folded | model.unfolded
+            and not (selected and in_unit(selected, key, model.grouping))]
+
+
+def fit(model, space):
+    """Apply the §5.6 height policy for a list of ``space`` lines.
+
+    Automatic folds are recomputed from none on every call, so a taller screen
+    opens them again; explicit folds and unfolds always win. Returns ``model``
+    itself when nothing changes.
+    """
+    auto, trial = [], replace(model, auto=frozenset())
+    for key in _candidates(model):
+        if list_lines(_rebuild(trial, auto=frozenset(auto))) <= space:
+            break
+        auto.append(key)
+    auto = frozenset(auto)
+    if auto == model.auto:
+        return model
+    selected = model.selected_id
+    if isinstance(selected, str) and selected.startswith(TOKEN) and selected not in model.rows:
+        key = selected[len(TOKEN):]
+        if key not in model.folded | auto:
+            # Its automatic fold opened: select the first row it hid, as an unfold does.
+            selected = next((row['session_id'] for row in _listed(model.rows, model)
+                             if in_unit(row, key, model.grouping)), selected)
+    return _rebuild(replace(model, selected_id=selected), auto=auto)
+
+
+def _section(row):
+    return row.get('section') or section_of(row)[0]
+
+
 def _heading(rows, index, start):
-    """Whether the renderer puts a group heading above row ``index``."""
-    group = rows[index].get('group')
-    return group != 'current' and (index == start or rows[index - 1].get('group') != group)
+    """Whether the renderer puts a section heading above row ``index``; a folded heading is its own row."""
+    if rows[index].get('kind') == 'section' and not rows[index].get('more'):
+        return False
+    return index == start or _section(rows[index - 1]) != _section(rows[index])
+
+
+heading_above = _heading
+
+
+def row_height(row):
+    """Lines a row takes: one, plus one for its fact sub-line."""
+    return 1 if row.get('kind') == 'section' else 1 + bool(row_facts(row))
 
 
 def line_offset(rows, start, index):
     """Screen lines from the first list line to row ``index`` when row ``start`` is shown first."""
-    return sum(1 + _heading(rows, i, start) for i in range(start, index)) + _heading(rows, index, start)
+    return sum(_heading(rows, i, start) + row_height(rows[i]) for i in range(start, index)) \
+        + _heading(rows, index, start)
 
 
 def viewport_start(rows, index, anchor, space):
     """The first row to show so row ``index`` sits on list line ``anchor``.
 
     With too few rows above it the row sits as near the anchor as they allow;
-    it always stays inside ``space`` lines. Headings count as lines, so a
-    heading appearing or vanishing above the row does not move it (#102).
+    it always stays inside ``space`` lines, sub-line included. Headings count
+    as lines, so a heading appearing or vanishing above the row does not move
+    it (#102).
     """
-    limit = min(max(0, anchor), max(0, space - 1))
-    # Offsets only grow as the start moves up, so walk up while the row still
-    # fits. ``below`` is the lines from the start row's own line to the target.
-    start, below = index, 0
-    while start > 0:
-        below += 1 + _heading(rows, start, start - 1)
-        if below + _heading(rows, start - 1, start - 1) > limit:
-            break
+    limit = min(max(0, anchor), max(0, space - row_height(rows[index])))
+    start = index
+    # Offsets only grow as the start moves up; walk up while the row still fits.
+    while start > 0 and line_offset(rows, start - 1, index) <= limit:
         start -= 1
     return start
 
@@ -181,11 +392,37 @@ def move(model, delta, *, visible):
     old = selected_index(model)
     new = max(0, min(len(model.order) - 1, old + delta))
     start = min(viewport_start(rows, old, model.anchor, visible), new)
-    anchor = min(line_offset(rows, start, new), max(0, visible - 1))
+    anchor = min(line_offset(rows, start, new), max(0, visible - row_height(rows[new])))
     return replace(model, selected_id=model.order[new], anchor=anchor)
 
 
+def _heading_row(model, token, listed, titles):
+    key = token[len(TOKEN):]
+    members = [row for row in listed if in_unit(row, key, model.grouping)]
+    # The section's one title, not its hidden members' own (Q15-F4).
+    title = titles.get(_parent(key), key)
+    # ``more``: a section's finished rows as one `… N more` line under the section heading.
+    return dict(kind='section', session_id=token, section=_parent(key), section_title=title,
+                count=len(members), attention=sum(_is_attention(row) for row in members),
+                more=key.startswith(FINISHED))
+
+
 def display_rows(model):
-    """Rows in display order; stale rows carry ``stale_since``."""
-    return [dict(model.rows[sid], stale_since=model.stale[sid]) if sid in model.stale else model.rows[sid]
-            for sid in model.order]
+    """Rows in display order with their section; stale rows carry ``stale_since``.
+
+    A folded section appears as one ``kind='section'`` row naming its count.
+    """
+    listed = _listed(model.rows, model) if model.folded or model.auto else ()
+    titles = _titles(model.rows.values(), model.grouping)
+    shown = []
+    for sid in model.order:
+        if sid.startswith(TOKEN) and sid not in model.rows:
+            shown.append(_heading_row(model, sid, listed, titles))
+            continue
+        row = model.rows[sid]
+        key = section_of(row, model.grouping)[0]
+        extra = dict(section=key, section_title=titles[key])
+        if sid in model.stale:
+            extra['stale_since'] = model.stale[sid]
+        shown.append(dict(row, **extra))
+    return shown

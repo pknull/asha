@@ -391,9 +391,13 @@ class SelectionDisplayTests(unittest.TestCase):
                'activity': 'working', 'lifecycle': 'open', 'generation': 1, 'reason': 'Working',
                'spec': {'model': 'opus', 'effort': 'high'},
                'selection_reported': {'model': 'claude-opus-5-5'}}
-        rendered = '\n'.join(lines({'rows': [row], 'summary': 'x'}, width=200, height=30))
-        self.assertIn('[claude claude-opus-5-5 effort high (req)]', rendered)
-        self.assertIn('model claude-opus-5-5 · effort high (requested)', rendered)
-        plain = '\n'.join(lines({'rows': [dict(row, spec={}, selection_reported={})], 'summary': 'x'},
-                                width=200, height=30))
-        self.assertIn('[claude]', plain)
+        # #102 phase 2: the row names the harness; the detail (narrow) and the
+        # side panel (wide) carry the full selection with its provenance.
+        for width in (100, 200):
+            with self.subTest(width=width):
+                rendered = '\n'.join(lines({'rows': [row], 'summary': 'x'}, width=width, height=30))
+                self.assertIn('model claude-opus-5-5 · effort high (requested)', rendered)
+                plain = '\n'.join(lines({'rows': [dict(row, spec={}, selection_reported={})], 'summary': 'x'},
+                                        width=width, height=30))
+                self.assertIn('claude', plain)
+                self.assertNotIn('model ', plain)
