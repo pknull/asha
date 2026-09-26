@@ -281,7 +281,7 @@ class RoomTests(unittest.TestCase):
         prompt = "line one\nline two; still data"
         expected = {
             "claude": [prompt],
-            "codex": [prompt],
+            "codex": ["--no-daemon", prompt],
             "copilot": ["--interactive", prompt],
             "opencode": ["--prompt", prompt],
         }
@@ -291,6 +291,18 @@ class RoomTests(unittest.TestCase):
                     room_launch_argv(self.asha_root, harness, prompt),
                     [str(self.asha_root / "bin/asha"), harness, *tail],
                 )
+
+    def test_codex_room_argv_never_joins_the_shared_app_server_daemon(self) -> None:
+        # Codex 0.157 runs daemon threads' hooks with the daemon's frozen
+        # environment, so they report under another session's identity (#100).
+        launcher = str(self.asha_root / "bin/asha")
+        self.assertEqual(room_launch_argv(self.asha_root, "codex", "P"),
+                         [launcher, "codex", "--no-daemon", "P"])
+        self.assertEqual(room_launch_argv(self.asha_root, "codex", "P", resume_id="thread-1"),
+                         [launcher, "codex", "resume", "--no-daemon", "thread-1", "P"])
+        for harness in ("claude", "copilot", "opencode"):
+            with self.subTest(harness=harness):
+                self.assertNotIn("--no-daemon", room_launch_argv(self.asha_root, harness, "P"))
 
     def test_open_persists_identity_then_launches_detached_in_exact_project(self) -> None:
         result = self._open()
@@ -1506,7 +1518,7 @@ class RoomTests(unittest.TestCase):
                 time.sleep(0.05)
             self.assertTrue(probe.exists(), "the respawned child did not start")
             evidence = json.loads(probe.read_text())
-            self.assertEqual(evidence["argv"], ["codex", "line one\nline two;"])
+            self.assertEqual(evidence["argv"], ["codex", "--no-daemon", "line one\nline two;"])
             self.assertEqual(evidence["cwd"], str(self.project))
             self.assertEqual(evidence["ASHA_HOME"], str(self.asha_home))
             self.assertEqual(evidence["ASHA_PERSONA"], "1")

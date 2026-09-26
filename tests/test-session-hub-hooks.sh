@@ -289,6 +289,42 @@ else
   fail "a wedged controller cannot hold the hub bridge past one second (${ELAPSED_MS}ms, out=$OUT)"
 fi
 
+# PermissionRequest carries a clipped, single-line request summary so Control
+# shows what is being asked (answering it stays in the terminal, #100/#101).
+run_control PermissionRequest '{"session_id":"native-perm","tool_name":"Bash","tool_input":{"command":"make clean\nmake all","description":"Rebuild"}}' \
+  ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+if [[ "$(captured)" == "control session event --event permission-requested --native-id native-perm --text Permission requested: Bash: make clean make all" ]]; then
+  ok "PermissionRequest forwards its tool and command as one clipped line"
+else
+  fail "PermissionRequest forwards its tool and command as one clipped line ($(captured))"
+fi
+LONG_COMMAND="$(printf 'x%.0s' {1..2000})"
+run_control PermissionRequest '{"session_id":"native-perm","tool_name":"Write","tool_input":{"file_path":"/p/'"$LONG_COMMAND"'"}}' \
+  ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+PERM_TEXT="$(captured)"; PERM_TEXT="${PERM_TEXT#*--text }"
+if [[ ${#PERM_TEXT} -le 300 && "$PERM_TEXT" == "Permission requested: Write: /p/x"* ]]; then
+  ok "a long request summary is clipped to 300 characters"
+else
+  fail "a long request summary is clipped (${#PERM_TEXT} chars)"
+fi
+run_control PostToolUse '{"session_id":"native-perm","tool_name":"Bash","tool_input":{"command":"ls"}}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+[[ "$(captured)" != *--text* ]] && ok "only PermissionRequest forwards request text" \
+  || fail "only PermissionRequest forwards request text ($(captured))"
+
+run_control UserPromptSubmit '{"session_id":"native-cwd","cwd":"/work/project dir"}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+if [[ "$(captured)" == "control session event --event prompt-submitted --native-id native-cwd --cwd /work/project dir" ]]; then
+  ok "the native payload cwd is forwarded so the hub can refuse another project's thread (#100)"
+else
+  fail "the native payload cwd is forwarded ($(captured))"
+fi
+for payload in '{"session_id":"native-cwd","cwd":"relative/dir"}' '{"session_id":"native-cwd","cwd":7}' \
+    '{"session_id":"native-cwd","cwd":"/a\nb"}'; do
+  run_control UserPromptSubmit "$payload" ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+  [[ "$(captured)" == "control session event --event prompt-submitted --native-id native-cwd" ]] \
+    || fail "an unusable cwd is not forwarded ($payload -> $(captured))"
+done
+ok "a relative, non-string or multi-line cwd is not forwarded"
+
 OUT="$(run_control Stop '{"session_id":"native-abc","stop_hook_active":true}' ASHA_HUB_SESSION_ID="$HUB_ID")"
 if [[ "$(captured)" == "control session event --event turn-stopped --native-id native-abc --stop-hook-active" && "$OUT" == '{}' ]]; then
   ok "stop_hook_active is forwarded so the hub never chains a second block"

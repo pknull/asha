@@ -78,7 +78,24 @@ EOF
   _asha_doctor_session_profile_section "$target"
   local experience_rc=0
   _asha_doctor_experience_configuration || experience_rc=$?
-  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $experience_rc -eq 0 ]]
+  local daemon_rc=0
+  _asha_doctor_codex_daemon_section "$target" || daemon_rc=$?
+  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $experience_rc -eq 0 && $daemon_rc -eq 0 ]]
+}
+
+# Codex 0.157's shared app-server daemon runs hooks with the environment of
+# whichever process spawned it (#100): check that Asha's TUI launches opt out
+# and that no running daemon or updater carries a hub session identity.
+_asha_doctor_codex_daemon_section() {
+  [[ "${1:-all}" == codex || "${1:-all}" == all ]] || return 0
+  local codex
+  codex="$(asha_harness_executable codex)"
+  command -v "$codex" >/dev/null 2>&1 || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+  echo ""
+  echo "── Codex shared app-server daemon (#100) ──"
+  (cd "$MARKET_ROOT" && python3 -m lib.control.codex_daemon "$MARKET_ROOT" "$(command -v "$codex")" \
+    "${ASHA_HOME:-$HOME/.asha}/state/control/hub-rejected-events.jsonl")
 }
 
 # The public doctor validates the same user-config default Control resolves.

@@ -53,7 +53,7 @@ class NormalizeTests(unittest.TestCase):
 
 class TerminalArgvTests(unittest.TestCase):
     def test_omitted_selection_is_byte_identical_to_the_old_argv(self):
-        for harness, tail in (("claude", ["P"]), ("codex", ["P"]), ("copilot", ["--interactive", "P"]),
+        for harness, tail in (("claude", ["P"]), ("codex", ["--no-daemon", "P"]), ("copilot", ["--interactive", "P"]),
                               ("opencode", ["--prompt", "P"])):
             with self.subTest(harness=harness):
                 self.assertEqual(room_launch_argv(ROOT, harness, "P"), [LAUNCHER, harness, *tail])
@@ -63,7 +63,7 @@ class TerminalArgvTests(unittest.TestCase):
         cases = {
             "claude": ({"model": "opus", "effort": "high"}, ["--model", "opus", "--effort", "high", "P"]),
             "codex": ({"model": "gpt-5.5", "effort": "high"},
-                      ["-m", "gpt-5.5", "-c", 'model_reasoning_effort="high"', "P"]),
+                      ["--no-daemon", "-m", "gpt-5.5", "-c", 'model_reasoning_effort="high"', "P"]),
             "copilot": ({"model": "gpt-5.4", "effort": "low"},
                         ["--model", "gpt-5.4", "--effort", "low", "--interactive", "P"]),
             "opencode": ({"model": "anthropic/claude-sonnet-5"}, ["-m", "anthropic/claude-sonnet-5", "--prompt", "P"]),
@@ -71,17 +71,18 @@ class TerminalArgvTests(unittest.TestCase):
         for harness, (selection, tail) in cases.items():
             with self.subTest(harness=harness):
                 self.assertEqual(room_launch_argv(ROOT, harness, "P", selection=selection), [LAUNCHER, harness, *tail])
-                self.assertEqual(terminal_flags(harness, selection), tail[:-1] if harness not in {"copilot", "opencode"}
-                                 else tail[:-2])
+                flags = [arg for arg in tail if arg != "--no-daemon"]
+                self.assertEqual(terminal_flags(harness, selection), flags[:-1] if harness not in {"copilot", "opencode"}
+                                 else flags[:-2])
 
     def test_resume_reapplies_the_stored_selection(self):
         selection = {"model": "opus", "effort": "max"}
         self.assertEqual(room_launch_argv(ROOT, "claude", "P", selection=selection, resume_id="native-1"),
                          [LAUNCHER, "claude", "--model", "opus", "--effort", "max", "--resume", "native-1", "P"])
         self.assertEqual(room_launch_argv(ROOT, "codex", "P", selection={"model": "gpt-5.5"}, resume_id="thread-1"),
-                         [LAUNCHER, "codex", "resume", "thread-1", "-m", "gpt-5.5", "P"])
+                         [LAUNCHER, "codex", "resume", "--no-daemon", "thread-1", "-m", "gpt-5.5", "P"])
         self.assertEqual(room_launch_argv(ROOT, "codex", "P", resume_id="thread-1"),
-                         [LAUNCHER, "codex", "resume", "thread-1", "P"])
+                         [LAUNCHER, "codex", "resume", "--no-daemon", "thread-1", "P"])
 
 
 class StructuredArgvTests(unittest.TestCase):

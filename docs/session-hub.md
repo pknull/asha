@@ -90,6 +90,46 @@ native turn is not a completed assignment. An explicit finished report or
 successful structured utility yields `finished`. Completed structured utilities
 leave the current list; their results remain under `show ID` and `list --all`.
 
+Hook identity is inherited environment, so every Codex TUI launch that Asha
+owns (Rooms, native resume, and the `bin/asha` chair, coordinator and Control
+paths) passes `--no-daemon` when the installed Codex documents it (0.157 and
+later). Codex's shared `app-server --managed-daemon` otherwise runs hooks with
+the environment of whichever process first spawned it, and every later
+session's events report under that frozen `ASHA_HUB_SESSION_ID` (#100). A
+remote TUI (`--remote`) and non-interactive subcommands are left alone, and a
+Codex that does not document the flag never receives it. The wrapper follows
+Codex's own grammar (value-taking options, variadic `-i`, `--`, and the first
+positional), so a profile, conversation name or prompt that spells a subcommand
+is still a TUI launch. As defence in depth the hub binds each generation to its
+first native conversation ID: an ordinary tool, Stop or permission event from a
+different conversation is refused whatever its cwd, including events without a
+cwd. Only SessionStart (an explicit new conversation such as `/clear` or `/new`)
+rebinds, and only from inside the project; resume is a new generation and binds
+afresh. The bound conversation may report from anywhere, because Claude's hook
+cwd follows a Bash `cd` or EnterWorktree. A missed SessionStart after `/clear`
+leaves the new conversation's events refused for the rest of that generation,
+and a native subagent reporting under its own thread ID is refused too; both
+are logged. A foreign conversation that starts inside the project before the
+session's own first event can still bind; process ancestry, which requires the
+reporter to descend from the session's pane, is the remaining guard. Refused hook events
+are appended to `~/.asha/state/control/hub-rejected-events.jsonl` (mode 0600,
+locked, trimmed in place to the newest half past 64 KiB) instead of being
+discarded. A live Claude or Codex terminal session with no native hook event 90
+seconds after launch is labelled `Hooks not reporting: attach` (`telemetry:
+hooks-not-reporting` in JSON); worker reports do not count as hook evidence,
+and Copilot/OpenCode sessions, which have no hook bridge, are never labelled.
+A terminal PermissionRequest makes the session `needs-input` with a one-line,
+300-character summary of the request (tool and command, path or URL) as its
+question, so Control shows what is being asked; the next step is `Answer in
+terminal (attach)`. Answering a terminal approval through `session permission`
+is not supported: it would mean typing into the pane (see #101).
+`asha doctor codex` fails when a running Codex daemon or its updater carries
+`ASHA_HUB_SESSION_ID` (the executable must be Codex), or when a Codex that has
+the flag would be launched without `--no-daemon`; it runs the real `bin/asha
+codex` wrapper against a stub Codex in a scratch home with profile and resume
+arguments, and notes recent refused events (a pane dying during
+close also refuses its last hook, so the count is informational).
+
 The dashboard derives a next step from these facts: `Done: close` for a finished
 live session, `Done: close record` after its process exits, and `Ended unreported:
 check work` for an exit without a current finished report. Idle Rooms say
