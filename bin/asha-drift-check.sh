@@ -661,6 +661,35 @@ print(words[0] if words else "")
     done < <(jq -r --arg prefix "$ASHA/plugins/" '.hooks // {} | .[] | .[]? | .hooks[]?
           | select(((.command // "") | startswith($prefix)) or ((.source // "") | test("^(asha|marketplace):"))) | .command // empty' "$CLAUDE/settings.json")
     [[ $missing -eq 0 ]] && pass "all asha hook paths exist (claude)"
+    # Every source hook must be registered, not only every registered one
+    # present (#104): an event added to a plugin after the last install leaves
+    # all paths valid, yet Claude never calls it. A missing control-event
+    # PostToolUseFailure, for one, leaves every failed tool open and blocks
+    # each later handoff receipt in its turn. Mirrors register_hooks' render.
+    unregistered=()
+    for plugin_root in "$ASHA"/plugins/*/; do
+      plugin_root="${plugin_root%/}"
+      drift_include_plugin_dir "${plugin_root##*/}" || continue
+      hooks_json="$plugin_root/hooks/hooks.json"
+      [[ -f "$hooks_json" ]] || hooks_json="$plugin_root/hooks.json"
+      [[ -f "$hooks_json" ]] || continue
+      abs_root="$(resolve_path "$plugin_root")"
+      while IFS=$'\t' read -r hook_event hook_command; do
+        [[ -n "$hook_event" ]] || continue
+        jq -e --arg e "$hook_event" --arg c "$hook_command" \
+            'any(.hooks[$e][]?.hooks[]?; (.command // "") == $c)' "$CLAUDE/settings.json" >/dev/null 2>&1 \
+          || unregistered+=("$hook_event: $hook_command")
+      done < <(jq -r --arg root "$abs_root" '.hooks // {} | to_entries[] | .key as $event | .value[]
+            | select(((._asha_harnesses // ["claude"]) | index("claude")) != null)
+            | .hooks[]? | [$event, ((.command // "") | gsub("\\$\\{CLAUDE_PLUGIN_ROOT\\}"; $root))] | @tsv' \
+            "$hooks_json" 2>/dev/null)
+    done
+    if [[ ${#unregistered[@]} -eq 0 ]]; then
+      pass "every source hook is registered (claude)"
+    else
+      nope "source hooks not registered in settings.json (rerun: asha install claude):"
+      printf '  %s\n' "${unregistered[@]}"
+    fi
     if jq -e --arg verify "$verify_pass_handler" '
         any(.hooks.Stop[]?.hooks[]?; (.command // "") == $verify)
         and any(.hooks.PostToolUse[]?.hooks[]?;

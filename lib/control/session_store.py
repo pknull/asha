@@ -332,7 +332,7 @@ class SessionStore:
                 found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
                 if found:
                     current = json.loads(found[0])
-                    current.update(active_tools={}, work_epoch=str(uuid.uuid4()))
+                    current.update(active_tools={}, tool_starts={}, work_epoch=str(uuid.uuid4()))
                     from .session_hub import Hub
                     Hub._save(c, current)
             self._event(c, sid, "turn-reserved", {"message_id": msg["message_id"]}, turn)

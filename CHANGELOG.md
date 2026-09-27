@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased — finalizer receipts after failed, denied or late-reported tools (#104)
+
+- Three Claude workers got blocked receipts ("No sole observed standalone
+  finalizer tool") from tools whose end never reached Control, not from
+  background work: every backgrounded Bash got its PostToolUse when it moved
+  to the background. The open starts came from failed tools on an install that
+  predates the `PostToolUseFailure` hook, a call denied by `policy-guard.sh`
+  (Claude sends no end for a denied call), and a hook report that was lost.
+- A tool end whose report arrives late (it fills a gap in the event order)
+  now retires its start; a duplicate retires nothing. A start is retired only
+  by an end of that tool: same session, same native conversation, same token
+  and kind, numbered after the start (QA19 F1/F2). A late report naming another
+  conversation is refused like a current one; an older call's end numbered
+  before a reused ID's start never retires it; a start or end without a number
+  stays open until the turn's Stop in an ordered session.
+- Two causes remain open and clear only at the turn's Stop (finalize in a
+  later turn): denied calls, for which Claude reports no end and a guard's
+  claim is not verifiable evidence, so none is reported (QA19 F3/F5,
+  `ToolDenied` is not a bridge mode); and lost end reports, which are not
+  retried, spooled or replayed (the spool and its replay were dropped after
+  QA20/QA22 could not confine or authenticate it).
+- A tool left open by the revision before this one has no recorded start and
+  is not migrated: no end retires it, and it clears at its turn's Stop.
+- `asha doctor claude` fails when a source hook is not registered in
+  `settings.json` (`asha install claude` repairs it); it previously checked
+  only that registered hook paths exist.
+- A blocked receipt's detail counts the open tool starts and names the likely
+  causes.
+
 ## Unreleased — session dashboard layout and grouping (#102 phase 2)
 
 - `asha control` groups sessions by project (default) or, with `g`, by state
@@ -73,6 +102,7 @@
 - Fix (#92): a graceful close with a current receipt no longer kills a terminal
   that has a client attached. The kill is tmux-conditional, the receipt is kept,
   and `--wait` retries.
+
 ## Unreleased — launch-time model and effort (#95)
 
 - `asha control session launch --model/--effort` (and the dashboard launch form)
@@ -91,6 +121,7 @@
   each close, report and completion to the selection retained with it (close
   snapshot, report envelope), never to the session's later model; the live
   selection appears separately as `current_sessions`.
+
 ## Unreleased — idle close and send delivery (#96)
 
 - Experimental, **off by default** (`control.idle_delivery: true` in the Asha
@@ -133,6 +164,7 @@
   blaming a valid `no-durable-update`; the close request asks for the handoff as the
   only command in its own tool call.
 - Room ownership format conditions no longer carry a stray closing brace.
+
 ## Unreleased — exited Room finalization (#97)
 
 - tmux 3.4 answers `display-message` for a vanished pane id with exit 0 and empty
@@ -436,7 +468,6 @@ the active instruction surface loses no release detail.
   stance-free with full tooling, unchanged. Existing installs need a
   reinstall or `asha doctor --fix` to symlink the new skill; until then
   the brief names a skill that is not yet installed.
-
 
 #### One asha root (`ASHA_HOME`), with a one-shot migration
 

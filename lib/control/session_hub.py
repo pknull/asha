@@ -318,7 +318,7 @@ class Hub:
     def _start(self, row, prompt, *, closing=False):
         from . import session_guidance as guidance
         row = self._update(row['session_id'], expected_generation=row['generation'], current_assignment=prompt,
-                           assignment_epoch=str(uuid.uuid4()), active_tools={})
+                           assignment_epoch=str(uuid.uuid4()), active_tools={}, tool_starts={})
         block, manifest = guidance.resolve(self, row, row.get('learning_ids'))
         key = 'opening' if row['generation'] == 1 or row['transport'] == 'structured' else 'resume:' + str(row['generation'])
         guidance.retain(self, row, key, guidance.planned(manifest, prompt, block))
@@ -1460,13 +1460,35 @@ class Hub:
                                              or not 0 <= background_tasks < BACKGROUND_TASK_LIMIT):
             raise StoreError('invalid background task count')
         ordered = {}
+        rebinding = None
+        if native_id:
+            native_id = text(native_id, 'native session ID', 512)
+            if native_id.startswith('-') or not native_id.isprintable():
+                raise StoreError('invalid native session ID')
+            if event:
+                # Before ordering: a late report is refused like a current one
+                # when it names another conversation (QA19 F1).
+                rebinding = native_binding(row, event, native_id, cwd)
         if event:
             # An older or repeated hook report must not undo newer work (#101).
             # An unsequenced one records the counter it arrived after (QA8 F3).
+            fills_gap = order is not None and order in session_order.state(row)['missing']
             disposition, ordered = session_order.observe(
                 row, event, order, attempts=attempts,
                 allocated=lambda: session_order.read_allocated(self.config, row))
             if disposition == 'ignored':
+                if event == 'tool-completed' and fills_gap:
+                    # A late end still ends its own start (#104), and only that
+                    # one: same conversation and kind, numbered after it (QA19).
+                    from .session_completion import observe_late_end
+                    if tool_kind not in {'work', 'report', 'finalizer'} or not isinstance(tool_token, str) \
+                            or len(tool_token) > 128:
+                        raise StoreError('invalid tool completion metadata')
+                    ended = observe_late_end(dict(row), tool_kind, tool_token, order=order, native_id=native_id)
+                    ordered['active_tools'] = ended.get('active_tools') or {}
+                    ordered['tool_starts'] = ended.get('tool_starts') or {}
+                    if ended.get('completion') is not row.get('completion'):
+                        ordered['completion'] = ended['completion']
                 if session_order.ignored_work(row, event, order, tool_kind):
                     # Late work after a receipt still invalidates it (QA8 F2).
                     ordered.update(work_epoch=str(uuid.uuid4()), completion_report=None)
@@ -1503,7 +1525,7 @@ class Hub:
             # a Stop-hook continuation can still finalize with a sole handoff.
             from .session_completion import observe_stop
             observed = observe_stop(dict(row))
-            changes.update(active_tools=observed['active_tools'])
+            changes.update(active_tools=observed['active_tools'], tool_starts=observed['tool_starts'])
             if observed.get('completion') is not row.get('completion'):
                 changes['completion'] = observed['completion']
         if event == 'prompt-submitted':
@@ -1512,6 +1534,7 @@ class Hub:
                 # A new turn after an observed stop recovers dropped/failed tool
                 # callbacks. It never revives the prior turn's completion.
                 changes['active_tools'] = {}
+                changes['tool_starts'] = {}
         if event == 'prompt-submitted' or (not event and state == 'working'):
             changes['work_epoch'] = str(uuid.uuid4())
             changes['completion_report'] = None
@@ -1519,8 +1542,8 @@ class Hub:
             from .session_completion import observe_tool
             if tool_kind not in {'work', 'report', 'finalizer'} or not isinstance(tool_token, str) or len(tool_token) > 128:
                 raise StoreError('invalid tool completion metadata')
-            observed = observe_tool(dict(row), event, tool_kind, tool_token)
-            for field in ('active_tools', 'work_epoch', 'completion_report', 'completion'):
+            observed = observe_tool(dict(row), event, tool_kind, tool_token, order=order, native_id=native_id)
+            for field in ('active_tools', 'tool_starts', 'work_epoch', 'completion_report', 'completion'):
                 if field in observed:
                     changes[field] = observed[field]
         if not event:
@@ -1534,13 +1557,8 @@ class Hub:
         if event == 'permission-requested':
             changes['question'] = None
         if native_id:
-            native_id = text(native_id, 'native session ID', 512)
-            if native_id.startswith('-') or not native_id.isprintable():
-                raise StoreError('invalid native session ID')
-            if event:
-                binding = native_binding(row, event, native_id, cwd)
-                if binding:
-                    changes['native_binding'] = binding
+            if rebinding:
+                changes['native_binding'] = rebinding
             changes['native_id'] = native_id
         if body:
             changes['reason'] = text(body, 'report', 16000)

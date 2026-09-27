@@ -46,9 +46,45 @@ def tool_metadata(name, arguments, native_id):
     return dict(completion_kind=kind, completion_token=token)
 
 
-def observe_tool(row, event, kind, token):
+def ends_start(row, token, kind, order=None, native_id=None):
+    """Whether this end is evidence that THIS start ended (#104, QA19 F1/F2).
+
+    Token equality alone is not: a tool-use ID can recur, and the fallback token
+    of identical input does; ``unknown`` names no tool at all. The end must name the start's kind and native
+    conversation, and be numbered after the start. Without both numbers nothing
+    orders them, so an ordered session keeps such a start open until its Stop;
+    only a session with no ordered event at all (structured transport, or a
+    session launched before ordering) falls back to arrival order. A tool left
+    open by a revision before #104 has no recorded start, so no end matches it;
+    it clears at its turn's Stop like any other unmatched start.
+    """
+    if token == 'unknown' or (row.get('active_tools') or {}).get(token) != kind:
+        return False
+    start = (row.get('tool_starts') or {}).get(token)
+    if start is None or start.get('native_id') != native_id:
+        return False
+    if start.get('order') is None:
+        from .session_order import state
+        return order is None and not state(row)['applied']
+    return order is not None and order > start['order']
+
+
+def _retire(row, tools, starts, kind, token):
+    """Retire a start ``ends_start`` matched; True when it was the receipt's sole finalizer."""
+    tools.pop(token)
+    starts.pop(token, None)
+    receipt = row.get('completion') or {}
+    if (kind == 'finalizer' and not tools and receipt.get('tool_token') == token
+            and all(receipt.get(k) == v for k, v in binding(row).items())):
+        row['completion'] = dict(receipt, tool_finished=True)
+        return True
+    return False
+
+
+def observe_tool(row, event, kind, token, *, order=None, native_id=None):
     """Track matching boundaries; composition/parallel/unknown work fails closed."""
     tools = dict(row.get('active_tools') or {})
+    starts = {k: v for k, v in (row.get('tool_starts') or {}).items() if k in tools}
     if event == 'tool-started':
         if kind != 'report':
             row['work_epoch'] = str(uuid.uuid4())
@@ -57,17 +93,53 @@ def observe_tool(row, event, kind, token):
             tools['unknown'] = 'work'
         else:
             tools[token] = kind
+            starts[token] = dict(order=order, native_id=native_id)
     else:
-        started = tools.pop(token, None)
-        receipt = row.get('completion') or {}
-        if (started == kind == 'finalizer' and not tools and receipt.get('tool_token') == token
-                and all(receipt.get(k) == v for k, v in binding(row).items())):
-            row['completion'] = dict(receipt, tool_finished=True)
-        elif started != 'report' or kind != 'report':
+        matched = ends_start(row, token, kind, order, native_id)
+        finished = matched and _retire(row, tools, starts, kind, token)
+        # An end that matched no start is still activity: it counts as work.
+        if not finished and not (matched and kind == 'report'):
             row['work_epoch'] = str(uuid.uuid4())
             row['completion_report'] = None
     row['active_tools'] = tools
+    row['tool_starts'] = starts
     return row
+
+
+def observe_late_end(row, kind, token, *, order, native_id):
+    """A tool end whose report filled a gap in the native order (#104): that tool ended.
+
+    Reports can arrive after newer ones; ordering keeps a late report from
+    undoing newer state, but the end of THIS start (``ends_start``) is still
+    native evidence. Only that start is retired; whether the end counts as new
+    work after a receipt is ``session_order.ignored_work``'s decision.
+    """
+    if not ends_start(row, token, kind, order, native_id):
+        return row
+    tools = dict(row.get('active_tools') or {})
+    starts = {k: v for k, v in (row.get('tool_starts') or {}).items() if k in tools}
+    _retire(row, tools, starts, kind, token)
+    row['active_tools'] = tools
+    row['tool_starts'] = starts
+    return row
+
+
+def blocked_detail(tools):
+    """Why no sole observed finalizer is running, with the likely cause (#104)."""
+    finalizers = sum(kind == 'finalizer' for kind in tools.values())
+    if not finalizers:
+        cause = ('the handoff\'s own tool start was not observed (it ran composed with other commands, outside '
+                 'the native tool bridge, or its hook report did not arrive)')
+    else:
+        others = len(tools) - 1
+        cause = (f'{others} other tool start{"s" if others != 1 else ""} in this turn '
+                 f'{"have" if others != 1 else "has"} no observed end (a parallel tool call, a call denied by a hook '
+                 'or at a permission prompt (Claude reports no end for it), a failed tool on a Claude install '
+                 'without the PostToolUseFailure hook (check `asha doctor claude`), or a lost end report: its hook '
+                 'report did not arrive; the next native Stop clears these starts)')
+    return ('No sole observed standalone finalizer tool: ' + cause + '. The handoff must run as the only command '
+            'in its own tool call, after every other tool finished, through the Claude/Codex native tool bridge; '
+            'retry the handoff that way, or attach')
 
 
 def observe_stop(row):
@@ -82,6 +154,7 @@ def observe_stop(row):
             and all(receipt.get(k) == v for k, v in binding(row).items())):
         row['completion'] = dict(receipt, tool_finished=True)
     row['active_tools'] = {}
+    row['tool_starts'] = {}
     return row
 
 
@@ -177,9 +250,7 @@ def issue(hub, actor, *, outcome, detail, publication=None, request=None):
             # its report arrives late and is otherwise ignored (#101 QA8 F2).
             receipt['order_applied'] = ordered['applied'] or None
             if tool_token is None:
-                receipt.update(status='blocked', detail='No sole observed standalone finalizer tool: the handoff must run '
-                               'as the only command in its own tool call, after every other tool finished, through the '
-                               'Claude/Codex native tool bridge; retry the handoff that way, or attach')
+                receipt.update(status='blocked', detail=blocked_detail(tools))
             current['completion'] = receipt
             hub._save(c, current)
             return receipt
