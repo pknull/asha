@@ -9,6 +9,12 @@ def memory_label(row):
     return 'Memory saved ' + datetime.fromtimestamp(stamp, timezone.utc).strftime('%H:%M UTC')
 
 
+def saved_label(row):
+    """``saved HH:MM UTC`` from the hub's save evidence (#105); empty without one."""
+    stamp = row.get('memory_saved_at')
+    return '' if stamp is None else 'saved ' + datetime.fromtimestamp(stamp, timezone.utc).strftime('%H:%M UTC')
+
+
 def receipt_label(row):
     """The completion-receipt state: whether a close would need a turn at all."""
     readiness = row.get('completion_readiness')
@@ -35,6 +41,13 @@ def present(row):
                 report.get('assignment_epoch') == row.get('assignment_epoch')) if report else activity == 'finished'
     ended = process == 'ended' or (process != 'live' and activity in {'exited', 'stopped', 'closed'})
     group = 'history' if row.get('lifecycle') == 'closed' and not record.get('needs_attention') else 'ended' if ended else 'current'
+    # An open Room is an ongoing conversation: a save or finished report never ends it (#105).
+    from .session_closure import TERMINAL_STATES
+    room_open = (row.get('profile') == 'room' and group == 'current' and row.get('lifecycle') == 'open'
+                 and record.get('state', 'completed') in TERMINAL_STATES)
+    changes = {}
+    if room_open and saved_label(row):
+        changes['saved_label'] = saved_label(row)
     if group == 'history':
         hint = 'Closed: view history'
     elif ended:
@@ -61,7 +74,16 @@ def present(row):
     elif activity == 'closing':
         hint = ('Finalized, closing' if row.get('completion_readiness', {}).get('status') == 'ready'
                 else 'Closing: await handoff')
-    elif row.get('completion_readiness', {}).get('status') == 'ready':
+    elif room_open and (activity in {'finished', 'idle'} or (
+            row.get('completion_readiness', {}).get('status') == 'ready'
+            and activity not in {'working', 'running', 'queued', 'starting'})):
+        # #105: a Room's save (or a finished report sent anyway) is a checkpoint.
+        saved = saved_label(row)
+        hint = saved[0].upper() + saved[1:] + ': waiting for you' if saved else 'Waiting for you'
+        if activity == 'finished':
+            changes.update(activity='idle', reported_activity='finished')
+    elif row.get('completion_readiness', {}).get('status') == 'ready' and not room_open:
+        # An open Room's save never offers completion, even while its turn goes on (QA26 Q26-F1).
         hint = 'Finalized: close'
     elif activity == 'working' and row.get('background_tasks'):
         hint = 'Working: background tasks'
@@ -78,7 +100,7 @@ def present(row):
                 'starting': 'Starting', 'failed': 'Failed: check work',
                 'blocked': 'Blocked: inspect', 'uncertain': 'Uncertain: inspect',
                 'budget-exhausted': 'Budget exhausted: inspect'}.get(activity, 'Inspect session')
-    return dict(row, next_step=hint, group=group)
+    return dict(row, next_step=hint, group=group, **changes)
 
 
 def _clock(stamp, pattern='%H:%M UTC'):

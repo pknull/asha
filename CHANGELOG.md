@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased — Rooms show saves, not completion (#105)
+
+- A Room is an ongoing conversation, so its Memory saves are checkpoints. The
+  Room contract (`--profile room`) no longer tells the agent to report
+  `finished` after a handoff; it says to keep the conversation going and leaves
+  completion to the close request. The worker contract is unchanged.
+- An open Room with a save (explicit save or ordinary handoff publication in
+  its current assignment) reads `Saved HH:MM UTC: waiting for you` with
+  activity `idle`, never `Finalized: close`, `Done: close` or the `Ready to
+  close` state section. A `finished` report sent anyway is shown the same way;
+  JSON keeps it as the added field `reported_activity: "finished"`, and the new
+  `saved_label` field carries `saved HH:MM UTC`. Receipts, closes, ended Rooms
+  and workers keep their existing presentation.
+- The same holds during the turn that continues after a save: the Room shows
+  its working activity with the saved label, not `Finalized: close`. A later
+  `no-durable-update` or `blocked` handoff in the same assignment keeps the last
+  save time (retained in the Room's `memory_checkpoint` field).
+
 ## Unreleased — read-only session preview, off by default (#102 phase 3)
 
 - Opt-in, **off by default**: `{"control": {"session_preview": true}}` in the

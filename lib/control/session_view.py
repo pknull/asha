@@ -53,6 +53,11 @@ def attention_rank(row):
     return 0 if row.get('activity') in ATTENTION or row.get('next_step', '').startswith('Close failed') else 1
 
 
+def _room_open(row):
+    """An open Room is an ongoing conversation; it is never ready to close (#105, QA26 Q26-F1)."""
+    return row.get('profile') == 'room' and row.get('lifecycle') == 'open' and row.get('group') == 'current'
+
+
 def state_section(row):
     """The state section for a presented current row; the next step decides it."""
     step = row.get('next_step', '')
@@ -60,7 +65,7 @@ def state_section(row):
         return 'state:needs'
     if step.startswith(('Closing', 'Finalized, closing')):
         return 'state:closing'
-    if step.startswith(_READY_STEPS):
+    if step.startswith(_READY_STEPS) and not _room_open(row):
         return 'state:ready'
     if row.get('activity') in WORKING or step.startswith(('Working', 'Queued', 'Starting', 'Hooks not reporting')):
         return 'state:working'
