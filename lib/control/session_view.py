@@ -237,6 +237,29 @@ def merge_row(model, row, *, observed_at, member=True):
                     seen=MappingProxyType(seen), excluded=MappingProxyType(excluded))
 
 
+def merge_changed(model, rows, *, observed_at, member):
+    """Merge rows re-read after a change was seen (#102 phase 4).
+
+    A row already refreshed after this read began, or proved out of the
+    query since, is newer evidence and is kept. ``member`` is the active
+    query's verdict on each row.
+    """
+    for row in rows:
+        sid = row['session_id']
+        if model.seen.get(sid, float('-inf')) > observed_at or model.excluded.get(sid, float('-inf')) > observed_at:
+            continue
+        model = merge_row(model, row, observed_at=observed_at, member=member(row))
+    return model
+
+
+def mark_stale(model, ids):
+    """Keep rows whose read failed, marked stale since they were last observed."""
+    marked = {sid: model.stale.get(sid, model.seen.get(sid)) for sid in ids if sid in model.rows}
+    if not marked or all(sid in model.stale for sid in marked):
+        return model
+    return replace(model, stale=MappingProxyType({**model.stale, **marked}))
+
+
 def selected_index(model):
     return model.order.index(model.selected_id) if model.selected_id in model.order else 0
 

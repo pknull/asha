@@ -2,7 +2,8 @@
 
 The pure parts live beside it: ``session_view`` (the retained model),
 ``session_layout`` (regions and renders), ``session_keys`` (footer and key
-sheet) and ``session_actions`` (row actions). This module owns curses.
+sheet), ``session_actions`` (row actions) and ``session_refresh`` (change-driven
+reads). This module owns curses.
 """
 from __future__ import annotations
 try:
@@ -17,16 +18,16 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import load_config
-from .hub_cli import overview
 from .session_hub import Hub, listed, no_handoff_enabled
-from . import session_actions, session_layout, session_preview, session_title, session_view
+from . import session_actions, session_layout, session_preview, session_refresh, session_title, session_view
 from .session_actions import launch_selection  # noqa: F401  (re-exported; #95 tests)
 from .session_keys import footer, key_sheet, sheet_lines as _sheet_lines, sheet_offset  # noqa: F401
 from .session_presentation import present  # noqa: F401  (re-exported for callers and tests)
 
 QUIT = object()
 ESC, SPACE = 27, ord(' ')
-REFRESH_SECONDS = 2
+# The loop wakes at least once per fast tick; keys wake it sooner (#102 phase 4).
+TICK_MS = int(session_refresh.FAST_SECONDS * 1000)
 
 
 def _key(name, default):
@@ -136,7 +137,7 @@ class Dashboard:
 
     def __init__(self, screen, config, env):
         from . import tui
-        screen.timeout(200)
+        screen.timeout(TICK_MS)
         self.screen, self.config, self.env = screen, config, env
         self.model = tui.TuiModel([])
         self.model.coloured = tui.init_colours(curses)
@@ -147,12 +148,16 @@ class Dashboard:
         self.view = session_view.ViewModel()
         self.page = {'summary': 'Reading sessions…', 'errors': []}
         # ``sheet`` is the key sheet's scroll offset while it is shown, else None.
-        self.next_refresh, self.message, self.sheet, self.started = 0.0, '', None, 0.0
+        self.message, self.sheet = '', None
         self.include_closed, self.peek, self.preview = False, False, True
         self.ascii = not _unicode_ok()
         self.title = _title_writer(env)
+        # One worker reads pages and row deltas; the UI thread only asks the
+        # change feed whether anything committed (#102 phase 4).
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='asha-session-view')
-        self.future = None
+        self.refresher = session_refresh.Refresher(
+            self.pool, read_page=session_refresh.page_reader(config, env),
+            read_rows=session_refresh.row_reader(config, env), feed=session_refresh.ChangeFeed.for_config(config))
         self.fitted = None   # (view, list height) the last automatic fold was computed for
         # The read-only preview (#102 phase 3) reads on its own worker thread, and
         # only when control.session_preview opts in; off, nothing is ever read.
@@ -168,23 +173,17 @@ class Dashboard:
                     return 0
         finally:
             self.pool.shutdown(wait=False, cancel_futures=True)
+            self.refresher.close()
             if self.previews is not None:
                 self.previews.close()
             self.title.close()
 
     def poll(self):
-        if self.future is None and time.monotonic() >= self.next_refresh:
-            self.started = time.time()
-            self.future = self.pool.submit(overview, self.config, env=self.env, include_closed=self.include_closed)
-        if self.future is not None and self.future.done():
-            try:
-                self.page = self.future.result()
-                self.view = session_view.merge(self.view, self.page['rows'], observed_at=self.started,
-                                               complete=bool(self.page.get('complete')))
-            except Exception as exc:
-                self.message = 'Status unavailable: ' + str(exc)
-                self.view = session_view.merge(self.view, [], observed_at=self.started, complete=False)
-            self.future, self.next_refresh = None, time.monotonic() + REFRESH_SECONDS
+        self.view, page, message = self.refresher.tick(self.view, include_closed=self.include_closed)
+        if page is not None:
+            self.page = page
+        if message:
+            self.message = message
         box = self.box()
         if self.previews is not None and box.mode in ('wide', 'peek') and self.sheet is None:
             # Only the selected row, and only while its preview is on screen.
@@ -238,7 +237,7 @@ class Dashboard:
         except (ValueError, OSError, KeyError):
             pass
         # Legacy Rooms and unowned structured sessions have no single-row read.
-        self.next_refresh = 0
+        self.refresher.request_page()
 
     def sheet_key(self, key):
         height = self.screen.getmaxyx()[0]
@@ -290,7 +289,7 @@ class Dashboard:
         elif key == ord('A'):
             # A different query, so this is the one key that re-reads the page.
             self.include_closed = not self.include_closed
-            self.next_refresh = 0
+            self.refresher.request_page()
             self.message = 'Including retained history' if self.include_closed else 'Showing current sessions'
         else:
             return False
@@ -306,9 +305,9 @@ class Dashboard:
         finally:
             curses.reset_prog_mode()
             self.model.coloured = tui.init_colours(curses)
-            self.screen.timeout(200)
+            self.screen.timeout(TICK_MS)
             tui._repaint_after_suspend(self.screen)
-            self.next_refresh = 0
+            self.refresher.request_page()
 
     def handle(self, key):
         if self.sheet is not None:

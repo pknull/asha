@@ -231,7 +231,7 @@ class LoopTests(unittest.TestCase):
         future.result.side_effect = pages
         pool.submit.return_value = future
         painted = []
-        clock = iter(range(0, 1000, 3))
+        clock = iter(range(0, 1000, 6))   # each read passes the 5 s slow tick
         with patch.object(session_tui, 'Hub'), \
              patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
              patch.object(session_tui, 'curses', FakeCurses), \
@@ -251,7 +251,7 @@ class LoopTests(unittest.TestCase):
         future.result.side_effect = [self.snapshot(row('a')), OSError('database locked')]
         pool.submit.return_value = future
         painted = []
-        clock = iter(range(0, 1000, 3))
+        clock = iter(range(0, 1000, 6))   # each read passes the 5 s slow tick
         with patch.object(session_tui, 'Hub'), \
              patch.object(session_tui, 'ThreadPoolExecutor', return_value=pool), \
              patch.object(session_tui, 'curses', FakeCurses), \
@@ -343,7 +343,7 @@ class ActionMembershipTests(unittest.TestCase):
     def test_force_close_then_a_late_complete_page(self):
         sid = self.fixture.launch()['session_id']
         old = self.fixture.hub.show(sid)
-        screen = ClockScreen([-1, ord('X'), -1, ord('q')], [0, 3, 3.1, 6])
+        screen = ClockScreen([-1, ord('X'), -1, ord('q')], [0, 6, 6.1, 12])
         trace = self.run_loop(screen, [Page([old]), Page([old], ready=lambda: screen.tick >= 2), Page([])])
         self.assertEqual(self.fixture.hub.get(sid)['lifecycle'], 'closed')
         self.assertEqual(trace[1], [(sid, 'open')])
@@ -352,7 +352,7 @@ class ActionMembershipTests(unittest.TestCase):
     def test_force_close_then_repeated_partial_pages(self):
         sid = self.fixture.launch()['session_id']
         old = self.fixture.hub.show(sid)
-        screen = ClockScreen([ord('X'), -1, -1, ord('q')], [0, 3, 6, 9])
+        screen = ClockScreen([ord('X'), -1, -1, ord('q')], [0, 6, 12, 18])
         trace = self.run_loop(screen, [Page([old]), Page([], complete=False), Page([], complete=False),
                                        Page([], complete=False)])
         self.assertEqual(trace[0], [(sid, 'open')])
