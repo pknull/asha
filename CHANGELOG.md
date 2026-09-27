@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — read-only session preview, off by default (#102 phase 3)
+
+- Opt-in, **off by default**: `{"control": {"session_preview": true}}` in the
+  Asha config shows the selected session's recent pane output (or structured
+  events) under the dashboard's side panel and in the narrow full-width detail.
+  Off, the dashboard shows no preview and issues no preview tmux read.
+- The capture is fixed-argv `capture-pane`, bracketed by exact Room ownership
+  checks, refused when a guarded tmux hook is configured at any scope (QA17
+  Q17-F1), paced at 500 ms after the previous read, bounded by a 2 s deadline
+  and sanitized before painting. Structured reads acknowledge nothing.
+- Documented limits, not guarantees: tmux `command-alias` entries configured by
+  the operator can turn any preview read, the hook check included, into input
+  (QA18 Q18-F1); a hook set between the check and the capture still runs. That
+  is why the preview is opt-in. History paging, cancel-on-close and the
+  inherited Q17-F6/F7 items remain follow-ups (docs/session-hub.md).
+
 ## Unreleased — finalizer receipts after failed, denied or late-reported tools (#104)
 
 - Three Claude workers got blocked receipts ("No sole observed standalone

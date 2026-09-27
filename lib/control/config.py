@@ -68,6 +68,10 @@ class ControlConfig:
     # Experimental turnless close (#101, `close --no-handoff`); off unless opted
     # in until #103 (an in-flight hook can be covered by an older Stop) closes.
     no_handoff_close: bool = False
+    # The dashboard's read-only pane preview (#102 phase 3); off unless opted in,
+    # because the operator's own tmux hooks and command aliases can run commands
+    # on a tmux read that Control cannot prevent (docs/session-hub.md).
+    session_preview: bool = False
 
 
 def _absolute(value: str, name: str, *, home: Path, allow_tilde: bool = True) -> Path:
@@ -559,7 +563,7 @@ def load_config(
         raise ConfigError("control must be an object")
     supported_control = {
         "workspace_root", "default_harness", "tmux", "event_staleness_seconds",
-        "workspace_trust", "idle_delivery", "no_handoff_close",
+        "workspace_trust", "idle_delivery", "no_handoff_close", "session_preview",
     }
     unknown_control = set(control) - supported_control
     if unknown_control:
@@ -643,6 +647,9 @@ def load_config(
     no_handoff_close = control.get("no_handoff_close", False)
     if not isinstance(no_handoff_close, bool):
         raise ConfigError("control.no_handoff_close must be true or false")
+    session_preview = control.get("session_preview", False)
+    if not isinstance(session_preview, bool):
+        raise ConfigError("control.session_preview must be true or false")
 
     workspace_trust = control.get("workspace_trust", "inherit")
     if workspace_trust not in TRUST_MODES:
@@ -675,4 +682,5 @@ def load_config(
         workspace_trust=workspace_trust,
         idle_delivery=idle_delivery,
         no_handoff_close=no_handoff_close,
+        session_preview=session_preview,
     )

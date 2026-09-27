@@ -627,7 +627,14 @@ def _set_recovery_guidance(exc: BaseException, guidance: str) -> None:
         pass
 
 
-def _owned_state(record: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, str]:
+def _owned_state(
+    record: Mapping[str, Any], tmux: TmuxAdapter, *,
+    deadline: Callable[[], float] | None = None,
+) -> tuple[str, str]:
+    """Classify the Room's pane. ``deadline`` returns the seconds each tmux read may take."""
+    def bounded() -> dict[str, float]:
+        return {} if deadline is None else {"deadline_seconds": deadline()}
+
     tmux_record = record["tmux"]
     session, pane = tmux_record["session"], tmux_record.get("pane_id")
     session_id = tmux_record.get("session_id")
@@ -635,20 +642,20 @@ def _owned_state(record: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, str
         return "mismatch", "record has no immutable tmux identity"
     if not pane:
         try:
-            if tmux.has_session(session):
+            if tmux.has_session(session, **bounded()):
                 return "mismatch", "readable session name is occupied without immutable identity"
         except TmuxError as exc:
             return "unavailable", str(exc)
         return "missing", "no immutable tmux identity or readable session is present"
     try:
-        facts = tmux.pane_facts(pane)
-        if tmux.session_id(pane) != session_id:
+        facts = tmux.pane_facts(pane, **bounded())
+        if tmux.session_id(pane, **bounded()) != session_id:
             return "mismatch", "immutable session identity mismatch"
-        if tmux.session_option(session_id, SESSION_ROOM_OPTION) != record["room_id"]:
+        if tmux.session_option(session_id, SESSION_ROOM_OPTION, **bounded()) != record["room_id"]:
             return "mismatch", "session ownership mismatch"
-        if tmux.pane_option(pane, PANE_ROOM_OPTION) != record["room_id"]:
+        if tmux.pane_option(pane, PANE_ROOM_OPTION, **bounded()) != record["room_id"]:
             return "mismatch", "pane ownership mismatch"
-        if tmux.pane_option(pane, PANE_PROJECT_OPTION) != _project_marker(
+        if tmux.pane_option(pane, PANE_PROJECT_OPTION, **bounded()) != _project_marker(
             record["project_id"]
         ):
             return "mismatch", "pane project ownership mismatch"
@@ -657,7 +664,7 @@ def _owned_state(record: Mapping[str, Any], tmux: TmuxAdapter) -> tuple[str, str
         return "open", "exact room ownership verified"
     except TmuxError as exc:
         try:
-            if tmux.has_session(session):
+            if tmux.has_session(session, **bounded()):
                 return "mismatch", "recorded pane is absent but its readable name is occupied"
         except TmuxError as collision_exc:
             return "unavailable", str(collision_exc)

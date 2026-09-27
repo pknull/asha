@@ -227,7 +227,8 @@ class TmuxInventory:
     def session_names(self) -> list[str]:
         return self.list_sessions()
 
-    def has_session(self, name: str) -> bool:
+    def has_session(self, name: str, *, deadline_seconds: float = 60) -> bool:
+        del deadline_seconds
         selected = _validate_session_target(name)
         return (
             selected in self._sessions
@@ -718,10 +719,10 @@ class TmuxAdapter:
             session_ids=session_ids, panes=panes, windows=windows,
         )
 
-    def has_session(self, name: str) -> bool:
+    def has_session(self, name: str, *, deadline_seconds: float = 60) -> bool:
         session = _validate_session_target(name)
         returncode, _stdout, stderr = self._run_status(
-            ["has-session", "-t", session],
+            ["has-session", "-t", session], deadline_seconds=deadline_seconds,
         )
         if returncode == 0:
             return True

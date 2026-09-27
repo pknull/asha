@@ -36,7 +36,7 @@ class FakeCurses:
     error = RuntimeError
 
 
-def run(keys, rows, *, size=(24, 100), hub=None, title=None):
+def run(keys, rows, *, size=(24, 100), hub=None, title=None, config=None):
     pool = MagicMock()
     pool.submit.return_value.done.return_value = True
     pool.submit.return_value.result.return_value = {
@@ -50,7 +50,7 @@ def run(keys, rows, *, size=(24, 100), hub=None, title=None):
          patch.object(tui, 'init_colours', return_value=False), \
          patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append((snap, kw))):
         screen = Screen(keys, size)
-        self_check = session_tui._loop(screen, object(), {})
+        self_check = session_tui._loop(screen, object() if config is None else config, {})
     assert self_check == 0
     return pool, painted
 

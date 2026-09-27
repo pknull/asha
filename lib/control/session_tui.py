@@ -19,7 +19,7 @@ from concurrent.futures import ThreadPoolExecutor
 from .config import load_config
 from .hub_cli import overview
 from .session_hub import Hub, listed, no_handoff_enabled
-from . import session_actions, session_layout, session_title, session_view
+from . import session_actions, session_layout, session_preview, session_title, session_view
 from .session_actions import launch_selection  # noqa: F401  (re-exported; #95 tests)
 from .session_keys import footer, key_sheet, sheet_lines as _sheet_lines, sheet_offset  # noqa: F401
 from .session_presentation import present  # noqa: F401  (re-exported for callers and tests)
@@ -154,6 +154,10 @@ class Dashboard:
         self.pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix='asha-session-view')
         self.future = None
         self.fitted = None   # (view, list height) the last automatic fold was computed for
+        # The read-only preview (#102 phase 3) reads on its own worker thread, and
+        # only when control.session_preview opts in; off, nothing is ever read.
+        self.previews = session_preview.Poller(reader=session_preview.reader_for(config, self.hub.tmux)) \
+            if session_preview.enabled(config) else None
 
     def run(self):
         try:
@@ -164,6 +168,8 @@ class Dashboard:
                     return 0
         finally:
             self.pool.shutdown(wait=False, cancel_futures=True)
+            if self.previews is not None:
+                self.previews.close()
             self.title.close()
 
     def poll(self):
@@ -179,12 +185,22 @@ class Dashboard:
                 self.message = 'Status unavailable: ' + str(exc)
                 self.view = session_view.merge(self.view, [], observed_at=self.started, complete=False)
             self.future, self.next_refresh = None, time.monotonic() + REFRESH_SECONDS
+        box = self.box()
+        if self.previews is not None and box.mode in ('wide', 'peek') and self.sheet is None:
+            # Only the selected row, and only while its preview is on screen.
+            self.previews.tick(self.previewed(), lines=max(1, box.list_height))
+
+    def previewed(self):
+        row = self.selected_row()
+        return row if row and row.get('kind') != 'section' else None
 
     def display(self):
         summary = self.page.get('summary', 'Reading sessions…')
         summary += ' (input filter)' if self.view.input_only else ''
         summary += f'; {len(self.view.stale)} stale' if self.view.stale else ''
-        return {'rows': session_view.display_rows(self.view), 'summary': summary,
+        shown = {'preview': self.previews.current(self.previewed())} \
+            if self.previews is not None and self.box().mode in ('wide', 'peek') else {}
+        return {**shown, 'session_preview': self.previews is not None, 'rows': session_view.display_rows(self.view), 'summary': summary,
                 'errors': self.page.get('errors', []), 'no_handoff_close': no_handoff_enabled(self.config),
                 'grouping': self.view.grouping, 'ascii': self.ascii, 'now': time.time(),
                 'attention': session_view.attention_counts(self.view)}
