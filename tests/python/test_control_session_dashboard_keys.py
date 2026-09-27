@@ -115,7 +115,7 @@ class ResizeSheetTests(unittest.TestCase):
                 FakeCurses.KEY_DOWN, (KEY_RESIZE, (60, 80)), ord('j')]
         _, painted = run(keys, [row('a')], size=(12, 80))
         sheets = [(kw['keys'], kw['sheet']) for _, kw in painted][-7:]
-        clamped = session_tui.sheet_offset(2, height=9, no_handoff_close=False)
+        clamped = session_tui.sheet_offset(2, height=9)
         self.assertEqual(sheets, [(True, 0), (True, 1), (True, 2), (True, clamped),
                                   (True, session_tui.sheet_offset(clamped + 1, height=9)), (True, 0), (False, 0)])
 

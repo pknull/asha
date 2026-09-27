@@ -32,8 +32,8 @@ class RoomSaveFixture(ClosureFixture):
         """
         with self.acting_as(sid):
             self.hub.observe('prompt-submitted')
-            self.hub.observe('tool-started', tool_kind='work', tool_token='w1')
-            self.hub.observe('tool-completed', tool_kind='work', tool_token='w1')
+            self.hub.observe('tool-started')
+            self.hub.observe('tool-completed')
             receipt = self.hub.handoff(None, **self.room_drafts())['completion']
             self.assertEqual(receipt['status'], 'ready', receipt.get('detail'))
             if report:

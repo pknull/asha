@@ -15,14 +15,12 @@ from pathlib import Path
 from . import session_closure as closure
 from .database import ControlDatabase, DATABASE_NAME
 from .registry_guards import mutation_guard
-from .rooms import (RoomStore, _action_identity, _owned_state, open_room, close_room, attach_room,
+from .rooms import (RoomStore, _owned_state, open_room, close_room, attach_room,
                     resolve_project)
 from .session_selection import evidence as selection_evidence, requested
-from .session_completion import no_handoff_eligibility, no_handoff_refusal, no_handoff_unsupported
-from . import session_order
 from .session_store import identifier, text, digest
 from .store import StoreError
-from .tmux import FENCE_LIMIT, RoomInputRefused, TmuxAdapter
+from .tmux import RoomInputRefused, TmuxAdapter
 
 
 SCHEMA = (
@@ -52,21 +50,9 @@ def waiting_on_background(row):
 # hooks and handoff remain valid until the close terminates it.
 ACTIVE_LIFECYCLES = {'starting', 'open', 'closing'}
 CLOSE_WAIT_LIMIT = 600
-NO_HANDOFF_DISABLED = ('close --no-handoff is experimental and off by default: a hook still between its '
-                       'attempt and its number can be covered by an older Stop (#103). Enable it with '
-                       '{"control": {"no_handoff_close": true}} in the Asha config, or attach, or --force')
-
-
-def no_handoff_enabled(config):
-    return getattr(config, 'no_handoff_close', False) is True
-
-
-# Idle-input refusals (#96) after which an automatic native-resume restart may
-# still run: nothing showed a person or a draft at the pane. ``disabled`` (the
-# default: idle typing is off) keeps the pre-#96 Codex native-resume close.
-# Every other refusal (attached, mode, ownership, occupied, stale, partial,
-# error) keeps the Room and asks for attach.
-RESTARTABLE_REFUSALS = frozenset({'disabled', 'ineligible', 'unknown'})
+# A hook report stamped this much older than the newest applied one is skipped
+# (D2); anything older still applies, bounding a backward clock step.
+STALE_REPORT_SECONDS = 30
 # A live terminal session with no native hook event this long after launch is
 # labelled "hooks not reporting" instead of plain unknown (#100): SessionStart
 # fires within seconds of a healthy launch.
@@ -147,16 +133,6 @@ def record_rejection(config, env, *, event, native_id, error, cwd=None):
                 handle.writelines(reversed(tail))
     except (OSError, ValueError):
         pass
-
-
-def _open_tools(row):
-    return any(kind != 'report' for kind in (row.get('active_tools') or {}).values())
-
-
-def _idle_fence(row):
-    """The observed idle boundary a typed delivery is bound to; any native event moves it."""
-    return (row['generation'], row['lifecycle'], row['activity'], row.get('native_activity'),
-            row.get('native_observed_at'), row.get('work_epoch'), row.get('assignment_epoch'))
 
 
 def attach_refusal(row):
@@ -318,7 +294,7 @@ class Hub:
     def _start(self, row, prompt, *, closing=False):
         from . import session_guidance as guidance
         row = self._update(row['session_id'], expected_generation=row['generation'], current_assignment=prompt,
-                           assignment_epoch=str(uuid.uuid4()), active_tools={}, tool_starts={})
+                           assignment_epoch=str(uuid.uuid4()))
         block, manifest = guidance.resolve(self, row, row.get('learning_ids'))
         key = 'opening' if row['generation'] == 1 or row['transport'] == 'structured' else 'resume:' + str(row['generation'])
         guidance.retain(self, row, key, guidance.planned(manifest, prompt, block))
@@ -338,13 +314,12 @@ class Hub:
         try:
             # Friendly labels may repeat. Rooms retain every incarnation.
             room_name = f"session-{row['session_id']}-{row['generation']}"
-            order_file = session_order.create_counter(self.config, row['session_id'], row['generation'])
             open_room(name=room_name, project=row['project'], harness=row['harness'], prompt=brief,
                       config=self.config, env=self.env, tmux=self.tmux,
                       asha_root=Path(__file__).resolve().parents[2], room_id=row['room_id'],
                       profile=row['profile'], hub_session_id=row['session_id'],
                       hub_generation=row['generation'], resume_id=row.get('native_id'),
-                      selection=requested(row.get('spec')), hub_event_order=order_file)
+                      selection=requested(row.get('spec')))
         except BaseException as exc:
             self._update(row['session_id'], lifecycle='interrupted', reason=str(exc)[:1000])
             raise
@@ -414,16 +389,6 @@ class Hub:
 
     def show(self, sid):
         row = self.get(sid)
-        if row['lifecycle'] in ACTIVE_LIFECYCLES and not no_handoff_enabled(self.config):
-            # Off by default (#103): never offered, so the dashboard says attach.
-            row['no_handoff'] = dict(eligible=False, reason=NO_HANDOFF_DISABLED)
-        elif row['lifecycle'] in ACTIVE_LIFECYCLES:
-            # The same predicate `close --no-handoff` applies, over the stored
-            # facts, before presentation rewrites activity (QA7 P2).
-            counters = (session_order.read_counters(self.config, row, wait=0.05)
-                        if row['transport'] == 'terminal' else None)
-            reason = no_handoff_eligibility(row, counters)
-            row['no_handoff'] = dict(eligible=reason is None, reason=reason)
         capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
         if capture.get('report_id'):
             with self.database() as db, db.transaction() as c:
@@ -568,8 +533,7 @@ class Hub:
             except (OSError, ValueError):
                 record = dict(record, attachment_required=True,
                     last_error='native activity is unknown or stale; no verified idle boundary, needs attach')
-        record = dict(record, guidance=closure.guidance_for(
-            row, record, idle_delivery=getattr(self.config, 'idle_delivery', False) is True))
+        record = dict(record, guidance=closure.guidance_for(row, record))
         state = record['state']
         row['closure'] = record
         if row['lifecycle'] in {'closing', 'interrupted'}:
@@ -721,26 +685,16 @@ class Hub:
         self._update(sid, **changes)
         return self.show(sid)
 
-    def close(self, sid, *, force=False, wait=0, no_handoff=False):
+    def close(self, sid, *, force=False, wait=0):
         """Graceful close: request a final handoff turn; terminate only after a verified acknowledgement.
 
         Repeated calls are idempotent: one request per incarnation, no duplicate
         messages. ``wait`` polls for the acknowledgement (bounded) before the
         final termination. ``force`` terminates now and records that no
-        memory save was claimed. ``no_handoff`` asks for no turn: a current
-        receipt still completes; otherwise the session stops at a verified
-        native idle boundary as ``closed-no-save-claimed`` (#101).
+        memory save was claimed.
         """
         if type(wait) is not int or not 0 <= wait <= CLOSE_WAIT_LIMIT:
             raise StoreError(f'wait must be 0..{CLOSE_WAIT_LIMIT} seconds')
-        if no_handoff and not no_handoff_enabled(self.config):
-            raise StoreError(NO_HANDOFF_DISABLED)
-        if force and no_handoff:
-            raise StoreError('--force terminates now; --no-handoff waits for an idle boundary: choose one')
-        if no_handoff:
-            from .sessions import refuse_managed_operator
-            refuse_managed_operator(self.config, self.env)
-            return self._close_without_handoff(sid, wait)
         if force:
             if wait:
                 raise StoreError('--force terminates now; it cannot be combined with --wait')
@@ -812,21 +766,6 @@ class Hub:
             record = self._deliver(row, self._new_closure(row))
         elif record['state'] in closure.RETRYABLE_STATES or record['state'] == 'undeliverable':
             record = self._deliver(row, closure.rearm(record))
-        elif (row['transport'] == 'terminal' and record['state'] == 'pending-delivery'
-              and record['delivery'].get('channel') == 'queued-message'):
-            record = self._continue_idle_close(row, record)
-        elif (row['transport'] == 'terminal' and record['state'] == 'pending-delivery'
-              and record['delivery'].get('channel') == 'stop-hook' and row.get('native_activity') == 'idle'):
-            # Same request and attempt: an earlier refusal (attached, typed input) may have cleared.
-            record = self._inject_close(row, record)
-        if record['generation'] != row['generation']:
-            # Internal close continuation changed incarnation, retaining request
-            # identity. Its actor may already have acknowledged during startup.
-            row = self.get(sid)
-            record = row['closure']
-            observed = record
-            if row['lifecycle'] == 'interrupted':
-                return self.show(sid)
         if record['state'] == 'acknowledged':
             from .session_completion import check, CompletionPending
             try:
@@ -836,7 +775,7 @@ class Hub:
             except (ValueError, OSError) as exc:
                 record = closure.transition(record, 'handoff-failed', last_error=str(exc), attachment_required=True)
         if (row['transport'] == 'terminal' and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
-                and not record.get('attachment_required') and not closure.recent_injection(record)
+                and not record.get('attachment_required')
                 and not closure.recent_native_observation(self.get(sid)) and not waiting_on_background(self.get(sid))):
             record = closure.transition(record, record['state'], attachment_required=True,
                 last_error='native activity is unknown or stale; no verified idle boundary, needs attach')
@@ -849,84 +788,6 @@ class Hub:
         self._update(sid, lifecycle='closing',
                      closure_fn=lambda current, _row: record if current == observed else current)
         return self.show(sid)
-
-    def _close_without_handoff(self, sid, wait):
-        """Poll (bounded by ``wait``) until the session can stop without a turn; refuse with the last reason."""
-        deadline = time.monotonic() + wait
-        while True:
-            with self._action_lock(sid):
-                result, reason = self._close_without_handoff_once(sid)
-            if result is not None:
-                return result
-            if time.monotonic() >= deadline:
-                raise StoreError('close --no-handoff refused: ' + reason)
-            time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
-
-    def _close_without_handoff_once(self, sid):
-        """Return (closed row, None), or (None, transient reason). Permanent refusals raise."""
-        row = self.get(sid)
-        if row['lifecycle'] == 'closed':
-            return self.show(sid), None
-        live = self._live(row)
-        from .session_completion import close_finalized
-        try:
-            finalized = close_finalized(self, row, ended=not live)
-        except RoomInputRefused as exc:
-            return None, (f'the terminal is in use ({exc}); nothing was stopped and the completion receipt is kept. '
-                          'Detach first, or --force')
-        if finalized is not None:
-            # A current receipt still closes as completed, without a turn.
-            return finalized, None
-        unsupported = no_handoff_unsupported(row)
-        if unsupported:
-            raise StoreError('close --no-handoff refused: ' + unsupported)
-        if not live:
-            # Nothing is running that could lose work; say so rather than wait.
-            if row['lifecycle'] in ACTIVE_LIFECYCLES:
-                from .session_experience import Experiences
-                row = Experiences(self).reconcile_completion(row)
-            return self._stop(row, close=True, closure_record=self._no_handoff_record(
-                row, 'the harness was no longer live')), None
-        with self._observation_lock(sid):
-            # Hooks write under this lock: a prompt that landed during the
-            # liveness probe is seen here, and one arriving now waits for the stop.
-            current = self.get(sid)
-            if current['generation'] != row['generation'] or current['lifecycle'] not in ACTIVE_LIFECYCLES:
-                return None, 'the session changed while closing; retry'
-            reason = no_handoff_refusal(current)
-            if reason:
-                return None, reason
-            # The counter lock is held through the kill: no hook of this
-            # incarnation can take a number between this check and the stop.
-            with session_order.allocation(self.config, current) as counters:
-                reason = session_order.kill_refusal(current, counters)
-                if reason:
-                    return None, reason
-                with self.database() as db, db.transaction() as c:
-                    unread = c.execute("SELECT COUNT(*) FROM hub_messages WHERE session_id=? AND state='queued'",
-                                       (sid,)).fetchone()[0]
-                record = self._no_handoff_record(current, 'stopped at a verified native idle boundary'
-                                                 + (f'; {unread} queued message(s) left unread' if unread else ''))
-                try:
-                    return self._stop(current, close=True, closure_record=record, detached_only=True), None
-                except RoomInputRefused as exc:
-                    return None, (f'the terminal is in use ({exc}); nothing was stopped. Detach first, or attach '
-                                  'and finish there, or --force')
-
-    def _no_handoff_record(self, row, detail):
-        record = row.get('closure')
-        if not record or record['generation'] != row['generation'] or record['state'] in closure.TERMINAL_STATES:
-            history = row.get('closure_history', [])
-            if record and record not in history:
-                # Kept once, even when a refused attempt is retried.
-                self._update(row['session_id'], closure_history=history + [record])
-            # No turn is requested, so no experience capture is requested either.
-            record = closure.new_closure(row)
-            record['selection'] = selection_evidence(row)
-        # A handoff an earlier attempt verified stays as evidence; this close claims none.
-        return closure.transition(record, closure.NO_HANDOFF_STATE, attachment_required=False,
-                                  delivery=dict(channel='no-handoff', detail=detail, message_id=None,
-                                                delivered_at=None))
 
     def _new_closure(self, row):
         from .session_experience import Experiences
@@ -980,7 +841,7 @@ class Hub:
             elif state == 'finished':
                 with self._observation_lock(row['session_id']):
                     result = self._observe(self.get(row['session_id']), None, state=state, body=reported_body,
-                                           native_id=native_id, tool_kind='report', tool_token='unknown')
+                                           native_id=native_id)
             else:
                 result = self.observe(None, state=state, body=reported_body, native_id=native_id)
             if capture is not None:
@@ -1019,183 +880,8 @@ class Hub:
         channel = 'stop-hook' if row['harness'] in closure.STOP_HOOK_HARNESSES else 'queued-message'
         detail = ('delivered as the Stop decision when the current turn ends, or when the worker reads messages'
                   if channel == 'stop-hook' else 'queued until the worker reads messages; no Stop seam on this harness')
-        record = closure.transition(record, 'pending-delivery', delivery=dict(record['delivery'], channel=channel,
-                                    detail=detail, message_id=mid))
-        if channel == 'queued-message':
-            return self._continue_idle_close(row, record)
-        if row.get('native_activity', row['activity']) != 'working' or not closure.recent_native_observation(row):
-            return self._inject_close(row, record)
-        return record
-
-    def _idle_input(self, row, line):
-        """Type one line into an owned, detached, idle terminal pane (#96).
-
-        Returns ``(outcome, reason)``. ``typed`` means pasted and submitted.
-        ``ineligible`` (no idle boundary, open tool, unsupported harness) and
-        ``unknown`` (no input line visible) are the only refusals after which an
-        automatic restart may still be considered (``RESTARTABLE_REFUSALS``).
-        Every other outcome may mean a person or a draft is at the pane:
-        ``ownership``, ``attached`` (including an attach-detach cycle), ``mode``,
-        ``unfenced`` (no attach generation to guard with), ``occupied``,
-        ``stale`` (new native activity after the idle boundary), ``partial``
-        (typed but not submitted) and ``error``.
-
-        Delivery is fenced to the observed idle boundary without holding any
-        lock that native hook reports wait on. The native hook bumps the pane's
-        event sequence before it reports, and the hub records the sequence it
-        reported; delivery requires the recorded sequence to equal the pane's
-        (no report pending, none lost) and tmux re-checks that sequence, the
-        attach generation, ownership, detachment and mode in the same commands
-        that paste and press Enter. The hub row is re-read right before the
-        paste and before Enter, and the whole input region must hold exactly
-        the typed text before Enter. Nothing here retries or waits.
-        """
-        from .pane_input import INJECTABLE_HARNESSES, composer_holds, flatten, input_line_state
-        if getattr(self.config, 'idle_delivery', False) is not True:
-            # Experimental and off by default: no tmux read or input at all.
-            return 'disabled', 'idle-pane typing is disabled (control.idle_delivery is off)'
-        if row['transport'] != 'terminal' or row['harness'] not in INJECTABLE_HARNESSES:
-            return 'ineligible', f"typing into a {row['harness']} {row['transport']} session is not supported"
-        if (row['lifecycle'] not in {'open', 'closing'} or row.get('native_activity') != 'idle'
-                or row['activity'] == 'needs-input'):
-            return 'ineligible', 'no observed idle turn boundary'
-        if _open_tools(row):
-            return 'ineligible', 'a native tool is still open'
-        sid, fence, text = row['session_id'], _idle_fence(row), flatten(line)
-        try:
-            record = RoomStore(self.config).read(row['room_id'])
-            state, detail = _owned_state(record, self.tmux)
-            if state != 'open':
-                return 'ownership', 'room ownership is ' + state + ': ' + detail
-            facts = self.tmux.room_input_facts(record['tmux']['pane_id'])
-            if facts.attached:
-                return 'attached', 'the pane is attached by a client'
-            status, detail = input_line_state(row['harness'], facts.screen)
-            if status != 'empty':
-                return status, 'the input line is not proven empty (' + detail + ')'
-            sequence = int(facts.event_sequence)
-
-            def moved():
-                current = self.get(sid)
-                if _idle_fence(current) != fence or _open_tools(current):
-                    return 'new native activity was observed after the idle boundary'
-                if (current.get('event_sequence') != sequence
-                        or current.get('event_sequence_pane') != record['tmux']['pane_id']):
-                    return (f'a native event is pending or its observation was lost (pane event '
-                            f'{sequence}, recorded {current.get("event_sequence")})')
-                return None
-
-            def confirm(screen):
-                if not composer_holds(row['harness'], screen, text):
-                    return 'the input region does not hold exactly the typed text'
-                return moved()
-
-            stale = moved()
-            if stale:
-                return 'stale', stale
-            self.tmux.inject_owned_room_input(**_action_identity(record), text=text,
-                attach_generation=facts.attach_generation, event_sequence=facts.event_sequence,
-                ready=moved, confirm=confirm)
-        except RoomInputRefused as exc:
-            return exc.category, str(exc)[:500]
-        except (AttributeError, OSError, ValueError) as exc:
-            return 'error', str(exc)[:500]
-        return 'typed', 'typed into the owned idle pane'
-
-    def _inject_close(self, row, record):
-        """Deliver a pending close request by typing it at a verified idle boundary."""
-        outcome, reason = self._idle_input(self.get(row['session_id']), closure.request_text(row, record))
-        if outcome != 'typed':
-            return dict(record, attachment_required=True, input_refusal=outcome,
-                        last_error='Control did not submit the close request: ' + reason + '; needs attach')
-        with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
-            c.execute("UPDATE hub_messages SET state='acknowledged' WHERE message_id=? AND state='queued'",
-                      (record['delivery']['message_id'],))
-        delivered = closure.mark_delivered(record, closure.INJECTION_CHANNEL,
-            detail='typed into the owned idle pane as a prompt', message_id=record['delivery']['message_id'])
-        return dict(delivered, last_error=None)
-
-    def _continue_idle_close(self, row, record):
-        """C7: wake only an observed idle owned conversation, never type into a pane."""
-        row = self.get(row['session_id'])  # A hook may have observed new work during the ownership probe.
-        current = row.get('closure')
-        if current and current['request_id'] == record['request_id'] and current.get('handoff'):
-            return current
-        activity = row.get('native_activity', row['activity'])
-        at = row.get('native_observed_at', row.get('observed_at'))
-        recent = at is not None and 0 <= time.time() - at <= 300
-        if recent and (activity == 'working' or row['activity'] == 'needs-input'):
-            return record
-        if activity == 'idle' and row['activity'] != 'needs-input':
-            # Typing at the idle prompt keeps the same process; a person at the
-            # pane (attached, or text in the input line) forbids the restart too.
-            typed = self._inject_close(row, record)
-            if typed['state'] == 'delivered' or typed.get('input_refusal') not in RESTARTABLE_REFUSALS:
-                return typed
-        if (not recent or activity != 'idle' or row['harness'] not in {'claude', 'codex'} or not row.get('native_id')):
-            return closure.transition(record, 'unanswered', attachment_required=True,
-                last_error='no proven Stop channel; idle native resume unavailable or activity unknown; attachment required')
-        unordered = session_order.kill_refusal(row, session_order.read_counters(self.config, row))
-        if unordered:
-            # The restart kills the process: the same invariant as every turnless kill.
-            return closure.transition(record, 'unanswered', attachment_required=True,
-                last_error=f'idle native resume refused: {unordered}; attachment required')
-        sid = row['session_id']
-        self._update(sid, expected_generation=row['generation'], lifecycle='closing', closure=record)
-        # Observe uses this same short lock. No database transaction spans the
-        # Room operation: SQLite-backed Room custody needs its own writer.
-        with self._observation_lock(sid):
-            fresh = self.get(sid)
-            latest = fresh.get('closure')
-            if latest and latest.get('handoff'):
-                return latest
-            observed_at = fresh.get('native_observed_at', fresh.get('observed_at'))
-            idle = fresh.get('native_activity', fresh['activity']) == 'idle'
-            if (fresh['generation'] != row['generation'] or fresh['lifecycle'] != 'closing'
-                    or not idle or fresh['activity'] == 'needs-input' or observed_at is None
-                    or not 0 <= time.time() - observed_at <= 300):
-                return latest or record
-            try:
-                with session_order.allocation(self.config, fresh) as counters:
-                    if session_order.kill_refusal(fresh, counters):
-                        return latest or record
-                    # Never kill a Room a person attached to after the probes.
-                    close_room(RoomStore(self.config), fresh['room_id'], tmux=self.tmux, detached_only=True)
-            except RoomInputRefused as exc:
-                refused = dict(record, attachment_required=True, input_refusal=exc.category,
-                               last_error='Control did not restart the session for close: ' + str(exc)[:300] + '; needs attach')
-                # The closing row above already holds ``record``; persist the refusal itself.
-                return self._update(sid, expected_generation=row['generation'], closure=refused)['closure']
-            self._update(sid, expected_generation=row['generation'], lifecycle='stopped')
-        generation = row['generation'] + 1
-        record = dict(record, generation=generation, attachment_required=False, input_refusal=None,
-                      last_error=None, continued_from_generation=row['generation'],
-                      delivery=dict(record['delivery'], channel='native-resume',
-                                    detail='continuing the same native conversation for close'))
-        next_row = self._update(sid, lifecycle='starting', generation=generation, closure=record,
-            room_id=str(uuid.uuid4()), room_history=row.get('room_history', []) + [row['room_id']],
-            activity='unknown', observed_at=None, native_activity='unknown', native_observed_at=None, event_sequence=None,
-            background_tasks=None, question=None, learning_ids=[], experience_request=None, capture={})
-        try:
-            self._start(next_row, closure.request_text(next_row, record), closing=True)
-        except (OSError, ValueError) as exc:
-            record = closure.transition(record, 'unanswered', attachment_required=True,
-                                        last_error='native close resume failed: ' + str(exc)[:500])
-            # A failure before Room creation has no live attach target. Preserve
-            # interrupted recovery so stop/force-close can dismiss its intent.
-            self._update(sid, lifecycle='interrupted', closure=record)
-            return record
-        def delivered(current, latest):
-            if (current and current['request_id'] == record['request_id'] and current['generation'] == generation
-                    and current['state'] == 'pending-delivery'):
-                return closure.mark_delivered(current, 'native-resume',
-                    detail='close request supplied as native conversation continuation', message_id=record['delivery']['message_id'])
-            return current
-        latest = self._update(sid, expected_generation=generation, closure_fn=delivered)
-        with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
-            c.execute("UPDATE hub_messages SET state='acknowledged' WHERE message_id=? AND state='queued'",
-                      (record['delivery']['message_id'],))
-        return latest['closure']
+        return closure.transition(record, 'pending-delivery', delivery=dict(record['delivery'], channel=channel,
+                                  detail=detail, message_id=mid))
 
     def stop_decision(self, row, *, stop_hook_active=False):
         """Stop-hook seam: the pending close request as the harness's own block decision.
@@ -1313,7 +999,7 @@ class Hub:
                            room_history=row.get('room_history', []) + [row['room_id']],
                            closure=None, closure_history=row.get('closure_history', []) + ([row['closure']] if row.get('closure') else []),
                            generation=row['generation'] + 1, activity='unknown', observed_at=None, learning_ids=learning_ids,
-                           native_activity='unknown', native_observed_at=None, event_sequence=None, background_tasks=None,
+                           native_activity='unknown', native_observed_at=None, native_emitted_at=None, background_tasks=None,
                            question=None, reason='Resuming native conversation' if row['native_id'] else 'Starting with explicit continuation context; native resume ID unavailable')
         return self._start(row, text(prompt, 'continuation'))
 
@@ -1364,15 +1050,9 @@ class Hub:
                 self._save(c, current)
                 guidance.retain_in(c, row, key, manifest)
                 message = dict(c.execute('SELECT * FROM hub_messages WHERE message_id=?', (mid,)).fetchone())
-            # The retained message stays the delivery contract; an idle session is
-            # told where to read and acknowledge it, never handed the body as keys.
-            outcome, reason = self._idle_input(self.get(sid), (
-                f'Asha Control message {mid} is queued for this session. Read it with '
-                '`asha control session messages`, act on it, then acknowledge it with '
-                f'`asha control session ack-message {mid}`.'))
-            if outcome == 'typed':
-                return dict(message, delivery='injected', delivery_detail=reason)
-            return dict(message, delivery='queued-until-read', delivery_detail='not typed: ' + reason)
+            # The retained message is the delivery contract; the session reads it.
+            return dict(message, delivery='queued-until-read',
+                        delivery_detail='queued until the session reads messages')
 
     def messages(self, sid, *, offset=0, limit=100):
         identifier(sid)
@@ -1417,77 +1097,52 @@ class Hub:
             raise StoreError('reporter is not part of this session')
         return row
 
-    def observe(self, event, *, native_id=None, state=None, body=None, tool_kind='work', tool_token='unknown',
-                sequence=None, sequence_pane=None, cwd=None, background_tasks=None, order=None, attempts=None):
-        session_order.validate(order, attempts)
-        if order is not None and not event:
-            raise StoreError('event order is hook evidence; worker reports do not carry it')
+    def observe(self, event, *, native_id=None, state=None, body=None, cwd=None, background_tasks=None,
+                emitted_at=None):
+        if emitted_at is not None and not event:
+            raise StoreError('emitted-at is hook evidence; worker reports do not carry it')
         actor = self.actor()
         if cwd is not None and not event:
             raise StoreError('cwd is hook evidence; worker reports do not carry it')
-        if sequence is not None:
-            # Only a bump of this Room's own pane counts; any other pane's
-            # counter could coincide with ours and hide an event.
-            try:
-                room_pane = RoomStore(self.config).read(actor['room_id'])['tmux']['pane_id']
-            except (KeyError, OSError, TypeError, ValueError):
-                room_pane = None
-            if room_pane is None or sequence_pane != room_pane:
-                sequence = None
         with self._observation_lock(actor['session_id']):
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
-            return self._observe(row, event, native_id=native_id, state=state, body=body,
-                                 tool_kind=tool_kind, tool_token=tool_token, sequence=sequence,
-                                 sequence_pane=sequence_pane, cwd=cwd, background_tasks=background_tasks,
-                                 order=order, attempts=attempts)
+            return self._observe(row, event, native_id=native_id, state=state, body=body, cwd=cwd,
+                                 background_tasks=background_tasks, emitted_at=emitted_at)
 
-    def _observe(self, row, event, *, native_id, state, body, tool_kind, tool_token, validate_fn=None,
-                 sequence=None, sequence_pane=None, cwd=None, background_tasks=None, order=None, attempts=None):
+    @staticmethod
+    def _skipped(row, emitted_at):
+        """D2: a hook report stamped older than the newest applied one, by at most 30 s.
+
+        Equal applies; a report more than 30 s older applies (a backward clock
+        step must not reject every event until time catches up); an unstamped
+        report applies (older hooks in live Rooms).
+        """
+        stored = row.get('native_emitted_at')
+        return emitted_at is not None and stored is not None and 0 < stored - emitted_at <= STALE_REPORT_SECONDS
+
+    def _observe(self, row, event, *, native_id, state, body, validate_fn=None, cwd=None, background_tasks=None,
+                 emitted_at=None):
         activity = EVENTS.get(event) if event else state
         if activity not in {'idle', 'working', 'needs-input', 'finished', 'exited'}:
             raise StoreError('invalid session observation')
         if background_tasks is not None and (event != 'turn-stopped' or type(background_tasks) is not int
                                              or not 0 <= background_tasks < BACKGROUND_TASK_LIMIT):
             raise StoreError('invalid background task count')
-        ordered = {}
+        if emitted_at is not None and (type(emitted_at) not in {int, float} or not 0 < emitted_at < 1e12):
+            raise StoreError('invalid hook emission time')
         rebinding = None
         if native_id:
             native_id = text(native_id, 'native session ID', 512)
             if native_id.startswith('-') or not native_id.isprintable():
                 raise StoreError('invalid native session ID')
             if event:
-                # Before ordering: a late report is refused like a current one
-                # when it names another conversation (QA19 F1).
                 rebinding = native_binding(row, event, native_id, cwd)
-        if event:
-            # An older or repeated hook report must not undo newer work (#101).
-            # An unsequenced one records the counter it arrived after (QA8 F3).
-            fills_gap = order is not None and order in session_order.state(row)['missing']
-            disposition, ordered = session_order.observe(
-                row, event, order, attempts=attempts,
-                allocated=lambda: session_order.read_allocated(self.config, row))
-            if disposition == 'ignored':
-                if event == 'tool-completed' and fills_gap:
-                    # A late end still ends its own start (#104), and only that
-                    # one: same conversation and kind, numbered after it (QA19).
-                    from .session_completion import observe_late_end
-                    if tool_kind not in {'work', 'report', 'finalizer'} or not isinstance(tool_token, str) \
-                            or len(tool_token) > 128:
-                        raise StoreError('invalid tool completion metadata')
-                    ended = observe_late_end(dict(row), tool_kind, tool_token, order=order, native_id=native_id)
-                    ordered['active_tools'] = ended.get('active_tools') or {}
-                    ordered['tool_starts'] = ended.get('tool_starts') or {}
-                    if ended.get('completion') is not row.get('completion'):
-                        ordered['completion'] = ended['completion']
-                if session_order.ignored_work(row, event, order, tool_kind):
-                    # Late work after a receipt still invalidates it (QA8 F2).
-                    ordered.update(work_epoch=str(uuid.uuid4()), completion_report=None)
-                result = self._update(row['session_id'], expected_generation=row['generation'],
-                                      validate_fn=validate_fn, **ordered)
-                result['observation'] = 'ignored'
-                return result
+        if event and self._skipped(row, emitted_at):
+            # Every effect of an older report is suppressed: activity, background
+            # tasks, question and lifecycle. The CLI gives a skipped Stop no decision.
+            return dict(row, observation='ignored')
         # #99: Claude's Stop payload lists background work (shells, Monitors,
         # agents) still running or pending. Such a turn ended, but the session
         # waits for that work to wake it: it is not an idle boundary.
@@ -1499,45 +1154,15 @@ class Hub:
         if event:
             changes.update(native_activity=activity, native_observed_at=changes['observed_at'],
                            background_tasks=outstanding)
+            if emitted_at is not None:
+                changes['native_emitted_at'] = emitted_at
             if outstanding:
                 changes['reason'] = f'Turn ended; waiting on {outstanding} background task(s)'
-            # The pane event sequence the native hook reported (#96). An event
-            # without one leaves the sequence unknown, which refuses typing
-            # until a sequenced event lands; a lower late one never rewinds it.
-            # The sequence is bound to the pane it counts: a new Room restarts it.
-            valid = type(sequence) is int and 0 < sequence < FENCE_LIMIT and bool(sequence_pane)
-            previous = row.get('event_sequence')
-            same_pane = previous is not None and row.get('event_sequence_pane') == sequence_pane
-            changes['event_sequence'] = (None if not valid
-                                         else max(previous, sequence) if same_pane else sequence)
-            changes['event_sequence_pane'] = sequence_pane if valid else None
-        if event == 'turn-stopped' and row.get('active_tools'):
-            # A native Stop means no tool of that turn is still running. Starts
-            # without an end (failed, denied or interrupted calls) are stale, so
-            # a Stop-hook continuation can still finalize with a sole handoff.
-            from .session_completion import observe_stop
-            observed = observe_stop(dict(row))
-            changes.update(active_tools=observed['active_tools'], tool_starts=observed['tool_starts'])
-            if observed.get('completion') is not row.get('completion'):
-                changes['completion'] = observed['completion']
         if event == 'prompt-submitted':
             changes['assignment_epoch'] = str(uuid.uuid4())
-            if row.get('native_activity') in {'idle', 'exited'}:
-                # A new turn after an observed stop recovers dropped/failed tool
-                # callbacks. It never revives the prior turn's completion.
-                changes['active_tools'] = {}
-                changes['tool_starts'] = {}
         if event == 'prompt-submitted' or (not event and state == 'working'):
             changes['work_epoch'] = str(uuid.uuid4())
             changes['completion_report'] = None
-        if event in {'tool-started', 'tool-completed'}:
-            from .session_completion import observe_tool
-            if tool_kind not in {'work', 'report', 'finalizer'} or not isinstance(tool_token, str) or len(tool_token) > 128:
-                raise StoreError('invalid tool completion metadata')
-            observed = observe_tool(dict(row), event, tool_kind, tool_token, order=order, native_id=native_id)
-            for field in ('active_tools', 'tool_starts', 'work_epoch', 'completion_report', 'completion'):
-                if field in observed:
-                    changes[field] = observed[field]
         if not event:
             # A worker report is fresher than the last Stop's background list.
             changes['background_tasks'] = None
@@ -1577,11 +1202,9 @@ class Hub:
                     return closure.transition(record, 'undeliverable',
                                               last_error='the harness exited before answering the close request')
                 return record
-        changes.update(ordered)
         result = self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn,
                               validate_fn=validate_fn, **changes)
         if event:
-            # The CLI gives an ignored Stop no delivery effects (QA8 F4).
             result['observation'] = 'applied'
         return result
 

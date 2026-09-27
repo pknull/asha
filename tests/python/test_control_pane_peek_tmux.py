@@ -15,7 +15,16 @@ import unittest
 from lib.control import pane_peek
 from lib.control.rooms import PANE_PROJECT_OPTION, PANE_ROOM_OPTION, SESSION_ROOM_OPTION, _project_marker
 from lib.control.socket_reaper import TmuxSocketReaper
-from lib.control.tmux import ATTACH_GENERATION_OPTION, TmuxAdapter, _attach_hook_command
+from lib.control.tmux import TmuxAdapter
+
+# A test-only attach counter: the Room session hooks bump it on every client
+# attach, so an unchanged value proves a capture created no client.
+ATTACH_GENERATION_OPTION = '@asha_attach_gen'
+
+
+def _attach_hook_command(pane):
+    return (f"set-option -p -t {pane} -F {ATTACH_GENERATION_OPTION} "
+            f"'#{{e|+:#{{{ATTACH_GENERATION_OPTION}}},1}}'")
 
 ROOM = '11111111-2222-4333-8444-555555555555'
 PROJECT = 'project-peek'

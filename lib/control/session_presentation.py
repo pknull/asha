@@ -66,13 +66,7 @@ def present(row):
             record.get('state') == 'pending-delivery' and row.get('transport') != 'structured'
             and row.get('native_activity', activity) == 'idle'
             and row.get('completion_readiness', {}).get('status') != 'ready'):
-        # #101: at a verified native idle boundary the operator may also close
-        # without a turn; anywhere else attachment is the only graceful path.
-        # A client or pane mode that refused typing refuses that stop as well.
-        # The hub computes ``no_handoff`` with the command's own predicate.
-        hint = ('Close: attach or --no-handoff' if (row.get('no_handoff') or {}).get('eligible')
-                and record.get('input_refusal') not in {'attached', 'mode'}
-                else 'Close needs attach')
+        hint = 'Close needs attach'
     elif activity == 'close-failed' or record.get('state') in {'unanswered', 'handoff-failed'}:
         hint = 'Close failed: retry or attach'
     elif activity == 'closing' and record.get('waiting_on_background'):

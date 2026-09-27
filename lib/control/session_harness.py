@@ -93,12 +93,7 @@ def decode_claude(value):
                 for start in range(0, len(content), 16000):
                     yield "text", {"text": content[start:start + 16000]}
             elif item.get("type") == "tool_use":
-                from .session_completion import tool_metadata
-                detail = {"tool_id": item.get("id"), "name": item.get("name")}
-                detail.update(tool_metadata(item.get('name'), item.get('input'), item.get('id')))
-                # Structured streams use the native tool id for result matching.
-                detail['completion_token'] = item.get('id') or 'unknown'
-                yield "tool", detail
+                yield "tool", {"tool_id": item.get("id"), "name": item.get("name")}
     elif kind == 'user':
         message = value.get('message') or {}
         for item in message.get('content', []) if isinstance(message, dict) else []:

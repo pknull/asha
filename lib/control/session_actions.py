@@ -2,19 +2,18 @@
 
 Moved out of the event loop unchanged in behaviour. Every destructive action
 still needs a typed ``yes``; nothing here derives eligibility, which comes
-from the hub's presented row (see ``session_keys.offers_no_handoff``).
+from the hub's presented row.
 """
 import uuid
 from dataclasses import dataclass
 from typing import Any
 
-from .session_hub import attach_refusal, no_handoff_enabled
+from .session_hub import attach_refusal
 from .session_presentation import memory_label
 
 ENTER = (10, 13)
-ACTION_KEYS = frozenset(map(ord, 'amxcXsr'))
-_CLOSE_LABELS = {'x': 'Close (request handoff) ', 'c': 'Close at idle (no handoff, no save claimed) ',
-                 'X': 'Force-close (no new handoff) ', 's': 'Stop '}
+ACTION_KEYS = frozenset(map(ord, 'amxXsr'))
+_CLOSE_LABELS = {'x': 'Close (request handoff) ', 'X': 'Force-close (no new handoff) ', 's': 'Stop '}
 
 
 @dataclass
@@ -117,12 +116,12 @@ def close_or_stop(ctx, key, row):
         return None
     refuse_managed_operator(ctx.config, ctx.env)
     if ctx.hub.owns(row['session_id']):
-        if letter in 'xc':
-            closed = ctx.hub.close(row['session_id'], no_handoff=letter == 'c')
+        if letter == 'x':
+            closed = ctx.hub.close(row['session_id'])
             return (closed.get('closure') or {}).get('guidance') or 'Session closed'
         stopped = ctx.hub.stop(row['session_id'], close=letter == 'X')
         return 'Session stopped; history retained; ' + (memory_label(stopped) or 'no memory handoff claimed')
-    if letter in 'xc':
+    if letter == 'x':
         return 'No handoff seam for a legacy Room or managed session; X force-closes, s stops'
     if row['transport'] == 'room':
         close_room(RoomStore(ctx.config), row['room_id'], tmux=ctx.hub.tmux)
@@ -168,9 +167,7 @@ def act(ctx, key, row):
         return answer(ctx, row) or ''
     if key == ord('m'):
         return send(ctx, row)
-    if key == ord('c') and not no_handoff_enabled(ctx.config):
-        return 'Close at idle (no handoff) is off: control.no_handoff_close, #103; x requests a handoff'
-    if key in map(ord, 'xcXs'):
+    if key in map(ord, 'xXs'):
         return close_or_stop(ctx, key, row)
     if key == ord('r'):
         return resume(ctx, row)

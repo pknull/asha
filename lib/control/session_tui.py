@@ -18,7 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import load_config
-from .session_hub import Hub, listed, no_handoff_enabled
+from .session_hub import Hub, listed
 from . import session_actions, session_layout, session_preview, session_refresh, session_title, session_view
 from .session_actions import launch_selection  # noqa: F401  (re-exported; #95 tests)
 from .session_keys import footer, key_sheet, sheet_lines as _sheet_lines, sheet_offset  # noqa: F401
@@ -200,7 +200,7 @@ class Dashboard:
         shown = {'preview': self.previews.current(self.previewed())} \
             if self.previews is not None and self.box().mode in ('wide', 'peek') else {}
         return {**shown, 'session_preview': self.previews is not None, 'rows': session_view.display_rows(self.view), 'summary': summary,
-                'errors': self.page.get('errors', []), 'no_handoff_close': no_handoff_enabled(self.config),
+                'errors': self.page.get('errors', []),
                 'grouping': self.view.grouping, 'ascii': self.ascii, 'now': time.time(),
                 'attention': session_view.attention_counts(self.view)}
 
@@ -241,13 +241,11 @@ class Dashboard:
 
     def sheet_key(self, key):
         height = self.screen.getmaxyx()[0]
-        enabled = no_handoff_enabled(self.config)
         if key in (curses.KEY_DOWN, curses.KEY_UP):
-            self.sheet = sheet_offset(self.sheet + (1 if key == curses.KEY_DOWN else -1), height=height,
-                                      no_handoff_close=enabled)
+            self.sheet = sheet_offset(self.sheet + (1 if key == curses.KEY_DOWN else -1), height=height)
         elif key == _key('KEY_RESIZE', 410):
             # Q13-F1: a resize keeps the sheet open at its place, clamped to the new height.
-            self.sheet = sheet_offset(self.sheet, height=height, no_handoff_close=enabled)
+            self.sheet = sheet_offset(self.sheet, height=height)
         elif key != -1:
             self.sheet = None
 
