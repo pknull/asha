@@ -502,13 +502,15 @@ ORDER_DIR="$WORK/order"; mkdir -m 0700 "$ORDER_DIR"
 ORDER_FILE="$ORDER_DIR/1"; printf '0\n' > "$ORDER_FILE"; chmod 0600 "$ORDER_FILE"
 ATTEMPTS="$ORDER_FILE.attempts"; : > "$ATTEMPTS"; chmod 0600 "$ATTEMPTS"
 attempts() { wc -c < "$ATTEMPTS" | tr -d ' '; }
+RESOLVED="$ORDER_FILE.resolved"; : > "$RESOLVED"; chmod 0600 "$RESOLVED"
+resolved() { wc -c < "$RESOLVED" | tr -d ' '; }
 run_control UserPromptSubmit '{"session_id":"native-ord"}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
 FIRST="$(captured)"
 run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
 SECOND="$(captured)"
 if [[ "$FIRST" == "control session event --event prompt-submitted --native-id native-ord --order 1 --attempts 1" \
    && "$SECOND" == "control session event --event turn-stopped --native-id native-ord --order 2 --attempts 2" \
-   && "$(cat "$ORDER_FILE")" == "2" && "$(wc -c < "$ORDER_FILE")" -eq 2 && "$(attempts)" == "2" ]]; then
+   && "$(cat "$ORDER_FILE")" == "2" && "$(wc -c < "$ORDER_FILE")" -eq 2 && "$(attempts)" == "2" && "$(resolved)" == "2" ]]; then
   ok "each hub event records an attempt, then takes the next order from its private counter, with no tmux"
 else
   fail "each hub event takes the next order ($FIRST | $SECOND | $(od -c "$ORDER_FILE" | head -2))"
@@ -547,6 +549,15 @@ exec {HELD}>&-
 # Two bytes: the attempt, and one after the failed allocation, past any concurrent Stop's count (QA10).
 [[ "$(attempts)" == "$((BEFORE + 2))" ]] && ok "a hook that cannot take a number leaves its attempt and its failure" \
   || fail "a hook that cannot take a number leaves its attempt and its failure ($BEFORE -> $(attempts))"
+# Two resolution bytes once the failure byte landed, so both logs match again (#103).
+[[ "$(resolved)" == "$(attempts)" ]] && ok "a finished hook resolves every attempt byte it wrote" \
+  || fail "a finished hook resolves every attempt byte it wrote ($(attempts) vs $(resolved))"
+BEFORE="$(resolved)"; chmod 0644 "$RESOLVED"
+run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
+[[ "$(captured)" == *--order* && "$(resolved)" == "$BEFORE" && "$(attempts)" != "$(resolved)" ]] \
+  && ok "a non-private resolution log is never written, leaving the attempt unresolved" \
+  || fail "a non-private resolution log is never written ($(captured); $BEFORE -> $(resolved))"
+chmod 0600 "$RESOLVED"; printf '5\n' > "$ORDER_FILE"
 BEFORE="$(attempts)"; chmod 0644 "$ATTEMPTS"
 run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" >/dev/null
 [[ "$(captured)" != *--order* && "$(attempts)" == "$BEFORE" && "$(cat "$ORDER_FILE")" == "5" ]] \
@@ -559,7 +570,7 @@ run_control Stop '{"session_id":"native-ord","stop_hook_active":false}' ASHA_HUB
 [[ "$(captured)" != *--order* && "$(wc -c < "$FULL.attempts" | tr -d ' ')" == "4194304" && "$(cat "$FULL")" == "0" ]] \
   && ok "a full attempt log stops growing and nothing is numbered" \
   || fail "a full attempt log stops growing ($(captured))"
-printf '0\n' > "$ORDER_FILE"; : > "$ATTEMPTS"
+printf '0\n' > "$ORDER_FILE"; : > "$ATTEMPTS"; : > "$RESOLVED"
 for i in $(seq 1 12); do
   ( printf '%s' '{"session_id":"native-ord"}' | env ASHA_ROOT="$FAKE_ROOT" CONTROL_CAPTURE="$WORK/par.$i" \
       ASHA_HUB_SESSION_ID="$HUB_ID" ASHA_HUB_EVENT_ORDER="$ORDER_FILE" "$CONTROL_HANDLER" UserPromptSubmit >/dev/null 2>&1 ) &
@@ -568,7 +579,7 @@ wait
 ORDERS="$(cat "$WORK"/par.* 2>/dev/null | sed -n 's/.*--order \([0-9]*\).*/\1/p' | sort -n | tr '\n' ' ')"
 LAST_ATTEMPTS="$(cat "$WORK"/par.* 2>/dev/null | sed -n 's/.*--order 12 --attempts \([0-9]*\).*/\1/p')"
 if [[ "$ORDERS" == "1 2 3 4 5 6 7 8 9 10 11 12 " && "$(cat "$ORDER_FILE")" == "12" \
-      && "$(attempts)" == "12" && "$LAST_ATTEMPTS" == "12" ]]; then
+      && "$(attempts)" == "12" && "$(resolved)" == "12" && "$LAST_ATTEMPTS" == "12" ]]; then
   ok "concurrent hooks take distinct, gap-free orders under the lock"
 else
   fail "concurrent hooks take distinct orders ($ORDERS; counter $(cat "$ORDER_FILE"))"

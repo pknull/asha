@@ -361,10 +361,10 @@ class EligibilityTests(unittest.TestCase):
     def test_eligible_only_at_an_ordered_idle_boundary(self):
         from lib.control.session_completion import no_handoff_eligibility
         from lib.control.session_order import ATTEMPT_LIMIT, Counters
-        self.assertIsNone(no_handoff_eligibility(self.row(), Counters(2, 2)))
+        self.assertIsNone(no_handoff_eligibility(self.row(), Counters(2, 2, 2)))
         order = lambda **c: {'generation': 1, 'applied': 2, 'last_event': 'turn-stopped', 'missing': [],
                              'barrier': None, 'attempts': 2, **c}
-        both = lambda n: Counters(n, 2)
+        both = lambda n: Counters(n, 2, 2)
         cases = {
             'copilot': (self.row(harness='copilot'), both(2), 'no native idle'),
             'structured': (self.row(transport='structured'), both(2), 'terminal'),
@@ -373,9 +373,12 @@ class EligibilityTests(unittest.TestCase):
             'question': (self.row(activity='needs-input'), both(2), 'input'),
             'report outstanding': (self.row(), both(3), 'not arrived'),
             'no counter': (self.row(), None, 'counter'),
-            'no attempt log': (self.row(), Counters(2, None), 'attempt log .* unavailable'),
-            'attempt log full': (self.row(), Counters(2, ATTEMPT_LIMIT), 'full'),
-            'unnumbered attempt': (self.row(), Counters(2, 3), '1 native hook.*started'),
+            'no attempt log': (self.row(), Counters(2, None, 2), 'attempt log .* unavailable'),
+            'attempt log full': (self.row(), Counters(2, ATTEMPT_LIMIT, ATTEMPT_LIMIT), 'full'),
+            'unnumbered attempt': (self.row(), Counters(2, 3, 3), '1 native hook.*started'),
+            'no resolution log': (self.row(), Counters(2, 2, None), 'resolution log .* unavailable'),
+            'hook mid-attempt': (self.row(), Counters(2, 3, 2), 'not finished'),
+            'more resolutions than attempts': (self.row(), Counters(2, 2, 3), 'not finished'),
             'Stop without attempts': (self.row(event_order=order(attempts=None)), both(2), 'did not report'),
             'barrier': (self.row(event_order=order(barrier=2)), both(2), 'out-of-order'),
             'pending barrier': (self.row(event_order=order(barrier_pending=True)), both(2), 'unreadable'),
