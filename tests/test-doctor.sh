@@ -501,6 +501,35 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+echo "--- test 3a: every source Claude hook must be registered (#104) ---"
+# The real register_hooks renders the full source set into the sandbox settings.
+echo '{}' > "$SANDBOX/.claude/settings.json"
+if env -i HOME="$SANDBOX" PATH="$PATH" USER="${USER:-test}" bash -c \
+    'MARKET_ROOT="$1"; source "$1/lib/install.sh"; register_hooks' _ "$REPO_ROOT" >/dev/null 2>&1; then
+  out="$(run --target claude 2>&1 || true)"
+  if grep -q "every source hook is registered (claude)" <<<"$out"; then
+    ok "a freshly registered hook set passes the source-hook check"
+  else
+    fail "fresh hook set: $(grep -iE "hook" <<<"$out" | head -4 | tr '\n' '|')"
+  fi
+  # An install that predates a source event: all paths still exist, yet the
+  # event is never called. Drop only the control-event PostToolUseFailure group.
+  jq '.hooks.PostToolUseFailure |= map(select(any(.hooks[]?; (.command // "") | endswith("control-event.sh PostToolUseFailure")) | not))
+      | .hooks |= with_entries(select(.value | length > 0))' \
+    "$SANDBOX/.claude/settings.json" > "$SANDBOX/settings.stale" && mv "$SANDBOX/settings.stale" "$SANDBOX/.claude/settings.json"
+  out="$(run --target claude 2>&1)"; rc=$?
+  if [[ $rc -ne 0 ]] && grep -q "source hooks not registered in settings.json" <<<"$out" \
+      && grep -q "PostToolUseFailure: .*control-event.sh PostToolUseFailure" <<<"$out" \
+      && grep -q "all asha hook paths exist (claude)" <<<"$out"; then
+    ok "an install missing a source hook event FAILS --target claude and names it"
+  else
+    fail "missing source hook event not reported (rc=$rc): $(grep -iE "hook" <<<"$out" | head -4 | tr '\n' '|')"
+  fi
+else
+  fail "fixture: register_hooks into the sandbox settings failed"
+fi
+
+# ---------------------------------------------------------------------------
 echo "--- test 3b: codex hook audit resolves env-wrapped executables ---"
 mkdir -p "$SANDBOX/.codex"
 printf 'features.hooks=true\n' > "$SANDBOX/.codex/config.toml"

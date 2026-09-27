@@ -679,6 +679,41 @@ order is newer than the last applied one. A late or duplicate report is kept in
 a bounded `observation_log` without those effects, and the CLI gives an ignored
 Stop no close-request decision or delivery confirmation. Numbers skipped by a
 newer report are kept in `event_order.missing` until their reports arrive.
+One effect survives lateness (#104): a tool end whose report fills a number in
+`missing` still retires its own start, and a sole finalizer ended that way is
+marked finished. It is never new work unless it is numbered after a ready
+receipt (see below). A duplicate report, or one whose number was never recorded
+as missing, retires nothing.
+
+**A start is retired only by evidence that that tool ended** (QA19), on time or
+late: the same hub session and generation (the authenticated reporter), the same
+native conversation (the late report is refused, like a current one, when it
+names another conversation than the session bound; and the end must name the
+conversation its start named), the same tool token and kind, and an end numbered
+after its start (`tool_starts` keeps each open start's number and conversation).
+Token equality alone is not evidence: a native tool-use ID can recur, and the
+fallback token of identical input without one does, so an older call's end
+numbered before a later start never retires it. When either number is missing
+(a hook that could not take one), nothing orders the pair: in a session with any
+ordered event the start stays open until the turn's Stop. Only a session with no
+ordered event at all (structured transport, or one launched before ordering)
+falls back to arrival order.
+
+A tool already open when Control was updated to #104 has no `tool_starts`
+record: the previous revision kept only `active_tools`. There is no migration.
+Without a recorded start nothing proves which conversation it ran in or when it
+started, so no end retires it; it stays open until its turn's Stop, and a
+handoff in that turn is blocked.
+
+**Lost end reports remain an open cause.** When the report of a tool end fails
+(for example killed at the hook's 0.6 s budget), the hook does not retry, spool
+or replay it: a detached retry is outside the session's process tree, which is
+how the hub authenticates a reporter (QA19 F4), and a replay spool could not
+prove that its entries came from this session, generation and conversation
+(QA20, QA22). The start stays open until the turn's Stop, and a handoff in the
+same turn is blocked; finalize in a later turn. A refused report still exits 0
+(the CLI keeps hooks fail-open); it is visible only in
+`hub-rejected-events.jsonl`.
 
 One invariant governs every termination without a turn: the receipt close
 (plain `close` or `--no-handoff`), `close --no-handoff`, and the Codex idle
@@ -758,6 +793,21 @@ No classifier grants native execution approval. Tool payload reads are bounded t
 plain argv: shell metacharacters are allowed inside quotes (single quotes fully
 literal; double quotes without `$`, backquote or backslash) and refused outside
 them. Claude's `PostToolUseFailure` ends a start exactly like `PostToolUse`.
+A Claude install made before that hook was added never reports failed tools'
+ends: each failed tool then stays open until the turn's Stop and blocks every
+handoff in that turn (#104). `asha doctor claude` fails when any source hook is
+not registered; `asha install claude` repairs it. A blocked receipt's detail
+counts the open starts and names these causes. Backgrounded Bash is not one of
+them: Claude sends its PostToolUse when the command moves to the background.
+**Denied calls remain an open cause.** A denied call never runs and gets no end
+event at all: neither PostToolUse, PostToolUseFailure nor PermissionDenied fires
+for a call denied by a PreToolUse hook or by a permission prompt (native probe,
+Claude Code 2.1.283). Its start stays open until the turn's Stop, and a handoff
+in the same turn is blocked; finalize in a later turn. Asha's guards do not
+report a denied call's end: a guard's claim is not verifiable denial evidence
+(any process of the session can make the same claim for a call that is still
+running), and no report from a guard can be ordered against the start that
+parallel PreToolUse hooks number independently (QA19 F3, F5).
 A native Stop ends every tool of its turn: unmatched starts are dropped then, and
 a sole matched finalizer whose end callback was lost counts as ended. Missing,
 malformed or oversized callbacks otherwise block finalization. A new prompt after
