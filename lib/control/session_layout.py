@@ -5,9 +5,11 @@
 never characters, so wide and combining project names clip to the screen.
 ``plain`` joins the spans into text for tests and golden files.
 """
+import time
 from collections import Counter, namedtuple
 
 from . import session_view
+from .session_preview import sanitize
 from .session_keys import footer, sheet_lines
 from .session_presentation import memory_label, present, receipt_label, row_facts
 from .session_selection import label as selection_label
@@ -28,7 +30,7 @@ Layout = namedtuple('Layout', 'mode height width list_top list_height list_width
 GLYPHS = {'working': ('●', '*'), 'input': ('▲', '!'), 'approval': ('◆', '#'), 'done': ('✓', '+'),
           'idle': ('○', 'o'), 'failed': ('✗', 'x'), 'ended': ('·', '.'), 'unknown': ('?', '?'),
           'closing': ('…', '~'), 'open': ('▼', '-'), 'folded': ('▸', '='), 'separator': ('│', '|'),
-          'ellipsis': ('…', '~'), 'dot': ('·', '-'), 'dash': ('—', '-')}
+          'ellipsis': ('…', '~'), 'dot': ('·', '-'), 'dash': ('—', '-'), 'rule': ('─', '-')}
 _INPUT = frozenset({'needs-input', 'waiting-input'})
 _FAILED = frozenset({'failed', 'blocked', 'uncertain', 'budget-exhausted', 'close-failed'})
 
@@ -288,6 +290,32 @@ def panel_lines(row, width, ascii_only=False):
     return lines
 
 
+PREVIEW_MIN = 6     # capture lines kept below the panel before the panel yields its facts
+
+
+def preview_lines(preview, width, ascii_only=False):
+    """The read-only capture under the panel: a marker, the newest lines, then the capture time (§5.1)."""
+    source = 'events' if preview is not None and preview.source == 'events' else 'pane'
+    label = f' {source}, read-only'
+    marker = (_g('rule', ascii_only) * max(0, width - cells(label))) + label
+    body = [('Capturing…', 'muted', INERT)] if preview is None else \
+        [(preview.note, 'muted', INERT)] if preview.note else \
+        [(sanitize(line), 'detail', None) for line in preview.lines] or [('(empty screen)', 'muted', INERT)]
+    stamp = [] if preview is None or preview.captured_at is None else \
+        [('captured ' + time.strftime('%H:%M:%S', time.localtime(preview.captured_at)), 'muted', INERT)]
+    return [(marker, 'muted', INERT)], body, stamp
+
+
+def compose_panel(head, preview, width, limit, ascii_only=False):
+    """Panel facts over the capture; the facts yield lines first, the capture keeps the newest."""
+    marker, body, stamp = preview_lines(preview, width, ascii_only)
+    head = head[:max(min(len(head), 3), limit - PREVIEW_MIN - len(marker) - len(stamp))]
+    room = max(0, limit - len(head) - len(marker) - len(stamp))
+    body = body[-room:] if room else []
+    gap = [('', 'muted', INERT)] * max(0, room - len(body))
+    return head + marker + body + gap + stamp
+
+
 def _prepare(rows, grouping):
     """Present raw rows and give each a section, as the model's display rows have."""
     prepared = []
@@ -350,7 +378,8 @@ def _tiny(height, width):
 
 def _sheet(data, width, height, offset):
     enabled = bool(data.get('no_handoff_close'))
-    lines = sheet_lines(height, offset, no_handoff_close=enabled)[:height]
+    lines = sheet_lines(height, offset, no_handoff_close=enabled,
+                        preview=bool(data.get('session_preview')))[:height]
     return [_spans([(fit(line, width), 'heading' if i == 0 else 'muted', None if i == 0 else INERT)])
             for i, line in enumerate(lines)]
 
@@ -370,9 +399,13 @@ def render(data, *, selected=0, anchor=None, width=100, height=30, message='', k
     box = layout(height, width, errors=bool(errors), peek=peek, preview=preview)
     screen = [[] for _ in range(height)]
     shown = set()
+    def panel(side_width):
+        head = panel_lines(current, side_width, ascii_only)
+        if 'preview' not in data or current is None or current.get('kind') == 'section':
+            return head
+        return compose_panel(head, data['preview'], side_width, box.list_height, ascii_only)
     if box.mode == 'peek':
-        _text_block(screen, box.list_top, 0, panel_lines(current, width, ascii_only), width, box.list_height,
-                    ascii_only)
+        _text_block(screen, box.list_top, 0, panel(width), width, box.list_height, ascii_only)
     else:
         listed, shown = render_list(rows, selected=selected, anchor=anchor, space=box.list_height,
                                     width=box.list_width, grouping=grouping, ascii_only=ascii_only,
@@ -382,8 +415,8 @@ def render(data, *, selected=0, anchor=None, width=100, height=30, message='', k
     if box.mode == 'wide':
         for y in range(box.list_top, box.list_top + box.list_height):
             _put(screen, y, _spans([(_g('separator', ascii_only), 'muted', INERT)], x=box.list_width))
-        _text_block(screen, box.list_top, box.side_x, panel_lines(current, box.side_width, ascii_only),
-                    box.side_width, box.list_height, ascii_only)
+        _text_block(screen, box.list_top, box.side_x, panel(box.side_width), box.side_width, box.list_height,
+                    ascii_only)
     elif box.mode == 'narrow':
         # The list may borrow detail lines on a short screen; the blank gap goes first.
         room = (box.error_y or box.message_y) - box.detail_top

@@ -100,6 +100,12 @@ combining project names cannot overrun a column. The selected row is always on
 screen: on a short terminal the narrow detail lends the list lines, and the
 selected row's group heading, then its fact line, give way before the row does.
 
+Live preview (#102 phase 3) is **off by default**. With
+`control.session_preview` on, the side panel and the narrow full-width detail
+also show a read-only view of the selected session; see
+[Live preview](#live-preview-opt-in-off-by-default) for what it can and cannot
+guarantee. Off, the dashboard shows no preview and issues no preview read.
+
 Rows are grouped by project by default; `g` switches to grouping by state
 (`Needs you`, `Working`, `Closing`, `Ready to close`, `Idle`), which follows the
 presented next step, so a row's words and its group agree. Project names that
@@ -155,11 +161,109 @@ started before the close cannot bring it back.
 
 The backend retains session identity and message records in SQLite. Terminal
 ownership uses the existing verified Room/tmux adapter. There is no Redis
-service, terminal scraping scheduler, or initiative lifecycle on this path.
+service, background terminal scraping, or initiative lifecycle on this path
+(the preview reads only the selected row while it is shown).
 Launch, stop and resume serialize by session; a reused pane cannot be killed
 or attached as though it were the old session. Existing Room, task and
 initiative records remain intact. Their advanced UI is still available via
 `asha control --initiatives`.
+
+### Live preview (opt-in, off by default)
+
+The preview reads another program's terminal through the operator's own tmux
+server, and that server's configuration can attach commands to a read. Asha
+cannot defend a tmux read against the operator's tmux hooks and command aliases,
+so the preview is **disabled by default**. It is enabled only by the Control
+setting `session_preview` in the Asha config (`~/.asha/config.json`, or
+`ASHA_CONFIG`):
+
+```json
+{"control": {"session_preview": true}}
+```
+
+Like the other Control settings it must be `true` or `false`; anything else is
+refused when the config loads. The dashboard reads it when it starts, so a
+change takes effect on the next `asha control`. With the default (`false`) the dashboard builds
+no preview reader: it shows no preview panel or `Capturing…` line, and issues
+no `capture-pane`, `show-hooks` or ownership read for a preview, and no
+structured event read either. `Space` still shows or hides the selected
+session's detail.
+
+**What it shows.** Under the side panel, and in the narrow full-width detail,
+the selected session's recent output, marked `pane, read-only` (or
+`events, read-only`) and stamped `captured HH:MM:SS`. A terminal or Room
+session shows the last lines of its pane. A structured session shows its
+retained text, tool, request and turn events; a long history is read a bounded
+slice per tick and says `… reading older events` until it catches up. An ended
+session shows no screen.
+
+**What the preview itself guarantees**, with no hook or alias configured:
+
+- *Read verbs only, fixed flags.* The capture module
+  (`lib/control/pane_peek.py`) issues exactly `tmux capture-pane -p -J -t PANE
+  -S -N` and `show-hooks` with fixed scope flags; the ownership reads are the
+  Room adapter's `display-message` and `show-options` reads. A static test
+  forbids any other tmux verb in the module, and the preview has no key that
+  types into a pane: replies still go through `m`, `a` or attach.
+- *Ownership checks.* Exact Room ownership (session and pane Room options,
+  project marker, immutable session id) is verified before every capture and
+  again after it. A pane that fails the first check is not captured; a screen
+  whose pane fails the second is discarded.
+- *Hook refusal.* tmux runs a configured `after-capture-pane` hook after every
+  capture, and `after-display-message` / `after-show-options` after the
+  ownership reads; such a hook can type into any pane or, through `run-shell`,
+  reach another tmux server (QA17 Q17-F1). Before the ownership reads, and
+  again immediately before the capture, the preview reads every hook scope that
+  applies to the pane (global, global window, session, window and pane). A
+  configured guarded hook, a failed query or unrecognised output refuses the
+  preview with `Preview disabled: tmux HOOK hook configured` (or the query
+  failure). Operator hooks are never cleared, restored or changed.
+- *No client, no attach.* A capture creates no tmux client, so it moves neither
+  `session_attached` nor the #96 attach generation that idle delivery and the
+  receipt close read; the dashboard never attaches, even read-only, to preview.
+- *Rate and scope limits.* Only the selected row is read, on the preview's own
+  worker thread and only while the preview is on screen (not under the key
+  sheet or with the panel hidden). A read starts at least 500 ms after the
+  previous one finished, so captures are at least that far apart. All tmux
+  reads of one preview share a 2 s deadline. A result for a row no longer
+  selected is dropped. At most 200 lines are read, clipped by terminal cells.
+- *Untrusted output.* Escape sequences (OSC 52 clipboard writes, title sets,
+  CSI cursor moves, DCS and similar strings) and control and format characters
+  are removed before painting.
+- *Structured reads acknowledge nothing.* Events are read without naming a
+  consumer, so no delivery cursor moves.
+
+**What it cannot guarantee.** tmux itself runs the operator's configuration
+around every command Control sends, and Control cannot see or prevent all of
+it:
+
+- *Command aliases (QA18 Q18-F1, documented limit).* tmux expands its server
+  `command-alias` option before running a command name. An alias such as
+  `show-hooks=send-keys -t %0 -l …` turns each nominal read, the `show-hooks`
+  guard included, into input; aliases on `display-message`, `show-options` or
+  `capture-pane` do the same. The preview does not detect or refuse this, and a
+  successful aliased `show-hooks` with no output looks like "no hooks
+  configured". This needs the alias to be configured in the server beforehand;
+  pane output cannot install one. It is a known limit, not a tested guarantee.
+- *Hooks outside the guarded set, and the check-to-capture race.* The hook
+  check is not atomic with the capture: a hook set in the milliseconds between
+  the last `show-hooks` and the capture, or before the post-capture ownership
+  read, still runs. Likewise a server restarted on the same socket in that
+  window can present a reused pane id (QA17 Q17-F2); the post-capture ownership
+  check discards that screen but cannot undo the read.
+
+Anything that tmux configuration can make a read do is outside what Control can
+defend, which is why the preview is opt-in. Enable it only on a tmux server
+whose hooks and aliases you control.
+
+Follow-ups (not yet done):
+
+- History paging: scrolling back through the capture (design §4.2, Q17-F5).
+- Cancel on close: closing the dashboard stops scheduling and discards a read
+  still running, but does not cancel that read; it ends at its 2 s deadline.
+- Inherited from phases 1–2: the `A` history toggle's refresh delay (Q17-F6),
+  and automatic folding of singleton finished projects, which saves no lines
+  and slows past a few hundred rows (Q17-F7).
 
 ## Status and input
 

@@ -54,7 +54,7 @@ def footer(row, *, width, no_handoff_close=False, peek=False):
     return '  '.join(keys + [TAIL])
 
 
-def key_sheet(*, no_handoff_close=False):
+def key_sheet(*, no_handoff_close=False, preview=False):
     """Every binding, labelled as the footer labels it."""
     entries = [('Up/Down', 'select a session'),
                ('Enter attach', 'open the terminal or structured conversation'),
@@ -71,7 +71,8 @@ def key_sheet(*, no_handoff_close=False):
                ('Left fold', 'fold the selected group to one line'),
                ('Right unfold', 'unfold the selected group'),
                ('! jump', 'select the next session that needs you'),
-               ('Space preview', 'show or hide the selected session detail'),
+               ('Space preview', 'show or hide detail and a read-only live screen' if preview
+                else 'show or hide the selected session detail'),
                ('Esc back', 'leave the full-width preview'),
                ('M input filter', 'show only sessions that need input'),
                ('A history', 'include retained history'),
@@ -93,9 +94,9 @@ def sheet_offset(offset, *, height, no_handoff_close=False):
     return max(0, min(offset, entries - _sheet_page(height)))
 
 
-def sheet_lines(height, offset, *, no_handoff_close):
+def sheet_lines(height, offset, *, no_handoff_close, preview=False):
     """The key sheet, paged on a short terminal so every binding stays reachable."""
-    sheet = key_sheet(no_handoff_close=no_handoff_close)
+    sheet = key_sheet(no_handoff_close=no_handoff_close, preview=preview)
     if len(sheet) <= height:
         return sheet
     entries = sheet[1:]
