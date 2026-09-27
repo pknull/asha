@@ -317,7 +317,16 @@ close also refuses its last hook, so the count is informational).
 The dashboard derives a next step from these facts: `Done: close` for a finished
 live session, `Done: close record` after its process exits, and `Ended unreported:
 check work` for an exit without a current finished report. Idle Rooms say
-`Waiting for you`; idle workers say `Stopped mid-task?`. Input requests direct
+`Waiting for you`; idle workers say `Stopped mid-task?`. A Room is an ongoing
+conversation, so its Memory saves are checkpoints, not completion (#105): an
+open Room with a save in its current assignment (an explicit save, or a
+handoff that published Memory) says `Saved HH:MM UTC: waiting for you` and is
+listed as idle, never `Finalized: close`, `Done: close` or under `Ready to
+close`. A Room that reports `finished` anyway is presented the same way while
+it is open: JSON shows `activity: "idle"` with the added field
+`reported_activity: "finished"`, and `saved_label` carries `saved HH:MM UTC`.
+The completion receipt itself is unchanged, and a Room that is closing, has a
+pending or failed close, or has ended keeps the close and ended hints below. Input requests direct
 you to the terminal or Control, and an idle undelivered close says `Close needs
 attach`. Ended sessions occupy a separate group below current sessions until
 closed. Raw activity, lifecycle, and observed process state remain in JSON.
@@ -634,7 +643,10 @@ or changed current Memory cannot authorize completion. The actor is verified by
 Room ownership and process ancestry (terminal), or the managed-session anchor and
 running turn (structured). Workers read project Memory at startup and finalize
 before explicit completion, through the project-memory skill; automatic chair
-context and transcript processing remain excluded.
+context and transcript processing remain excluded. The Room contract
+(`--profile room`) asks for the same startup read and handoff publication but
+treats each save as a checkpoint: it never asks the Room to report `finished`
+after a save, and the Room ends only through the close request (#105).
 
 ## Completion before close
 

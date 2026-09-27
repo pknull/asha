@@ -325,8 +325,8 @@ class Hub:
         prompt = text(prompt + block, 'assignment with selected guidance')
         if row['transport'] == 'structured':
             return self._start_structured(row, prompt)
-        from .session_completion import WORKER_INSTRUCTION
-        prompt += '\n\n' + WORKER_INSTRUCTION
+        from .session_completion import instruction
+        prompt += '\n\n' + instruction(row['profile'])
         brief = prompt
         if row['profile'] == 'worker':
             brief += ('\n\nOptional session tools: `asha control session report --state needs-input --text "question"` '
@@ -526,6 +526,13 @@ class Hub:
                 and handoff.get('outcome') == 'published' and handoff.get('verified') is True
                 and handoff.get('digests')):
             row['memory_saved_at'] = max(row['memory_saved_at'] or 0, handoff['acknowledged_at'])
+        for receipt in (row.get('completion') or {}, row.get('memory_checkpoint') or {}):
+            if (row['profile'] == 'room' and receipt.get('outcome') == 'published' and receipt.get('publication_id')
+                    and receipt.get('finalized_at') is not None
+                    and all(receipt.get(k) == row.get(k) for k in ('session_id', 'generation', 'assignment_epoch'))):
+                # #105: a Room's ordinary handoff save is its checkpoint for this assignment;
+                # the retained copy outlives a later handoff's receipt (QA26 Q26-F2).
+                row['memory_saved_at'] = max(row['memory_saved_at'] or 0, receipt['finalized_at'])
         self._present_closure(row)
         if (record.get('generation') == row['generation'] and record.get('state') == 'forced'
                 and row['memory_saved_at'] is not None):
@@ -1724,6 +1731,10 @@ class Hub:
         except (ValueError, OSError) as exc:
             self._update(row['session_id'], completion=dict(status='blocked', detail=str(exc)[:1000]))
             raise StoreError('handoff refused: ' + str(exc)) from exc
+        if row['profile'] == 'room' and receipt.get('outcome') == 'published' and receipt.get('publication_id'):
+            # Presentation only (QA26 Q26-F2): a later handoff replaces the receipt, never the save time.
+            self._update(row['session_id'], memory_checkpoint={k: receipt.get(k) for k in (
+                'session_id', 'generation', 'assignment_epoch', 'outcome', 'publication_id', 'finalized_at')})
         return dict(session_id=row['session_id'], outcome=outcome, completion=receipt, git_invoked=False)
 
     def _handoff(self, row, request_id, *, outcome, detail, active_file, decisions_file, expected):

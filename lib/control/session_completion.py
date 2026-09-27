@@ -173,6 +173,28 @@ WORKER_INSTRUCTION = (
 )
 
 
+# #105: a Room is an ongoing conversation; its saves are checkpoints, never completion.
+ROOM_INSTRUCTION = (
+    'Project-memory contract (Room): this Room is an ongoing conversation, not a one-task assignment. '
+    'Before work, use the project-memory skill to read this project\'s Memory v2 through the existing reader '
+    'and verify relevant claims against live sources. Do not load chair context or private recovery/transcript stores. '
+    'When the Keeper asks for a save or durable project knowledge settles, publish it as a standalone shell tool '
+    '(`asha control session handoff --read --json` prints the digests, then `asha control session handoff '
+    '--active-file ACTIVE --decisions-file DECISIONS --expected-active DIGEST --expected-decisions DIGEST --json`). '
+    'A save is a checkpoint: Control shows the Room as saved and it stays open. After a save, keep the '
+    'conversation going; do not report completion and do not end the Room. The Room ends only through the close '
+    'request Control delivers when the Keeper closes it; follow that request\'s own instructions. '
+    'If memory, scope or native permissions block publication, say so and report '
+    '`asha control session report --state needs-input --text "REASON"`. '
+    'This workflow does not authorize Git commit/push, private-memory publication or permission bypass.'
+)
+
+
+def instruction(profile):
+    """The project-memory contract appended to a terminal session's assignment."""
+    return ROOM_INSTRUCTION if profile == 'room' else WORKER_INSTRUCTION
+
+
 def binding(row):
     return {key: row.get(key) for key in ('session_id', 'generation', 'project_id',
                                          'assignment_epoch', 'work_epoch')}
