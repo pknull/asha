@@ -52,7 +52,7 @@ class ExperienceFixture(ClosureFixture):
 class ExperienceContracts(ExperienceFixture):
     def test_partial_capture_storage_failure_rolls_back_without_blocking_close(self):
         from lib.control.database import Transaction, DatabaseError
-        closing = self.hub.close(self.sid)['closure']
+        closing = self.hub.request_close(self.sid, wait=60)['closure']
         original = Transaction.execute
         def reject_review(c, sql, parameters=()):
             if sql.startswith('INSERT INTO hub_experience_reviews'):
@@ -61,13 +61,13 @@ class ExperienceContracts(ExperienceFixture):
         with self.acting_as(self.sid), mock.patch.object(Transaction, 'execute', reject_review):
             result = self.hub.handoff(closing['request_id'], outcome='no-durable-update', detail='Unchanged',
                                       experience_file=self.file())
-        self.assertEqual(result['closure_state'], 'acknowledged')
+        self.assertEqual(result['closure_state'], 'closing')
         self.assertEqual(result['capture']['status'], 'invalid')
         self.assertEqual(self.experience.page(self.pid)['total'], 0)
 
     def test_unavailable_capture_receipt_table_preserves_ordinary_close_ack(self):
         from lib.control.database import Transaction, DatabaseError
-        closing = self.hub.close(self.sid)['closure']
+        closing = self.hub.request_close(self.sid, wait=60)['closure']
         original = Transaction.execute
         def reject_receipt(c, sql, parameters=()):
             if sql.startswith('INSERT OR REPLACE INTO hub_experience_captures'):
@@ -76,7 +76,7 @@ class ExperienceContracts(ExperienceFixture):
         with self.acting_as(self.sid), mock.patch.object(Transaction, 'execute', reject_receipt):
             result = self.hub.handoff(closing['request_id'], outcome='no-durable-update', detail='Unchanged',
                                       experience_file=self.file())
-        self.assertEqual(result['closure_state'], 'acknowledged')
+        self.assertEqual(result['closure_state'], 'closing')
         self.assertEqual(result['capture']['status'], 'invalid')
         self.assertEqual(self.experience.page(self.pid)['total'], 0)
 
@@ -117,7 +117,7 @@ class ExperienceContracts(ExperienceFixture):
         self.assertEqual(reopened.show(first['report_id'])['body']['summary'], report()['summary'])
 
     def test_invalid_capture_never_blocks_no_update_handoff(self):
-        closing = self.hub.close(self.sid)['closure']
+        closing = self.hub.request_close(self.sid, wait=60)['closure']
         path = self.project / 'oversized'; path.write_bytes(b'x' * 16385)
         before = self.digests()
         with self.acting_as(self.sid):
@@ -125,13 +125,13 @@ class ExperienceContracts(ExperienceFixture):
                                       experience_file=str(path))
             self.hub.observe('turn-stopped')
         self.assertEqual(result['capture']['status'], 'invalid')
-        self.assertEqual(result['closure_state'], 'acknowledged')
-        self.assertEqual(self.hub.close(self.sid)['closure']['state'], 'completed')
+        self.assertEqual(result['closure_state'], 'closing')
+        self.assertEqual(self.hub.close(self.sid)['lifecycle'], 'closed')
         self.assertEqual(self.digests(), before)
         self.assertFalse(result['git_invoked'])
 
     def test_missing_is_distinct_from_none_and_disabled(self):
-        close = self.hub.close(self.sid)['closure']
+        close = self.hub.request_close(self.sid, wait=60)['closure']
         self.assertTrue(close['capture']['requested'])
         with self.acting_as(self.sid):
             result = self.hub.handoff(close['request_id'], outcome='no-durable-update', detail='Unchanged')
@@ -139,7 +139,7 @@ class ExperienceContracts(ExperienceFixture):
         self.assertEqual(self.experience.page(self.pid)['rows'], [])
 
     def test_capture_survives_memory_cas_failure_and_retry(self):
-        close = self.hub.close(self.sid)['closure']
+        close = self.hub.request_close(self.sid, wait=60)['closure']
         active, decisions = self.drafts()
         path = self.file()
         with self.acting_as(self.sid):
@@ -151,7 +151,7 @@ class ExperienceContracts(ExperienceFixture):
                 expected=self.digests(), experience_file=path)
         self.assertEqual(result['capture']['report_id'], first['report_id'])
         self.assertEqual(len(self.experience.page(self.pid)['rows']), 1)
-        self.assertEqual(result['closure_state'], 'acknowledged')
+        self.assertEqual(result['closure_state'], 'closing')
 
     def test_unsafe_files_and_known_secrets_are_omitted_without_echo(self):
         ordinary = self.project / 'good'; ordinary.write_text(json.dumps(report()))

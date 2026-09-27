@@ -87,8 +87,7 @@ class SessionHubTests(unittest.TestCase):
         shown = self.hub.show(row['session_id'])
         self.assertIsNotNone(shown['memory_saved_at'])
         closed = self.hub.close(row['session_id'], force=True)
-        self.assertIn('Memory saved', closed['reason'])
-        self.assertNotIn('no project-memory handoff was claimed', closed['reason'])
+        self.assertTrue(closed['reason'].startswith('Closed, saved '), closed['reason'])
         # D8: a later assignment in the same generation keeps the save time visible.
         self.hub._update(row['session_id'], assignment_epoch='later-assignment')
         self.assertIsNotNone(self.hub.show(row['session_id'])['memory_saved_at'])
@@ -97,12 +96,11 @@ class SessionHubTests(unittest.TestCase):
         row = self.launch()
         self.hub.send(row['session_id'], 'Retain me', key='one')
         self.tmux.sessions.clear()
-        self.hub.close(row['session_id'])
+        self.hub.request_close(row['session_id'], wait=60)
         self.assertEqual(self.hub.get(row['session_id'])['lifecycle'], 'closed')
         self.assertEqual(len(self.hub.messages(row['session_id'])), 1)
-        # No agent was left to hand off memory: the close stays visible until acknowledged.
-        self.assertEqual([r['activity'] for r in self.hub.list()['rows']], ['close-failed'])
-        self.hub.close(row['session_id'], force=True)
+        # No agent was left to ask: closed at once, unsaved, and off the default page.
+        self.assertEqual(self.hub.show(row['session_id'])['reason'], 'Closed, unsaved')
         self.assertEqual(self.hub.list()['rows'], [])
 
     def test_stop_keeps_history_and_resume_keeps_session_identity(self):
@@ -119,7 +117,7 @@ class SessionHubTests(unittest.TestCase):
         row = self.launch()
         self.tmux.session_identity = '$99'
         with self.assertRaises(ValueError):
-            self.hub.close(row['session_id'])
+            self.hub.request_close(row['session_id'], wait=60)
         self.assertEqual(self.hub.get(row['session_id'])['lifecycle'], 'open')
         self.assertEqual(self.tmux.killed, [])
 
@@ -457,7 +455,7 @@ while time.monotonic() < deadline:
             return open_room(**kwargs)
         with mock.patch('lib.control.session_hub.open_room', side_effect=native_launch):
             row = self.launch()
-        self.addCleanup(lambda: self.hub.close(row['session_id']))
+        self.addCleanup(lambda: self.hub.close(row['session_id'], force=True))
         go.touch()
         def await_file(path):
             deadline = time.monotonic() + 5
@@ -471,7 +469,7 @@ while time.monotonic() < deadline:
         await_file(done)
         self.assertEqual(self.hub.show(row['session_id'])['activity'], 'finished')
         self.assertEqual(self.hub.messages(row['session_id'])[0]['state'], 'acknowledged')
-        self.hub.close(row['session_id'])
+        self.hub.request_close(row['session_id'], wait=60)
         self.assertEqual(self.hub.get(row['session_id'])['result'], 'Clock retained')
 
 

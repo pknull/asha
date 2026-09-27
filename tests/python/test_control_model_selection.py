@@ -359,7 +359,7 @@ class SelectionExperienceTests(ExperienceFixture):
 
     def test_close_requests_keep_the_selection_they_were_requested_under(self):
         self.hub._update(self.sid, selection_reported={'model': 'model-A'})
-        self.hub.close(self.sid)
+        self.hub.request_close(self.sid, wait=60)
         self.assertEqual(self.hub.get(self.sid)['closure']['selection']['model']['effective'], 'model-A')
         self.hub._update(self.sid, selection_reported={'model': 'model-B'})
         closes = self.experience.stats(self.pid, model='model-A')['capture']['closure_states']

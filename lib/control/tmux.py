@@ -66,29 +66,11 @@ _INVENTORY_FORMAT = "\t".join((
     *tuple(f"#{{{option}}}" for option in _INVENTORY_SESSION_OPTIONS),
     *tuple(f"#{{{option}}}" for option in _INVENTORY_PANE_OPTIONS),
 ))
-# Unlike _ROOM_REFUSAL, never run-shell here: a failing run-shell leaves the
-# target pane in view-mode, in front of whoever attaches next.
-_INPUT_REFUSAL = "display-message -p ASHA_ROOM_OWNERSHIP_REFUSED"
 _ROOM_REFUSAL = (
     'display-message -p ASHA_ROOM_OWNERSHIP_REFUSED ; run-shell "exit 66"'
 )
 class TmuxError(ValueError):
     """A tmux precondition, invocation, or identity check failed."""
-
-
-# Why a detached-only kill refused: a client is attached, the pane is in a
-# mode, or ownership changed.
-ROOM_INPUT_REFUSALS = frozenset({"attached", "mode", "ownership"})
-
-
-class RoomInputRefused(TmuxError):
-    """A detached-only kill refused; ``category`` says why."""
-
-    def __init__(self, category: str, message: str) -> None:
-        if category not in ROOM_INPUT_REFUSALS:
-            raise ValueError(f"unknown room input refusal: {category}")
-        super().__init__(message)
-        self.category = category
 
 
 @dataclass(frozen=True)
@@ -801,42 +783,23 @@ class TmuxAdapter:
 
     def kill_owned_room(
         self, *, room_id: str, project_marker: str,
-        pane_id: str, session_id: str, detached_only: bool = False,
+        pane_id: str, session_id: str,
     ) -> None:
-        """Atomically revalidate immutable Room identity and kill only that session.
-
-        ``detached_only`` adds "no client attached, pane not in a mode" to the
-        same tmux condition: an automatic fallback never kills a Room a person
-        is using. That refusal raises ``RoomInputRefused``.
-        """
+        """Atomically revalidate immutable Room identity and kill only that session."""
         pane, session, condition = self._room_condition(
             room_id=room_id, project_marker=project_marker,
             pane_id=pane_id, session_id=session_id,
         )
-        if detached_only:
-            condition = self._detached(condition)
         returncode, stdout, stderr = self._run_status([
             "if-shell", "-F", "-t", pane, condition,
             f"display-message -p ASHA_ROOM_OWNED ; kill-session -t {session}",
-            _INPUT_REFUSAL if detached_only else _ROOM_REFUSAL,
+            _ROOM_REFUSAL,
         ])
         if returncode == 0 and stdout == b"ASHA_ROOM_OWNED\n":
             return
         if returncode == 66 or b"ASHA_ROOM_OWNERSHIP_REFUSED" in stdout:
-            if detached_only:
-                raise RoomInputRefused(
-                    "attached", "room kill refused: a client is attached, the pane is "
-                    "in a tmux mode or ownership changed; no session was killed",
-                )
             raise TmuxError("room ownership changed; no session was killed")
         self._raise_failure(returncode, stderr)
-
-    @staticmethod
-    def _detached(condition: str) -> str:
-        """``condition`` plus detached, not in a mode, and window not linked into
-        another session (a client there would see the pane without attaching)."""
-        fence = "#{&&:#{==:#{pane_in_mode},0},#{==:#{window_linked},0}}"
-        return f"#{{&&:{condition},#{{&&:#{{==:#{{session_attached}},0}},{fence}}}}}"
 
     def window_pane_facts(
         self, session: str, window: str, *, deadline_seconds: float = 60,
@@ -1088,12 +1051,13 @@ class TmuxAdapter:
         ]
 
     def send_line(self, pane_id: str, text: str) -> None:
-        """Type one bounded line plus Enter into an owned pane.
+        """Type one bounded line plus Enter into a pane.
 
-        OPERATOR-ONLY SEAM: this exists for explicit human actions relayed by
-        the TUI (the close-worker key). Controller code paths must never call
-        it; the controller's no-pane-input rule is a design invariant, not a
-        missing feature.
+        OPERATOR-INITIATED SEAM: it types only for an explicit operator action,
+        the TUI's close-worker key and the one pointer line an operator's close
+        types into an idle or unobserved session (best-effort close D1). This
+        checks the pane syntax and line length only; the caller verifies Room
+        ownership first. Nothing types on a refresh or reconciliation.
         """
         pane = _validate_pane_id(pane_id)
         if not isinstance(text, str) or not text or len(text) > 200 or any(

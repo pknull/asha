@@ -13,13 +13,12 @@ class NextStepRenderingTests(unittest.TestCase):
     def test_every_hint_state_renders_without_replacing_raw_activity(self):
         cases = [
             ({'activity': 'finished'}, 'Finished, unsaved'),
-            ({'activity': 'finished', 'completion_readiness': {'status': 'ready'}}, 'Finalized: close'),
             ({'activity': 'finished', 'process_state': 'ended'}, 'Done: close record'),
             ({'activity': 'exited', 'process_state': 'ended'}, 'Ended unreported: check work'),
             ({'activity': 'idle', 'profile': 'room'}, 'Waiting for you'),
             ({'activity': 'idle'}, 'Stopped mid-task?'),
-            ({'activity': 'closing', 'native_activity': 'idle', 'closure': {
-                'generation': 1, 'state': 'pending-delivery'}}, 'Close needs attach'),
+            ({'activity': 'closing', 'lifecycle': 'closing', 'closure': {
+                'generation': 1, 'state': 'closing', 'requested_at': 0.0, 'deadline': 60.0}}, 'Closing: waiting for a save'),
             ({'activity': 'needs-input'}, 'Answer in terminal (attach)'),
             ({'activity': 'permission-requested'}, 'Answer in terminal (attach)'),
             ({'activity': 'working'}, 'Working'),

@@ -56,9 +56,9 @@ class EmittedAtTests(ClosureFixture):
         self.hub.observe('prompt-submitted', emitted_at=1000.0)
         self.hub.observe('permission-requested', emitted_at=995.0, body='May I?')
         self.assertIsNone(self.hub.get(self.sid).get('question'))
-        self.hub.close(self.sid)
+        self.hub.request_close(self.sid, wait=60)
         self.hub.observe('session-ended', emitted_at=995.0)
-        self.assertEqual(self.hub.get(self.sid)['closure']['state'], 'pending-delivery')
+        self.assertEqual(self.hub.get(self.sid)['lifecycle'], 'closing')
 
     def test_explicit_reports_bypass_the_guard(self):
         self.hub.observe('prompt-submitted', emitted_at=1000.0)
@@ -95,11 +95,11 @@ class HookCompatibilityTests(ClosureFixture):
 
     def test_a_skipped_stop_returns_no_close_decision(self):
         sid = self.launch()['session_id']
-        self.hub.close(sid)
+        self.hub.request_close(sid, wait=60)
         self.event(sid, '--event', 'prompt-submitted', '--emitted-at', '1000.0')
         code, out = self.event(sid, '--event', 'turn-stopped', '--emitted-at', '995.0')
         self.assertEqual((code, out), (0, '{}'))
-        self.assertEqual(self.hub.get(sid)['closure']['state'], 'pending-delivery')
+        self.assertIsNone(self.hub.get(sid)['closure']['delivery']['delivered_at'])
         code, out = self.event(sid, '--event', 'turn-stopped', '--emitted-at', '1001.0')
         self.assertEqual(json.loads(out)['decision'], 'block')
 

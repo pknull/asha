@@ -31,7 +31,7 @@ from lib.control.rooms import (
     open_room,
     room_launch_argv,
 )
-from lib.control.tmux import PaneFacts, RoomInputRefused, TmuxError
+from lib.control.tmux import PaneFacts, TmuxError
 from lib.control.tmux import TmuxAdapter
 from lib.control.socket_reaper import TmuxSocketReaper
 from lib.control import cli, tui
@@ -56,6 +56,8 @@ class FakeTmux:
         # Clients attached to the Room session.
         self.attached = 0
         self.before_kill = None
+        # Lines typed through the operator-initiated ``send_line`` seam.
+        self.sent: list[tuple[str, str]] = []
 
     executable = "tmux"
     socket = None
@@ -98,11 +100,9 @@ class FakeTmux:
             "display-message -p ASHA_ROOM_REFUSED ; run-shell \"exit 66\"",
         ]
 
-    def kill_owned_room(self, *, detached_only: bool = False, **identity) -> None:
+    def kill_owned_room(self, **identity) -> None:
         if self.before_kill is not None:
             self.before_kill()
-        if detached_only and self.attached:
-            raise RoomInputRefused("attached", "a client is attached; no session was killed")
         if self.replace_before_owned_action:
             session = next(iter(self.sessions))
             self.session_options[(session, SESSION_ROOM_OPTION)] = "foreign"
@@ -117,6 +117,11 @@ class FakeTmux:
             raise TmuxError("room ownership changed; no session was killed")
         self.killed.append(identity["session_id"])
         self.sessions.clear()
+
+    def send_line(self, pane_id: str, text: str) -> None:
+        if pane_id != self.pane_id or not self.sessions:
+            raise TmuxError("missing pane")
+        self.sent.append((pane_id, text))
 
     def session_option(self, session: str, option: str) -> str | None:
         if session == self.session_identity:

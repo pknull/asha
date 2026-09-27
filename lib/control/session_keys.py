@@ -21,8 +21,6 @@ def row_keys(row):
     answer = ['a answer'] if row.get('activity') in _ANSWERABLE and row.get('transport') == 'structured' else []
     if group == 'history':
         keys = ['r resume', 'Enter view', 'A history']
-    elif step.startswith('Close failed'):
-        keys = ['x retry close', 'X force-close', 'Enter attach']
     elif group == 'ended':
         keys = ['x close', 'r resume', 'X force-close', 'Enter attach']
     else:

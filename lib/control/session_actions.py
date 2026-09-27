@@ -13,7 +13,7 @@ from .session_presentation import memory_label
 
 ENTER = (10, 13)
 ACTION_KEYS = frozenset(map(ord, 'amxXsr'))
-_CLOSE_LABELS = {'x': 'Close (request handoff) ', 'X': 'Force-close (no new handoff) ', 's': 'Stop '}
+_CLOSE_LABELS = {'x': 'Close (asks for a Memory save, then closes) ', 'X': 'Force-close (no wait) ', 's': 'Stop '}
 
 
 @dataclass
@@ -117,10 +117,17 @@ def close_or_stop(ctx, key, row):
     refuse_managed_operator(ctx.config, ctx.env)
     if ctx.hub.owns(row['session_id']):
         if letter == 'x':
-            closed = ctx.hub.close(row['session_id'])
+            # D6: record the request and hand the wait to a detached waiter; never block the dashboard.
+            hub = ctx.hub
+            requested = hub.request_close(row['session_id'], wait=hub._close_wait(False, None))
+            if requested['lifecycle'] == 'closing':
+                hub.spawn_close_waiter(row['session_id'])
+            return (requested.get('closure') or {}).get('guidance') or requested.get('reason') or 'Session closed'
+        if letter == 'X':
+            closed = ctx.hub.close(row['session_id'], force=True)
             return (closed.get('closure') or {}).get('guidance') or 'Session closed'
-        stopped = ctx.hub.stop(row['session_id'], close=letter == 'X')
-        return 'Session stopped; history retained; ' + (memory_label(stopped) or 'no memory handoff claimed')
+        stopped = ctx.hub.stop(row['session_id'])
+        return 'Session stopped; history retained; ' + (memory_label(stopped) or 'no memory save claimed')
     if letter == 'x':
         return 'No handoff seam for a legacy Room or managed session; X force-closes, s stops'
     if row['transport'] == 'room':
