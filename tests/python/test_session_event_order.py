@@ -528,7 +528,7 @@ class OrderRecoveryTests(OrderFixture):
         row = dict(generation=1, event_order=dict(generation=1, applied=10, last_event='turn-stopped',
                                                   missing=[], barrier=None, attempts=10))
         receipt = dict(order_applied=10, generation=1)
-        counters = session_order.Counters(80, 80)
+        counters = session_order.Counters(80, 80, 80)
         gap = session_order.MISSING_LIMIT + 6                     # 11..80 skipped, 11..16 dropped
         _, fields = session_order.observe(row, 'turn-stopped', 11 + gap, allocated=lambda: 80, attempts=80)
         row['event_order'] = fields['event_order']
@@ -539,3 +539,200 @@ class OrderRecoveryTests(OrderFixture):
         self.assertEqual(row['event_order']['missing_dropped'], 16)
         self.assertRegex(session_order.receipt_unaccounted(row, receipt, counters) or '', 'not arrived')
         self.assertIsNone(session_order.receipt_unaccounted(row, dict(receipt, order_applied=16), counters))
+
+
+class UnresolvedAttemptTests(OrderFixture):
+    """QA11 Q11-F1 (#103): a Stop never reconciles a hook still between its two records.
+
+    Ported from /tmp/aq9597/qa11/race.py (append_pending_cases). A Stop pauses
+    under the counter lock just before its attempt sample; a later PreToolUse
+    appends its start, then pauses either before flock or after flock timed
+    out but before its failure byte. The Stop then samples (counting the later
+    start), numbers, reports and is applied while the later hook is still in
+    flight. Only PATH scheduling wrappers differ: the real hook performs every
+    append and allocation. Red before the two-phase record; the settled
+    variant, where the failure byte lands before close, is the negative control.
+    """
+
+    def gate(self, name):
+        gate = self.root / (name + '-' + str(time.monotonic_ns()))
+        gate.mkdir()
+        return gate
+
+    def wait_for(self, path, proc):
+        deadline = time.monotonic() + 8
+        while not path.exists():
+            self.assertIsNone(proc.poll(), 'the hook exited before its gate')
+            self.assertLess(time.monotonic(), deadline, 'the hook never reached its gate')
+            time.sleep(0.003)
+
+    def stop_before_sample(self, sid):
+        """The real Stop hook, paused under the counter lock just before its coverage sample."""
+        env, cap = self.hook_env(sid)
+        gate = self.gate('stop')
+        (gate / 'stat').write_text(
+            '#!/bin/bash\n'
+            'if [[ "$1" == -c && "$2" == %s && "$4" == "$QA_COUNTER.attempts" ]]; then\n'
+            '  if [[ ! -e "$QA_GATE/first-stat" ]]; then touch "$QA_GATE/first-stat"\n'
+            '  else touch "$QA_GATE/ready"; while [[ ! -e "$QA_GATE/release" ]]; do sleep .003; done; fi\n'
+            'fi\n'
+            'exec /usr/bin/stat "$@"\n')
+        (gate / 'stat').chmod(0o700)
+        env.update(PATH=f"{gate}:{env['PATH']}", QA_COUNTER=str(self.counter(sid)), QA_GATE=str(gate))
+        proc = subprocess.Popen(['bash', str(HOOK), 'Stop'], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=env)
+        self.wait_for(gate / 'ready', proc)
+        return proc, gate / 'release', cap
+
+    def work_in_flight(self, sid, phase, event='PreToolUse'):
+        """A later hook paused before its flock, or after flock timed out and before its failure byte."""
+        env, cap = self.hook_env(sid)
+        gate = self.gate('work')
+        (gate / 'flock').write_text(
+            '#!/bin/bash\n'
+            'if [[ "$QA_PHASE" == after-timeout ]]; then /usr/bin/flock "$@"; rc=$?; '
+            'printf %s "$rc" >"$QA_GATE/rc"; fi\n'
+            'touch "$QA_GATE/ready"; while [[ ! -e "$QA_GATE/release" ]]; do sleep .003; done\n'
+            'if [[ "$QA_PHASE" == after-timeout ]]; then exit "$rc"; fi\n'
+            'exec /usr/bin/flock "$@"\n')
+        (gate / 'flock').chmod(0o700)
+        env.update(PATH=f"{gate}:{env['PATH']}", QA_GATE=str(gate), QA_PHASE=phase)
+        proc = subprocess.Popen(['bash', str(HOOK), event], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, text=True, env=env, start_new_session=True)
+        self.wait_for(gate / 'ready', proc)
+        if phase == 'after-timeout':
+            self.assertEqual((gate / 'rc').read_text(), '1')          # the real flock -w 0.2 failed
+        return proc, gate / 'release', cap
+
+    def deliver(self, sid, cap):
+        args = json.loads(cap.read_text())
+        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), \
+                mock.patch.object(hub_cli, 'Hub', return_value=self.hub), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(hub_cli.dispatch(args[2:], env=self.env), 0)
+        return args
+
+    def covered_in_flight(self, sid, phase):
+        """Leave an applied Stop whose sample counted a later hook still in flight; return that hook."""
+        size = session_order.attempts_path(self.config, sid, self.hub.get(sid)['generation']).stat().st_size
+        stop, stop_release, stop_cap = self.stop_before_sample(sid)
+        try:
+            work, work_release, work_cap = self.work_in_flight(sid, phase)
+        finally:
+            stop_release.touch()
+            _, stderr = stop.communicate(timeout=8)
+        self.assertEqual(stop.returncode, 0, stderr)
+        args = self.deliver(sid, stop_cap)
+        self.assertEqual(int(args[args.index('--attempts') + 1]), size + 2)   # the later start is counted
+        order = self.hub.get(sid)['event_order']
+        self.assertEqual(order['last_event'], 'turn-stopped')
+        self.assertEqual(session_order.read_allocated(self.config, self.hub.get(sid)), order['applied'])
+        self.assertIsNone(work.poll())
+        self.assertFalse(work_cap.exists())
+        return work, work_release, work_cap
+
+    def release(self, work, work_release):
+        work_release.touch()
+        _, stderr = work.communicate(timeout=8)
+        self.assertEqual(work.returncode, 0, stderr)
+
+    def cases(self):
+        for harness in ('claude', 'codex'):
+            for receipt in (False, True):
+                for no_handoff in ([False, True] if receipt else [True]):
+                    yield harness, receipt, no_handoff
+
+    def test_in_flight_later_hook_is_never_covered_by_an_older_stop(self):
+        for phase in ('before-flock', 'after-timeout'):
+            for harness, receipt, no_handoff in self.cases():
+                with self.subTest(phase=phase, harness=harness, receipt=receipt, no_handoff=no_handoff):
+                    self.tmux.killed.clear()
+                    sid = self.idle(harness, receipt)
+                    work, work_release, _ = self.covered_in_flight(sid, phase)
+                    try:
+                        self.protected(sid, no_handoff=no_handoff)
+                        self.assertRegex(session_order.kill_refusal(
+                            self.hub.get(sid), session_order.read_counters(self.config, self.hub.get(sid))) or '',
+                            'not finished')
+                    finally:
+                        self.release(work, work_release)
+                    # Resolved but unreported (lost, or numbered and not arrived): still refused.
+                    self.protected(sid, no_handoff=no_handoff)
+                    self.hub.stop(sid)
+                    self.tmux.killed.clear()
+
+    def test_failure_byte_negative_control(self):
+        """The later hook's failure lands before close: refused before and after the fix."""
+        for harness, receipt, no_handoff in self.cases():
+            with self.subTest(harness=harness, receipt=receipt, no_handoff=no_handoff):
+                self.tmux.killed.clear()
+                sid = self.idle(harness, receipt)
+                work, work_release, work_cap = self.covered_in_flight(sid, 'after-timeout')
+                self.release(work, work_release)
+                self.assertNotIn('--order', json.loads(work_cap.read_text()))
+                self.protected(sid, no_handoff=no_handoff)
+                self.assertRegex(self.hub.show(sid)['no_handoff']['reason'], 'started')
+                self.hub.stop(sid)
+                self.tmux.killed.clear()
+
+    def test_later_stop_after_a_resolved_hook_closes(self):
+        """Refusal is not permanent once the later hook resolves: a Stop numbered after it reconciles it."""
+        for phase in ('before-flock', 'after-timeout'):
+            with self.subTest(phase=phase):
+                self.tmux.killed.clear()
+                sid = self.idle()
+                work, work_release, work_cap = self.covered_in_flight(sid, phase)
+                self.release(work, work_release)
+                if '--order' in json.loads(work_cap.read_text()):
+                    self.deliver(sid, work_cap)
+                self.protected(sid)
+                self.deliver(sid, self.hook_capture(sid, 'Stop'))
+                self.assertEqual(self.hub.close(sid, no_handoff=True)['closure']['state'],
+                                 'closed-no-save-claimed')
+                self.tmux.killed.clear()
+
+    def hook_capture(self, sid, event):
+        env, cap = self.hook_env(sid)
+        done = subprocess.run(['bash', str(HOOK), event], input='{}', text=True, capture_output=True,
+                              env=env, timeout=10)
+        self.assertEqual(done.returncode, 0, done.stderr)
+        return cap
+
+    def test_crash_between_the_two_records_refuses_until_resume(self):
+        """A hook killed after its start and before its resolution never counts as resolved."""
+        sid = self.idle()
+        work, _, work_cap = self.work_in_flight(sid, 'before-flock')
+        os.killpg(work.pid, signal.SIGKILL)
+        work.communicate(timeout=5)
+        self.assertFalse(work_cap.exists())
+        self.protected(sid)
+        # A later Stop cannot tell a crashed hook from a stalled one: still refused.
+        self.deliver(sid, self.hook_capture(sid, 'Stop'))
+        self.assertEqual(self.hub.get(sid)['event_order']['last_event'], 'turn-stopped')
+        self.protected(sid)
+        self.assertRegex(self.hub.show(sid)['no_handoff']['reason'], 'resume')
+        self.hub.stop(sid)
+        self.hub.resume(sid, prompt='New generation')
+        self.deliver(sid, self.hook_capture(sid, 'Stop'))
+        self.assertEqual(self.hub.close(sid, no_handoff=True)['closure']['state'], 'closed-no-save-claimed')
+
+    def test_resolution_log_is_private_and_matches_starts(self):
+        sid = self.idle()
+        attempts = session_order.attempts_path(self.config, sid, 1)
+        resolved = session_order.resolved_path(self.config, sid, 1)
+        self.assertEqual(stat.S_IMODE(resolved.stat().st_mode), 0o600)
+        self.assertEqual(resolved.stat().st_size, attempts.stat().st_size)
+        size = attempts.stat().st_size
+        self.assertIsNotNone(self.hook(sid, 'PreToolUse'))                  # numbered: one each
+        self.assertEqual((attempts.stat().st_size, resolved.stat().st_size), (size + 1, size + 1))
+        with self.counter(sid).open('r+') as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            self.assertIsNone(self.hook(sid, 'PreToolUse'))                 # failed: two each
+        self.assertEqual((attempts.stat().st_size, resolved.stat().st_size), (size + 3, size + 3))
+        resolved.chmod(0o644)
+        self.assertRegex(session_order.kill_refusal(
+            self.hub.get(sid), session_order.read_counters(self.config, self.hub.get(sid))), 'resolution log')
+        resolved.chmod(0o600)
+        resolved.unlink()
+        self.assertRegex(session_order.kill_refusal(
+            self.hub.get(sid), session_order.read_counters(self.config, self.hub.get(sid))), 'resolution log')

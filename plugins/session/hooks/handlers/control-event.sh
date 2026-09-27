@@ -72,6 +72,15 @@ fi
 # counted by a concurrent Stop still moves the size past that Stop's count. Past
 # HUB_ATTEMPT_LIMIT bytes (lib/control/session_order.py ATTEMPT_LIMIT) nothing
 # is appended or allocated, and the hub refuses turnless kills until resume.
+#
+# A Stop's size sample also counts a later hook that has appended but not yet
+# taken its number or written its failure byte, so the size alone cannot prove
+# that hook finished (#103, QA11). Each hook therefore closes its attempt in a
+# second private log ($ASHA_HUB_EVENT_ORDER.resolved, created 0600 by the hub):
+# one byte once its number is written, or two once its failure byte has landed,
+# so both logs grow by the same amount per finished hook. The hub kills only
+# when the two sizes are equal. A hook that dies between the two records leaves
+# them unequal for the rest of this generation, which only refuses.
 HUB_ORDER=""
 HUB_ATTEMPTS=""
 HUB_ATTEMPT_LIMIT=4194304
@@ -87,6 +96,11 @@ hub_attempt() {
   size="$(stat -c %s -- "$file" 2>/dev/null)" || return 1
   [[ "$size" =~ ^[0-9]+$ ]] && (( size < HUB_ATTEMPT_LIMIT )) || return 1
   printf '.' 2>/dev/null >>"$file"
+}
+hub_resolve() {
+  local file="$ASHA_HUB_EVENT_ORDER.resolved"
+  hub_private_file "$file" || return 1
+  printf '%s' "$1" 2>/dev/null >>"$file"
 }
 hub_order_next() {
   local file="$1" fd content value attempts
@@ -115,7 +129,12 @@ hub_order_next() {
 if [[ -n "$HUB_SESSION" && -n "${ASHA_HUB_EVENT_ORDER:-}" ]] && command -v flock >/dev/null 2>&1 \
     && hub_attempt "$ASHA_HUB_EVENT_ORDER"; then
   read -r HUB_ORDER HUB_ATTEMPTS <<<"$(hub_order_next "$ASHA_HUB_EVENT_ORDER" || true)"
-  [[ "$HUB_ORDER" =~ ^[1-9][0-9]{0,8}$ ]] || { HUB_ORDER=""; printf '.' 2>/dev/null >>"$ASHA_HUB_EVENT_ORDER.attempts"; }
+  if [[ "$HUB_ORDER" =~ ^[1-9][0-9]{0,8}$ ]]; then
+    hub_resolve '.' || true
+  else
+    HUB_ORDER=""
+    printf '.' 2>/dev/null >>"$ASHA_HUB_EVENT_ORDER.attempts" && hub_resolve '..' || true
+  fi
   [[ -n "$HUB_ORDER" && "$HUB_ATTEMPTS" =~ ^[1-9][0-9]{0,7}$ ]] || HUB_ATTEMPTS=""
 fi
 

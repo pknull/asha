@@ -597,11 +597,13 @@ only by the Control setting `no_handoff_close` in the Asha config:
 {"control": {"no_handoff_close": true}}
 ```
 
-The reason is QA11's Q11-F1: a hook that has appended its attempt byte but has
-not yet taken a number, or not yet recorded that it failed to, is counted by an
-older Stop's size sample. A close made while that hook is still in flight
-accepts the boundary and kills the terminal, so its work is lost unseen (see
-invariant 4 below). With the setting off (the default), `close --no-handoff`
+It was gated because of QA11's Q11-F1: a hook that had appended its attempt
+byte but had not yet taken a number, or not yet recorded that it failed to, was
+counted by an older Stop's size sample, and a close made while that hook was
+still in flight killed the terminal with its work unseen. #103 closes that
+window with a second, resolution record per hook (invariant 5 below). The
+default is unchanged until that fix has had its own independent QA round. With
+the setting off (the default), `close --no-handoff`
 refuses with a message naming the setting and #103, kills nothing, and changes
 nothing; `session show/list --json` report `no_handoff.eligible: false` with that
 reason; the dashboard neither lists `c` nor suggests it. Plain `close`, the
@@ -741,20 +743,30 @@ when all of the following hold:
    took its number are covered by it, as in 3; any hook appending after it,
    numbered or not, refuses the kill until the next Stop. A Stop that could not
    report the size refuses too.
+5. No hook is between its two records (#103). Invariant 4 alone is not enough:
+   a Stop's size sample counts a later hook's first byte even while that hook
+   has not yet taken its number, or has failed to and not yet written its
+   failure byte (QA11 Q11-F1), so an older Stop would cover it. Each hook
+   therefore also appends to a resolution log (`<counter>.resolved`, created
+   empty and 0600 beside the attempt log) once its attempt is accounted for:
+   one byte after its number is written, or two after its failure byte has
+   landed, matching its two attempt bytes. The kill requires the two logs to
+   have equal sizes, read resolution first under the counter lock. A hook's
+   resolution bytes always follow its attempt bytes, so equality proves that no
+   hook was mid-attempt at that read; one that starts later starts after the
+   kill decision. Once the in-flight hook resolves, invariants 1 and 4 take
+   over: a number it took refuses until its report is applied, and its failure
+   byte moves the attempt log past the Stop's count. The hook refuses to write
+   a non-private or symlinked resolution log, which leaves its attempt
+   unresolved.
 
-**Known gap (Q11-F1, #103): invariant 4 is not fully proven.** The Stop counts
-bytes, and a hook's first byte is written before that hook takes its number.
-A hook still between that append and its allocation, or between a failed
-allocation and its failure byte, is therefore covered by an older Stop, and a
-close made in that window kills the terminal while the hook's work is
-unreported. The window is small (a hook's own scheduling between two
-consecutive steps) but real, and it is reproducible with scheduling gates. It is
-why `close --no-handoff` is off by default. **The receipt close path (plain
-`close` with a current receipt, and `--no-handoff` when enabled) shares this
-window.** It
-checks the same invariant. Sampling before the number (QA10) reduced the window
-but did not close it. The receipt close is still strictly safer than before
-#101, which applied none of these checks.
+A hook that dies between its two records (killed after its attempt byte and
+before its resolution) never counts as resolved. No later Stop can tell a dead
+hook from a stalled one, so it refuses every turnless close for the rest of the
+generation; recover with `asha control session stop ID` then `resume ID`, or
+`close ID --force` (no save claim). The window for that is the hook's first few
+milliseconds, well inside its sub-second budget. The receipt close path (plain
+`close` with a current receipt) applies the same five invariants.
 
 A completion receipt records the applied order at issue (`order_applied`). It
 is current only while no report numbered after that order is missing or still
@@ -766,9 +778,12 @@ or a tool end other than the finalizer's; report-tool events are not work. The
 finalizer's own end, report-tool events and the closing Stop necessarily follow
 the receipt and do not invalidate it.
 
-Availability costs are deliberate. A missing or corrupt counter, or a Room
-launched before this change, refuses turnless closes until the session is
-resumed (a new generation gets a fresh counter and attempt log). Out-of-order
+Availability costs are deliberate. A missing or corrupt counter, a missing or
+non-private resolution log, or a Room launched before the counter (#101) or the
+resolution log (#103) existed, refuses turnless closes until the session is
+resumed (a new generation gets a fresh counter and both logs), as does a hook
+that died between its two records. A hook still in flight refuses only until it
+finishes; retry the close. Out-of-order
 evidence, or a hook that started without a number, refuses them until the next
 turn's Stop. `close` then asks for a handoff turn; attach or
 `--force` remain available. This is always on and independent of

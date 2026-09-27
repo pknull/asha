@@ -88,7 +88,8 @@ class ClosureFixture(unittest.TestCase):
             # models a number allocated elsewhere (the counter keeps the maximum);
             # order=None reports an unsequenced event and allocates nothing.
             # Every hook first appends one byte to the attempt log (QA9); a
-            # numbered report carries the log's size.
+            # numbered report carries the log's size. The hook has finished its
+            # attempt before it reports, so its resolution byte (#103) lands too.
             from lib.control import session_order
             generation = hub.get(sid)['generation']
             path = session_order.counter_path(self.config, sid, generation)
@@ -111,6 +112,10 @@ class ClosureFixture(unittest.TestCase):
                         kwargs['attempts'] = attempts.stat().st_size
             elif 'order' in kwargs and kwargs['order'] is None:
                 del kwargs['order']
+            resolved = session_order.resolved_path(self.config, sid, generation)
+            if event and attempts.exists() and resolved.exists():
+                with resolved.open('ab') as log:
+                    log.write(b'.')
             # Like control-event.sh: bump the pane's event sequence, then report it.
             if 'sequence' not in kwargs and getattr(self.tmux, 'event_sequence', None) is not None:
                 self.tmux.event_sequence = str(int(self.tmux.event_sequence) + 1)

@@ -32,6 +32,18 @@ held, inside the session's observation lock, through the kill itself:
     log's size read under the counter lock; the kill requires the log's size
     now to equal the size the last applied Stop reported. Attempts before that
     Stop's allocation are covered by it, as in (c); any later attempt refuses.
+(e) no hook is between its two records (#103, QA11 Q11-F1). A Stop's sample
+    counts every start appended so far, including a later hook that has not
+    yet taken its number or recorded its failure; (d) alone would let that
+    Stop cover it. So each hook also appends to a resolution log once its
+    attempt is accounted for: one byte after its number is written, or two
+    after its failure byte has landed (matching its two attempt bytes). The
+    kill requires the resolution log's size to equal the attempt log's, read
+    in that order under the counter lock. Every resolution byte follows its
+    attempt bytes, so resolved <= attempts always, and equality proves no hook
+    was mid-attempt when the resolution log was read. A hook killed between
+    its records stays unresolved: no later Stop can tell it from a stalled
+    one, so only a new generation (stop then resume) or --force clears it.
 
 This is independent of the experimental pane sequence that fences idle typing
 (#96); that feature and its counters are untouched.
@@ -71,10 +83,20 @@ def attempts_path(config, sid: str, generation: int) -> Path:
     return path.with_name(path.name + '.attempts')
 
 
+def resolved_path(config, sid: str, generation: int) -> Path:
+    """The incarnation's resolution log: the hook derives it as ``$ASHA_HUB_EVENT_ORDER.resolved``."""
+    path = counter_path(config, sid, generation)
+    return path.with_name(path.name + '.resolved')
+
+
 class Counters(NamedTuple):
-    """One locked reading: numbers allocated, and hooks started (None when the log is unusable)."""
+    """One locked reading: numbers allocated, hook attempt bytes, and resolution bytes.
+
+    A log's size is None when the log is unusable (missing, not private, not regular).
+    """
     allocated: int
     attempts: int | None
+    resolved: int | None
 
 
 def _valid_counter(fd) -> bool:
@@ -84,8 +106,8 @@ def _valid_counter(fd) -> bool:
 
 
 def create_counter(config, sid: str, generation: int) -> str:
-    """Create this incarnation's counter (0600, content ``0``) and its empty attempt log (0600)
-    in a private directory; return the counter's path.
+    """Create this incarnation's counter (0600, content ``0``) and its empty attempt and
+    resolution logs (0600) in a private directory; return the counter's path.
 
     An existing file is accepted only when it is a private regular file of this
     user with valid content; anything else refuses the launch.
@@ -112,26 +134,27 @@ def create_counter(config, sid: str, generation: int) -> str:
                 os.write(handle, b'0\n')
             finally:
                 os.close(handle)
-        log = attempts_path(config, sid, generation).name
-        try:
-            handle = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
-        except FileExistsError:
+        for log, label in ((attempts_path(config, sid, generation).name, 'attempt'),
+                           (resolved_path(config, sid, generation).name, 'resolution')):
             try:
-                handle = os.open(log, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
-            except OSError as exc:
-                raise StoreError(f'event attempt log is not a regular file: {path}.attempts') from exc
-            try:
-                if not _valid_counter(handle):
-                    raise StoreError(f'event attempt log is invalid: {path}.attempts')
-            finally:
+                handle = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=fd)
+            except FileExistsError:
+                try:
+                    handle = os.open(log, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+                except OSError as exc:
+                    raise StoreError(f'event {label} log is not a regular file: {root / log}') from exc
+                try:
+                    if not _valid_counter(handle):
+                        raise StoreError(f'event {label} log is invalid: {root / log}')
+                finally:
+                    os.close(handle)
+            else:
                 os.close(handle)
-        else:
-            os.close(handle)
     return str(path)
 
 
 def _attempts(path) -> int | None:
-    """The attempt log's size, or None when it is missing, not private, or not a regular file."""
+    """A log's size, or None when it is missing, not private, or not a regular file."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except OSError:
@@ -177,8 +200,14 @@ def allocation(config, row, *, wait=1.0):
             yield None
             return
         match = _CONTENT.fullmatch(os.pread(fd, 32, 0))
-        yield (Counters(int(match.group(1)), _attempts(attempts_path(config, row['session_id'], row['generation'])))
-               if match else None)
+        if not match:
+            yield None
+            return
+        # Resolution first (invariant e): a hook's resolution bytes follow its
+        # attempt bytes, so equal sizes read in this order admit no hook mid-attempt.
+        sid, generation = row['session_id'], row['generation']
+        resolved = _attempts(resolved_path(config, sid, generation))
+        yield Counters(int(match.group(1)), _attempts(attempts_path(config, sid, generation)), resolved)
     finally:
         os.close(fd)
 
@@ -296,18 +325,25 @@ def observe(row, event: str, order, *, allocated=lambda: None, attempts=None, no
 
 
 def kill_refusal(row, counters):
-    """Why a turnless kill of this live terminal is not proven safe now, or None (invariant a-d)."""
+    """Why a turnless kill of this live terminal is not proven safe now, or None (invariant a-e)."""
     current = state(row)
     if counters is None:
         return ('the native event counter of this incarnation is unavailable (sessions launched before '
                 'ordering, or a missing/invalid counter); resume, attach, or --force')
-    allocated, attempts = counters
+    allocated, attempts, resolved = counters
     if attempts is None:
         return ('the native event attempt log of this incarnation is unavailable (missing, or not a private '
                 'file); resume, attach, or --force')
     if attempts >= ATTEMPT_LIMIT:
         return ('the native event attempt log of this incarnation is full; no Stop can clear it in this '
                 'generation. Stop then resume the session for a fresh log, or close --force (no save claim)')
+    if resolved is None:
+        return ('the native event resolution log of this incarnation is unavailable (missing, or not a private '
+                'file; sessions launched before #103); stop then resume, attach, or --force')
+    if resolved != attempts:
+        return ('a native hook started and has not finished taking its number or recording its failure (in '
+                'flight, or killed between its two records). Wait and retry; if it persists the hook died and '
+                'no Stop can clear it in this generation: stop then resume, attach, or --force')
     if not current['applied']:
         return 'no ordered native event has been applied for this incarnation'
     if allocated > current['applied']:

@@ -348,7 +348,7 @@ def no_handoff_refusal(row):
 def no_handoff_eligibility(row, counters):
     """The one predicate behind both `close --no-handoff` and the dashboard's offer of it.
 
-    ``counters`` is the incarnation's event counter and attempt log; the command
+    ``counters`` is the incarnation's event counter, attempt log and resolution log; the command
     reads them under the counter lock it then holds through the kill.
     """
     from .session_order import kill_refusal
