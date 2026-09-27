@@ -154,10 +154,42 @@ The selected row keeps its screen line, group headings and fact lines included.
 recency order. A row missing from an incomplete observation stays, marked
 `stale since HH:MM:SS UTC`, until a complete page shows it has gone. Keys do not
 re-read the whole list: an action re-reads only its own row (a legacy Room or a
-structured session the hub does not own waits for the next refresh), and `A`
+structured session the hub does not own waits for the next page), and `A`
 re-reads because it changes the query. The re-read row obeys the same query as
 the list: closing a session while history is off removes it, and a page that
 started before the close cannot bring it back.
+
+Refresh is change-driven (#102 phase 4, `session_refresh.py`):
+
+- *Fast tick, every 250 ms.* The dashboard keeps one read-only connection to
+  `control.sqlite3` open and reads `PRAGMA data_version`. If no other connection
+  committed, it does nothing more: no query, no row read. After a commit it
+  lists the sessions written since its cursors (hub rows by `updated_at`,
+  read through a covering index; structured sessions by
+  `session_events.sequence` and `managed_sessions.updated_at`) and re-shows
+  only those rows, reusing the last terminal inventory (a row new to the view
+  takes a fresh one).
+- *Slow tick, every 5 s.* Some facts change because time passed or a process
+  died, and nothing writes a row: liveness, `Hooks not reporting` (90 s after
+  launch without a native event), staleness windows, a receipt made stale by a
+  Memory publication, legacy Rooms. The slow tick takes one bounded tmux
+  inventory and re-reads the whole page, so these appear within 5 s plus one
+  page read. Pages start 5 s apart, measured from each start; a page that
+  outlasts the interval is followed at once, never overlapped.
+- One worker thread does every read, one at a time, and returns row deltas. A
+  failed row read marks that row `stale since …` and keeps it; the next page
+  clears the marker. A change the dashboard cannot read as a single row (a
+  managed session the hub does not own, a pruned row) brings the page
+  forward, at most once every 2 s (the old refresh period).
+- `A` pressed while a page is being read is no longer lost: the next page uses
+  the new query (Q17-F6).
+- The view writes nothing. Its cursors live only in the dashboard process: it
+  consumes no event queue and acknowledges nothing. With `control.session_preview`
+  off, refreshes issue no preview read.
+
+Limits: the page summary counts (`N current; …`) change with the page, so they
+can trail a row delta by up to 5 s; the title count and rows are current. The
+optional `hub_events` timeline table from the design is not built.
 
 The backend retains session identity and message records in SQLite. Terminal
 ownership uses the existing verified Room/tmux adapter. There is no Redis
@@ -261,9 +293,9 @@ Follow-ups (not yet done):
 - History paging: scrolling back through the capture (design §4.2, Q17-F5).
 - Cancel on close: closing the dashboard stops scheduling and discards a read
   still running, but does not cancel that read; it ends at its 2 s deadline.
-- Inherited from phases 1–2: the `A` history toggle's refresh delay (Q17-F6),
-  and automatic folding of singleton finished projects, which saves no lines
-  and slows past a few hundred rows (Q17-F7).
+- Inherited from phases 1–2: automatic folding of singleton finished projects,
+  which saves no lines and slows past a few hundred rows (Q17-F7). The `A`
+  history toggle's refresh delay (Q17-F6) is fixed by phase 4.
 
 ## Status and input
 

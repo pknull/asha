@@ -12,24 +12,33 @@ from .session_hub import Hub
 from .store import StoreError
 
 
-def overview(config, *, env=None, tmux=None, include_closed=False):
+class _UnavailableTerminal:
+    """Stands in for a terminal inventory that could not be read."""
+    def __getattr__(self, name):
+        from .tmux import TmuxError
+        def unavailable(*args, **kwargs):
+            raise TmuxError('Terminal observation unavailable')
+        return unavailable
+
+
+def terminal_inventory(deadline):
+    """One bounded tmux inventory, or a stand-in that refuses, plus its error."""
+    from .tmux import TmuxAdapter
+    from .orchestration.observation import BoundedTmux
+    try:
+        return BoundedTmux(TmuxAdapter(), deadline).inventory(), []
+    except (ValueError, OSError) as exc:
+        return _UnavailableTerminal(), ['Terminal observation unavailable: ' + str(exc)]
+
+
+def overview(config, *, env=None, tmux=None, include_closed=False, tmux_errors=(), deadline=None):
+    """The session page. ``tmux`` and ``tmux_errors`` pass in an inventory already read."""
     from .rooms import RoomStore, _owned_state
     from .store import SnapshotBudget
-    from .tmux import TmuxAdapter, TmuxError
-    from .orchestration.observation import BoundedTmux
-    deadline = time.monotonic() + 2
-    probe_errors = []
+    deadline = time.monotonic() + 2 if deadline is None else deadline
+    probe_errors = list(tmux_errors)
     if tmux is None:
-        try:
-            tmux = BoundedTmux(TmuxAdapter(), deadline).inventory()
-        except (ValueError, OSError) as exc:
-            probe_errors.append('Terminal observation unavailable: ' + str(exc))
-            class UnavailableTerminal:
-                def __getattr__(self, name):
-                    def unavailable(*args, **kwargs):
-                        raise TmuxError('Terminal observation unavailable')
-                    return unavailable
-            tmux = UnavailableTerminal()
+        tmux, probe_errors = terminal_inventory(deadline)
     hub = Hub(config, env=env, tmux=tmux)
     try:
         page = hub.list(include_closed=include_closed, deadline=deadline)

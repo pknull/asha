@@ -507,6 +507,24 @@ class ControlDatabase:
             # The caller is already unwinding; close() surfaces a dead handle.
             pass
 
+    def data_version(self) -> int:
+        """SQLite's change counter: it moves when another connection commits.
+
+        One integer read outside any transaction, with no table access, so a
+        viewer can poll it cheaply between short read transactions.
+        """
+        connection = self._live()
+        if connection.in_transaction:
+            raise DatabaseError("Control database transaction is already active")
+        try:
+            return int(connection.execute("PRAGMA data_version").fetchone()[0])
+        except sqlite3.Error as exc:
+            raise _wrap(exc, "cannot read data version") from exc
+
+    def set_trace(self, callback) -> None:
+        """Report each statement this connection runs (a test and diagnostics seam)."""
+        self._live().set_trace_callback(callback)
+
     @contextmanager
     def transaction(self, *, write: bool = False) -> Iterator[Transaction]:
         """Run one short transaction; writes take the lock up front.
