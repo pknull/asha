@@ -82,12 +82,11 @@ class StateSectionTests(unittest.TestCase):
     CASES = [
         (dict(activity='needs-input'), 'state:needs'),
         (dict(activity='permission-requested'), 'state:needs'),
-        (dict(activity='close-failed'), 'state:needs'),
         (dict(activity='working'), 'state:working'),
         (dict(activity='queued'), 'state:working'),
         (dict(activity='unknown', telemetry='hooks-not-reporting'), 'state:working'),
         (dict(activity='closing', lifecycle='closing'), 'state:closing'),
-        (dict(activity='idle', completion_readiness={'status': 'ready'}), 'state:ready'),
+        (dict(activity='finished'), 'state:ready'),
         (dict(activity='idle', profile='room'), 'state:idle'),
         (dict(activity='idle'), 'state:idle'),
         (ENDED, 'ended'),
@@ -153,7 +152,7 @@ class FoldTests(unittest.TestCase):
         self.assertEqual(session_view.fold(ViewModel(), fold=True), ViewModel())
 
 
-DONE = dict(activity='idle', completion_readiness={'status': 'ready'})
+DONE = dict(activity='finished')
 TOKEN = session_view.TOKEN
 
 
@@ -191,7 +190,7 @@ class AutoFoldTests(unittest.TestCase):
 
     def test_attention_and_working_rows_are_never_folded(self):
         rows = [row(str(i), created=i, **({'activity': 'needs-input'} if i % 2 else {})) for i in range(8)]
-        rows += [row('x', created=9, **dict(ENDED, activity='close-failed'))]
+        rows += [row('x', created=9, **dict(ENDED, activity='needs-input'))]
         view = model_of(rows)
         fitted = session_view.fit(view, 2)
         self.assertEqual(fitted.auto, frozenset())
@@ -368,19 +367,15 @@ class AttentionJumpTests(unittest.TestCase):
 
 
 class RowFactTests(unittest.TestCase):
-    """Sub-line facts come from presented fields only (receipt, close, background, staleness)."""
+    """Sub-line facts come from presented fields only (close, background, staleness)."""
 
     def test_facts(self):
         self.assertEqual(row_facts(present(row('a'))), [])
-        receipt = present(row('a', completion_readiness={'receipt': 'current', 'status': 'ready'}))
-        self.assertEqual(row_facts(receipt), ['receipt current'])
-        closing = present(row('a', lifecycle='closing', activity='closing',
-                              closure={'generation': 1, 'state': 'delivered', 'attempts': 2,
-                                       'requested_at': 3600.0}))
-        self.assertEqual(row_facts(closing), ['close requested 01:00 UTC', 'attempt 2', 'delivered'])
-        done = present(row('a', closure={'generation': 1, 'state': 'completed', 'requested_at': 0.0}))
+        closing = present(row('a', lifecycle='closing', activity='closing', closure={'generation': 1, 'state': 'closing', 'requested_at': 3600.0, 'deadline': 3660.0}))
+        self.assertEqual(row_facts(closing), ['close requested 01:00 UTC', 'closes by 01:01 UTC'])
+        done = present(row('a', closure={'generation': 1, 'state': 'closed', 'requested_at': 0.0, 'deadline': 60.0}))
         self.assertEqual(row_facts(done), [])
-        old = present(row('a', generation=2, closure={'generation': 1, 'state': 'delivered'}))
+        old = present(row('a', generation=2, closure={'generation': 1, 'state': 'closing', 'deadline': 1.0}))
         self.assertEqual(row_facts(old), [])
         busy = present(row('a', background_tasks=2))
         self.assertEqual(row_facts(busy), ['2 background tasks'])
@@ -392,7 +387,7 @@ class LineMathTests(unittest.TestCase):
 
     def test_line_offset_counts_headings_and_sub_lines(self):
         rows = session_view.display_rows(model_of([
-            row('a'), row('b', completion_readiness={'receipt': 'current', 'status': 'ready'}),
+            row('a'), row('b', lifecycle='closing', activity='closing', closure={'generation': 1, 'state': 'closing', 'requested_at': 3600.0, 'deadline': 3660.0}),
             row('c'), row('d', project='zeta')]))
         # asha heading, a, b + fact, c, zeta heading, d
         self.assertEqual([session_view.line_offset(rows, 0, i) for i in range(4)], [1, 2, 4, 6])
@@ -400,7 +395,7 @@ class LineMathTests(unittest.TestCase):
 
     def test_the_selected_row_and_its_sub_line_stay_inside_the_space(self):
         rows = session_view.display_rows(model_of(
-            [row(f'r{i:02d}', created=i, completion_readiness={'receipt': 'current', 'status': 'ready'})
+            [row(f'r{i:02d}', created=i, lifecycle='closing', activity='closing', closure={'generation': 1, 'state': 'closing', 'requested_at': 3600.0, 'deadline': 3660.0})
              for i in range(12)]))
         for anchor in range(0, 30):
             start = session_view.viewport_start(rows, 9, anchor, 6)

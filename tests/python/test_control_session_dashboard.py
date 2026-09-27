@@ -16,7 +16,7 @@ class FooterTests(unittest.TestCase):
     """T5: the footer is one line that always fits and names the row's keys."""
 
     STATES = [None, row(), row(activity='needs-input'), row(activity='needs-input', transport='structured'),
-              row(activity='exited', process_state='ended'), row(activity='close-failed'),
+              row(activity='exited', process_state='ended'),
               row(lifecycle='closed', activity='closed', process_state='ended'),
               row(activity='idle', closure={'generation': 1, 'state': 'pending-delivery'}, native_activity='idle')]
 
@@ -46,7 +46,8 @@ class FooterTests(unittest.TestCase):
             row(activity='needs-input', transport='structured')), **wide))
         self.assertIn('r resume', session_tui.footer(session_tui.present(
             row(activity='exited', process_state='ended')), **wide))
-        self.assertIn('X force-close', session_tui.footer(session_tui.present(row(activity='close-failed')), **wide))
+        self.assertIn('X force-close', session_tui.footer(session_tui.present(
+            row(activity='exited', process_state='ended')), **wide))
 
     def test_no_c_close_key_is_offered(self):
         idle = session_tui.present(row(activity='idle', native_activity='idle',
@@ -137,17 +138,15 @@ class ScreenAnchorTests(unittest.TestCase):
 
 
 class RowMarkerTests(unittest.TestCase):
-    def test_receipt_state_is_shown_on_the_session_row(self):
-        rows = [row('cur', completion_readiness={'receipt': 'current', 'status': 'ready'}),
-                row('old', completion_readiness={'receipt': 'stale', 'status': 'stale', 'stale_since': 3600.0}),
-                row('none', completion_readiness={'receipt': 'none', 'status': 'missing'})]
+    def test_close_facts_are_shown_on_the_session_row(self):
+        rows = [row('cur', lifecycle='closing', activity='closing',
+                    closure={'generation': 1, 'state': 'closing', 'requested_at': 3600.0, 'deadline': 3660.0}),
+                row('none')]
         # Phase 2: the facts sit on the line under their row (list column only).
         rendered = [line.split('│')[0] for line in session_tui.lines({'rows': rows}, width=160, height=30)]
-        at = {name: next(i for i, line in enumerate(rendered) if 'Job ' + name in line) for name in ('cur', 'old', 'none')}
-        self.assertIn('receipt current', rendered[at['cur'] + 1])
-        self.assertIn('receipt stale since 01:00 UTC', rendered[at['old'] + 1])
-        self.assertNotIn('receipt', rendered[at['none'] + 1])
-        self.assertNotIn('receipt', rendered[at['none']])
+        at = {name: next(i for i, line in enumerate(rendered) if 'Job ' + name in line) for name in ('cur', 'none')}
+        self.assertIn('close requested 01:00 UTC', rendered[at['cur'] + 1])
+        self.assertNotIn('receipt', '\n'.join(rendered))
 
     def test_stale_rows_are_labelled(self):
         rendered = session_tui.lines({'rows': [row(stale_since=3661.0)]}, width=100, height=30)
@@ -354,7 +353,8 @@ class ActionMembershipTests(unittest.TestCase):
         closed = dict(lifecycle='closed', transport='terminal', profile='worker', activity='closed')
         self.assertFalse(listed(closed, include_closed=False))
         self.assertTrue(listed(closed, include_closed=True))
-        self.assertTrue(listed(dict(closed, closure={'attention': True}), include_closed=False))
+        # D11: an old record's attention flag no longer keeps a closed row listed.
+        self.assertFalse(listed(dict(closed, closure={'attention': True}), include_closed=False))
         finished = dict(lifecycle='open', transport='structured', profile='worker', activity='finished')
         self.assertFalse(listed(finished, include_closed=False))
         self.assertTrue(listed(dict(finished, profile='room'), include_closed=False))

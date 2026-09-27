@@ -135,3 +135,15 @@ def latest_saved_at(hub, row, *, since=None):
                           (row['session_id'], row['generation'], row['project_id'],
                            -1.0 if since is None else since)).fetchone()
     return saved[0] if saved else None
+
+
+def saved_for_assignment(hub, row):
+    """D7: a publication or attestation exists for the row's current assignment."""
+    if not hub.initialized():
+        return False
+    with hub.database() as db, db.transaction() as c:
+        if not _available(c):
+            return False
+        return c.execute('SELECT 1 FROM hub_memory_publications WHERE session_id=? AND generation=? '
+                         'AND project_id=? AND assignment_epoch=? LIMIT 1',
+                         (row['session_id'], row['generation'], row['project_id'], assignment_epoch(row))).fetchone() is not None

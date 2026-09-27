@@ -31,7 +31,7 @@ from .store import (
     StoreError, _CLOEXEC, _NOFOLLOW, _directory_fd, _managed_start,
     _open_existing_file, _registry_lock,
 )
-from .tmux import RoomInputRefused, TmuxAdapter, TmuxError, validate_command_argv
+from .tmux import TmuxAdapter, TmuxError, validate_command_argv
 from .orchestration.projects import display_name, list_projects_across, resolve_roots
 
 
@@ -1008,10 +1008,9 @@ def attach_room(store: RoomStore, selector: str, *, tmux: TmuxAdapter) -> dict[s
 
 
 def close_room(
-    store: RoomStore, selector: str, *, tmux: TmuxAdapter, detached_only: bool = False,
+    store: RoomStore, selector: str, *, tmux: TmuxAdapter,
 ) -> dict[str, Any]:
-    """Close one owned Room. ``detached_only`` (automatic fallbacks) refuses,
-    with ``RoomInputRefused``, while a client is attached or the pane is in a mode."""
+    """Close one owned Room."""
     with store.transaction(create=False):
         record = store.resolve(selector)
         expected_digest = store.digest(record)
@@ -1048,12 +1047,7 @@ def close_room(
         already = record["lifecycle"] == "ended" and state == "missing"
         if state in {"open", "ended"}:
             try:
-                tmux.kill_owned_room(
-                    **_action_identity(record),
-                    **({"detached_only": True} if detached_only else {}),
-                )
-            except RoomInputRefused:
-                raise
+                tmux.kill_owned_room(**_action_identity(record))
             except TmuxError as exc:
                 changed_state, changed_detail = _owned_state(record, tmux)
                 if changed_state != "missing":

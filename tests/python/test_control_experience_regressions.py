@@ -39,7 +39,7 @@ class ReceiptReview(ExperienceFixture):
         self.assertEqual(changed['capture']['status'], 'invalid')
 
     def test_memory_only_retry_retains_existing_capture_receipt(self):
-        close = self.hub.close(self.sid)['closure']
+        close = self.hub.request_close(self.sid, wait=60)['closure']
         active, decisions = self.drafts()
         with self.acting_as(self.sid):
             with self.assertRaises(StoreError):
@@ -63,7 +63,7 @@ class SecurityReview(ExperienceFixture):
                     self.experience.set_policy(str(self.project), 'review', expected_revision=1)
 
     def test_close_correction_can_retain_replacement_before_memory_retry(self):
-        close = self.hub.close(self.sid)['closure']
+        close = self.hub.request_close(self.sid, wait=60)['closure']
         active, decisions = self.drafts()
         with self.acting_as(self.sid):
             with self.assertRaises(StoreError):
@@ -95,7 +95,7 @@ class SecurityReview(ExperienceFixture):
 
 class CorrectionRetryReview(ExperienceFixture):
     def test_memory_only_retry_keeps_latest_successful_correction(self):
-        close = self.hub.close(self.sid)['closure']
+        close = self.hub.request_close(self.sid, wait=60)['closure']
         active, decisions = self.drafts()
         with self.acting_as(self.sid):
             with self.assertRaises(StoreError):
@@ -115,7 +115,7 @@ class CorrectionRetryReview(ExperienceFixture):
         self.assertEqual(result['capture']['report_id'], correction)
 
     def test_policy_disable_does_not_erase_previously_captured_close_receipt(self):
-        close = self.hub.close(self.sid)['closure']
+        close = self.hub.request_close(self.sid, wait=60)['closure']
         active, decisions = self.drafts()
         with self.acting_as(self.sid), self.assertRaises(StoreError):
             self.hub.handoff(close['request_id'], active_file=active, decisions_file=decisions,

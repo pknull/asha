@@ -93,10 +93,9 @@ def overview(config, *, env=None, tmux=None, include_closed=False, tmux_errors=(
     rows = [present(row) for row in rows]
     rows.sort(key=lambda row: {'current': 0, 'ended': 1, 'history': 2}[row['group']])
     complete = page['complete'] and not errors
-    failed_closes = sum(bool((r.get('closure') or {}).get('needs_attention')) for r in rows)
     return {'contract': 'asha.hub-sessions.v1', 'rows': rows, 'complete': complete,
             'errors': errors, 'summary': f"{sum(r['group'] == 'current' for r in rows)} current; {sum(r['group'] == 'ended' for r in rows)} ended; {sum(r['activity'] == 'needs-input' and r['group'] == 'current' for r in rows)} need input"
-            + (f"; {failed_closes} closes need attention" if failed_closes else '') + (' (partial observation)' if not complete else '')}
+            + (' (partial observation)' if not complete else '')}
 
 
 def startup_observation():
@@ -156,11 +155,14 @@ def dispatch(argv, *, env):
         if verb == 'resume':
             parser.add_argument('--digest')
         if verb == 'close':
-            parser.add_argument('--force', action='store_true', help='terminate now; no memory handoff is requested or claimed')
-            parser.add_argument('--wait', type=int, default=0, metavar='SECONDS', help='poll for the handoff acknowledgement before terminating')
+            parser.add_argument('--force', action='store_true', help='a zero wait: terminate now without asking for a save')
+            parser.add_argument('--wait', type=int, default=None, metavar='SECONDS',
+                                help='how long to wait for a Memory save before terminating '
+                                     '(default control.close_wait_seconds, 60)')
     elif verb == 'handoff':
         parser.add_argument('--request', metavar='REQUEST_ID')
-        parser.add_argument('--attempt', type=int)
+        # Accepted and ignored for one release: close requests in live Rooms still name it.
+        parser.add_argument('--attempt', help=argparse.SUPPRESS)
         parser.add_argument('--read', action='store_true', help='print live memory destination facts for this session')
         parser.add_argument('--outcome', choices=['no-durable-update', 'failed', 'blocked'])
         parser.add_argument('--detail')
@@ -211,6 +213,8 @@ def dispatch(argv, *, env):
         elif verb == 'send':
             result = hub.send(args.session_id, args.text, key=args.key or str(uuid.uuid4()), learning_ids=args.learning_ids)
         elif verb in {'stop', 'close'}:
+            if verb == 'close' and args.force and args.wait is not None:
+                parser.error('--force is a zero wait; it cannot be combined with --wait')
             if hub.owns(args.session_id):
                 if verb == 'close':
                     result = hub.close(args.session_id, force=args.force, wait=args.wait)
@@ -219,7 +223,7 @@ def dispatch(argv, *, env):
             else:
                 from .sessions import refuse_managed_operator
                 refuse_managed_operator(config, env)
-                if verb == 'close' and (not args.force or args.wait):
+                if verb == 'close' and not args.force:
                     raise StoreError('graceful close with a memory handoff is available only for hub project sessions; '
                                      'this legacy Room or managed session has no handoff seam: use `close ID --force` (without --wait) or `stop ID`')
                 if is_managed(args.session_id):
@@ -270,14 +274,10 @@ def dispatch(argv, *, env):
             if args.read:
                 result = hub.handoff_read()
             else:
-                if args.request and args.attempt is None:
-                    parser.error('--request requires --attempt from the delivered close request')
-                if not args.request and args.attempt is not None:
-                    parser.error('--attempt requires --request')
                 from .session_closure import parse_digest
                 expected = {'activeContext.md': parse_digest(args.expected_active),
                             'decisions.md': parse_digest(args.expected_decisions)}
-                result = hub.handoff(args.request, attempt=args.attempt, outcome=args.outcome, detail=args.detail,
+                result = hub.handoff(args.request, outcome=args.outcome, detail=args.detail,
                                      active_file=args.active_file, decisions_file=args.decisions_file, expected=expected,
                                      experience_file=args.experience_file, experience_ref=args.experience_ref, supersedes=args.supersedes, key=args.key)
         elif verb == 'messages':

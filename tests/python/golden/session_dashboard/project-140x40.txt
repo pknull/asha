@@ -4,10 +4,9 @@ ASHA CONTROL · Sessions                                                        
 > ◆ lint-sweep             codex    Answer in terminal (attach)     1m│ ◆ Answer in terminal (attach)
   ▲ docs-room              claude   Answer in Control               3m│ Run make lint in /home/pknull/Code/asha
   ● issue-102              claude   Working                         4s│
-  ✓ close-audit            claude   Finalized: close                9m│ session 00000000-0001
-    receipt current                                                   │ 0 queued messages
-  … wrap-up                claude   Closing: await handoff          1m│
-    close requested 13:45 UTC · attempt 1 · delivered                 │
+  ✓ close-audit            claude   Finished, saved 13:37 UTC       9m│ session 00000000-0001
+  … wrap-up                claude   Closing: waiting for a save     1m│ 0 queued messages
+    close requested 13:45 UTC · closes by 13:46 UTC                   │
 ▼ servitor                                                           2│
   ● refactor-io            codex    Working: background tasks      12s│
     2 background tasks                                                │
@@ -16,6 +15,7 @@ ASHA CONTROL · Sessions                                                        
   ● 幅広い名前のセッショ…  claude   Working                         1d│
 ▼ Ended                                                              1│
   · servitor/old-worker    codex    Ended unreported: check work   22m│
+                                                                      │
                                                                       │
                                                                       │
                                                                       │

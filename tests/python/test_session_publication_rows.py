@@ -61,7 +61,7 @@ class PublicationRowTests(PublicationRowFixture):
 
     def test_close_path_handoff_inserts_a_close_row(self):
         sid = self.launch()['session_id']
-        rid = self.hub.close(sid)['closure']['request_id']
+        rid = self.hub.request_close(sid, wait=60)['closure']['request_id']
         active, decisions = self.drafts()
         with self.acting_as(sid):
             self.hub.handoff(rid, active_file=active, decisions_file=decisions, expected=self.digests())

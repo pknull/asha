@@ -20,7 +20,8 @@ from .rooms import (RoomStore, _owned_state, open_room, close_room, attach_room,
 from .session_selection import evidence as selection_evidence, requested
 from .session_store import identifier, text, digest
 from .store import StoreError
-from .tmux import RoomInputRefused, TmuxAdapter
+from .config import CLOSE_WAIT_LIMIT
+from .tmux import TmuxAdapter
 
 
 SCHEMA = (
@@ -49,7 +50,9 @@ def waiting_on_background(row):
 # A session that is closing gracefully still owns its process; its reporter,
 # hooks and handoff remain valid until the close terminates it.
 ACTIVE_LIFECYCLES = {'starting', 'open', 'closing'}
-CLOSE_WAIT_LIMIT = 600
+# Close takes the session's action lock with a bound (D9) and polls this often.
+CLOSE_LOCK_SECONDS = 5
+CLOSE_POLL_SECONDS = 0.5
 # A hook report stamped this much older than the newest applied one is skipped
 # (D2); anything older still applies, bounding a backward clock step.
 STALE_REPORT_SECONDS = 30
@@ -63,6 +66,28 @@ HOOK_REPORTING_HARNESSES = frozenset({'claude', 'codex'})
 # Rejected hook events are kept, not discarded, in a small local diagnostic.
 REJECTION_LOG_NAME = 'hub-rejected-events.jsonl'
 REJECTION_LOG_BYTES = 64 * 1024
+
+
+class LockTimeout(StoreError):
+    """A bounded lock wait ran out: another holder kept the session's action lock."""
+
+
+def _bounded_flock(fd, timeout):
+    """Take the registry flock on ``fd`` within ``timeout`` seconds, or raise ``LockTimeout``."""
+    import fcntl
+    from .store import _HELD_REGISTRY_LOCKS
+    metadata = os.fstat(fd)
+    if (metadata.st_dev, metadata.st_ino) in _HELD_REGISTRY_LOCKS.get():
+        return
+    until = time.monotonic() + timeout
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= until:
+                raise LockTimeout('the session is busy (a handoff may be publishing); retry') from None
+            time.sleep(0.05)
 
 
 def rejection_log_path(config):
@@ -154,13 +179,13 @@ def attach_refusal(row):
 def listed(row, *, include_closed):
     """Whether ``Hub.list`` puts this shown row on its page (#102).
 
-    The SQL filter and this predicate agree: a closed session stays listed only
-    while its failed close needs attention, and a finished structured worker
-    leaves the default page. The dashboard applies it to single-row refreshes.
+    The SQL filter and this predicate agree: a closed session leaves the
+    default page, and a finished structured worker does too. The dashboard
+    applies it to single-row refreshes.
     """
     if include_closed:
         return True
-    if row.get('lifecycle') == 'closed' and not (row.get('closure') or {}).get('attention'):
+    if row.get('lifecycle') == 'closed':
         return False
     return not (row.get('transport') == 'structured' and row.get('profile') == 'worker'
                 and row.get('activity') == 'finished')
@@ -176,12 +201,18 @@ class Hub:
         return ControlDatabase(self.config, create=create, busy_timeout=0.2)
 
     @contextmanager
-    def _action_lock(self, sid):
-        """Serialize process mutations without holding a database write lock."""
+    def _action_lock(self, sid, *, timeout=None):
+        """Serialize process mutations without holding a database write lock.
+
+        ``timeout`` bounds the wait (close, D9); ``LockTimeout`` is raised when
+        another holder (a handoff that is publishing) keeps it past the bound.
+        """
         from .store import _directory_fd, _managed_start, _registry_lock
         root = self.config.tasks_dir.parent / 'hub-locks' / identifier(sid)
         with mutation_guard(self.config), _directory_fd(root, create=True,
                 managed_start=_managed_start(root, ('control', 'hub-locks', sid))) as fd:
+            if timeout is not None:
+                _bounded_flock(fd, timeout)
             with _registry_lock(fd):
                 yield
 
@@ -212,8 +243,6 @@ class Hub:
 
     @staticmethod
     def _save(c, row):
-        from .session_completion import mark_stale
-        mark_stale(row)
         row['updated_at'] = time.time()
         c.execute('INSERT INTO hub_sessions VALUES(?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET lifecycle=excluded.lifecycle,updated_at=excluded.updated_at,payload=excluded.payload',
                   (row['session_id'], row['lifecycle'], row['updated_at'], json.dumps(row)))
@@ -236,6 +265,7 @@ class Hub:
                model=None, effort=None):
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
+        self.reconcile_closes()
         selected = resolve_project(project, env=self.env)
         prompt = text(prompt, 'assignment')
         if profile not in {'worker', 'room'}:
@@ -368,9 +398,9 @@ class Hub:
     def _update(self, sid, *, expected_generation=None, closure_fn=None, validate_fn=None, **changes):
         """Merge changes into the freshly read row inside one write transaction.
 
-        ``closure_fn(record, row)`` computes the closure transition against the
-        record as it is at write time, so a hook that read its row earlier can
-        never overwrite an acknowledgement recorded in between.
+        ``closure_fn(record, row)`` computes the closure record against the
+        record as it is at write time, so a writer that read its row earlier
+        can never overwrite a change recorded in between.
         """
         with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
             found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
@@ -477,14 +507,11 @@ class Hub:
         return row
 
     def _present_session(self, row):
-        from .session_presentation import memory_label, present
+        from .session_presentation import present
         row['selection'] = selection_evidence(row)
         from .session_publication import latest_saved_at
         # D8: the newest publication or attestation in this generation.
         row['memory_saved_at'] = latest_saved_at(self, row)
-        from .session_completion import view
-        if row['lifecycle'] not in {'closed', 'stopped'}:
-            row['completion_readiness'] = view(self, row)
         record = row.get('closure') or {}
         handoff = record.get('handoff') or {}
         # D11: saves recorded before publication rows existed stay readable.
@@ -499,85 +526,27 @@ class Hub:
                 and all(legacy.get(k) == row.get(k) for k in ('session_id', 'generation'))):
             row['memory_saved_at'] = max(row['memory_saved_at'] or 0, legacy['finalized_at'])
         self._present_closure(row)
-        if (record.get('generation') == row['generation'] and record.get('state') == 'forced'
-                and row['memory_saved_at'] is not None):
-            guidance = ((row['closure']['guidance'] + '; ') if handoff.get('outcome') in closure.ACKNOWLEDGED
-                        else 'Force-closed; ') + memory_label(row)
-            row['closure'] = dict(row['closure'], guidance=guidance)
-            row['reason'] = guidance
         row.update(present(row))
 
     def _present_closure(self, row):
-        """Read-only view: refresh structured delivery facts, attach guidance, surface the state."""
+        """Read-only view of the close request or its outcome; never persisted here."""
         record = row.get('closure')
         if not record:
             return
-        if record['generation'] != row['generation']:
+        if record.get('generation') != row['generation']:
             row['closure'] = dict(record, stale=True, guidance='Closure record from an earlier incarnation')
             return
-        if row['transport'] == 'structured' and self._has_structured_record(row['session_id']):
-            record = self._structured_delivery(row, record)
-        if (row['transport'] == 'terminal' and row.get('process_state') != 'ended'
-                and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
-                and waiting_on_background(row)):
-            # #99: the agent's turn ended while its own background work runs;
-            # the close waits for the Stop after the wake-up, not for attach.
-            record = dict(record, waiting_on_background=row['background_tasks'])
-        elif (row['transport'] == 'terminal' and row.get('process_state') != 'ended'
-                and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
-                and not closure.recent_native_observation(row)):
-            from .session_completion import check
-            try:
-                # A proven idle boundary remains valid without periodic callbacks.
-                check(self, row, idle=True)
-            except (OSError, ValueError):
-                record = dict(record, attachment_required=True,
-                    last_error='native activity is unknown or stale; no verified idle boundary, needs attach')
         record = dict(record, guidance=closure.guidance_for(row, record))
-        state = record['state']
         row['closure'] = record
-        if row['lifecycle'] in {'closing', 'interrupted'}:
-            failing = state in closure.RETRYABLE_STATES or state == 'undeliverable'
-            phase = 'Closing' + (f' ({state})' if failing else '')
+        if row['lifecycle'] == 'closing':
             if row['activity'] == 'needs-input':
                 # The final turn is exactly where a native prompt or question lands; never hide it.
-                row['reason'] = phase + ', needs input: ' + str(row.get('question') or row.get('reason') or '')
-            elif row['activity'] == 'exited':
-                # A dead terminal is not "the machine's turn"; keep the observed fact.
-                row['reason'] = phase + f" (exited: {row.get('reason', '')}); " + record['guidance']
+                row['reason'] = 'Closing, needs input: ' + str(row.get('question') or row.get('reason') or '')
             else:
-                # 'unknown' is merely missing telemetry; the closure state is the better fact.
-                row['activity'] = 'close-failed' if failing else 'closing'
-                row['reason'] = phase + ': ' + record['guidance']
-            record['needs_attention'] = failing or row['activity'] == 'exited'
+                row['activity'] = 'closing'
+                row['reason'] = record['guidance']
         elif row['lifecycle'] in {'closed', 'stopped'}:
             row['reason'] = record['guidance']
-            record['needs_attention'] = bool(record.get('attention'))
-            if record.get('attention'):
-                row['activity'] = 'close-failed'
-
-    def _structured_delivery(self, row, record):
-        """Derive delivery from the retained close message and its turn; never persisted here."""
-        if record['state'] not in {'pending-delivery', 'delivered'}:
-            return record
-        from .session_store import SessionStore
-        with SessionStore(self.config) as sessions, sessions.db.transaction() as c:
-            message = c.execute('SELECT * FROM session_messages WHERE session_id=? AND delivery_key=?',
-                                (row['session_id'], closure.message_key(record))).fetchone()
-            turn = None
-            if message and message['turn_id']:
-                turn = c.execute('SELECT * FROM session_turns WHERE turn_id=?', (message['turn_id'],)).fetchone()
-        if message is None:
-            return record
-        if message['state'] in {'cancelled', 'uncertain'} or (turn and turn['state'] not in {'running', 'completed'}):
-            return closure.transition(record, 'undeliverable', last_error=f"close turn {turn['state'] if turn else message['state']}")
-        if turn is None:
-            return record
-        delivered = record if record['state'] == 'delivered' else closure.mark_delivered(
-            record, 'structured-turn', detail='close request consumed by turn ' + turn['turn_id'], message_id=message['message_id'])
-        if turn['state'] == 'completed' and not delivered.get('handoff'):
-            return closure.transition(delivered, 'unanswered')
-        return delivered
 
     def list(self, *, include_closed=False, limit=100, deadline=None):
         if not self.initialized():
@@ -585,9 +554,9 @@ class Hub:
         if not 1 <= limit <= 1000:
             raise StoreError('invalid session limit')
         with self.database() as db, db.transaction() as c:
-            # A close that failed its handoff stays on the default page until the
-            # operator acknowledges it with a force-close; silence is never success.
-            where = '' if include_closed else "WHERE lifecycle!='closed' OR json_extract(payload, '$.closure.attention')=1"
+            # Closed sessions leave the default page; an old record's attention
+            # flag no longer keeps one there (D11).
+            where = '' if include_closed else "WHERE lifecycle!='closed'"
             records = c.execute(f'SELECT session_id FROM hub_sessions {where} ORDER BY updated_at DESC LIMIT ?', (limit + 1,)).fetchall()
         rows, complete = [], len(records) <= limit
         for record in records[:limit]:
@@ -613,29 +582,21 @@ class Hub:
         return attach_room(RoomStore(self.config), row['room_id'], tmux=self.tmux)
 
     def stop(self, sid, *, close=False):
-        """Abrupt stop: ends the owned process now and never claims a memory save.
+        """Abrupt stop: ends the owned process now and never asks for a memory save.
 
-        ``close=True`` is the explicit force-close; a bare ``close()`` is the
-        graceful path with a verified handoff.
+        ``close=True`` records the session closed rather than stopped. A pending
+        close request ends here too (D6).
         """
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
-        with self._action_lock(sid):
+        self.reconcile_closes(exclude=sid)
+        with self._action_lock(sid, timeout=CLOSE_LOCK_SECONDS):
             row = self.get(sid)
             if row['lifecycle'] == 'closed' or (row['lifecycle'] == 'stopped' and not close):
-                record = row.get('closure')
-                if record and record.get('attention'):
-                    # Any explicit stop or force-close is the operator accepting that no
-                    # memory was saved; the closure evidence itself is kept untouched.
-                    self._update(sid, closure=dict(record, attention=False, dismissed_at=time.time()))
                 return self.show(sid)
             record = row.get('closure')
-            if self._live(row) or (record and record['state'] not in closure.TERMINAL_STATES):
-                # A verified handoff already recorded is kept as evidence; a
-                # force never claims one that did not happen.
-                record = closure.transition(record or self._new_closure(row), 'forced', terminated_at=time.time())
-            # An explicit operator stop or force-close is itself the acknowledgement.
-            return self._stop(row, close=close, closure_record=record, dismiss=True)
+            closed = self._closed_record(row, record) if closure.pending(record, row) else None
+            return self._stop(row, close=close, closure_record=closed)
 
     def _live(self, row):
         """Is there a live agent this session could ask for a final turn?"""
@@ -656,12 +617,13 @@ class Hub:
             return False
         return state == 'open'
 
-    def _stop(self, row, *, close, closure_record=None, dismiss=False, detached_only=False):
-        """Terminate the owned process; record the closure outcome honestly."""
+    def _stop(self, row, *, close, closure_record=None):
+        """Terminate the owned process; an attached terminal is killed too (D4)."""
         sid = row['session_id']
         if row['transport'] == 'structured':
             from .session_store import SessionStore
             if self._has_structured_record(sid):
+                # A stop request (D10); the store's own cleanup reconciles the provider.
                 with SessionStore(self.config) as sessions:
                     sessions.stop(sid)
         else:
@@ -674,124 +636,208 @@ class Hub:
                 if self.tmux.has_session(session):
                     raise StoreError('launch ownership is uncertain; inspect the retained session')
             else:
-                # ``detached_only`` makes tmux itself refuse while a client is attached.
-                close_room(rooms, row['room_id'], tmux=self.tmux, detached_only=detached_only)
+                close_room(rooms, row['room_id'], tmux=self.tmux)
         changes = dict(lifecycle='closed' if close else 'stopped')
         if closure_record is not None:
-            attention = (closure_record['state'] in closure.ATTENTION_STATES and not closure_record['memory'].get('saved')
-                         and not dismiss)
-            changes['closure'] = dict(closure_record, terminated_at=closure_record.get('terminated_at') or time.time(),
-                                      attention=attention)
+            changes['closure'] = closure_record
         self._update(sid, **changes)
         return self.show(sid)
 
-    def close(self, sid, *, force=False, wait=0):
-        """Graceful close: request a final handoff turn; terminate only after a verified acknowledgement.
+    def close(self, sid, *, force=False, wait=None):
+        """Best-effort close: ask for a Memory save, wait a bounded time, then terminate.
 
-        Repeated calls are idempotent: one request per incarnation, no duplicate
-        messages. ``wait`` polls for the acknowledgement (bounded) before the
-        final termination. ``force`` terminates now and records that no
-        memory save was claimed.
+        ``wait`` defaults to ``control.close_wait_seconds``; ``force`` is a zero
+        wait. A repeated close joins the pending request (one request and at
+        most one typed pointer per request) and finalizes it once it expired.
+        The row ends closed, labelled saved or unsaved from the generation's
+        publications (D8).
         """
-        if type(wait) is not int or not 0 <= wait <= CLOSE_WAIT_LIMIT:
-            raise StoreError(f'wait must be 0..{CLOSE_WAIT_LIMIT} seconds')
-        if force:
-            if wait:
-                raise StoreError('--force terminates now; it cannot be combined with --wait')
-            return self.stop(sid, close=True)
+        wait = self._close_wait(force, wait)
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
-        deadline = time.monotonic() + wait
-        result = self._close_step(sid, deadline)
-        while result['lifecycle'] == 'closing' and time.monotonic() < deadline:
-            state = result['closure']['state']
-            if result['activity'] == 'needs-input':
-                break
-            if state == 'acknowledged':
-                result = self._close_step(sid, deadline)
-                if result['lifecycle'] == 'closing':
-                    time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
-                continue
-            if state not in {'pending-delivery', 'delivered'}:
-                break
-            # A queued-only channel is satisfied only when the worker reads messages; poll it gently.
-            interval = 0.5 if result['closure']['delivery'].get('channel') in {'stop-hook', 'structured-turn'} else 2.0
-            time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
-            result = self._close_step(sid, deadline)
-        return result
+        self.reconcile_closes(exclude=sid)
+        row = self.request_close(sid, wait=wait)
+        if row['lifecycle'] != 'closing':
+            return row
+        return self.await_close(sid, row['closure']['request_id'])
 
-    def _close_step(self, sid, deadline):
-        """One close attempt. A client attached at the receipt close's kill is a
-        transient refusal: poll until ``deadline``, then refuse, keeping the receipt."""
-        while True:
-            try:
-                with self._action_lock(sid):
-                    return self._close_once(sid)
-            except RoomInputRefused as exc:
-                if time.monotonic() >= deadline:
-                    raise StoreError(f'close refused: the terminal is in use ({exc}); nothing was stopped and the '
-                                     'completion receipt is kept. Detach, then re-run close, or --force') from exc
-                time.sleep(min(0.5, max(0.0, deadline - time.monotonic())))
+    def _close_wait(self, force, wait):
+        if wait is not None and (type(wait) is not int or not 0 <= wait <= CLOSE_WAIT_LIMIT):
+            raise StoreError(f'wait must be 0..{CLOSE_WAIT_LIMIT} seconds')
+        if force and wait is not None:
+            raise StoreError('--force is a zero wait; it cannot be combined with --wait')
+        return 0 if force else self.config.close_wait_seconds if wait is None else wait
 
-    def _close_once(self, sid):
-        row = self.get(sid)
-        if row['lifecycle'] == 'closed':
-            return self.show(sid)
-        record = row.get('closure')
-        observed = record   # the record as read; a hook may move it while the tmux probe runs
-        current = record and record['generation'] == row['generation'] and record['state'] not in closure.TERMINAL_STATES
-        live = self._live(row)
-        from .session_completion import close_finalized
-        finalized = close_finalized(self, row, ended=not live)
-        if finalized is not None:
-            return finalized
-        if not live:
-            from .session_experience import Experiences
-            if row['lifecycle'] in ACTIVE_LIFECYCLES:
-                row = Experiences(self).reconcile_completion(row)
-            # Nothing can be asked. Retain whatever the request reached, never a success.
-            if current and record['state'] in {'delivered', 'pending-delivery'}:
-                record = closure.transition(record, 'undeliverable', last_error='the harness is no longer live')
-            elif current and record['state'] == 'acknowledged':
-                record = closure.transition(record, 'handoff-failed',
-                    last_error='completion receipt missing or stale; inspect Memory and handoff')
-            elif not record or record['generation'] != row['generation']:
-                record = closure.transition(self._new_closure(row), 'unavailable')
-            return self._stop(row, close=True, closure_record=record)
-        if current and row['transport'] == 'structured':
-            record = self._structured_delivery(row, record)
-        if not current:
+    def request_close(self, sid, *, wait):
+        """Record the close request and deliver it; never waits (D6). Returns the shown row."""
+        with self._action_lock(sid, timeout=CLOSE_LOCK_SECONDS):
+            row = self.get(sid)
+            if row['lifecycle'] == 'closed':
+                return self.show(sid)
+            record = row.get('closure')
+            if row['lifecycle'] == 'closing' and closure.pending(record, row):
+                if wait == 0:
+                    # --force on a pending request: its deadline is now.
+                    return self._finalize_locked(sid, record['request_id'])
+                return self.show(sid)
             if record:
                 self._update(sid, closure_history=row.get('closure_history', []) + [record])
-            record = self._deliver(row, self._new_closure(row))
-        elif record['state'] in closure.RETRYABLE_STATES or record['state'] == 'undeliverable':
-            record = self._deliver(row, closure.rearm(record))
-        if record['state'] == 'acknowledged':
-            from .session_completion import check, CompletionPending
-            try:
-                check(self, self.get(sid))
-            except CompletionPending:
-                pass
-            except (ValueError, OSError) as exc:
-                record = closure.transition(record, 'handoff-failed', last_error=str(exc), attachment_required=True)
-        if (row['transport'] == 'terminal' and record['state'] in {'pending-delivery', 'delivered', 'acknowledged'}
-                and not record.get('attachment_required')
-                and not closure.recent_native_observation(self.get(sid)) and not waiting_on_background(self.get(sid))):
-            record = closure.transition(record, record['state'], attachment_required=True,
-                last_error='native activity is unknown or stale; no verified idle boundary, needs attach')
-        if record['state'] == 'undeliverable':
-            # The queue refused the request: there is no agent left to ask.
-            return self._stop(row, close=True, closure_record=record)
-        # Apply only against the record this call read. A SessionEnd observation
-        # that landed meanwhile (it writes without the action lock) must not be
-        # rolled back to the older snapshot; the next close re-derives from it.
-        self._update(sid, lifecycle='closing',
-                     closure_fn=lambda current, _row: record if current == observed else current)
-        return self.show(sid)
+            record = self._new_closure(row, wait)
+            live = self._live(row)
+            if wait == 0 or not live or self._finished_and_saved(row):
+                # Nothing to wait for (D7: a current finished report with a save closes at once).
+                if row['lifecycle'] in ACTIVE_LIFECYCLES and not live:
+                    from .session_experience import Experiences
+                    row = Experiences(self).reconcile_completion(row)
+                return self._stop(row, close=True, closure_record=self._closed_record(row, record))
+            record = self._deliver(row, record)
+            self._update(sid, lifecycle='closing', closure=record)
+            return self.show(sid)
 
-    def _new_closure(self, row):
+    def await_close(self, sid, request_id):
+        """Poll until a save lands after the request, the process ends, or the deadline passes."""
+        from .session_publication import latest_saved_at
+        while True:
+            row = self.get(sid)
+            record = row.get('closure') or {}
+            if row['lifecycle'] != 'closing' or record.get('request_id') != request_id:
+                return self.show(sid)
+            if (latest_saved_at(self, row, since=record['requested_at']) is not None
+                    or not self._live(row)):
+                return self._finalize(sid, request_id)
+            now = time.time()
+            if now >= record['deadline']:
+                return self._finalize(sid, request_id, grace=closure.PUBLICATION_GRACE_SECONDS)
+            self._point(row, record)
+            time.sleep(min(CLOSE_POLL_SECONDS, max(0.0, record['deadline'] - now)))
+
+    def spawn_close_waiter(self, sid):
+        """Start a detached ``asha control session close ID`` that waits out the request (D6)."""
+        import subprocess
+        asha = Path(__file__).resolve().parents[2] / 'bin' / 'asha'
+        subprocess.Popen([str(asha), 'control', 'session', 'close', identifier(sid)], env=self.env,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         start_new_session=True, close_fds=True)
+
+    def reconcile_closes(self, *, exclude=None):
+        """Finalize every close whose deadline passed while nothing waited (D6).
+
+        Runs from mutation paths only, never the cached read-only refresh.
+        """
+        if not self.initialized():
+            return
+        with self.database() as db, db.transaction() as c:
+            expired = [r[0] for r in c.execute(
+                "SELECT session_id FROM hub_sessions WHERE lifecycle='closing' "
+                "AND json_extract(payload, '$.closure.deadline') < ?", (time.time(),))]
+        for sid in expired:
+            if sid == exclude:
+                continue
+            row = self.get(sid)
+            try:
+                # Same D9 grace as the foreground waiter: an in-flight save finishes first.
+                self._finalize(sid, row['closure']['request_id'],
+                               grace=closure.PUBLICATION_GRACE_SECONDS)
+            except (ValueError, OSError):
+                pass
+
+    def _finished_and_saved(self, row):
+        """D7: a current finished report and a save for the current assignment, in either order.
+
+        A report stays current until new work: a prompt, a message read as a
+        new assignment, or a working report. Tool calls (the save's own) do not
+        end it. A structured report is current while its row says finished.
+        """
+        report = row.get('completion_report') or {}
+        current = (report.get('generation') == row['generation']
+                   and report.get('assignment_epoch') == row.get('assignment_epoch'))
+        if not current and not (row['transport'] == 'structured' and row.get('activity') == 'finished'):
+            return False
+        from .session_publication import saved_for_assignment
+        return saved_for_assignment(self, row)
+
+    def _point(self, row, record):
+        """D1: type the one pointer line into an idle or unobserved terminal pane.
+
+        At most one per request; a working Claude session gets the Stop-hook
+        decision instead, and any other working session gets the pointer once
+        it is observed idle. Only the close's own waiter types.
+        """
+        if (row['transport'] != 'terminal' or record.get('pointer_at') is not None
+                or record['delivery'].get('delivered_at') is not None
+                or (row.get('native_activity') or 'unknown') not in {'idle', 'unknown'}):
+            return
+        try:
+            with self._action_lock(row['session_id'], timeout=CLOSE_POLL_SECONDS):
+                current = self.get(row['session_id'])
+                latest = current.get('closure') or {}
+                if (current['lifecycle'] != 'closing' or latest.get('request_id') != record['request_id']
+                        or latest.get('pointer_at') is not None):
+                    return
+                room = RoomStore(self.config).read(current['room_id'])
+                state, detail = _owned_state(room, self.tmux)
+                if state != 'open':
+                    return
+                # Recorded first, so a failure below never types a second line.
+                self._update(row['session_id'], closure=dict(latest, pointer_at=time.time()))
+                self.tmux.send_line(room['tmux']['pane_id'], closure.pointer_line(latest))
+        except (LockTimeout, ValueError, OSError):
+            return
+
+    def _finalize(self, sid, request_id, *, grace=0.0):
+        """Terminate for this request; a publication in flight gets ``grace`` seconds first (D9)."""
+        until = time.monotonic() + grace
+        if grace:
+            self._await_publication(self.get(sid), until)
+        try:
+            with self._action_lock(sid, timeout=max(CLOSE_LOCK_SECONDS, until - time.monotonic())):
+                return self._finalize_locked(sid, request_id)
+        except LockTimeout:
+            # A handoff still publishing past the grace: kill anyway. A Memory
+            # write cut short is recovered by its journal on the next read.
+            return self._finalize_locked(sid, request_id)
+
+    def _await_publication(self, row, until):
+        """Wait (to ``until``) while an explicit save holds the project's Memory publication lock."""
+        import fcntl
+        try:
+            lock = closure.secure_path(closure.secure_project_root(Path(row['project'])),
+                                       'Work/session-state/.memory-publication.lock')
+            fd = os.open(lock, os.O_RDWR | getattr(os, 'O_NOFOLLOW', 0))
+        except (OSError, ValueError):
+            return
+        try:
+            while True:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                    return
+                except BlockingIOError:
+                    if time.monotonic() >= until:
+                        return
+                    time.sleep(0.05)
+        finally:
+            os.close(fd)
+
+    def _finalize_locked(self, sid, request_id):
+        """Idempotent: only the named request of the current incarnation is finalized."""
+        row = self.get(sid)
+        record = row.get('closure') or {}
+        if (row['lifecycle'] != 'closing' or record.get('request_id') != request_id
+                or record.get('generation') != row['generation']):
+            return self.show(sid)
+        if not self._live(row):
+            from .session_experience import Experiences
+            row = Experiences(self).reconcile_completion(row)
+        return self._stop(row, close=True, closure_record=self._closed_record(row, record))
+
+    def _closed_record(self, row, record):
+        from .session_publication import latest_saved_at
+        return dict(record, state='closed', saved_at=latest_saved_at(self, row), terminated_at=time.time())
+
+    def _new_closure(self, row, wait):
         from .session_experience import Experiences
-        record = closure.new_closure(row)
+        record = closure.new_closure(row, wait=wait)
         # The selection this request was made under; statistics attribute the
         # close to it even after a later resume or reroute (#95).
         record['selection'] = selection_evidence(row)
@@ -852,7 +898,7 @@ class Hub:
             return result
 
     def _deliver(self, row, record):
-        """Queue the close request at the supported seam; delivery itself is observed later."""
+        """Queue the close request at the supported seam: the next structured turn, or a hub message."""
         body = closure.request_text(row, record)
         key = closure.message_key(record)
         if row['transport'] == 'structured':
@@ -861,27 +907,22 @@ class Hub:
                 with SessionStore(self.config) as sessions:
                     message = sessions.enqueue(row['session_id'], body, key=key)
             except StoreError as exc:
-                return closure.transition(record, 'undeliverable', last_error=str(exc))
+                return dict(record, delivery=dict(record['delivery'], detail='not queued: ' + str(exc)[:500]))
             wake = self._wake_structured(row['session_id'])
-            detail = wake['dispatch_warning'] or 'queued for the next structured turn'
-            return closure.transition(record, 'pending-delivery', delivery=dict(record['delivery'], channel='structured-turn',
-                                      detail=detail, message_id=message['message_id']))
+            detail = wake['dispatch_warning'] or 'queued as the next structured turn'
+            return dict(record, delivery=dict(record['delivery'], channel='structured-turn', detail=detail,
+                                              message_id=message['message_id']))
         with mutation_guard(self.config), self.database() as db, db.transaction(write=True) as c:
-            # A re-armed request supersedes its earlier unread copies; one outstanding instruction per request.
+            # One outstanding close request: an earlier request's unread copy is superseded.
             c.execute("UPDATE hub_messages SET state='superseded' WHERE session_id=? AND state='queued' AND delivery_key LIKE ? AND delivery_key!=?",
                       (row['session_id'], closure.MESSAGE_KEY_PREFIX + '%', key))
-            old = c.execute('SELECT message_id FROM hub_messages WHERE session_id=? AND delivery_key=?', (row['session_id'], key)).fetchone()
-            if old:
-                mid = old[0]
-            else:
-                mid = str(uuid.uuid4())
-                c.execute('INSERT INTO hub_messages VALUES(?,?,?,?,?,?,?)',
-                          (mid, row['session_id'], key, body, digest(body), 'queued', time.time()))
+            mid = str(uuid.uuid4())
+            c.execute('INSERT INTO hub_messages VALUES(?,?,?,?,?,?,?)',
+                      (mid, row['session_id'], key, body, digest(body), 'queued', time.time()))
         channel = 'stop-hook' if row['harness'] in closure.STOP_HOOK_HARNESSES else 'queued-message'
-        detail = ('delivered as the Stop decision when the current turn ends, or when the worker reads messages'
-                  if channel == 'stop-hook' else 'queued until the worker reads messages; no Stop seam on this harness')
-        return closure.transition(record, 'pending-delivery', delivery=dict(record['delivery'], channel=channel,
-                                  detail=detail, message_id=mid))
+        detail = ('the Stop decision when the current turn ends; an idle pane gets one pointer line'
+                  if channel == 'stop-hook' else 'queued until read; an idle or unobserved pane gets one pointer line')
+        return dict(record, delivery=dict(record['delivery'], channel=channel, detail=detail, message_id=mid))
 
     def stop_decision(self, row, *, stop_hook_active=False):
         """Stop-hook seam: the pending close request as the harness's own block decision.
@@ -890,41 +931,26 @@ class Hub:
         here: the caller prints the decision first and then calls
         ``confirm_delivery``, so a hook killed at its time budget re-emits the
         same request at the next Stop instead of recording a delivery the agent
-        never saw. A delivered request whose continued turn ends without a
-        handoff is marked ``unanswered`` at that next Stop.
+        never saw.
         """
         if row['lifecycle'] != 'closing' or not row.get('closure'):
             return None
-        with self._action_lock(row['session_id']):
+        with self._action_lock(row['session_id'], timeout=CLOSE_LOCK_SECONDS):
             row = self.get(row['session_id'])
             record = row.get('closure')
-            if row['lifecycle'] != 'closing' or not record or record['generation'] != row['generation']:
-                return None
-            from .session_completion import check
-            try:
-                check(self, row, idle=True)
-                return None  # An explicit save already finalized this turn.
-            except (ValueError, OSError):
-                pass
-            if record['state'] == 'pending-delivery' and row['harness'] in closure.STOP_HOOK_HARNESSES and not stop_hook_active:
+            if (row['lifecycle'] != 'closing' or not closure.pending(record, row)
+                    or row['harness'] not in closure.STOP_HOOK_HARNESSES or stop_hook_active
+                    or record['delivery'].get('delivered_at') is not None):
                 # stop_hook_active means this Stop already follows a hook block; never chain blocks.
-                return closure.StopDecision(closure.request_text(row, record), receipt=closure.receipt_for(record))
-            if record['state'] == 'delivered' and not record.get('handoff') and not row.get('background_tasks'):
-                # #99: a turn that ended waiting on its own background work has
-                # not declined the request; the Stop after the wake-up decides.
-                self._update(row['session_id'], expected_generation=row['generation'],
-                             closure_fn=lambda current, _row: closure.transition(current, 'unanswered')
-                             if current and current['state'] == 'delivered' and not current.get('handoff') else current)
-        return None
+                return None
+            return closure.StopDecision(closure.request_text(row, record), receipt=closure.receipt_for(record))
 
     def confirm_delivery(self, row, receipt=None):
         """Record that a printed Stop decision reached the harness.
 
-        The receipt names the exact close request and delivery attempt the
-        decision was emitted for (``StopDecision.receipt``); without one it is
-        taken from the row the caller acted on. A receipt for any other request,
-        attempt or generation is stale and changes nothing, so a replacement
-        request keeps its own pending delivery. Idempotent.
+        The receipt names the exact close request and incarnation the decision
+        was emitted for (``StopDecision.receipt``); any other is stale and
+        changes nothing. Idempotent.
         """
         if receipt is None:
             receipt = closure.receipt_for(row.get('closure')) if row.get('closure') else None
@@ -932,21 +958,22 @@ class Hub:
             return {'confirmed': False, 'reason': 'no delivery receipt'}
         outcome = {'confirmed': False, 'reason': 'stale receipt'}
         def mark(record, current):
-            if not record or closure.receipt_for(record) != receipt or record['generation'] != current['generation']:
+            if not closure.pending(record, current) or closure.receipt_for(record) != receipt:
                 return record
-            if record['state'] != 'pending-delivery' or current['lifecycle'] != 'closing':
-                outcome.update(reason='already delivered' if record['state'] != 'pending-delivery' else 'session no longer closing')
+            if record['delivery'].get('delivered_at') is not None:
+                outcome.update(reason='already delivered')
                 return record
             outcome.update(confirmed=True, reason='delivered')
             return closure.mark_delivered(record, 'stop-hook', detail='emitted as the Stop hook decision',
                                           message_id=record['delivery'].get('message_id'))
-        with self._action_lock(row['session_id']):
+        with self._action_lock(row['session_id'], timeout=CLOSE_LOCK_SECONDS):
             self._update(row['session_id'], closure_fn=mark)
         return outcome
 
     def resume(self, sid, *, prompt, expected_digest=None, learning_ids=None):
         from .sessions import refuse_managed_operator
         refuse_managed_operator(self.config, self.env)
+        self.reconcile_closes()
         with self._action_lock(sid):
             return self._resume(sid, prompt=prompt, expected_digest=expected_digest, learning_ids=learning_ids)
 
@@ -954,7 +981,7 @@ class Hub:
         prompt = text(prompt, 'continuation')
         row = self.get(sid)
         if row['lifecycle'] == 'closing':
-            raise StoreError('a close request is pending; let it finish, re-run close, or force-close first')
+            raise StoreError('a close is pending; let it finish, or force-close first')
         if row['transport'] == 'structured':
             from .session_store import SessionStore
             if not self._has_structured_record(sid):
@@ -1007,6 +1034,7 @@ class Hub:
         from .sessions import refuse_managed_operator
         from . import session_guidance as guidance
         refuse_managed_operator(self.config, self.env)
+        self.reconcile_closes()
         with self._action_lock(sid):
             row = self.get(sid)
             if row['lifecycle'] == 'closed':
@@ -1192,17 +1220,10 @@ class Hub:
         if event in {'tool-completed', 'turn-stopped', 'session-ended'} and (row['activity'] == 'finished' or explicit_question):
             changes.update(activity=row['activity'], reason=row['reason'], question=row['question'],
                            activity_source=row.get('activity_source', 'report'))
-        closure_fn = None
         if event == 'session-ended':
             from .session_experience import Experiences
             Experiences(self).reconcile_completion(row, observed_exit=True)
-            def closure_fn(record, current):
-                if (current['lifecycle'] == 'closing' and record and record['generation'] == current['generation']
-                        and record['state'] in {'pending-delivery', 'delivered'}):
-                    return closure.transition(record, 'undeliverable',
-                                              last_error='the harness exited before answering the close request')
-                return record
-        result = self._update(row['session_id'], expected_generation=row['generation'], closure_fn=closure_fn,
+        result = self._update(row['session_id'], expected_generation=row['generation'],
                               validate_fn=validate_fn, **changes)
         if event:
             result['observation'] = 'applied'
@@ -1227,7 +1248,7 @@ class Hub:
                 raise StoreError('message does not belong to this session')
             record = current.get('closure')
             # Reading the close request is delivery evidence for the queued channel.
-            if (record and record['state'] == 'pending-delivery' and record['generation'] == current['generation']
+            if (closure.pending(record, current) and record['delivery'].get('delivered_at') is None
                     and record['delivery'].get('message_id') == mid):
                 current['closure'] = closure.mark_delivered(record, 'queued-message', detail='close request read and acknowledged', message_id=mid)
                 self._save(c, current)
@@ -1265,38 +1286,32 @@ class Hub:
         row = self._handoff_actor()
         record = row.get('closure')
         memory = closure.memory_destination(row['project'])
+        pending = closure.pending(record, row)
         return {'session_id': row['session_id'], 'generation': row['generation'],
-                'request_id': record['request_id'] if record else None,
-                'attempt': record.get('attempts', 1) if record else None,
-                'closure_state': record['state'] if record else None, 'memory': memory,
+                'request_id': record['request_id'] if pending else None,
+                'closure_state': record.get('state') if record else None, 'memory': memory,
                 'paths': {name: (memory['destination'] + '/' + name) if memory['destination'] else None
                           for name in closure.MEMORY_FILES}}
 
-    def handoff(self, request_id, *, attempt=None, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None,
+    def handoff(self, request_id, *, outcome=None, detail=None, active_file=None, decisions_file=None, expected=None,
                 experience_file=None, experience_ref=None, supersedes=None, key=None):
-        """Finalize current work, optionally acknowledging a bound close request."""
+        """Save project Memory (or attest), optionally answering a pending close request.
+
+        Any save lands as a publication row; a pending close closes on the
+        first one after its request (D8), named or not.
+        """
         request_id = identifier(request_id) if request_id else None
         actor = self._handoff_actor(request_id)
         with self._action_lock(actor['session_id']):
             row = self.get(actor['session_id'])
-            from .session_completion import binding
-            if binding(row) != binding(actor) or row['lifecycle'] not in ACTIVE_LIFECYCLES:
+            if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
             if request_id is None:
                 if any((experience_file, experience_ref, supersedes, key)):
                     raise StoreError('completion experience belongs on session report --state finished')
-                if row.get('closure') and row['closure']['state'] not in closure.TERMINAL_STATES:
-                    raise StoreError('a close request is pending; handoff must name its --request')
-                return self._finalize(row, outcome=outcome, detail=detail, active_file=active_file,
-                                      decisions_file=decisions_file, expected=expected)
+                return self._finalize_handoff(row, outcome=outcome, detail=detail, active_file=active_file,
+                                              decisions_file=decisions_file, expected=expected)
             closure.validate_handoff_request(row.get('closure'), row, request_id)
-            attempts = row['closure'].get('attempts', 1)
-            if attempt is None and attempts > 1:
-                # A re-issued request binds only an explicit selector; an old
-                # reply that omits it must not satisfy the current attempt.
-                raise StoreError(f'this close request was re-issued; name --attempt {attempts} from the delivered request')
-            if attempt is not None and attempt != attempts:
-                raise StoreError('stale close delivery attempt')
             from .session_experience import Experiences
             capture = None
             if not any((experience_file, experience_ref, supersedes, key)):
@@ -1307,14 +1322,10 @@ class Hub:
                     experience_file=experience_file, experience_ref=experience_ref, supersedes=supersedes)
             row = self._update(row['session_id'], expected_generation=row['generation'],
                 closure_fn=lambda record, current: dict(record, capture={**record.get('capture', {}), **capture}))
-            if binding(row) != binding(actor):
-                raise StoreError('work changed during handoff; finalize the current turn')
             return self._handoff(row, request_id, outcome=outcome, detail=detail, active_file=active_file,
                                  decisions_file=decisions_file, expected=expected)
 
-    def _finalize(self, row, *, outcome, detail, active_file, decisions_file, expected):
-        from .session_completion import issue, invalidate
-        invalidate(self, row, 'handoff in progress')
+    def _finalize_handoff(self, row, *, outcome, detail, active_file, decisions_file, expected):
         publication = None
         try:
             if active_file or decisions_file:
@@ -1336,16 +1347,10 @@ class Hub:
                 from .session_completion import snapshot
                 with snapshot(row):
                     pass
-            saved = self._record_saved(row, 'handoff', outcome, detail, publication)
-            if outcome in closure.ACKNOWLEDGED:
-                receipt = issue(self, row, outcome=outcome, detail=detail, publication=publication)
-            else:
-                receipt = dict(status=outcome, detail=detail)
-                self._update(row['session_id'], completion=receipt)
         except (ValueError, OSError) as exc:
-            self._update(row['session_id'], completion=dict(status='blocked', detail=str(exc)[:1000]))
             raise StoreError('handoff refused: ' + str(exc)) from exc
-        return dict(session_id=row['session_id'], outcome=outcome, completion=receipt, git_invoked=False, **saved)
+        saved = self._record_saved(row, 'handoff', outcome, detail, publication)
+        return dict(session_id=row['session_id'], outcome=outcome, detail=detail, git_invoked=False, **saved)
 
     def _record_saved(self, row, source, outcome, detail, publication):
         """Retain a publication row for a successful handoff or attestation (D3).
@@ -1381,14 +1386,10 @@ class Hub:
             if outcome not in {None, 'published'} or not (active_file and decisions_file):
                 raise StoreError('publication requires both draft files and no other outcome')
             outcome = 'published'
-            if not record['memory']['available']:
-                raise StoreError('project memory is unavailable: ' + str(record['memory']['reason']))
             try:
                 publication = closure.publish_handoff(row['project'], active_file, decisions_file, expected=expected or {})
             except (OSError, ValueError) as exc:
                 # Retryable: the request stays open; the agent re-reads and retries or reports blocked.
-                self._update(row['session_id'], expected_generation=row['generation'],
-                             closure=closure.transition(record, record['state'], last_error=str(exc)[:1000]))
                 raise StoreError('handoff publication refused: ' + str(exc)) from exc
             detail = detail or 'published verified project memory'
         if outcome is None:
@@ -1396,22 +1397,11 @@ class Hub:
         detail = text(detail, 'handoff detail', 4000)
         updated = closure.record_handoff(record, row, outcome, detail, publication=publication)
         saved = self._record_saved(row, 'close', outcome, detail, publication and publication['publication'])
-        from .session_completion import issue
-        if outcome in closure.ACKNOWLEDGED:
-            try:
-                completion = issue(self, row, outcome=outcome, detail=detail,
-                    publication=publication and publication['publication'], request=closure.receipt_for(record))
-                if completion['status'] != 'ready':
-                    updated = closure.transition(updated, 'handoff-failed', last_error=completion['detail'])
-            except (ValueError, OSError) as exc:
-                completion = dict(status='blocked', detail=str(exc))
-                updated = closure.transition(updated, 'handoff-failed', last_error=str(exc))
-        else:
-            completion = dict(status=outcome, detail=detail)
-        self._update(row['session_id'], completion=completion)
-        self._update(row['session_id'], expected_generation=row['generation'], closure=updated)
+        self._update(row['session_id'], expected_generation=row['generation'],
+                     closure_fn=lambda current, _row: dict(current, handoff=updated['handoff'])
+                     if current and current.get('request_id') == request_id else current)
         return {'session_id': row['session_id'], 'request_id': request_id, 'outcome': outcome,
-                'closure_state': updated['state'], 'memory': updated['memory'], 'handoff': updated['handoff'],
-                'completion': completion,
+                'closure_state': 'closing', 'memory': updated['memory'], 'handoff': updated['handoff'],
                 'capture': updated.get('capture', {'status': 'disabled', 'report_id': None}),
                 'git_invoked': False, **saved}
+

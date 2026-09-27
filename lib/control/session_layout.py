@@ -11,7 +11,7 @@ from collections import Counter, namedtuple
 from . import session_view
 from .session_preview import sanitize
 from .session_keys import footer, sheet_lines
-from .session_presentation import memory_label, present, receipt_label, row_facts
+from .session_presentation import memory_label, present, row_facts
 from .session_selection import label as selection_label
 from .tui_style import BAD, GOOD, INERT, MACHINE, WAITING, tier_for
 
@@ -32,7 +32,7 @@ GLYPHS = {'working': ('●', '*'), 'input': ('▲', '!'), 'approval': ('◆', '#
           'closing': ('…', '~'), 'open': ('▼', '-'), 'folded': ('▸', '='), 'separator': ('│', '|'),
           'ellipsis': ('…', '~'), 'dot': ('·', '-'), 'dash': ('—', '-'), 'rule': ('─', '-')}
 _INPUT = frozenset({'needs-input', 'waiting-input'})
-_FAILED = frozenset({'failed', 'blocked', 'uncertain', 'budget-exhausted', 'close-failed'})
+_FAILED = frozenset({'failed', 'blocked', 'uncertain', 'budget-exhausted'})
 
 
 def layout(height, width, *, errors=False, peek=False, preview=True):
@@ -61,8 +61,6 @@ def glyph_kind(row):
     activity, step, group = row.get('activity'), row.get('next_step', ''), row.get('group')
     if group == 'history':
         return 'ended'
-    if activity == 'close-failed' or step.startswith('Close failed'):
-        return 'failed'
     if group == 'ended':
         return 'done' if step.startswith('Done') else 'ended'
     if activity == 'permission-requested':
@@ -71,7 +69,7 @@ def glyph_kind(row):
         return 'input'
     if activity == 'closing' or step.startswith('Closing'):
         return 'closing'
-    if step.startswith(('Finalized', 'Done', 'Result ready', 'Finished')):
+    if step.startswith(('Done', 'Finished')):
         return 'done'
     if activity in session_view.WORKING:
         return 'working'
@@ -245,8 +243,7 @@ def _meta(row):
     capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
     experience = (f"capture:{capture.get('status', 'disabled')} review:{row.get('experience_review', 'none')}"
                   if capture else '')
-    receipt = receipt_label(row)
-    return [part for part in (receipt, f"{row.get('pending_messages', 0)} queued messages", experience,
+    return [part for part in (f"{row.get('pending_messages', 0)} queued messages", experience,
                               selection_label(row)) if part]
 
 

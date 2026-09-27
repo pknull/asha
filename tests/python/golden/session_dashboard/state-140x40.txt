@@ -10,13 +10,13 @@ ASHA CONTROL · Sessions                                                        
   ? servitor/smoke-3       claude   Hooks not reporting: attach     6m│
   ● 測試プロジェクト/幅…   claude   Working                         1d│
 ▼ Closing                                                            1│
-  … asha/wrap-up           claude   Closing: await handoff          1m│
-    close requested 13:45 UTC · attempt 1 · delivered                 │
+  … asha/wrap-up           claude   Closing: waiting for a save     1m│
+    close requested 13:45 UTC · closes by 13:46 UTC                   │
 ▼ Ready to close                                                     1│
-  ✓ asha/close-audit       claude   Finalized: close                9m│
-    receipt current                                                   │
+  ✓ asha/close-audit       claude   Finished, saved 13:37 UTC       9m│
 ▼ Ended                                                              1│
   · servitor/old-worker    codex    Ended unreported: check work   22m│
+                                                                      │
                                                                       │
                                                                       │
                                                                       │

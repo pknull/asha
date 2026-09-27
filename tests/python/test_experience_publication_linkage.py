@@ -29,11 +29,11 @@ class PublicationLinkage(ClosureFixture):
         self.assertEqual(receipt['hub_generation'], 1)
         verify_publication(self.hub, self.hub.get(self.sid), receipt)
         self.assertIsNotNone(self.hub.show(self.sid)['memory_saved_at'])
-        closed = self.hub.close(self.sid)
+        closed = self.hub.request_close(self.sid, wait=60)
         self.assertEqual(closed['closure']['capture']['status'], 'disabled')
         self.assertEqual(closed['closure']['capture']['reason'], 'explicit-save-published')
         self.assertNotIn('--experience-file', self.hub.messages(self.sid)[0]['body'])
-        self.assertEqual(self.tmux.killed, [], 'publication alone does not replace issue #92 completion receipt')
+        self.assertEqual(self.tmux.killed, [], 'a save without a current finished report still asks (D7)')
         with self.acting_as(self.sid):
             acknowledgement = self.hub.handoff(closed['closure']['request_id'], outcome='no-durable-update', detail='Already saved')
         self.assertEqual(acknowledgement['capture']['status'], 'disabled')
@@ -46,7 +46,7 @@ class PublicationLinkage(ClosureFixture):
         # D8: a new assignment never erases the generation's save time.
         self.assertIsNotNone(self.hub.show(self.sid)['memory_saved_at'])
         verify_publication(self.hub, self.hub.get(self.sid), receipt)
-        closing = self.hub.close(self.sid)
+        closing = self.hub.request_close(self.sid, wait=60)
         self.assertTrue(closing['closure']['capture']['requested'])
 
     def test_resume_generation_cannot_reuse_publication(self):
@@ -57,7 +57,7 @@ class PublicationLinkage(ClosureFixture):
         self.assertIsNone(self.hub.show(self.sid)['memory_saved_at'])
         with self.assertRaises(StoreError):
             verify_publication(self.hub, self.hub.get(self.sid), receipt)
-        self.assertTrue(self.hub.close(self.sid)['closure']['capture']['requested'])
+        self.assertTrue(self.hub.request_close(self.sid, wait=60)['closure']['capture']['requested'])
 
     def test_new_native_assignment_needs_a_new_completion_capture_key(self):
         with self.acting_as(self.sid):
@@ -73,7 +73,7 @@ class PublicationLinkage(ClosureFixture):
         self.publish()
         with self.acting_as(self.sid):
             self.hub.observe('prompt-submitted')
-        self.assertTrue(self.hub.close(self.sid)['closure']['capture']['requested'])
+        self.assertTrue(self.hub.request_close(self.sid, wait=60)['closure']['capture']['requested'])
 
     def test_forged_receipt_and_actor_fail_without_false_linkage(self):
         from lib.control.session_publication import verify_publication
@@ -94,7 +94,7 @@ class PublicationLinkage(ClosureFixture):
         self.assertNotIn('hub_session_id', receipt)
         receipt = self.publish(source='close')
         self.assertNotIn('hub_session_id', receipt)
-        self.assertTrue(self.hub.close(self.sid)['closure']['capture']['requested'])
+        self.assertTrue(self.hub.request_close(self.sid, wait=60)['closure']['capture']['requested'])
 
     def test_recording_failure_retains_successful_memory_receipt(self):
         with mock.patch('lib.control.session_publication.record_publication', side_effect=StoreError('unavailable')):
@@ -102,7 +102,7 @@ class PublicationLinkage(ClosureFixture):
         self.assertEqual(receipt['status'], 'published')
         self.assertEqual(receipt['hub_publication_status'], 'unavailable')
         self.assertEqual((self.memory / 'activeContext.md').read_text(), ACTIVE)
-        self.assertTrue(self.hub.close(self.sid)['closure']['capture']['requested'])
+        self.assertTrue(self.hub.request_close(self.sid, wait=60)['closure']['capture']['requested'])
 
 
 class RoomSaveIntegration(review_fixture.ReviewFixture):

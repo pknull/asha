@@ -64,14 +64,12 @@ class AttentionTests(unittest.TestCase):
 
     def test_attention_does_not_leave_its_group(self):
         rows = [row('a'), row('e', activity='exited', process_state='ended'),
-                row('f', activity='exited', process_state='ended',
-                    closure={'generation': 1, 'needs_attention': True})]
+                row('f', activity='needs-input', process_state='ended')]
         ordered = [r['session_id'] for r in order(rows)]
         self.assertEqual(ordered, ['a', 'f', 'e'])
 
-    def test_approval_and_close_failure_count_as_attention(self):
-        for changes in ({'activity': 'permission-requested'}, {'activity': 'close-failed'},
-                        {'activity': 'waiting-input'}):
+    def test_approval_and_waiting_input_count_as_attention(self):
+        for changes in ({'activity': 'permission-requested'}, {'activity': 'waiting-input'}):
             with self.subTest(changes=changes):
                 rows = [row('a'), row('b', **changes)]
                 self.assertEqual([r['session_id'] for r in order(rows)], ['b', 'a'])

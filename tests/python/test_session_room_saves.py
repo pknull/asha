@@ -34,8 +34,8 @@ class RoomSaveFixture(ClosureFixture):
             self.hub.observe('prompt-submitted')
             self.hub.observe('tool-started')
             self.hub.observe('tool-completed')
-            receipt = self.hub.handoff(None, **self.room_drafts())['completion']
-            self.assertEqual(receipt['status'], 'ready', receipt.get('detail'))
+            result = self.hub.handoff(None, **self.room_drafts())
+            self.assertEqual(result['hub_publication_status'], 'recorded', result)
             if report:
                 self.hub.report(state='finished', body='Saved the X decision')
             if stop:
@@ -101,7 +101,7 @@ class RoomSavePresentationTests(RoomSaveFixture):
         self.assert_open_and_saved(self.overview_row(sid))
         text = self.dashboard(shown)
         self.assertIn('Saved ', text)
-        for word in ('Finalized', 'Done', 'finished', 'Ready to close'):
+        for word in ('Finished', 'Done', 'finished', 'Ready to close'):
             self.assertNotIn(word, text)
 
     def test_room_save_without_report_is_not_ready_to_close(self):
@@ -109,8 +109,7 @@ class RoomSavePresentationTests(RoomSaveFixture):
         shown = self.save(sid, report=False)
         self.assert_open_and_saved(shown)
         self.assertNotIn('reported_activity', shown)
-        self.assertEqual(shown['completion_readiness']['status'], 'ready', 'the receipt itself is unchanged')
-        self.assertNotIn('Finalized', self.dashboard(shown))
+        self.assertNotIn('Finished', self.dashboard(shown))
 
     def assert_saved_and_working(self, row):
         """The post-save turn: still working, saved, never finished or ready to close."""
@@ -125,12 +124,11 @@ class RoomSavePresentationTests(RoomSaveFixture):
         """QA26 Q26-F1: the finalizer ended and the turn continues."""
         sid = self.launch(profile='room', harness=harness)['session_id']
         shown = self.save(sid, report=False, stop=False)
-        self.assertEqual(shown['completion_readiness']['status'], 'ready', 'the receipt itself is unchanged')
         self.assert_saved_and_working(shown)
         self.assert_saved_and_working(self.listed(sid))
         self.assert_saved_and_working(self.overview_row(sid))
         text = self.dashboard(shown)
-        for word in ('Finalized', 'Ready to close', 'Done'):
+        for word in ('Finished', 'Ready to close', 'Done'):
             self.assertNotIn(word, text)
         with self.acting_as(sid):
             self.hub.observe('turn-stopped')
@@ -157,7 +155,6 @@ class RoomSavePresentationTests(RoomSaveFixture):
             self.hub.observe('turn-stopped')
         again = self.hub.show(sid)
         self.assertEqual(again['assignment_epoch'], epoch)
-        self.assertNotEqual(again['completion'].get('outcome'), 'published', 'the later handoff replaced the receipt')
         if outcome == 'no-durable-update':
             self.assertGreater(again['memory_saved_at'], saved)
         else:
@@ -171,10 +168,12 @@ class RoomSavePresentationTests(RoomSaveFixture):
     def test_later_blocked_handoff_keeps_the_last_save_time(self):
         self.later_handoff_keeps_the_last_save_time('blocked')
 
-    def test_saved_room_still_closes_gracefully(self):
+    def test_saved_room_with_a_finished_report_closes_at_once(self):
         sid = self.launch(profile='room')['session_id']
         self.save(sid, report=True)
-        self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
+        closed = self.hub.request_close(sid, wait=60)
+        self.assertEqual((closed['lifecycle'], closed['closure']['state']), ('closed', 'closed'))
+        self.assertTrue(closed['reason'].startswith('Closed, saved '))
 
     def test_ended_room_keeps_its_ended_presentation(self):
         sid = self.launch(profile='room')['session_id']
@@ -185,15 +184,15 @@ class RoomSavePresentationTests(RoomSaveFixture):
         self.assertEqual(ended['next_step'], 'Done: close record')
 
 
-class WorkerCompletionUnchangedTests(RoomSaveFixture):
-    def test_worker_save_and_report_is_finished_and_ready(self):
+class WorkerCompletionTests(RoomSaveFixture):
+    def test_worker_save_and_report_is_finished_and_saved(self):
         sid = self.launch()['session_id']
         shown = self.save(sid, report=True)
         self.assertEqual(shown['activity'], 'finished')
-        self.assertEqual(shown['next_step'], 'Finalized: close')
+        self.assertTrue(shown['next_step'].startswith('Finished, saved '), shown['next_step'])
         self.assertNotIn('reported_activity', shown)
         self.assertNotIn('saved_label', shown)
         self.assertEqual(session_view.state_section(shown), 'state:ready')
         self.assertEqual(self.overview_row(sid)['activity'], 'finished')
-        self.assertIn('Finalized: close', self.dashboard(shown))
-        self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
+        self.assertIn('Finished, saved', self.dashboard(shown))
+        self.assertEqual(self.hub.request_close(sid, wait=60)['lifecycle'], 'closed')

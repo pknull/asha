@@ -29,10 +29,9 @@ def fixture_rows():
         row('00000000-0002', 'docs-room', created=2, age=180, activity='needs-input', transport='structured',
             profile='room', reason='Which branch?'),
         row('00000000-0003', 'issue-102', created=3, age=4, reason='Tool: Bash'),
-        row('00000000-0004', 'close-audit', created=4, age=540, activity='idle', memory_saved_at=NOW - 540,
-            completion_readiness={'receipt': 'current', 'status': 'ready'}),
+        row('00000000-0004', 'close-audit', created=4, age=540, activity='finished', memory_saved_at=NOW - 540),
         row('00000000-0005', 'wrap-up', created=5, age=60, lifecycle='closing', activity='closing',
-            closure={'generation': 1, 'state': 'delivered', 'attempts': 1, 'requested_at': NOW - 60}),
+            closure={'generation': 1, 'state': 'closing', 'requested_at': NOW - 60, 'deadline': NOW}),
         row('00000000-0006', 'refactor-io', project='servitor', harness='codex', created=6, age=12,
             background_tasks=2),
         row('00000000-0007', 'smoke-3', project='servitor', created=7, age=360, activity='unknown',
@@ -192,10 +191,9 @@ class ContentTests(unittest.TestCase):
 
     def test_facts_sub_line_sits_under_its_row(self):
         rendered = render(snapshot(model()), width=100, height=30)
-        at = next(i for i, line in enumerate(rendered) if 'close-audit' in line)
-        self.assertIn('receipt current', rendered[at + 1])
         at = next(i for i, line in enumerate(rendered) if 'wrap-up' in line)
-        self.assertIn('attempt 1', rendered[at + 1])
+        self.assertIn('close requested', rendered[at + 1])
+        self.assertIn('closes by', rendered[at + 1])
 
     def test_selection_marker_and_side_panel_identity(self):
         view = model()

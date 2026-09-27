@@ -11,7 +11,7 @@ from types import MappingProxyType
 from .session_presentation import present, row_facts
 
 GROUP_RANK = {'current': 0, 'ended': 1, 'history': 2}
-ATTENTION = frozenset({'needs-input', 'permission-requested', 'waiting-input', 'close-failed'})
+ATTENTION = frozenset({'needs-input', 'permission-requested', 'waiting-input'})
 WORKING = frozenset({'working', 'running', 'queued', 'starting', 'closing'})
 GROUPINGS = ('project', 'state')
 # Phase 2 sections (#102). State sections follow the presented next step.
@@ -19,9 +19,9 @@ STATE_SECTIONS = (('state:needs', 'Needs you'), ('state:working', 'Working'), ('
                   ('state:ready', 'Ready to close'), ('state:idle', 'Idle'))
 TAIL_SECTIONS = (('ended', 'Ended'), ('history', 'History'))
 _SECTION_RANK = {key: rank for rank, (key, _) in enumerate(STATE_SECTIONS + TAIL_SECTIONS)}
-_NEEDS_STEPS = ('Answer', 'Close needs attach', 'Close: attach', 'Close failed', 'Blocked', 'Uncertain',
+_NEEDS_STEPS = ('Answer', 'Blocked', 'Uncertain',
                 'Failed', 'Budget exhausted')
-_READY_STEPS = ('Finalized: close', 'Done: close', 'Result ready', 'Done reported', 'Finished')
+_READY_STEPS = ('Done reported', 'Finished')
 # A folded section is one selectable heading in ``order``; session ids are never prefixed so.
 TOKEN = 'section:'
 # A section's finished rows fold to one `… N more` row (§5.6) under this key prefix.
@@ -50,7 +50,7 @@ class ViewModel:
 
 def attention_rank(row):
     """0 when the row needs the operator; changes only with its attention class."""
-    return 0 if row.get('activity') in ATTENTION or row.get('next_step', '').startswith('Close failed') else 1
+    return 0 if row.get('activity') in ATTENTION else 1
 
 
 def _room_open(row):
@@ -63,7 +63,7 @@ def state_section(row):
     step = row.get('next_step', '')
     if attention_rank(row) == 0 or step.startswith(_NEEDS_STEPS):
         return 'state:needs'
-    if step.startswith(('Closing', 'Finalized, closing')):
+    if step.startswith('Closing'):
         return 'state:closing'
     if step.startswith(_READY_STEPS) and not _room_open(row):
         return 'state:ready'

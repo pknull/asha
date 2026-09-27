@@ -14,7 +14,7 @@ class BootstrapRecovery(fixtures.GuidanceReview):
         with mock.patch.object(SessionStore, '_create_in_transaction', side_effect=StoreError('fixture creation failure')):
             with self.assertRaises(StoreError):
                 self.launch(session_id=sid, transport='structured')
-        closed = self.hub.close(sid)['closure']
+        closed = self.hub.request_close(sid, wait=60)['closure']
         resumed = self.hub.resume(sid, prompt='Start after the failed launch was closed')
         self.assertIsNone(resumed.get('closure'))
         self.assertEqual(len(resumed['closure_history']), 1)
