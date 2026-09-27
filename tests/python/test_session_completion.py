@@ -25,76 +25,6 @@ class CompletionTests(ClosureFixture):
             self.hub.observe('tool-completed', tool_kind='finalizer', tool_token=token)
         return result
 
-    def test_save_idle_close_without_turn_attach_or_force(self):
-        for harness in ('claude', 'codex'):
-            with self.subTest(harness=harness):
-                sid = self.launch(harness=harness)['session_id']
-                with self.acting_as(sid):
-                    self.hub.observe('prompt-submitted')
-                    receipt = self.save(sid)
-                    self.assertEqual(receipt['completion']['status'], 'ready')
-                    self.hub.observe('turn-stopped')
-                starts = len(self.tmux.created)
-                closed = self.hub.close(sid)
-                self.assertEqual(closed['closure']['state'], 'completed')
-                self.assertEqual(closed['closure']['delivery']['channel'], 'completion-receipt')
-                self.assertEqual(len(self.tmux.created), starts)
-                self.assertEqual(self.hub.messages(sid), [])
-
-    def test_no_update_receipt_required_for_explicit_finished_report(self):
-        sid = self.launch()['session_id']
-        with self.acting_as(sid):
-            with self.assertRaisesRegex(StoreError, 'handoff'):
-                self.hub.report(state='finished', body='Done')
-            result = self.hub.handoff(None, outcome='no-durable-update', detail='Reviewed; nothing durable changed')
-            self.assertEqual(result['completion']['status'], 'ready')
-            self.hub.report(state='finished', body='Done')
-            self.hub.observe('turn-stopped')
-        self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
-
-    def test_new_prompt_send_and_tool_invalidate(self):
-        for event in ('prompt-submitted', 'tool-started', 'send'):
-            with self.subTest(event=event):
-                sid = self.launch()['session_id']
-                with self.acting_as(sid):
-                    self.save(sid)
-                    if event == 'send':
-                        self.hub.send(sid, 'More work', key='more')
-                    else:
-                        self.hub.observe(event)
-                    self.hub.observe('turn-stopped')
-                    with self.assertRaisesRegex(StoreError, 'handoff'):
-                        self.hub.report(state='finished', body='Old receipt')
-                self.assertNotEqual(self.hub.close(sid)['closure']['state'], 'completed')
-                self.hub.stop(sid)
-
-    def test_concurrent_memory_update_and_silence_block_readiness(self):
-        import memory_v2
-        for change in ('publication', 'silence'):
-            with self.subTest(change=change):
-                sid = self.launch()['session_id']
-                self.save(sid)
-                if change == 'publication':
-                    memory_v2.publish(self.project, ACTIVE, '# Decisions\n\n- Newer.\n')
-                else:
-                    marker = self.project / 'Work/markers/silence'
-                    marker.parent.mkdir(parents=True, exist_ok=True)
-                    marker.touch()
-                with self.acting_as(sid):
-                    self.hub.observe('turn-stopped')
-                    with self.assertRaisesRegex(StoreError, 'handoff'):
-                        self.hub.report(state='finished', body='Done')
-                self.assertNotEqual(self.hub.close(sid)['closure']['state'], 'completed')
-                self.hub.stop(sid)
-
-    def test_blocked_is_retained_and_cannot_claim_completion(self):
-        sid = self.launch()['session_id']
-        with self.acting_as(sid):
-            result = self.hub.handoff(None, outcome='blocked', detail='Permission denied')
-            self.assertEqual(result['completion']['status'], 'blocked')
-            with self.assertRaisesRegex(StoreError, 'handoff'):
-                self.hub.report(state='finished', body='Done')
-
     def test_idle_claude_missing_receipt_requires_attach(self):
         sid = self.launch()['session_id']
         with self.acting_as(sid):
@@ -103,17 +33,6 @@ class CompletionTests(ClosureFixture):
         self.assertTrue(result['closure']['attachment_required'])
         # #101/#103: the turnless close is off by default, so only attach is offered.
         self.assertEqual(result['next_step'], 'Close needs attach')
-
-    def test_failed_save_cannot_reuse_previous_receipt(self):
-        import memory_v2
-        sid = self.launch()['session_id']
-        self.save(sid)
-        with mock.patch.dict(os.environ, {'ASHA_HUB_SESSION_ID': sid}), mock.patch(
-                'lib.control.session_publication.publication_actor', return_value=(self.hub, self.hub.get(sid))):
-            with self.assertRaises(ValueError):
-                memory_v2.publish(self.project, 'invalid active', DECISIONS)
-        with self.acting_as(sid), self.assertRaisesRegex(StoreError, 'handoff'):
-            self.hub.report(state='finished', body='No false success')
 
     def test_no_update_refuses_unavailable_identity_silence_and_scope(self):
         sid = self.launch()['session_id']
@@ -138,20 +57,6 @@ class CompletionTests(ClosureFixture):
                 config.write_text(original)
                 if cause in {'silence', 'scope'}:
                     marker.unlink()
-
-    def test_receipt_does_not_survive_resume_or_another_session(self):
-        sid = self.launch()['session_id']
-        self.save(sid)
-        receipt = self.hub.get(sid)['completion']
-        self.hub.stop(sid)
-        self.hub.resume(sid, prompt='Further work')
-        with self.acting_as(sid), self.assertRaisesRegex(StoreError, 'handoff'):
-            self.hub.report(state='finished', body='Old generation')
-        self.hub.stop(sid)
-        other = self.launch()['session_id']
-        self.hub._update(other, completion=receipt)
-        with self.acting_as(other), self.assertRaisesRegex(StoreError, 'handoff'):
-            self.hub.report(state='finished', body='Other actor')
 
     def test_prompt_during_liveness_probe_prevents_termination(self):
         sid = self.launch()['session_id']
@@ -181,22 +86,6 @@ class CompletionTests(ClosureFixture):
         result = self.hub.close(sid)
         self.assertNotEqual(result['closure']['state'], 'completed')
         self.assertEqual(self.hub.get(sid)['completion'], old)
-
-    def test_copilot_and_opencode_receipt_does_not_invent_native_idle(self):
-        for harness in ('copilot', 'opencode'):
-            with self.subTest(harness=harness):
-                sid = self.launch(harness=harness)['session_id']
-                # These harnesses have no native Control tool callbacks.
-                with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
-                    result = self.hub.handoff(None, outcome='no-durable-update', detail='Reviewed')
-                    self.assertEqual(result['completion']['status'], 'blocked')
-                    with self.assertRaises(StoreError):
-                        self.hub.report(state='finished', body='Done')
-                result = self.hub.close(sid)
-                self.assertTrue(result['closure']['attachment_required'])
-                self.assertEqual(self.tmux.killed, [])
-                self.hub.stop(sid)
-                self.tmux.killed.clear()
 
     def test_unread_terminal_work_queued_before_finalizing_is_not_discarded(self):
         sid = self.launch()['session_id']
@@ -257,19 +146,6 @@ class CompletionTests(ClosureFixture):
                 self.hub.stop(sid)
                 self.tmux.killed.clear()
 
-    def test_proven_idle_receipt_does_not_expire_without_further_work(self):
-        import time
-        sid = self.launch()['session_id']
-        self.save(sid)
-        receipt = self.hub.get(sid)['completion']
-        self.hub.close(sid)
-        with self.acting_as(sid):
-            self.hub.observe('turn-stopped')
-        self.hub._update(sid, native_observed_at=time.time() - 301,
-                         completion=dict(receipt, finalized_at=time.time() - 302))
-        self.assertEqual(self.hub.show(sid)['next_step'], 'Finalized, closing')
-        self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
-
     def test_dashboard_stale_close_needs_attach_without_mutating_record(self):
         import time
         for requested in (False, True):
@@ -290,100 +166,6 @@ class CompletionTests(ClosureFixture):
                 self.assertEqual(listed['next_step'], 'Close needs attach')
                 self.assertEqual(self.hub.get(sid), before)
                 self.hub.stop(sid)
-
-    def test_new_tool_during_report_capture_refuses_finished_state(self):
-        from lib.control.session_experience import Experiences
-        sid = self.launch()['session_id']
-        self.save(sid)
-        original = Experiences.optional_capture
-        def interleave(experience, *args, **kwargs):
-            self.hub.observe('tool-started', tool_kind='work', tool_token='new-work')
-            return original(experience, *args, **kwargs)
-        with self.acting_as(sid), mock.patch.object(Experiences, 'optional_capture', new=interleave):
-            with self.assertRaisesRegex(StoreError, 'work changed'):
-                self.hub.report(state='finished', body='Stale result')
-        self.assertNotEqual(self.hub.get(sid)['activity'], 'finished')
-        self.assertFalse(self.hub.get(sid).get('completion_report'))
-
-    def test_missing_failed_or_oversized_callback_recovers_only_after_new_idle_turn(self):
-        for callback in (None, 'unknown'):
-            sid = self.launch()['session_id']
-            with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
-                self.hub.observe('tool-started', tool_kind='work', tool_token='lost')
-                if callback:
-                    self.hub.observe('tool-completed', tool_kind='work', tool_token=callback)
-                self.hub.observe('prompt-submitted')
-                self.assertIn('lost', self.hub.get(sid)['active_tools'])
-                self.hub.observe('turn-stopped')
-                self.hub.observe('prompt-submitted')
-                self.assertEqual(self.hub.get(sid)['active_tools'], {})
-                with self.assertRaises(StoreError):
-                    self.hub.report(state='finished', body='No old receipt')
-            self.save(sid)
-            with self.acting_as(sid):
-                self.hub.observe('turn-stopped')
-            self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
-
-    def test_save_none_wrapper_produces_receipt_without_git(self):
-        import save_none
-        import memory_v2
-        from pathlib import Path
-        sid = self.launch()['session_id']
-        active, decisions = self.drafts()
-        with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
-            self.hub.observe('tool-started', tool_kind='finalizer', tool_token='none-save')
-            with mock.patch.dict(os.environ, {'ASHA_HUB_SESSION_ID': sid}), mock.patch(
-                    'lib.control.session_publication.publication_actor', return_value=(self.hub, self.hub.get(sid))):
-                result = save_none.publish_managed_none(self.project, Path(active), Path(decisions), explicit_none=True,
-                    expected_preimages=memory_v2.snapshot_digests(memory_v2.read_published_snapshot(self.project)))
-            self.assertFalse(result['git_invoked'])
-            self.assertEqual(result['publication']['completion']['status'], 'ready')
-            self.hub.observe('tool-completed', tool_kind='finalizer', tool_token='none-save')
-            self.hub.observe('turn-stopped')
-        self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
-
-    def test_composed_finalizer_and_parallel_work_cannot_close(self):
-        for kind in ('work', 'finalizer'):
-            sid = self.launch()['session_id']
-            with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)):
-                if kind == 'finalizer':
-                    self.hub.observe('tool-started', tool_kind='work', tool_token='parallel')
-                self.hub.observe('tool-started', tool_kind=kind, tool_token='save')
-                self.hub.handoff(None, outcome='no-durable-update', detail='Attempted finalization')
-                self.hub.observe('tool-completed', tool_kind=kind, tool_token='save')
-                if kind == 'finalizer':
-                    self.hub.observe('tool-completed', tool_kind='work', tool_token='parallel')
-                self.hub.observe('turn-stopped')
-                with self.assertRaises(StoreError):
-                    self.hub.report(state='finished', body='Must refuse')
-            self.assertNotEqual(self.hub.close(sid)['closure']['state'], 'completed')
-            self.hub.stop(sid)
-
-    def test_save_while_close_waits_suppresses_stop_request_and_closes(self):
-        import threading
-        import time
-        sid = self.launch()['session_id']
-        with self.acting_as(sid):
-            self.hub.observe('prompt-submitted')
-        first = self.hub.close(sid)
-        errors = []
-        def save_then_idle():
-            try:
-                time.sleep(0.1)
-                self.save(sid)
-                with self.acting_as(sid):
-                    stopped = self.hub.observe('turn-stopped')
-                    self.assertIsNone(self.hub.stop_decision(stopped))
-            except BaseException as exc:
-                errors.append(exc)
-        thread = threading.Thread(target=save_then_idle)
-        thread.start()
-        result = self.hub.close(sid, wait=5)
-        thread.join(timeout=5)
-        self.assertFalse(errors, errors)
-        self.assertEqual(result['closure']['request_id'], first['closure']['request_id'])
-        self.assertEqual(result['closure']['state'], 'completed')
-
 
 class StructuredCompletionTests(ClosureFixture):
     def tool_events(self, harness):

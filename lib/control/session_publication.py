@@ -1,9 +1,16 @@
-"""Controller linkage for explicit Memory saves; completion revalidates separately."""
+"""Controller linkage for successful Memory publications and attestations.
+
+Every successful publication path retains one ``hub_memory_publications`` row
+(best-effort close, D3): an explicit save, the close-path handoff, an ordinary
+handoff, and a ``no-durable-update`` attestation. The row's receipt names its
+``source``. "Saved" is read from these rows; nothing here gates completion.
+"""
 from __future__ import annotations
 
 import json
 import os
 import time
+import uuid
 from pathlib import Path
 
 from .store import StoreError
@@ -35,8 +42,35 @@ def publication_actor(project_dir):
     return hub, actor
 
 
+# The paths that insert a row; ``attestation`` is a no-durable-update handoff.
+SOURCES = ('explicit-save', 'close', 'handoff', 'attestation')
+
+
+def insert(c, row, source, receipt):
+    """Retain one successful publication or attestation for this incarnation."""
+    from .session_experience import canonical
+    if source not in SOURCES:
+        raise StoreError('unknown publication source')
+    receipt = dict(receipt, source=source, hub_session_id=row['session_id'], hub_generation=row['generation'],
+                   project_id=row['project_id'])
+    receipt.setdefault('publication_id', str(uuid.uuid4()))
+    c.execute('INSERT INTO hub_memory_publications VALUES(?,?,?,?,?,?,?)',
+              (receipt['publication_id'], row['session_id'], row['generation'], row['project_id'],
+               assignment_epoch(row), time.time(), canonical(receipt)))
+    return receipt
+
+
+def record(hub, row, source, receipt):
+    """Insert a handoff's publication or attestation row for the acting incarnation."""
+    from .session_experience import Experiences
+    hub.initialize()
+    with mutation_guard(hub.config), hub.database() as db, db.transaction(write=True) as c:
+        Experiences.current(c, row)
+        return insert(c, row, source, receipt)
+
+
 def record_publication(hub, actor, receipt):
-    """Retain the receipt issued from validated bytes under the Memory lock."""
+    """Retain an explicit save's receipt issued from validated bytes under the Memory lock."""
     from .session_experience import Experiences, canonical
     if (receipt.get('source') != 'explicit-save' or receipt.get('status') != 'published'
             or receipt.get('project_id') != actor['project_id']
@@ -49,12 +83,7 @@ def record_publication(hub, actor, receipt):
         c.execute('INSERT INTO hub_memory_publications VALUES(?,?,?,?,?,?,?)',
                   (receipt['publication_id'], actor['session_id'], actor['generation'], actor['project_id'],
                    assignment_epoch(actor), time.time(), canonical(receipt)))
-    from .session_completion import issue
-    from .session_closure import receipt_for, TERMINAL_STATES
-    close = actor.get('closure')
-    request = receipt_for(close) if close and close['state'] not in TERMINAL_STATES else None
-    return issue(hub, actor, outcome='published', detail='Explicit save published Memory v2',
-                 publication=receipt, request=request)
+    return 'recorded'
 
 
 def _available(c):
@@ -70,36 +99,40 @@ def verify_publication(hub, actor, publication):
                           (publication.get('publication_id'),)).fetchone() if _available(c) else None
     if (not saved or saved['session_id'] != actor['session_id'] or saved['generation'] != actor['generation']
             or saved['project_id'] != actor['project_id']
-            or saved['receipt'] != canonical({k: v for k, v in publication.items() if k != 'completion'})):
+            or saved['receipt'] != canonical({k: v for k, v in publication.items()
+                                          if k not in {'completion', 'hub_publication_status', 'hub_publication_error'}})):
         raise StoreError('verified explicit-save publication receipt required for this Room generation')
     return dict(saved)
 
 
 def saved_current_assignment(hub, row):
-    """Read-only C6 assessment suppression; never a completion readiness test."""
+    """Read-only C6 assessment suppression: only an explicit save counts (D3), never an attestation."""
     if row['profile'] != 'room' or not hub.initialized():
         return False
     with hub.database() as db, db.transaction() as c:
         if not _available(c):
             return False
-        return c.execute('SELECT 1 FROM hub_memory_publications WHERE session_id=? AND generation=? '
-                         'AND project_id=? AND assignment_epoch=? LIMIT 1',
+        return c.execute("SELECT 1 FROM hub_memory_publications WHERE session_id=? AND generation=? "
+                         "AND project_id=? AND assignment_epoch=? AND json_extract(receipt, '$.source')='explicit-save' "
+                         "LIMIT 1",
                          (row['session_id'], row['generation'], row['project_id'], assignment_epoch(row))).fetchone() is not None
 
 
-def latest_saved_at(hub, row):
-    """Presentation evidence only; never a readiness or termination decision."""
+def latest_saved_at(hub, row, *, since=None):
+    """The newest publication or attestation in this generation (D8), or None.
+
+    Every assignment of the generation counts, so a later assignment never
+    erases an earlier save; the time shown makes its age visible. ``since``
+    restricts it to publications at or after that time. Presentation and close
+    evidence only; never a completion gate.
+    """
+    if not hub.initialized():
+        return None
     with hub.database() as db, db.transaction() as c:
         if not _available(c):
             return None
-        saved = c.execute('SELECT published_at,receipt FROM hub_memory_publications WHERE session_id=? AND generation=? '
-                          'AND project_id=? AND assignment_epoch=? ORDER BY published_at DESC LIMIT 1',
-                          (row['session_id'], row['generation'], row['project_id'], assignment_epoch(row))).fetchone()
-    if saved:
-        receipt = json.loads(saved['receipt'])
-        if (receipt.get('source') == 'explicit-save' and receipt.get('status') == 'published'
-                and receipt.get('hub_session_id') == row['session_id']
-                and receipt.get('hub_generation') == row['generation']
-                and receipt.get('project_id') == row['project_id']):
-            return saved['published_at']
-    return None
+        saved = c.execute('SELECT max(published_at) FROM hub_memory_publications WHERE session_id=? AND generation=? '
+                          'AND project_id=? AND published_at>=?',
+                          (row['session_id'], row['generation'], row['project_id'],
+                           -1.0 if since is None else since)).fetchone()
+    return saved[0] if saved else None

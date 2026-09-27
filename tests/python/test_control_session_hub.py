@@ -89,8 +89,9 @@ class SessionHubTests(unittest.TestCase):
         closed = self.hub.close(row['session_id'], force=True)
         self.assertIn('Memory saved', closed['reason'])
         self.assertNotIn('no project-memory handoff was claimed', closed['reason'])
+        # D8: a later assignment in the same generation keeps the save time visible.
         self.hub._update(row['session_id'], assignment_epoch='later-assignment')
-        self.assertIsNone(self.hub.show(row['session_id'])['memory_saved_at'])
+        self.assertIsNotNone(self.hub.show(row['session_id'])['memory_saved_at'])
 
     def test_close_missing_session_preserves_record_and_messages(self):
         row = self.launch()

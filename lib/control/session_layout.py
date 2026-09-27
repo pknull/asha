@@ -71,7 +71,7 @@ def glyph_kind(row):
         return 'input'
     if activity == 'closing' or step.startswith('Closing'):
         return 'closing'
-    if step.startswith(('Finalized', 'Done', 'Result ready')):
+    if step.startswith(('Finalized', 'Done', 'Result ready', 'Finished')):
         return 'done'
     if activity in session_view.WORKING:
         return 'working'

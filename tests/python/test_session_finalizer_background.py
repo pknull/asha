@@ -136,21 +136,6 @@ class GuaranteeTests(FinalizerFixture):
             self.assertEqual(row['completion']['status'], 'blocked')
             self.assertEqual(row['active_tools'], {})
 
-    def test_late_work_end_after_a_ready_receipt_invalidates_it(self):
-        """A tool whose start report was lost ends after the finalizer; its end reports late."""
-        sid = self.launch()['session_id']
-        with self.acting_as(sid):
-            self.hub.observe('prompt-submitted')
-            n = self.applied(sid) + 1
-            unseen = str(uuid.uuid4())                  # its start (order n) never reports
-            self.tool(sid, start=n + 1, end=n + 2)
-            self.assertEqual(self.finalize()['status'], 'ready')       # finalizer n+3, n+4
-            self.tool(sid, start=n + 6, end=n + 7, kind='report')      # n+5 is still in flight
-            self.hub.observe('tool-completed', tool_kind='work', tool_token=unseen, order=n + 5)
-            with self.assertRaisesRegex(Exception, 'handoff'):
-                self.hub.report(state='finished', body='Done')
-
-
 class EndIdentityTests(FinalizerFixture):
     """QA19: a start is retired only by an end of THAT tool: same session, same native
     conversation, same token and kind, numbered after its start."""

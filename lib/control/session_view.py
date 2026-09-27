@@ -21,7 +21,7 @@ TAIL_SECTIONS = (('ended', 'Ended'), ('history', 'History'))
 _SECTION_RANK = {key: rank for rank, (key, _) in enumerate(STATE_SECTIONS + TAIL_SECTIONS)}
 _NEEDS_STEPS = ('Answer', 'Close needs attach', 'Close: attach', 'Close failed', 'Blocked', 'Uncertain',
                 'Failed', 'Budget exhausted')
-_READY_STEPS = ('Finalized: close', 'Done: close', 'Result ready', 'Done reported')
+_READY_STEPS = ('Finalized: close', 'Done: close', 'Result ready', 'Done reported', 'Finished')
 # A folded section is one selectable heading in ``order``; session ids are never prefixed so.
 TOKEN = 'section:'
 # A section's finished rows fold to one `… N more` row (§5.6) under this key prefix.

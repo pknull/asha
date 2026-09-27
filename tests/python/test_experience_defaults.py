@@ -194,8 +194,8 @@ class C2CompletionCapture(DefaultsFixture):
             self.experience.set_policy(str(self.project), 'capture')
             marker = self.project / 'Work/markers/silence'
             marker.parent.mkdir(parents=True, exist_ok=True); marker.touch()
-            with self.assertRaisesRegex(StoreError, 'silence'):
-                self.hub.report(state='finished', body='Done')
+            # Finished is ungated (D3); silence only withholds the assessment request.
+            self.assertNotIn('experience_request', self.hub.report(state='finished', body='Done'))
             marker.unlink()
             self.hub._update(self.sid, transport='structured')
             self.assertFalse(self.experience.completion_enabled(self.hub.get(self.sid)))

@@ -296,22 +296,6 @@ class RefresherTests(RefreshFixture):
         # Five seconds plus the next page's own (zero) duration and one collecting tick.
         self.assertLessEqual(first - crossing, session_refresh.SLOW_SECONDS + session_refresh.FAST_SECONDS)
 
-    def test_receipt_staleness_from_a_memory_publication_surfaces_within_one_slow_tick(self):
-        import memory_v2
-        sid = self.launch()['session_id']
-        from tests.python.test_session_no_handoff_close import Fixture
-        Fixture.save(self, sid)
-        refresher = self.refresher()
-        view = self.run_for(refresher, session_view.ViewModel(), 0.1)
-        self.assertEqual(view.rows[sid]['completion_readiness']['receipt'], 'current')
-        memory_v2.publish(self.project, ACTIVE, '# Decisions\n\n- Newer.\n')
-        published = self.clock.now
-        seen = []
-        self.run_for(refresher, view, 2 * session_refresh.SLOW_SECONDS, each=lambda v: seen.append(
-            (self.clock.now, v.rows[sid]['completion_readiness']['receipt'])))
-        first = next(at for at, receipt in seen if receipt == 'stale')
-        self.assertLessEqual(first - published, session_refresh.SLOW_SECONDS + 0.1)
-
     def test_a_quiet_dashboard_costs_one_pragma_per_fast_tick_and_a_page_per_slow_tick(self):
         self.other(self.launch()['session_id'])
         feed = self.feed()
