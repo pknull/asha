@@ -352,8 +352,7 @@ def publish(project_dir: Path, active_context: str, decisions: str, *,
         actor = publication_actor(root)
         if actor:
             hub, verified = actor
-            from lib.control.session_completion import invalidate, _scope
-            invalidate(hub, verified, 'save in progress; completion requires a successful publication')
+            from lib.control.session_completion import _scope
             _scope(verified)
     _assert_persistence_enabled(root)
     project_config = require_v2_config(root)
@@ -388,13 +387,13 @@ def publish(project_dir: Path, active_context: str, decisions: str, *,
         receipt.update(hub_session_id=verified['session_id'], hub_generation=verified['generation'])
         from lib.control.session_publication import record_publication
         try:
-            receipt['completion'] = record_publication(hub, verified, receipt)
+            receipt['hub_publication_status'] = record_publication(hub, verified, receipt)
         except (OSError, ValueError) as exc:
             # The Memory transaction already succeeded. Keep that receipt even
             # if Control cannot retain linkage; it grants no Room adoption or
             # duplicate-assessment suppression in that case.
             receipt['hub_publication_status'] = 'unavailable'
-            receipt['completion'] = {'status': 'blocked', 'detail': str(exc)[:1000]}
+            receipt['hub_publication_error'] = str(exc)[:1000]
     return receipt
 
 

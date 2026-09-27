@@ -15,6 +15,12 @@ def saved_label(row):
     return '' if stamp is None else 'saved ' + datetime.fromtimestamp(stamp, timezone.utc).strftime('%H:%M UTC')
 
 
+def finished_label(row):
+    """``Finished, saved HH:MM UTC`` or ``Finished, unsaved`` (D3): finished is never gated on a save."""
+    saved = saved_label(row)
+    return 'Finished, ' + (saved if saved else 'unsaved')
+
+
 def receipt_label(row):
     """The completion-receipt state: whether a close would need a turn at all."""
     readiness = row.get('completion_readiness')
@@ -88,9 +94,8 @@ def present(row):
     elif activity == 'working' and row.get('background_tasks'):
         hint = 'Working: background tasks'
     elif finished:
-        hint = ('Result ready: needs handoff' if (row.get('transport') == 'structured' or 'completion_readiness' in row)
-                and row.get('completion_readiness', {}).get('status') != 'ready'
-                else 'Done: close' if process == 'live' else 'Done reported: inspect session')
+        hint = finished_label(row) if process == 'live' or row.get('transport') == 'structured' \
+            else 'Done reported: inspect session'
     elif activity == 'unknown' and row.get('telemetry') == 'hooks-not-reporting':
         hint = 'Hooks not reporting: attach'
     elif activity == 'idle':

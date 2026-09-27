@@ -12,8 +12,7 @@ class NextStepRenderingTests(unittest.TestCase):
 
     def test_every_hint_state_renders_without_replacing_raw_activity(self):
         cases = [
-            ({'activity': 'finished'}, 'Done: close'),
-            ({'activity': 'finished', 'completion_readiness': {'status': 'stale'}}, 'Result ready: needs handoff'),
+            ({'activity': 'finished'}, 'Finished, unsaved'),
             ({'activity': 'finished', 'completion_readiness': {'status': 'ready'}}, 'Finalized: close'),
             ({'activity': 'finished', 'process_state': 'ended'}, 'Done: close record'),
             ({'activity': 'exited', 'process_state': 'ended'}, 'Ended unreported: check work'),
@@ -34,6 +33,12 @@ class NextStepRenderingTests(unittest.TestCase):
                 self.assertEqual(row, original)
                 self.assertNotIn('Memory saved', rendered)
                 self.assertNotIn('landed', rendered)
+
+    def test_finished_label_names_the_generation_save_or_its_absence(self):
+        from lib.control.session_presentation import present
+        self.assertEqual(present(self.row(activity='finished'))['next_step'], 'Finished, unsaved')
+        self.assertEqual(present(self.row(activity='finished', memory_saved_at=0))['next_step'],
+                         'Finished, saved 00:00 UTC')
 
     def test_ended_sessions_have_a_separate_group(self):
         live = self.row(activity='working')

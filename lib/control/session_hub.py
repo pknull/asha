@@ -515,24 +515,24 @@ class Hub:
         from .session_presentation import memory_label, present
         row['selection'] = selection_evidence(row)
         from .session_publication import latest_saved_at
+        # D8: the newest publication or attestation in this generation.
         row['memory_saved_at'] = latest_saved_at(self, row)
         from .session_completion import view
         if row['lifecycle'] not in {'closed', 'stopped'}:
             row['completion_readiness'] = view(self, row)
         record = row.get('closure') or {}
         handoff = record.get('handoff') or {}
+        # D11: saves recorded before publication rows existed stay readable.
         if (record.get('generation') == row['generation']
                 and handoff.get('generation') == row['generation']
                 and handoff.get('outcome') == 'published' and handoff.get('verified') is True
                 and handoff.get('digests')):
             row['memory_saved_at'] = max(row['memory_saved_at'] or 0, handoff['acknowledged_at'])
-        for receipt in (row.get('completion') or {}, row.get('memory_checkpoint') or {}):
-            if (row['profile'] == 'room' and receipt.get('outcome') == 'published' and receipt.get('publication_id')
-                    and receipt.get('finalized_at') is not None
-                    and all(receipt.get(k) == row.get(k) for k in ('session_id', 'generation', 'assignment_epoch'))):
-                # #105: a Room's ordinary handoff save is its checkpoint for this assignment;
-                # the retained copy outlives a later handoff's receipt (QA26 Q26-F2).
-                row['memory_saved_at'] = max(row['memory_saved_at'] or 0, receipt['finalized_at'])
+        legacy = row.get('memory_checkpoint') or {}
+        if (legacy.get('outcome') == 'published' and legacy.get('publication_id')
+                and legacy.get('finalized_at') is not None
+                and all(legacy.get(k) == row.get(k) for k in ('session_id', 'generation'))):
+            row['memory_saved_at'] = max(row['memory_saved_at'] or 0, legacy['finalized_at'])
         self._present_closure(row)
         if (record.get('generation') == row['generation'] and record.get('state') == 'forced'
                 and row['memory_saved_at'] is not None):
@@ -950,12 +950,7 @@ class Hub:
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
-            if state == 'finished':
-                from .session_completion import check
-                try:
-                    check(self, row)
-                except (ValueError, OSError) as exc:
-                    raise StoreError('verified project-memory handoff required: ' + str(exc)) from exc
+            # Finished is ungated (D3): the row shows whether this generation saved.
             experiences = Experiences(self)
             capture = None
             request = row.get('experience_request') or {}
@@ -979,25 +974,15 @@ class Hub:
                     request = dict(request, status='answered')
             # Issued-key attachments amend capture, never the original task result.
             reported_body = None if followup else body
-            from contextlib import ExitStack
-            with ExitStack() as stack:
-                validate = None
-                if state == 'finished':
-                    from .session_completion import binding, snapshot
-                    stack.enter_context(self._observation_lock(row['session_id']))
-                    digests = stack.enter_context(snapshot(row))
-                    def validate(c, current):
-                        if binding(current) != binding(row):
-                            raise StoreError('work changed during completion reporting; finalize again')
-                        check(self, current, digests=digests, connection=c)
-                if row['transport'] == 'structured':
-                    result = self._update(row['session_id'], expected_generation=row['generation'], validate_fn=validate,
-                                          result=text(reported_body, 'report', 16000), activity=state)
-                elif state == 'finished':
+            if row['transport'] == 'structured':
+                result = self._update(row['session_id'], expected_generation=row['generation'],
+                                      result=text(reported_body, 'report', 16000), activity=state)
+            elif state == 'finished':
+                with self._observation_lock(row['session_id']):
                     result = self._observe(self.get(row['session_id']), None, state=state, body=reported_body,
-                        native_id=native_id, tool_kind='report', tool_token='unknown', validate_fn=validate)
-                else:
-                    result = self.observe(None, state=state, body=reported_body, native_id=native_id)
+                                           native_id=native_id, tool_kind='report', tool_token='unknown')
+            else:
+                result = self.observe(None, state=state, body=reported_body, native_id=native_id)
             if capture is not None:
                 changes = {'capture': capture}
                 if request:
@@ -1723,6 +1708,12 @@ class Hub:
             if outcome not in closure.OUTCOMES or (outcome == 'published' and not publication):
                 raise StoreError('an explicit outcome or both draft files are required')
             detail = text(detail, 'handoff detail', 4000)
+            if outcome == 'no-durable-update':
+                # An attestation passes the same scope and silence checks as a publication.
+                from .session_completion import snapshot
+                with snapshot(row):
+                    pass
+            saved = self._record_saved(row, 'handoff', outcome, detail, publication)
             if outcome in closure.ACKNOWLEDGED:
                 receipt = issue(self, row, outcome=outcome, detail=detail, publication=publication)
             else:
@@ -1731,11 +1722,26 @@ class Hub:
         except (ValueError, OSError) as exc:
             self._update(row['session_id'], completion=dict(status='blocked', detail=str(exc)[:1000]))
             raise StoreError('handoff refused: ' + str(exc)) from exc
-        if row['profile'] == 'room' and receipt.get('outcome') == 'published' and receipt.get('publication_id'):
-            # Presentation only (QA26 Q26-F2): a later handoff replaces the receipt, never the save time.
-            self._update(row['session_id'], memory_checkpoint={k: receipt.get(k) for k in (
-                'session_id', 'generation', 'assignment_epoch', 'outcome', 'publication_id', 'finalized_at')})
-        return dict(session_id=row['session_id'], outcome=outcome, completion=receipt, git_invoked=False)
+        return dict(session_id=row['session_id'], outcome=outcome, completion=receipt, git_invoked=False, **saved)
+
+    def _record_saved(self, row, source, outcome, detail, publication):
+        """Retain a publication row for a successful handoff or attestation (D3).
+
+        The Memory write already committed; a failure to retain the row is
+        reported, never turned into a refused handoff.
+        """
+        from .session_publication import record
+        if outcome == 'published':
+            source_receipt = dict(publication or {}, status='published')
+        elif outcome == 'no-durable-update':
+            source, source_receipt = 'attestation', dict(status='attested', outcome=outcome, detail=detail)
+        else:
+            return {}
+        try:
+            saved = record(self, row, source, source_receipt)
+        except (OSError, ValueError) as exc:
+            return dict(hub_publication_status='unavailable', hub_publication_error=str(exc)[:1000])
+        return dict(hub_publication_status='recorded', publication_source=saved['source'])
 
     def _handoff(self, row, request_id, *, outcome, detail, active_file, decisions_file, expected):
         record = row.get('closure')
@@ -1766,6 +1772,7 @@ class Hub:
             raise StoreError('an outcome or both draft files are required')
         detail = text(detail, 'handoff detail', 4000)
         updated = closure.record_handoff(record, row, outcome, detail, publication=publication)
+        saved = self._record_saved(row, 'close', outcome, detail, publication and publication['publication'])
         from .session_completion import issue
         if outcome in closure.ACKNOWLEDGED:
             try:
@@ -1784,4 +1791,4 @@ class Hub:
                 'closure_state': updated['state'], 'memory': updated['memory'], 'handoff': updated['handoff'],
                 'completion': completion,
                 'capture': updated.get('capture', {'status': 'disabled', 'report_id': None}),
-                'git_invoked': False}
+                'git_invoked': False, **saved}

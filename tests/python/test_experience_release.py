@@ -13,7 +13,7 @@ class ExperienceRelease(unittest.TestCase):
         rendered = '\n'.join(session_tui.lines(data))
         self.assertIn('capture:captured', rendered)
         self.assertIn('review:unsupported', rendered)
-        self.assertIn('Done: close', rendered)
+        self.assertIn('Finished, unsaved', rendered)
         self.assertEqual(data['rows'][0]['activity'], 'finished')
         for width, height in ((1, 1), (20, 8), (40, 20)):
             self.assertLessEqual(len(session_tui.lines(data, width=width, height=height)), height)

@@ -143,7 +143,10 @@ class RoomSavePresentationTests(RoomSaveFixture):
         self.saved_before_stop('codex')
 
     def later_handoff_keeps_the_last_save_time(self, outcome):
-        """QA26 Q26-F2: a later handoff in the same assignment never erases the checkpoint."""
+        """QA26 Q26-F2: a later handoff in the same assignment never erases the checkpoint.
+
+        An attestation is itself a save (D3), so it only moves the time forward.
+        """
         sid = self.launch(profile='room')['session_id']
         saved = self.save(sid, report=False)['memory_saved_at']
         self.assertIsNotNone(saved)
@@ -155,9 +158,12 @@ class RoomSavePresentationTests(RoomSaveFixture):
         again = self.hub.show(sid)
         self.assertEqual(again['assignment_epoch'], epoch)
         self.assertNotEqual(again['completion'].get('outcome'), 'published', 'the later handoff replaced the receipt')
-        self.assertEqual(again['memory_saved_at'], saved)
+        if outcome == 'no-durable-update':
+            self.assertGreater(again['memory_saved_at'], saved)
+        else:
+            self.assertEqual(again['memory_saved_at'], saved)
         self.assert_open_and_saved(again)
-        self.assertEqual(self.listed(sid)['memory_saved_at'], saved)
+        self.assertEqual(self.listed(sid)['memory_saved_at'], again['memory_saved_at'])
 
     def test_later_no_durable_update_keeps_the_last_save_time(self):
         self.later_handoff_keeps_the_last_save_time('no-durable-update')

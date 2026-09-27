@@ -43,7 +43,8 @@ class PublicationLinkage(ClosureFixture):
         from lib.control.session_publication import verify_publication
         receipt = self.publish()
         self.hub.send(self.sid, 'Another assignment', key='next', learning_ids=[])
-        self.assertIsNone(self.hub.show(self.sid)['memory_saved_at'])
+        # D8: a new assignment never erases the generation's save time.
+        self.assertIsNotNone(self.hub.show(self.sid)['memory_saved_at'])
         verify_publication(self.hub, self.hub.get(self.sid), receipt)
         closing = self.hub.close(self.sid)
         self.assertTrue(closing['closure']['capture']['requested'])
