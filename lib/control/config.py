@@ -49,6 +49,11 @@ def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
     return result
 
 
+# Retired settings (best-effort close, D5): accepted and ignored for one
+# release so an existing config still loads.
+IGNORED_CONTROL_KEYS = frozenset({"idle_delivery", "no_handoff_close"})
+
+
 @dataclass(frozen=True)
 class ControlConfig:
     config_path: Path
@@ -63,11 +68,6 @@ class ControlConfig:
     session_prefix: str
     event_staleness_seconds: int
     workspace_trust: str
-    # Experimental idle-pane typing for close/send (#96); off unless opted in.
-    idle_delivery: bool = False
-    # Experimental turnless close (#101, `close --no-handoff`); off unless opted
-    # in until #103 (an in-flight hook can be covered by an older Stop) closes.
-    no_handoff_close: bool = False
     # The dashboard's read-only pane preview (#102 phase 3); off unless opted in,
     # because the operator's own tmux hooks and command aliases can run commands
     # on a tmux read that Control cannot prevent (docs/session-hub.md).
@@ -563,8 +563,8 @@ def load_config(
         raise ConfigError("control must be an object")
     supported_control = {
         "workspace_root", "default_harness", "tmux", "event_staleness_seconds",
-        "workspace_trust", "idle_delivery", "no_handoff_close", "session_preview",
-    }
+        "workspace_trust", "session_preview",
+    } | IGNORED_CONTROL_KEYS
     unknown_control = set(control) - supported_control
     if unknown_control:
         raise ConfigError(f"control has {len(unknown_control)} unsupported field(s)")
@@ -641,12 +641,6 @@ def load_config(
     if not 1 <= raw_staleness <= 86400:
         raise ConfigError("control.event_staleness_seconds must be from 1 through 86400")
 
-    idle_delivery = control.get("idle_delivery", False)
-    if not isinstance(idle_delivery, bool):
-        raise ConfigError("control.idle_delivery must be true or false")
-    no_handoff_close = control.get("no_handoff_close", False)
-    if not isinstance(no_handoff_close, bool):
-        raise ConfigError("control.no_handoff_close must be true or false")
     session_preview = control.get("session_preview", False)
     if not isinstance(session_preview, bool):
         raise ConfigError("control.session_preview must be true or false")
@@ -680,7 +674,5 @@ def load_config(
         session_prefix=session_prefix,
         event_staleness_seconds=raw_staleness,
         workspace_trust=workspace_trust,
-        idle_delivery=idle_delivery,
-        no_handoff_close=no_handoff_close,
         session_preview=session_preview,
     )

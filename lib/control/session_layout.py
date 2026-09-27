@@ -377,9 +377,7 @@ def _tiny(height, width):
 
 
 def _sheet(data, width, height, offset):
-    enabled = bool(data.get('no_handoff_close'))
-    lines = sheet_lines(height, offset, no_handoff_close=enabled,
-                        preview=bool(data.get('session_preview')))[:height]
+    lines = sheet_lines(height, offset, preview=bool(data.get('session_preview')))[:height]
     return [_spans([(fit(line, width), 'heading' if i == 0 else 'muted', None if i == 0 else INERT)])
             for i, line in enumerate(lines)]
 
@@ -432,8 +430,7 @@ def render(data, *, selected=0, anchor=None, width=100, height=30, message='', k
     if errors:
         screen[box.error_y] = _spans([(fit(errors[0], width, ascii_only), 'error', BAD)])
     screen[box.message_y] = _spans([(fit(message, width, ascii_only), 'message', None)])
-    screen[box.footer_y] = _spans([(fit(footer(current, width=width, peek=box.mode == 'peek',
-                                                no_handoff_close=bool(data.get('no_handoff_close'))), width),
+    screen[box.footer_y] = _spans([(fit(footer(current, width=width, peek=box.mode == 'peek'), width),
                                     'muted', INERT)])
     return screen
 

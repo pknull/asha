@@ -18,18 +18,16 @@ class FooterTests(unittest.TestCase):
     STATES = [None, row(), row(activity='needs-input'), row(activity='needs-input', transport='structured'),
               row(activity='exited', process_state='ended'), row(activity='close-failed'),
               row(lifecycle='closed', activity='closed', process_state='ended'),
-              row(activity='idle', no_handoff={'eligible': True},
-                  closure={'generation': 1, 'state': 'pending-delivery'}, native_activity='idle')]
+              row(activity='idle', closure={'generation': 1, 'state': 'pending-delivery'}, native_activity='idle')]
 
     def test_footer_fits_every_width_on_one_line(self):
         for width in (40, 80, 120):
             for state in self.STATES:
-                for enabled in (False, True):
-                    with self.subTest(width=width, state=state and state['activity'], enabled=enabled):
-                        text = session_tui.footer(state, width=width, no_handoff_close=enabled)
-                        self.assertNotIn('\n', text)
-                        self.assertLessEqual(tui._cell_width(text), width)
-                        self.assertTrue(text.endswith('? keys  q quit'))
+                with self.subTest(width=width, state=state and state['activity']):
+                    text = session_tui.footer(state, width=width)
+                    self.assertNotIn('\n', text)
+                    self.assertLessEqual(tui._cell_width(text), width)
+                    self.assertTrue(text.endswith('? keys  q quit'))
 
     def test_rendered_dashboard_ends_with_the_single_footer_line(self):
         data = {'summary': 'x', 'rows': [row(str(i)) for i in range(60)]}
@@ -38,11 +36,11 @@ class FooterTests(unittest.TestCase):
                 rendered = session_tui.lines(data, width=width, height=height)
                 self.assertEqual(len(rendered), height)
                 self.assertEqual(rendered[-1], session_tui.footer(
-                    session_tui.present(data['rows'][0]), width=width, no_handoff_close=False))
+                    session_tui.present(data['rows'][0]), width=width))
                 self.assertEqual(sum('q quit' in line for line in rendered), 1)
 
     def test_footer_follows_the_selected_state(self):
-        wide = dict(width=200, no_handoff_close=False)
+        wide = dict(width=200)
         self.assertIn('n job', session_tui.footer(None, **wide))
         self.assertIn('a answer', session_tui.footer(session_tui.present(
             row(activity='needs-input', transport='structured')), **wide))
@@ -50,18 +48,14 @@ class FooterTests(unittest.TestCase):
             row(activity='exited', process_state='ended')), **wide))
         self.assertIn('X force-close', session_tui.footer(session_tui.present(row(activity='close-failed')), **wide))
 
-    def test_no_handoff_offer_is_hidden_while_the_setting_is_off(self):
-        eligible = session_tui.present(row(activity='idle', no_handoff={'eligible': True}, native_activity='idle',
-                                           closure={'generation': 1, 'state': 'pending-delivery'}))
-        self.assertNotIn('c close', session_tui.footer(eligible, width=200, no_handoff_close=False))
-        self.assertIn('c close (no handoff)', session_tui.footer(eligible, width=200, no_handoff_close=True))
-        ineligible = dict(eligible, no_handoff={'eligible': False})
-        self.assertNotIn('c close', session_tui.footer(ineligible, width=200, no_handoff_close=True))
-        self.assertNotIn('c close', '\n'.join(session_tui.key_sheet(no_handoff_close=False)))
-        self.assertIn('c close (no handoff)', '\n'.join(session_tui.key_sheet(no_handoff_close=True)))
+    def test_no_c_close_key_is_offered(self):
+        idle = session_tui.present(row(activity='idle', native_activity='idle',
+                                       closure={'generation': 1, 'state': 'pending-delivery'}))
+        self.assertNotIn('c close', session_tui.footer(idle, width=200))
+        self.assertNotIn('c close', '\n'.join(session_tui.key_sheet()))
 
     def test_key_sheet_view_lists_every_binding_within_bounds(self):
-        data = {'summary': 'x', 'rows': [row()], 'no_handoff_close': True}
+        data = {'summary': 'x', 'rows': [row()]}
         rendered = session_tui.lines(data, width=60, height=30, keys=True)
         text = '\n'.join(rendered)
         for key in ('Enter', 'x ', 'X ', 's ', 'r ', 'm ', 'n ', 'o ', 'M ', 'A ', 'G ', 'q '):
@@ -81,8 +75,7 @@ class KeySheetPagingTests(unittest.TestCase):
         for _ in range(40):
             page = session_tui.lines(data, width=width, height=height, keys=True, sheet=offset)
             seen.append(page)
-            following = session_tui.sheet_offset(offset + 1, height=height,
-                                                  no_handoff_close=data['no_handoff_close'])
+            following = session_tui.sheet_offset(offset + 1, height=height)
             if following == offset:
                 return seen
             offset = following
@@ -90,25 +83,23 @@ class KeySheetPagingTests(unittest.TestCase):
 
     def test_every_binding_is_reachable_at_12_rows(self):
         for width in (40, 80):
-            for enabled in (False, True):
-                with self.subTest(width=width, enabled=enabled):
-                    data = {'summary': 'x', 'rows': [row()], 'no_handoff_close': enabled}
-                    pages = self.pages(data, width=width, height=12)
-                    self.assertGreater(len(pages), 1)
-                    text = '\n'.join(line for page in pages for line in page)
-                    labels = self.LABELS + (('c close (no handoff)',) if enabled else ())
-                    for label in labels:
-                        self.assertIn(label, text)
-                    for page in pages:
-                        self.assertLessEqual(len(page), 12)
-                        self.assertTrue(all(tui._cell_width(line) <= width for line in page))
-                        self.assertIn('Up/Down', page[-1])
+            with self.subTest(width=width):
+                data = {'summary': 'x', 'rows': [row()]}
+                pages = self.pages(data, width=width, height=12)
+                self.assertGreater(len(pages), 1)
+                text = '\n'.join(line for page in pages for line in page)
+                for label in self.LABELS:
+                    self.assertIn(label, text)
+                for page in pages:
+                    self.assertLessEqual(len(page), 12)
+                    self.assertTrue(all(tui._cell_width(line) <= width for line in page))
+                    self.assertIn('Up/Down', page[-1])
 
     def test_a_sheet_that_fits_is_not_paged(self):
-        data = {'summary': 'x', 'rows': [row()], 'no_handoff_close': True}
+        data = {'summary': 'x', 'rows': [row()]}
         rendered = session_tui.lines(data, width=80, height=40, keys=True)
         self.assertEqual(rendered[0], 'Keys (any key returns)')
-        self.assertEqual(session_tui.sheet_offset(5, height=40, no_handoff_close=True), 0)
+        self.assertEqual(session_tui.sheet_offset(5, height=40), 0)
 
 
 class ScreenAnchorTests(unittest.TestCase):
@@ -319,7 +310,7 @@ class ActionMembershipTests(unittest.TestCase):
     """QA12-F1: a row refresh after an action obeys the active query."""
 
     def setUp(self):
-        from tests.python.test_session_no_handoff_close import Fixture
+        from tests.python.test_control_session_closure import ClosureFixture as Fixture
         self.fixture = Fixture()
         self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)
@@ -337,7 +328,7 @@ class ActionMembershipTests(unittest.TestCase):
              patch.object(tui, '_prompt_line', return_value='yes'), \
              patch('lib.control.sessions.refuse_managed_operator'), \
              patch.object(session_tui, '_paint', side_effect=lambda s, snap, **kw: painted.append(snap)):
-            session_tui._loop(screen, SimpleNamespace(no_handoff_close=True), {})
+            session_tui._loop(screen, SimpleNamespace(), {})
         return [[(r['session_id'], r['lifecycle']) for r in snap['rows']] for snap in painted]
 
     def test_force_close_then_a_late_complete_page(self):

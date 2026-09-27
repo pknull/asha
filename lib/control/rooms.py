@@ -746,7 +746,6 @@ def _result(
 def room_respawn_argv(
     asha_root: Path, harness: str, prompt: str, *, hub_session: bool,
     selection: Mapping[str, str] | None = None, resume_id: str | None = None,
-    idle_fence: bool = False,
 ) -> list[str]:
     """The complete argv respawned into a Room pane, validated as tmux argv data.
 
@@ -758,11 +757,7 @@ def room_respawn_argv(
     for key in SCRUBBED_ROLE_ENV:
         argv.extend(["-u", key])
     if not hub_session:
-        argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION', '-u', 'ASHA_HUB_EVENT_ORDER'])
-    if not idle_fence:
-        # A marker inherited from the tmux server's global environment must not
-        # switch on the delivery-only hook work (#96) in a default Room.
-        argv.extend(['-u', 'ASHA_ROOM_INPUT_FENCE'])
+        argv.extend(['-u', 'ASHA_HUB_SESSION_ID', '-u', 'ASHA_HUB_GENERATION'])
     # The encoded prompt remains data; resume identifiers and model
     # selection travel as exact argv entries, never shell text.
     argv.extend(room_tmux_argv(
@@ -786,7 +781,6 @@ def open_room(
     profile: str = "room", hub_session_id: str | None = None,
     hub_generation: int = 1, resume_id: str | None = None,
     selection: Mapping[str, str] | None = None,
-    hub_event_order: str | None = None,
 ) -> dict[str, Any]:
     if profile not in {"worker", "room"}:
         raise RoomError("invalid project session profile")
@@ -801,10 +795,9 @@ def open_room(
         selected_harness = validate_harness(harness)
     except HarnessError as exc:
         raise RoomError(str(exc)) from exc
-    idle_fence = getattr(config, "idle_delivery", False) is True
     argv = room_respawn_argv(
         asha_root, selected_harness, text, hub_session=bool(hub_session_id),
-        selection=selection, resume_id=resume_id, idle_fence=idle_fence,
+        selection=selection, resume_id=resume_id,
     )
     command_key, harness_command = room_harness_command(selected_harness, env)
     if executable_finder(harness_command) is None:
@@ -845,12 +838,7 @@ def open_room(
                 "ASHA_SESSION_PROFILE": profile,
                 **({"ASHA_HUB_SESSION_ID": hub_session_id,
                     "ASHA_HUB_GENERATION": str(hub_generation)} if hub_session_id else {}),
-                # This incarnation's hook event counter (#101), private hub state.
-                **({"ASHA_HUB_EVENT_ORDER": hub_event_order} if hub_session_id and hub_event_order else {}),
                 "ASHA_ORCHESTRATOR_STANCE": "0", ROOM_ENV: identity,
-                # The idle-typing fence (#96) exists only when opted in; an
-                # explicit "0" overrides any server-global marker.
-                "ASHA_ROOM_INPUT_FENCE": "1" if idle_fence else "0",
                 command_key: harness_command,
             },
             holder_argv=["sleep", "3600"],
@@ -860,7 +848,6 @@ def open_room(
                 PANE_PROJECT_OPTION: _project_marker(selected_project["project_id"]),
             },
             pane_title=f"asha:room:{slug}:{selected_harness}",
-            attach_fence=idle_fence,
             )
             record["tmux"]["pane_id"] = pane
             record["tmux"]["session_id"] = tmux.session_id(pane)

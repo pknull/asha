@@ -15,24 +15,15 @@ class CompletionTests(ClosureFixture):
         import memory_v2
         token = str(uuid.uuid4())
         with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
-            self.hub.observe('tool-started', tool_kind='finalizer', tool_token=token)
+            self.hub.observe('tool-started')
         row = self.hub.get(sid)
         before = memory_v2.snapshot_digests(memory_v2.read_published_snapshot(self.project))
         with mock.patch.dict(os.environ, {'ASHA_HUB_SESSION_ID': sid}), mock.patch(
                 'lib.control.session_publication.publication_actor', return_value=(self.hub, row)):
             result = memory_v2.publish(self.project, ACTIVE, DECISIONS, expected_preimages=before)
         with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
-            self.hub.observe('tool-completed', tool_kind='finalizer', tool_token=token)
+            self.hub.observe('tool-completed')
         return result
-
-    def test_idle_claude_missing_receipt_requires_attach(self):
-        sid = self.launch()['session_id']
-        with self.acting_as(sid):
-            self.hub.observe('turn-stopped')
-        result = self.hub.close(sid)
-        self.assertTrue(result['closure']['attachment_required'])
-        # #101/#103: the turnless close is off by default, so only attach is offered.
-        self.assertEqual(result['next_step'], 'Close needs attach')
 
     def test_no_update_refuses_unavailable_identity_silence_and_scope(self):
         sid = self.launch()['session_id']
@@ -116,11 +107,11 @@ class CompletionTests(ClosureFixture):
         sid = self.launch()['session_id']
         record = self.hub.close(sid)['closure']
         with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), self.ordered_hooks(sid):
-            self.hub.observe('tool-started', tool_kind='finalizer', tool_token='final')
+            self.hub.observe('tool-started')
             self.hub.handoff(record['request_id'], attempt=1, outcome='no-durable-update', detail='Reviewed')
             self.assertEqual(self.hub.close(sid)['closure']['state'], 'acknowledged')
             self.assertEqual(self.tmux.killed, [])
-            self.hub.observe('tool-completed', tool_kind='finalizer', tool_token='final')
+            self.hub.observe('tool-completed')
             self.hub.observe('turn-stopped')
         self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
 
@@ -229,73 +220,3 @@ class StructuredCompletionTests(ClosureFixture):
                 self.assertEqual(self.hub.close(sid)['closure']['state'], 'completed')
                 with SessionStore(self.config) as sessions, sessions.db.transaction() as c:
                     self.assertEqual(c.execute('SELECT count(*) FROM session_turns WHERE session_id=?', (sid,)).fetchone()[0], 1)
-
-    def test_queued_work_failed_turn_and_new_tool_refuse_readiness(self):
-        from lib.control.session_store import SessionStore
-        from lib.control.session_completion import check
-        for change in ('queue', 'failed', 'tool'):
-            sid, owner, turn, worker = self.start('codex')
-            with mock.patch.object(worker, 'structured_actor', return_value=(worker.get(sid), turn['delivery_key'])):
-                worker.handoff(None, outcome='no-durable-update', detail='Reviewed')
-            self.tool_end(sid, owner, turn)
-            with SessionStore(self.config) as sessions:
-                if change == 'queue':
-                    sessions.enqueue(sid, 'More work', key='later')
-                elif change == 'failed':
-                    sessions.finish(sid, owner['generation'], turn['turn_id'], success=False, reason='native failure')
-                else:
-                    sessions.observe(sid, owner['generation'], turn['turn_id'], 'tool', {'name':'fileChange', 'status':'inProgress'})
-            with self.assertRaises(StoreError):
-                check(self.hub, self.hub.get(sid))
-            with SessionStore(self.config) as sessions, sessions.db.transaction(write=True) as c:
-                c.execute('UPDATE managed_sessions SET owner_pid=NULL,owner_identity=NULL WHERE session_id=?', (sid,))
-
-
-class CompletionCommandTests(unittest.TestCase):
-    def test_large_tool_result_keeps_boundary_identity(self):
-        import subprocess
-        import sys
-        from pathlib import Path
-        from completion_event import metadata
-        payload = dict(tool_name='Bash', tool_use_id='native-42', tool_input=dict(command=
-            'asha control session handoff --outcome no-durable-update --detail Reviewed --json'))
-        expected = metadata(payload)
-        payload['tool_response'] = 'output' * 10000
-        tool = Path(__file__).resolve().parents[2] / 'plugins/session/tools/completion_event.py'
-        result = subprocess.run([sys.executable, str(tool)], input=json.dumps(payload), text=True,
-                                capture_output=True, check=True)
-        self.assertEqual(result.stdout.strip(), ' '.join(expected))
-
-    def test_only_standalone_finished_report_preserves_completion(self):
-        from lib.control.session_completion import report_tool
-        allowed = 'asha control session report --state finished --text "Reviewed work" --json'
-        self.assertTrue(report_tool('Bash', {'command': allowed}))
-        for command in (allowed + '; touch file', allowed + ' && true',
-                        'echo ' + allowed, allowed.replace('finished', 'working'),
-                        allowed.replace('Reviewed work', '$(touch file)'),
-                        allowed + '\ntrue', allowed + ' > file',
-                        allowed + ' --unknown x', allowed + ' --state finished'):
-            with self.subTest(command=command):
-                self.assertFalse(report_tool('Bash', {'command': command}))
-        self.assertFalse(report_tool('mcp__arbitrary', {'command': allowed}))
-
-    def test_finalizer_accepts_shell_metacharacters_inside_quotes(self):
-        # Issue #96: prose details such as "(publication 80bf40f5)" were
-        # classified as work, so a correct handoff could never be sole.
-        from completion_event import command_kind
-        base = 'asha control session handoff --request R --attempt 2 --outcome no-durable-update --json --detail '
-        for detail in ('"Published earlier (publication 80bf40f5); unchanged & verified."',
-                       "'Costs $5 | uses `x` > y (literal)'", '"a*b? [c] {d} #e ~f !"'):
-            with self.subTest(detail=detail):
-                self.assertEqual(command_kind(dict(tool_name='Bash', tool_input=dict(command=base + detail))), 'finalizer')
-        for detail in ('"$(touch x)"', '"`touch x`"', '"${HOME}"', '"a\\"b"', "'open", 'x #comment',
-                       'a*', '{a,b}', '(x)'):
-            with self.subTest(detail=detail):
-                self.assertEqual(command_kind(dict(tool_name='Bash', tool_input=dict(command=base + detail))), 'work')
-
-    def test_finalizer_rejects_trailing_shell_work(self):
-        from completion_event import command_kind
-        command = 'asha control session handoff --outcome no-durable-update --detail Reviewed --json'
-        self.assertEqual(command_kind(dict(tool_name='Bash', tool_input=dict(command=command))), 'finalizer')
-        for suffix in ('; touch new-work', ' && true', ' | cat', ' &', '\ntrue', ' > receipt.json'):
-            self.assertEqual(command_kind(dict(tool_name='Bash', tool_input=dict(command=command + suffix))), 'work')

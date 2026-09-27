@@ -57,9 +57,6 @@ RETRYABLE_STATES = {"unanswered", "handoff-failed"}
 # on the default page until the operator acknowledges it.
 ATTENTION_STATES = {"unanswered", "handoff-failed", "undeliverable", "unavailable"}
 MESSAGE_KEY_PREFIX = "close:"
-# Issue #96: the close request typed into an owned, detached, idle terminal pane
-# whose input line was proven empty (Claude and Codex only).
-INJECTION_CHANNEL = "pane-injection"
 # The Stop bridge (control-event.sh) passes a block decision through only when
 # its reason carries this token; keep the two in step.
 CLOSE_REQUEST_TOKEN = "Asha Control close request"
@@ -174,20 +171,10 @@ def request_text(row: dict, closure: dict) -> str:
 
 def recent_native_observation(row: dict) -> bool:
     stamp = row.get('native_observed_at', row.get('observed_at'))
-    if stamp is not None and 0 <= time.time() - stamp <= 300:
-        return True
-    record = row.get('closure') or {}
-    return record.get('generation') == row.get('generation') and recent_injection(record)
+    return stamp is not None and 0 <= time.time() - stamp <= 300
 
 
-def recent_injection(record: dict) -> bool:
-    """A request typed into a verified idle pane is fresh delivery evidence (#96)."""
-    delivery = (record or {}).get('delivery') or {}
-    at = delivery.get('delivered_at')
-    return delivery.get('channel') == INJECTION_CHANNEL and at is not None and 0 <= time.time() - at <= 300
-
-
-def guidance_for(row: dict, closure: dict, *, idle_delivery: bool = False) -> str:
+def guidance_for(row: dict, closure: dict) -> str:
     state = closure["state"]
     if closure.get('attachment_required') and state not in {'completed', 'forced', 'handoff-failed', NO_HANDOFF_STATE}:
         return 'Close needs attachment: attach and hand the agent the retained close request, or force-close. ' + str(closure.get('last_error') or '')
@@ -195,14 +182,11 @@ def guidance_for(row: dict, closure: dict, *, idle_delivery: bool = False) -> st
         if row["transport"] == "structured":
             return "Close request queued as the next structured turn; re-run close after it completes"
         if row["harness"] in STOP_HOOK_HARNESSES:
-            typed = "or typed into its pane at a verified idle boundary; " if idle_delivery else ""
             return ("Close request queued; it reaches the agent when its current turn stops, when it reads messages, "
-                    + typed + "otherwise attach and hand it the request, or force-close")
+                    "otherwise attach and hand it the request, or force-close")
         return ("Close request queued; this harness has no proven Stop return channel, so it reaches the agent only when "
                 "it reads messages: attach and hand it the request, or force-close")
     if state == "delivered":
-        if (closure.get("delivery") or {}).get("channel") == INJECTION_CHANNEL:
-            return "Close request typed into the idle session; waiting for its handoff acknowledgement"
         return "Close request delivered; waiting for the session's handoff acknowledgement"
     if state == "acknowledged":
         return "Handoff " + _verification_word(closure) + "; re-run close (or close --wait) to terminate the session"
@@ -373,9 +357,9 @@ def parse_digest(value):
     return value
 
 
-__all__ = ["ACKNOWLEDGED", "ATTENTION_STATES", "CLOSE_REQUEST_TOKEN", "INJECTION_CHANNEL", "MEMORY_FILES", "MESSAGE_KEY_PREFIX",
+__all__ = ["ACKNOWLEDGED", "ATTENTION_STATES", "CLOSE_REQUEST_TOKEN", "MEMORY_FILES", "MESSAGE_KEY_PREFIX",
            "NO_HANDOFF_STATE",
            "OUTCOMES", "RETRYABLE_STATES", "STOP_HOOK_HARNESSES", "TERMINAL_STATES", "StopDecision",
            "guidance_for", "mark_delivered", "memory_destination", "message_key", "new_closure",
-           "parse_digest", "publish_handoff", "rearm", "receipt_for", "recent_injection", "record_handoff", "request_text",
+           "parse_digest", "publish_handoff", "rearm", "receipt_for", "record_handoff", "request_text",
            "transition", "validate_handoff_request"]

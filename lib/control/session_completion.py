@@ -35,129 +35,6 @@ def _pending_work(c, row):
             raise StoreError('queued project work remains; read and acknowledge messages before finalizing')
 
 
-def report_tool(name, arguments):
-    from completion_event import report_only
-    return report_only({'tool_name': name, 'tool_input': arguments})
-
-
-def tool_metadata(name, arguments, native_id):
-    from completion_event import metadata
-    kind, token = metadata({'tool_name': name, 'tool_input': arguments, 'tool_use_id': native_id})
-    return dict(completion_kind=kind, completion_token=token)
-
-
-def ends_start(row, token, kind, order=None, native_id=None):
-    """Whether this end is evidence that THIS start ended (#104, QA19 F1/F2).
-
-    Token equality alone is not: a tool-use ID can recur, and the fallback token
-    of identical input does; ``unknown`` names no tool at all. The end must name the start's kind and native
-    conversation, and be numbered after the start. Without both numbers nothing
-    orders them, so an ordered session keeps such a start open until its Stop;
-    only a session with no ordered event at all (structured transport, or a
-    session launched before ordering) falls back to arrival order. A tool left
-    open by a revision before #104 has no recorded start, so no end matches it;
-    it clears at its turn's Stop like any other unmatched start.
-    """
-    if token == 'unknown' or (row.get('active_tools') or {}).get(token) != kind:
-        return False
-    start = (row.get('tool_starts') or {}).get(token)
-    if start is None or start.get('native_id') != native_id:
-        return False
-    if start.get('order') is None:
-        from .session_order import state
-        return order is None and not state(row)['applied']
-    return order is not None and order > start['order']
-
-
-def _retire(row, tools, starts, kind, token):
-    """Retire a start ``ends_start`` matched; True when it was the receipt's sole finalizer."""
-    tools.pop(token)
-    starts.pop(token, None)
-    receipt = row.get('completion') or {}
-    if (kind == 'finalizer' and not tools and receipt.get('tool_token') == token
-            and all(receipt.get(k) == v for k, v in binding(row).items())):
-        row['completion'] = dict(receipt, tool_finished=True)
-        return True
-    return False
-
-
-def observe_tool(row, event, kind, token, *, order=None, native_id=None):
-    """Track matching boundaries; composition/parallel/unknown work fails closed."""
-    tools = dict(row.get('active_tools') or {})
-    starts = {k: v for k, v in (row.get('tool_starts') or {}).items() if k in tools}
-    if event == 'tool-started':
-        if kind != 'report':
-            row['work_epoch'] = str(uuid.uuid4())
-            row['completion_report'] = None
-        if token in tools or token == 'unknown' or len(tools) >= 32:
-            tools['unknown'] = 'work'
-        else:
-            tools[token] = kind
-            starts[token] = dict(order=order, native_id=native_id)
-    else:
-        matched = ends_start(row, token, kind, order, native_id)
-        finished = matched and _retire(row, tools, starts, kind, token)
-        # An end that matched no start is still activity: it counts as work.
-        if not finished and not (matched and kind == 'report'):
-            row['work_epoch'] = str(uuid.uuid4())
-            row['completion_report'] = None
-    row['active_tools'] = tools
-    row['tool_starts'] = starts
-    return row
-
-
-def observe_late_end(row, kind, token, *, order, native_id):
-    """A tool end whose report filled a gap in the native order (#104): that tool ended.
-
-    Reports can arrive after newer ones; ordering keeps a late report from
-    undoing newer state, but the end of THIS start (``ends_start``) is still
-    native evidence. Only that start is retired; whether the end counts as new
-    work after a receipt is ``session_order.ignored_work``'s decision.
-    """
-    if not ends_start(row, token, kind, order, native_id):
-        return row
-    tools = dict(row.get('active_tools') or {})
-    starts = {k: v for k, v in (row.get('tool_starts') or {}).items() if k in tools}
-    _retire(row, tools, starts, kind, token)
-    row['active_tools'] = tools
-    row['tool_starts'] = starts
-    return row
-
-
-def blocked_detail(tools):
-    """Why no sole observed finalizer is running, with the likely cause (#104)."""
-    finalizers = sum(kind == 'finalizer' for kind in tools.values())
-    if not finalizers:
-        cause = ('the handoff\'s own tool start was not observed (it ran composed with other commands, outside '
-                 'the native tool bridge, or its hook report did not arrive)')
-    else:
-        others = len(tools) - 1
-        cause = (f'{others} other tool start{"s" if others != 1 else ""} in this turn '
-                 f'{"have" if others != 1 else "has"} no observed end (a parallel tool call, a call denied by a hook '
-                 'or at a permission prompt (Claude reports no end for it), a failed tool on a Claude install '
-                 'without the PostToolUseFailure hook (check `asha doctor claude`), or a lost end report: its hook '
-                 'report did not arrive; the next native Stop clears these starts)')
-    return ('No sole observed standalone finalizer tool: ' + cause + '. The handoff must run as the only command '
-            'in its own tool call, after every other tool finished, through the Claude/Codex native tool bridge; '
-            'retry the handoff that way, or attach')
-
-
-def observe_stop(row):
-    """A native Stop ends every tool of its turn.
-
-    A sole matched finalizer whose end callback was lost is ended; any other
-    start without an end (failed, denied or interrupted) is stale and dropped.
-    """
-    tools = dict(row.get('active_tools') or {})
-    receipt = row.get('completion') or {}
-    if (len(tools) == 1 and set(tools.values()) == {'finalizer'} and receipt.get('tool_token') in tools
-            and all(receipt.get(k) == v for k, v in binding(row).items())):
-        row['completion'] = dict(receipt, tool_finished=True)
-    row['active_tools'] = {}
-    row['tool_starts'] = {}
-    return row
-
-
 WORKER_INSTRUCTION = (
     'Project-memory contract: before work, use the project-memory skill to read this project\'s '
     'Memory v2 through the existing reader and verify relevant claims against live sources. '
@@ -258,21 +135,11 @@ def issue(hub, actor, *, outcome, detail, publication=None, request=None):
             if publication and publication['after'] != digests:
                 raise StoreError('Memory publication was superseded; re-read and finalize again')
             _pending_work(c, current)
-            tools = current.get('active_tools') or {}
-            tool_token = next(iter(tools)) if len(tools) == 1 and next(iter(tools.values())) == 'finalizer' else None
             receipt = dict(contract=CONTRACT, receipt_id=str(uuid.uuid4()), status='ready',
                            **binding(row), turn=turn and {k: turn[k] for k in ('turn_id', 'generation')},
                            outcome=outcome, detail=detail, digests=digests,
                            publication_id=publication and publication['publication_id'],
                            request=request, finalized_at=time.time(), destination=str(Path(row['project']) / 'Memory'))
-            receipt.update(tool_token=tool_token, tool_finished=False)
-            from .session_order import state as order_state
-            ordered = order_state(current)
-            # Work numbered after this is unaccounted-for or invalidating, even if
-            # its report arrives late and is otherwise ignored (#101 QA8 F2).
-            receipt['order_applied'] = ordered['applied'] or None
-            if tool_token is None:
-                receipt.update(status='blocked', detail=blocked_detail(tools))
             current['completion'] = receipt
             hub._save(c, current)
             return receipt
@@ -311,15 +178,6 @@ def check(hub, row, *, digests=None, idle=False, connection=None):
             raise StoreError('project-memory handoff has pending or incomplete structured work')
         if idle and (state['state'] != 'idle' or state['stop_requested']):
             raise StoreError('structured session has not reached a safe idle boundary')
-    tools = row.get('active_tools') or {}
-    if not receipt.get('tool_finished'):
-        if tools == {receipt.get('tool_token'): 'finalizer'}:
-            raise CompletionPending('handoff retained; waiting for its finalizer tool to end')
-        raise StoreError('handoff needs a matched standalone finalizer tool end; finish tools and finalize again')
-    if any(kind != 'report' for kind in tools.values()):
-        raise StoreError('further tools remain active; finish tools and finalize again')
-    if idle and tools:
-        raise CompletionPending('handoff finalized; waiting for completion report tool to end')
     if row['transport'] == 'terminal' and idle:
         if row.get('background_tasks') and row.get('native_activity') == 'working':
             # #99: the turn ended with the agent's own background work still running.
@@ -330,51 +188,6 @@ def check(hub, row, *, digests=None, idle=False, connection=None):
                 or stamp is None or stamp < receipt['finalized_at'] or row.get('activity') == 'needs-input'):
             raise CompletionPending('handoff finalized; native idle boundary unobserved, needs attach')
     return receipt
-
-
-# Harnesses whose native hooks report turn boundaries to Control.
-NATIVE_IDLE_HARNESSES = {'claude', 'codex'}
-
-
-def no_handoff_unsupported(row):
-    """Why this session can never close without a turn here, or None (a permanent refusal)."""
-    if row.get('transport') != 'terminal':
-        return ('close --no-handoff applies to terminal sessions; a structured session closes through its managed '
-                'turn (close) or --force')
-    if row.get('harness') not in NATIVE_IDLE_HARNESSES:
-        return (f"{row.get('harness')} has no native idle bridge in Control, so no idle boundary can be verified; "
-                'attach, or --force')
-    return None
-
-
-def no_handoff_refusal(row):
-    """Why this terminal row's stored facts are not a native idle boundary now, or None (#101).
-
-    Ordering (whether those facts are the newest) is ``session_order.kill_refusal``.
-    """
-    native = row.get('native_activity')
-    if row.get('activity') == 'needs-input' or native == 'needs-input':
-        return ('the session is waiting for input (a native question or permission prompt); answer it in the '
-                'terminal, or --force')
-    if native == 'working' and row.get('background_tasks'):
-        return (f"the session is working: its turn ended with {row['background_tasks']} background task(s) still "
-                'running (#99); wait for the wake-up turn to stop, or --force')
-    if native == 'working' or row.get('activity') == 'working' or row.get('active_tools'):
-        return 'the session is working (a turn or tool is in progress); wait for it to stop, or --force'
-    if native not in {'idle', 'exited'} or row.get('native_observed_at') is None:
-        return ('no verified native idle boundary has been observed (activity unknown); attach to check the '
-                'terminal, or --force')
-    return None
-
-
-def no_handoff_eligibility(row, counters):
-    """The one predicate behind both `close --no-handoff` and the dashboard's offer of it.
-
-    ``counters`` is the incarnation's event counter, attempt log and resolution log; the command
-    reads them under the counter lock it then holds through the kill.
-    """
-    from .session_order import kill_refusal
-    return no_handoff_unsupported(row) or no_handoff_refusal(row) or kill_refusal(row, counters)
 
 
 def _ready(receipt):
@@ -425,16 +238,9 @@ def view(hub, row):
     facts = dict(finalized_at=receipt.get('finalized_at') if _ready(receipt) else None, stale_since=None)
     try:
         found = check(hub, row)
-        from . import session_order
-        if row['transport'] == 'terminal':
-            unaccounted = session_order.receipt_unaccounted(
-                row, found, session_order.read_counters(hub.config, row, wait=0.05))
-            if unaccounted:
-                return dict(facts, status='stale', receipt='stale', receipt_id=found['receipt_id'],
-                            stale_since=None, reason='receipt not provably current: ' + unaccounted)
         return dict(facts, status='ready', receipt='current', receipt_id=found['receipt_id'])
     except CompletionPending as exc:
-        # Valid and bound to this work; only its finalizer's end is still due.
+        # Valid and bound to this work; only its idle boundary is still due.
         return dict(facts, status='stale', receipt='current', receipt_id=receipt.get('receipt_id'),
                     reason=str(exc))
     except (OSError, ValueError) as exc:
@@ -452,47 +258,36 @@ def close_finalized(hub, row, *, ended=False):
     """Return a closed row only after revalidation at the owned stop boundary."""
     if not row.get('completion'):
         return None
-    from contextlib import nullcontext
-    from . import session_order
     with hub._observation_lock(row['session_id']):
         current = hub.get(row['session_id'])
         stopping = False
-        live_terminal = current['transport'] == 'terminal' and not ended
         try:
-            with (session_order.allocation(hub.config, current) if live_terminal else nullcontext()) as counters:
-                with snapshot(current) as digests:
-                    with hub.database() as db, db.transaction(write=True) as c:
-                        current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?',
-                                                       (row['session_id'],)).fetchone()[0])
-                        receipt = check(hub, current, digests=digests,
-                                        idle=current['transport'] == 'structured' or not ended, connection=c)
-                        if live_terminal:
-                            # One invariant for every turnless kill (#101 QA8), held
-                            # with the counter lock through the stop below.
-                            refused = (session_order.kill_refusal(current, counters)
-                                       or session_order.receipt_unaccounted(current, receipt, counters))
-                            if refused:
-                                raise CompletionPending('receipt close waits: ' + refused)
-                        if current['transport'] == 'structured':
-                            # Fence enqueue/claim_turn before releasing the writer. The
-                            # ordinary stop path handles provider cleanup afterwards.
-                            c.execute('UPDATE managed_sessions SET stop_requested=1 WHERE session_id=?',
-                                      (current['session_id'],))
-                    record = current.get('closure')
-                    if not record or record['generation'] != current['generation']:
-                        record = closure.new_closure(current)
-                    record = closure.transition(record, 'completed', attachment_required=False,
-                        delivery=dict(channel='completion-receipt', detail='Finalized, closing',
-                                      message_id=None, delivered_at=time.time()),
-                        completion_receipt=receipt['receipt_id'],
-                        memory=dict(record['memory'], saved=receipt['outcome'] == 'published'),
-                        handoff=dict(outcome=receipt['outcome'], detail=receipt['detail'], verified=True,
-                                     generation=current['generation'], acknowledged_at=receipt['finalized_at'],
-                                     destination=receipt['destination'], digests=receipt['digests']))
-                    stopping = True
-                    # A graceful close never kills a terminal a person is attached to
-                    # (QA7): tmux refuses the kill itself; the receipt stays for a retry.
-                    return hub._stop(current, close=True, closure_record=record, detached_only=True)
+            with snapshot(current) as digests:
+                with hub.database() as db, db.transaction(write=True) as c:
+                    current = json.loads(c.execute('SELECT payload FROM hub_sessions WHERE session_id=?',
+                                                   (row['session_id'],)).fetchone()[0])
+                    receipt = check(hub, current, digests=digests,
+                                    idle=current['transport'] == 'structured' or not ended, connection=c)
+                    if current['transport'] == 'structured':
+                        # Fence enqueue/claim_turn before releasing the writer. The
+                        # ordinary stop path handles provider cleanup afterwards.
+                        c.execute('UPDATE managed_sessions SET stop_requested=1 WHERE session_id=?',
+                                  (current['session_id'],))
+                record = current.get('closure')
+                if not record or record['generation'] != current['generation']:
+                    record = closure.new_closure(current)
+                record = closure.transition(record, 'completed', attachment_required=False,
+                    delivery=dict(channel='completion-receipt', detail='Finalized, closing',
+                                  message_id=None, delivered_at=time.time()),
+                    completion_receipt=receipt['receipt_id'],
+                    memory=dict(record['memory'], saved=receipt['outcome'] == 'published'),
+                    handoff=dict(outcome=receipt['outcome'], detail=receipt['detail'], verified=True,
+                                 generation=current['generation'], acknowledged_at=receipt['finalized_at'],
+                                 destination=receipt['destination'], digests=receipt['digests']))
+                stopping = True
+                # A graceful close never kills a terminal a person is attached to
+                # (QA7): tmux refuses the kill itself; the receipt stays for a retry.
+                return hub._stop(current, close=True, closure_record=record, detached_only=True)
         except (OSError, ValueError) as exc:
             if stopping:
                 raise

@@ -189,9 +189,9 @@ class SessionHubTests(unittest.TestCase):
             self.assertIsNone(self.hub.get(sid).get('background_tasks'))
             self.hub.observe('turn-stopped', background_tasks=2)
             # The wake-up turn's own Stop with nothing outstanding is idle.
-            self.hub.observe('tool-started', tool_token='t1')
+            self.hub.observe('tool-started')
             self.assertIsNone(self.hub.get(sid).get('background_tasks'))
-            self.hub.observe('tool-completed', tool_token='t1')
+            self.hub.observe('tool-completed')
             self.hub.observe('turn-stopped', background_tasks=0)
             idle = self.hub.show(sid)
             self.assertEqual(idle['activity'], 'idle')
@@ -246,8 +246,8 @@ class SessionHubTests(unittest.TestCase):
             self.assertEqual((current['activity'], current['native_id']), ('working', 'thread-own'))
             # The bound conversation may report from anywhere (Claude's hook
             # cwd follows Bash cd and EnterWorktree), or without an ID at all.
-            self.hub.observe('tool-started', native_id='thread-own', cwd=str(outside), tool_token='t')
-            self.hub.observe('tool-completed', native_id='thread-own', cwd=str(outside), tool_token='t')
+            self.hub.observe('tool-started', native_id='thread-own', cwd=str(outside))
+            self.hub.observe('tool-completed', native_id='thread-own', cwd=str(outside))
             self.hub.observe('turn-stopped', cwd='relative/ignored')
             self.assertEqual(self.hub.get(sid)['activity'], 'idle')
             # An explicit new conversation (/clear, /new) rebinds inside the

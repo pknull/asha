@@ -6,8 +6,8 @@
 #   2. a Control-managed task (ASHA_CONTROL_MANAGED=1) -> `asha control event`
 #
 # The hub path is deliberately the thinner of the two: session identity and
-# generation are inherited environment. Event name, optional native session ID,
-# the native cwd, tool classification and opaque boundary token are forwarded,
+# generation are inherited environment. Event name, the hook's start time,
+# optional native session ID and the native cwd are forwarded,
 # plus a clipped one-line request summary on PermissionRequest; no other body
 # is retained. The
 # bridge is bounded (under a second on keystroke-facing events, a few seconds
@@ -22,6 +22,11 @@
 # ASHA_SESSION_PROFILE is not consulted here. The worker profile silences
 # Asha's own context hooks; silencing this one too would make a worker
 # invisible to the operator watching the session.
+
+# When the native hook fired, taken first (best-effort close D2). The hub skips
+# a hook report older than the newest one it applied (within 30 s), so a slow
+# report never undoes newer activity.
+EMITTED_AT="$(date +%s.%N 2>/dev/null || true)"
 set -uo pipefail
 
 case "${1:-}" in
@@ -30,7 +35,7 @@ case "${1:-}" in
   PreToolUse)        CONTROL_EVENT="tool-started" ;;
   PostToolUse)       CONTROL_EVENT="tool-completed" ;;
   # Claude reports a failed tool here instead of PostToolUse; either way the
-  # start has ended, and an unmatched start would block a later sole handoff.
+  # tool has ended.
   PostToolUseFailure) CONTROL_EVENT="tool-completed" ;;
   PermissionRequest) CONTROL_EVENT="permission-requested" ;;
   Stop)              CONTROL_EVENT="turn-stopped" ;;
@@ -39,7 +44,7 @@ case "${1:-}" in
 esac
 
 HUB_SESSION="${ASHA_HUB_SESSION_ID:-}"
-# Tool-start telemetry is only a hub completion seam, not a legacy task event.
+# Tool-start telemetry is only a hub activity seam, not a legacy task event.
 if [[ "$CONTROL_EVENT" == "tool-started" && -z "$HUB_SESSION" ]]; then
   echo '{}'
   exit 0
@@ -47,115 +52,6 @@ fi
 if [[ -z "$HUB_SESSION" && "${ASHA_CONTROL_MANAGED:-}" != "1" ]]; then
   echo '{}'
   exit 0
-fi
-
-# First, take this event's place in the session's order (#101). Hooks run as
-# independent processes and their reports can arrive out of order; the hub
-# applies an event only when its number is newer than the last one applied, so
-# an older Stop can never erase newer work. The counter is this incarnation's
-# own private file (ASHA_HUB_EVENT_ORDER, created 0600 by the hub, content a
-# decimal number), incremented under flock. No tmux is involved, and it does
-# not depend on the idle-typing setting. Any failure (no file, a symlink,
-# another owner, unreadable content, lock not taken within 0.2s) omits --order;
-# the hub then treats the order as uncertain and refuses a turnless close.
-# Unreadable content is never reset, because restarting the count would make
-# every later event look old.
-#
-# Before taking a number the hook appends one byte to the incarnation's attempt
-# log ($ASHA_HUB_EVENT_ORDER.attempts, created 0600 by the hub): O_APPEND, no
-# lock, so a hook that then times out on the counter lock, or whose report is
-# lost, still leaves evidence the hub checks before any turnless kill (QA9).
-# A numbered report carries the log's size read under the counter lock BEFORE
-# the number is taken (QA10): appends are unlocked, so a size read after the
-# increment could count a later hook whose number and report were then lost.
-# A hook that gets no number appends a second byte, so one that was already
-# counted by a concurrent Stop still moves the size past that Stop's count. Past
-# HUB_ATTEMPT_LIMIT bytes (lib/control/session_order.py ATTEMPT_LIMIT) nothing
-# is appended or allocated, and the hub refuses turnless kills until resume.
-#
-# A Stop's size sample also counts a later hook that has appended but not yet
-# taken its number or written its failure byte, so the size alone cannot prove
-# that hook finished (#103, QA11). Each hook therefore closes its attempt in a
-# second private log ($ASHA_HUB_EVENT_ORDER.resolved, created 0600 by the hub):
-# one byte once its number is written, or two once its failure byte has landed,
-# so both logs grow by the same amount per finished hook. The hub kills only
-# when the two sizes are equal. A hook that dies between the two records leaves
-# them unequal for the rest of this generation, which only refuses.
-HUB_ORDER=""
-HUB_ATTEMPTS=""
-HUB_ATTEMPT_LIMIT=4194304
-hub_private_file() {
-  local file="$1"
-  [[ "$file" == /* && -f "$file" && ! -L "$file" && -O "$file" ]] || return 1
-  # Private to this user only (the hub creates it 0600).
-  [[ "$(stat -c %a -- "$file" 2>/dev/null)" =~ ^[0-7]?[0-7]00$ ]]
-}
-hub_attempt() {
-  local file="$1.attempts" size
-  hub_private_file "$file" || return 1
-  size="$(stat -c %s -- "$file" 2>/dev/null)" || return 1
-  [[ "$size" =~ ^[0-9]+$ ]] && (( size < HUB_ATTEMPT_LIMIT )) || return 1
-  printf '.' 2>/dev/null >>"$file"
-}
-hub_resolve() {
-  local file="$ASHA_HUB_EVENT_ORDER.resolved"
-  hub_private_file "$file" || return 1
-  printf '%s' "$1" 2>/dev/null >>"$file"
-}
-hub_order_next() {
-  local file="$1" fd content value attempts
-  hub_private_file "$file" || return 1
-  exec {fd}<>"$file" 2>/dev/null || return 1
-  if ! flock -w 0.2 "$fd" 2>/dev/null; then exec {fd}>&-; return 1; fi
-  # The whole file must be one canonical number and an optional newline.
-  IFS= read -r -d '' -N 16 content <&"$fd" || true
-  value="${content%$'\n'}"
-  if [[ "${#content}" -gt 10 || ! "$value" =~ ^(0|[1-9][0-9]{0,8})$ ]] || (( value >= 999999999 )); then
-    exec {fd}>&-; return 1
-  fi
-  # Still under the lock and before taking a number: every hook counted here
-  # appended before this number, and any append after it exceeds the count.
-  attempts="$(stat -c %s -- "$file.attempts" 2>/dev/null)" || attempts=""
-  value=$((value + 1))
-  # Rewrite the same inode from offset 0 while the lock is held; the read left
-  # this descriptor's offset past the old value, so reopen it through /proc.
-  # Without /proc the write fails and the event is simply unordered.
-  if ! printf '%s\n' "$value" 2>/dev/null >"/proc/self/fd/$fd"; then
-    exec {fd}>&-; return 1
-  fi
-  exec {fd}>&-
-  printf '%s %s' "$value" "$attempts"
-}
-if [[ -n "$HUB_SESSION" && -n "${ASHA_HUB_EVENT_ORDER:-}" ]] && command -v flock >/dev/null 2>&1 \
-    && hub_attempt "$ASHA_HUB_EVENT_ORDER"; then
-  read -r HUB_ORDER HUB_ATTEMPTS <<<"$(hub_order_next "$ASHA_HUB_EVENT_ORDER" || true)"
-  if [[ "$HUB_ORDER" =~ ^[1-9][0-9]{0,8}$ ]]; then
-    hub_resolve '.' || true
-  else
-    HUB_ORDER=""
-    printf '.' 2>/dev/null >>"$ASHA_HUB_EVENT_ORDER.attempts" && hub_resolve '..' || true
-  fi
-  [[ -n "$HUB_ORDER" && "$HUB_ATTEMPTS" =~ ^[1-9][0-9]{0,7}$ ]] || HUB_ATTEMPTS=""
-fi
-
-# Before anything else, make this native event visible to Control's idle-pane
-# typing (#96): bump the Room pane's own event sequence. Control types into an
-# idle pane only while the sequence equals the one the hub last recorded, and
-# tmux re-checks it when pasting and pressing Enter, so an event whose report
-# is slow or is killed at the budget below still stops the typing. One bounded
-# tmux call; any failure just omits --sequence, which makes the hub treat the
-# sequence as unknown and refuse to type until a sequenced event lands.
-# Only Rooms created with Control's experimental idle typing (control.idle_delivery)
-# carry the fence; everywhere else this costs nothing.
-HUB_SEQUENCE=""
-if [[ -n "$HUB_SESSION" && "${ASHA_ROOM_INPUT_FENCE:-}" == "1" && -n "${TMUX:-}" && "${TMUX_PANE:-}" =~ ^%[0-9]+$ ]] \
-    && command -v tmux >/dev/null 2>&1 && command -v timeout >/dev/null 2>&1; then
-  HUB_SEQUENCE="$(
-    timeout --signal=KILL 0.2 tmux set-option -p -t "$TMUX_PANE" -F @asha_event_seq \
-      '#{e|+:#{@asha_event_seq},1}' ';' show-options -p -v -t "$TMUX_PANE" @asha_event_seq \
-      2>/dev/null || true
-  )"
-  [[ "$HUB_SEQUENCE" =~ ^[1-9][0-9]{0,8}$ ]] || HUB_SEQUENCE=""
 fi
 
 # A hub session sits in front of the operator's own keystrokes, so its share of
@@ -203,17 +99,6 @@ else
 fi
 INPUT_TRUNCATED=""
 [[ "$(printf '%s' "$INPUT" | wc -c)" -lt "$HUB_READ_CHARS" ]] || INPUT_TRUNCATED=1
-TOOL_KIND="work"
-TOOL_TOKEN="unknown"
-if [[ "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed" ]]; then
-  if [[ -z "$INPUT_TRUNCATED" ]]; then
-    CLASSIFIER="$(dirname -- "${BASH_SOURCE[0]}")/../../tools/completion_event.py"
-    CLASSIFICATION="$(printf '%s' "$INPUT" | python3 "$CLASSIFIER" 2>/dev/null || true)"
-    read -r TOOL_KIND TOOL_TOKEN <<< "$CLASSIFICATION"
-    TOOL_KIND="${TOOL_KIND:-work}"
-    TOOL_TOKEN="${TOOL_TOKEN:-unknown}"
-  fi
-fi
 SESSION_ID=""
 HOOK_CWD=""
 EXIT_STATUS=""
@@ -298,17 +183,12 @@ if [[ -n "$HUB_SESSION" ]]; then
   HUB_RESPONSE=""
   if [[ -n "$ASHA_CMD" ]] && command -v timeout >/dev/null 2>&1; then
     HUB_ARGS=(control session event --event "$CONTROL_EVENT")
-    if [[ "$CONTROL_EVENT" == "tool-started" || "$CONTROL_EVENT" == "tool-completed" ]]; then
-      HUB_ARGS+=(--tool-kind "$TOOL_KIND" --tool-token "$TOOL_TOKEN")
-    fi
+    [[ ! "$EMITTED_AT" =~ ^[0-9]{1,12}\.[0-9]{1,9}$ ]] || HUB_ARGS+=(--emitted-at "$EMITTED_AT")
     [[ -z "$SESSION_ID" ]] || HUB_ARGS+=(--native-id "$SESSION_ID")
     [[ -z "$HOOK_CWD" ]] || HUB_ARGS+=(--cwd "$HOOK_CWD")
     [[ -z "$PERMISSION_TEXT" ]] || HUB_ARGS+=(--text "$PERMISSION_TEXT")
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
     [[ -z "$BACKGROUND_TASKS" ]] || HUB_ARGS+=(--background-tasks "$BACKGROUND_TASKS")
-    [[ -z "$HUB_SEQUENCE" ]] || HUB_ARGS+=(--sequence "$HUB_SEQUENCE" --sequence-pane "$TMUX_PANE")
-    [[ -z "$HUB_ORDER" ]] || HUB_ARGS+=(--order "$HUB_ORDER")
-    [[ -z "$HUB_ATTEMPTS" ]] || HUB_ARGS+=(--attempts "$HUB_ATTEMPTS")
     HUB_RESPONSE="$(
       timeout --signal=TERM --kill-after=0.1 "$HUB_CONTROLLER_SECONDS" \
         "$ASHA_CMD" "${HUB_ARGS[@]}" 2>/dev/null || true

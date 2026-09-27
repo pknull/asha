@@ -7,7 +7,6 @@ handoff, and a ``no-durable-update`` attestation. The row's receipt names its
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 import uuid

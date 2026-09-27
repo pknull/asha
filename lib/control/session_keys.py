@@ -6,22 +6,12 @@ TAIL = '? keys  q quit'
 _ANSWERABLE = frozenset({'needs-input', 'permission-requested', 'waiting-input'})
 
 
-def offers_no_handoff(row, *, enabled):
-    """Whether the dashboard offers ``c``: only the hub's own predicate result decides (T6, QA7 P2).
-
-    ``row['no_handoff']`` is written by ``Hub.show`` from ``no_handoff_eligibility``
-    over the stored facts, before presentation rewrites activity. The view never
-    re-derives eligibility from presented fields.
-    """
-    return bool(enabled) and (row.get('no_handoff') or {}).get('eligible') is True
-
-
 def attachable(row):
     """Whether Enter can act: the hub's own attach predicate decides (T6, Q14-F5)."""
     return attach_refusal(row) is None
 
 
-def row_keys(row, *, no_handoff_close=False):
+def row_keys(row):
     """The action keys, most important first, for the selected row's state."""
     if row is None:
         return ['n job', 'o Room', 'A history', 'G workflows']
@@ -40,29 +30,25 @@ def row_keys(row, *, no_handoff_close=False):
     if not attachable(row):
         # Never advertise Enter where the hub would refuse it (Q14-F5).
         keys = [key for key in keys if not key.startswith('Enter ')]
-    if offers_no_handoff(row, enabled=no_handoff_close):
-        keys.insert(1, 'c close (no handoff)')
     return keys
 
 
-def footer(row, *, width, no_handoff_close=False, peek=False):
+def footer(row, *, width, peek=False):
     """One state-aware line: the keys that matter for the selected row (#102)."""
     from .tui import _cell_width
-    keys = (['Esc back'] if peek else []) + row_keys(row, no_handoff_close=no_handoff_close)
+    keys = (['Esc back'] if peek else []) + row_keys(row)
     while keys and _cell_width('  '.join(keys + [TAIL])) > width:
         keys.pop()
     return '  '.join(keys + [TAIL])
 
 
-def key_sheet(*, no_handoff_close=False, preview=False):
+def key_sheet(*, preview=False):
     """Every binding, labelled as the footer labels it."""
     entries = [('Up/Down', 'select a session'),
                ('Enter attach', 'open the terminal or structured conversation'),
                ('a answer', 'answer the pending input request'),
                ('m send', 'queue a message for the session'),
                ('x close', 'close, requesting a memory handoff'),
-               *([('c close (no handoff)', 'close at a verified native idle; no save claimed')]
-                 if no_handoff_close else []),
                ('X force-close', 'close without a new handoff'),
                ('s stop', 'stop the session; history is retained'),
                ('r resume', 'resume with a continuation'),
@@ -86,21 +72,21 @@ def _sheet_page(height):
     return max(1, height - 2)
 
 
-def sheet_offset(offset, *, height, no_handoff_close=False):
+def sheet_offset(offset, *, height):
     """Clamp a key-sheet scroll offset for this height; 0 when the sheet fits."""
-    entries = len(key_sheet(no_handoff_close=no_handoff_close)) - 1
+    entries = len(key_sheet()) - 1
     if entries + 1 <= height:
         return 0
     return max(0, min(offset, entries - _sheet_page(height)))
 
 
-def sheet_lines(height, offset, *, no_handoff_close, preview=False):
+def sheet_lines(height, offset, *, preview=False):
     """The key sheet, paged on a short terminal so every binding stays reachable."""
-    sheet = key_sheet(no_handoff_close=no_handoff_close, preview=preview)
+    sheet = key_sheet(preview=preview)
     if len(sheet) <= height:
         return sheet
     entries = sheet[1:]
-    first = sheet_offset(offset, height=height, no_handoff_close=no_handoff_close)
+    first = sheet_offset(offset, height=height)
     page = entries[first:first + _sheet_page(height)]
     return (['Keys (Up/Down scroll; other keys return)', *page,
              f'  {first + 1}-{first + len(page)} of {len(entries)} · Up/Down for more'])

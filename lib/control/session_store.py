@@ -332,7 +332,7 @@ class SessionStore:
                 found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
                 if found:
                     current = json.loads(found[0])
-                    current.update(active_tools={}, tool_starts={}, work_epoch=str(uuid.uuid4()))
+                    current.update(work_epoch=str(uuid.uuid4()))
                     from .session_hub import Hub
                     Hub._save(c, current)
             self._event(c, sid, "turn-reserved", {"message_id": msg["message_id"]}, turn)
@@ -386,18 +386,6 @@ class SessionStore:
             if kind in {"completed", "failed"}:
                 from .provider_recovery import observe_terminal
                 observe_terminal(c, sid, turn, kind)
-            if kind == 'tool' and c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_sessions'").fetchone():
-                found = c.execute('SELECT payload FROM hub_sessions WHERE session_id=?', (sid,)).fetchone()
-                if found:
-                    current = json.loads(found[0])
-                    from .session_completion import observe_tool
-                    event = 'tool-completed' if payload.get('status') in {'completed', 'failed', 'cancelled', 'declined'} else 'tool-started'
-                    token = payload.get('completion_token') or payload.get('tool_id') or 'unknown'
-                    # Claude tool results carry identity only; the start froze kind.
-                    tool_kind = payload.get('completion_kind') or (current.get('active_tools') or {}).get(token, 'work')
-                    observe_tool(current, event, tool_kind, token)
-                    from .session_hub import Hub
-                    Hub._save(c, current)
             rerouted = kind == 'progress' and payload.get('subtype') == 'model-rerouted'
             if ((kind == 'initialized' and ('model' in payload or 'effort' in payload)) or rerouted) \
                     and c.execute("SELECT 1 FROM sqlite_master WHERE name='hub_sessions'").fetchone():

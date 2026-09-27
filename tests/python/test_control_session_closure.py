@@ -64,65 +64,33 @@ class ClosureFixture(unittest.TestCase):
     @contextmanager
     def acting_as(self, sid):
         # Scripted native boundary fixture. This is not native delivery proof.
+        # The handoff runs as a tool call, so its hooks report around it.
         handoff = self.hub.handoff
-        def finalized(*args, **kwargs):
-            token = str(__import__('uuid').uuid4())
-            self.hub.observe('tool-started', tool_kind='finalizer', tool_token=token)
+        def reported(*args, **kwargs):
+            self.hub.observe('tool-started')
             try:
                 return handoff(*args, **kwargs)
             finally:
-                self.hub.observe('tool-completed', tool_kind='finalizer', tool_token=token)
+                self.hub.observe('tool-completed')
         with mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), \
                 self.ordered_hooks(sid), \
-                mock.patch.object(self.hub, 'handoff', side_effect=finalized):
+                mock.patch.object(self.hub, 'handoff', side_effect=reported):
             yield
+
+    # Hook arguments the hub no longer takes (best-effort close D11): the CLI
+    # accepts and ignores them, so reports that still carry them apply.
+    OBSOLETE_HOOK_ARGUMENTS = ('order', 'attempts', 'tool_kind', 'tool_token', 'sequence', 'sequence_pane')
 
     @contextmanager
     def ordered_hooks(self, sid, hub=None):
-        """Report ``hub.observe`` hook events the way control-event.sh numbers them."""
+        """Report ``hub.observe`` hook events as the CLI does: obsolete arguments dropped."""
         hub = hub or self.hub
         observe = hub.observe
-        def sequenced(event, **kwargs):
-            # Like control-event.sh (#101): take the next number from this
-            # incarnation's real counter file at hook start. An explicit order
-            # models a number allocated elsewhere (the counter keeps the maximum);
-            # order=None reports an unsequenced event and allocates nothing.
-            # Every hook first appends one byte to the attempt log (QA9); a
-            # numbered report carries the log's size. The hook has finished its
-            # attempt before it reports, so its resolution byte (#103) lands too.
-            from lib.control import session_order
-            generation = hub.get(sid)['generation']
-            path = session_order.counter_path(self.config, sid, generation)
-            attempts = session_order.attempts_path(self.config, sid, generation)
-            content = path.read_text() if event and path.exists() else None
-            if event and attempts.exists():
-                with attempts.open('ab') as log:
-                    log.write(b'.')
-            if content is not None and not __import__('re').fullmatch(r'(0|[1-9][0-9]{0,8})\n?', content):
-                kwargs.pop('order', None)                  # unreadable: the hook reports unsequenced
-            elif content is not None:
-                allocated = int(content)
-                if 'order' not in kwargs:
-                    kwargs['order'] = allocated + 1
-                elif kwargs['order'] is None:
-                    del kwargs['order']
-                if type(kwargs.get('order')) is int and 0 < kwargs['order'] < session_order.ORDER_LIMIT:
-                    path.write_text(f"{max(allocated, kwargs['order'])}\n")
-                    if attempts.exists() and 'attempts' not in kwargs:
-                        kwargs['attempts'] = attempts.stat().st_size
-            elif 'order' in kwargs and kwargs['order'] is None:
-                del kwargs['order']
-            resolved = session_order.resolved_path(self.config, sid, generation)
-            if event and attempts.exists() and resolved.exists():
-                with resolved.open('ab') as log:
-                    log.write(b'.')
-            # Like control-event.sh: bump the pane's event sequence, then report it.
-            if 'sequence' not in kwargs and getattr(self.tmux, 'event_sequence', None) is not None:
-                self.tmux.event_sequence = str(int(self.tmux.event_sequence) + 1)
-                kwargs['sequence'] = int(self.tmux.event_sequence)
-                kwargs.setdefault('sequence_pane', self.tmux.pane_id)
+        def reported(event, **kwargs):
+            for name in self.OBSOLETE_HOOK_ARGUMENTS:
+                kwargs.pop(name, None)
             return observe(event, **kwargs)
-        with mock.patch.object(hub, 'observe', side_effect=sequenced):
+        with mock.patch.object(hub, 'observe', side_effect=reported):
             yield
 
     def drafts(self, active=ACTIVE, decisions=DECISIONS):
@@ -162,18 +130,6 @@ class TerminalClosureTests(ClosureFixture):
         self.assertEqual(again['attempts'], 1)
         self.assertEqual(len(self.hub.messages(row['session_id'])), 1)
         self.assertEqual(self.tmux.killed, [])
-
-    def test_idle_worker_is_not_reached_without_a_turn_boundary(self):
-        row = self.launch()
-        with self.acting_as(row['session_id']):
-            self.hub.observe('turn-stopped')
-        self.hub.close(row['session_id'])
-        shown = self.hub.show(row['session_id'])
-        self.assertEqual(shown['closure']['state'], 'pending-delivery')
-        self.assertEqual(shown['activity'], 'closing')
-        # No proven empty input line (the fake pane shows nothing): never typed into.
-        self.assertEqual(self.tmux.injected, [])
-        self.assertIn('did not submit the close request', shown['closure']['guidance'])
 
     def test_stop_with_background_work_outstanding_is_not_an_idle_close_boundary(self):
         # #99: a Stop block only continues the turn, so the request is still
@@ -297,15 +253,6 @@ class TerminalClosureTests(ClosureFixture):
         record = self.hub.show(sid)['closure']
         self.assertEqual(record['state'], 'acknowledged')
         self.assertTrue(record['memory']['saved'])
-
-    def test_codex_terminal_is_queued_only_until_its_return_channel_is_proven(self):
-        row = self.launch(harness='codex')
-        sid = row['session_id']
-        record = self.hub.close(sid)['closure']
-        self.assertEqual(record['delivery']['channel'], 'queued-message')
-        with self.acting_as(sid):
-            self.assertIsNone(self.hub.stop_decision(self.hub.observe('turn-stopped')))
-        self.assertEqual(self.hub.show(sid)['closure']['state'], 'unanswered')
 
     def test_resume_moves_an_old_closure_record_into_history(self):
         row = self.launch()
@@ -779,16 +726,6 @@ class TerminalClosureTests(ClosureFixture):
         self.assertEqual(record['state'], 'delivered')
         self.assertEqual(record['delivery']['channel'], 'queued-message')
 
-    def test_harness_without_stop_seam_only_queues(self):
-        row = self.launch(harness='copilot')
-        sid = row['session_id']
-        record = self.hub.close(sid)['closure']
-        self.assertEqual(record['delivery']['channel'], 'queued-message')
-        self.assertIn('Stop', record['guidance'])
-        with self.acting_as(sid):
-            self.assertIsNone(self.hub.stop_decision(self.hub.observe('turn-stopped')))
-        self.assertEqual(self.hub.show(sid)['closure']['state'], 'unanswered')
-
     def test_wait_finalizes_after_the_acknowledgement_arrives(self):
         row = self.launch()
         sid = row['session_id']
@@ -800,9 +737,9 @@ class TerminalClosureTests(ClosureFixture):
             time.sleep(0.3)
             with mock.patch.object(worker, 'actor', side_effect=lambda: worker.get(sid)), \
                     self.ordered_hooks(sid, worker):
-                worker.observe('tool-started', tool_kind='finalizer', tool_token='wait-finalizer')
+                worker.observe('tool-started')
                 worker.handoff(rid, outcome='no-durable-update', detail='nothing durable')
-                worker.observe('tool-completed', tool_kind='finalizer', tool_token='wait-finalizer')
+                worker.observe('tool-completed')
                 worker.observe('turn-stopped')
         thread = threading.Thread(target=acknowledge)
         thread.start()
@@ -912,13 +849,13 @@ class StructuredClosureTests(ClosureFixture):
         worker.env['ASHA_MANAGED_TURN_ID'] = turn['turn_id']
         with SessionStore(self.config) as sessions:
             sessions.observe(sid, session['generation'], turn['turn_id'], 'tool',
-                             dict(tool_id='handoff', completion_kind='finalizer', status='inProgress'))
+                             dict(tool_id='handoff', status='inProgress'))
         with mock.patch.object(worker, 'structured_actor', return_value=(worker.get(sid), turn['delivery_key'])):
             result = worker.handoff(record['request_id'], outcome='no-durable-update', detail='utility only read')
         self.assertEqual(result['closure_state'], 'acknowledged')
         with SessionStore(self.config) as sessions:
             sessions.observe(sid, session['generation'], turn['turn_id'], 'tool',
-                             dict(tool_id='handoff', completion_kind='finalizer', status='completed'))
+                             dict(tool_id='handoff', status='completed'))
             sessions.finish(sid, session['generation'], turn['turn_id'], success=True)
         self.release_owner(sid)
         closed = self.hub.close(sid)
