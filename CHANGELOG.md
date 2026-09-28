@@ -1,5 +1,58 @@
 # Changelog
 
+## Unreleased — best-effort close (supersedes the unreleased #92, #96, #101, #103 and #104 entries)
+
+- Close asks the session to save project Memory, waits a bounded time, then
+  terminates, and the row reads `Closed, saved HH:MM UTC` or `Closed,
+  unsaved`. The wait is `--wait SECONDS`, defaulting to the new
+  `control.close_wait_seconds` (60, at most 600); `--force` is a zero wait and
+  cannot be combined with `--wait`. An attached terminal is killed at the
+  deadline. A publication still in flight at the deadline gets 10 more
+  seconds; a kill mid-publication leaves the recovery journal, which the next
+  read or publication recovers.
+- Delivery: a queued hub message; a working Claude session's Stop-hook block
+  decision; and one bounded pointer line typed into an idle or unobserved
+  terminal pane after Room ownership is verified (a working Codex session gets
+  it once observed idle). At most one pointer per request, typed only by the
+  close's own waiter. Structured sessions get the request as their next turn,
+  then a stop request.
+- The dashboard's `x` records the request and starts a detached `asha control
+  session close ID` waiter; it no longer blocks. A repeated close joins the
+  pending request; any later close, stop, launch, send or resume finalizes an
+  expired one. A current finished report plus a save for the current
+  assignment closes at once.
+- Every successful save path records a `hub_memory_publications` row naming its
+  source (`explicit-save`, `close`, `handoff`, or `attestation` for
+  `no-durable-update`, detail retained); "saved" reads only those rows, and
+  the label shows the newest save in the generation. `report --state
+  finished` is no longer gated on a receipt and reads `Finished, saved HH:MM
+  UTC` or `Finished, unsaved`. A handoff no longer has to be a standalone tool
+  call.
+- Late hook reports: each hook forwards when it fired (`--emitted-at`), and the
+  hub skips a report up to 30 s older than the newest one it applied, with all
+  of its effects; older than that still applies (clock steps), and unstamped
+  reports apply.
+- Removed: completion receipts and `completion_readiness`, hook event ordering
+  and attempt logs (`ASHA_HUB_EVENT_ORDER`), tool identity and finalizer
+  classification, `close --no-handoff` and the dashboard `c` key, idle-pane
+  typing with its tmux fence (`control.idle_delivery`, typed `send` delivery),
+  the Codex native-resume close restart, the multi-state close machine
+  (attempts, re-arming, `close-failed` and its attention flag) and
+  detached-only kills.
+- Compatibility for one release: `control.idle_delivery` and
+  `control.no_handoff_close` are accepted and ignored; hooks passing
+  `--order`, `--attempts`, `--tool-kind`, `--tool-token`, `--sequence` or
+  `--sequence-pane`, and `handoff --attempt`, are accepted and ignored. Close
+  records from earlier versions are read-only and present through the same
+  label; their `attention` flag no longer keeps a closed row listed.
+- Kept from those entries: the project-memory skill and compact
+  startup/completion contract in hub assignments (#92); Claude
+  `PostToolUseFailure` ends a tool for the activity line (#96); `asha doctor
+  claude` fails when a source hook is not registered in `settings.json` (`asha
+  install claude` repairs it) (#104); Room ownership format conditions no
+  longer carry a stray closing brace (#96); CAS publication, native
+  permissions and the no-Git handoff.
+
 ## Unreleased — Rooms show saves, not completion (#105)
 
 - A Room is an ongoing conversation, so its Memory saves are checkpoints. The
@@ -8,15 +61,14 @@
   completion to the close request. The worker contract is unchanged.
 - An open Room with a save (explicit save or ordinary handoff publication in
   its current assignment) reads `Saved HH:MM UTC: waiting for you` with
-  activity `idle`, never `Finalized: close`, `Done: close` or the `Ready to
-  close` state section. A `finished` report sent anyway is shown the same way;
+  activity `idle`, never finished or the `Ready to close` state section. A `finished` report sent anyway is shown the same way;
   JSON keeps it as the added field `reported_activity: "finished"`, and the new
-  `saved_label` field carries `saved HH:MM UTC`. Receipts, closes, ended Rooms
-  and workers keep their existing presentation.
+  `saved_label` field carries `saved HH:MM UTC`. Closes, ended Rooms and
+  workers keep their existing presentation.
 - The same holds during the turn that continues after a save: the Room shows
-  its working activity with the saved label, not `Finalized: close`. A later
-  `no-durable-update` or `blocked` handoff in the same assignment keeps the last
-  save time (retained in the Room's `memory_checkpoint` field).
+  its working activity with the saved label. A later `blocked` handoff keeps
+  the last save time; the save time is read from the generation's publication
+  rows (best-effort close), so a later assignment or handoff never erases it.
 
 ## Unreleased — read-only session preview, off by default (#102 phase 3)
 
@@ -34,35 +86,6 @@
   is why the preview is opt-in. History paging, cancel-on-close and the
   inherited Q17-F6/F7 items remain follow-ups (docs/session-hub.md).
 
-## Unreleased — finalizer receipts after failed, denied or late-reported tools (#104)
-
-- Three Claude workers got blocked receipts ("No sole observed standalone
-  finalizer tool") from tools whose end never reached Control, not from
-  background work: every backgrounded Bash got its PostToolUse when it moved
-  to the background. The open starts came from failed tools on an install that
-  predates the `PostToolUseFailure` hook, a call denied by `policy-guard.sh`
-  (Claude sends no end for a denied call), and a hook report that was lost.
-- A tool end whose report arrives late (it fills a gap in the event order)
-  now retires its start; a duplicate retires nothing. A start is retired only
-  by an end of that tool: same session, same native conversation, same token
-  and kind, numbered after the start (QA19 F1/F2). A late report naming another
-  conversation is refused like a current one; an older call's end numbered
-  before a reused ID's start never retires it; a start or end without a number
-  stays open until the turn's Stop in an ordered session.
-- Two causes remain open and clear only at the turn's Stop (finalize in a
-  later turn): denied calls, for which Claude reports no end and a guard's
-  claim is not verifiable evidence, so none is reported (QA19 F3/F5,
-  `ToolDenied` is not a bridge mode); and lost end reports, which are not
-  retried, spooled or replayed (the spool and its replay were dropped after
-  QA20/QA22 could not confine or authenticate it).
-- A tool left open by the revision before this one has no recorded start and
-  is not migrated: no end retires it, and it clears at its turn's Stop.
-- `asha doctor claude` fails when a source hook is not registered in
-  `settings.json` (`asha install claude` repairs it); it previously checked
-  only that registered hook paths exist.
-- A blocked receipt's detail counts the open tool starts and names the likely
-  causes.
-
 ## Unreleased — session dashboard layout and grouping (#102 phase 2)
 
 - `asha control` groups sessions by project (default) or, with `g`, by state
@@ -71,8 +94,7 @@
 - From 120 columns the list shares the screen with a side panel for the
   selected session; narrower, `Space` shows a full-width detail. Rows carry a
   state glyph (ASCII fallback), harness, next step and time since the last
-  change, with receipt, close, background and staleness facts on a line under
-  the row. Text clips by terminal cells.
+  change, with close, background and staleness facts on a line under the row. Text clips by terminal cells.
 - An attention banner and `!` reach sessions that need you when they are off
   screen or folded. The terminal title shows `N awaiting input` outside tmux,
   and inside tmux only when `set-titles` is on for the dashboard's own tmux
@@ -86,56 +108,6 @@
   the hub would accept the attach (not on closed or stopped terminals).
 - `n`/`o` use the project launch form with optional Model and Effort fields.
 - A resize keeps the paged key sheet open at its clamped place (QA13 Q13-F1).
-
-## Unreleased — receipt state and close without a handoff turn (#101)
-
-- `session list/show --json` report each session's completion receipt under
-  `completion_readiness.receipt` (`current`, `stale` or `none`) with
-  `finalized_at` and `stale_since`. The hub stamps the first write at which a
-  ready receipt stops matching the session's work, and a Memory-only change is
-  dated from the published files. The dashboard detail line shows `receipt
-  current`, `receipt stale since HH:MM UTC` or `no receipt`.
-- Experimental, off by default: `control.no_handoff_close` (#103). With the
-  default the command refuses, naming the setting, and the dashboard does not
-  offer it. The reason is QA11 Q11-F1: a hook between its attempt byte and its
-  number can be covered by an older Stop. The receipt close checks the same
-  invariant and shares this window, reduced but not closed. When enabled:
-  `asha control session close ID --no-handoff` (dashboard `c`): a current receipt
-  still closes as `completed`. Otherwise an idle Claude/Codex terminal stops at a
-  verified native idle boundary (no open tool, no outstanding background work, no
-  pending question, no attached client) as `closed-no-save-claimed`, distinct
-  from `completed` and `forced`, never claiming a Memory save. A working,
-  questioned, attached or unobserved session is refused with the reason and left
-  running; `--wait N` polls for the boundary. Structured sessions, Copilot and
-  OpenCode refuse. A pending close at such a boundary now suggests
-  `Close: attach or --no-handoff`. The offer uses the command's own predicate
-  (`no_handoff` in `session show/list --json`). Idle-pane typing
-  (`control.idle_delivery`) is unchanged.
-- Native event order is always on. `control-event.sh` takes a per-incarnation
-  order from a private flock'd counter (`ASHA_HUB_EVENT_ORDER`, no tmux), and
-  the hub applies a hook's effects only when its order is newer than the last
-  applied one. Late and duplicate reports are logged without effect, and an
-  ignored Stop gets no close-request decision. One invariant now governs every
-  turnless termination (receipt close, `--no-handoff`, Codex idle resume). It
-  is checked under the counter lock held through the kill: every allocated
-  number has been applied, the last is a Stop, and no unsequenced or
-  out-of-order evidence stands without a later-allocated Stop. Receipts record
-  their order, and late work after them still invalidates them (QA7, QA8).
-  The attempt-log size a numbered report carries is read before its number is
-  taken, and a hook that gets no number appends a second byte (QA10 F1). A full
-  attempt log's refusal names its recovery: stop then resume, or `--force`
-  (QA10 F2).
-- Every hook appends one byte to a private per-incarnation attempt log before
-  taking a number, and numbered reports carry the log's size. A turnless kill
-  also requires the log to be unchanged since the last Stop, so a hook that
-  timed out on the counter lock and then lost its report no longer goes unseen
-  (QA9 F1). A counter read that times out leaves the barrier pending until the
-  next readable report instead of permanently (QA9 F2); dropped missing-report
-  entries only refuse receipts issued before them (QA9 F3); a forged huge order
-  no longer materializes its whole gap (QA9 H1).
-- Fix (#92): a graceful close with a current receipt no longer kills a terminal
-  that has a client attached. The kill is tmux-conditional, the receipt is kept,
-  and `--wait` retries.
 
 ## Unreleased — launch-time model and effort (#95)
 
@@ -156,49 +128,6 @@
   snapshot, report envelope), never to the session's later model; the live
   selection appears separately as `current_sessions`.
 
-## Unreleased — idle close and send delivery (#96)
-
-- Experimental, **off by default** (`control.idle_delivery: true` in the Asha
-  config enables it; open QA findings in `docs/session-hub.md`): graceful close
-  reaches an idle Claude/Codex terminal session without attachment:
-  at a verified idle Stop, with no open tool, exact Room ownership, no attached
-  client and a captured input line proven empty, Control types the retained close
-  request (one line, bound to request ID and attempt) into the owned pane.
-  Delivery is fenced to the observed idle boundary without holding any lock that
-  native hook reports wait on. Each Room pane carries two exact counters: an
-  attach generation (`@asha_attach_gen`, bumped by session hooks on every attach
-  or switch-in, so a same-second attach-type-detach cycle refuses) and an event
-  sequence (`@asha_event_seq`, bumped by `control-event.sh` before it reports and
-  recorded by the hub from that pane only). Control types only while the recorded
-  sequence equals the pane's, so a report still running or killed at the hook
-  budget refuses; tmux re-checks both counters, ownership, detachment, mode and
-  an unlinked window when pasting and when pressing Enter, hook integrity is
-  re-verified before each, and paste to Enter must fit in 1.5 seconds. Enter
-  follows only when the whole input region, between Claude's width-matched
-  unindented borders or down to Codex's styled footer, holds exactly the pasted
-  text (display wraps only; Claude paste placeholders refuse). Rooms without the
-  fence, or with missing, non-canonical or exhausted counters, refuse as
-  `unfenced`. The
-  Codex classifier checks continuation lines and the empty-composer footer hint
-  and parses extended-colour SGR as units (native 0.157 captures as fixtures).
-  Typed refusals (`attached`, `mode`, `ownership`, `unfenced`, `occupied`,
-  `stale`, `partial`, `error`) keep `Close needs attach` and never restart the
-  Room; the Codex
-  native-resume fallback kills only a detached, non-mode pane. A re-armed close
-  request requires its explicit `--attempt`. Copilot/OpenCode are never typed into.
-- With that setting on, `session send` to such an idle session types a one-line
-  pointer to the retained message; it always reports `delivery: injected` or
-  `queued-until-read` with the reason (`disabled` by default).
-- Finalizer classification accepts shell metacharacters inside quotes, so a prose
-  `--detail "... (publication X); ..."` handoff is recognised as standalone.
-- Claude `PostToolUseFailure` ends a tool start; a native Stop drops unmatched starts
-  and ends a sole matched finalizer. Doctor expects the new Claude hook; reinstall
-  the Claude target to register it.
-- A `handoff-failed` status names Control's refused completion evidence instead of
-  blaming a valid `no-durable-update`; the close request asks for the handoff as the
-  only command in its own tool call.
-- Room ownership format conditions no longer carry a stray closing brace.
-
 ## Unreleased — exited Room finalization (#97)
 
 - tmux 3.4 answers `display-message` for a vanished pane id with exit 0 and empty
@@ -216,18 +145,6 @@
 - Doctor detects managed ignore drift; invalid privacy settings fail before repair.
   This changes ignore rules only: already tracked files and Git history require a
   separately authorized cleanup.
-
-## Unreleased — project-memory completion (#92)
-
-- Add the project-memory skill and compact startup/completion contract to hub
-  assignments, without chair context or another memory store.
-- Successful explicit saves and no-durable-update handoffs issue completion
-  receipts bound to actor, turn and Memory digests. Explicit finished reports
-  require a current receipt; further work and superseding Memory invalidate it.
-- Normal close consumes a current receipt at a verified idle boundary without
-  another model turn. Missing/stale receipts retain actionable attachment guidance.
-- Preserve CAS publication, native permissions and no-Git handoff behavior; document
-  separate terminal/structured fixture evidence and unsupported native seams.
 
 ## Unreleased — session experience
 

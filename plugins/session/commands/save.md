@@ -172,21 +172,20 @@ compare-and-swap and no Git seam; see `docs/session-hub.md`.
    python3 "$TOOLS/push_retry.py" ensure --project-dir "$COMMIT_REPO"
    ```
 
-## Control completion receipt
+## Control publication record
 
-A verified Control worker or Room gets a separate `completion` result from the
-publisher (under `publication` on scope none). Confirm `status=ready`; a successful
-Memory transaction with blocked receipt retention is not completion. New tools or
-work invalidate readiness. After the authorized save steps above, if the receipt is blocked/ineligible or other tools
-ran after publication, re-read and verify the pair, then make the final tool call
-`asha control session handoff --outcome no-durable-update --detail 'Save verified with no further durable changes' --json` (include current `--request ID --attempt N` if
-closing). Use no-update only when true. Otherwise publish the merged drafts through
-handoff. Then only report finished as a standalone command and end the turn.
+A verified Control worker or Room gets `hub_publication_status` from the
+publisher (under `publication` on scope none): `recorded` means Control shows
+the session as saved; `unavailable` means the Memory transaction succeeded but
+Control could not record it, so say so. When closing, a save that lands before
+the close's deadline lets it close as saved; name the close with `--request ID`
+on handoff commands if you use them.
 
 Silence, failed saves, denied permissions or scope restrictions require a blocked
-handoff and an honest needs-input report. Never use a no-update attestation to hide
-an unsaved durable change. This receipt does not authorize the Git steps above when
-the user's assignment withholds commit/push authority.
+handoff (`asha control session handoff --outcome blocked --detail REASON --json`)
+and an honest needs-input report. Never use a no-update attestation to hide an
+unsaved durable change. Recording the save does not authorize the Git steps
+above when the user's assignment withholds commit/push authority.
 
 ## Hard exclusions
 

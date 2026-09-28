@@ -65,11 +65,8 @@ Terminal attachment returns an exact verified tmux target. The dashboard opens
 it on Enter. Never use screen text to decide permissions or type into native
 prompts through tmux. The human can use the attached harness.
 
-Terminal messages remain **queued** until the worker reads them; reading is not
-acknowledgement. Only when the experimental `control.idle_delivery` setting is on
-(default off) does Control type a one-line pointer into an idle, detached
-Claude/Codex pane (`delivery: injected`); otherwise the result says
-`queued-until-read` and why.
+Terminal messages remain **queued** until the worker reads them
+(`delivery: queued-until-read`); reading is not acknowledgement.
 Never type into a pane yourself. Say when attachment is needed. Structured messages are retained for an eligible turn boundary;
 do not promise mid-turn steering or consumption. Reuse a message key and
 identical body when retrying a send.
@@ -109,46 +106,34 @@ An unanswered request followed by exit records `exited-before-capture`.
 ## Close, stop and resume
 
 `session stop ID` stops the owned process now and retains history. `session
-close ID` is graceful: it asks the session for one final turn and terminates
-only after a verified project-memory handoff (`closure.state` becomes
-`acknowledged`, then `completed`). Re-run `close`, or use `close ID --wait 120`,
-to terminate after the acknowledgement. `close ID --force` terminates now and
-records that no memory save was claimed. An observed idle Codex terminal with a
-captured native ID can be stopped and resumed in the same conversation with the
-close request. The request ID survives the new generation. Working sessions are
-not stopped. Unknown activity, missing native IDs, unsupported resume and failed
-resume leave `unanswered` with attachment required. Claude retains its Stop-hook
-channel; an already idle Claude session needs attachment unless the
-experimental `control.idle_delivery` setting is on (default off), in which case
-Control may type the close request into an idle, detached pane and any refusal
-still needs attachment. Report
-`unanswered`, `handoff-failed`, `undeliverable` and `unavailable` states as
-what they are; none of them is a completed save. The handoff never commits or
-pushes; landing code remains a separate explicit decision. Dashboard `q` only
-exits the UI; it does not stop workers or the supervisor. `M` filters input
-requests; `A` includes retained history.
+close ID` is best-effort: it asks the session to save project Memory, waits a
+bounded time (`--wait SECONDS`, default `control.close_wait_seconds`, 60), then
+terminates it, attached terminal included. `close ID --force` is a zero wait.
+The request reaches a working Claude session as its Stop-hook decision and an
+idle or unobserved terminal as one typed pointer line to `session messages`; a
+working Codex session gets the pointer once observed idle; a structured session
+gets it as its next turn. The close ends at the first save after the request,
+at process exit, or at the deadline; the row then reads `Closed, saved HH:MM
+UTC` or `Closed, unsaved` (unsaved only when the generation has no save at
+all). Dashboard `x` records the request and hands the wait to a detached
+waiter; re-running `close` joins a pending request and finalizes an expired
+one. A finished report that is still current plus a save for the current
+assignment closes at once. The handoff never commits or pushes; landing code
+remains a separate explicit decision. Dashboard `q` only exits the UI; it does
+not stop workers or the supervisor. `M` filters input requests; `A` includes
+retained history.
 
 Rooms that explicitly saved after their latest assignment in the same generation
-omit the close experience assessment (`explicit-save-published`). Control retains publication evidence and a separate completion receipt. A current
-receipt plus a verified idle boundary lets normal close terminate without another
-model turn. Missing/stale receipts require a fresh project-memory handoff; an idle
-pane that refuses typing, or an unsupported terminal, says needs attach. Codex's existing idle continuation
-is a fallback only when no qualifying receipt exists. Treat `completion_readiness`
-(`receipt`: current, stale with `stale_since`, or none) and `closure.guidance` as
-evidence; never infer readiness from prose. `close ID --no-handoff` is
-experimental and refused unless the Control setting `no_handoff_close` is true
-(#103); when enabled it stops an idle
-Claude/Codex terminal without a turn as `closed-no-save-claimed`. It claims no
-save, refuses while the session works, waits for input or has a client attached,
-and still completes normally on a current receipt.
+omit the close experience assessment (`explicit-save-published`); an attestation
+does not. Treat `memory_saved_at` and `closure.guidance` as evidence; never infer
+a save from prose.
 
 Worker assignments include the project-memory startup/completion contract across
-harnesses without chair context. `report --state finished` requires a current
-receipt from a save or `handoff --outcome no-durable-update --detail WHY`. Publication
-blockers use `handoff --outcome blocked`; silence or scope refusal is not a no-update
-attestation. Copilot/OpenCode lack the native idle bridge and require attachment
-for terminal closure even with a receipt. Structured paths bind to their managed
-turn; native delivery and permissions remain separately qualified.
+harnesses without chair context. `report --state finished` is never gated; the
+row reads finished, saved or unsaved. Publication blockers use `handoff
+--outcome blocked`; silence or scope refusal is not a no-update attestation.
+Structured paths bind to their managed turn; native delivery and permissions
+remain separately qualified.
 
 Experience policy resolves project override, user `session_experience.default_mode`
 in `~/.asha/config.json`, then builtin off. `experience policy --read-only --project
