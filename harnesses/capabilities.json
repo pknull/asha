@@ -111,15 +111,15 @@
         },
         "session-close": {
           "support": "native",
-          "surface": "session close -> queued hub message; Stop -> control-event.sh -> `session event --event turn-stopped` returns the pending close request once as a single-line block decision; the final turn acknowledges with `session handoff`",
-          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "surface": "session close -> best-effort: queued hub message; a working session gets the request once as its Stop-hook block decision; an idle or unobserved pane gets one typed pointer line; bounded wait, then termination labelled saved or unsaved",
+          "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
-            "A current completion receipt plus observed idle closes without another turn; idle without a receipt needs attach",
-            "Acknowledgement binds to Room ownership, process ancestry, generation and request ID",
-            "Publication runs through memory_v2 with a compare-and-swap; no Git seam",
-            "The Stop decision is printed before delivery is recorded; a hook killed at its 3 s Stop budget re-emits the same request at the next guard-free Stop (a Stop that follows a delivered block carries stop_hook_active and emits nothing), so an unattended worker may need another user turn or an attach",
-            "An absent, malformed or over-bound Stop payload is treated as stop_hook_active (no block); a delivery receipt confirms only its exact request and attempt",
-            "Delivery through the Stop seam requires jq in the worker's PATH; without it the guard can never be cleared and the request stays queued"
+            "Best-effort: the close ends at the first publication after the request, at process exit, or at the deadline (default 60 s); an unanswered request closes unsaved",
+            "The pointer line is typed by the close's own waiter after Room ownership is verified, at most once per request; a session at a native question or permission prompt is not typed into",
+            "Publication runs through memory_v2 with a compare-and-swap; no Git seam; a kill mid-publication leaves the recovery journal",
+            "The Stop decision is printed before delivery is recorded; a Stop that follows a delivered block carries stop_hook_active and emits nothing",
+            "An absent, malformed or over-bound Stop payload is treated as stop_hook_active (no block); delivery is confirmed only for its exact request and generation",
+            "Delivery through the Stop seam requires jq in the worker's PATH; the queued message and pointer line remain"
           ]
         },
         "session-experience": {
@@ -128,7 +128,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
+            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -154,13 +154,13 @@
         },
         "project-memory": {
           "support": "partial",
-          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
-          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff publication rows; ungated finished report",
+          "verifier": "python test_session_publication_rows + test_control_session_closure; tests:test-install/test-session-hub-hooks",
           "limitations": [
             "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
-            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
-            "Terminal close requires an observed Stop; structured close requires the exact completed turn and no queued work; native permissions may block handoff CLI"
+            "Structured close is the next structured turn, then a stop request; native permissions may block the handoff CLI"
           ]
         }
       }
@@ -285,12 +285,11 @@
         },
         "session-close": {
           "support": "partial",
-          "surface": "Queued while working; recent observed idle + captured native ID uses owned native conversation resume with one close request",
-          "verifier": "python test_session_idle_close/test_control_session_closure; tests:test-session-hub-hooks",
+          "surface": "session close -> best-effort: queued hub message; one typed pointer line once the pane is observed idle (or at once when activity is unknown); bounded wait, then termination labelled saved or unsaved",
+          "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
-            "Unknown activity, missing native ID or failed resume requires attachment; finished report alone is not idle evidence",
-            "No proven Stop block return channel, pane typing or screen reads; fixture evidence is not a paid native probe",
-            "Issue #92 verified completion receipt seam precedes wake; C6 explicit-save linkage alone cannot authorize termination"
+            "No proven Stop block return channel; a session that stays working through the wait closes unsaved",
+            "Fixture evidence is not a paid native probe"
           ]
         },
         "session-experience": {
@@ -299,7 +298,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
+            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -325,13 +324,13 @@
         },
         "project-memory": {
           "support": "partial",
-          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
-          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff publication rows; ungated finished report",
+          "verifier": "python test_session_publication_rows + test_control_session_closure; tests:test-install/test-session-hub-hooks",
           "limitations": [
             "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
-            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
-            "Terminal close requires an observed Stop; structured close requires the exact completed turn and no queued work; native permissions may block handoff CLI",
+            "Structured close is the next structured turn, then a stop request; native permissions may block the handoff CLI",
             "PreToolUse unified_exec/tool coverage remains incomplete; callbacks are telemetry, not a complete enforcement boundary"
           ]
         }
@@ -439,11 +438,11 @@
         },
         "session-close": {
           "support": "partial",
-          "surface": "session close -> queued hub message only",
-          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "surface": "session close -> best-effort: queued hub message and one typed pointer line (activity is unobserved); bounded wait, then termination labelled saved or unsaved",
+          "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
-            "No Stop seam or supported native resume; idle/unknown activity leaves unanswered with attachment required",
-            "Working sessions keep the queued request; screen scraping and keystrokes are not used"
+            "No Stop seam or activity hooks: the pointer is typed without an observed idle boundary",
+            "Fixture evidence is not a paid native probe"
           ]
         },
         "session-experience": {
@@ -452,7 +451,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
+            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -478,13 +477,13 @@
         },
         "project-memory": {
           "support": "partial",
-          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
-          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff publication rows; ungated finished report",
+          "verifier": "python test_session_publication_rows + test_control_session_closure; tests:test-install/test-session-hub-hooks",
           "limitations": [
             "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
-            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
-            "Memory publication supported; completion receipts and finished reporting blocked without native Control tool/idle bridge; needs attach; structured transport unsupported"
+            "Memory publication and finished reporting supported; no native activity bridge, so rows read unknown; structured transport unsupported"
           ]
         }
       }
@@ -593,11 +592,11 @@
         },
         "session-close": {
           "support": "partial",
-          "surface": "session close -> queued hub message only",
-          "verifier": "python test_control_session_closure + tests:test-session-hub-hooks",
+          "surface": "session close -> best-effort: queued hub message and one typed pointer line (activity is unobserved); bounded wait, then termination labelled saved or unsaved",
+          "verifier": "python test_control_session_closure/test_session_publication_rows/test_session_emitted_at; tests:test-session-hub-hooks",
           "limitations": [
-            "No Stop seam or supported native resume; idle/unknown activity leaves unanswered with attachment required",
-            "Working sessions keep the queued request; screen scraping and keystrokes are not used"
+            "No Stop seam or activity hooks: the pointer is typed without an observed idle boundary",
+            "Fixture evidence is not a paid native probe"
           ]
         },
         "session-experience": {
@@ -606,7 +605,7 @@
           "verifier": "python test_experience_defaults/test_experience_publication_linkage; tests:test-session-hub-hooks/test-install",
           "limitations": [
             "Builtin policy is off; invalid config stays off and doctor reports it; no installer enables capture",
-            "Capture, task completion and Memory handoff are independent; completion requires its own current Memory receipt",
+            "Capture, task completion and Memory handoff are independent; finished reporting is not gated on a save",
             "Fixture-tested seams; native inference probes remain outstanding"
           ]
         },
@@ -632,13 +631,13 @@
         },
         "project-memory": {
           "support": "partial",
-          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff completion receipts; report gate",
-          "verifier": "python test_session_completion + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff publication rows; ungated finished report",
+          "verifier": "python test_session_publication_rows + test_control_session_closure; tests:test-install/test-session-hub-hooks",
           "limitations": [
             "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
-            "Receipts bind project/session/generation/work and publication digests; new work or changed Memory requires another handoff",
+            "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
-            "Memory publication supported; completion receipts and finished reporting blocked without native Control tool/idle bridge; needs attach; structured transport unsupported"
+            "Memory publication and finished reporting supported; no native activity bridge, so rows read unknown; structured transport unsupported"
           ]
         }
       }

@@ -1,14 +1,15 @@
 ---
 name: session-project-memory
-description: Read and verify project Memory v2 at worker startup, then publish authorized durable findings or record a verified completion handoff before finishing a Control project assignment.
+description: Read and verify project Memory v2 at worker startup, then publish authorized durable findings or attest no durable update before finishing a Control project assignment.
 ---
 
 # Project memory
 
-Use the existing Memory v2 reader, validator and Control handoff. The hub receipt
-is lifecycle evidence; `Memory/activeContext.md` and `Memory/decisions.md` remain
-the published project state. This workflow grants no Git or native permission
-authority. Respect the assignment's publication limits.
+Use the existing Memory v2 reader, validator and Control handoff. Control records
+each successful save as a publication row, which is how a session reads as
+saved; `Memory/activeContext.md` and `Memory/decisions.md` remain the published
+project state. This workflow grants no Git or native permission authority.
+Respect the assignment's publication limits.
 
 At startup, run `asha control session handoff --read --json` for the verified
 project plane. Read its pair through
@@ -37,28 +38,23 @@ When nothing durable changed, attest that explicitly:
 asha control session handoff --outcome no-durable-update --detail 'WHY' --json
 ```
 
-Finish other tools first. Run publication/handoff as one standalone shell command
-with literal arguments, without chaining, expansion or redirection. Its native
-tool-end callback must arrive before reporting finished.
+A successful handoff answers `hub_publication_status: recorded`; an explicit
+session save through the publisher returns the same field in its publication
+receipt (nested under `publication` for scope none). A publication can succeed
+while Control fails to record it (`unavailable`); say so. When responding to a
+close request, name it with `--request ID` from the request or `handoff --read
+--json`; a save without it still counts.
 
-An explicit successful session save through an observed tool also returns `completion.status=ready` in its
-publication receipt (nested under `publication` for scope none). Confirm that
-status; a publication can succeed while completion retention fails. If other
-tools ran after saving, re-read and finalize again. When responding to a pending
-close, include the exact `--request ID --attempt N` from Control on every handoff
-command; `handoff --read --json` returns both selectors.
-
-After a ready receipt, report `asha control session report --state finished --text 'RESULT'` as a standalone command and end the turn. Further work, resume,
-or Memory changes invalidate readiness. A native idle boundary is still required
-for unattended terminal closure. Copilot/OpenCode currently lack the tool/idle
-bridge: Memory publication works, but completion remains blocked and verified
-finished reporting is unavailable. Report needs-input with that limitation. Structured Claude/Codex use
-the retained managed turn; native tool/permission availability still applies.
+Then report `asha control session report --state finished --text 'RESULT'` and
+end the turn. Finished is never gated: the row reads finished, saved HH:MM or
+finished, unsaved. A close asks for this save, waits a bounded time, then
+terminates the session. Structured Claude/Codex use the retained managed turn;
+native tool/permission availability still applies.
 
 Silence, unavailable memory, a different/private/managed plane, or denied
 permissions are blockers, never reasons to claim no durable update. Use
 `handoff --outcome blocked --detail 'REASON'` and report needs-input. If this skill
 is unavailable, follow the same reader/validator commands from the assignment.
 Do not initialize a store, switch planes, bypass native approvals, or reconstruct
-transcripts to satisfy the completion gate. This handoff never commits or pushes.
+transcripts to make a session read as saved. This handoff never commits or pushes.
 An explicitly requested session-save keeps its separately authorized Git behavior.

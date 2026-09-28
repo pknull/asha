@@ -94,7 +94,7 @@ input`, `◆ approval`, `✓ finished`, `… closing`, `○ idle`, `✗ failed`,
 session name, the harness (from 60 columns), the next step and the time since it
 last changed. That time never reorders rows. The model and effort selection is
 shown in the detail and side panel, not on the row. A line under the row carries
-receipt, close-request (time, attempt, state), background-task and staleness
+close-request (requested time and deadline), background-task and staleness
 facts when there are any. Names are clipped by terminal cells, so wide or
 combining project names cannot overrun a column. The selected row is always on
 screen: on a short terminal the narrow detail lends the list lines, and the
@@ -140,13 +140,11 @@ sessions, as grouped sessions and linked windows make it, or its session cannot
 be found, the title is off. It is always off in a Control-managed
 session, whose pane title is Control's own evidence, and with
 `ASHA_CONTROL_TITLE=0`. On exit the previous title is restored (the pane's
-previous title inside tmux, the xterm title stack elsewhere). The `c` offer
-comes only from the hub's own no-handoff verdict for that row, never from the
-dashboard reading presented activity.
+previous title inside tmux, the xterm title stack elsewhere).
 
 The dashboard keeps its rows between refreshes (#102). It orders them itself by
 group (current, ended, history), then by project (or by state section with
-`g`), then rows needing input, approval or a failed close, then creation time;
+`g`), then rows needing input or approval, then creation time;
 activity never reorders the list, and the selection follows its session. When the selected session leaves, the nearest
 surviving row in the previous order is selected (the following one on a tie).
 The selected row keeps its screen line, group headings and fact lines included.
@@ -171,8 +169,7 @@ Refresh is change-driven (#102 phase 4, `session_refresh.py`):
   takes a fresh one).
 - *Slow tick, every 5 s.* Some facts change because time passed or a process
   died, and nothing writes a row: liveness, `Hooks not reporting` (90 s after
-  launch without a native event), staleness windows, a receipt made stale by a
-  Memory publication, legacy Rooms. The slow tick takes one bounded tmux
+  launch without a native event), staleness windows, legacy Rooms. The slow tick takes one bounded tmux
   inventory and re-reads the whole page, so these appear within 5 s plus one
   page read. Pages start 5 s apart, measured from each start; a page that
   outlasts the interval is followed at once, never overlapped.
@@ -250,9 +247,8 @@ session shows no screen.
   configured guarded hook, a failed query or unrecognised output refuses the
   preview with `Preview disabled: tmux HOOK hook configured` (or the query
   failure). Operator hooks are never cleared, restored or changed.
-- *No client, no attach.* A capture creates no tmux client, so it moves neither
-  `session_attached` nor the #96 attach generation that idle delivery and the
-  receipt close read; the dashboard never attaches, even read-only, to preview.
+- *No client, no attach.* A capture creates no tmux client, so it never moves
+  `session_attached`; the dashboard never attaches, even read-only, to preview.
 - *Rate and scope limits.* Only the selected row is read, on the preview's own
   worker thread and only while the preview is on screen (not under the key
   sheet or with the panel hidden). A read starts at least 500 ms after the
@@ -338,7 +334,7 @@ A terminal PermissionRequest makes the session `needs-input` with a one-line,
 300-character summary of the request (tool and command, path or URL) as its
 question, so Control shows what is being asked; the next step is `Answer in
 terminal (attach)`. Answering a terminal approval through `session permission`
-is not supported: it would mean typing into the pane (see #101).
+is not supported: it would mean typing into the pane.
 `asha doctor codex` fails when a running Codex daemon or its updater carries
 `ASHA_HUB_SESSION_ID` (the executable must be Codex), or when a Codex that has
 the flag would be launched without `--no-daemon`; it runs the real `bin/asha
@@ -346,21 +342,20 @@ codex` wrapper against a stub Codex in a scratch home with profile and resume
 arguments, and notes recent refused events (a pane dying during
 close also refuses its last hook, so the count is informational).
 
-The dashboard derives a next step from these facts: `Done: close` for a finished
-live session, `Done: close record` after its process exits, and `Ended unreported:
-check work` for an exit without a current finished report. Idle Rooms say
+The dashboard derives a next step from these facts: `Finished, saved HH:MM UTC`
+or `Finished, unsaved` for a finished live session (a finished report is never
+gated on a save), `Done: close record` after its process exits, and `Ended
+unreported: check work` for an exit without a current finished report. Idle Rooms say
 `Waiting for you`; idle workers say `Stopped mid-task?`. A Room is an ongoing
 conversation, so its Memory saves are checkpoints, not completion (#105): an
 open Room with a save in its current assignment (an explicit save, or a
 handoff that published Memory) says `Saved HH:MM UTC: waiting for you` and is
-listed as idle, never `Finalized: close`, `Done: close` or under `Ready to
-close`. A Room that reports `finished` anyway is presented the same way while
+listed as idle, never as finished or under `Ready to close`. A Room that reports `finished` anyway is presented the same way while
 it is open: JSON shows `activity: "idle"` with the added field
 `reported_activity: "finished"`, and `saved_label` carries `saved HH:MM UTC`.
-The completion receipt itself is unchanged, and a Room that is closing, has a
-pending or failed close, or has ended keeps the close and ended hints below. Input requests direct
-you to the terminal or Control, and an idle undelivered close says `Close needs
-attach`. Ended sessions occupy a separate group below current sessions until
+A Room that is closing or has ended keeps the close and ended hints below.
+Input requests direct you to the terminal or Control, and a pending close says
+`Closing: waiting for a save` or `Closing: saved`. Ended sessions occupy a separate group below current sessions until
 closed. Raw activity, lifecycle, and observed process state remain in JSON.
 
 A Claude turn can end while its own background work is still running: a
@@ -370,42 +365,33 @@ empty array when nothing is in flight; verified on Claude Code 2.1.283). The
 hook bridge forwards only the count, and the hub records such a Stop as
 `working` with `background_tasks: N`, reason `Turn ended; waiting on N
 background task(s)` and next step `Working: background tasks` (#99). It is not
-an idle boundary: idle-pane typing refuses it, a delivered close request is not
-marked unanswered there, a finalized handoff does not close the session while
-that work runs (`Closing: background tasks running`, not `Close needs attach`),
-and the five-minute staleness rules wait instead. A pending Stop-hook close
-request is still emitted at such a Stop, because a Stop block only continues
-the turn and never interrupts the background job. The next hook event or worker
+an idle boundary: a close does not type its pointer there, and the five-minute
+staleness rules wait instead. A pending Stop-hook close request is still
+emitted at such a Stop, because a Stop block only continues the turn and never
+interrupts the background job. The next hook event or worker
 report clears the count; the Stop that follows the wake-up decides idle. The
 wait is bounded: four hours after that Stop with no newer native event, the
-usual staleness rules apply again (the row reads `unknown`, and a pending close
-needs attach or force-close).
+usual staleness rules apply again (the row reads `unknown`).
 Limits: only Claude reports this (Codex, Copilot and OpenCode Stops carry no
 such field, so their turn end stays idle); a truncated or unparsed Stop payload
 forwards no count and reads as the plain idle Stop; a process detached from a
 foreground command (`cmd &`, `nohup`) is not Claude background work and is not
 seen; if Claude exits without waking, process exit ends the session as usual.
-A session that keeps a long-lived Monitor or server running never reaches a
-quiet Stop, so its finalized close waits until that work ends, the bound
-passes, or the operator force-closes. The wake-up Stop itself has not been
+A close still ends at its deadline. The wake-up Stop itself has not been
 probed natively; the headless probe showed the field on the turn-ending Stop
 only.
 
-`Memory saved HH:MM UTC` requires a controller-retained explicit-save receipt
-for this generation and assignment, or a verified handoff in this generation.
-Worker result text does not establish a save or code landing. Force-close keeps
-an existing save receipt visible; it does not publish another save.
+`Memory saved HH:MM UTC` requires a publication row (an explicit save, a
+handoff or a `no-durable-update` attestation) in this generation; a later
+assignment does not erase it. Worker result text does not establish a save or
+code landing. Force-close keeps an existing save visible; it does not publish
+another save.
 
 Terminal messages sent with `session send ID --text TEXT --key UUID` are
-retained until read. Only with the experimental `control.idle_delivery` setting
-on (default off), when a Claude or Codex terminal session is at a verified idle
-boundary (see "Typing at an idle boundary" below), Control also types one
-line into its pane naming the message ID and the `session messages` /
-`session ack-message MESSAGE_ID` commands; the message body itself is never
-typed. The result's `delivery` field says `injected` or `queued-until-read`,
-with the refusal reason in `delivery_detail`. Otherwise attach to provide
-interactive input, or let the worker read `session messages` and acknowledge
-processed context with `session ack-message MESSAGE_ID`. Pages expose
+retained until read (`delivery: queued-until-read`); nothing is typed into the
+pane. Attach to provide interactive input, or let the worker read `session
+messages` and acknowledge processed context with `session ack-message
+MESSAGE_ID`. Pages expose
 completeness and a continuation offset.
 
 Worker launch, resume and send automatically supply up to three compatible active
@@ -442,561 +428,113 @@ text and deduplicates retries. An unanswered request followed by exit records
 ## Recovery and operation
 
 `session stop ID` ends the owned execution now and retains history for
-resume. `session close ID` is the graceful path: it asks the session's own
-agent for one final turn and terminates only after a verified project-memory
-handoff. `session close ID --force` terminates now, hides the session, and
-records that no memory save was claimed. Native harness exit is observed as
-exit, without guessing that the assignment succeeded.
+resume. `session close ID` is the best-effort close below. `session close ID
+--force` is the same close with a zero wait: it terminates now without asking
+for a save. Native harness exit is observed as exit, without guessing that the
+assignment succeeded.
 
-## Graceful close and the memory handoff
+## Best-effort close
 
-Without a qualifying completion receipt, normal close records one bound request (`closure.request_id`, tied to the
-session's incarnation `generation`) and moves the session to lifecycle
-`closing`. The request text asks the agent to bring the current step to a safe
-boundary, then acknowledge with one of:
+Control observes native sessions from outside (tmux panes plus hook reports),
+so close does not try to prove that a session is quiet. It asks the session to
+save project Memory, waits a bounded time, then terminates:
+
+1. `close ID` records `closure = {request_id, generation, requested_at,
+   deadline}` and moves the session to lifecycle `closing`. The wait is
+   `--wait SECONDS`, defaulting to `control.close_wait_seconds` (60, at most
+   600); `--force` is a zero wait and cannot be combined with `--wait`.
+2. The request goes out through the seams that exist. A terminal session gets
+   a queued hub message (read with `session messages`). A working Claude
+   session also gets it as the harness's own Stop-hook block decision when its
+   turn ends. An idle session, or one whose activity is unknown, gets one
+   bounded pointer line typed into its pane naming the request and `session
+   messages`; any other working session (Codex) gets that pointer once it is
+   observed idle within the wait. At most one pointer is typed per request, and
+   only by the close's own waiter after it verified Room ownership; a refresh
+   never types. A session waiting at a native question or permission prompt is
+   not typed into. A structured session gets the request as its next
+   structured turn.
+3. The close ends at the first publication or attestation recorded after the
+   request (a handoff that names the request or not, or an explicit save), when
+   the process ends, or at the deadline. A publication still in flight at the
+   deadline gets 10 more seconds, then the session is terminated anyway.
+4. Termination kills the Room even when a terminal is attached (the operator's
+   close authorizes it; `--wait` extends it). A structured session is asked to
+   stop; its store's own cleanup reconciles the provider, and the closed record
+   does not claim a confirmed process exit.
+5. The row reads `Closed, saved HH:MM UTC` or `Closed, unsaved`. The time is
+   the newest publication in the generation, so an earlier save still shows,
+   with its age visible; `unsaved` means the generation has none.
+
+A session whose finished report is still current (no new prompt, message or
+working report since) and whose current assignment already has a publication,
+in either order, closes at once without a request. The documented worker
+sequence is save, then `report --state finished`.
+
+The request text asks the agent to save and end its turn:
 
 ```bash
 asha control session handoff --read --json                       # live destination facts
-asha control session handoff --request ID --attempt N --active-file A --decisions-file D \
+asha control session handoff --request ID --active-file A --decisions-file D \
     --expected-active DIGEST --expected-decisions DIGEST --json   # publish
-asha control session handoff --request ID --attempt N --outcome no-durable-update --detail WHY --json
-asha control session handoff --request ID --attempt N --outcome blocked --detail REASON --json
+asha control session handoff --request ID --outcome no-durable-update --detail WHY --json
+asha control session handoff --request ID --outcome blocked --detail REASON --json
 ```
 
 Publication runs through the shared Memory v2 validator with a compare-and-swap
 on both files: a digest that changed since the agent read it refuses the write,
 so a newer save is never overwritten; the agent re-reads, merges and retries.
-Control verifies the published bytes and records the destination and digests.
-A valid explicit `no-durable-update` also satisfies the handoff. `failed` or
-`blocked` outcomes are retained as `handoff-failed` and never become a
-successful closure. Nothing on this path commits, pushes or integrates code;
-Git publication remains the chair's separate, explicit decision.
+Scope, identity and silence are checked before any write. A `no-durable-update`
+attestation passes the same checks and counts as saved; `failed` or `blocked`
+save nothing. Nothing on this path commits, pushes or integrates code; Git
+publication remains the chair's separate, explicit decision. The handoff need
+not be a standalone tool call, and `--attempt` is accepted and ignored for one
+release.
 
-Delivery is honest about each seam:
+A kill during a publication is recoverable, not pair-atomic: publication is two
+file replacements under a recovery journal, and readers refuse with a recovery
+command until `memory_v2.py recover` (or the next publication) restores the
+pair.
 
-| Session | Delivery | Idle agent |
-| --- | --- | --- |
-| Terminal Claude | Queued message, and once as the harness's own Stop-hook block decision when the current turn ends | Typed into the owned pane at a verified idle boundary (`pane-injection`); an attached pane or unproven input line needs attach |
-| Terminal Codex | Queued while working; typed into the owned pane at a verified idle boundary | Typed as for Claude. An attached pane or typed input needs attach; an unrecognised screen falls back to owned stop and native resume with the close request (recent idle and a native conversation ID required) |
-| Terminal Copilot/OpenCode | Queued message only (no Stop seam or supported native resume) | `unanswered`, attachment required |
-| Structured Claude/Codex | The request becomes the next structured turn | Same path; the turn is scheduled by the supervisor |
+The wait never blocks the dashboard: `x` records the request and starts a
+detached `asha control session close ID` waiter, then returns; `X` is `close
+--force`. The CLI waits in the foreground. Re-running `close` joins the pending
+request (no second request or pointer) and finalizes it once it has expired.
+If no waiter is left, any later `close` or `stop`, and every launch, send or
+resume, finalizes expired closes; the cached dashboard refresh never does, so a
+close is recovered when a command runs again, not terminated while nothing
+runs. Finalization names its request and generation, so a stale waiter cannot
+end a newer request. `stop ID` on a pending close ends it as stopped.
 
-The Stop decision is printed before delivery is recorded, so a hook killed at
-its time budget re-emits the same request at the next guard-free Stop rather
-than blaming the agent for a request it never saw; a Stop that follows a
-delivered block carries `stop_hook_active` and emits nothing, so an unattended
-worker may need another user turn or an attach. The seam needs `jq` in the
-worker's PATH; without it the request stays queued. `closure.state` shows `pending-delivery`, `delivered`, `acknowledged`,
-`unanswered` (the turn ended without a handoff), `handoff-failed`,
-`undeliverable` (the harness exited first), `unavailable` (no live agent to
-ask), `forced`, `closed-no-save-claimed` (`close --no-handoff`, see below), or
-`completed`. Re-running `close` is idempotent: it reuses
-the request, re-asks after `unanswered`/`handoff-failed` with a fresh queued
-copy, and terminates only once the state is `acknowledged`. `close --wait N`
-polls for that acknowledgement first and returns early when the session needs
-input. Dashboard `x` closes gracefully; `X` force-closes; the STATUS column
-shows `closing` or `close-failed`, a native prompt or question during the
-final turn still shows as `needs-input`, and the summary counts closes needing
-attention. A close that terminated without a verified save (`unanswered`,
-`handoff-failed`, `undeliverable`, `unavailable`) stays on the default page as
-`close-failed` until the operator acknowledges it with `close ID --force`
-(dashboard `X`) or `stop ID`, on a live or an already-closed row alike; an
-explicit stop or force was the operator's own choice and needs no further
-acknowledgement, and the closure evidence itself is retained. A terminal that exited during a
-close keeps `exited` as its status with the closure guidance in its reason. The Stop decision is never emitted when the harness reports
-`stop_hook_active`, so a block is never chained onto a block; a Stop payload
-that is absent, malformed, or larger than the bridge's bounded read is treated
-as if that guard were set, never as permission to block again, and the bridge
-itself relays no block while the guard holds. Delivery is confirmed against
-the exact request, attempt and incarnation the decision was emitted for, so a
-late receipt for an earlier request cannot mark its replacement delivered.
+Every successful publication path records one `hub_memory_publications` row
+naming its source: `explicit-save`, `close` (a handoff naming the request),
+`handoff` (an ordinary handoff) or `attestation` (`no-durable-update`, with its
+detail). "Saved" is read from these rows only. Only an `explicit-save` row
+suppresses a close's experience assessment request.
 
-The Codex native-resume continuation keeps one close request ID across the new
-generation. Only a recent native idle observation and verified owned process
-permit the wake; an explicit `finished` report alone is insufficient. Working
-sessions are not stopped. Failure leaves the request unanswered with
-`attachment_required` and actionable guidance for the dashboard.
+Compatibility for one release: the retired `control.idle_delivery` and
+`control.no_handoff_close` settings are accepted and ignored; hooks in live
+Rooms that still pass `--order`, `--attempts`, `--tool-kind`, `--tool-token`,
+`--sequence` or `--sequence-pane` are accepted and ignored; stale
+`hub-event-order/` directories and `ASHA_HUB_EVENT_ORDER` in a Room's
+environment are ignored. Close records from earlier versions (states such as
+`acknowledged` or `closed-no-save-claimed`, attempts, `attention`) are read
+only: they present through the same saved/unsaved label, a verified save they
+recorded still counts, and `attention` no longer keeps a closed row on the
+default page. A `closing` row from an earlier version has no deadline; run
+`close` again to give it a request.
 
-### Typing at an idle boundary (experimental, off by default)
+### Late hook reports
 
-Issue #96: an ongoing Room is idle whenever its user stops talking to it, so a
-close that waited for a Stop would always need a keystroke. Control can type the
-request into the idle pane, but this is **experimental and disabled by
-default**. It is enabled only by the Control setting `idle_delivery` in the Asha
-config (`~/.asha/config.json`, or `ASHA_CONFIG`):
-
-```json
-{"control": {"idle_delivery": true}}
-```
-
-With the default (`false`), Control never reads or types into a pane for close
-or send: an idle Claude close stays `pending-delivery` on its Stop-hook channel
-with `input_refusal: disabled` and the dashboard shows `Close needs attach`; an
-observed idle Codex terminal keeps its native-resume close continuation (below);
-`session send` answers `queued-until-read`. New Rooms get no input fence: no pane
-counters and no attach hooks, and the `ASHA_ROOM_INPUT_FENCE` marker is set to
-`0` in the Room session and unset for the harness process, so a marker left in
-the tmux server's global environment cannot switch it on. The native hook
-bridge makes its tmux call only for an exact `1`. Pending-close guidance
-mentions typing only while the setting is on. Rooms created while the setting was off
-refuse typing as `unfenced` if it is later turned on.
-
-It stays off because the fourth adversarial review of #96
-(`Work/reports/qa4-issue-96.md`) left these findings open:
-
-- **P1:** an older Stop report that lands after a newer working or tool-start
-  report restores `idle` (and clears newer open tools) while the hub keeps the
-  newer event sequence, so a delivery can be authorised against out-of-order
-  state. The recorded maximum sequence does not prove event order or that every
-  earlier report landed.
-- **P2:** the 1.5-second limit is checked before the final Enter command, which
-  has its own five-second deadline; a delayed tmux server can execute Enter
-  later than the stated bound.
-- **P2 (conditional):** a native event whose hook cannot bump the pane counter
-  (no `TMUX_PANE`, or a denied tmux socket) after the last hub read does not
-  stop an Enter already past confirmation; the missing-pane case refuses only
-  deliveries that start after the unsequenced report.
-- Screen-check limits remain: a hard newline where a display wrap could fall
-  reads as that wrap, and Codex's `[Pasted Content N chars]` binds only length.
-
-The native Claude/Codex idle close probes have not been run either. The rest of
-this section describes the mechanism when the setting is on.
-
-When enabled, Control may type one line into a terminal pane it owns only when
-every fact holds:
-
-- the harness is Claude or Codex (Copilot/OpenCode are never typed into);
-- the last native event is an observed idle Stop, the session is not waiting for
-  input, and no native tool start is still open;
-- exact Room ownership verifies, the pane is not in a tmux mode, and no client is
-  attached to its session;
-- a capture of the visible screen proves the input line empty: Claude's `❯` line
-  between its two rules with nothing after the marker (placeholders count as
-  text; vim NORMAL/VISUAL mode refuses), or Codex's `›` composer holding at most
-  a dim placeholder, with no continuation line and the footer's `? for shortcuts`
-  hint that Codex shows only while the composer is empty (native 0.157 captures;
-  extended-colour SGR parameters are parsed as units, never read as dim);
-- the Room carries its input fence (below) with valid counters and hooks;
-- the hub row, read again after those probes, still shows the same idle
-  boundary (generation, activity, native observation and work/assignment epochs)
-  with no open tool, and it has recorded the pane's current event sequence.
-
-Rooms are created with an input fence: two counters stored as options of the
-owned pane itself (`show-options -p`), the most specific tmux scope, so no
-window, session or global value can stand in for them. Each must be a canonical
-ASCII integer below 1,000,000,000, where tmux arithmetic still counts exactly;
-a missing, non-canonical or exhausted counter refuses as `unfenced`, never
-wraps or freezes.
-
-- The attach generation `@asha_attach_gen` is incremented by the Room session's
-  `client-attached` and `client-session-changed` hooks, which name the owned
-  pane. Any client attaching to or switching into the Room moves it, so an
-  attach-type-detach cycle is seen even within one second
-  (`session_last_attached` has one-second resolution and is not used).
-- The event sequence `@asha_event_seq` is incremented by the native hook bridge
-  (`control-event.sh`) with one bounded tmux call before it reports the event,
-  and the report carries the new value and the pane it bumped. The hub accepts
-  it only for the Room's own pane and records the highest value reported for
-  that pane (a new Room pane starts over); a report without one (tmux
-  unavailable, or a hook environment without the Room pane) makes it unknown. Delivery requires the recorded sequence to
-  equal the pane's, so an event whose report is still running, or was killed at
-  the bridge's time budget, refuses as `stale` until a later sequenced report
-  lands. Delivery holds no lock that reports wait on.
-
-The counters are read with the screen. tmux then requires exact ownership, no
-attached client, no tmux mode, a Room window not linked into another session
-(whose clients would see the pane without attaching) and both counters unchanged
-in the command that pastes (bracketed when the harness asked for it) and again
-in the command that presses Enter: an attach or a native event that began in
-between refuses. Immediately before each of those two commands Control also
-re-reads the counters and requires both attach hooks to be exactly the installed
-commands, and it re-reads the hub row right before the paste and before Enter.
-Paste to Enter must fit in 1.5 seconds, or Enter is withheld (`partial`). A
-Room created before this fence refuses as `unfenced` and needs attach.
-
-What this does not cover: a harness that begins work without running its hook
-bridge (the sequence cannot move); hook environments without the Room pane
-(`TMUX_PANE`), which leave every Codex/Claude delivery refused as `stale`; a
-change to hooks or counters made through direct tmux server access in the
-instant between Control's re-check and the guarded command; and processes that
-drive the tmux server directly (for example `send-keys` from another client).
-Room session hooks shadow global tmux hooks of the same names for that session
-only.
-
-Before Enter, Control captures the screen again and requires the whole input
-region to hold exactly the pasted text. For Claude the region is the box between
-its borders: the top border is the unindented rule directly above the `❯` line,
-the bottom border is the next unindented rule of the same width, and any other
-unindented rule between them is ambiguous and refuses (typed draft lines are
-indented, so a rule inside a draft is content, never a border). For Codex it is
-the composer from the `›` line to one blank line followed by a single block of
-one to three footer lines that each set SGR colour or attributes (typed composer
-text never does; a bare reset does not count) and are not paste placeholders;
-any other layout, including a blank line inside a draft, an unstyled trailing
-block or a missing footer, refuses. Every line of the region must be part of the
-text: the prompt line is the marker and one space, each continuation line the
-two-space indent, and only the single space at a display wrap may be missing or
-begin the next line. No other whitespace is normalised (tmux captures carry no
-blanks at a line end). Limits of this screen check: without wrap metadata a
-hard newline exactly where a display wrap could fall reads as that wrap; a
-Claude paste placeholder (`[Pasted text #N ...]`) cannot be bound to this paste
-and refuses, leaving the request unsubmitted in the input line (`partial`);
-Codex's `[Pasted Content N chars]` is accepted only as the whole composer and
-only with the typed length, which binds the length, not the content. A screen
-read cannot prove the composer at the instant of the keypress; the counters
-checked by tmux in the Enter command are what close that gap.
-
-The typed close request is the exact retained request, flattened to one line
-and bound to its request ID and `--attempt N`. A delivered attempt is never
-typed twice; after `unanswered`, the next `close` re-arms and types the next
-attempt, and a re-armed request accepts only a handoff naming that attempt.
-Refusals are typed and recorded as `input_refusal`: `disabled` (the setting
-is off; nothing is read or typed), `attached`, `mode`,
-`ownership`, `unfenced`, `occupied`, `stale` (new or unrecorded native
-activity), `partial` (typed but not submitted; the text stays in the input line)
-or `error`. Each leaves the request pending with
-`attachment_required` and never restarts the Room. Only `disabled`,
-`ineligible` (no idle boundary, open tool) and `unknown` (no input line
-visible) leave the Codex
-native-resume fallback available, and that fallback kills the Room only through
-a tmux condition that also requires no attached client and no mode. A typed
-request counts as fresh native evidence for 300 seconds. No other pane input or
-screen read is used. These are fixture- and tmux-tested seams; the native
-Claude/Codex idle close probes in #96 have not been run.
-
-For a Room with a controller-retained explicit save in its current generation
-after its latest assignment, close omits the experience assessment and records
-`disabled` / `explicit-save-published`. A new assignment invalidates the omission.
-Publication linkage still proves only the save. The separate completion receipt
-below supplies termination authority. Legacy Rooms and non-hub managed sessions
-have no handoff seam: `close` refuses without `--force`. A publication whose
-follow-up read is refused remains a historical successful publication; unavailable
-or changed current Memory cannot authorize completion. The actor is verified by
-Room ownership and process ancestry (terminal), or the managed-session anchor and
-running turn (structured). Workers read project Memory at startup and finalize
-before explicit completion, through the project-memory skill; automatic chair
-context and transcript processing remain excluded. The Room contract
-(`--profile room`) asks for the same startup read and handoff publication but
-treats each save as a checkpoint: it never asks the Room to report `finished`
-after a save, and the Room ends only through the close request (#105).
-
-## Completion before close
-
-A successful explicit `memory_v2.py publish` (including `save_none.py`) inside a
-verified hub actor with a sole observed standalone finalizer returns
-`completion.status=ready` with a controller-produced
-`asha.session-completion.v1` receipt. The no-Git handoff can also finalize before a
-close request exists:
-
-```bash
-asha control session handoff --read --json
-asha control session handoff --outcome no-durable-update --detail 'Reviewed with no durable change' --json
-asha control session handoff --active-file A --decisions-file D --expected-active SHA --expected-decisions SHA --json
-asha control session report --state finished --text 'Verified result' --json
-```
-
-Finish other tools before handoff. Use one shell command with literal arguments,
-without shell composition, expansion or redirection. The matching native tool-end
-event must arrive before a finished report is accepted; `ready` in the command
-response alone does not prove that boundary. A standalone finished report preserves readiness;
-subsequent work requires a new handoff. Saves can publish successfully while
-completion retention fails; inspect both statuses. `blocked`/`failed` never satisfy
-completion. An unavailable, silenced, mismatched or unauthorized Memory plane must
-be reported as blocked, not no-durable-update. No handoff commits or pushes.
-Explicit session-save retains only its separately authorized Git behavior.
-
-Receipts live in the existing Control record, not a new Memory store. They bind
-project ID, hub session and generation, assignment/work epochs, structured turn
-and owner generation where applicable, both publication digests, and close request
-and attempt when responding to close. New prompts, queued work, tools and resume
-invalidate readiness. Close checks current Memory under its publication lock and
-serializes terminal observations through the owned stop boundary. Concurrent saves
-use the existing pre-draft CAS; a superseded save remains historical publication
-evidence but cannot close the session. The controller never accepts a submitted
-JSON receipt as authority.
-
-`finish -> save -> native Stop -> close` consumes a qualifying receipt without
-attachment, wake, a model turn, or force-close. `Finalized: close` and `Finalized,
-closing` describe verified readiness; stale or missing evidence remains visible.
-An idle request that cannot be typed (see above) says `Close needs attach`. A close already pending
-requires `--request ID --attempt N` from the delivered request, not an old selector.
-If Stop was not observed and the last native activity is over 300 seconds old,
-both queued and acknowledged closes require attachment. A verified idle boundary
-remains valid without further work; an idle receipt does not expire merely with age.
-
-Receipt state is shown per session so the operator can see in advance whether a
-close needs a turn (#101). `session list/show --json` add, under
-`completion_readiness`, `receipt` (`current`, `stale` or `none`), `finalized_at`,
-and `stale_since`: the first hub write at which the receipt stopped matching the
-session's work (new prompt, tool, queued message, resume or changed close
-request), or, when only published Memory changed, the later of the Memory files'
-and the silence marker's modification times. The time is `null` when neither is
-known. A receipt whose finalizer tool end has not yet arrived is `current`. The
-dashboard's detail line reads `receipt current`, `receipt stale since HH:MM UTC`
-or `no receipt`; a current or stale receipt is also shown on the line under the
-session's row.
-
-### Closing an idle session without a handoff turn
-
-**Experimental and off by default (#103).** `close --no-handoff` is enabled
-only by the Control setting `no_handoff_close` in the Asha config:
-
-```json
-{"control": {"no_handoff_close": true}}
-```
-
-It was gated because of QA11's Q11-F1: a hook that had appended its attempt
-byte but had not yet taken a number, or not yet recorded that it failed to, was
-counted by an older Stop's size sample, and a close made while that hook was
-still in flight killed the terminal with its work unseen. #103 closes that
-window with a second, resolution record per hook (invariant 5 below). The
-default is unchanged until that fix has had its own independent QA round. With
-the setting off (the default), `close --no-handoff`
-refuses with a message naming the setting and #103, kills nothing, and changes
-nothing; `session show/list --json` report `no_handoff.eligible: false` with that
-reason; the dashboard neither lists `c` nor suggests it. Plain `close`, the
-receipt close, `--force` and the Codex idle native-resume close are unaffected
-by the setting. With it on, the behaviour below applies.
-
-`close ID --no-handoff` (dashboard `c`) asks for no final turn. A current receipt
-still closes as `completed` through `completion-receipt`, exactly as `close`.
-Otherwise a terminal Claude or Codex session stops only at a verified native idle
-boundary: the last native event is a Stop (or session start) with no open tool,
-no outstanding background work (#99), no pending native question or permission,
-and no worker `needs-input` report. It closes as `closed-no-save-claimed` with
-delivery channel `no-handoff`. That state is distinct from `completed` (a
-verified receipt) and `forced` (no boundary). It never claims a Memory save and
-never needs attention. It queues no message, types nothing and resumes nothing;
-any earlier verified handoff stays in the record as evidence only.
-
-The boundary is re-read under the session's observation lock after the tmux
-liveness probe, so a prompt that lands meanwhile refuses the close. The kill
-is conditional inside tmux on no client being attached, so a person at the pane
-(with a possible composer draft) refuses it too. A working session, a pending
-question, an attached client, an unobserved session and an unproven event order
-(below) are refused with the reason, and nothing is stopped. `--wait N` polls up
-to N seconds for the boundary, then refuses with the last reason. `--force`
-cannot be combined with it. Structured sessions, Copilot and OpenCode (which have
-no native idle bridge) refuse. A harness that is no longer live closes with the
-same honest state. A turn whose start hook never fired at all remains invisible
-to it, as it is to the receipt close. `session show/list --json` report
-`no_handoff: {eligible, reason}`, computed by the same predicate the command
-applies, over the stored facts and the incarnation's event counter. With the setting on, when a pending close finds an
-eligible boundary without a receipt, the next step reads `Close: attach or
---no-handoff` instead of only `Close needs attach`.
-
-Every graceful close that terminates a live terminal, including the receipt path
-of a plain `close`, uses the same tmux-conditional kill. An attached client
-refuses it, the receipt is kept, and `--wait` treats the refusal as transient.
-Before #101, a current receipt killed an attached session.
-
-### Native event order and the turnless-termination invariant
-
-Hook reports are independent processes and can arrive out of order, late,
-twice, or never. Each hub incarnation gets a private counter file
-(`hub-event-order/<session>/<generation>` under Control state, 0600 in 0700
-directories, passed to the Room as `ASHA_HUB_EVENT_ORDER`). `control-event.sh`
-takes the next number from it under `flock` when the hook starts, with no tmux
-call, and forwards it as `--order`. The hook refuses a counter that is a symlink,
-another user's, readable or writable by others, or not exactly one canonical
-number; it then reports unsequenced. Unsequenced reports therefore arise only
-from failures (lock timeout, bad or missing counter, a Room launched before this
-change). The hub creates the counter and refuses to reuse an invalid existing one.
-
-Before taking a number, every hook appends one byte to the incarnation's
-attempt log (`<counter>.attempts`, created empty and 0600 beside the counter):
-`O_APPEND`, no lock, so a hook that then times out on the counter lock, or whose
-report is killed at the controller budget or lost, still leaves evidence. A
-numbered report also forwards the log's size as `--attempts`, read under the
-counter lock before the number is taken: appends are unlocked, so a size read
-after the increment could count a later hook whose number and report were then
-lost. A hook that gets no number appends a second byte, so a hook already
-counted by a concurrent Stop still moves the size past that Stop's count. The
-hook refuses a non-private or symlinked log (no attempt, no number) and stops
-appending at 4 MiB (a soft bound: concurrent hooks may overshoot it by a few
-bytes).
-
-A full attempt log refuses every turnless close for the rest of that
-generation: no later Stop, prompt, `/clear` or fresh handoff resets it, and the
-log is never rotated. Recover by starting a new generation or forcing the
-close: `asha control session stop ID` then `asha control session resume ID`
-(the new generation gets an empty counter and log; a pending graceful close
-must be resolved first), or `asha control session close ID --force`, which makes
-no save claim. Attaching and exiting there also ends the session.
-
-The hub applies an event's activity, tool and background effects only when its
-order is newer than the last applied one. A late or duplicate report is kept in
-a bounded `observation_log` without those effects, and the CLI gives an ignored
-Stop no close-request decision or delivery confirmation. Numbers skipped by a
-newer report are kept in `event_order.missing` until their reports arrive.
-One effect survives lateness (#104): a tool end whose report fills a number in
-`missing` still retires its own start, and a sole finalizer ended that way is
-marked finished. It is never new work unless it is numbered after a ready
-receipt (see below). A duplicate report, or one whose number was never recorded
-as missing, retires nothing.
-
-**A start is retired only by evidence that that tool ended** (QA19), on time or
-late: the same hub session and generation (the authenticated reporter), the same
-native conversation (the late report is refused, like a current one, when it
-names another conversation than the session bound; and the end must name the
-conversation its start named), the same tool token and kind, and an end numbered
-after its start (`tool_starts` keeps each open start's number and conversation).
-Token equality alone is not evidence: a native tool-use ID can recur, and the
-fallback token of identical input without one does, so an older call's end
-numbered before a later start never retires it. When either number is missing
-(a hook that could not take one), nothing orders the pair: in a session with any
-ordered event the start stays open until the turn's Stop. Only a session with no
-ordered event at all (structured transport, or one launched before ordering)
-falls back to arrival order.
-
-A tool already open when Control was updated to #104 has no `tool_starts`
-record: the previous revision kept only `active_tools`. There is no migration.
-Without a recorded start nothing proves which conversation it ran in or when it
-started, so no end retires it; it stays open until its turn's Stop, and a
-handoff in that turn is blocked.
-
-**Lost end reports remain an open cause.** When the report of a tool end fails
-(for example killed at the hook's 0.6 s budget), the hook does not retry, spool
-or replay it: a detached retry is outside the session's process tree, which is
-how the hub authenticates a reporter (QA19 F4), and a replay spool could not
-prove that its entries came from this session, generation and conversation
-(QA20, QA22). The start stays open until the turn's Stop, and a handoff in the
-same turn is blocked; finalize in a later turn. A refused report still exits 0
-(the CLI keeps hooks fail-open); it is visible only in
-`hub-rejected-events.jsonl`.
-
-One invariant governs every termination without a turn: the receipt close
-(plain `close` or `--no-handoff`), `close --no-handoff`, and the Codex idle
-native-resume close. The kill is authorized only while the counter's `flock` is
-held, inside the session's observation lock, through the stop itself, and only
-when all of the following hold:
-
-1. The counter's allocated value equals the applied order. A hook that took a
-   number but has not reported, whether slow, killed or lost, refuses the kill.
-   No hook can take a number during the kill; one that tries reports unsequenced
-   to a session that is gone.
-2. The last applied event is a Stop, with no open tool, outstanding background
-   task, pending question, or explicit `working` report.
-3. No unsequenced or out-of-order evidence stands. An unsequenced, late,
-   duplicate or gapped report sets `event_order.barrier` to the counter's value
-   when it arrived. Only an applied Stop numbered above the barrier clears it,
-   because only that Stop is known to have been allocated after the evidence. A
-   new generation also clears it. An already-allocated Stop never clears newer
-   unordered work. If the counter cannot be read when the evidence arrives (a
-   lock timeout, most often), `event_order.barrier_pending` is set instead; the
-   next report that reads the counter fixes the barrier at its value then, so a
-   later turn's Stop recovers within the same generation.
-4. Every hook that started is accounted for: the attempt log's size now equals
-   the size the last applied Stop reported. Hooks that appended before that Stop
-   took its number are covered by it, as in 3; any hook appending after it,
-   numbered or not, refuses the kill until the next Stop. A Stop that could not
-   report the size refuses too.
-5. No hook is between its two records (#103). Invariant 4 alone is not enough:
-   a Stop's size sample counts a later hook's first byte even while that hook
-   has not yet taken its number, or has failed to and not yet written its
-   failure byte (QA11 Q11-F1), so an older Stop would cover it. Each hook
-   therefore also appends to a resolution log (`<counter>.resolved`, created
-   empty and 0600 beside the attempt log) once its attempt is accounted for:
-   one byte after its number is written, or two after its failure byte has
-   landed, matching its two attempt bytes. The kill requires the two logs to
-   have equal sizes, read resolution first under the counter lock. A hook's
-   resolution bytes always follow its attempt bytes, so equality proves that no
-   hook was mid-attempt at that read; one that starts later starts after the
-   kill decision. Once the in-flight hook resolves, invariants 1 and 4 take
-   over: a number it took refuses until its report is applied, and its failure
-   byte moves the attempt log past the Stop's count. The hook refuses to write
-   a non-private or symlinked resolution log, which leaves its attempt
-   unresolved.
-
-A hook that dies between its two records (killed after its attempt byte and
-before its resolution) never counts as resolved. No later Stop can tell a dead
-hook from a stalled one, so it refuses every turnless close for the rest of the
-generation; recover with `asha control session stop ID` then `resume ID`, or
-`close ID --force` (no save claim). The window for that is the hook's first few
-milliseconds, well inside its sub-second budget. The receipt close path (plain
-`close` with a current receipt) applies the same five invariants.
-
-A completion receipt records the applied order at issue (`order_applied`). It
-is current only while no report numbered after that order is missing or still
-in flight. At most 64 missing numbers are kept (the newest); the highest number
-dropped is kept as `event_order.missing_dropped`, which refuses only receipts
-issued before it. Work numbered after it invalidates the receipt even when its report
-arrives late and is otherwise ignored. Work here means a prompt, a tool start,
-or a tool end other than the finalizer's; report-tool events are not work. The
-finalizer's own end, report-tool events and the closing Stop necessarily follow
-the receipt and do not invalidate it.
-
-Availability costs are deliberate. A missing or corrupt counter, a missing or
-non-private resolution log, or a Room launched before the counter (#101) or the
-resolution log (#103) existed, refuses turnless closes until the session is
-resumed (a new generation gets a fresh counter and both logs), as does a hook
-that died between its two records. A hook still in flight refuses only until it
-finishes; retry the close. Out-of-order
-evidence, or a hook that started without a number, refuses them until the next
-turn's Stop. `close` then asks for a handoff turn; attach or
-`--force` remain available. This is always on and independent of
-`control.idle_delivery`; the typing fence's pane sequence is unchanged.
-Allocation order approximates native order: two hooks that start within the
-same instant can still take numbers in the opposite order to their native
-events, and no Control-side sequence can detect that.
-
-| Harness | Startup/completion instruction and skill | Receipt production | Close finalized idle session | Evidence/limits |
-| --- | --- | --- | --- | --- |
-| Claude terminal | Yes, worker and Room assignment | Explicit save / no-update / draft handoff | Yes, observed Stop or proven ended process | Controller/hook fixtures; native finish-save-idle probe not run |
-| Codex terminal | Yes | Same, subject to native sandbox approval | Yes, observed Stop or proven ended process | Controller/hook fixtures; PreToolUse does not cover every unified_exec/tool path; native probe not run |
-| Copilot terminal | Yes | Memory publication supported; completion blocked without tool bridge | Needs attach; verified finished report unsupported | No native Control tool/idle bridge; fixtures assert refusal |
-| OpenCode terminal | Yes | Memory publication supported; completion blocked without tool bridge | Needs attach; verified finished report unsupported | No native Control tool/idle bridge; fixtures assert refusal |
-| Claude structured | Yes, each hub turn | Verified managed CLI/save | After exact successful turn, with no queued work | Separate controller fixtures; native permissions can block the CLI |
-| Codex structured | Yes, each hub turn | Verified managed CLI/save where native sandbox permits | Same controller contract | Separate fixtures; no out-of-sandbox publication proxy; native delivery not proven |
-| Copilot/OpenCode structured | Unsupported | Unsupported | Unsupported | No managed transport |
-
-Hooks remain bounded and fail-open telemetry, not a complete enforcement boundary.
-No classifier grants native execution approval. Tool payload reads are bounded to
-256 KiB and retain only classification and opaque identity. A finalizer is one
-plain argv: shell metacharacters are allowed inside quotes (single quotes fully
-literal; double quotes without `$`, backquote or backslash) and refused outside
-them. Claude's `PostToolUseFailure` ends a start exactly like `PostToolUse`.
-A Claude install made before that hook was added never reports failed tools'
-ends: each failed tool then stays open until the turn's Stop and blocks every
-handoff in that turn (#104). `asha doctor claude` fails when any source hook is
-not registered; `asha install claude` repairs it. A blocked receipt's detail
-counts the open starts and names these causes. Backgrounded Bash is not one of
-them: Claude sends its PostToolUse when the command moves to the background.
-**Denied calls remain an open cause.** A denied call never runs and gets no end
-event at all: neither PostToolUse, PostToolUseFailure nor PermissionDenied fires
-for a call denied by a PreToolUse hook or by a permission prompt (native probe,
-Claude Code 2.1.283). Its start stays open until the turn's Stop, and a handoff
-in the same turn is blocked; finalize in a later turn. Asha's guards do not
-report a denied call's end: a guard's claim is not verifiable denial evidence
-(any process of the session can make the same claim for a call that is still
-running), and no report from a guard can be ordered against the start that
-parallel PreToolUse hooks number independently (QA19 F3, F5).
-A native Stop ends every tool of its turn: unmatched starts are dropped then, and
-a sole matched finalizer whose end callback was lost counts as ended. Missing,
-malformed or oversized callbacks otherwise block finalization. A new prompt after
-an observed idle boundary clears abandoned tool tracking and invalidates old
-receipts; finalize anew. A `handoff-failed` status names the refused completion
-evidence when the agent's own outcome was a valid acknowledgement. A new
-structured turn or terminal incarnation also resets tracking. Do not treat scripted
-fixture results as native-model proof.
-
-`session resume ID --text CONTINUATION` retains the hub ID and starts another
-owned terminal incarnation. Claude/Codex resume the native conversation when
-a native ID was captured. Otherwise Asha explicitly starts a fresh harness
-with the assignment, last reported result and continuation context. It does
-not claim to recover an unrecorded transcript. Terminal conversation history
-is otherwise owned by the native harness.
-
-Structured utilities use the existing supervisor and admission policy. Paused
-admission retains new work without launching it. The owner exits between turns
-and a later message can start another owner. Recovery after a failure or stop
-requires inspecting `show ID` and providing its `recovery_digest` with
-`resume ID --digest DIGEST --text CONTINUATION`; uncertain input is never
-automatically replayed. Existing quota and turn-budget limits still apply.
-
-Terminal jobs do not need the supervisor or the dashboard to keep running.
-Closing either UI is separate from stopping work. This change does not resume
-old initiatives, clear old questions, or migrate an existing registry backend.
+Hooks run as separate processes, so their reports can arrive out of order.
+Each hook stamps when it fired (`--emitted-at`, from `date +%s.%N` on its
+first line). The hub stores the newest applied stamp and skips a report whose
+stamp is older by at most 30 seconds: none of its effects apply (activity,
+background tasks, question, lifecycle), and a skipped Stop returns no close
+decision. An equal stamp applies. A report more than 30 seconds older applies,
+so a backward clock step cannot reject every event until time catches up. An
+unstamped report (an older hook) applies. A new generation starts without a
+stamp. Explicit `session report` calls are authoritative and bypass the check.
 
 ## Optional session experience
 

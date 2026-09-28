@@ -50,9 +50,9 @@ receive these completion prompts.
 
 ```bash
 asha control session report --state finished --text 'Result' --experience-file /absolute/report.json --key UUID
-asha control session handoff --request REQUEST --attempt N --outcome no-durable-update --detail 'No binding change' --experience-file /absolute/report.json
-asha control session handoff --request REQUEST --attempt N --outcome no-durable-update --detail 'Same findings' --experience-ref REPORT_UUID
-asha control session handoff --request REQUEST --attempt N --outcome no-durable-update --detail 'Correction' --experience-file /absolute/correction.json --supersedes REPORT_UUID --key NEW_UUID
+asha control session handoff --request REQUEST --outcome no-durable-update --detail 'No binding change' --experience-file /absolute/report.json
+asha control session handoff --request REQUEST --outcome no-durable-update --detail 'Same findings' --experience-ref REPORT_UUID
+asha control session handoff --request REQUEST --outcome no-durable-update --detail 'Correction' --experience-file /absolute/correction.json --supersedes REPORT_UUID --key NEW_UUID
 ```
 
 `--experience-ref` and `--experience-file` are alternatives. Both report and
@@ -96,25 +96,17 @@ optional capture does not invalidate a valid Memory acknowledgement. Capture occ
 before Memory CAS and survives a later publication conflict. Review never delays
 close; terminal close works without a supervisor. Claude uses its existing Stop
 return channel; Codex, Copilot and OpenCode use the existing queued message seam.
-Capture itself never types into or scrapes a terminal. The close request may be
-typed into a detached, idle Claude/Codex pane with a proven-empty input line
-(docs/session-hub.md, "Typing at an idle boundary"); an observed idle Codex session
-with a captured native ID can otherwise continue its same conversation for close,
-but only when no input line was visible or no idle boundary held, and only by
-killing a detached pane. An attached, occupied, partial, stale or ownership
-refusal, unknown activity, missing native IDs, unsupported harnesses or resume
-failures require attachment.
+Capture itself never types into or scrapes a terminal. A close types at most one
+pointer line into an idle or unobserved pane and ends at its deadline whether or
+not the assessment arrived (docs/session-hub.md, "Best-effort close").
 
 Explicit saves inside verified terminal hub sessions gain controller-derived
 `hub_session_id` and `hub_generation`. Control retains the exact publication receipt.
 A Room generation that saved after its latest assignment is not asked for another
 close assessment: capture is disabled with reason `explicit-save-published`.
-Further assignments or a new generation invalidate this omission. Successful explicit saves also produce a separate verified completion receipt for
-issue #92. Close consumes it only after rechecking the current turn, project
-identity and Memory digests at an observed idle boundary. A failed or superseded
-completion receipt does not erase evidence that publication succeeded. See
-[completion and closure](session-hub.md#completion-before-close) for the support
-matrix and attachment guidance.
+Further assignments or a new generation invalidate this omission. A
+`no-durable-update` attestation is recorded as saved but never suppresses the
+assessment. See [best-effort close](session-hub.md#best-effort-close).
 
 For structured utilities only, launch can explicitly select
 `--result-contract asha.session-result.v1`. Its retained result is then
