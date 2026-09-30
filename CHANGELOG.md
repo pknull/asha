@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased — code v1.6.0: superpowers ideas folded in, recipes dropped
+
+- `debugger`, `tdd`, `reviewer`, `codebase-historian` and `/code:orchestrate`
+  adopt ideas from obra/superpowers (MIT): a root-cause process, tests that
+  catch breaks, a named review range with **Declined to judge**, rulings
+  instead of stalls, and verifying review findings before fixing them.
+- Removed the unused code `recipes/` directory. Reinstall Codex, Copilot and
+  OpenCode to refresh generated agents.
+
 ## Unreleased — best-effort close (supersedes the unreleased #92, #96, #101, #103 and #104 entries)
 
 - Close asks the session to save project Memory, waits a bounded time, then

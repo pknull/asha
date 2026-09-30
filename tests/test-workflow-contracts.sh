@@ -25,7 +25,6 @@ assert_absent() {
 }
 
 CODE_COMMAND="$REPO_ROOT/plugins/code/commands/orchestrate.md"
-CODE_RECIPES="$REPO_ROOT/plugins/code/recipes"
 PANEL_COMMAND="$REPO_ROOT/plugins/panel/commands/panel.md"
 PANEL_CODIFIER="$REPO_ROOT/plugins/panel/agents/codifier.md"
 
@@ -37,10 +36,9 @@ assert_contains "risk routing can require historian" 'codebase-historian' "$CODE
 assert_contains "risk routing can require reviewer" 'Append `reviewer`' "$CODE_COMMAND"
 assert_absent "tier override removed" '--tier' "$CODE_COMMAND" "$REPO_ROOT/plugins/code/README.md"
 assert_absent "claimed-status metrics removed" 'claimed_status' "$CODE_COMMAND"
-assert_absent "harness model labels removed" 'Haiku' "$CODE_COMMAND" "$CODE_RECIPES"
-assert_absent "harness model labels removed (Sonnet)" 'Sonnet' "$CODE_COMMAND" "$CODE_RECIPES"
-assert_absent "harness model labels removed (Opus)" 'Opus' "$CODE_COMMAND" "$CODE_RECIPES"
-assert_absent "recipes have no per-agent model fields" 'model:' "$CODE_RECIPES"
+assert_absent "harness model labels removed" 'Haiku' "$CODE_COMMAND"
+assert_absent "harness model labels removed (Sonnet)" 'Sonnet' "$CODE_COMMAND"
+assert_absent "harness model labels removed (Opus)" 'Opus' "$CODE_COMMAND"
 [[ ! -e "$REPO_ROOT/plugins/code/modules/complexity-routing.md" ]] && ok "uninstalled routing dependency removed" || fail "uninstalled routing dependency removed"
 [[ ! -e "$REPO_ROOT/plugins/code/modules/code.md" ]] && ok "orphan code module removed" || fail "orphan code module removed"
 [[ ! -e "$REPO_ROOT/plugins/code/modules/parallel-agents.md" ]] && ok "orphan parallel-agents module removed" || fail "orphan parallel-agents module removed"

@@ -1,6 +1,6 @@
 # Code Plugin
 
-**Version**: 1.5.0
+**Version**: 1.6.0
 
 Development workflows for implementation, debugging, review, refactoring,
 verification, PostgreSQL work, and guarded issue processing.
@@ -132,22 +132,6 @@ findings.
 | Skill | Purpose | Example request |
 |---|---|---|
 | `postgres` (installed as `code-postgres`) | Query plans, schema design, RLS, migration safety, and database security | `Use code-postgres to review this migration and RLS policy.` |
-
-## Recipes
-
-Recipes under `recipes/` are orchestration definitions and reference material,
-not separate slash commands.
-
-| Recipe | Use case |
-|---|---|
-| `feature-implementation.yaml` | End-to-end feature work with design and review checkpoints |
-| `bug-investigation.yaml` | Interactive diagnosis and regression-test workflow for one bug |
-| `fix-loop.yaml` | Test-gated unattended processing of a bug backlog |
-| `refactor-safe.yaml` | Cleanup with an approved deletion plan and behavior checks |
-| `security-audit.yaml` | Security assessment followed by approved remediation |
-
-Use `/code:orchestrate` for ordinary interactive orchestration and
-`/code:issue-loop` for the specifically guarded unattended path.
 
 ## Installation
 

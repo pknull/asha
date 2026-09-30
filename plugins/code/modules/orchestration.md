@@ -1,8 +1,7 @@
 # Orchestration Module
 
 **Applies to**: code workflows that coordinate more than one bounded role.
-`/code:orchestrate` owns the interactive command contract; recipes may reuse
-these mechanics.
+`/code:orchestrate` owns the interactive command contract.
 
 ## Core rules
 
@@ -73,10 +72,3 @@ stop and report:
 - why each attempt failed;
 - the missing context or external change;
 - viable alternatives.
-
-## Recipes
-
-Recipes under `plugins/code/recipes/` provide longer reference workflows for
-feature implementation, bug investigation, refactoring, and security audit.
-They do not override the command's risk routing, status handling, or user
-authority boundaries.
