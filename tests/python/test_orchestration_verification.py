@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import json
 import os
 import pwd
 import re
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -15,6 +17,7 @@ from contextlib import nullcontext
 from pathlib import Path
 from unittest import mock
 
+from lib.control.config import ConfigError, reject_unsafe_writable_ancestors
 from lib.control.orchestration import actions as action_module
 from lib.control.jj import (
     ImmutableTree, MaterializationPlan, RepositoryFacts, WorkspaceIdentity,
@@ -29,6 +32,8 @@ from lib.control.orchestration.links import build_link
 from lib.control.orchestration.results import publish_result
 from lib.control.orchestration.store import ObservationOnlyPlanError, StoreError
 from lib.control.orchestration.cli import _create
+from lib.control.orchestration.config import load_config
+from lib.control.orchestration.scheduler import SchedulerError, _goal
 from lib.control.orchestration.composition import (
     bundle_composition_digest, cross_composition_digest,
 )
@@ -46,6 +51,54 @@ from tests.python.orchestration_increment3_fixtures import (
 )
 from tests.python.test_orchestration_graph import valid_plan
 from tests.python.test_control_config_model import task_record
+
+
+def _outside_tmp_parent(test: unittest.TestCase) -> str:
+    """Return a private parent outside /tmp for a contained fixture root.
+
+    Containment mounts a private tmpfs over /tmp, so a fixture root under /tmp
+    turns the materialization's parent into writable scratch instead of the
+    read-only root bind. The root must also stay short enough for Control's
+    200-character assignment goal and pass the writable-ancestor check.
+    """
+    reasons = []
+    candidates = (
+        ("TMPDIR", tempfile.gettempdir()),
+        ("HOME", os.environ.get("HOME") or str(Path.home())),
+    )
+    for label, raw in candidates:
+        base = Path(raw).resolve()
+        if base.is_relative_to("/tmp"):
+            reasons.append(f"{label} {base} is under /tmp")
+            continue
+        try:
+            reject_unsafe_writable_ancestors(base, label)
+        except ConfigError as exc:
+            reasons.append(f"{label} {base}: {exc}")
+            continue
+        if not os.access(base, os.W_OK | os.X_OK):
+            reasons.append(f"{label} {base} is not writable")
+            continue
+        root = base / ("v" + "x" * 8)  # TemporaryDirectory(prefix="v") shape
+        config = load_config({
+            "HOME": str(root / "home"),
+            "ASHA_CONFIG": str(root / "missing.json"),
+            "ASHA_HOME": str(root / "asha"),
+            "XDG_RUNTIME_DIR": str(root / "runtime"),
+        })
+        identity = str(uuid.UUID(int=0))
+        try:
+            _goal({"slug": ""}, {}, (
+                config.initiatives_dir / identity / "assignments" / f"{identity}.md"
+            ))
+        except SchedulerError:
+            reasons.append(f"{label} {base} is too long for the assignment goal")
+            continue
+        return str(base)
+    test.skipTest(
+        "no short private directory outside /tmp for a contained fixture root: "
+        + "; ".join(reasons)
+    )
 
 
 class VerificationJj:
@@ -180,11 +233,16 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
         elif "nonzero" in method:
             command = [sys.executable, "-c", "raise SystemExit(7)"]
         elif "outside_write" in method:
+            # The fixture root is pinned outside /tmp (see _outside_tmp_parent),
+            # so the materialization's parent sits on the read-only root bind
+            # rather than on the private /tmp tmpfs. The write must refuse.
             command = [
                 sys.executable, "-c",
-                "from pathlib import Path; "
+                "import errno; from pathlib import Path; "
                 "target=Path.cwd().parent/'outside-marker'; "
-                "target.write_text('sandbox-only'); "
+                "exec(\"try: target.write_text('escaped')\\n"
+                "except OSError as e:\\n if e.errno != errno.EROFS: raise\\n"
+                "else: raise SystemExit('outside write was not read-only')\"); "
                 "Path('/tmp/isolated-marker').write_text('scratch')",
             ]
         elif "large_output" in method:
@@ -213,10 +271,21 @@ class OrchestrationVerificationTests(ExecutionFixture, unittest.TestCase):
             if command_denial(command) is not None
             else nullcontext()
         )
+        fixture_root = (
+            mock.patch(
+                "tests.python.orchestration_execution_fixtures.tempfile.TemporaryDirectory",
+                functools.partial(
+                    tempfile.TemporaryDirectory, prefix="v",
+                    dir=_outside_tmp_parent(self),
+                ),
+            )
+            if "outside_write" in method
+            else nullcontext()
+        )
         with mock.patch(
             "tests.python.orchestration_execution_fixtures.valid_plan",
             side_effect=plan_for_command,
-        ), denied_preflight:
+        ), denied_preflight, fixture_root:
             super().setUp()
         self.candidate = save_candidate(self)
         advance_node(self, "implementation-a", ["evaluating", "succeeded"])
