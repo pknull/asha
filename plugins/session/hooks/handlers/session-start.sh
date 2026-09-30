@@ -87,20 +87,26 @@ fi
 # Copilot, and OpenCode receive the same layer from their wrapper-managed
 # instruction file; injecting it again here doubles authoritative context.
 if [[ "$HARNESS" == "claude" ]]; then
+  source "$SCRIPT_DIR/operational-budget.sh"
   OPERATION_FILE="${ASHA_HOME:-$HOME/.asha}/operation.md"
   CORE_MD="$PLUGIN_ROOT/modules/CORE.md"
   REMINDER=""
+  OPERATION_SOURCE=""
   if [[ -f "$OPERATION_FILE" ]]; then
-    printf -v REMINDER '<system-reminder>\nAsha-managed project. Operational guidelines loaded.\n\n%s\n</system-reminder>' "$(head -c 4000 "$OPERATION_FILE")"
-    append_context "$REMINDER"
+    OPERATION_SOURCE="$OPERATION_FILE"
   elif [[ -f "$CORE_MD" ]]; then
-    printf -v REMINDER '<system-reminder>\nAsha-managed project. Operational guidelines loaded.\n\n%s\n</system-reminder>' "$(head -c 4000 "$CORE_MD")"
+    OPERATION_SOURCE="$CORE_MD"
+  fi
+  if [[ -n "$OPERATION_SOURCE" ]]; then
+    OPERATION_TEXT="$(asha_budget_truncate "$(cat "$OPERATION_SOURCE")" \
+      "$ASHA_OPERATION_MAX_BYTES" "$(basename "$OPERATION_SOURCE")")"
+    printf -v REMINDER '<system-reminder>\nAsha-managed project. Operational guidelines loaded.\n\n%s\n</system-reminder>' "$OPERATION_TEXT"
     append_context "$REMINDER"
   fi
 
   # Only active learnings acquire authority at start.
   if [[ -n "$PYTHON_CMD" && -f "$PLUGIN_ROOT/tools/learnings_manager.py" ]]; then
-    ACTIVE="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/learnings_manager.py" render-active --max-bytes 3000 2>/dev/null || true)"
+    ACTIVE="$("$PYTHON_CMD" "$PLUGIN_ROOT/tools/learnings_manager.py" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null || true)"
     if [[ -n "$ACTIVE" ]]; then
       printf -v REMINDER '<system-reminder>\nActive reviewed learnings:\n\n%s\n</system-reminder>' "$ACTIVE"
       append_context "$REMINDER"

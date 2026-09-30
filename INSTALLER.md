@@ -154,6 +154,13 @@ operational-merge.sh <temporary-file>
 exec codex -c "model_instructions_file=\"<combined-or-identity-file>\"" "$@"
 ```
 
+The operational layer has one budget for every harness,
+`plugins/session/hooks/handlers/operational-budget.sh`: `operation.md` is capped
+at 4000 UTF-8 bytes and active learnings at 3000, cut on a character boundary
+with a `[Truncated: …]` notice. Claude's SessionStart hook and
+`operational-merge.sh` both source it, so all four harnesses receive the same
+text. `asha doctor` fails when `operation.md` exceeds its budget.
+
 Plain `codex` and `asha codex` share `~/.codex/`. The only behavioral
 difference is the `-c` flag at launch; skills, custom agents, hooks, rules,
 MCP configuration, projects, and sessions are single-instance.

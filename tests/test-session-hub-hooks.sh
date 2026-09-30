@@ -511,5 +511,34 @@ else
   fail "an unmanaged session calls no controller at all ($OUT)"
 fi
 
+echo "--- operational layer budget: one truncation for every harness ---"
+
+# 15-byte head then 2-byte characters: a raw byte cut at 4000 splits one.
+{ printf 'OPERATION_HEAD:'; printf 'é%.0s' $(seq 1 3000); printf 'OPERATION_TAIL_SENTINEL\n'; } \
+  > "$HOME_DIR/.asha/operation.md"
+rm -rf "$PROJECT/Work/session-state"
+OVER="$(run_hook session-start.sh "$START_PAYLOAD")"
+if [[ "$OVER" == *OPERATION_HEAD:* && "$OVER" != *OPERATION_TAIL_SENTINEL* \
+   && "$OVER" == *"[Truncated: operation.md"* ]]; then
+  ok "SessionStart truncates an over-budget operation.md with a notice"
+else
+  fail "SessionStart truncates an over-budget operation.md with a notice"
+fi
+if printf '%s' "$OVER" | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1; then
+  ok "SessionStart truncation never splits a UTF-8 character"
+else
+  fail "SessionStart truncation never splits a UTF-8 character"
+fi
+MERGED="$WORK/operational.md"
+env -u ASHA_HOME HOME="$HOME_DIR" bash "$REPO_ROOT/identity/operational-merge.sh" "$MERGED" >/dev/null 2>&1
+HOOK_BODY="$(printf '%s' "$OVER" | sed -n '/^OPERATION_HEAD:/,/^\[Truncated: operation.md/p')"
+MERGE_BODY="$(sed -n '/^OPERATION_HEAD:/,/^\[Truncated: operation.md/p' "$MERGED" 2>/dev/null)"
+if [[ -n "$HOOK_BODY" && "$HOOK_BODY" == "$MERGE_BODY" ]]; then
+  ok "Claude and file-based harnesses receive identical operational text"
+else
+  fail "Claude and file-based harnesses receive identical operational text"
+fi
+printf 'operation-v2-sentinel\n' > "$HOME_DIR/.asha/operation.md"
+
 echo "test-session-hub-hooks: $PASS passed, $FAIL failed"
 [[ $FAIL -eq 0 ]]

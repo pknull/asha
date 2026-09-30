@@ -10,9 +10,9 @@
 # `.github/instructions/*.instructions.md` body (or any always-on instructions
 # slot). No <system-reminder> wrappers — those are a Claude-hook convention.
 #
-# Budgets + fallbacks MIRROR session-start.sh's operational layer — KEEP IN SYNC:
-#   - operation.md, cap 4000 chars, fallback CORE.md
-#   - active learnings via `learnings_manager.py render-active --max-bytes 3000`
+# Budgets and truncation come from plugins/session/hooks/handlers/
+# operational-budget.sh, which session-start.sh also sources, so every harness
+# receives the same text. Fallback when operation.md is absent: CORE.md.
 #
 # Usage: operational-merge.sh <output-path>
 # Exit 0 on success; 1 if there is nothing to emit (no operation + no learnings)
@@ -42,39 +42,28 @@ LEARNINGS_DIR="$ASHA_DIR/learnings"
 LEARNINGS_MANAGER="$ASHA_ROOT/plugins/session/tools/learnings_manager.py"
 CORE_MD="$ASHA_ROOT/plugins/session/modules/CORE.md"
 
-OPERATION_MAX=4000
-LEARNINGS_MAX=3000
+# shellcheck source=../plugins/session/hooks/handlers/operational-budget.sh
+source "$ASHA_ROOT/plugins/session/hooks/handlers/operational-budget.sh"
 
 PYTHON_CMD=""
 command -v python3 >/dev/null 2>&1 && PYTHON_CMD="python3"
-
-truncate_content() {
-  local content="$1" max_chars="$2" label="$3"
-  local length=${#content}
-  if [[ $length -le $max_chars ]]; then
-    printf '%s' "$content"
-  else
-    printf '%s\n\n[Truncated: %s exceeded %s chars (%s total). Read the full file if needed.]' \
-      "${content:0:$max_chars}" "$label" "$max_chars" "$length"
-  fi
-}
 
 OPERATION_CONTENT=""
 LEARNINGS_CONTENT=""
 
 [[ -f "$OPERATION_FILE" ]] && \
-  OPERATION_CONTENT="$(truncate_content "$(cat "$OPERATION_FILE")" "$OPERATION_MAX" "operation.md")"
+  OPERATION_CONTENT="$(asha_budget_truncate "$(cat "$OPERATION_FILE")" "$ASHA_OPERATION_MAX_BYTES" "operation.md")"
 
 # Candidates and retired records do not acquire authority by existing.
 if [[ -d "$LEARNINGS_DIR" && -f "$LEARNINGS_MANAGER" && -n "$PYTHON_CMD" ]]; then
-  RENDERED_ACTIVE="$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-active --max-bytes "$LEARNINGS_MAX" 2>/dev/null || true)"
+  RENDERED_ACTIVE="$("$PYTHON_CMD" "$LEARNINGS_MANAGER" render-active --max-bytes "$ASHA_LEARNINGS_MAX_BYTES" 2>/dev/null || true)"
   [[ -n "$RENDERED_ACTIVE" ]] && \
-    LEARNINGS_CONTENT="$(truncate_content "$RENDERED_ACTIVE" "$LEARNINGS_MAX" "active learnings")"
+    LEARNINGS_CONTENT="$(asha_budget_truncate "$RENDERED_ACTIVE" "$ASHA_LEARNINGS_MAX_BYTES" "active learnings")"
 fi
 
 # Fall back to CORE.md if operation.md doesn't exist yet.
 [[ -z "$OPERATION_CONTENT" && -f "$CORE_MD" ]] && \
-  OPERATION_CONTENT="$(truncate_content "$(cat "$CORE_MD")" "$OPERATION_MAX" "CORE.md")"
+  OPERATION_CONTENT="$(asha_budget_truncate "$(cat "$CORE_MD")" "$ASHA_OPERATION_MAX_BYTES" "CORE.md")"
 
 # Nothing to emit → signal caller (no file written).
 [[ -z "$OPERATION_CONTENT" && -z "$LEARNINGS_CONTENT" ]] && exit 1
