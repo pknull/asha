@@ -430,9 +430,17 @@ class ControlTuiFocusTests(unittest.TestCase):
             )
 
         self.assertEqual(result, "room open cancelled")
-        self.assertIn("Error beside Project", screen.text)
-        self.assertIn(invalid, screen.text)
-        self.assertIn("run session-init there", screen.text)
+        # The 80-column modal wraps the error and elides the input head, both
+        # at points set by the temporary path's length. Compare the error with
+        # its wrapped rows rejoined, and the retained draft by its tail.
+        unwrapped = "".join(item[2] for item in screen.writes)
+        self.assertIn(
+            f"Error beside Project: project {invalid} is not exactly one "
+            "initialized Memory v2 Asha project; run session-init there",
+            unwrapped,
+        )
+        inputs = [item[2] for item in screen.writes if "> Project:" in item[2]]
+        self.assertTrue(inputs[-1].endswith("/not-initialized"), inputs[-1])
         open_call.assert_not_called()
 
     def test_task_tab_accepts_the_explicitly_highlighted_candidate(self):
