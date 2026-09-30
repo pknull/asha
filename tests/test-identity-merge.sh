@@ -146,7 +146,7 @@ else
   fail "oversized operational inputs merge successfully"
 fi
 if ! grep -q 'OPERATION_TAIL\|LEARNINGS_TAIL' "$SANDBOX/.cache/asha/operational.md" && \
-   grep -q 'operation.md exceeded 4000 chars' "$SANDBOX/.cache/asha/operational.md"; then
+   grep -q 'operation.md exceeded 4000 bytes' "$SANDBOX/.cache/asha/operational.md"; then
   ok "operation cap holds and legacy flat learnings remain uninjected"
 else
   fail "operation cap holds and legacy flat learnings remain uninjected"
@@ -211,6 +211,49 @@ if claude_args="$(env -i PATH="$PATH" HOME="$SANDBOX" ASHA_HOME="$SANDBOX/.asha"
   ok "Claude launch injects the same compact identity contract"
 else
   fail "Claude launch injects the same compact identity contract"
+fi
+
+# ---------------------------------------------------------------------------
+# Operational budget is measured in bytes and reported by doctor
+# ---------------------------------------------------------------------------
+echo "--- operational budget ---"
+reset_sandbox
+mkdir -p "$SANDBOX/.asha"
+{ printf 'OPERATION_HEAD:'; printf 'é%.0s' $(seq 1 3000); printf 'OPERATION_TAIL_SENTINEL\n'; } \
+  > "$SANDBOX/.asha/operation.md"
+run_operational_merge >/dev/null 2>&1 || true
+merged="$SANDBOX/.cache/asha/operational.md"
+if grep -q 'OPERATION_HEAD:' "$merged" && ! grep -q 'OPERATION_TAIL_SENTINEL' "$merged" \
+   && grep -q '^\[Truncated: operation.md exceeded 4000 bytes' "$merged"; then
+  ok "operational merge caps operation.md at 4000 bytes, not characters"
+else
+  fail "operational merge caps operation.md at 4000 bytes, not characters"
+fi
+iconv -f UTF-8 -t UTF-8 "$merged" >/dev/null 2>&1 \
+  && ok "operational merge output stays valid UTF-8" \
+  || fail "operational merge output stays valid UTF-8"
+
+BUDGET_LIB="$REPO_ROOT/plugins/session/hooks/handlers/operational-budget.sh"
+budget_report() {
+  bash -c 'source "$1" && asha_operation_budget_report "$2"' _ "$BUDGET_LIB" "$1" 2>&1
+}
+if report="$(budget_report "$SANDBOX/.asha/operation.md")"; then
+  fail "budget report fails an over-budget operation.md"
+elif [[ "$report" == FAIL* ]]; then
+  ok "budget report fails an over-budget operation.md"
+else
+  fail "budget report fails an over-budget operation.md ($report)"
+fi
+printf 'small\n' > "$SANDBOX/.asha/operation.md"
+if report="$(budget_report "$SANDBOX/.asha/operation.md")" && [[ "$report" == PASS* ]]; then
+  ok "budget report passes an operation.md within budget"
+else
+  fail "budget report passes an operation.md within budget ($report)"
+fi
+if report="$(budget_report "$SANDBOX/.asha/absent.md")"; then
+  ok "budget report tolerates a missing operation.md"
+else
+  fail "budget report tolerates a missing operation.md ($report)"
 fi
 
 echo ""

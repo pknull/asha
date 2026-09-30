@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — one operational budget for every harness
+
+- Claude's SessionStart hook cut `operation.md` at 4000 bytes with no notice,
+  which could split a UTF-8 character, while `operational-merge.sh` capped it
+  at 4000 characters with a notice. Claude and the file-based harnesses
+  therefore received different text. Both now source
+  `plugins/session/hooks/handlers/operational-budget.sh`: a UTF-8 byte budget
+  (operation 4000, learnings 3000), a character-safe cut and a truncation
+  notice.
+- `asha doctor` fails when `operation.md` exceeds its budget, since anything
+  past it never reaches a session.
+
 ## Unreleased — code v1.6.0: superpowers ideas folded in, recipes dropped
 
 - `debugger`, `tdd`, `reviewer`, `codebase-historian` and `/code:orchestrate`

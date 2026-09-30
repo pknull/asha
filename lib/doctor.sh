@@ -80,7 +80,20 @@ EOF
   _asha_doctor_experience_configuration || experience_rc=$?
   local daemon_rc=0
   _asha_doctor_codex_daemon_section "$target" || daemon_rc=$?
-  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $experience_rc -eq 0 && $daemon_rc -eq 0 ]]
+  local budget_rc=0
+  _asha_doctor_operational_budget_section || budget_rc=$?
+  [[ $drift_rc -eq 0 && $ws_rc -eq 0 && $imported_rc -eq 0 && $experience_rc -eq 0 && $daemon_rc -eq 0 \
+     && $budget_rc -eq 0 ]]
+}
+
+# Every harness receives operation.md through one byte budget; anything past it
+# never reaches a session, so an over-budget file fails rather than warns.
+_asha_doctor_operational_budget_section() {
+  echo ""
+  echo "── Operational layer budget ──"
+  # shellcheck source=../plugins/session/hooks/handlers/operational-budget.sh
+  source "$MARKET_ROOT/plugins/session/hooks/handlers/operational-budget.sh"
+  asha_operation_budget_report
 }
 
 # Codex 0.157's shared app-server daemon runs hooks with the environment of
