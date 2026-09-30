@@ -1003,23 +1003,47 @@ class TmuxAdapter:
         self._run(args)
 
     def caller_client(self, pane: str) -> str | None:
-        """Return the first client tty attached to the caller pane's session."""
+        """Return the tty of the client currently displaying the caller pane.
+
+        Only clients of the caller pane's session whose current window is the
+        caller pane's window, with the caller pane active, qualify; the most
+        recently active one wins. None means no client is showing the pane.
+        """
         pane_id = _validate_pane_id(pane)
-        session = _validate_session_name(self._one_line(
+        caller = self._one_line(
             self._run([
-                "display-message", "-p", "-t", pane_id, "#{session_name}",
+                "display-message", "-p", "-t", pane_id,
+                "#{session_name}\t#{window_id}",
             ]),
             "session name",
-        ))
+        )
+        session_field, separator, window_field = caller.rpartition("\t")
+        if not separator:
+            raise TmuxError("tmux returned invalid session name")
+        session = _validate_session_name(session_field)
+        window_id = _validate_window_id(window_field)
         output = self._run([
-            "list-clients", "-t", session, "-F", "#{client_tty}",
+            "list-clients", "-t", session, "-F",
+            "#{client_tty}\t#{client_activity}\t#{window_id}\t#{pane_id}",
         ])
         if output == "":
             return None
-        lines = output.split("\n")
-        if not lines or not lines[0]:
-            raise TmuxError("tmux returned invalid client tty")
-        return _validate_client_tty(lines[0])
+        chosen: str | None = None
+        chosen_activity = -1
+        for line in output.removesuffix("\n").split("\n"):
+            fields = line.rsplit("\t", 3)
+            if (len(fields) != 4 or not fields[1].isascii() or
+                    not fields[1].isdigit()):
+                raise TmuxError("tmux returned invalid client tty")
+            tty = _validate_client_tty(fields[0])
+            activity = int(fields[1])
+            client_window = _validate_window_id(fields[2])
+            client_pane = _validate_pane_id(fields[3])
+            if client_window != window_id or client_pane != pane_id:
+                continue
+            if activity > chosen_activity:
+                chosen, chosen_activity = tty, activity
+        return chosen
 
     def popup_argv(
         self, *, client: str, session: str, width: str, height: str,

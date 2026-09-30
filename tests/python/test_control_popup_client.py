@@ -181,36 +181,59 @@ class PopupClientUnitTests(unittest.TestCase):
             "TMUX": "/tmp/tmux/default,1,0", "TMUX_PANE": "%7",
         })
 
-    def test_caller_client_queries_the_calling_panes_session_then_first_client(self) -> None:
+    @staticmethod
+    def _caller_client_adapter(
+        clients: bytes, *, caller: bytes = b"operator\t@3\n", socket: str | None = None,
+    ) -> tuple[TmuxAdapter, mock.Mock]:
         responses = iter((
-            subprocess.CompletedProcess(["tmux"], 0, b"operator\n", b""),
-            subprocess.CompletedProcess(
-                ["tmux"], 0, b"/dev/pts/7\n/dev/pts/9\n", b"",
-            ),
+            subprocess.CompletedProcess(["tmux"], 0, caller, b""),
+            subprocess.CompletedProcess(["tmux"], 0, clients, b""),
         ))
         runner = mock.Mock(side_effect=lambda argv, **kwargs: next(responses))
-        adapter = TmuxAdapter(socket="asha-control", runner=runner)
+        kwargs = {} if socket is None else {"socket": socket}
+        return TmuxAdapter(runner=runner, **kwargs), runner
+
+    def test_caller_client_queries_the_calling_panes_session_and_window(self) -> None:
+        adapter, runner = self._caller_client_adapter(
+            b"/dev/pts/7\t100\t@3\t%12\n", socket="asha-control",
+        )
 
         self.assertEqual(adapter.caller_client("%12"), "/dev/pts/7")
         self.assertEqual(
             [call.args[0] for call in runner.call_args_list],
             [
                 ["tmux", "-L", "asha-control", "display-message", "-p", "-t", "%12",
-                 "#{session_name}"],
+                 "#{session_name}\t#{window_id}"],
                 ["tmux", "-L", "asha-control", "list-clients", "-t", "operator",
-                 "-F", "#{client_tty}"],
+                 "-F", "#{client_tty}\t#{client_activity}\t#{window_id}\t#{pane_id}"],
             ],
         )
         self.assertTrue(all(not call.kwargs["shell"] for call in runner.call_args_list))
 
-    def test_caller_client_returns_none_only_for_a_session_without_clients(self) -> None:
-        responses = iter((
-            subprocess.CompletedProcess(["tmux"], 0, b"operator\n", b""),
-            subprocess.CompletedProcess(["tmux"], 0, b"", b""),
-        ))
-        adapter = TmuxAdapter(
-            runner=lambda argv, **kwargs: next(responses),
+    def test_caller_client_skips_a_first_listed_client_not_showing_the_pane(self) -> None:
+        for stale in (b"/dev/pts/2\t900\t@5\t%20\n", b"/dev/pts/2\t900\t@3\t%13\n"):
+            with self.subTest(stale=stale):
+                adapter, _ = self._caller_client_adapter(
+                    stale + b"/dev/pts/7\t100\t@3\t%12\n",
+                )
+                self.assertEqual(adapter.caller_client("%12"), "/dev/pts/7")
+
+    def test_caller_client_prefers_the_most_recently_active_matching_client(self) -> None:
+        adapter, _ = self._caller_client_adapter(
+            b"/dev/pts/7\t100\t@3\t%12\n/dev/pts/9\t250\t@3\t%12\n",
         )
+
+        self.assertEqual(adapter.caller_client("%12"), "/dev/pts/9")
+
+    def test_caller_client_returns_none_when_no_client_shows_the_pane(self) -> None:
+        adapter, _ = self._caller_client_adapter(
+            b"/dev/pts/7\t100\t@5\t%20\n/dev/pts/9\t250\t@3\t%13\n",
+        )
+
+        self.assertIsNone(adapter.caller_client("%12"))
+
+    def test_caller_client_returns_none_only_for_a_session_without_clients(self) -> None:
+        adapter, _ = self._caller_client_adapter(b"")
 
         self.assertIsNone(adapter.caller_client("%4"))
 
@@ -220,14 +243,19 @@ class PopupClientUnitTests(unittest.TestCase):
             TmuxAdapter(runner=no_run).caller_client("bad-pane")
         no_run.assert_not_called()
 
-        for session, tty, diagnostic in (
-            (b"bad session\n", None, "session name"),
-            (b"operator\n", b"pts/7\n", "client tty"),
-            (b"operator\n", b"/dev/pts/7\x1b\n", "client tty"),
-            (b"operator\n", b"/dev/pts/7\r\n", "client tty"),
+        for caller, clients, diagnostic in (
+            (b"bad session\t@3\n", None, "session name"),
+            (b"operator\n", None, "session name"),
+            (b"operator\tbad\n", None, "window id"),
+            (b"operator\t@3\n", b"pts/7\t1\t@3\t%4\n", "client tty"),
+            (b"operator\t@3\n", b"/dev/pts/7\x1b\t1\t@3\t%4\n", "client tty"),
+            (b"operator\t@3\n", b"/dev/pts/7\t1\t@3\t%4\r\n", "pane id"),
+            (b"operator\t@3\n", b"/dev/pts/7\tx\t@3\t%4\n", "client tty"),
+            (b"operator\t@3\n", b"/dev/pts/7\n", "client tty"),
+            (b"operator\t@3\n", b"/dev/pts/7\t1\t@3\t%4\n\n", "client tty"),
         ):
-            with self.subTest(diagnostic=diagnostic):
-                outputs = [session] + ([] if tty is None else [tty])
+            with self.subTest(diagnostic=diagnostic, clients=clients):
+                outputs = [caller] + ([] if clients is None else [clients])
                 adapter = TmuxAdapter(runner=lambda argv, **kwargs: subprocess.CompletedProcess(
                     argv, 0, outputs.pop(0), b"",
                 ))
