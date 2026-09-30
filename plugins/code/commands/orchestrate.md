@@ -90,7 +90,8 @@ interview merely because several files are involved.
 For each sequential phase:
 
 1. Give the agent the task, repository constraints, owned paths, acceptance
-   criteria, verification commands, and the previous handoff path.
+   criteria, verification commands, and the previous handoff path. A reviewer
+   also receives up to five input classes the implementation's tests do not exercise.
 2. Collect its result and branch on its returned status.
 3. Write the normalized handoff beneath
    `Work/code-orchestrate/<run-id>/` and pass the path to the next phase.
@@ -122,6 +123,14 @@ Handle the status rather than merely recording it:
 
 A missing status is a malformed handoff. Ask the phase to restate its result in
 the contract; do not infer success from prose.
+
+Decide rather than stall. A conflict, ambiguity, or plan defect that the task
+and repository do not settle is ruled on by the phase, recorded in its handoff
+as `Ruling: <decision> — <why> — <cost if wrong>`, and carried forward. Only
+four things stop a phase: a destructive or irreversible step, a
+security-sensitive action, an outward side effect nobody requested (push,
+publish, merge), or a defect that leaves every path a guess (`BLOCKED`).
+<!-- Adapted from obra/superpowers executing-plans (MIT). -->
 
 ### 4. Handoffs
 
@@ -157,6 +166,14 @@ reads the actual diff and test output rather than trusting the handoff. Do not
 commit, push, merge, deploy, or perform destructive cleanup unless the user
 explicitly requested it.
 
+Before changing code for a finding, the implementing phase checks it against
+the code: the cited lines exist, the claim holds here, and whatever the
+reviewer wants built out has callers (grep first). Fix confirmed findings one
+at a time, each with a test that failed first; answer a wrong one with evidence
+as a ruling. Never pre-judge a reviewer ("do not flag X", "at most Minor").
+The fix diff gets its own review pass before the report.
+<!-- Adapted from obra/superpowers receiving-code-review and subagent-driven-development (MIT). -->
+
 Return:
 
 ```text
@@ -168,4 +185,5 @@ Files changed: <paths>
 Verification: <commands and results>
 Review: <SHIP | NEEDS WORK | BLOCKED, with findings>
 Open questions: <items or None>
+Rulings: <every Ruling: line from the handoffs, in order, or None>
 ```
