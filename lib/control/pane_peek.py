@@ -68,12 +68,20 @@ class PeekDisabled(PeekRefused):
 
 
 class _Budget:
-    """One deadline for a whole preview read; each call returns the time left."""
+    """One deadline for a whole preview read; each call returns the time left.
 
-    def __init__(self, seconds: float):
+    Every tmux call asks it first, so once ``cancelled`` is set (the dashboard
+    closed) no further tmux command starts; one already running ends at its
+    own deadline.
+    """
+
+    def __init__(self, seconds: float, cancelled=None):
         self._end = time.monotonic() + seconds
+        self._cancelled = cancelled
 
     def __call__(self) -> float:
+        if self._cancelled is not None and self._cancelled.is_set():
+            raise TmuxError("preview read cancelled")
         remaining = self._end - time.monotonic()
         if remaining <= 0:
             raise TmuxError("preview read timed out")
@@ -155,9 +163,12 @@ def owned_pane(record: Mapping[str, Any], tmux: TmuxAdapter, budget=None) -> str
     return record["tmux"]["pane_id"]
 
 
-def peek_room(record: Mapping[str, Any], tmux: TmuxAdapter, lines: int) -> list[str]:
-    """Hooks, ownership, hooks, capture, ownership: every call checks again."""
-    budget = _Budget(DEADLINE_SECONDS)
+def peek_room(record: Mapping[str, Any], tmux: TmuxAdapter, lines: int, *, cancelled=None) -> list[str]:
+    """Hooks, ownership, hooks, capture, ownership: every call checks again.
+
+    ``cancelled`` (a ``threading.Event``) stops the read before its next tmux call.
+    """
+    budget = _Budget(DEADLINE_SECONDS, cancelled)
     try:
         pane = _validate_pane_id(record["tmux"].get("pane_id") or "")
     except TmuxError as exc:

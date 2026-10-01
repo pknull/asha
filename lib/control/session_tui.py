@@ -14,6 +14,7 @@ import locale
 import signal
 import subprocess
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -161,7 +162,10 @@ class Dashboard:
         self.fitted = None   # (view, list height) the last automatic fold was computed for
         # The read-only preview (#102 phase 3) reads on its own worker thread, and
         # only when control.session_preview opts in; off, nothing is ever read.
-        self.previews = session_preview.Poller(reader=session_preview.reader_for(config, self.hub.tmux)) \
+        # Closing sets ``cancelled``, which the running read checks before each step.
+        cancelled = threading.Event()
+        self.previews = session_preview.Poller(
+            reader=session_preview.reader_for(config, self.hub.tmux, cancelled=cancelled), cancelled=cancelled) \
             if session_preview.enabled(config) else None
 
     def run(self):
