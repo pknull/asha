@@ -119,8 +119,10 @@ a folded heading.
 
 When the list is taller than the screen, the dashboard folds automatically:
 History, then Ended, then each group's finished rows (ready to close) into one
-`… N more` line, from the bottom up, until it fits. Rows that are working or
-need you are never folded, nor is the group holding the selected row; when a
+`… N more` line, from the bottom up, until it fits. A fold that would save no
+line, such as a group's single one-line finished row, is skipped, so many small
+finished projects keep their rows instead of trading each for `… 1 more`. Rows
+that are working or need you are never folded, nor is the group holding the selected row; when a
 refresh or an action moves the selected row into an automatically folded group
 (it finished, stopped or left for history), that fold opens and the selection
 stays on the row. Automatic folds are recomputed on every paint, so a taller
@@ -289,9 +291,6 @@ Follow-ups (not yet done):
 - History paging: scrolling back through the capture (design §4.2, Q17-F5).
 - Cancel on close: closing the dashboard stops scheduling and discards a read
   still running, but does not cancel that read; it ends at its 2 s deadline.
-- Inherited from phases 1–2: automatic folding of singleton finished projects,
-  which saves no lines and slows past a few hundred rows (Q17-F7). The `A`
-  history toggle's refresh delay (Q17-F6) is fixed by phase 4.
 
 ## Status and input
 

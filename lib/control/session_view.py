@@ -159,12 +159,13 @@ def _unit(row, grouping, folds):
 
 
 def _visible(rows, model):
-    visible, folds = [], model.folded | model.auto
+    visible, seen, folds = [], set(), model.folded | model.auto
     for row in _listed(rows, model):
         unit = _unit(row, model.grouping, folds)
         if unit is None:
             visible.append(row['session_id'])
-        elif TOKEN + unit not in visible:
+        elif unit not in seen:
+            seen.add(unit)
             visible.append(TOKEN + unit)
     return tuple(visible)
 
@@ -346,6 +347,27 @@ def _candidates(model):
             and not (selected and in_unit(selected, key, model.grouping))]
 
 
+def _fold_savings(rows):
+    """Lines the unfolded list takes, and the lines each automatic fold key would save.
+
+    Units are disjoint (finished rows are current, never Ended or History), so
+    savings add up: a whole section becomes its one heading line, and a
+    section's finished rows become one `… N more` line under the kept heading.
+    """
+    total = sum(_heading(rows, i, 0) + row_height(rows[i]) for i in range(len(rows)))
+    saving = {}
+    for shown in rows:
+        if shown.get('kind') == 'section':
+            continue
+        key = shown['section']
+        if key in TAIL_FOLDS:
+            saving[key] = saving.get(key, 0) + row_height(shown)
+        elif finished(shown):
+            # The first finished row's height pays for the `… N more` line.
+            saving[FINISHED + key] = saving.get(FINISHED + key, -1) + row_height(shown)
+    return total, saving
+
+
 def fit(model, space):
     """Apply the §5.6 height policy for a list of ``space`` lines.
 
@@ -353,11 +375,16 @@ def fit(model, space):
     opens them again; explicit folds and unfolds always win. Returns ``model``
     itself when nothing changes.
     """
-    auto, trial = [], replace(model, auto=frozenset())
+    rows = display_rows(_rebuild(replace(model, auto=frozenset())))
+    total, saving = _fold_savings(rows)
+    auto = []
     for key in _candidates(model):
-        if list_lines(_rebuild(trial, auto=frozenset(auto))) <= space:
+        if total <= space:
             break
-        auto.append(key)
+        # A fold that saves no line (a lone one-line finished row) only hides the row (Q16-F1).
+        if saving.get(key, 0) > 0:
+            auto.append(key)
+            total -= saving[key]
     auto = frozenset(auto)
     if auto == model.auto:
         return model
@@ -424,15 +451,25 @@ def move(model, delta, *, visible):
     return replace(model, selected_id=model.order[new], anchor=anchor)
 
 
-def _heading_row(model, token, listed, titles):
+def _unit_counts(model, listed):
+    """(members, attention members) per fold key that folds them, from one pass over the list."""
+    counts = {}
+    for row in listed:
+        key = section_of(row, model.grouping)[0]
+        for unit in (key, FINISHED + key) if finished(row) else (key,):
+            members, attention = counts.get(unit, (0, 0))
+            counts[unit] = (members + 1, attention + _is_attention(row))
+    return counts
+
+
+def _heading_row(model, token, counts, titles):
     key = token[len(TOKEN):]
-    members = [row for row in listed if in_unit(row, key, model.grouping)]
+    members, attention = counts.get(key, (0, 0))
     # The section's one title, not its hidden members' own (Q15-F4).
     title = titles.get(_parent(key), key)
     # ``more``: a section's finished rows as one `… N more` line under the section heading.
     return dict(kind='section', session_id=token, section=_parent(key), section_title=title,
-                count=len(members), attention=sum(_is_attention(row) for row in members),
-                more=key.startswith(FINISHED))
+                count=members, attention=attention, more=key.startswith(FINISHED))
 
 
 def display_rows(model):
@@ -440,12 +477,12 @@ def display_rows(model):
 
     A folded section appears as one ``kind='section'`` row naming its count.
     """
-    listed = _listed(model.rows, model) if model.folded or model.auto else ()
+    counts = _unit_counts(model, _listed(model.rows, model)) if model.folded or model.auto else {}
     titles = _titles(model.rows.values(), model.grouping)
     shown = []
     for sid in model.order:
         if sid.startswith(TOKEN) and sid not in model.rows:
-            shown.append(_heading_row(model, sid, listed, titles))
+            shown.append(_heading_row(model, sid, counts, titles))
             continue
         row = model.rows[sid]
         key = section_of(row, model.grouping)[0]

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — dashboard follow-ups from #102 QA (#106)
+
+- Automatic short-screen folding skips a fold that saves no line (a group's
+  lone one-line finished row) and computes every fold's saving from one pass
+  instead of rebuilding the view per candidate; a folded heading's count no
+  longer rescans the list. QA measured 2.4 s at 201 rows; 400 singleton
+  projects now fit in milliseconds (Q16-F1/Q17-F7).
+
 ## Unreleased — one operational budget for every harness
 
 - Claude's SessionStart hook cut `operation.md` at 4000 bytes with no notice,
