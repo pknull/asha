@@ -256,7 +256,11 @@ session shows no screen.
   sheet or with the panel hidden). A read starts at least 500 ms after the
   previous one finished, so captures are at least that far apart. All tmux
   reads of one preview share a 2 s deadline. A result for a row no longer
-  selected is dropped. At most 200 lines are read, clipped by terminal cells.
+  selected is dropped. Quitting the dashboard cancels a read in progress: a
+  queued read never starts, a pane read issues no further tmux command (so no
+  capture follows a close) and a structured read stops before its next page;
+  a tmux command already running ends at that deadline and its output is
+  discarded. At most 200 lines are read, clipped by terminal cells.
 - *Untrusted output.* Escape sequences (OSC 52 clipboard writes, title sets,
   CSI cursor moves, DCS and similar strings) and control and format characters
   are removed before painting.
@@ -289,8 +293,6 @@ whose hooks and aliases you control.
 Follow-ups (not yet done):
 
 - History paging: scrolling back through the capture (design §4.2, Q17-F5).
-- Cancel on close: closing the dashboard stops scheduling and discards a read
-  still running, but does not cancel that read; it ends at its 2 s deadline.
 
 ## Status and input
 

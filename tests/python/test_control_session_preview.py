@@ -419,6 +419,82 @@ class ReaderTests(unittest.TestCase):
         self.assertTrue({call[0] for call in runner.calls} <= READ_ONLY_VERBS)
 
 
+class CancelTests(unittest.TestCase):
+    """#106 (QA18 follow-up): closing the dashboard cancels a running read, not just its result."""
+
+    def test_a_cancelled_peek_issues_no_further_tmux_command(self):
+        import threading
+        cancelled = threading.Event()
+
+        def close_mid_read(runner, args):
+            if args[0] == 'display-message':
+                cancelled.set()             # the dashboard closes during the ownership read
+        runner = FakeTmuxRunner(on_call=close_mid_read)
+        with self.assertRaises(pane_peek.PeekRefused):
+            pane_peek.peek_room(record(), TmuxAdapter(runner=runner), 5, cancelled=cancelled)
+        verbs = [call[0] for call in runner.calls]
+        self.assertNotIn('capture-pane', verbs)
+        self.assertEqual(verbs[-1], 'display-message')
+
+    def test_a_peek_cancelled_before_it_starts_runs_nothing(self):
+        import threading
+        cancelled = threading.Event()
+        cancelled.set()
+        runner = FakeTmuxRunner()
+        with self.assertRaises(pane_peek.PeekRefused):
+            pane_peek.peek_room(record(), TmuxAdapter(runner=runner), 5, cancelled=cancelled)
+        self.assertEqual(runner.calls, [])
+
+    def test_close_cancels_the_running_production_read(self):
+        import threading
+        entered, release = threading.Event(), threading.Event()
+
+        def stall(runner, args):
+            if args[0] == 'display-message' and not entered.is_set():
+                entered.set()
+                release.wait(5)             # the read is running when the dashboard closes
+        runner = FakeTmuxRunner(on_call=stall)
+        with mock.patch('lib.control.rooms.RoomStore') as rooms:
+            rooms.return_value.read.return_value = record()
+            cancelled = threading.Event()
+            poller = session_preview.Poller(
+                reader=session_preview.reader_for(object(), TmuxAdapter(runner=runner), cancelled=cancelled),
+                cancelled=cancelled)
+            poller.tick(session(), lines=5)
+            self.assertTrue(entered.wait(5))
+            poller.close()
+            release.set()
+            for _ in range(200):
+                if not any(t.name == 'asha-session-preview' and t.is_alive() for t in threading.enumerate()):
+                    break
+                threading.Event().wait(0.01)
+        self.assertNotIn('capture-pane', [call[0] for call in runner.calls])
+
+    def test_a_queued_read_never_starts_after_close(self):
+        reads, pool = [], ManualPool()
+        poller = session_preview.Poller(reader=lambda *a: reads.append(a) or [], pool=pool, clock=Clock())
+        poller.tick(session(), lines=5)
+        poller.close()
+        pool.run()
+        self.assertEqual(reads, [])
+
+    def test_a_structured_read_stops_between_pages_once_cancelled(self):
+        import threading
+        cancelled = threading.Event()
+        page = {'events': [StructuredPreviewTests.event(1, 'text', {'text': 'x\n'})], 'complete': False,
+                'next_event_cursor': 1}
+        store = StructuredPreviewTests.Store([page] * session_preview.EVENT_PAGES)
+        real = store.events
+
+        def events(*args, **kwargs):
+            cancelled.set()                 # close lands while the first page is read
+            return real(*args, **kwargs)
+        store.events = events
+        with self.assertRaises(session_preview.Cancelled):
+            session_preview.StructuredTail().read(store, 's1', cancelled=cancelled)
+        self.assertEqual(len(store.calls), 1)
+
+
 class Clock:
     def __init__(self):
         self.now = 100.0

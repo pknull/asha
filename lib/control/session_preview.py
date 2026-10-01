@@ -9,8 +9,10 @@ delivery cursor ever moves; an ended session shows no screen at all.
 drops a result whose selection is no longer current. A read starts no sooner
 than ``INTERVAL`` seconds after the previous one finished, so the tmux capture
 commands themselves, not just the submissions, are at least that far apart.
-Closing it stops scheduling and discards any read still running; a hung read
-never holds the dashboard's exit.
+Closing it stops scheduling and cancels a read still running: a queued read
+never starts, a pane read issues no further tmux command and a structured read
+stops before its next page. A tmux call already running ends at its own
+deadline, unseen, and never holds the dashboard's exit.
 The preview is off unless ``control.session_preview`` is true (``enabled``):
 the dashboard then builds no ``Poller`` and issues no preview read at all.
 Everything shown is sanitized first: pane output is untrusted, so escape
@@ -35,6 +37,10 @@ TAILS = 8                # structured cursors retained for recently selected row
 ENDED = frozenset({'closed', 'stopped', 'ended'})
 
 Preview = namedtuple('Preview', 'key lines captured_at source note')
+
+
+class Cancelled(Exception):
+    """The dashboard closed while this read was queued or running."""
 
 # ESC-introduced sequences: CSI, OSC (BEL or ST terminated, or cut off), the
 # DCS/SOS/PM/APC string family, tmux's ESC k title, and two-byte escapes; then
@@ -115,10 +121,12 @@ class StructuredTail:
             self._flush()
             self.lines.append(_clean(summary()))
 
-    def read(self, store, sid):
+    def read(self, store, sid, cancelled=None):
         """Advance through at most ``EVENT_PAGES`` pages; return the retained tail."""
         behind = False
         for _ in range(EVENT_PAGES):
+            if cancelled is not None and cancelled.is_set():
+                raise Cancelled()
             page = store.events(sid, after=self.cursor, limit=EVENT_PAGE)
             for event in page.get('events', []):
                 self._add(event)
@@ -131,18 +139,22 @@ class StructuredTail:
             (['… reading older events'] if behind else [])
 
 
-def reader_for(config, tmux=None):
-    """The production read: a pane capture or a structured event tail, never a write."""
+def reader_for(config, tmux=None, *, cancelled=None):
+    """The production read: a pane capture or a structured event tail, never a write.
+
+    ``cancelled`` is the ``Poller``'s event: once set, the read stops at its next step.
+    """
     def read(row, lines, tail):
         if source_of(row) == 'events':
             from .session_store import SessionStore
             with SessionStore(config) as store:
-                return tail.read(store, row['session_id'])[-lines:]
+                return tail.read(store, row['session_id'], cancelled)[-lines:]
         from . import pane_peek
         from .rooms import RoomStore
         from .tmux import TmuxAdapter
         record = RoomStore(config).read(row['room_id'])
-        return [_clean(line) for line in pane_peek.peek_room(record, tmux or TmuxAdapter(), lines)]
+        return [_clean(line) for line in pane_peek.peek_room(record, tmux or TmuxAdapter(), lines,
+                                                             cancelled=cancelled)]
     return read
 
 
@@ -167,9 +179,12 @@ class DaemonPool:
 class Poller:
     """Schedules preview reads for the selected row; the UI thread only ticks and reads results."""
 
-    def __init__(self, *, reader, pool=None, clock=time.monotonic, wall=time.time, interval=INTERVAL):
+    def __init__(self, *, reader, pool=None, clock=time.monotonic, wall=time.time, interval=INTERVAL,
+                 cancelled=None):
         self._reader, self._clock, self._wall, self._interval = reader, clock, wall, interval
         self._pool = pool or DaemonPool()
+        # Shared with the reader (``reader_for(cancelled=...)``) so close reaches a running read.
+        self._cancelled = cancelled or threading.Event()
         self._closed = False
         self._inflight = None          # (key, future)
         self._latest = None            # Preview for the key it was read for
@@ -204,6 +219,8 @@ class Poller:
             self._latest = result    # a read for a selection that moved on is never shown
 
     def _timed(self, row, lines, tail):
+        if self._cancelled.is_set():
+            raise Cancelled()
         lines = self._reader(row, lines, tail)
         return self._clock(), lines
 
@@ -231,6 +248,7 @@ class Poller:
         return latest if latest is not None and latest.key == preview_key(row) else None
 
     def close(self):
-        """Stop scheduling; a read still running finishes unseen on its daemon thread."""
+        """Stop scheduling and cancel a read still running; its result is never shown."""
+        self._cancelled.set()
         self._closed, self._inflight = True, None
         self._pool.shutdown(wait=False, cancel_futures=True)

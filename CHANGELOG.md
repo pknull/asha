@@ -7,6 +7,11 @@
   instead of rebuilding the view per candidate; a folded heading's count no
   longer rescans the list. QA measured 2.4 s at 201 rows; 400 singleton
   projects now fit in milliseconds (Q16-F1/Q17-F7).
+- Quitting the dashboard now cancels a live-preview read in progress instead
+  of only discarding its result: a queued read never starts, a pane read
+  issues no further tmux command, and a structured read stops before its
+  next page. A tmux command already running still ends at its 2 s deadline
+  (QA18 follow-up).
 
 ## Unreleased — one operational budget for every harness
 
