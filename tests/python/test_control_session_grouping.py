@@ -1,5 +1,6 @@
 """#102 phase 2: project/state sections, folding and the attention jump (pure; no curses)."""
 import unittest
+import unittest.mock
 
 from lib.control import session_view
 from lib.control.session_presentation import present, row_facts
@@ -400,6 +401,99 @@ class LineMathTests(unittest.TestCase):
         for anchor in range(0, 30):
             start = session_view.viewport_start(rows, 9, anchor, 6)
             self.assertLessEqual(session_view.line_offset(rows, start, 9) + 2, 6)
+
+
+class FoldScalingTests(unittest.TestCase):
+    """#106 (Q16-F1/Q17-F7): automatic folding skips folds that save no line and never rebuilds per candidate."""
+
+    @staticmethod
+    def singletons(count):
+        # One working row, then one finished row in each of ``count`` other projects.
+        return [row('w', project='a-working', created=0)] + [
+            row(f's{i:04}', project=f'p{i:04}', created=i + 1, **DONE) for i in range(count)]
+
+    def test_a_fold_that_saves_no_line_is_not_applied(self):
+        view = replace_selected(model_of(self.singletons(25)), 'w')
+        fitted = session_view.fit(view, 17)
+        # Each singleton's `… 1 more` line costs what its row did, so nothing folds.
+        self.assertEqual(fitted.auto, frozenset())
+        self.assertIs(fitted, view)
+
+    def test_fit_rebuilds_a_bounded_number_of_times(self):
+        view = replace_selected(model_of(self.singletons(200)), 'w')
+        calls = []
+        real = session_view._rebuild
+        with unittest.mock.patch.object(session_view, '_rebuild',
+                                        side_effect=lambda *a, **k: calls.append(1) or real(*a, **k)):
+            session_view.fit(view, 17)
+        self.assertLessEqual(len(calls), 2)
+
+    def test_fit_stays_fast_with_many_singleton_projects(self):
+        import time
+        view = replace_selected(model_of(self.singletons(400)), 'w')
+        start = time.perf_counter()
+        session_view.fit(view, 17)
+        # QA measured 2.4 s at 201 rows and a 15 s cutoff at 401; this bound is generous.
+        self.assertLess(time.perf_counter() - start, 1.0)
+
+    def test_painting_many_folded_units_stays_linear(self):
+        import time
+        rows = [row('w', project='a-working', created=0)]
+        for i in range(1000):
+            rows += [row(f'x{i:04}', project=f'p{i:04}', created=2 * i + 1, **DONE),
+                     row(f'y{i:04}', project=f'p{i:04}', created=2 * i + 2, **DONE)]
+        fitted = session_view.fit(replace_selected(model_of(rows), 'w'), 17)
+        self.assertEqual(len(fitted.auto), 1000)
+        start = time.perf_counter()
+        shown = session_view.display_rows(fitted)
+        # Each heading once counted its members by scanning the whole list (O(rows x folds)).
+        self.assertLess(time.perf_counter() - start, 0.25)
+        self.assertEqual({(r['count'], r['more']) for r in shown if r.get('kind') == 'section'}, {(2, True)})
+
+    def test_folds_that_save_lines_still_apply_in_policy_order(self):
+        # Two finished rows per project: each `… 2 more` saves one line.
+        rows = [row('w', project='a-working', created=0)]
+        for i in range(30):
+            rows += [row(f'x{i:03}', project=f'p{i:03}', created=2 * i + 1, **DONE),
+                     row(f'y{i:03}', project=f'p{i:03}', created=2 * i + 2, **DONE)]
+        view = replace_selected(model_of(rows), 'w')
+        fitted = session_view.fit(view, 80)
+        self.assertLessEqual(session_view.list_lines(fitted), 80)
+        # Bottom-up: the last projects fold first, and only as many as needed.
+        self.assertEqual(len(fitted.auto), session_view.list_lines(view) - 80)
+        self.assertIn('finished:project:p029', fitted.auto)
+        self.assertNotIn('finished:project:p000', fitted.auto)
+
+    def test_matches_the_greedy_policy_line_for_line(self):
+        """Oracle: the §5.6 greedy fold over real line counts, skipping folds that save nothing."""
+        import random
+        from dataclasses import replace
+
+        def reference(model, space):
+            auto, trial = [], replace(model, auto=frozenset())
+            lines = lambda keys: session_view.list_lines(session_view._rebuild(trial, auto=frozenset(keys)))
+            for key in session_view._candidates(model):
+                if lines(auto) <= space:
+                    break
+                if lines(auto + [key]) < lines(auto):
+                    auto.append(key)
+            return frozenset(auto)
+
+        kinds = [{}, DONE, DONE, ENDED, CLOSED, {'activity': 'needs-input'}, {'activity': 'idle'},
+                 dict(DONE, background_tasks=2), dict(ENDED, background_tasks=1)]
+        rng = random.Random(106)
+        for case in range(300):
+            rows = [row(f'r{i:03}', project=rng.choice('ABCDEFG'), created=i, **rng.choice(kinds))
+                    for i in range(rng.randint(1, 30))]
+            view = model_of(rows, grouping=rng.choice(('project', 'state')), input_only=rng.random() < 0.1)
+            if view.order and rng.random() < 0.7:
+                view = replace_selected(view, rng.choice(view.order))
+            if view.order and rng.random() < 0.3:
+                view = session_view.fold(view, fold=rng.random() < 0.5)
+            for space in (1, 3, 8, 15, 40):
+                with self.subTest(case=case, space=space):
+                    fitted = session_view.fit(view, space)
+                    self.assertEqual(fitted.auto, reference(view, space))
 
 
 if __name__ == '__main__':
