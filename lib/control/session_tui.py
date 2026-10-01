@@ -151,6 +151,8 @@ class Dashboard:
         # ``sheet`` is the key sheet's scroll offset while it is shown, else None.
         self.message, self.sheet = '', None
         self.include_closed, self.peek, self.preview = False, False, True
+        # Preview scrollback (#106, design §4.2): lines above the newest, for one preview key.
+        self.back, self.back_key = 0, None
         self.ascii = not _unicode_ok()
         self.title = _title_writer(env)
         # One worker reads pages and row deltas; the UI thread only asks the
@@ -190,19 +192,53 @@ class Dashboard:
             self.message = message
         box = self.box()
         if self.previews is not None and box.mode in ('wide', 'peek') and self.sheet is None:
-            # Only the selected row, and only while its preview is on screen.
-            self.previews.tick(self.previewed(), lines=max(1, box.list_height))
+            # Only the selected row, and only while its preview is on screen;
+            # scrolled back, it reads the whole bounded capture.
+            row = self.previewed()
+            self.previews.tick(row, lines=session_preview.MAX_LINES if self.scrollback(row)
+                               else max(1, box.list_height))
 
     def previewed(self):
         row = self.selected_row()
         return row if row and row.get('kind') != 'section' else None
 
+    def previewing(self):
+        return self.previews is not None and self.sheet is None and self.box().mode in ('wide', 'peek')
+
+    def scrollback(self, row):
+        """How far the shown preview is scrolled back; a new selection starts at the newest line."""
+        return self.back if row is not None and self.back_key == session_preview.preview_key(row) else 0
+
+    def scroll_preview(self, key):
+        """PgUp/PgDn move half a list height through the capture, never past its oldest page."""
+        row = self.previewed()
+        if not self.previewing() or row is None:
+            return False
+        shown = self.previews.current(row)
+        captured = len(shown.lines) if shown is not None and not shown.note else 0
+        page = max(1, self.box().list_height // 2)
+        back = self.scrollback(row) + (page if key == _key('KEY_PPAGE', 339) else -page)
+        self.back = max(0, min(back, captured - page, session_preview.MAX_LINES - page))
+        self.back_key = session_preview.preview_key(row)
+        return True
+
+    def shown_preview(self):
+        """The selected row's preview cut to the scrolled position, and how far back that is."""
+        row = self.previewed()
+        preview = self.previews.current(row)
+        if preview is None or preview.note:
+            return preview, 0
+        back = min(self.scrollback(row), max(0, len(preview.lines) - 1))
+        return (preview._replace(lines=preview.lines[:len(preview.lines) - back]) if back else preview), back
+
     def display(self):
         summary = self.page.get('summary', 'Reading sessions…')
         summary += ' (input filter)' if self.view.input_only else ''
         summary += f'; {len(self.view.stale)} stale' if self.view.stale else ''
-        shown = {'preview': self.previews.current(self.previewed())} \
-            if self.previews is not None and self.box().mode in ('wide', 'peek') else {}
+        shown = {}
+        if self.previews is not None and self.box().mode in ('wide', 'peek'):
+            preview, back = self.shown_preview()
+            shown = {'preview': preview, 'preview_back': back} if back else {'preview': preview}
         return {**shown, 'session_preview': self.previews is not None, 'rows': session_view.display_rows(self.view), 'summary': summary,
                 'errors': self.page.get('errors', []),
                 'grouping': self.view.grouping, 'ascii': self.ascii, 'now': time.time(),
@@ -258,6 +294,7 @@ class Dashboard:
             if self.view.order else None
 
     def toggle_preview(self):
+        self.back = 0
         if self.screen.getmaxyx()[1] - 1 >= session_layout.WIDE:
             self.preview = not self.preview
         else:
@@ -284,7 +321,9 @@ class Dashboard:
         elif key == SPACE:
             self.toggle_preview()
         elif key == ESC:
-            self.peek = False
+            self.peek, self.back = False, 0
+        elif key in (_key('KEY_PPAGE', 339), _key('KEY_NPAGE', 338)):
+            return self.scroll_preview(key)
         elif key == ord('M'):
             view = session_view.with_changes(view, input_only=not view.input_only)
             self.message = 'Showing input requests' if view.input_only else 'Showing all sessions'

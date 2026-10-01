@@ -290,8 +290,11 @@ def panel_lines(row, width, ascii_only=False):
 PREVIEW_MIN = 6     # capture lines kept below the panel before the panel yields its facts
 
 
-def preview_lines(preview, width, ascii_only=False):
-    """The read-only capture under the panel: a marker, the newest lines, then the capture time (§5.1)."""
+def preview_lines(preview, width, ascii_only=False, back=0):
+    """The read-only capture under the panel: a marker, the newest lines, then the capture time (§5.1).
+
+    ``back`` is how many lines the capture is scrolled back from its newest (PgUp, #106).
+    """
     source = 'events' if preview is not None and preview.source == 'events' else 'pane'
     label = f' {source}, read-only'
     marker = (_g('rule', ascii_only) * max(0, width - cells(label))) + label
@@ -299,13 +302,14 @@ def preview_lines(preview, width, ascii_only=False):
         [(preview.note, 'muted', INERT)] if preview.note else \
         [(sanitize(line), 'detail', None) for line in preview.lines] or [('(empty screen)', 'muted', INERT)]
     stamp = [] if preview is None or preview.captured_at is None else \
-        [('captured ' + time.strftime('%H:%M:%S', time.localtime(preview.captured_at)), 'muted', INERT)]
+        [('captured ' + time.strftime('%H:%M:%S', time.localtime(preview.captured_at))
+          + (f' · {back} lines back, PgDn returns' if back else ''), 'muted', INERT)]
     return [(marker, 'muted', INERT)], body, stamp
 
 
-def compose_panel(head, preview, width, limit, ascii_only=False):
+def compose_panel(head, preview, width, limit, ascii_only=False, back=0):
     """Panel facts over the capture; the facts yield lines first, the capture keeps the newest."""
-    marker, body, stamp = preview_lines(preview, width, ascii_only)
+    marker, body, stamp = preview_lines(preview, width, ascii_only, back)
     head = head[:max(min(len(head), 3), limit - PREVIEW_MIN - len(marker) - len(stamp))]
     room = max(0, limit - len(head) - len(marker) - len(stamp))
     body = body[-room:] if room else []
@@ -398,7 +402,8 @@ def render(data, *, selected=0, anchor=None, width=100, height=30, message='', k
         head = panel_lines(current, side_width, ascii_only)
         if 'preview' not in data or current is None or current.get('kind') == 'section':
             return head
-        return compose_panel(head, data['preview'], side_width, box.list_height, ascii_only)
+        return compose_panel(head, data['preview'], side_width, box.list_height, ascii_only,
+                             data.get('preview_back', 0))
     if box.mode == 'peek':
         _text_block(screen, box.list_top, 0, panel(width), width, box.list_height, ascii_only)
     else:

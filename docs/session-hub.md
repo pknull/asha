@@ -228,6 +228,14 @@ retained text, tool, request and turn events; a long history is read a bounded
 slice per tick and says `… reading older events` until it catches up. An ended
 session shows no screen.
 
+`PgUp` and `PgDn` scroll the preview half a list height through its capture
+(design §4.2). Scrolled back, the preview reads the whole bounded capture (200
+lines) instead of one screen, stops at its oldest page, and the stamp reads
+`captured HH:MM:SS · N lines back, PgDn returns`. The position counts lines
+above the newest one, so new output moves the view; selecting another session,
+`Space` or `Esc` returns to the newest line. With the preview off these keys do
+nothing.
+
 **What the preview itself guarantees**, with no hook or alias configured:
 
 - *Read verbs only, fixed flags.* The capture module
@@ -289,10 +297,6 @@ it:
 Anything that tmux configuration can make a read do is outside what Control can
 defend, which is why the preview is opt-in. Enable it only on a tmux server
 whose hooks and aliases you control.
-
-Follow-ups (not yet done):
-
-- History paging: scrolling back through the capture (design §4.2, Q17-F5).
 
 ## Status and input
 
