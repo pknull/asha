@@ -55,7 +55,8 @@ def key_sheet(*, preview=False):
                ('Left fold', 'fold the selected group to one line'),
                ('Right unfold', 'unfold the selected group'),
                ('! jump', 'select the next session that needs you'),
-               ('Space preview', 'show or hide detail and a read-only live screen' if preview
+               ('Space preview', 'show or hide detail and a read-only live screen; PgUp/PgDn scroll it'
+                if preview
                 else 'show or hide the selected session detail'),
                ('Esc back', 'leave the full-width preview'),
                ('M input filter', 'show only sessions that need input'),

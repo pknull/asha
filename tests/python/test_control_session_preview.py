@@ -799,6 +799,80 @@ class DashboardWiringTests(unittest.TestCase):
         self.assertEqual(poller2.tick.call_count, count)
 
 
+class PreviewPagingTests(unittest.TestCase):
+    """#106 (QA17 Q17-F5, design §4.2): PgUp/PgDn scroll back through the bounded capture."""
+
+    PGUP, PGDN, DOWN = 339, 338, 258
+
+    def run_dashboard(self, keys, *, size=(30, 140), lines=100, config=None):
+        from tests.python.test_control_session_dashboard import row as hub_row
+        from tests.python.test_control_session_dashboard_keys import run
+        from lib.control import session_tui
+        poller = mock.MagicMock()
+        poller.current.return_value = session_preview.Preview(
+            ('a',), [f'line {i}' for i in range(lines)], 1_700_000_000.0, 'pane', '')
+        rows = [hub_row('a', room_id=ROOM), hub_row('b', room_id=ROOM)]
+        with mock.patch.object(session_tui.session_preview, 'Poller', return_value=poller):
+            _, painted = run(keys, rows, size=size, config=PREVIEW_ON if config is None else config)
+        return poller, painted
+
+    @staticmethod
+    def shown(painted):
+        snap = painted[-1][0]
+        return snap['preview'].lines, snap.get('preview_back', 0)
+
+    def test_pgup_scrolls_back_and_pgdn_returns_to_the_newest_line(self):
+        _, painted = self.run_dashboard([self.PGUP])
+        lines, back = self.shown(painted)
+        self.assertGreater(back, 0)
+        self.assertEqual(lines[-1], f'line {99 - back}')
+        _, painted = self.run_dashboard([self.PGUP, self.PGDN])
+        self.assertEqual(self.shown(painted), ([f'line {i}' for i in range(100)], 0))
+
+    def test_scrolling_back_reads_the_bounded_history(self):
+        poller, _ = self.run_dashboard([])
+        self.assertLess(poller.tick.call_args.kwargs['lines'], session_preview.MAX_LINES)
+        poller, _ = self.run_dashboard([self.PGUP])
+        self.assertEqual(poller.tick.call_args.kwargs['lines'], session_preview.MAX_LINES)
+
+    def test_scrolling_stops_at_the_oldest_captured_page(self):
+        _, painted = self.run_dashboard([self.PGUP] * 30)
+        lines, back = self.shown(painted)
+        self.assertEqual(lines[0], 'line 0')
+        self.assertGreater(len(lines), 1)
+        _, again = self.run_dashboard([self.PGUP] * 31)
+        self.assertEqual(self.shown(again), (lines, back))
+
+    def test_a_short_capture_that_fits_does_not_scroll(self):
+        _, painted = self.run_dashboard([self.PGUP], lines=3)
+        self.assertEqual(self.shown(painted), (['line 0', 'line 1', 'line 2'], 0))
+
+    def test_a_new_selection_starts_at_the_newest_line(self):
+        _, painted = self.run_dashboard([self.PGUP, self.DOWN])
+        self.assertEqual(self.shown(painted)[1], 0)
+
+    def test_the_narrow_peek_scrolls_too(self):
+        _, painted = self.run_dashboard([ord(' '), self.PGUP], size=(24, 100))
+        self.assertGreater(self.shown(painted)[1], 0)
+
+    def test_paging_keys_do_nothing_with_the_preview_off(self):
+        from tests.python.test_control_session_dashboard import row as hub_row
+        from tests.python.test_control_session_dashboard_keys import run
+        _, painted = run([self.PGUP, self.PGDN], [hub_row('a'), hub_row('b')], size=(30, 140))
+        self.assertNotIn('preview', painted[-1][0])
+        self.assertNotIn('preview_back', painted[-1][0])
+
+    def test_the_panel_says_how_far_back_it_is(self):
+        row = dict(session(), name='issue-102', project_name='asha', harness='claude', profile='worker',
+                   reason='Observed', next_step='Working', group='current', created_at=1.0, updated_at=2.0)
+        preview = session_preview.Preview(('s1',), ['older'], 1_700_000_000.0, 'pane', '')
+        data = {'rows': [row], 'summary': '', 'errors': [], 'grouping': 'project', 'now': 3.0,
+                'preview': preview, 'preview_back': 12}
+        text = '\n'.join(session_layout.plain(session_layout.render(data, width=140, height=30)))
+        self.assertIn('12 lines back', text)
+        self.assertIn('PgDn', text)
+
+
 PREVIEW_ON = SimpleNamespace(session_preview=True)
 
 

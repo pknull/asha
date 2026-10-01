@@ -12,6 +12,10 @@
   issues no further tmux command, and a structured read stops before its
   next page. A tmux command already running still ends at its 2 s deadline
   (QA18 follow-up).
+- With `control.session_preview` on, `PgUp`/`PgDn` scroll the live preview
+  back through its bounded 200-line capture, as design §4.2 specified
+  (Q17-F5). The `A` history toggle's in-flight reload (Q16-F2/Q17-F6),
+  listed with these, was already fixed by #102 phase 4.
 
 ## Unreleased — one operational budget for every harness
 
