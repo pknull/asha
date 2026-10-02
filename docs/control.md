@@ -1419,8 +1419,9 @@ The live-probed semantic claims are:
 | `turn-stopped` | Wired from `Stop` | Wired from `Stop`; live-proven on Codex 0.147.0. Delivery remains subject to Codex's hash-bound interactive hook trust. |
 | `session-ended` | Wired from `SessionEnd` | Codex has no equivalent event. |
 
-Copilot and OpenCode provide process liveness only; no semantic Control event
-is claimed for either. Event hooks receive opaque task/run identifiers, discard
+Copilot and OpenCode provide process liveness only to Control tasks; no
+semantic task event is claimed for either. (Hub sessions are separate: see
+`docs/session-hub.md` for the OpenCode bridge.) Event hooks receive opaque task/run identifiers, discard
 prompt and tool bodies, and write one bounded current snapshot. Event delivery
 is local, network-free, observational, and fail-open.
 

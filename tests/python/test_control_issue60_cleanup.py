@@ -38,12 +38,18 @@ class Issue60CleanupContractTests(unittest.TestCase):
             "python test_control_increment3.HarnessAdapterTests/"
             "LiveAdapterEvidenceTests"
         )
-        for harness in ("copilot", "opencode"):
+        # Hub-session bridges add their own render test; the process-liveness
+        # adapter tests stay named for the Control task path.
+        verifiers = {
+            "copilot": expected,
+            "opencode": "tests:test-opencode + " + expected,
+        }
+        for harness, wanted in verifiers.items():
             with self.subTest(harness=harness):
                 verifier = capabilities["harnesses"][harness]["capabilities"][
                     "control-status"
                 ]["verifier"]
-                self.assertEqual(verifier, expected)
+                self.assertEqual(verifier, wanted)
                 self.assertNotIn("doctor:tmux", verifier)
 
 

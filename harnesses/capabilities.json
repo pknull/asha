@@ -548,10 +548,13 @@
         },
         "control-status": {
           "support": "partial",
-          "surface": "process liveness only",
-          "verifier": "python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
+          "surface": "hub sessions: plugins/asha.js session.created -> session-start; tool.execute.before -> tool-started; tool.execute.after -> tool-completed; session.idle -> turn-stopped (via control-event.sh, asynchronous); Control tasks: process liveness only",
+          "verifier": "tests:test-opencode + python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
           "limitations": [
-            "No semantic Control events are claimed"
+            "Rendered and unit-tested against a mocked bridge only; not live-proven against a running OpenCode",
+            "Only root sessions inside an ASHA_HUB_SESSION_ID environment report; child sessions and Control tasks do not",
+            "prompt-submitted, permission-requested and session-ended are not claimed",
+            "session.idle reports a Stop with its guard set: OpenCode has no Stop block seam, so hub close requests are queued-only"
           ]
         },
         "guardrails": {
