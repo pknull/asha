@@ -57,8 +57,10 @@ claimed:
 
 Copilot and OpenCode provide process liveness only to Control tasks; Asha
 claims no semantic task events for either harness. OpenCode hub sessions report
-session start, tool start/end and idle through the generated plugin
-(`harnesses/capabilities.json`, not live-proven).
+session start, tool start/end and idle through the generated plugin, and
+Copilot hub sessions report session start, prompt, tool completion and session
+end through its recovery hook file (`harnesses/capabilities.json`; neither is
+live-proven).
 
 A harness with no wired stop or exit event (Copilot and OpenCode) never
 emits a signal that supersedes an in-progress `working`/`needs-input` snapshot.
@@ -221,7 +223,8 @@ points and Bash 3.2 compatibility are retained.
 The installer emits:
 
 - `asha-guardrails.json` for translated policy and secret guards
-- `asha-recovery.json` for start, prompt, post-tool, and session-end recovery
+- `asha-recovery.json` for start, prompt, post-tool, and session-end recovery,
+  each followed by a hub-session-only `control-event.sh` report
 - the declared-pass next-prompt check in `asha-recovery.json`; style findings
   queued by post-tool recovery are drained through the same prompt seam
 - the remaining feature-specific hook files required by installed plugins

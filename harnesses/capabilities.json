@@ -394,10 +394,13 @@
         },
         "control-status": {
           "support": "partial",
-          "surface": "process liveness only",
-          "verifier": "python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
+          "surface": "hub sessions: hooks/asha-recovery.json sessionStart -> session-start; userPromptSubmitted -> prompt-submitted; postToolUse -> tool-completed; sessionEnd -> session-ended (via control-event.sh); Control tasks: process liveness only",
+          "verifier": "tests:test-install/test-doctor + python test_control_increment3.HarnessAdapterTests/LiveAdapterEvidenceTests",
           "limitations": [
-            "No semantic Control events are claimed"
+            "Rendered and tested against a fake asha only; not live-proven against a running Copilot",
+            "Only an ASHA_HUB_SESSION_ID environment reports; ASHA_CONTROL_MANAGED is cleared so Control tasks stay liveness-only",
+            "Copilot has no turn-end hook: a finished turn stays working until the next event or the staleness rules; tool-started and permission-requested are not claimed",
+            "Copilot has no Stop block seam, so hub close requests are queued-only"
           ]
         },
         "guardrails": {

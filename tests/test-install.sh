@@ -459,6 +459,35 @@ if jq -e '
 else
   fail "Copilot installs Memory v2 recovery callbacks"
 fi
+# Control session events ride the same owned file: one bounded control-event.sh
+# entry per existing hook, reporting only inside a hub session. A Control task
+# (ASHA_CONTROL_MANAGED=1, no hub session) stays liveness-only.
+COPILOT_FAKE_ROOT="$(mktemp -d)"
+mkdir -p "$COPILOT_FAKE_ROOT/bin"
+printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >>"%s/calls"\necho "{}"\n' "$COPILOT_FAKE_ROOT" >"$COPILOT_FAKE_ROOT/bin/asha"
+chmod +x "$COPILOT_FAKE_ROOT/bin/asha"
+copilot_control_ok=1
+for pair in sessionStart:session-start userPromptSubmitted:prompt-submitted \
+    postToolUse:tool-completed sessionEnd:session-ended; do
+  hook="${pair%%:*}" event="${pair#*:}"
+  cmd="$(jq -r --arg h "$hook" '.hooks[$h][-1].bash // ""' "$SANDBOX/.copilot/hooks/asha-recovery.json" 2>/dev/null)"
+  [[ "$cmd" == *"/plugins/session/hooks/handlers/control-event.sh"* ]] || { copilot_control_ok=0; echo "    no Control entry on $hook" >&2; continue; }
+  : >"$COPILOT_FAKE_ROOT/calls"
+  printf '{"sessionId":"cp-1","cwd":"/proj","timestamp":1}' \
+    | env -i PATH="$PATH" HOME="$SANDBOX" ASHA_ROOT="$COPILOT_FAKE_ROOT" ASHA_CONTROL_MANAGED=1 \
+        bash -c "$cmd" >/dev/null 2>&1
+  [[ ! -s "$COPILOT_FAKE_ROOT/calls" ]] || { copilot_control_ok=0; echo "    $hook reported outside a hub session" >&2; }
+  out="$(printf '{"sessionId":"cp-1","cwd":"/proj","timestamp":1}' \
+    | env -i PATH="$PATH" HOME="$SANDBOX" ASHA_ROOT="$COPILOT_FAKE_ROOT" ASHA_HUB_SESSION_ID=hub-1 \
+        bash -c "$cmd" 2>/dev/null)"
+  grep -q "^control session event --event $event .*--native-id cp-1 --cwd /proj" "$COPILOT_FAKE_ROOT/calls" \
+    && [[ "$out" == "{}" ]] \
+    || { copilot_control_ok=0; echo "    $hook -> $(cat "$COPILOT_FAKE_ROOT/calls") / $out" >&2; }
+done
+[[ $copilot_control_ok -eq 1 ]] \
+  && ok "Copilot hooks report hub session events through control-event.sh" \
+  || fail "Copilot hooks report hub session events through control-event.sh"
+mv "$COPILOT_FAKE_ROOT" "$SANDBOX/copilot-fake-root"
 [[ ! -e "$SANDBOX/.copilot/hooks/asha-nudges.json" && ! -e "$SANDBOX/.copilot/hooks/asha-lifecycle.json" ]] \
   && ok "Copilot legacy nudge/lifecycle files are pruned" \
   || fail "Copilot legacy nudge/lifecycle files are pruned"

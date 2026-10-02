@@ -1421,7 +1421,7 @@ The live-probed semantic claims are:
 
 Copilot and OpenCode provide process liveness only to Control tasks; no
 semantic task event is claimed for either. (Hub sessions are separate: see
-`docs/session-hub.md` for the OpenCode bridge.) Event hooks receive opaque task/run identifiers, discard
+`docs/session-hub.md` for the OpenCode and Copilot bridges.) Event hooks receive opaque task/run identifiers, discard
 prompt and tool bodies, and write one bounded current snapshot. Event delivery
 is local, network-free, observational, and fail-open.
 
