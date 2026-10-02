@@ -185,11 +185,13 @@ def dispatch(argv, *, env):
         parser.add_argument('--native-id')
         parser.add_argument('--text')
     elif verb == 'event-lost':
-        # The hook bridge's own record of a report it gave up on; diagnostic only.
+        # The hook bridge's own record of a report it gave up on: a loss metric,
+        # and for a Stop its late delivery (#110).
         parser.add_argument('--event', required=True)
         parser.add_argument('--reason', required=True)
         parser.add_argument('--native-id')
         parser.add_argument('--emitted-at', type=float)
+        parser.add_argument('--background-tasks', type=int)
         parser.add_argument('--budget', type=float)
     elif verb == 'messages':
         parser.add_argument('session_id', nargs='?')
@@ -287,6 +289,14 @@ def dispatch(argv, *, env):
             if args.event in EVENTS and args.reason in LOSS_REASONS - {'stale-skip'}:
                 record_loss(config, env, event=args.event, reason=args.reason, native_id=args.native_id,
                             emitted_at=args.emitted_at, budget=args.budget)
+                if args.event == 'turn-stopped':
+                    # A lost Stop would leave a finished report unsettled; deliver it
+                    # late when this call can prove the conversation. Refusal is silent.
+                    try:
+                        hub.deliver_lost_stop(native_id=args.native_id, emitted_at=args.emitted_at,
+                                              background_tasks=args.background_tasks)
+                    except (ValueError, OSError, StoreError):
+                        pass
             print('{}')
             return 0
         elif verb == 'handoff':

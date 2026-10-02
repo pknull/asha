@@ -1173,6 +1173,37 @@ class Hub:
             return self._observe(row, event, native_id=native_id, state=state, body=body, cwd=cwd,
                                  background_tasks=background_tasks, emitted_at=emitted_at)
 
+    def deliver_lost_stop(self, *, native_id, emitted_at, background_tasks=None):
+        """#110: apply a Stop the bridge gave up on, from its detached loss call.
+
+        A dropped turn-stopped would leave a #109 report unsettled indefinitely.
+        The loss call runs after the hook returned, outside the session's process
+        tree, so ``actor`` cannot vouch for it. It proves itself instead by the
+        native conversation this generation already bound (a different or
+        unbound conversation is refused, as is an unstamped report), and it
+        applies only when no newer hook report has been applied, at any age:
+        the 30 s clock-step allowance of D2 never lets a late Stop overwrite a
+        newer turn. No close decision rides back; the next Stop re-emits it.
+        """
+        if not native_id or type(emitted_at) not in {int, float}:
+            raise StoreError('a late Stop needs its native session ID and emission time')
+        sid = identifier(self.env.get('ASHA_HUB_SESSION_ID', ''))
+        with self._observation_lock(sid):
+            row = self.get(sid)
+            if str(row['generation']) != self.env.get('ASHA_HUB_GENERATION') or row['lifecycle'] not in ACTIVE_LIFECYCLES:
+                raise StoreError('stale or inactive session reporter')
+            binding = row.get('native_binding') or {}
+            if binding.get('generation') != row['generation'] or binding.get('native_id') != native_id:
+                raise StoreError('a late Stop must name the conversation this generation bound')
+            stored = row.get('native_emitted_at')
+            if stored is not None and stored > emitted_at:
+                raise StoreError('a newer hook report was applied after this Stop')
+            state, _ = _owned_state(RoomStore(self.config).read(row['room_id']), self.tmux)
+            if state != 'open':
+                raise StoreError('session ownership unavailable')
+            return self._observe(row, 'turn-stopped', native_id=native_id, state=None, body=None,
+                                 background_tasks=background_tasks, emitted_at=emitted_at)
+
     @staticmethod
     def _skipped(row, emitted_at):
         """D2: a hook report stamped older than the newest applied one, by at most 30 s.

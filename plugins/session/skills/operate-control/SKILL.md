@@ -170,11 +170,12 @@ and dashboard. A failed telemetry hook must not block native work.
 - Launch refuses a project without initialized Memory v2 ("not exactly one
   initialized Memory v2 Asha project"). For a scratch probe, run `memory_v2.py
   init --project-dir DIR` and commit it before launching.
-- A dropped hook report leaves a row stale (#110; lost reports are logged in
-  `~/.asha/state/control/hub-lost-events.jsonl`). A missed `turn-stopped`
-  reads working after the turn ended, and for Claude and Codex a finished
-  report then stays `Working: reported finished`, since they never settle on
-  staleness alone. Confirm from the pane before acting on the row.
+- A dropped hook report leaves a row stale (lost reports are logged in
+  `~/.asha/state/control/hub-lost-events.jsonl`). A dropped `turn-stopped` is
+  delivered late by the bridge's loss call (#110), usually within seconds; if
+  that also fails, a Claude or Codex finished report stays `Working: reported
+  finished` until the next prompt, since they never settle on staleness alone.
+  Confirm from the pane before acting on the row.
 - Copilot has no turn-end hook: a Copilot row stays working after its turn until
   the next event or the staleness rule.
 - Codex and Copilot ask to trust a new folder before their first turn; the row
