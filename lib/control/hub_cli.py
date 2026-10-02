@@ -129,7 +129,8 @@ def dispatch(argv, *, env):
                 return c.execute('SELECT 1 FROM managed_sessions WHERE session_id=?', (sid,)).fetchone() is not None
         except SessionsUninitialized:
             return False
-    always = {'launch', 'attach', 'close', 'report', 'event', 'messages', 'ack-message', 'list', 'handoff'}
+    always = {'launch', 'attach', 'close', 'report', 'event', 'event-lost', 'messages', 'ack-message', 'list',
+              'handoff'}
     if verb not in always:
         if verb not in {'show', 'send', 'stop', 'resume'} or len(argv) < 2 or not hub.owns(argv[1]):
             return None
@@ -183,6 +184,13 @@ def dispatch(argv, *, env):
                 parser.add_argument(obsolete, help=argparse.SUPPRESS)
         parser.add_argument('--native-id')
         parser.add_argument('--text')
+    elif verb == 'event-lost':
+        # The hook bridge's own record of a report it gave up on; diagnostic only.
+        parser.add_argument('--event', required=True)
+        parser.add_argument('--reason', required=True)
+        parser.add_argument('--native-id')
+        parser.add_argument('--emitted-at', type=float)
+        parser.add_argument('--budget', type=float)
     elif verb == 'messages':
         parser.add_argument('session_id', nargs='?')
         parser.add_argument('--offset', type=int, default=0)
@@ -255,6 +263,10 @@ def dispatch(argv, *, env):
             else:
                 result = hub.observe(args.event, body=args.text, native_id=args.native_id, cwd=args.cwd,
                                      background_tasks=args.background_tasks, emitted_at=args.emitted_at)
+                if result.get('observation') == 'ignored':
+                    from .session_hub import record_loss
+                    record_loss(config, env, event=args.event, reason='stale-skip', native_id=args.native_id,
+                                emitted_at=args.emitted_at, newest=result.get('native_emitted_at'))
             if verb == 'event':
                 # The only instruction this bridge ever carries: a pending close
                 # request, returned once as the harness's own Stop decision.
@@ -270,6 +282,13 @@ def dispatch(argv, *, env):
                     except (ValueError, OSError, StoreError):
                         pass
                 return 0
+        elif verb == 'event-lost':
+            from .session_hub import EVENTS, LOSS_REASONS, record_loss
+            if args.event in EVENTS and args.reason in LOSS_REASONS - {'stale-skip'}:
+                record_loss(config, env, event=args.event, reason=args.reason, native_id=args.native_id,
+                            emitted_at=args.emitted_at, budget=args.budget)
+            print('{}')
+            return 0
         elif verb == 'handoff':
             if args.read:
                 result = hub.handoff_read()
@@ -288,6 +307,9 @@ def dispatch(argv, *, env):
         print(json.dumps(result, ensure_ascii=True, indent=None if args.json else 2))
         return 0
     except (ValueError, OSError, StoreError) as exc:
+        if verb == 'event-lost':
+            print('{}')
+            return 0
         if verb == 'event':
             from .session_hub import record_rejection
             record_rejection(config, env, event=args.event, native_id=args.native_id, error=exc, cwd=args.cwd)

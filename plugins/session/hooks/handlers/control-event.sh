@@ -189,10 +189,24 @@ if [[ -n "$HUB_SESSION" ]]; then
     [[ -z "$PERMISSION_TEXT" ]] || HUB_ARGS+=(--text "$PERMISSION_TEXT")
     [[ -z "$STOP_HOOK_ACTIVE" ]] || HUB_ARGS+=(--stop-hook-active)
     [[ -z "$BACKGROUND_TASKS" ]] || HUB_ARGS+=(--background-tasks "$BACKGROUND_TASKS")
+    HUB_RC=0
     HUB_RESPONSE="$(
       timeout --signal=TERM --kill-after=0.1 "$HUB_CONTROLLER_SECONDS" \
-        "$ASHA_CMD" "${HUB_ARGS[@]}" 2>/dev/null || true
-    )"
+        "$ASHA_CMD" "${HUB_ARGS[@]}" 2>/dev/null
+    )" || HUB_RC=$?
+    # A timed-out call is a lost report (cheap loss metric, beside the
+    # rejection log). It is recorded by a separate, bounded call that is
+    # fully detached, so the hook still returns within its own budget.
+    if [[ $HUB_RC -eq 124 || $HUB_RC -eq 137 ]]; then
+      LOST_ARGS=(control session event-lost --event "$CONTROL_EVENT" --reason bridge-timeout
+                 --budget "$HUB_CONTROLLER_SECONDS")
+      [[ ! "$EMITTED_AT" =~ ^[0-9]{1,12}\.[0-9]{1,9}$ ]] || LOST_ARGS+=(--emitted-at "$EMITTED_AT")
+      [[ -z "$SESSION_ID" ]] || LOST_ARGS+=(--native-id "$SESSION_ID")
+      DETACH=()
+      ! command -v setsid >/dev/null 2>&1 || DETACH=(setsid)
+      ( "${DETACH[@]}" timeout --signal=TERM --kill-after=0.5 5 "$ASHA_CMD" "${LOST_ARGS[@]}" \
+          </dev/null >/dev/null 2>&1 & )
+    fi
   fi
   # Stop is the one seam where a close request may ride back. The shape is
   # checked strictly: one line, one object, exactly decision=block plus a

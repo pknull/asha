@@ -548,6 +548,16 @@ so a backward clock step cannot reject every event until time catches up. An
 unstamped report (an older hook) applies. A new generation starts without a
 stamp. Explicit `session report` calls are authoritative and bypass the check.
 
+Reports that change nothing without being refused are counted, not discarded.
+A skipped late report, and a bridge call that ran out of its budget (0.6 s, or
+3 s at Stop), each append one line to
+`~/.asha/state/control/hub-lost-events.jsonl` (reason `stale-skip` or
+`bridge-timeout`, with event, session, generation, native ID and stamps; same
+bound, mode and trimming as the rejection log). The bridge records a timeout
+through a detached, bounded `session event-lost` call, so the hook itself still
+returns within its budget; a timeout whose record also fails is not counted.
+This is a loss metric only: nothing reorders, retries or waits on it.
+
 ## Optional session experience
 
 [Session experience and reviewed learning](session-experience.md) documents user

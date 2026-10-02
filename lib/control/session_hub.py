@@ -66,6 +66,11 @@ HOOK_REPORTING_HARNESSES = frozenset({'claude', 'codex'})
 # Rejected hook events are kept, not discarded, in a small local diagnostic.
 REJECTION_LOG_NAME = 'hub-rejected-events.jsonl'
 REJECTION_LOG_BYTES = 64 * 1024
+# Hook reports that never changed a row although nothing refused them: a stale
+# skip (D2) and a bridge call that ran out of its budget. Same bound and format
+# as the rejection log; a cheap loss metric, not an ordering mechanism.
+LOSS_LOG_NAME = 'hub-lost-events.jsonl'
+LOSS_REASONS = frozenset({'stale-skip', 'bridge-timeout'})
 
 
 class LockTimeout(StoreError):
@@ -125,15 +130,41 @@ def native_binding(row, event, native_id, cwd):
     return dict(generation=row['generation'], native_id=native_id)
 
 
+def loss_log_path(config):
+    return config.tasks_dir.parent / LOSS_LOG_NAME
+
+
+def _clip(value, limit):
+    return str(value)[:limit] if value is not None else None
+
+
+def _stamp(value):
+    return value if type(value) in {int, float} and 0 < value < 1e12 else None
+
+
 def record_rejection(config, env, *, event, native_id, error, cwd=None):
     """Append one refused hook event; keep the newest half once over budget. Never raises."""
-    clip = lambda value, limit: str(value)[:limit] if value is not None else None
-    entry = dict(at=time.time(), event=clip(event, 64), session_id=clip(env.get('ASHA_HUB_SESSION_ID'), 64),
-                 generation=clip(env.get('ASHA_HUB_GENERATION'), 16), native_id=clip(native_id, 128),
-                 cwd=clip(cwd, 512),
-                 pid=os.getpid(), ppid=os.getppid(), error=clip(error, 300))
+    entry = dict(at=time.time(), event=_clip(event, 64), session_id=_clip(env.get('ASHA_HUB_SESSION_ID'), 64),
+                 generation=_clip(env.get('ASHA_HUB_GENERATION'), 16), native_id=_clip(native_id, 128),
+                 cwd=_clip(cwd, 512),
+                 pid=os.getpid(), ppid=os.getppid(), error=_clip(error, 300))
+    _append_bounded(rejection_log_path(config), entry)
+
+
+def record_loss(config, env, *, event, reason, native_id=None, emitted_at=None, newest=None, budget=None):
+    """Append one hook report that changed nothing without being refused. Never raises."""
+    entry = dict(at=time.time(), reason=_clip(reason, 32), event=_clip(event, 64),
+                 session_id=_clip(env.get('ASHA_HUB_SESSION_ID'), 64),
+                 generation=_clip(env.get('ASHA_HUB_GENERATION'), 16), native_id=_clip(native_id, 128),
+                 emitted_at=_stamp(emitted_at), newest_applied=_stamp(newest),
+                 budget_seconds=budget if type(budget) is float and 0 < budget <= 60 else None,
+                 pid=os.getpid(), ppid=os.getppid())
+    _append_bounded(loss_log_path(config), entry)
+
+
+def _append_bounded(path, entry):
+    """Append one JSON line under a lock; keep the newest half once over budget. Never raises."""
     line = json.dumps(entry, ensure_ascii=True) + '\n'
-    path = rejection_log_path(config)
     try:
         import fcntl
         path.parent.mkdir(parents=True, exist_ok=True)
