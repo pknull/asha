@@ -92,6 +92,7 @@ class FinishedAndLabelTests(PublicationRowFixture):
         sid = self.launch()['session_id']
         with self.acting_as(sid):
             self.hub.report(state='finished', body='Done without saving')
+            self.hub.observe('turn-stopped')
         shown = self.hub.show(sid)
         self.assertEqual(shown['activity'], 'finished')
         self.assertEqual(shown['next_step'], 'Finished, unsaved')
@@ -101,6 +102,7 @@ class FinishedAndLabelTests(PublicationRowFixture):
         with self.acting_as(sid):
             self.hub.handoff(None, outcome='no-durable-update', detail='Nothing durable')
             self.hub.report(state='finished', body='Done')
+            self.hub.observe('turn-stopped')
         shown = self.hub.show(sid)
         self.assertIsNotNone(shown['memory_saved_at'])
         self.assertNotIn('unsaved', shown['next_step'])

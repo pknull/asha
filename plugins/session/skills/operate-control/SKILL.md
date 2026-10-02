@@ -93,7 +93,10 @@ These commands verify the reporting process belongs to the live session.
 Workers need not report each turn. Hooks supply best-effort native lifecycle
 observations where available. `unknown` means observation is missing or stale,
 `idle` means a native turn ended, and `finished` means an explicit worker report
-or a completed structured utility. Silence proves none of these. Read results
+whose turn has stopped, or a completed structured utility. A report whose turn
+is still running reads `working` with `reported_activity: finished` (`Working:
+reported finished`); harnesses without a turn-end event (Copilot) settle it
+after five quiet minutes. Silence proves none of these. Read results
 before conveying them as conclusions. Message pages expose `complete` and
 `next_offset`; use `messages --offset N` to read subsequent pages.
 
@@ -117,7 +120,7 @@ at process exit, or at the deadline; the row then reads `Closed, saved HH:MM
 UTC` or `Closed, unsaved` (unsaved only when the generation has no save at
 all). Dashboard `x` records the request and hands the wait to a detached
 waiter; re-running `close` joins a pending request and finalizes an expired
-one. A finished report that is still current plus a save for the current
+one. A finished report that is still current and settled plus a save for the current
 assignment closes at once. The handoff never commits or pushes; landing code
 remains a separate explicit decision. Dashboard `q` only exits the UI; it does
 not stop workers or the supervisor. `M` filters input requests; `A` includes

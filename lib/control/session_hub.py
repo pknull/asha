@@ -517,7 +517,7 @@ class Hub:
                     row['reason'] = detail
                 elif state != 'open':
                     row.update(activity='unknown', reason=detail)
-                elif row['observed_at'] and time.time() - row['observed_at'] > 300 and row['activity'] == 'working' and not waiting_on_background(row):
+                elif row['observed_at'] and time.time() - row['observed_at'] > closure.STALE_OBSERVATION_SECONDS and row['activity'] == 'working' and not waiting_on_background(row):
                     row.update(activity='unknown', reason='No recent observation; the harness may still be working')
                 if (state == 'open' and row['harness'] in HOOK_REPORTING_HARNESSES and not row.get('native_observed_at')
                         and row.get('launched_at') and time.time() - row['launched_at'] > HOOK_SILENCE_SECONDS):
@@ -783,6 +783,9 @@ class Hub:
         current = (report.get('generation') == row['generation']
                    and report.get('assignment_epoch') == row.get('assignment_epoch'))
         if not current and not (row['transport'] == 'structured' and row.get('activity') == 'finished'):
+            return False
+        if current and not closure.report_settled(row):
+            # #109: the reporting turn is still running; closing now would kill it.
             return False
         from .session_publication import saved_for_assignment
         return saved_for_assignment(self, row)
@@ -1230,6 +1233,10 @@ class Hub:
                 assignment_epoch=row.get('assignment_epoch'), reported_at=changes['observed_at'])
         elif not event:
             changes['completion_report'] = None
+        report = row.get('completion_report')
+        if report and event in {'turn-stopped', 'session-ended'} and not outstanding:
+            # #109: the reporting turn has ended; only now does the report read finished.
+            changes['completion_report'] = dict(report, turn_ended_at=changes['observed_at'])
         if event == 'permission-requested':
             changes['question'] = None
         if native_id:

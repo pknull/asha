@@ -310,7 +310,24 @@ the next event or the staleness rules, and explicit reports remain the reliable
 activity signal. Neither bridge is live-proven.
 Missing or stale telemetry shows `unknown`; it never stops a worker. An idle
 native turn is not a completed assignment. An explicit finished report or
-successful structured utility yields `finished`. Completed structured utilities
+successful structured utility yields `finished`.
+
+A worker sends its finished report from inside its last turn and may keep
+working after it (save, final report, last test). A terminal row therefore
+reads `finished` only when the report has landed **and** that turn has
+stopped (#109): the next Stop that lists no background work stamps
+`completion_report.turn_ended_at`. Between the two the row shows
+`activity: "working"` with `reported_activity: "finished"` and the next step
+`Working: reported finished`; it is not ready to close, and a close asks
+instead of closing at once. A tool call after the report no longer erases it,
+and the Stop that ends the turn no longer turns it into `Stopped mid-task?`.
+Claude and Codex have that turn-end event. Harnesses without one fall back to
+the five-minute staleness rule: the report settles once no native event or
+report has arrived for five minutes after it. That covers Copilot (no turn-end
+hook), OpenCode (its idle Stop is not live-proven; one that arrives still
+settles at once) and any session whose hooks never reported. A Codex or Claude
+report never settles on staleness alone. Structured sessions report finished
+only at their managed turn boundary and are unaffected. Completed structured utilities
 leave the current list; their results remain under `show ID` and `list --all`.
 
 Hook identity is inherited environment, so every Codex TUI launch that Asha
@@ -479,8 +496,11 @@ save project Memory, waits a bounded time, then terminates:
    with its age visible; `unsaved` means the generation has none.
 
 A session whose finished report is still current (no new prompt, message or
-working report since) and whose current assignment already has a publication,
-in either order, closes at once without a request. The documented worker
+working report since) and settled (its turn has stopped, or the staleness
+fallback above applies; #109) and whose current assignment already has a
+publication, in either order, closes at once without a request. A report whose
+turn is still running gets an ordinary close request, so a close never kills
+the turn that is finishing. The documented worker
 sequence is save, then `report --state finished`.
 
 The request text asks the agent to save and end its turn:
