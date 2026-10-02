@@ -107,3 +107,65 @@ class HookCompatibilityTests(ClosureFixture):
         self.configure_control(idle_delivery=True, no_handoff_close=True)
         self.assertFalse(hasattr(self.config, 'idle_delivery'))
         self.assertFalse(hasattr(self.config, 'no_handoff_close'))
+
+
+class LossLogTests(ClosureFixture):
+    """A cheap loss metric: reports the hub skipped or never received are logged, bounded."""
+
+    def run_cli(self, sid, verb, *argv):
+        from lib.control import hub_cli
+        out = io.StringIO()
+        env = dict(self.env, ASHA_HUB_SESSION_ID=sid, ASHA_HUB_GENERATION='1')
+        with mock.patch.object(hub_cli, 'Hub', return_value=self.hub), \
+                mock.patch.object(self.hub, 'actor', side_effect=lambda: self.hub.get(sid)), redirect_stdout(out):
+            code = hub_cli.dispatch([verb, *argv], env=env)
+        return code, out.getvalue().strip()
+
+    def entries(self):
+        from lib.control import session_hub
+        path = session_hub.loss_log_path(self.config)
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_a_stale_skip_is_logged_and_an_applied_report_is_not(self):
+        from lib.control import session_hub
+        sid = self.launch()['session_id']
+        self.run_cli(sid, 'event', '--event', 'prompt-submitted', '--emitted-at', '1000.0')
+        self.assertEqual(self.entries(), [])
+        code, out = self.run_cli(sid, 'event', '--event', 'turn-stopped', '--emitted-at', '995.5',
+                                 '--native-id', 'thread-1')
+        self.assertEqual((code, out), (0, '{}'))
+        [entry] = self.entries()
+        self.assertEqual((entry['reason'], entry['event'], entry['session_id'], entry['native_id']),
+                         ('stale-skip', 'turn-stopped', sid, 'thread-1'))
+        self.assertEqual((entry['emitted_at'], entry['newest_applied']), (995.5, 1000.0))
+        self.assertEqual(session_hub.loss_log_path(self.config).stat().st_mode & 0o777, 0o600)
+        self.assertNotEqual(session_hub.loss_log_path(self.config), session_hub.rejection_log_path(self.config))
+
+    def test_a_bridge_timeout_is_recorded_without_touching_the_session(self):
+        sid = self.launch()['session_id']
+        before = self.hub.get(sid)
+        code, out = self.run_cli(sid, 'event-lost', '--event', 'tool-completed', '--reason', 'bridge-timeout',
+                                 '--budget', '0.6', '--emitted-at', '1234.5', '--native-id', 'thread-2')
+        self.assertEqual((code, out), (0, '{}'))
+        [entry] = self.entries()
+        self.assertEqual((entry['reason'], entry['event'], entry['session_id'], entry['native_id'],
+                          entry['budget_seconds'], entry['emitted_at']),
+                         ('bridge-timeout', 'tool-completed', sid, 'thread-2', 0.6, 1234.5))
+        self.assertEqual(self.hub.get(sid)['updated_at'], before['updated_at'])
+
+    def test_a_malformed_loss_report_records_nothing_and_still_answers(self):
+        sid = self.launch()['session_id']
+        for argv in (['--event', 'not-an-event', '--reason', 'bridge-timeout'],
+                     ['--event', 'tool-completed', '--reason', 'something-else']):
+            code, out = self.run_cli(sid, 'event-lost', *argv)
+            self.assertEqual((code, out), (0, '{}'))
+        self.assertEqual(self.entries(), [])
+
+    def test_the_loss_log_is_bounded(self):
+        from lib.control import session_hub
+        env = dict(self.env, ASHA_HUB_SESSION_ID='s' * 300, ASHA_HUB_GENERATION='1')
+        for _ in range(3000):
+            session_hub.record_loss(self.config, env, event='tool-started', reason='bridge-timeout',
+                                    native_id='n' * 600)
+        self.assertLessEqual(session_hub.loss_log_path(self.config).stat().st_size, session_hub.REJECTION_LOG_BYTES)
+        self.assertTrue(all(entry['reason'] == 'bridge-timeout' for entry in self.entries()))

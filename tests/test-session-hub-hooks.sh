@@ -152,6 +152,12 @@ CAPTURE="$WORK/control.args"
 mkdir -p "$FAKE_ROOT/bin"
 cat > "$FAKE_ROOT/bin/asha" <<'STUB'
 #!/usr/bin/env bash
+# A bridge-timeout loss record runs detached after the hook returned; keep it
+# out of the per-call capture so it can never overwrite a later assertion.
+if [[ "$1 $2 $3" == "control session event-lost" ]]; then
+  printf '%s\n' "$*" >> "$CONTROL_CAPTURE.lost"
+  exit 0
+fi
 printf '%s\n' "$*" > "$CONTROL_CAPTURE"
 [[ -z "${CONTROL_STUB_SLEEP:-}" ]] || sleep "$CONTROL_STUB_SLEEP"
 [[ -z "${CONTROL_STUB_OUTPUT:-}" ]] || printf '%s\n' "$CONTROL_STUB_OUTPUT"
@@ -416,6 +422,32 @@ if [[ "$OUT" == '{}' && $ELAPSED_MS -ge 2500 && $ELAPSED_MS -le 4000 ]]; then
   ok "a wedged controller on Stop is bounded by the larger turn-boundary budget (${ELAPSED_MS}ms)"
 else
   fail "a wedged controller on Stop is bounded by the larger turn-boundary budget (${ELAPSED_MS}ms, out=$OUT)"
+fi
+
+# A bridge timeout is a lost report: the hook records it through a detached,
+# bounded call (cheap loss metric), and still returns within its own budget.
+LOST_CAPTURE="$CAPTURE.lost"
+: > "$LOST_CAPTURE"
+START_NS=$(date +%s%N)
+OUT="$(run_control PostToolUse '{"session_id":"slow-tool"}' ASHA_HUB_SESSION_ID="$HUB_ID" CONTROL_STUB_SLEEP=5)"
+ELAPSED_MS=$(( ($(date +%s%N) - START_NS) / 1000000 ))
+# Records from earlier timed-out tests may still be landing: match by native id.
+for _ in $(seq 1 40); do grep -q -- '--native-id slow-tool$' "$LOST_CAPTURE" && break; sleep 0.1; done
+LOST="$(grep -- '--native-id slow-tool$' "$LOST_CAPTURE" | sed -E 's/ --emitted-at [0-9]+\.[0-9]+//')"
+if [[ "$OUT" == '{}' && $ELAPSED_MS -le 1500 \
+   && "$LOST" == "control session event-lost --event tool-completed --reason bridge-timeout --budget 0.6 --native-id slow-tool" ]] \
+   && grep -Eq -- '--emitted-at [0-9]+\.[0-9]+ --native-id slow-tool$' "$LOST_CAPTURE"; then
+  ok "a timed-out bridge call is recorded as lost without extending the hook (${ELAPSED_MS}ms)"
+else
+  fail "a timed-out bridge call is recorded as lost without extending the hook (${ELAPSED_MS}ms, out=$OUT, lost=$LOST)"
+fi
+: > "$LOST_CAPTURE"
+run_control PostToolUse '{"session_id":"fast-tool"}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
+sleep 0.3
+if ! grep -q -- 'fast-tool' "$LOST_CAPTURE"; then
+  ok "a bridge call that answers in time records no loss"
+else
+  fail "a bridge call that answers in time records no loss ($(cat "$LOST_CAPTURE"))"
 fi
 
 # Worst case: a harness that never closes the payload pipe and a controller
