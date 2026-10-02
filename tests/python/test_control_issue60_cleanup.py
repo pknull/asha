@@ -41,7 +41,7 @@ class Issue60CleanupContractTests(unittest.TestCase):
         # Hub-session bridges add their own render test; the process-liveness
         # adapter tests stay named for the Control task path.
         verifiers = {
-            "copilot": expected,
+            "copilot": "tests:test-install/test-doctor + " + expected,
             "opencode": "tests:test-opencode + " + expected,
         }
         for harness, wanted in verifiers.items():

@@ -303,8 +303,11 @@ whose hooks and aliases you control.
 Claude and Codex hooks provide best-effort observations. OpenCode's generated
 plugin reports session start, tool start/end and idle (as a guarded Stop)
 through the same bridge; it is not live-proven, and OpenCode has no Stop block
-seam, so its close requests are queued-only. Copilot terminal workers currently
-need optional explicit reports for activity detail.
+seam, so its close requests are queued-only. Copilot's recovery hook file
+reports session start, prompt submission, tool completion and session end the
+same way; Copilot has no turn-end hook, so a finished turn reads working until
+the next event or the staleness rules, and explicit reports remain the reliable
+activity signal. Neither bridge is live-proven.
 Missing or stale telemetry shows `unknown`; it never stops a worker. An idle
 native turn is not a completed assignment. An explicit finished report or
 successful structured utility yields `finished`. Completed structured utilities

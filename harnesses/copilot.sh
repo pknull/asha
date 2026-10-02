@@ -233,37 +233,32 @@ copilot_install_hooks() {
 }
 
 # Memory v2 recovery callbacks plus direct SessionStart/RP context delivery.
+# The same owned file carries Control session events: each hook ends with the
+# shared, bounded control-event.sh bridge under the native name it maps. Only a
+# hub session (ASHA_HUB_SESSION_ID) reports; ASHA_CONTROL_MANAGED is cleared so
+# a Control task keeps its process-liveness-only contract.
 copilot_install_recovery_hooks() {
   local start_h="$PLUGINS_DIR/session/hooks/handlers/session-start.sh"
   local prompt_h="$PLUGINS_DIR/session/hooks/handlers/user-prompt-submit.sh"
   local post_h="$PLUGINS_DIR/session/hooks/handlers/post-tool-use.sh"
   local end_h="$PLUGINS_DIR/session/hooks/handlers/session-end.sh"
   local verify_h="$PLUGINS_DIR/session/hooks/handlers/verify-pass-complete.sh"
+  local control_h="$PLUGINS_DIR/session/hooks/handlers/control-event.sh"
   if [[ ! -x "$start_h" || ! -x "$prompt_h" || ! -x "$post_h" \
-      || ! -x "$end_h" || ! -x "$verify_h" ]]; then
+      || ! -x "$end_h" || ! -x "$verify_h" || ! -x "$control_h" ]]; then
     log "[copilot] recovery handlers missing/not executable; skipping recovery hooks"
     return 0
   fi
-  local abs_start abs_prompt abs_post abs_end abs_verify content
+  local abs_start abs_prompt abs_post abs_end abs_verify abs_control content
   abs_start="$(resolve_path "$start_h")"
   abs_prompt="$(resolve_path "$prompt_h")"
   abs_post="$(resolve_path "$post_h")"
   abs_end="$(resolve_path "$end_h")"
   abs_verify="$(resolve_path "$verify_h")"
+  abs_control="$(resolve_path "$control_h")"
 
-  content="$(jq -nc --arg s "$abs_start" --arg p "$abs_prompt" --arg t "$abs_post" \
-    --arg e "$abs_end" --arg v "$abs_verify" '{
-    version: 1,
-    hooks: {
-      sessionStart:        [{type:"command", bash:$s, timeoutSec:15}],
-      userPromptSubmitted: [
-        {type:"command", bash:$p, timeoutSec:10},
-        {type:"command", bash:$v, timeoutSec:15}
-      ],
-      postToolUse:         [{type:"command", bash:$t, timeoutSec:15}],
-      sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}]
-    }
-  }')" || { log "[copilot] failed to build recovery json; skipping"; return 0; }
+  content="$(copilot_recovery_json "$abs_start" "$abs_prompt" "$abs_post" "$abs_end" "$abs_verify" "$abs_control")" \
+    || { log "[copilot] failed to build recovery json; skipping"; return 0; }
 
   local prepared
   prepared="$(mktemp)"
@@ -271,6 +266,25 @@ copilot_install_recovery_hooks() {
   asha_artifact_install_prepared copilot "$start_h" "$COPILOT_RECOVERY_FILE" copilot-recovery "$prepared"
   rm -f "$prepared"
   say "[copilot] installed Memory v2 recovery hooks -> $COPILOT_RECOVERY_FILE"
+}
+
+# The recovery file's exact content; drift-check compares against the same render.
+copilot_recovery_json() {
+  jq -nc --arg s "$1" --arg p "$2" --arg t "$3" --arg e "$4" --arg v "$5" --arg c "$6" '
+    def control($native): {type:"command", bash:("env -u ASHA_CONTROL_MANAGED " + ($c | @sh) + " " + $native), timeoutSec:5};
+    {
+    version: 1,
+    hooks: {
+      sessionStart:        [{type:"command", bash:$s, timeoutSec:15}, control("SessionStart")],
+      userPromptSubmitted: [
+        {type:"command", bash:$p, timeoutSec:10},
+        {type:"command", bash:$v, timeoutSec:15},
+        control("UserPromptSubmit")
+      ],
+      postToolUse:         [{type:"command", bash:$t, timeoutSec:15}, control("PostToolUse")],
+      sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}, control("SessionEnd")]
+    }
+  }'
 }
 
 # Reconcile the two retired, pre-ledger dedicated hook files independently of

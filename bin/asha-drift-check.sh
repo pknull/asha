@@ -845,25 +845,31 @@ if [[ "$TARGET" == "copilot" || "$TARGET" == "all" ]]; then
     post_handler="$ASHA/plugins/session/hooks/handlers/post-tool-use.sh"
     end_handler="$ASHA/plugins/session/hooks/handlers/session-end.sh"
     verify_handler="$ASHA/plugins/session/hooks/handlers/verify-pass-complete.sh"
+    control_handler="$ASHA/plugins/session/hooks/handlers/control-event.sh"
     if [[ ! -x "$start_handler" || ! -x "$prompt_handler" || ! -x "$post_handler" \
-        || ! -x "$end_handler" || ! -x "$verify_handler" ]]; then
+        || ! -x "$end_handler" || ! -x "$verify_handler" || ! -x "$control_handler" ]]; then
       nope "Memory v2 recovery handler missing or not executable"
     elif [[ ! -f "$recovery" ]]; then
       nope "recovery hooks file missing: $recovery (run ./install.sh --target copilot)"
     elif ! jq empty "$recovery" 2>/dev/null; then
       nope "recovery hooks file is invalid JSON: $recovery"
     else
+      # Twin of copilot_recovery_json in harnesses/copilot.sh: keep in step.
       expected="$(jq -nc --arg s "$start_handler" --arg p "$prompt_handler" \
-        --arg t "$post_handler" --arg e "$end_handler" --arg v "$verify_handler" '{
+        --arg t "$post_handler" --arg e "$end_handler" --arg v "$verify_handler" \
+        --arg c "$control_handler" '
+        def control($native): {type:"command", bash:("env -u ASHA_CONTROL_MANAGED " + ($c | @sh) + " " + $native), timeoutSec:5};
+        {
         version: 1,
         hooks: {
-          sessionStart:        [{type:"command", bash:$s, timeoutSec:15}],
+          sessionStart:        [{type:"command", bash:$s, timeoutSec:15}, control("SessionStart")],
           userPromptSubmitted: [
             {type:"command", bash:$p, timeoutSec:10},
-            {type:"command", bash:$v, timeoutSec:15}
+            {type:"command", bash:$v, timeoutSec:15},
+            control("UserPromptSubmit")
           ],
-          postToolUse:         [{type:"command", bash:$t, timeoutSec:15}],
-          sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}]
+          postToolUse:         [{type:"command", bash:$t, timeoutSec:15}, control("PostToolUse")],
+          sessionEnd:          [{type:"command", bash:$e, timeoutSec:10}, control("SessionEnd")]
         }
       }')"
       if [[ "$(jq -S . "$recovery")" == "$(jq -S . <<<"$expected")" ]]; then

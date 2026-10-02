@@ -175,7 +175,7 @@ MCP configuration, projects, and sessions are single-instance.
 ├── agents/                          # generated Copilot agent files
 │   └── <plugin>-<agent>.agent.md    # from plugins/<plugin>/agents/<agent>.md
 ├── hooks/asha-guardrails.json       # PreToolUse guardrails → copilot-policy-adapter.sh (dedicated; user's hooks.json untouched)
-├── hooks/asha-recovery.json         # Memory v2 recovery + direct context/RP callbacks
+├── hooks/asha-recovery.json         # Memory v2 recovery, direct context/RP callbacks, hub Control events
 └── mcp-config.json                  # NOT managed by Asha (Copilot reads it directly)
 ```
 
