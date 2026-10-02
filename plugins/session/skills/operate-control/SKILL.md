@@ -29,9 +29,15 @@ asha control session launch --project PROJECT --prompt QUESTION --harness claude
 ```
 
 Add `--model MODEL` and/or `--effort LEVEL` only when the Keeper or the task
-calls for a tier; omitted means the harness default. Never pick, escalate or
-retry with another model on your own. `show` reports the requested and effective
-values with their provenance (docs/session-hub.md, "Model and effort").
+calls for a tier; omitted means the harness default. One standing exception: a
+**mechanical lookup** may launch on a cheaper model (for example
+`--harness claude --model sonnet`). A mechanical lookup locates files, reads
+logs or records, or lists and counts, and you check its output against the
+source before using it. Anything that draws conclusions does not qualify:
+investigation, review, design and fixes stay on the default. Otherwise never
+pick, escalate or retry with another model on your own. `show` reports the
+requested and effective values with their provenance (docs/session-hub.md,
+"Model and effort").
 
 The default **worker** omits Asha's persona, operational injection and automatic
 memory work, preserving native permissions, project instructions and installed
