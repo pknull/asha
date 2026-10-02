@@ -219,6 +219,30 @@ For target-specific install changes also run:
 Use `--dry-run` when validating a mutating installer plan. Test both a clean
 install and collision/uninstall behavior when ownership semantics change.
 
+### Test environment gotchas
+
+Run suites in a scrubbed environment. Each item below has cost a full run:
+
+- Start from `env -i`, then pass back only what the suite needs: `PATH`
+  including `~/.asdf/shims`, `~/.local/bin` and `~/bin` (jj and harness CLIs
+  live there), `ASDF_DATA_DIR=~/.asdf` and `ASDF_NODEJS_VERSION` from
+  `~/.tool-versions`, `LANG=C.UTF-8`. Without the asdf pair, `test-opencode.sh`
+  fails its node checks under a sandbox HOME.
+- Use a throwaway `HOME` outside `/tmp` (bwrap mounts a tmpfs over `/tmp`,
+  failing `test_home_is_preserved_inside_containment`), with no group-writable
+  ancestor (Control refuses them) and its own `.gitconfig` user.
+- Keep `TMUX_TMPDIR` short, such as `/tmp/t1` mode 0700: a long path exceeds the
+  Unix socket limit (`File name too long`).
+- Never let `ASHA_HOME`, `ASHA_CONFIG`, `XDG_CONFIG_HOME` or `CODEX_HOME` reach
+  `install.sh`, `uninstall.sh` or a harness adapter. Hub sessions export them,
+  and the installer honours them independently of `HOME`, so an install meant for
+  a sandbox rewrites the live install.
+- Run the baseline on an unchanged checkout in its own workspace, never on the
+  working copy you are editing.
+- `test_experience_review_limits` concurrency
+  (`sidecar link count must be exactly 1`) is a known flake under full-suite
+  load; rerun it alone before treating it as a regression.
+
 ## Focused documentation
 
 - [Root orientation and plugin map](README.md)
