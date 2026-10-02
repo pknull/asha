@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased — a dropped Stop no longer strands a finished report (#110)
+
+- The hook bridge gives SessionStart and SessionEnd the same 3 s lifecycle
+  budget as Stop; tool, prompt and permission events keep 0.6 s. Measured: the
+  CLI call takes about 0.16 s idle and is CPU-bound under load (p50 0.5 s at
+  2x CPU oversubscription, p99 1.6 s with 16 concurrent writers), with SQLite
+  and the session lock under 50 ms.
+- A Stop the bridge times out on is delivered late by its detached loss call,
+  so a #109 report settles instead of reading `Working: reported finished`
+  until the next prompt. The late Stop must name the native conversation the
+  generation bound and applies only if no newer hook report was applied; it
+  carries the Stop's background task count and returns no close decision.
+  The loss call's bound rises from 5 s to 20 s.
+
 ## Unreleased — finished waits for the reporting turn to end (#109)
 
 - A worker's finished report and its turn end no longer share one activity

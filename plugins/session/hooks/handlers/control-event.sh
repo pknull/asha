@@ -11,8 +11,8 @@
 # plus a clipped one-line request summary on PermissionRequest; no other body
 # is retained. The
 # bridge is bounded (under a second on keystroke-facing events, a few seconds
-# at the Stop turn boundary), and the answer is a harmless empty object — with
-# one named exception. On Stop only, a pending graceful close request is
+# at the session-start, Stop and session-end lifecycle boundaries), and the
+# answer is a harmless empty object — with one named exception. On Stop only, a pending graceful close request is
 # returned as the harness's own single-line block decision, so the session's
 # final memory-handoff turn starts at the turn boundary the harness itself
 # declared. The hub emits it once per confirmed delivery attempt and never
@@ -61,12 +61,17 @@ fi
 # about 0.13s, so the controller budget is roughly five times what it needs.
 HUB_READ_SECONDS=0.15
 HUB_CONTROLLER_SECONDS=0.6
-# Stop is a turn boundary, not a keystroke: the harness is already idle, and the
-# hub path there does ownership checks (several tmux calls), takes the session
-# lock and answers the pending close request. It gets a larger, still bounded,
-# budget; a kill here re-emits the same request at the next Stop.
-HUB_STOP_SECONDS=3
-[[ "$CONTROL_EVENT" != "turn-stopped" ]] || HUB_CONTROLLER_SECONDS="$HUB_STOP_SECONDS"
+# Lifecycle boundaries are not keystrokes: SessionStart, Stop and SessionEnd
+# fire when the harness starts, goes idle or exits. Under CPU contention the
+# call is slower than the keystroke budget (#110: p50 0.5 s at 2x CPU
+# oversubscription, p99 1.6 s with 16 concurrent writers; interpreter start and
+# imports dominate). They get a larger, still bounded, budget, which stays
+# under Copilot's 5 s per-hook timeout. A Stop killed here is delivered late by
+# the loss call below, and its close request is re-emitted at the next Stop.
+HUB_LIFECYCLE_SECONDS=3
+case "$CONTROL_EVENT" in
+  session-start|turn-stopped|session-ended) HUB_CONTROLLER_SECONDS="$HUB_LIFECYCLE_SECONDS" ;;
+esac
 
 # Never retain or forward payload bodies. A truncated or malformed object
 # simply yields no optional session/exit facts and the controller remains open.
@@ -196,15 +201,19 @@ if [[ -n "$HUB_SESSION" ]]; then
     )" || HUB_RC=$?
     # A timed-out call is a lost report (cheap loss metric, beside the
     # rejection log). It is recorded by a separate, bounded call that is
-    # fully detached, so the hook still returns within its own budget.
+    # fully detached, so the hook still returns within its own budget. For a
+    # Stop the same call delivers the turn end late (#110), so it carries the
+    # background task count, and its bound outlasts the load that caused the
+    # timeout (one live record landed 5 s after a 3 s Stop budget).
     if [[ $HUB_RC -eq 124 || $HUB_RC -eq 137 ]]; then
       LOST_ARGS=(control session event-lost --event "$CONTROL_EVENT" --reason bridge-timeout
                  --budget "$HUB_CONTROLLER_SECONDS")
       [[ ! "$EMITTED_AT" =~ ^[0-9]{1,12}\.[0-9]{1,9}$ ]] || LOST_ARGS+=(--emitted-at "$EMITTED_AT")
       [[ -z "$SESSION_ID" ]] || LOST_ARGS+=(--native-id "$SESSION_ID")
+      [[ -z "$BACKGROUND_TASKS" ]] || LOST_ARGS+=(--background-tasks "$BACKGROUND_TASKS")
       DETACH=()
       ! command -v setsid >/dev/null 2>&1 || DETACH=(setsid)
-      ( "${DETACH[@]}" timeout --signal=TERM --kill-after=0.5 5 "$ASHA_CMD" "${LOST_ARGS[@]}" \
+      ( "${DETACH[@]}" timeout --signal=TERM --kill-after=0.5 20 "$ASHA_CMD" "${LOST_ARGS[@]}" \
           </dev/null >/dev/null 2>&1 & )
     fi
   fi

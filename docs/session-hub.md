@@ -569,14 +569,29 @@ unstamped report (an older hook) applies. A new generation starts without a
 stamp. Explicit `session report` calls are authoritative and bypass the check.
 
 Reports that change nothing without being refused are counted, not discarded.
-A skipped late report, and a bridge call that ran out of its budget (0.6 s, or
-3 s at Stop), each append one line to
+A skipped late report, and a bridge call that ran out of its budget (0.6 s on
+tool, prompt and permission events; 3 s at the session-start, Stop and
+session-end lifecycle boundaries), each append one line to
 `~/.asha/state/control/hub-lost-events.jsonl` (reason `stale-skip` or
 `bridge-timeout`, with event, session, generation, native ID and stamps; same
 bound, mode and trimming as the rejection log). The bridge records a timeout
-through a detached, bounded `session event-lost` call, so the hook itself still
-returns within its budget; a timeout whose record also fails is not counted.
-This is a loss metric only: nothing reorders, retries or waits on it.
+through a detached `session event-lost` call bounded at 20 s, so the hook
+itself still returns within its budget; a timeout whose record also fails is
+not counted. For every event but one this is a loss metric only: nothing
+reorders, retries or waits on it.
+
+The exception is `turn-stopped` (#110): a lost Stop would leave a finished
+report unsettled (`Working: reported finished`) until the next prompt, so the
+loss call also delivers it late. That call runs after the hook returned and is
+not part of the session's process tree, so it proves itself by the native
+conversation this generation already bound instead: an unbound generation, a
+different native ID or an unstamped report is refused. It applies only when no
+newer hook report has been applied, at any age (the 30 s clock-step allowance
+above does not extend to it), carries the Stop's background task count (a Stop
+that listed background work still is not a turn end), and returns no close
+decision; a pending close request is re-emitted at the next Stop. A Stop whose
+loss record also fails stays unsettled until the next prompt, session end or
+close.
 
 ## Optional session experience
 

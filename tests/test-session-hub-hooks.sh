@@ -441,6 +441,34 @@ if [[ "$OUT" == '{}' && $ELAPSED_MS -le 1500 \
 else
   fail "a timed-out bridge call is recorded as lost without extending the hook (${ELAPSED_MS}ms, out=$OUT, lost=$LOST)"
 fi
+# #110: SessionStart and SessionEnd are lifecycle boundaries, not keystrokes.
+# They share Stop's budget, so a call slower than the keystroke budget lands.
+for lifecycle in SessionStart SessionEnd; do
+  : > "$LOST_CAPTURE"
+  START_NS=$(date +%s%N)
+  OUT="$(run_control "$lifecycle" '{"session_id":"slow-life"}' ASHA_HUB_SESSION_ID="$HUB_ID" CONTROL_STUB_SLEEP=1.2)"
+  ELAPSED_MS=$(( ($(date +%s%N) - START_NS) / 1000000 ))
+  sleep 0.3
+  if [[ "$OUT" == '{}' && $ELAPSED_MS -ge 1100 && $ELAPSED_MS -le 2500 ]] && ! grep -q -- 'slow-life' "$LOST_CAPTURE"; then
+    ok "a slow $lifecycle report lands within the lifecycle budget (${ELAPSED_MS}ms)"
+  else
+    fail "a slow $lifecycle report lands within the lifecycle budget (${ELAPSED_MS}ms, lost=$(cat "$LOST_CAPTURE"))"
+  fi
+done
+
+# A lost Stop is delivered late by the loss call, so the call carries what the
+# Stop meant: a turn still waiting on background work is not a turn end.
+: > "$LOST_CAPTURE"
+OUT="$(run_control Stop '{"session_id":"slow-bg","stop_hook_active":false,"background_tasks":[{},{}]}' \
+  ASHA_HUB_SESSION_ID="$HUB_ID" CONTROL_STUB_SLEEP=10)"
+for _ in $(seq 1 40); do grep -q -- 'slow-bg' "$LOST_CAPTURE" && break; sleep 0.1; done
+LOST="$(grep -- 'slow-bg' "$LOST_CAPTURE" | sed -E 's/ --emitted-at [0-9]+\.[0-9]+//')"
+if [[ "$OUT" == '{}' && "$LOST" == "control session event-lost --event turn-stopped --reason bridge-timeout --budget 3 --native-id slow-bg --background-tasks 2" ]]; then
+  ok "a lost Stop forwards its background task count to the loss call"
+else
+  fail "a lost Stop forwards its background task count to the loss call (out=$OUT, lost=$LOST)"
+fi
+
 : > "$LOST_CAPTURE"
 run_control PostToolUse '{"session_id":"fast-tool"}' ASHA_HUB_SESSION_ID="$HUB_ID" >/dev/null
 sleep 0.3
