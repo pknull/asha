@@ -28,6 +28,7 @@ remain available to natural-language routing.
 |---|---|---|
 | `bookstack` | Search and manage a BookStack instance through its REST API | `BOOKSTACK_BASE_URL`, `BOOKSTACK_API_TOKEN` |
 | `gemini` | Single-shot Google-grounded search with citations | Gemini API credentials documented by the skill |
+| `keybase` | List, create, delete and gc Keybase encrypted git repos; Keybase vs GitHub | Keybase client logged in, service running |
 | `proton-mail` | Read and manage Proton Mail through localhost-only Proton Mail Bridge IMAP/SMTP | `PROTON_BRIDGE_USERNAME`, `PROTON_BRIDGE_PASSWORD`; optional CA certificate |
 | `todoist` | Create, find, update, and complete Todoist tasks | `TODOIST_API_TOKEN` |
 | `wolfram` | Computational and factual queries through Wolfram | Wolfram credentials documented by the skill |
