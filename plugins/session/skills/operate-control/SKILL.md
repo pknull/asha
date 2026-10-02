@@ -165,6 +165,26 @@ A paused runtime retains the assignment; report that fact rather than silently
 resuming it. Ordinary terminal sessions run independently of the supervisor
 and dashboard. A failed telemetry hook must not block native work.
 
+## Gotchas
+
+- Launch refuses a project without initialized Memory v2 ("not exactly one
+  initialized Memory v2 Asha project"). For a scratch probe, run `memory_v2.py
+  init --project-dir DIR` and commit it before launching.
+- A dropped hook report leaves a row stale (#110; lost reports are logged in
+  `~/.asha/state/control/hub-lost-events.jsonl`). A missed `turn-stopped`
+  reads working after the turn ended, and for Claude and Codex a finished
+  report then stays `Working: reported finished`, since they never settle on
+  staleness alone. Confirm from the pane before acting on the row.
+- Copilot has no turn-end hook: a Copilot row stays working after its turn until
+  the next event or the staleness rule.
+- Codex and Copilot ask to trust a new folder before their first turn; the row
+  shows no activity (Codex: "Hooks not reporting") until someone answers in the
+  pane. Accepting Codex's "remember" choice writes to the live
+  `~/.codex/config.toml`.
+- A worker running one long command (a full test suite) emits no events, so the
+  row drifts to `unknown`/"Inspect session". Check the process before treating
+  it as stuck.
+
 ## Advanced workflows
 
 Use initiatives only when the Keeper requests their staged workflow. Open
