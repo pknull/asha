@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased — finished waits for the reporting turn to end (#109)
+
+- A worker's finished report and its turn end no longer share one activity
+  field. A terminal row reads `finished` only when the report has landed and
+  that turn has stopped; between the two it reads `Working: reported
+  finished` (`activity: working`, `reported_activity: finished`), is not ready
+  to close, and a close sends an ordinary request instead of closing at once.
+  This stops closes from killing a Codex turn still finishing after its report,
+  and a report followed by more work and a Stop no longer reads `Stopped
+  mid-task?`. Harnesses without a turn-end event (Copilot; OpenCode until its
+  idle Stop is live-proven) settle the report after five quiet minutes.
+
 ## Unreleased — dashboard follow-ups from #102 QA (#106)
 
 - Automatic short-screen folding skips a fold that saves no line (a group's

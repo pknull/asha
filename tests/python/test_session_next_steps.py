@@ -22,6 +22,11 @@ class NextStepRenderingTests(unittest.TestCase):
             ({'activity': 'needs-input'}, 'Answer in terminal (attach)'),
             ({'activity': 'permission-requested'}, 'Answer in terminal (attach)'),
             ({'activity': 'working'}, 'Working'),
+            # #109: a report whose turn has not stopped is still working; a stopped one is finished.
+            ({'activity': 'working', 'native_observed_at': 9e9, 'completion_report': {
+                'generation': 1, 'reported_at': 9e9}}, 'Working: reported finished'),
+            ({'activity': 'idle', 'native_observed_at': 9e9, 'completion_report': {
+                'generation': 1, 'reported_at': 9e9, 'turn_ended_at': 9e9}}, 'Finished, unsaved'),
         ]
         for changes, hint in cases:
             with self.subTest(hint=hint):

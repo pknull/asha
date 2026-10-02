@@ -376,6 +376,7 @@ class EarlyReturnTests(FastClose):
                              lambda: self.hub.handoff(None, outcome='no-durable-update', detail='Nothing')]
                     for step in (steps if order == 'report-first' else reversed(steps)):
                         step()
+                    self.hub.observe('turn-stopped')   # #109: finished once the reporting turn ends
                 closed = self.hub.close(sid)
                 self.assertEqual(closed['lifecycle'], 'closed')
                 self.assertEqual([m for m in self.hub.messages(sid) if m['delivery_key'].startswith('close:')], [])

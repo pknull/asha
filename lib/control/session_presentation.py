@@ -1,6 +1,8 @@
 """Read-only next steps from observed process state and publication evidence."""
 from datetime import datetime, timezone
 
+from .session_closure import report_settled
+
 
 def memory_label(row):
     stamp = row.get('memory_saved_at')
@@ -30,6 +32,8 @@ def present(row):
     report = row.get('completion_report')
     finished = (report.get('generation') == row.get('generation') and
                 report.get('assignment_epoch') == row.get('assignment_epoch')) if report else activity == 'finished'
+    # #109: a report sent mid-turn is finished only once that turn has stopped.
+    settled = finished and (not report or report_settled(row))
     ended = process == 'ended' or (process != 'live' and activity in {'exited', 'stopped', 'closed'})
     group = 'history' if row.get('lifecycle') == 'closed' else 'ended' if ended else 'current'
     # An open Room is an ongoing conversation: a save or finished report never ends it (#105).
@@ -55,9 +59,15 @@ def present(row):
             changes.update(activity='idle', reported_activity='finished')
     elif activity == 'working' and row.get('background_tasks'):
         hint = 'Working: background tasks'
-    elif finished:
+    elif finished and not settled and activity in {'working', 'finished', 'idle'}:
+        hint = 'Working: reported finished'
+        changes.update(activity='working', reported_activity='finished')
+    elif settled:
         hint = finished_label(row) if process == 'live' or row.get('transport') == 'structured' \
             else 'Done reported: inspect session'
+        if hint != 'Done reported: inspect session':
+            # The Stop that settled the report overwrote the raw activity with idle.
+            changes['activity'] = 'finished'
     elif activity == 'unknown' and row.get('telemetry') == 'hooks-not-reporting':
         hint = 'Hooks not reporting: attach'
     elif activity == 'idle':
