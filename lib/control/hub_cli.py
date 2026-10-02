@@ -219,7 +219,7 @@ def dispatch(argv, *, env):
         elif verb == 'list':
             result = overview(config, env=env, include_closed=args.all)
         elif verb == 'show':
-            result = hub.show(args.session_id)
+            result = hub.show(args.session_id, refresh_usage=True)
         elif verb == 'send':
             result = hub.send(args.session_id, args.text, key=args.key or str(uuid.uuid4()), learning_ids=args.learning_ids)
         elif verb in {'stop', 'close'}:

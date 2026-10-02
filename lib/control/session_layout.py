@@ -13,6 +13,7 @@ from .session_preview import sanitize
 from .session_keys import footer, sheet_lines
 from .session_presentation import memory_label, present, row_facts
 from .session_selection import label as selection_label
+from .session_usage import line as usage_line, tokens_label
 from .tui_style import BAD, GOOD, INERT, MACHINE, WAITING, tier_for
 
 # List plus side panel from a 120-column terminal: the painter keeps the last
@@ -130,17 +131,25 @@ def _spans(parts, x=0, selected=False):
     return placed
 
 
-def _columns(width, grouping):
-    """Cell widths of the name, harness, next-step and age columns."""
+TOKENS_WIDTH = 5   # session_usage.compact: at most five cells
+
+
+def _columns(width, grouping, tokens=False):
+    """Cell widths of the name, harness, next-step, tokens and age columns.
+
+    The tokens column (#111) exists only while some listed session has known
+    usage, so a list with none keeps every other column's width.
+    """
     harness = 7 if width >= 60 else 0
     stamp = 4 if width >= 30 else 0
-    rest = max(0, width - 4 - (harness + 2 if harness else 0) - (stamp + 1 if stamp else 0))
+    used = TOKENS_WIDTH if tokens and width >= 60 else 0
+    rest = max(0, width - 4 - (harness + 2 if harness else 0) - (stamp + 1 if stamp else 0) - (used + 1 if used else 0))
     name = max(6, min(32 if grouping == 'state' else 24, int(rest * 0.42)))
-    return name, harness, max(0, rest - name - 2), stamp
+    return name, harness, max(0, rest - name - 2), used, stamp
 
 
-def _row_spans(row, *, selected, width, grouping, ascii_only, now):
-    name_w, harness_w, step_w, age_w = _columns(width, grouping)
+def _row_spans(row, *, selected, width, grouping, ascii_only, now, tokens=False):
+    name_w, harness_w, step_w, tokens_w, age_w = _columns(width, grouping, tokens)
     tier = activity_tier(row.get('activity'))
     name = row.get('name', '')
     if not str(row.get('section', '')).startswith('project:') \
@@ -153,6 +162,9 @@ def _row_spans(row, *, selected, width, grouping, ascii_only, now):
     if harness_w:
         parts.append((pad(row.get('harness', ''), harness_w, ascii_only) + '  ', 'row', None))
     parts.append((pad(row.get('next_step', ''), step_w, ascii_only), 'status', tier))
+    if tokens_w:
+        used = fit(tokens_label(row.get('usage')), tokens_w, ascii_only)
+        parts.append((' ' + ' ' * (tokens_w - cells(used)) + used, 'muted', INERT))
     if age_w:
         stamp = fit(age(row.get('updated_at'), now), age_w, ascii_only)
         parts.append((' ' + ' ' * (age_w - cells(stamp)) + stamp, 'row', None))
@@ -210,6 +222,7 @@ def render_list(rows, *, selected, anchor, space, width, grouping, ascii_only, n
     for row in rows:
         if row.get('kind') != 'section' or row.get('more'):
             counts[row.get('section')] += row.get('count', 1) if row.get('more') else 1
+    tokens = any(tokens_label(row.get('usage')) for row in rows if row.get('kind') != 'section')
     start = session_view.viewport_start(rows, selected, space - 1 if anchor is None else anchor, space)
     lines, shown = [], set()
     for i in range(start, len(rows)):
@@ -231,7 +244,7 @@ def render_list(rows, *, selected, anchor, space, width, grouping, ascii_only, n
             lines.append(_folded_spans(row, selected=i == selected, width=width, ascii_only=ascii_only))
         else:
             lines.append(_row_spans(row, selected=i == selected, width=width, grouping=grouping,
-                                    ascii_only=ascii_only, now=now))
+                                    ascii_only=ascii_only, now=now, tokens=tokens))
             facts = _facts_spans(row, width, ascii_only)
             if facts and len(lines) < space:
                 lines.append(facts)
@@ -243,8 +256,9 @@ def _meta(row):
     capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
     experience = (f"capture:{capture.get('status', 'disabled')} review:{row.get('experience_review', 'none')}"
                   if capture else '')
+    usage = usage_line(row.get('usage')) if tokens_label(row.get('usage')) else ''
     return [part for part in (f"{row.get('pending_messages', 0)} queued messages", experience,
-                              selection_label(row)) if part]
+                              selection_label(row), usage) if part]
 
 
 def _folded_label(row):

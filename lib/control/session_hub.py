@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from . import session_closure as closure
+from . import session_usage
 from .database import ControlDatabase, DATABASE_NAME
 from .registry_guards import mutation_guard
 from .rooms import (RoomStore, _owned_state, open_room, close_room, attach_room,
@@ -448,8 +449,11 @@ class Hub:
             self._save(c, row)
         return row
 
-    def show(self, sid):
+    def show(self, sid, *, refresh_usage=False):
+        """The presented row with its stored usage; ``refresh_usage`` (the show verb, stop and close)
+        first rereads changed native records and stores the result (#111)."""
         row = self.get(sid)
+        native_ids = None
         capture = (row.get('closure') or {}).get('capture') or row.get('capture') or {}
         if capture.get('report_id'):
             with self.database() as db, db.transaction() as c:
@@ -466,10 +470,11 @@ class Hub:
             from .session_output import project
             if not self._has_structured_record(sid):
                 row.update(activity=row['lifecycle'], pending_messages=0, capabilities={'resume': True})
-                self._present_session(row)
+                self._present_session(row, refresh_usage=refresh_usage)
                 return row
             with SessionStore(self.config) as sessions:
                 state = sessions.get(sid)
+                native_ids = session_usage.remember(row, state.get('native_id'))
                 row['recovery_digest'] = sessions.recovery_digest(state)
                 row['recovery'] = state.get('recovery')
                 row['activity'] = state['state']
@@ -501,7 +506,7 @@ class Hub:
                 row['reason'] = row['runtime_warning']
             row['capabilities'] = {'attach': 'conversation-view', 'send': 'turn-boundary', 'permissions': 'native',
                                    'close': 'final-structured-turn'}
-            self._present_session(row)
+            self._present_session(row, refresh_usage=refresh_usage, native_ids=native_ids)
             return row
         if row['lifecycle'] in {'closed', 'stopped'}:
             row['activity'] = row['lifecycle']
@@ -534,11 +539,15 @@ class Hub:
         row['capabilities'] = {'attach': 'native-terminal', 'send': 'queued-until-read',
                                'permissions': 'native', 'resume': row['harness'] in {'claude', 'codex'},
                                'close': 'stop-hook-final-turn' if row['harness'] in closure.STOP_HOOK_HARNESSES else 'queued-request-only'}
-        self._present_session(row)
+        self._present_session(row, refresh_usage=refresh_usage)
         return row
 
-    def _present_session(self, row):
+    def _present_session(self, row, *, refresh_usage=False, native_ids=None):
         from .session_presentation import present
+        if refresh_usage:
+            self._refresh_usage(row, session_usage.remember(row, None) if native_ids is None else native_ids)
+        row['usage_line'] = session_usage.line(row.get('usage'))
+        row['tokens'] = session_usage.tokens_label(row.get('usage'))
         row['selection'] = selection_evidence(row)
         from .session_publication import latest_saved_at
         # D8: the newest publication or attestation in this generation.
@@ -558,6 +567,37 @@ class Hub:
             row['memory_saved_at'] = max(row['memory_saved_at'] or 0, legacy['finalized_at'])
         self._present_closure(row)
         row.update(present(row))
+
+    def _refresh_usage(self, row, native_ids):
+        """Read the worker's native records into ``row`` and store what changed (#111).
+
+        Fail-open: any failure to read or to store leaves usage unknown or
+        unstored and never refuses the show or the close that asked.
+        """
+        from .session_selection import record_reported
+        previous = row.get('usage')
+        try:
+            usage = session_usage.read(row['harness'], native_ids, env=self.env, previous=previous)
+        except Exception as exc:  # noqa: BLE001 - a reader defect must never block a close
+            usage = session_usage.unknown(row['harness'], 'native record unreadable: ' + type(exc).__name__,
+                                          native_ids)
+        changes = {}
+        stable = lambda value: {k: v for k, v in (value or {}).items() if k != 'read_at'}
+        if usage is not previous and stable(usage) != stable(previous):
+            changes['usage'] = usage
+        reported = row.get('selection_reported') or {}
+        if usage['status'] == 'known' and any(usage.get(f) and usage[f] != reported.get(f) for f in ('model', 'effort')):
+            # The record states what actually ran: effective, not requested.
+            changes['selection_reported'] = record_reported(
+                row, {'model': usage.get('model'), 'effort': usage.get('effort')},
+                source='native-record')['selection_reported']
+        if not changes:
+            return
+        row.update(changes)
+        try:
+            self._update(row['session_id'], **changes)
+        except Exception:  # noqa: BLE001 - storing is best-effort; the shown row still carries it
+            pass
 
     def _present_closure(self, row):
         """Read-only view of the close request or its outcome; never persisted here."""
@@ -595,7 +635,7 @@ class Hub:
                 complete = False
                 break
             try:
-                rows.append(self.show(record[0]))
+                rows.append(self.show(record[0], refresh_usage=False))
             except (ValueError, OSError) as exc:
                 complete = False
                 row = self.get(record[0])
@@ -672,7 +712,7 @@ class Hub:
         if closure_record is not None:
             changes['closure'] = closure_record
         self._update(sid, **changes)
-        return self.show(sid)
+        return self.show(sid, refresh_usage=True)
 
     def close(self, sid, *, force=False, wait=None):
         """Best-effort close: ask for a Memory save, wait a bounded time, then terminate.
@@ -1274,6 +1314,7 @@ class Hub:
             if rebinding:
                 changes['native_binding'] = rebinding
             changes['native_id'] = native_id
+            changes['native_ids'] = session_usage.remember(row, native_id)
         if body:
             changes['reason'] = text(body, 'report', 16000)
             if activity == 'finished':
