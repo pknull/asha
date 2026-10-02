@@ -62,6 +62,30 @@ uses the session's requested model or `unknown`, never a later report. `models`
 is that per-event breakdown with provenance; `current_sessions` separately
 lists the live rows' current selection.
 
+### Token use (#111)
+
+`session show` and every stop or close read the worker's native records,
+read-only, and store `usage` on the session row: token totals (`input`
+uncached, `cache_read`, `cache_write`, `output`, and `reasoning`, which is part
+of output), `cache_hit_ratio` (cache reads over all input), and the effective
+`model` and `effort` where the record states them. Those also enter
+`selection_reported` with source `native-record`, so terminal sessions stop
+reading `requested`/`unknown` once a record exists. `show` adds a compact
+`usage_line`; `list` and the dashboard present the stored value without
+reading records (a `tokens` field, and a tokens column while any listed session
+has known usage). Tokens only, never prices.
+
+| Harness | Record | Notes |
+| --- | --- | --- |
+| Claude | `~/.claude/projects/*/<native_id>.jsonl` (`CLAUDE_CONFIG_DIR`) | `message.usage` counted once per `message.id` (one line per content block repeats it); top-level `effort`; `<native_id>/subagents/` transcripts are added to the totals |
+| Codex | `~/.codex/sessions/*/*/*/rollout-*-<thread>.jsonl` or `archived_sessions/` (`CODEX_HOME`) | cumulative `token_count` totals restart when a thread is resumed into the same file, so each run's final total is summed; `input_tokens` includes cached input; `turn_context` model and effort; spawned subagent threads are not counted |
+| Copilot, OpenCode | not checked yet | always `unknown` |
+
+Every native conversation a session bound (`native_ids`, across resumes and
+`/clear`) is summed. Records are reread only when their size or mtime changed.
+A missing, oversized (over 256 MiB) or unparsable record leaves usage `unknown`
+with a reason and never blocks a show, stop or close.
+
 Plain workers do not trigger Asha's first-run configuration. Existing native
 skills and hooks remain available; a harness without the Asha hooks can still
 run its assignment, with activity shown as unknown until explicitly reported.

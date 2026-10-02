@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — per-worker model, effort and token use (#111)
+
+- `session show` and every stop or close read the worker's native record
+  (Claude transcript, Codex rollout) read-only and store `usage` on the row:
+  input, cache read, cache write, output and reasoning tokens, the cache-hit
+  ratio, and the effective model and effort, which also fill
+  `selection_reported` (source `native-record`). Every conversation the
+  session bound across resumes is summed. Tokens only, no prices.
+- `show` adds `usage_line`; `list` rows carry `tokens`, and the dashboard
+  gains a tokens column while any listed session has known usage.
+- Copilot and OpenCode read `unknown` until their records are checked; a
+  missing or unparsable record also reads `unknown` and never blocks a close.
+
 ## Unreleased — a dropped Stop no longer strands a finished report (#110)
 
 - The hook bridge gives SessionStart and SessionEnd the same 3 s lifecycle
