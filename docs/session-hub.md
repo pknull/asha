@@ -300,8 +300,11 @@ whose hooks and aliases you control.
 
 ## Status and input
 
-Claude and Codex hooks provide best-effort observations. Copilot and OpenCode
-terminal workers currently need optional explicit reports for activity detail.
+Claude and Codex hooks provide best-effort observations. OpenCode's generated
+plugin reports session start, tool start/end and idle (as a guarded Stop)
+through the same bridge; it is not live-proven, and OpenCode has no Stop block
+seam, so its close requests are queued-only. Copilot terminal workers currently
+need optional explicit reports for activity detail.
 Missing or stale telemetry shows `unknown`; it never stops a worker. An idle
 native turn is not a completed assignment. An explicit finished report or
 successful structured utility yields `finished`. Completed structured utilities
@@ -334,7 +337,8 @@ locked, trimmed in place to the newest half past 64 KiB) instead of being
 discarded. A live Claude or Codex terminal session with no native hook event 90
 seconds after launch is labelled `Hooks not reporting: attach` (`telemetry:
 hooks-not-reporting` in JSON); worker reports do not count as hook evidence,
-and Copilot/OpenCode sessions, which have no hook bridge, are never labelled.
+and Copilot/OpenCode sessions, whose bridges are not live-proven, are never
+labelled.
 A terminal PermissionRequest makes the session `needs-input` with a one-line,
 300-character summary of the request (tool and command, path or URL) as its
 question, so Control shows what is being asked; the next step is `Answer in

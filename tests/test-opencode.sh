@@ -70,8 +70,9 @@ if command -v node >/dev/null 2>&1; then
 import pathlib, sys
 source = pathlib.Path(sys.argv[1]).read_text()
 source = source.replace(
-    'import { spawnSync } from "node:child_process"',
+    'import { spawn, spawnSync } from "node:child_process"',
     '''globalThis.__ashaSpawnCalls = []
+const spawn = () => { throw new Error("unexpected async spawn outside a hub session") }
 const spawnSync = (command, args, options) => {
   globalThis.__ashaSpawnCalls.push({ command, args, input: options.input })
   return { status: 0, stdout: "", stderr: "" }
@@ -112,6 +113,86 @@ NODE
   fi
 else
   echo "  - node absent; child-idle behavior check skipped"
+fi
+# Control session events: the bridge reports the four lifecycle seams it already
+# holds through the shared control-event.sh contract, only inside a hub session,
+# never for a child session, and never blocks the native seam waiting for it.
+if command -v node >/dev/null 2>&1; then
+  EVENT_PLUGIN="$WORK/asha-plugin-events.mjs"
+  python3 - "$OC1/plugins/asha.js" "$EVENT_PLUGIN" <<'PY'
+import pathlib, re, sys
+source = pathlib.Path(sys.argv[1]).read_text()
+source, count = re.subn(
+    r'import \{[^}]*\} from "node:child_process"',
+    '''globalThis.__ashaSync = []
+globalThis.__ashaAsync = []
+const spawnSync = (command, args, options) => {
+  globalThis.__ashaSync.push({ command, args, input: options.input })
+  return { status: 0, stdout: "", stderr: "" }
+}
+const spawn = (command, args, options) => {
+  const call = { command, args, env: options.env, input: "", ended: false }
+  globalThis.__ashaAsync.push(call)
+  return {
+    stdin: { on() {}, end(value) { call.input += value || ""; call.ended = true } },
+    on() {}, unref() { call.unref = true },
+  }
+}''',
+    source, count=1)
+assert count == 1, "child_process import not found"
+pathlib.Path(sys.argv[2]).write_text(source)
+PY
+  if node --input-type=module - "$EVENT_PLUGIN" \
+      >"$WORK/events.out" 2>"$WORK/events.err" <<'NODE'
+import { pathToFileURL } from "node:url"
+
+const { AshaPlugin } = await import(pathToFileURL(process.argv[2]).href)
+const fail = (message) => { throw new Error(message) }
+
+// Outside a hub session nothing is reported.
+delete process.env.ASHA_HUB_SESSION_ID
+let hooks = await AshaPlugin({ directory: "/project" })
+await hooks.event({ event: { type: "session.created", properties: { info: { id: "plain-1" } } } })
+await hooks["tool.execute.before"]({ sessionID: "plain-1", tool: "bash" }, { args: {} })
+await hooks["tool.execute.after"]({ sessionID: "plain-1", tool: "bash", args: {} })
+await hooks.event({ event: { type: "session.idle", properties: { info: { id: "plain-1" } } } })
+if (globalThis.__ashaAsync.length !== 0) fail("reported outside a hub session")
+
+process.env.ASHA_HUB_SESSION_ID = "hub-1"
+hooks = await AshaPlugin({ directory: "/project" })
+await hooks.event({ event: { type: "session.created", properties: { info: { id: "root-1" } } } })
+await hooks.event({ event: { type: "session.created", properties: { info: { id: "child-1", parentID: "root-1" } } } })
+await hooks["tool.execute.before"]({ sessionID: "child-1", tool: "bash" }, { args: {} })
+await hooks["tool.execute.after"]({ sessionID: "child-1", tool: "bash", args: {} })
+await hooks.event({ event: { type: "session.idle", properties: { info: { id: "child-1" } } } })
+await hooks["tool.execute.before"]({ sessionID: "root-1", tool: "bash" }, { args: { command: "ls" } })
+await hooks["tool.execute.after"]({ sessionID: "root-1", tool: "bash", args: { command: "ls" } })
+await hooks.event({ event: { type: "session.idle", properties: { info: { id: "root-1" } } } })
+
+const calls = globalThis.__ashaAsync
+const names = calls.map((c) => c.args.join(" "))
+if (JSON.stringify(names) !== JSON.stringify(["SessionStart", "PreToolUse", "PostToolUse", "Stop"])) {
+  fail("unexpected control events: " + JSON.stringify(names))
+}
+for (const call of calls) {
+  if (!call.command.endsWith("/hooks/handlers/control-event.sh")) fail("not the shared bridge: " + call.command)
+  if (!call.ended || !call.unref) fail("bridge call left open or blocking: " + call.args)
+  const payload = JSON.parse(call.input)
+  if (payload.session_id !== "root-1" || payload.cwd !== "/project") fail("payload identity: " + call.input)
+  if (call.env.ASHA_HUB_SESSION_ID !== "hub-1" || call.env.ASHA_HARNESS !== "opencode") fail("env identity")
+}
+// OpenCode has no Stop block seam: a close request must never be marked
+// delivered through a decision the bridge cannot act on.
+if (JSON.parse(calls[3].input).stop_hook_active !== true) fail("idle Stop must carry stop_hook_active")
+if (globalThis.__ashaSync.some((c) => c.command.endsWith("control-event.sh"))) fail("control event ran synchronously")
+NODE
+  then
+    ok "generated plugin reports session/tool/idle seams to Control through control-event.sh in hub sessions only"
+  else
+    fail "generated plugin reports session/tool/idle seams to Control through control-event.sh in hub sessions only ($(grep -m1 "^Error" "$WORK/events.err"))"
+  fi
+else
+  echo "  - node absent; Control event bridge check skipped"
 fi
 if HOME="$H1" XDG_CONFIG_HOME="$H1/config" ASHA_HOME="$H1/.asha" \
     ASHA_OPENCODE_CMD="$OPENCODE_OK" \

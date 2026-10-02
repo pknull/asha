@@ -221,14 +221,16 @@ opencode_install_plugin() {
   local post="$handlers/post-tool-use.sh"
   local end="$handlers/session-end.sh"
   local verify="$handlers/verify-pass-complete.sh"
+  local control="$handlers/control-event.sh"
   [[ -x "$adapter" ]] || { echo "WARN: OpenCode policy adapter missing: $adapter" >&2; return 0; }
   [[ -x "$verify" ]] || { echo "WARN: OpenCode verification handler missing: $verify" >&2; return 0; }
+  [[ -x "$control" ]] || { echo "WARN: OpenCode Control event bridge missing: $control" >&2; return 0; }
 
   local content prepared
-  content="$(python3 - "$adapter" "$start" "$prompt" "$post" "$end" "$verify" <<'PYEOF'
+  content="$(python3 - "$adapter" "$start" "$prompt" "$post" "$end" "$verify" "$control" <<'PYEOF'
 import json, sys
-adapter, start, prompt, post, end, verify = map(json.dumps, sys.argv[1:])
-print('import { spawnSync } from "node:child_process"')
+adapter, start, prompt, post, end, verify, control = map(json.dumps, sys.argv[1:])
+print('import { spawn, spawnSync } from "node:child_process"')
 print('')
 print('export const AshaPlugin = async ({ directory }) => {')
 print('  let latestSessionID = ""')
@@ -250,6 +252,22 @@ print('      const result = spawnSync(command, event ? [event] : [], { input: JS
 print('      return { status: result.status, stdout: result.stdout || "", stderr: result.stderr || "" }')
 print('    } catch (_) { return { status: 0, stdout: "", stderr: "" } }')
 print('  }')
+# Control session events (asha control session event) go through the same
+# bounded control-event.sh bridge Claude and Codex use, under the native names it
+# maps. Only a hub session reports, only for root (non-child) sessions, and
+# never synchronously: the bridge bounds itself, and an OpenCode seam must not
+# wait on Control. Idle is reported as a Stop whose guard is set, because
+# OpenCode has no Stop block seam to carry a close request back.
+print('  const report = (native, sid, extra) => {')
+print('    if (!process.env.ASHA_HUB_SESSION_ID || !sid || childSessions.has(sid)) return')
+print('    try {')
+print(f'      const child = spawn({control}, [native], {{ env: envFor(sid), stdio: ["pipe", "ignore", "ignore"] }})')
+print('      child.on("error", () => {})')
+print('      child.stdin.on("error", () => {})')
+print('      child.stdin.end(JSON.stringify({ session_id: sid, cwd: directory, ...(extra || {}) }))')
+print('      child.unref()')
+print('    } catch (_) {}')
+print('  }')
 print('  const ensureStarted = (sid) => {')
 print('    if (!sid || childSessions.has(sid) || started.has(sid)) return')
 print('    started.add(sid)')
@@ -270,6 +288,7 @@ print('      output.env.CLAUDE_PROJECT_DIR = input.cwd || directory')
 print('    },')
 print('    "tool.execute.before": async (input, output) => {')
 print('      const sid = input.sessionID || ""; remember(sid); ensureStarted(sid)')
+print('      report("PreToolUse", sid)')
 print('      const payload = { session_id: sid, cwd: directory, tool_name: input.tool || "", tool_input: output.args || {} }')
 print(f'      const result = run({adapter}, "", payload, sid)')
 print('      if (result.status === 0 && result.stderr.trim()) { append(sid, result.stderr.trim()); process.stderr.write(result.stderr) }')
@@ -277,6 +296,7 @@ print('      if (result.status === 2) throw new Error((result.stderr || "Blocked
 print('    },')
 print('    "tool.execute.after": async (input) => {')
 print('      const sid = input.sessionID || ""; remember(sid)')
+print('      report("PostToolUse", sid)')
 print('      const payload = { hook_event_name: "PostToolUse", session_id: sid, cwd: directory, tool_name: input.tool || "", tool_input: input.args || {} }')
 print(f'      append(sid, run({post}, "", payload, sid).stdout)')
 print('    },')
@@ -291,11 +311,13 @@ print('        const info = event.properties?.info || event.properties || {}')
 print('        const sid = info.id || info.sessionID || ""; remember(sid)')
 print('        if (info.parentID || info.parentId) childSessions.add(sid)')
 print('        ensureStarted(sid)')
+print('        report("SessionStart", sid)')
 print('      } else if (event && event.type === "session.idle") {')
 print('        const info = event.properties?.info || event.properties || {}')
 print('        const sid = info.id || info.sessionID || latestSessionID || ""')
 print('        if (childSessions.has(sid)) return')
 print('        remember(sid)')
+print('        report("Stop", sid, { stop_hook_active: true })')
 print(f'        append(sid, run({verify}, "", {{ session_id: sid, cwd: directory }}, sid).stdout)')
 print('      }')
 print('    },')

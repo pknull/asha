@@ -55,8 +55,10 @@ claimed:
 | `turn-stopped` return channel | The Stop hook can return one fail-open `block` wake decision per new coordinator journal cursor; a hub session's pending graceful-close request rides the same channel once per request (`docs/session-hub.md`). | not claimed; requires a live probe. Hub close requests for Codex are therefore queued-only. |
 | `session-ended` | Wired from `SessionEnd` | Codex has no equivalent event. |
 
-Copilot and OpenCode provide process liveness only; Asha claims no semantic
-Control events for either harness.
+Copilot and OpenCode provide process liveness only to Control tasks; Asha
+claims no semantic task events for either harness. OpenCode hub sessions report
+session start, tool start/end and idle through the generated plugin
+(`harnesses/capabilities.json`, not live-proven).
 
 A harness with no wired stop or exit event (Copilot and OpenCode) never
 emits a signal that supersedes an in-progress `working`/`needs-input` snapshot.
