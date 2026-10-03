@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased — Copilot live-verified range to 1.0.91
+
+- `asha doctor` stops warning on Copilot CLI 1.0.79-1.0.91. Verified live on
+  1.0.91 (2026-10-03): `tests/test-copilot-live.sh` passes, and a Control
+  worker's hook events (activity, tool completion, finished report) reach the
+  hub. The `preToolUse` deny path was not re-tested on this version.
+
 ## Unreleased — per-worker model, effort and token use (#111)
 
 - `session show` and every stop or close read the worker's native record

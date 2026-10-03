@@ -51,7 +51,7 @@ asha_copilot_verified_min_version() {
 }
 
 asha_copilot_verified_max_version() {
-  printf '%s\n' '1.0.78'
+  printf '%s\n' '1.0.91'
 }
 
 asha_opencode_min_version() {
