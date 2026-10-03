@@ -375,14 +375,14 @@ if grep -q "outside the live-verified range" <<<"$out"; then
 else
   ok "verified Copilot version does not warn"
 fi
-out="$(run_with_copilot_version 1.0.78 2>&1)"
+out="$(run_with_copilot_version 1.0.91 2>&1)"
 if grep -q "outside the live-verified range" <<<"$out"; then
-  fail "workspace-v2 verified Copilot version does not warn"
+  fail "newest verified Copilot version does not warn"
 else
-  ok "workspace-v2 verified Copilot version does not warn"
+  ok "newest verified Copilot version does not warn"
 fi
-out="$(run_with_copilot_version 1.0.79 2>&1)"
-grep -q "outside the live-verified range 1.0.63-1.0.78" <<<"$out" \
+out="$(run_with_copilot_version 1.0.92 2>&1)"
+grep -q "outside the live-verified range 1.0.63-1.0.91" <<<"$out" \
   && ok "newer Copilot version warns to run the live canary" \
   || fail "newer Copilot version warns to run the live canary"
 
