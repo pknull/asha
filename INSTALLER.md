@@ -423,6 +423,12 @@ regex policy engine: Codex rules are prefix-based and apply at permission /
 sandbox boundaries, not every tool call. They are a native Codex safety net,
 not a replacement for hook guardrails.
 
+The same file pins `asha` to `$HOME/.local/bin/asha` with `host_executable` and
+allows, outside the sandbox, the read-only experience inspections and exactly
+`asha control session report|handoff`, which act only as the proven caller
+session (#112). No allow rule renders when `HOME` is empty or `/`. See
+[the Codex section](docs/harness-enforcement.md#openai-codex).
+
 ### Codex agents render to native TOML
 
 Asha source agents remain Markdown, but the Codex installer renders them into
