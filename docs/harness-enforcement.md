@@ -142,6 +142,23 @@ the tmux socket or host PID ancestry: a digest-bound launch token proves the
 staging reservation, while the pane proof remains primary wherever tmux is
 reachable.
 
+Terminal session reports and Memory handoffs have no token: they prove the
+caller through the tmux socket and host PID ancestry, which the workspace-write
+sandbox denies. The installer-owned `rules/asha.rules` therefore pins `asha` to
+`$HOME/.local/bin/asha` with `host_executable` and allows exactly `asha control
+session report` and `asha control session handoff`, so Codex runs those two
+outside the sandbox without a prompt. Both act only as the proven caller
+session. Codex bypasses the sandbox only when every segment of a command is
+allowed, so a save chained with other commands, or using redirection, `$VAR` or
+a heredoc, stays sandboxed and fails with `session ownership unavailable` or
+`reporter is not part of this session`, plus a hint to rerun the command on its
+own. Without the pin, a bare-name allow rule also matches a planted `./asha`,
+`Work/asha` or `/tmp/x/asha`; with it they no longer match. No allow rule
+renders when `HOME` is empty or `/`. Tested qualifier: Codex 0.160.0, terminal
+Rooms and workers, by `codex execpolicy check --resolve-host-executables`
+against the rendered rules; a live Room probe is pending (#112). Structured
+Codex workers were not probed.
+
 #### Installer preservation boundary
 
 Direct hook registration, full Codex install/update, and uninstall share a

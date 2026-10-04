@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased — Codex Rooms can report and save from the sandbox (#112)
+
+- The installer-owned `~/.codex/rules/asha.rules` pins `asha` to
+  `$HOME/.local/bin/asha` with `host_executable` and allows exactly
+  `asha control session report` and `handoff`, so Codex runs those two outside
+  the sandbox, where Control can prove the caller. Reinstall the Codex target to
+  take it. Reverses e9ebb12's "report stays native" for these two verbs; every
+  other session verb stays sandboxed or prompted.
+- Security: before the pin, the bare-name experience read allows also matched
+  a planted `./asha`, `Work/asha` or `/tmp/x/asha`, which then ran outside the
+  sandbox. Pinned, they no longer match. No allow rule renders when `HOME` is
+  empty or `/`.
+- `session ownership unavailable` now carries its cause (for example
+  `error connecting to /tmp/tmux-1000/default (Operation not permitted)`), and a
+  tmux connect refusal, or a failed ancestry check while `/proc` cannot see the
+  pane, adds a hint to run the asha command on its own with literal arguments.
+- The project-memory skill and the worker and Room contracts ask for each
+  `asha control session` command on its own (no `&&`, pipes, redirection,
+  `$VAR` or heredoc), drafts written with the edit tool, and the save digests
+  from `handoff --read`. Verified with `codex execpolicy check` on Codex
+  0.160.0; the live Room probe is pending.
+
 ## Unreleased — Copilot live-verified range to 1.0.91
 
 - `asha doctor` stops warning on Copilot CLI 1.0.79-1.0.91. Verified live on

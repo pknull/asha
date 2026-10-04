@@ -242,9 +242,10 @@
         "guardrails": {
           "support": "partial",
           "surface": "config.toml and rules/asha.rules",
-          "verifier": "doctor:rules",
+          "verifier": "doctor:rules + python test_experience_save_defaults",
           "limitations": [
-            "Rules are prefix-based and apply at approval/sandbox boundaries"
+            "Rules are prefix-based and apply at approval/sandbox boundaries",
+            "rules/asha.rules pins asha to $HOME/.local/bin/asha with host_executable and allows exactly `asha control session report|handoff` to run outside the sandbox; no allow rule renders when HOME is empty or /. Codex 0.160.0, terminal Rooms and workers: verified with `codex execpolicy check --resolve-host-executables` (a planted ./asha, Work/asha or /tmp/x/asha does not match); the live Room probe is pending (#112)"
           ]
         },
         "persona": {
@@ -325,13 +326,14 @@
         "project-memory": {
           "support": "partial",
           "surface": "project-memory skill; hub worker/Room assignments; explicit save and session handoff publication rows; ungated finished report",
-          "verifier": "python test_session_publication_rows + test_control_session_closure; tests:test-install/test-session-hub-hooks",
+          "verifier": "python test_session_publication_rows + test_control_session_closure + test_session_sandbox_denial + test_session_plain_save_commands; tests:test-install/test-session-hub-hooks",
           "limitations": [
             "Controller/scripted fixtures are not native finish-save-idle delivery proof; no paid native probe performed",
             "Every successful save records a publication row (explicit save, close, handoff or no-durable-update attestation); saved is read from those rows only",
             "No Git publication, transcript extraction, chair context, or native permission bypass",
             "Structured close is the next structured turn, then a stop request; native permissions may block the handoff CLI",
-            "PreToolUse unified_exec/tool coverage remains incomplete; callbacks are telemetry, not a complete enforcement boundary"
+            "PreToolUse unified_exec/tool coverage remains incomplete; callbacks are telemetry, not a complete enforcement boundary",
+            "Codex 0.160.0, terminal Rooms and workers: report and handoff prove the caller through the tmux socket and host PID ancestry, which the sandbox denies, so they succeed only as one plain command that rules/asha.rules runs outside the sandbox; a chained or expanded command fails ownership with a rerun hint. Live Room probe pending (#112)"
           ]
         }
       }
