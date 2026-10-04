@@ -159,6 +159,14 @@ Rooms and workers, by `codex execpolicy check --resolve-host-executables`
 against the rendered rules; a live Room probe is pending (#112). Structured
 Codex workers were not probed.
 
+The pin covers only `asha`. Allow rules you approve yourself, such as those
+Codex appends to `~/.codex/rules/default.rules`, also match by bare name: an
+agent that writes `./git` or `Work/curl` into its workspace matches a `git` or
+`curl` allow rule and runs it unsandboxed. Pin each program you allow with your
+own `host_executable(name = ..., paths = [...])` line. An allowed `asha` command
+also runs asha's own code, so do not run a Codex session whose writable
+workspace contains the checkout that `~/.local/bin/asha` points to.
+
 #### Installer preservation boundary
 
 Direct hook registration, full Codex install/update, and uninstall share a
