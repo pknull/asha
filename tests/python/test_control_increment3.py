@@ -156,7 +156,8 @@ class PrivateResultPrelaunchTests(unittest.TestCase):
                 self.assertEqual(journal["phase"], "preserved")
                 workspace = Path(journal["workspace"]["path"])
                 self.assertEqual((workspace / ".asha").stat().st_mode & 0o777,
-                                 0o775 if failure == "chmod" else 0o700)
+                                 increment2.JJ_DIRECTORY_MODE_UNDER_UMASK_002
+                                 if failure == "chmod" else 0o700)
 
     def test_replacements_before_normalization_never_chmod_foreign_state(self):
         from lib.control.prepare import PreparationError
@@ -175,6 +176,9 @@ class PrivateResultPrelaunchTests(unittest.TestCase):
                     journal = CreationJournalStore(self.config).read(request.task_id)
                     workspace = Path(journal["workspace"]["path"])
                     asha = workspace / ".asha"
+                    # Each altered path with the mode it was created with:
+                    # jj's under its workspace-add umask, this test's under 0002.
+                    jj_made = increment2.JJ_DIRECTORY_MODE_UNDER_UMASK_002
                     if collision in {"symlink", "inode"}:
                         old = workspace / "retained-asha"
                         asha.rename(old)
@@ -182,8 +186,8 @@ class PrivateResultPrelaunchTests(unittest.TestCase):
                             asha.symlink_to(old, target_is_directory=True)
                         else:
                             asha.mkdir()
-                        altered.append(asha)
-                        altered.append(old)
+                        altered.append((asha, 0o775))
+                        altered.append((old, jj_made))
                     elif collision == "registration":
                         patches.enter_context(mock.patch.object(adapter, "workspace_identities", return_value={}))
                     elif collision == "operation":
@@ -202,20 +206,20 @@ class PrivateResultPrelaunchTests(unittest.TestCase):
                             return metadata
 
                         patches.enter_context(mock.patch("os.fstat", side_effect=fstat))
-                        altered.append(asha)
+                        altered.append((asha, jj_made))
                     else:
                         sidecar = self.config.tasks_dir.parent / "transactions" / f"{request.task_id}.ownership"
                         sidecar.write_bytes(b"foreign sidecar")
                         sidecar.chmod(0o600)
-                        altered.append(asha)
+                        altered.append((asha, jj_made))
 
                 with self.assertRaises(PreparationError):
                     self.start_fake_codex(request, adapter=adapter, failure_injector=inject)
                 patches.close()
                 self.assertEqual(self.fake_provider_calls, [])
-                for path in altered:
+                for path, mode in altered:
                     if not path.is_symlink():
-                        self.assertEqual(path.stat().st_mode & 0o777, 0o775)
+                        self.assertEqual(path.stat().st_mode & 0o777, mode)
 
     def test_ready_boundary_replacement_is_refused_before_provider(self):
         from lib.control.prepare import PreparationError

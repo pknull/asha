@@ -138,6 +138,27 @@ def _workspace_add_argv(
     return argv
 
 
+_PROC_UMASK = re.compile(rb"^Umask:\s*([0-7]{1,4})$", re.MULTILINE)
+
+
+# The task record names its workspace before `jj workspace add` creates the
+# root, so readers validate that root while jj populates it. jj makes it and
+# every directory inside under the process umask; with 0002 the root stayed
+# group-writable until privatized, and the namespace check refused the task
+# meanwhile (#115). Keep the caller's umask, so checkout directories keep the
+# operator's read bits, but never grant group/other write. Read it from /proc:
+# setting and restoring it is process-wide and races other threads' files.
+def _workspace_add_umask() -> int:
+    try:
+        with open("/proc/self/status", "rb") as handle:
+            match = _PROC_UMASK.search(handle.read(65536))
+    except OSError:
+        match = None
+    if match is None:
+        return 0o077
+    return (int(match.group(1), 8) & 0o777) | 0o022
+
+
 def _exact_ascii_line(raw: bytes, label: str) -> str:
     """Decode exactly one unpadded ASCII line, with one optional final LF."""
     try:
@@ -1209,16 +1230,21 @@ class JjAdapter:
 
     def _run_bytes(
         self, executable: str, args: Sequence[str], *, cwd: Path | None = None,
-        limit: int = MAX_OUTPUT_BYTES,
+        limit: int = MAX_OUTPUT_BYTES, umask: int | None = None,
     ) -> bytes:
         argv = [executable, *map(str, args)]
         return checked_bytes(
             argv, cwd=cwd, limit=limit, runner=self.runner, error_type=JjError,
+            umask=umask,
         )
 
-    def _run(self, args: Sequence[str], *, cwd: Path | None = None) -> str:
+    def _run(
+        self, args: Sequence[str], *, cwd: Path | None = None, umask: int | None = None,
+    ) -> str:
         try:
-            return self._run_bytes(self.executable, args, cwd=cwd).decode("utf-8")
+            return self._run_bytes(
+                self.executable, args, cwd=cwd, umask=umask,
+            ).decode("utf-8")
         except UnicodeDecodeError as exc:
             raise JjError("jj output was not UTF-8") from exc
 
@@ -2454,7 +2480,7 @@ class JjAdapter:
             source, destination, name,
             _workspace_base_commit_ids(base_commit_id, "workspace add"),
             message, operation_id,
-        ))
+        ), umask=_workspace_add_umask())
 
     def workspace_conflicts(
         self, workspace: Path,

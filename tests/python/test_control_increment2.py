@@ -42,6 +42,10 @@ from lib.control.store import (
 )
 from lib.control.transaction import CreationJournalStore, JournalError
 
+# jj creates workspace directories under the caller's umask plus 0022 (#115);
+# the private-result tests run with umask 0002.
+JJ_DIRECTORY_MODE_UNDER_UMASK_002 = 0o755
+
 
 class JjAdapterTests(unittest.TestCase):
     def test_visible_commit_refuses_all_zero_id_without_running_jj(self) -> None:
@@ -80,6 +84,31 @@ class JjAdapterTests(unittest.TestCase):
         self.assertNotIn("@", add)
         self.assertIn("--revision", add)
         self.assertEqual(add[add.index("--revision") + 1], "b" * 40)
+
+    def test_workspace_add_child_umask_withholds_group_and_other_write(self) -> None:
+        # Issue #115: keep the caller's umask plus 0022; private when /proc is silent.
+        umasks = []
+
+        def runner(argv, **kwargs):
+            umasks.append(kwargs.get("umask"))
+            return subprocess.CompletedProcess(argv, 0, "created\n", "")
+
+        adapter = JjAdapter(runner=runner)
+        previous = os.umask(0o002)
+        try:
+            adapter.add_workspace(
+                Path("/repo"), Path("/work/task"), "asha-task-11111111",
+                "b" * 40, "Task label", "a" * 128,
+            )
+            with mock.patch("lib.control.jj.open", create=True,
+                            side_effect=OSError("no /proc")):
+                adapter.add_workspace(
+                    Path("/repo"), Path("/work/next"), "asha-next-11111111",
+                    "b" * 40, "Task label", "a" * 128,
+                )
+        finally:
+            os.umask(previous)
+        self.assertEqual(umasks, [0o022, 0o077])
 
     def test_merge_workspace_add_repeats_revision_and_leaves_the_single_form_alone(
         self,
@@ -834,7 +863,8 @@ class RealJjPreparationTests(unittest.TestCase):
                     p: ((workspace / p).read_bytes(), (workspace / p).stat().st_mode)
                     for p in (".gitignore", ".asha/config.json", "tool", "tracked.txt")
                 }
-                self.assertEqual((workspace / ".asha").stat().st_mode & 0o777, 0o775)
+                self.assertEqual((workspace / ".asha").stat().st_mode & 0o777,
+                                 JJ_DIRECTORY_MODE_UNDER_UMASK_002)
                 self.assertIsNone(journal["materialization_ownership"])
 
         calls = self.start_fake_codex(request, failure_injector=capture)
@@ -1471,6 +1501,41 @@ class RealJjPreparationTests(unittest.TestCase):
                 description="different",
                 destination=Path(prepared["jj"]["workspace_path"]),
             )
+
+    def test_readers_never_see_a_writable_workspace_root_during_add(self) -> None:
+        # Issue #115: the task record names its workspace before jj creates
+        # the root, so every reader validates that root while jj populates it.
+        # Made under a 0002 umask it stayed group-writable until privatized,
+        # and a concurrent list skipped the task while read refused it.
+        config = self.config
+        for user_umask in (0o002, 0o077):
+            with self.subTest(umask=oct(user_umask)):
+                request = self.request(f"umask-{user_umask:03o}")
+                observed = {}
+
+                class Observing(JjAdapter):
+                    def add_workspace(inner_self, source, destination, *args, **kwargs):
+                        super().add_workspace(source, destination, *args, **kwargs)
+                        observed["mode"] = stat.S_IMODE(destination.lstat().st_mode)
+                        tasks = TaskStore(config)
+                        observed["listed"] = [item["task_id"] for item in tasks.list()]
+                        observed["skipped"] = tasks.skipped
+                        try:
+                            observed["peeked"] = tasks.peek(request.task_id)["task_id"]
+                        except StoreError as exc:
+                            observed["peeked"] = str(exc)
+
+                previous = os.umask(user_umask)
+                try:
+                    prepare_task_workspace(config, request, jj=Observing())
+                finally:
+                    os.umask(previous)
+                # Born as the operator's umask allows, minus group/other write.
+                self.assertEqual(
+                    oct(observed["mode"]), oct(0o777 & ~(user_umask | 0o022)),
+                )
+                self.assertIn(request.task_id, observed["listed"], observed["skipped"])
+                self.assertEqual(observed["peeked"], request.task_id)
 
     def test_add_error_after_exact_registration_persists_recovery_identity(self) -> None:
         class ErrorAfterAddAdapter(JjAdapter):
