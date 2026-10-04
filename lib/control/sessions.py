@@ -527,16 +527,18 @@ def parser():
 
 def main(argv=None, *, env=None):
     values = dict(os.environ if env is None else env)
-    from .hub_cli import dispatch
+    from .hub_cli import dispatch, expand_selector
     arguments = list(sys.argv[1:] if argv is None else argv)
     try:
+        # A short ID from `session list` routes like its full ID (#113).
+        arguments = expand_selector(arguments, env=values)
         routed = dispatch(arguments, env=values)
         if routed is not None:
             return routed
     except (StoreError, OSError, ValueError) as exc:
         print(f"asha control session: {exc}", file=sys.stderr)
         return 2
-    args = parser().parse_args(argv)
+    args = parser().parse_args(arguments)
     try:
         config = load_config(values)
         if args.command == "ask":

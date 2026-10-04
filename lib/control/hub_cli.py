@@ -3,13 +3,24 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import sys
 import uuid
 import time
 
 from .config import load_config
+from .database import DATABASE_NAME
 from .session_hub import Hub
+from .session_store import identifier
 from .store import StoreError
+
+# Verbs whose first positional is a session ID `session list` shows (#113).
+SESSION_ID_VERBS = frozenset({'show', 'attach', 'close', 'stop', 'resume', 'send'})
+# A prefix of the canonical ID form. Four characters keep a stray digit from
+# selecting a session; legacy Room names stay selectable where Rooms are.
+_ID_PREFIX = re.compile(r'[0-9a-f-]{4,36}')
+_ID_CHARACTERS = re.compile(r'[0-9a-f-]+')
 
 
 class _UnavailableTerminal:
@@ -98,6 +109,122 @@ def overview(config, *, env=None, tmux=None, include_closed=False, tmux_errors=(
             + (' (partial observation)' if not complete else '')}
 
 
+def _listed_matches(config, hub, needle, *, room_names):
+    """{ID: label} for each ID `session list` can show that starts with ``needle``.
+
+    Hub sessions, structured conversations and legacy Rooms the hub does not
+    own; a hub session's own Room ID is never listed, so it never matches.
+    ``room_names`` adds Rooms whose exact name is ``needle``, as attach and close
+    have always accepted.
+    """
+    from .rooms import RoomStore
+    prefix = _ID_PREFIX.fullmatch(needle) is not None
+    named = lambda room: room_names and room['name'].casefold() == needle
+    rooms = [room for room in RoomStore(config).list()
+             if named(room) or (prefix and room['room_id'].startswith(needle))]
+    found, hub_rooms = {}, set()
+    if (prefix or rooms) and (config.tasks_dir.parent / DATABASE_NAME).exists():
+        with hub.database() as db, db.transaction() as c:
+            tables = {r[0] for r in c.execute("SELECT name FROM sqlite_master WHERE type='table' "
+                                              "AND name IN ('hub_sessions','managed_sessions')")}
+            if prefix and 'hub_sessions' in tables:
+                for sid, name in c.execute("SELECT session_id,json_extract(payload,'$.name') FROM hub_sessions "
+                                           'WHERE substr(session_id,1,?)=?', (len(needle), needle)):
+                    found[sid] = name or 'session'
+            if prefix and 'managed_sessions' in tables:
+                for (sid,) in c.execute('SELECT session_id FROM managed_sessions WHERE substr(session_id,1,?)=?',
+                                        (len(needle), needle)):
+                    found.setdefault(sid, 'structured session')
+            if 'hub_sessions' in tables:
+                hub_rooms = {room['room_id'] for room in rooms if c.execute(
+                    "SELECT 1 FROM hub_sessions WHERE json_extract(payload,'$.room_id')=? OR EXISTS("
+                    "SELECT 1 FROM json_each(payload,'$.room_history') WHERE value=?) LIMIT 1",
+                    (room['room_id'], room['room_id'])).fetchone()}
+    for room in rooms:
+        if named(room) or room['room_id'] not in hub_rooms:
+            found.setdefault(room['room_id'], 'Room ' + room['name'])
+    return found
+
+
+def resolve_session(config, hub, selector, *, room_names=False):
+    """The full ID for a unique prefix of one `session list` shows (#113).
+
+    A canonical UUID passes through unchanged and behaves exactly as before.
+    An unknown or ambiguous selector names the session it could not find.
+    """
+    try:
+        return identifier(selector)
+    except StoreError:
+        pass
+    needle = selector.strip().casefold()
+    found = _listed_matches(config, hub, needle, room_names=room_names)
+    if len(found) == 1:
+        return next(iter(found))
+    if found:
+        from .orchestration.messages import terminal_safe
+        shown = [f'{sid} ({terminal_safe(label[:48])})' for sid, label in sorted(found.items())]
+        more = f'; and {len(shown) - 10} more' if len(shown) > 10 else ''
+        raise StoreError(f'session prefix {selector!r} is ambiguous; it matches ' + '; '.join(shown[:10]) + more +
+                         '; use more characters')
+    short = _ID_CHARACTERS.fullmatch(needle) is not None and len(needle) < 4
+    raise StoreError(f'session {selector!r} was not found' +
+                     ('; an ID prefix needs at least 4 characters' if short else ''))
+
+
+def expand_selector(argv, *, env):
+    """Expand a short session ID right after its verb, where routing reads it (#113)."""
+    if len(argv) < 2 or argv[0] not in SESSION_ID_VERBS or argv[1].startswith('-'):
+        return argv
+    config = load_config(env)
+    selected = resolve_session(config, Hub(config, env=env), argv[1], room_names=argv[0] in {'attach', 'close'})
+    return [argv[0], selected, *argv[2:]]
+
+
+def _interactive():
+    """Whether this command has a terminal for tmux to attach."""
+    return all(getattr(stream, 'isatty', lambda: False)() for stream in (sys.stdin, sys.stdout))
+
+
+def same_server(tmux, pane, env):
+    """Whether the caller runs inside tmux on the server holding ``pane``.
+
+    tmux exports ``TMUX=socket_path,server_pid,session`` to its panes.
+    """
+    fields = env.get('TMUX', '').rsplit(',', 2)
+    if len(fields) != 3 or not fields[0] or not fields[1].isascii() or not fields[1].isdigit():
+        return False
+    return tmux.server_identity(pane) == (fields[0], int(fields[1]))
+
+
+def attach_terminal(attached, *, tmux, env):
+    """Attach this terminal to a verified Room target; the exit status (#113).
+
+    Inside tmux on the Room's server the caller's own client switches to it;
+    anywhere else tmux attaches this terminal, and refuses to nest by itself.
+    Both forms keep the fail-closed ownership check of the printed command.
+    """
+    from .orchestration.messages import terminal_safe
+    from .rooms import room_switch_argv
+    argv = attached['attach_argv']
+    if same_server(tmux, attached['pane_id'], env):
+        client = tmux.caller_client(env['TMUX_PANE']) if env.get('TMUX_PANE') else None
+        if client is None:
+            print('asha control session: no tmux client is showing this pane; attach with: ' + attached['attach'],
+                  file=sys.stderr)
+            return 2
+        argv = room_switch_argv(attached, tmux=tmux, client=client)
+    status = subprocess.run(argv, check=False).returncode
+    if status == 66:
+        print(f"asha control session: Room {terminal_safe(attached['name'])} failed its ownership check; "
+              'nothing was attached', file=sys.stderr)
+        return 2
+    if status != 0:
+        print(f"asha control session: tmux exited with status {status}; attach with: {attached['attach']}",
+              file=sys.stderr)
+        return 2
+    return 0
+
+
 def startup_observation():
     from datetime import datetime, timezone
     stamp = datetime.now(timezone.utc).isoformat(timespec='seconds')
@@ -147,8 +274,11 @@ def dispatch(argv, *, env):
         parser.add_argument('--result-contract', choices=['asha.session-result.v1'])
         parser.add_argument('--model', help='native model for this session; omitted means the harness default')
         parser.add_argument('--effort', help='native reasoning effort; omitted means the harness default')
-    elif verb in {'show', 'attach', 'close', 'stop', 'resume', 'send'}:
-        parser.add_argument('session_id')
+    elif verb in SESSION_ID_VERBS:
+        parser.add_argument('session_id', help='a session ID, or a unique prefix of one as `list` shows it')
+        if verb == 'attach':
+            parser.add_argument('--print', action='store_true',
+                                help='print the verified tmux command instead of attaching')
         if verb in {'resume', 'send'}:
             parser.add_argument('--text', required=True)
         if verb == 'send':
@@ -214,6 +344,8 @@ def dispatch(argv, *, env):
         parser.add_argument('--key')
     args = parser.parse_args(argv[1:])
     try:
+        if verb in SESSION_ID_VERBS:
+            args.session_id = resolve_session(config, hub, args.session_id, room_names=verb in {'attach', 'close'})
         if verb == 'launch':
             result = hub.launch(**{k: v for k, v in vars(args).items() if k != 'json'})
         elif verb == 'list':
@@ -255,6 +387,8 @@ def dispatch(argv, *, env):
                     from .rooms import RoomStore, attach_room
                     result = attach_room(RoomStore(config), args.session_id, tmux=hub.tmux)
             if not args.json:
+                if result.get('attach') and not args.print and _interactive():
+                    return attach_terminal(result, tmux=hub.tmux, env=env)
                 print(result.get('attach', 'Open asha control and press Enter on session ' + args.session_id))
                 return 0
         elif verb in {'report', 'event'}:
