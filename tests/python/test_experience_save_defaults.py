@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -58,6 +59,27 @@ class SaveGate(unittest.TestCase):
                     if commands:
                         self.assertIn('experience policy --read-only', commands[0])
 
+    @staticmethod
+    def render_rules(home):
+        """The rules ``codex_render_rules`` prints for ``home``, parsed into (text, rules, host executables)."""
+        script = 'source lib/install.sh\nsource harnesses/codex.sh\nHOME="$1"\ncodex_render_rules\n'
+        text = subprocess.run(['bash', '-euc', script, 'render', home], cwd=ROOT, check=True,
+                              capture_output=True, text=True, env=dict(os.environ)).stdout
+        rules, hosts = [], []
+        exec(text, {'prefix_rule': lambda **value: rules.append(value),
+                    'host_executable': lambda **value: hosts.append(value)})
+        return text, rules, hosts
+
+    @staticmethod
+    def allows(rules, command):
+        """Prefix match as Codex does it: a list element in a pattern is a set of alternatives."""
+        args = shlex.split(command)
+        def element(pattern, arg):
+            return arg in pattern if isinstance(pattern, list) else arg == pattern
+        return any(len(args) >= len(rule['pattern'])
+                   and all(element(p, a) for p, a in zip(rule['pattern'], args))
+                   for rule in rules if rule['decision'] == 'allow')
+
     def test_rendered_rules_allow_reads_but_never_experience_writes(self):
         with tempfile.TemporaryDirectory(dir=os.environ['HOME']) as home:
             script = ('source lib/install.sh\nsource harnesses/codex.sh\n'
@@ -66,18 +88,70 @@ class SaveGate(unittest.TestCase):
                            env=dict(os.environ, HOME=home))
             rules = []
             exec((Path(home) / '.codex/rules/asha.rules').read_text(),
-                 {'prefix_rule': lambda **value: rules.append(value)})
-            allowed = [rule['pattern'] for rule in rules if rule['decision'] == 'allow']
+                 {'prefix_rule': lambda **value: rules.append(value),
+                  'host_executable': lambda **value: None})
             def matches(command):
-                args = shlex.split(command)
-                return any(args[:len(prefix)] == prefix for prefix in allowed)
+                return self.allows(rules, command)
             for suffix in ('policy --read-only --project P --json', 'pending --project P --json', 'show REPORT --json'):
                 self.assertTrue(matches('asha control session experience ' + suffix), suffix)
             for suffix in ('policy --mode capture --project P', 'policy --clear --project P',
                            'dispose --project P --decision-file D --publication-file R',
                            'review --project P --report R --result-file F'):
                 self.assertFalse(matches('asha control session experience ' + suffix), suffix)
-            self.assertFalse(matches('asha control session report --state finished'))
+            # #112: these two act only as the proven caller session, so they run outside the sandbox.
+            self.assertTrue(matches('asha control session report --state finished --text DONE'))
+            self.assertTrue(matches('asha control session handoff --read --json'))
+            self.assertTrue(matches('asha control session handoff --outcome no-durable-update --detail WHY --json'))
+            for verb in ('launch --project P --prompt X', 'send SESSION TEXT', 'close SESSION', 'stop SESSION',
+                         'attach SESSION', 'list', 'messages'):
+                self.assertFalse(matches('asha control session ' + verb), verb)
+            for command in ('asha control session', 'asha control report --state finished',
+                            'asha session report --state finished', 'asha control session reports'):
+                self.assertFalse(matches(command), command)
+
+    def test_rules_pin_asha_to_the_user_bin_and_omit_allows_without_a_home(self):
+        with tempfile.TemporaryDirectory(dir=os.environ['HOME']) as home:
+            _, rules, hosts = self.render_rules(home)
+            self.assertEqual(hosts, [{'name': 'asha', 'paths': [home + '/.local/bin/asha']}])
+            self.assertTrue(any(rule['decision'] == 'allow' for rule in rules))
+            _, _, slashed = self.render_rules(home + '/')
+            self.assertEqual(slashed, hosts, 'a trailing slash must not change the pinned path')
+        for home in ('', '/', '//', 'relative/home'):
+            with self.subTest(home=home):
+                text, rules, hosts = self.render_rules(home)
+                self.assertEqual(hosts, [])
+                self.assertEqual([r for r in rules if r['decision'] == 'allow'], [])
+                self.assertNotIn('decision = "allow"', text)
+                self.assertTrue(any(rule['decision'] == 'prompt' for rule in rules),
+                                'prompt rules still render without a home')
+
+    def test_codex_execpolicy_resolves_only_the_pinned_asha(self):
+        codex = shutil.which('codex')
+        if codex is None:
+            self.skipTest('codex is absent: the native execpolicy pin check needs the codex CLI')
+        with tempfile.TemporaryDirectory(dir=os.environ['HOME']) as home:
+            text, _, _ = self.render_rules(home)
+            rules = Path(home) / 'asha.rules'
+            rules.write_text(text)
+            def decision(*argv):
+                result = subprocess.run(
+                    [codex, 'execpolicy', 'check', '--resolve-host-executables', '-r', str(rules), *argv],
+                    cwd=home, env=dict(os.environ, HOME=home), capture_output=True, text=True, check=True)
+                return json.loads(result.stdout).get('decision')
+            pinned = home + '/.local/bin/asha'
+            for program in ('asha', pinned):
+                for verb in (['report', '--state', 'finished', '--text', 'DONE'], ['handoff', '--read', '--json']):
+                    with self.subTest(program=program, verb=verb[0]):
+                        self.assertEqual(decision(program, 'control', 'session', *verb), 'allow')
+                for verb in ('launch', 'send', 'close', 'stop', 'attach'):
+                    with self.subTest(program=program, verb=verb):
+                        self.assertIsNone(decision(program, 'control', 'session', verb, 'X'))
+            for planted in ('./asha', 'Work/asha', '/tmp/x/asha'):
+                for verb in ('report', 'handoff'):
+                    with self.subTest(planted=planted, verb=verb):
+                        self.assertIsNone(decision(planted, 'control', 'session', verb, '--json'))
+                with self.subTest(planted=planted, verb='experience'):
+                    self.assertIsNone(decision(planted, 'control', 'session', 'experience', 'pending'))
 
 
 class PolicyReadOnly(ClosureFixture):
