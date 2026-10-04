@@ -828,9 +828,10 @@ class Hub:
     def _finished_and_saved(self, row):
         """D7: a current finished report and a save for the current assignment, in either order.
 
-        A report stays current until new work: a prompt, a message read as a
-        new assignment, or a working report. Tool calls (the save's own) do not
-        end it. A structured report is current while its row says finished.
+        A report stays current until new work: a message read as a new
+        assignment, a working report, or a prompt whose turn makes a report
+        (#114: a prompt alone only unsettles it). Tool calls (the save's own) do
+        not end it. A structured report is current while its row says finished.
         """
         report = row.get('completion_report') or {}
         current = (report.get('generation') == row['generation']
@@ -931,6 +932,25 @@ class Hub:
         record['capture'] = Experiences(self).close_capture(row, record['request_id'])
         return record
 
+    def _adopt_later_turn(self, row):
+        """#114: a report in a later turn makes the prompt that started it a new assignment.
+
+        Only while the assignment that turn would replace is still current; a
+        Control assignment or resume in between keeps its own. Either way the
+        later turn is spent.
+        """
+        if not row.get('later_turn'):
+            return row
+        with self._observation_lock(row['session_id']):
+            current = self.get(row['session_id'])
+            later = current.get('later_turn')
+            if not later:
+                return current
+            changes = dict(later_turn=None)
+            if later.get('replaces') == current.get('assignment_epoch'):
+                changes['assignment_epoch'] = later['epoch']
+            return self._update(current['session_id'], expected_generation=row['generation'], **changes)
+
     def report(self, *, state, body=None, native_id=None, experience_file=None,
                experience_ref=None, key=None, supersedes=None):
         """Optional completion assessment; capture failures never erase task status."""
@@ -944,6 +964,7 @@ class Hub:
             row = self.get(actor['session_id'])
             if row['generation'] != actor['generation'] or row['lifecycle'] not in ACTIVE_LIFECYCLES:
                 raise StoreError('stale or inactive session reporter')
+            row = self._adopt_later_turn(row)
             # Finished is ungated (D3): the row shows whether this generation saved.
             experiences = Experiences(self)
             capture = None
@@ -1306,11 +1327,23 @@ class Hub:
                 changes['native_emitted_at'] = emitted_at
             if outstanding:
                 changes['reason'] = f'Turn ended; waiting on {outstanding} background task(s)'
-        if event == 'prompt-submitted':
-            changes['assignment_epoch'] = str(uuid.uuid4())
-        if event == 'prompt-submitted' or (not event and state == 'working'):
-            changes['work_epoch'] = str(uuid.uuid4())
-            changes['completion_report'] = None
+        report = row.get('completion_report')
+        if (event == 'prompt-submitted' and report and report.get('generation') == row['generation']
+                and report.get('assignment_epoch') == row.get('assignment_epoch')):
+            # #114: a turn after a finished report is not yet new work (Claude
+            # starts one when a background Monitor or task notification wakes
+            # it). The report stands, unsettled while the turn runs: a report in
+            # this turn makes it a new assignment (report), a clean turn end
+            # settles the standing report again.
+            changes.update(later_turn=dict(epoch=str(uuid.uuid4()), replaces=row.get('assignment_epoch')),
+                           completion_report={k: v for k, v in report.items() if k != 'turn_ended_at'},
+                           work_epoch=str(uuid.uuid4()))
+        else:
+            if event == 'prompt-submitted':
+                changes.update(assignment_epoch=str(uuid.uuid4()), later_turn=None)
+            if event == 'prompt-submitted' or (not event and state == 'working'):
+                changes['work_epoch'] = str(uuid.uuid4())
+                changes['completion_report'] = None
         if not event:
             # A worker report is fresher than the last Stop's background list.
             changes['background_tasks'] = None
@@ -1319,10 +1352,10 @@ class Hub:
                 assignment_epoch=row.get('assignment_epoch'), reported_at=changes['observed_at'])
         elif not event:
             changes['completion_report'] = None
-        report = row.get('completion_report')
         if report and event in {'turn-stopped', 'session-ended'} and not outstanding:
             # #109: the reporting turn has ended; only now does the report read finished.
-            changes['completion_report'] = dict(report, turn_ended_at=changes['observed_at'])
+            # #114: a later turn that made no report ends here and is spent.
+            changes.update(completion_report=dict(report, turn_ended_at=changes['observed_at']), later_turn=None)
         if event == 'permission-requested':
             changes['question'] = None
         if native_id:

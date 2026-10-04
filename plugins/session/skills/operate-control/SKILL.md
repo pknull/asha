@@ -102,7 +102,9 @@ observations where available. `unknown` means observation is missing or stale,
 whose turn has stopped, or a completed structured utility. A report whose turn
 is still running reads `working` with `reported_activity: finished` (`Working:
 reported finished`); harnesses without a turn-end event (Copilot) settle it
-after five quiet minutes. Silence proves none of these. Read results
+after five quiet minutes. A later turn with no new report (a background
+notification waking the worker) keeps the report and reads finished again
+when it ends. Silence proves none of these. Read results
 before conveying them as conclusions. Message pages expose `complete` and
 `next_offset`; use `messages --offset N` to read subsequent pages.
 
@@ -180,7 +182,7 @@ and dashboard. A failed telemetry hook must not block native work.
   `~/.asha/state/control/hub-lost-events.jsonl`). A dropped `turn-stopped` is
   delivered late by the bridge's loss call (#110), usually within seconds; if
   that also fails, a Claude or Codex finished report stays `Working: reported
-  finished` until the next prompt, since they never settle on staleness alone.
+  finished` until a later turn ends, since they never settle on staleness alone.
   Confirm from the pane before acting on the row.
 - Copilot has no turn-end hook: a Copilot row stays working after its turn until
   the next event or the staleness rule.
