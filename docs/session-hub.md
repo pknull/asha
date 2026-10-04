@@ -17,7 +17,22 @@ asha control session launch --project termart --prompt 'Discuss the status displ
 asha control session launch --project termart --prompt 'Summarize open issues' --transport structured --harness claude --json
 asha control session list --json
 asha control session show SESSION_ID --json
+asha control session attach SESSION_ID
 ```
+
+`show`, `attach`, `close`, `stop`, `resume` and `send` accept a full session ID
+or a unique prefix of at least four characters, such as the eight that `list`
+and the dashboard show. An unknown or ambiguous prefix fails naming the
+session, and an ambiguous one lists the matching IDs; nothing acts on a guess.
+Put the ID right after the verb.
+`attach` and `close` still take an exact legacy Room name.
+
+In a terminal, `attach` attaches: inside tmux on the Room's own server it
+switches your client (`switch-client`), anywhere else it runs `attach-session`
+(tmux itself refuses to nest inside another server). Both repeat the Room
+ownership check first and attach nothing when it fails. `--json` keeps the
+print-only result for scripts and the dashboard; `--print` prints the verified
+tmux command instead of running it, as does any non-terminal caller.
 
 Project names resolve through Asha's existing index; canonical initialized
 project paths also work. Ambiguous names require a choice. Ordinary jobs run

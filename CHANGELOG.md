@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — session verbs take short IDs; attach attaches (#113)
+
+- `asha control session show|attach|close|stop|resume|send` accept a unique
+  prefix (four characters or more) of an ID that `session list` shows, such as
+  the eight-character form. An unknown prefix reads `session 'e154c8af' was not
+  found` instead of naming a room; an ambiguous one lists the matching IDs and
+  acts on none. Full UUIDs and exact legacy Room names behave as before.
+- In a terminal, `session attach` attaches: `switch-client` for the caller's own
+  client inside tmux on the Room's server, `attach-session` elsewhere. Both keep
+  the `if-shell` ownership guard and attach nothing when it refuses (exit 2).
+  `--json` stays print-only for scripts and the dashboard; `--print` prints the
+  command, as does a non-terminal caller.
+
 ## Unreleased — Codex Rooms can report and save from the sandbox (#112)
 
 - The installer-owned `~/.codex/rules/asha.rules` pins `asha` to

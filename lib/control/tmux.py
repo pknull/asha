@@ -28,6 +28,8 @@ _ROOM_UUID = re.compile(
     re.ASCII,
 )
 _SHA256 = re.compile(r"[0-9a-f]{64}", re.ASCII)
+# A client tty that embeds as one word in a tmux command string.
+_COMMAND_TTY = re.compile(r"/dev/[A-Za-z0-9_./-]{1,256}", re.ASCII)
 _USER_OPTION = re.compile(r"@[a-z][a-z0-9_]{0,63}", re.ASCII)
 _ENVIRONMENT_KEY = re.compile(r"[A-Z][A-Z0-9_]{0,63}", re.ASCII)
 _RESULT_STAGING_TOKEN = re.compile(r"[0-9a-f]{64}", re.ASCII)
@@ -780,6 +782,38 @@ class TmuxAdapter:
             "if-shell", "-F", "-t", pane, condition,
             f"attach-session -t {session}", _ROOM_REFUSAL,
         ]
+
+    def room_switch_argv(
+        self, *, room_id: str, project_marker: str,
+        pane_id: str, session_id: str, client: str,
+    ) -> list[str]:
+        """The same guarded action for a caller already inside tmux on this server.
+
+        It moves ``client`` to the Room session instead of nesting an attach.
+        """
+        pane, session, condition = self._room_condition(
+            room_id=room_id, project_marker=project_marker,
+            pane_id=pane_id, session_id=session_id,
+        )
+        client = _validate_client_tty(client)
+        if _COMMAND_TTY.fullmatch(client) is None or ".." in client:
+            raise TmuxError("tmux client tty is invalid")
+        return [
+            self.executable, *self._socket_args(),
+            "if-shell", "-F", "-t", pane, condition,
+            f"switch-client -c {client} -t {session}", _ROOM_REFUSAL,
+        ]
+
+    def server_identity(self, pane_id: str) -> tuple[str, int]:
+        """The socket path and pid of the server holding a pane, as tmux exports them in ``TMUX``."""
+        pane = _validate_pane_id(pane_id)
+        line = self._one_line(self._run([
+            "display-message", "-p", "-t", pane, "#{socket_path}\t#{pid}",
+        ]), "server identity")
+        path, separator, pid = line.rpartition("\t")
+        if not separator or not path or not pid.isascii() or not pid.isdigit():
+            raise TmuxError(f"can't find pane: {pane}")
+        return path, int(pid)
 
     def kill_owned_room(
         self, *, room_id: str, project_marker: str,

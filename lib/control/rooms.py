@@ -1007,6 +1007,18 @@ def attach_room(store: RoomStore, selector: str, *, tmux: TmuxAdapter) -> dict[s
     )}
 
 
+def room_switch_argv(
+    attached: Mapping[str, Any], *, tmux: TmuxAdapter, client: str,
+) -> list[str]:
+    """The guarded switch-client form of an ``attach_room`` result for ``client`` (#113)."""
+    return tmux.room_switch_argv(
+        room_id=attached["room_id"],
+        project_marker=_project_marker(attached["project_id"]),
+        pane_id=attached["pane_id"], session_id=attached["session_id"],
+        client=client,
+    )
+
+
 def close_room(
     store: RoomStore, selector: str, *, tmux: TmuxAdapter,
 ) -> dict[str, Any]:
@@ -1071,5 +1083,5 @@ __all__ = [
     "ROOM_OPEN_CONTRACT", "SESSION_ROOM_OPTION", "RoomError", "RoomStore",
     "attach_room", "close_room", "list_rooms", "open_room", "resolve_project",
     "room_harness_available", "room_harness_command", "room_launch_argv",
-    "room_tmux_argv",
+    "room_switch_argv", "room_tmux_argv",
 ]
