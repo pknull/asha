@@ -43,6 +43,14 @@ BACKGROUND_TASK_LIMIT = 10000
 BACKGROUND_WAIT_SECONDS = 4 * 3600
 
 
+def _ownership_unavailable(detail):
+    """The refusal names why ownership is unknown, and how to rerun when tmux refused the caller."""
+    message = f'session ownership unavailable: {detail}'
+    if any(marker in detail.casefold() for marker in TMUX_CONNECT_FAILURES):
+        message += '; ' + SANDBOX_HINT
+    return StoreError(message)
+
+
 def waiting_on_background(row):
     """The last native Stop listed background work, and it is not too old to trust."""
     stamp = row.get('native_observed_at')
@@ -57,6 +65,11 @@ CLOSE_POLL_SECONDS = 0.5
 # A hook report stamped this much older than the newest applied one is skipped
 # (D2); anything older still applies, bounding a backward clock step.
 STALE_REPORT_SECONDS = 30
+# A sandboxed shell cannot reach the tmux socket or see host PIDs, so the
+# ownership proof fails there (#112). Codex runs a plain asha command that its
+# rules allow outside the sandbox; a chained or expanded one stays inside.
+SANDBOX_HINT = 'inside the Codex sandbox run this asha command on its own with literal arguments'
+TMUX_CONNECT_FAILURES = ('error connecting to', 'failed to connect to server')
 # A live terminal session with no native hook event this long after launch is
 # labelled "hooks not reporting" instead of plain unknown (#100): SessionStart
 # fires within seconds of a healthy launch.
@@ -1191,12 +1204,14 @@ class Hub:
         if str(row['generation']) != self.env.get('ASHA_HUB_GENERATION') or row['lifecycle'] not in ACTIVE_LIFECYCLES:
             raise StoreError('stale or inactive session reporter')
         record = RoomStore(self.config).read(row['room_id'])
-        state, _ = _owned_state(record, self.tmux)
+        state, detail = _owned_state(record, self.tmux)
         if state != 'open':
-            raise StoreError('session ownership unavailable')
+            raise _ownership_unavailable(detail)
         facts = self.tmux.pane_facts(record['tmux']['pane_id'])
         if not facts.pane_pid or not caller_descends_from(facts.pane_pid, require_complete=True):
-            raise StoreError('reporter is not part of this session')
+            # A PID namespace hides the pane: the caller may be the session, sandboxed.
+            hidden = facts.pane_pid and not os.path.exists(f'/proc/{facts.pane_pid}')
+            raise StoreError('reporter is not part of this session' + ('; ' + SANDBOX_HINT if hidden else ''))
         return row
 
     def observe(self, event, *, native_id=None, state=None, body=None, cwd=None, background_tasks=None,
@@ -1238,9 +1253,9 @@ class Hub:
             stored = row.get('native_emitted_at')
             if stored is not None and stored > emitted_at:
                 raise StoreError('a newer hook report was applied after this Stop')
-            state, _ = _owned_state(RoomStore(self.config).read(row['room_id']), self.tmux)
+            state, detail = _owned_state(RoomStore(self.config).read(row['room_id']), self.tmux)
             if state != 'open':
-                raise StoreError('session ownership unavailable')
+                raise _ownership_unavailable(detail)
             return self._observe(row, 'turn-stopped', native_id=native_id, state=None, body=None,
                                  background_tasks=background_tasks, emitted_at=emitted_at)
 
