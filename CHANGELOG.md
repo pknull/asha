@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased — a later turn without a report keeps finished (#114)
+
+- A finished worker woken for another turn without new work (a background
+  Monitor expiry or task notification, which Claude delivers as a prompt) no
+  longer reads `Stopped mid-task?`. A prompt that arrives while a current
+  finished report stands keeps the report and its assignment; the row reads
+  `Working: reported finished` while that turn runs (a close asks) and
+  `Finished` again once it ends with no new report (clean Stop on Claude and
+  Codex, five quiet minutes on Copilot). This also settles a report whose
+  reporting turn ended with background work still running, at the turn that
+  work wakes.
+- A report in that later turn still makes its prompt a new assignment, as
+  before; a Control `send`, a resume, or a prompt after a report that is no
+  longer current replace the report as before.
+
 ## Unreleased — session verbs take short IDs; attach attaches (#113)
 
 - `asha control session show|attach|close|stop|resume|send` accept a unique

@@ -369,6 +369,18 @@ report never settles on staleness alone. Structured sessions report finished
 only at their managed turn boundary and are unaffected. Completed structured utilities
 leave the current list; their results remain under `show ID` and `list --all`.
 
+A finished worker can start another turn without new work: Claude wakes for a
+background Monitor or task notification, and that turn reaches the hub as
+`prompt-submitted` (#114). A prompt that arrives while a current finished
+report stands therefore does not erase it. The report stays, unsettled while
+the later turn runs (`Working: reported finished`, a close asks), and settles
+again when that turn ends with no new report: the next clean Stop on Claude or
+Codex, five quiet minutes on Copilot. The assignment does not change, so an
+earlier save still counts. If the worker reports in that turn (working,
+needs-input or finished), the prompt becomes a new assignment and the report
+replaces the old one, as before. A Control assignment (`send`), a resume or a
+prompt after a report that is no longer current replace it as before.
+
 Hook identity is inherited environment, so every Codex TUI launch that Asha
 owns (Rooms, native resume, and the `bin/asha` chair, coordinator and Control
 paths) passes `--no-daemon` when the installed Codex documents it (0.157 and
@@ -534,8 +546,8 @@ save project Memory, waits a bounded time, then terminates:
    the newest publication in the generation, so an earlier save still shows,
    with its age visible; `unsaved` means the generation has none.
 
-A session whose finished report is still current (no new prompt, message or
-working report since) and settled (its turn has stopped, or the staleness
+A session whose finished report is still current (no new message, working
+report, or prompt whose turn made a report since; #114) and settled (its turn has stopped, or the staleness
 fallback above applies; #109) and whose current assignment already has a
 publication, in either order, closes at once without a request. A report whose
 turn is still running gets an ordinary close request, so a close never kills
@@ -620,7 +632,7 @@ not counted. For every event but one this is a loss metric only: nothing
 reorders, retries or waits on it.
 
 The exception is `turn-stopped` (#110): a lost Stop would leave a finished
-report unsettled (`Working: reported finished`) until the next prompt, so the
+report unsettled (`Working: reported finished`) until a later turn ends, so the
 loss call also delivers it late. That call runs after the hook returned and is
 not part of the session's process tree, so it proves itself by the native
 conversation this generation already bound instead: an unbound generation, a
@@ -629,8 +641,8 @@ newer hook report has been applied, at any age (the 30 s clock-step allowance
 above does not extend to it), carries the Stop's background task count (a Stop
 that listed background work still is not a turn end), and returns no close
 decision; a pending close request is re-emitted at the next Stop. A Stop whose
-loss record also fails stays unsettled until the next prompt, session end or
-close.
+loss record also fails stays unsettled until a later turn ends (#114), session
+end or close.
 
 ## Optional session experience
 
