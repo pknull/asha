@@ -344,18 +344,28 @@ PYEOF
 # ---------------------------------------------------------------------------
 
 codex_render_rules() {
-  local content user_home rules_template
+  local content user_home launcher_home rules_template allow_template allow_rules
   rules_template="$(mktemp)" || return $?
-  cat > "$rules_template" <<'EOF'
-# Managed by asha installer; do not edit.
-#
-# These native Codex rules are a coarse fallback for command approvals. Asha's
-# richer policy engine remains hook-based, but current Codex shell execution can
-# bypass PreToolUse. Rules operate at approval/sandbox boundaries and use prefix
-# matching only, so they are deliberately narrower than policy-guard.sh.
+  allow_template="$(mktemp)" || { rm -f "$rules_template"; return 1; }
+  # Allow rules run their command outside the sandbox without a prompt, so they
+  # render only with the pin below; without a usable HOME there is none.
+  cat > "$allow_template" <<'EOF'
+
+# `asha` resolves only to the user's launcher. Without this pin a bare-name rule
+# also matches a planted ./asha or Work/asha, which would then run unsandboxed.
+host_executable(name = "asha", paths = ["__ASHA_LAUNCHER__"])
+
+# report and handoff act only as the proven caller session: Control verifies the
+# session's pane ownership and process ancestry before either writes. They run
+# outside the sandbox because that proof needs the tmux socket and host PIDs.
+prefix_rule(
+    pattern = ["asha", "control", "session", ["report", "handoff"]],
+    decision = "allow",
+    justification = "Report status or publish Memory as the proven caller session.",
+)
 
 # The read-only policy form rejects --mode/--clear; allowing the bare policy
-# prefix would also approve writes. Save-review/disposition/report stay native.
+# prefix would also approve writes. Save-review and disposition stay native.
 prefix_rule(
     pattern = ["asha", "control", "session", "experience", "policy", "--read-only"],
     decision = "allow",
@@ -385,6 +395,15 @@ prefix_rule(
     decision = "allow",
     justification = "Inspect one frozen advisory review packet.",
 )
+EOF
+  cat > "$rules_template" <<'EOF'
+# Managed by asha installer; do not edit.
+#
+# These native Codex rules are a coarse fallback for command approvals. Asha's
+# richer policy engine remains hook-based, but current Codex shell execution can
+# bypass PreToolUse. Rules operate at approval/sandbox boundaries and use prefix
+# matching only, so they are deliberately narrower than policy-guard.sh.
+__ASHA_ALLOW_RULES__
 
 prefix_rule(
     pattern = ["find", "/home"],
@@ -465,6 +484,20 @@ prefix_rule(
 EOF
   content="$(cat "$rules_template")"
   rm -f "$rules_template"
+
+  # The pin comes from HOME alone, without the getent fallback below: a guessed
+  # path could pin a file the launcher never installed.
+  launcher_home="${HOME:-}"
+  while [[ "$launcher_home" == */ ]]; do launcher_home="${launcher_home%/}"; done
+  local placeholder=$'\n__ASHA_ALLOW_RULES__'
+  if [[ "$launcher_home" == /* && "$launcher_home" != *[\"\\]* && "$launcher_home" != *$'\n'* ]]; then
+    allow_rules="$(cat "$allow_template")"
+    allow_rules="${allow_rules//__ASHA_LAUNCHER__/"$launcher_home/.local/bin/asha"}"
+    content="${content/__ASHA_ALLOW_RULES__/"$allow_rules"}"
+  else
+    content="${content/"$placeholder"/}"
+  fi
+  rm -f "$allow_template"
 
   user_home="${HOME:-}"
   if [[ -z "$user_home" ]]; then
