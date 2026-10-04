@@ -11,16 +11,27 @@ saved; `Memory/activeContext.md` and `Memory/decisions.md` remain the published
 project state. This workflow grants no Git or native permission authority.
 Respect the assignment's publication limits.
 
+Run each `asha control session` command as its own tool call, on its own with
+literal arguments: no `&&`, pipes, redirection, `$VAR` or heredoc. Codex runs
+only that plain form outside its sandbox, where Control can prove the caller is
+this session; chained or expanded, it stays sandboxed and fails with `session
+ownership unavailable` or `reporter is not part of this session`. When an error
+says to run the command on its own, do that.
+
 At startup, run `asha control session handoff --read --json` for the verified
-project plane. Read its pair through
+project plane. Then, as a separate command, read its pair through
 `python3 "$ASHA_ROOT/plugins/session/tools/memory_v2.py" read --project-dir PROJECT --format json`.
 Verify relevant claims against live source before relying on them. Read only this
 project's relevant state. Never import chair context, private recovery files,
 native transcripts, or another project's Memory into the handoff.
 
-At completion, finish verification and other tools first. Read the coherent pair
-again before drafting and retain `digests.active` and `digests.decisions`.
-If authorized durable knowledge changed, write both drafts outside Memory and use:
+At completion, finish verification and other tools first. Run
+`asha control session handoff --read --json` again and retain its
+`memory.baseline` digests for `activeContext.md` and `decisions.md`, then reread
+the pair before drafting. Taking the digests first means a save that lands in
+between fails the compare-and-swap instead of being overwritten. If authorized
+durable knowledge changed, write both drafts outside Memory with your edit tool
+and use:
 
 ```bash
 asha control session handoff --active-file ACTIVE --decisions-file DECISIONS --expected-active DIGEST --expected-decisions DIGEST --json
