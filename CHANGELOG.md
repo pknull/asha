@@ -21,19 +21,20 @@
   and `AKIA` tokens and Bearer credentials, so `github_pat_`, `glpat-`, `npm_`,
   Slack `xox[abprs]-` and Google `AIza` tokens, JWTs, `Basic` credentials and
   encrypted PEM keys passed their scrubbers and knowledge lint.
-- The set is the union of the three modules' old patterns, so it is at least
-  as broad as recovery_state's was. A Bearer or Basic credential may also
-  contain `~` (RFC 6750), and a PEM block matches its markers in any case and
-  runs to the end of the text when it has no END line.
+- The set is the union of the three modules' old patterns, with two shapes
+  tightened so prose passes. A Bearer or Basic credential (which may now
+  contain `~`, per RFC 6750) needs a digit, one of `+ ~ =`, two lower-to-upper
+  case changes as base64 has, or 24 characters. "Basic configuration", "basic
+  JavaScript" and "Bearer authentication" no longer redact, in recovery
+  snapshots either. An `npm_` token needs 32 or more alphanumerics (real ones
+  have 36), so `npm_package_version` and `npm_config_*` names pass. A PEM
+  block matches its markers in any case and runs to the end of the text when
+  it has no END line.
 - Each module keeps its replacement text and codes. Recovery labels are
   unchanged. The workspace modules write `[REDACTED_TOKEN]` for every bare
   token family, `Bearer [REDACTED]` as before, and `Basic [REDACTED]` for the
   newly covered scheme; knowledge still refuses to promote private-key
   material.
-- Recovery's 12-character token minimum and its Bearer/Basic shape come with
-  the set: identifiers such as `npm_package_version` and prose such as "basic
-  configuration" now redact in the workspace modules too, and block knowledge
-  lint. Tightening those shapes is left as a follow-up.
 
 ## Unreleased — image 2.1.0: paid fal.ai generation beside local ComfyUI
 

@@ -16,7 +16,7 @@ TOOLS = Path(__file__).resolve().parents[2] / "plugins" / "session" / "tools"
 sys.path.insert(0, str(TOOLS))
 
 import workspace_workitems as wi  # type: ignore[reportMissingImports]  # noqa: E402
-from tests.python.secret_specimens import PROSE, SPECIMENS  # noqa: E402
+from tests.python.secret_specimens import PROSE, PROSE_NEAR_MISSES, SPECIMENS  # noqa: E402
 
 
 class WorkItemFixture(unittest.TestCase):
@@ -222,21 +222,23 @@ class AdapterPrivacyCases(WorkItemFixture):
         return report["candidate"]["objective"], report["redactions"]
 
     def test_each_shared_secret_family_is_scrubbed_with_its_workitem_label(self):
-        labels = {
-            "bearer": ("Bearer [REDACTED]", "bearer_credential"),
-            "basic": ("Basic [REDACTED]", "bearer_credential"),
-            "private_key": ("[REDACTED_SECRET_MATERIAL]", "private_key"),
-        }
+        labels = {"private_key": ("[REDACTED_SECRET_MATERIAL]", "private_key")}
         for family, specimen in SPECIMENS.items():
             with self.subTest(family=family):
                 objective, redactions = self.preview_objective(f"before {specimen.text} after")
-                label, code = labels.get(family, ("[REDACTED_TOKEN]", "credential_token"))
+                if specimen.kind == "auth":
+                    label = f"{specimen.text.split()[0]} [REDACTED]"
+                    code = "bearer_credential"
+                else:
+                    label, code = labels.get(family, ("[REDACTED_TOKEN]", "credential_token"))
                 self.assertNotIn(specimen.secret, objective)
                 self.assertEqual(f"before {label} after", objective)
                 self.assertEqual([code], redactions)
 
     def test_ordinary_prose_and_hex_commit_ids_are_not_redacted(self):
-        self.assertEqual((PROSE, []), self.preview_objective(PROSE))
+        for text in (PROSE, *PROSE_NEAR_MISSES):
+            with self.subTest(text=text):
+                self.assertEqual((text, []), self.preview_objective(text))
 
     def test_import_requires_matching_preview_and_never_executes_content(self):
         marker, data = self.malicious_candidate()

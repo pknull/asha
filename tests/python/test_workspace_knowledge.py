@@ -17,7 +17,7 @@ TOOLS_DIR = Path(__file__).parent.parent.parent / "plugins" / "session" / "tools
 sys.path.insert(0, str(TOOLS_DIR))
 
 import workspace_knowledge as wk  # type: ignore[reportMissingImports]  # noqa: E402
-from tests.python.secret_specimens import PROSE, SPECIMENS  # noqa: E402
+from tests.python.secret_specimens import PROSE, PROSE_NEAR_MISSES, SPECIMENS  # noqa: E402
 
 
 class KnowledgeFixture(unittest.TestCase):
@@ -204,7 +204,6 @@ class LintCases(KnowledgeFixture):
 
 class SharedSecretPatternCases(unittest.TestCase):
     def test_each_shared_secret_family_is_scrubbed_and_blocks_lint(self):
-        labels = {"bearer": "Bearer [REDACTED]", "basic": "Basic [REDACTED]"}
         for family, specimen in SPECIMENS.items():
             with self.subTest(family=family):
                 text = f"before {specimen.text} after\n"
@@ -218,12 +217,15 @@ class SharedSecretPatternCases(unittest.TestCase):
                 self.assertIn("secret_pattern", findings)
                 self.assertEqual([], errors)
                 self.assertNotIn(specimen.secret, content)
-                label = labels.get(family, "[REDACTED_TOKEN]")
+                label = (f"{specimen.text.split()[0]} [REDACTED]" if specimen.kind == "auth"
+                         else "[REDACTED_TOKEN]")
                 self.assertEqual(f"before {label} after\n", content)
 
     def test_ordinary_prose_and_hex_commit_ids_are_not_redacted(self):
-        self.assertEqual([], wk._privacy_findings(PROSE, "doc.md"))
-        self.assertEqual((PROSE, [], []), wk.scrub_candidate(PROSE))
+        for text in (PROSE, *PROSE_NEAR_MISSES):
+            with self.subTest(text=text):
+                self.assertEqual([], wk._privacy_findings(text, "doc.md"))
+                self.assertEqual((text, [], []), wk.scrub_candidate(text))
 
 
 class PromotionCases(KnowledgeFixture):
