@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased — structured Codex workers start, finish and report (#120)
+
+- Structured Codex sessions failed in a tenth of a second: their owners run
+  under the supervisor service, whose fixed `PATH` has no asdf or npm `codex`,
+  so the launcher exited 127 before app-server started. `asha control
+  supervisor install` now pins `ASHA_CLAUDE_CMD` and `ASHA_CODEX_CMD` beside
+  `ASHA_JJ`, resolved in the installing shell. Rerun it to rewrite the unit;
+  existing units keep failing until then.
+- A finished Codex session's result is its final answer. Codex streams text as
+  per-token deltas and its completion had no summary, so the result read as
+  the last token (often ".") and hid the worker's own report.
+- A provider that exits without a terminal result now names its exit status or
+  signal in the session's failure and recovery record. stderr is still never
+  retained.
+- Probed on Codex 0.160.0 with the installer's pinned `asha` allow rules: a
+  structured Codex worker's plain `asha control session report`, `handoff
+  --read`, `handoff` publication and `handoff --outcome no-durable-update` all
+  reach Control from inside the sandbox, so `asha_control` gains no handoff.
+
 ## Unreleased — skill authoring hygiene (security 1.0.1, session 2.3.2, write 1.11.1; #119)
 
 - Every asha skill description now says when to use the skill. Eight of the
