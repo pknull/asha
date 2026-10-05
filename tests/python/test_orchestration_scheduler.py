@@ -177,9 +177,14 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
         self.assertEqual(self.store.peek(initiative["initiative_id"])["state"], "draft")
 
     def test_goal_capacity_uses_the_selected_store_artifact_path(self):
-        path = Path("/tmp") / ("x" * 180) / "00000000-0000-4000-8000-000000000000.md"
+        # The goal names the path below ASHA_HOME (#117), so only that part counts.
+        path = self.config.asha_home / ("x" * 180) / "00000000-0000-4000-8000-000000000000.md"
         with mock.patch.object(self.store, "assignment_path", return_value=path):
             with self.assertRaisesRegex(SchedulerError, "200-character"):
+                validate_goal_capacity(self.config, self.initiative(), self.plan, store=self.store)
+        outside = Path("/tmp") / "00000000-0000-4000-8000-000000000000.md"
+        with mock.patch.object(self.store, "assignment_path", return_value=outside):
+            with self.assertRaisesRegex(SchedulerError, "outside ASHA_HOME"):
                 validate_goal_capacity(self.config, self.initiative(), self.plan, store=self.store)
 
     def capacity_case(self, node_type="work", *, interactive=True):
@@ -588,7 +593,7 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
             0,
         )
 
-    def test_control_goal_elides_long_slug_and_preserves_absolute_assignment_path(self) -> None:
+    def test_control_goal_elides_long_slug_and_anchors_assignment_at_asha_home(self) -> None:
         initiative = {"slug": "s" * 40}
         node = {"node_id": "n" * 40}
         attempt_id = "11111111-1111-4111-8111-111111111111"
@@ -596,16 +601,26 @@ class OrchestrationSchedulerTests(ExecutionFixture, unittest.TestCase):
             self.config.initiatives_dir / self.initiative_id / "assignments"
             / f"{attempt_id}.md"
         )
-        goal = _goal(initiative, node, assignment)
+        goal = _goal(initiative, node, assignment, asha_home=self.config.asha_home)
         self.assertLessEqual(len(goal), 200)
         self.assertTrue(goal.startswith("orch "))
         self.assertIn(attempt_id, goal)
-        self.assertTrue(goal.endswith(str(assignment)))
+        relative = assignment.relative_to(self.config.asha_home).as_posix()
+        self.assertTrue(goal.endswith(f" $ASHA_HOME/{relative}"), goal)
+        self.assertNotIn(str(self.config.asha_home), goal)
         slug_part = goal.removeprefix("orch ").split(" ", 1)[0]
         self.assertLessEqual(len(slug_part), 24)
-        too_long = Path("/") / ("a" * 170) / f"{attempt_id}.md"
-        with self.assertRaisesRegex(SchedulerError, "absolute assignment path"):
-            _goal(initiative, node, too_long)
+        # The goal no longer grows with the operator's home path (#117).
+        deep_home = Path("/") / ("a" * 170)
+        deep = deep_home / assignment.relative_to(self.config.asha_home)
+        self.assertLessEqual(len(_goal(initiative, node, deep, asha_home=deep_home)), 200)
+        # A path that cannot be named relative to ASHA_HOME is refused, never
+        # rendered absolute.
+        with self.assertRaisesRegex(SchedulerError, "outside ASHA_HOME"):
+            _goal(
+                initiative, node, Path("/elsewhere") / f"{attempt_id}.md",
+                asha_home=self.config.asha_home,
+            )
 
     def test_successful_dispatch_surfaces_delivery_preflight_stderr(self) -> None:
         diagnostic = (

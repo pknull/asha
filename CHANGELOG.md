@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased — orchestration goals name no home path (#117)
+
+- An orchestration dispatch now passes Control the goal `orch <slug>
+  <attempt-id> $ASHA_HOME/<path-below-ASHA_HOME>` instead of the absolute
+  assignment path. The goal becomes the Control task label and the description
+  of the worker's change, so the operator's home path reached commit subjects.
+  Every Control worker's environment sets `ASHA_HOME`, which resolves the
+  reference, and the goal's length no longer depends on where `ASHA_HOME` is.
+- Existing records are not migrated and pushed history is not rewritten. A
+  dispatch left indeterminate before this change reissues its Control task's
+  stored absolute-path label on replay, because Control refuses a replay whose
+  label differs.
+
 ## Unreleased — image 2.1.0: paid fal.ai generation beside local ComfyUI
 
 - New `image-fal` skill (`plugins/image/skills/fal/`) for hosted fal.ai

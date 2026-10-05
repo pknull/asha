@@ -502,8 +502,15 @@ The scheduler then invokes one argv-only bounded subprocess, without a shell:
   --harness <node-harness>
   --role <node-role>
   --detach --json
-  --goal "orch <slug-prefix> <attempt-id> <absolute-assignment-path>"
+  --goal "orch <slug-prefix> <attempt-id> $ASHA_HOME/<assignment-path-below-ASHA_HOME>"
 ```
+
+The goal becomes the Control task label and the description of the worker's
+change, so it names the assignment through the literal `$ASHA_HOME` rather
+than an absolute path; every Control worker's environment sets `ASHA_HOME`.
+A replay against a task Control registered before this form reissues that
+task's stored absolute-path label, because Control refuses a replay whose
+label differs.
 
 An approved-baseline or scope-baseline node uses its approved scope-origin
 commit. An upstream-seal node requires one exact successful upstream seal
